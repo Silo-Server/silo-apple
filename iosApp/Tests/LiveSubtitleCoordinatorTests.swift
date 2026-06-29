@@ -59,6 +59,12 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
         }
         func selectLive(trackKey: String) { calls.append(.selectLive(trackKey: trackKey)) }
         func closeLiveTrack(trackKey: String) { calls.append(.close(trackKey: trackKey)) }
+        // M5 seamless swap: the success path defers the close to the persisted
+        // selection. Recorded as the same `.close` so the state-machine tests
+        // assert "the live track was closed" regardless of immediate-vs-deferred.
+        func closeLiveTrackAfterPersistedSelected(trackKey: String) {
+            calls.append(.close(trackKey: trackKey))
+        }
         func restorePriorSelection(_ selection: Int64?) { calls.append(.restore(selection)) }
         func registerPersisted(subtitleId: Int) { calls.append(.registerPersisted(subtitleId)) }
         func showPreparingNotice() { calls.append(.showPreparing) }
@@ -105,8 +111,14 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
         let controls = FakeControls(isPlaying: isPlaying)
         let sink = FakeSink()
         let clock = ManualClock()
-        let coordinator = LiveSubtitleCoordinator(controls: controls, sink: sink, clock: clock)
-        coordinator.selectionSnapshotProvider = { priorSelection }
+        // Constructor injection: the selection snapshot is fixed at build time,
+        // matching production (the seam is a `let`, not a settable property).
+        let coordinator = LiveSubtitleCoordinator(
+            controls: controls,
+            sink: sink,
+            clock: clock,
+            selectionSnapshot: { priorSelection }
+        )
         return (coordinator, controls, sink, clock)
     }
 

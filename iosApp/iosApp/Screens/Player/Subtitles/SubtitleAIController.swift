@@ -146,9 +146,45 @@ final class SubtitleAIController {
     /// player backends.
     private let registerAndSelectDescriptor: @MainActor (SidecarSubtitleDescriptor) -> Void
 
+    /// Register a synthesized descriptor in the picker WITHOUT selecting it.
+    /// Used for the `subtitle_ready` broadcast (M5): a translation finished
+    /// elsewhere (or on another device) should become selectable, but must not
+    /// hijack the current viewer's subtitle choice. Defaults to the selecting
+    /// closure when not injected (older call sites / tests).
+    private let registerDescriptorWithoutSelecting: @MainActor (SidecarSubtitleDescriptor) -> Void
+
     /// The in-flight Task draining the poller stream. Cancelled on a new
     /// submission, on `cancelActiveJob()`, and on `reset()`.
     private var pollDrainTask: Task<Void, Never>?
+
+    // MARK: - Early-frame buffer (M5)
+    //
+    // The server dispatches the translate job on a background goroutine and can
+    // emit `subtitle_translation_started`/`_cues` over the websocket BEFORE the
+    // HTTP 202 returns the job id — i.e. before `activeJob` (and thus the
+    // `track_key` we match on) is known. On a fast LAN those early frames would
+    // otherwise be dropped in `handle(_:)`, and the live cue experience could
+    // fail to engage on the very first job. To avoid that we stash the racing
+    // `started`/`cues`/`completed`/`failed` frames ONLY while a submit is in
+    // flight (`phase == .submitting`), capped, then replay the ones whose
+    // `track_key` matches the landed job once the 202 sets `activeJob`.
+
+    /// Frames received during the in-flight submit window, awaiting the 202.
+    /// Bounded by `Self.earlyFrameBufferCap`; oldest dropped on overflow.
+    private var earlyFrameBuffer: [PlaybackRealtimeSubtitleEvent] = []
+
+    /// Hard cap on buffered early frames. A `started` plus a few opening cue
+    /// batches is all that can realistically beat the 202 on a fast LAN; the
+    /// cap bounds memory if the server ever streams ahead unexpectedly. Old
+    /// frames are dropped first so the freshest cues survive.
+    private static let earlyFrameBufferCap = 32
+
+    /// Drop any buffered early frames and stop buffering. Called once the
+    /// buffered frames have been replayed (or discarded) and on submit-failure
+    /// / reset so a later job never inherits this one's racing frames.
+    private func clearEarlyFrameBuffer() {
+        earlyFrameBuffer.removeAll(keepingCapacity: false)
+    }
 
     /// Bumped on every `reset()`. Each async step that mutates observable
     /// state after an `await` (poll drain, completion handoff, quota refresh)
@@ -157,16 +193,21 @@ final class SubtitleAIController {
     /// register after a reset. Mirrors ``AICapabilities``'s `generation`.
     private var generation = 0
 
-    /// `nonisolated` so the owning ``PlayerViewModel`` (a Swift-5-mode type
-    /// that isn't globally `@MainActor`) can construct this `@MainActor`
-    /// controller from its own initializer / lazy property without an
-    /// `assumeIsolated` wrapper. The body only stores the injected
-    /// collaborators (immutable `let`s) and never touches the `@Observable`
-    /// main-actor state, so it is main-safe.
-    nonisolated init(
+    /// `@MainActor`-isolated (the type default). The owning ``PlayerViewModel``
+    /// is a Swift-5-mode type that isn't globally `@MainActor`, so it builds
+    /// this controller inside a `MainActor.assumeIsolated` block in its lazy
+    /// `subtitleAI` initializer — `subtitleAI` is documented to be accessed
+    /// only on the main actor (player UI, job commands, `cleanup()`). Isolating
+    /// the init (rather than marking it `nonisolated` and assigning to
+    /// main-actor `let`s from a nonisolated context) is what keeps the
+    /// Swift-6 actor-isolation warnings off this initializer.
+    init(
         api: ContinuumAI = .shared,
         poller: AIJobPoller = AIJobPoller(),
-        capabilities: AICapabilities = .shared,
+        // `nil` default rather than `.shared`: the shared capabilities holder is
+        // `@MainActor`-isolated, and default arguments evaluate in a nonisolated
+        // context, so it is resolved inside this (main-actor) init body instead.
+        capabilities: AICapabilities? = nil,
         mediaFileId: @escaping @MainActor () -> Int?,
         currentTime: @escaping @MainActor () -> Double,
         sessionId: @escaping @MainActor () -> String? = { nil },
@@ -174,6 +215,9 @@ final class SubtitleAIController {
         liveCoordinator: LiveSubtitleCoordinator? = nil,
         handoffContext: @escaping @MainActor () -> HandoffContext?,
         registerAndSelectDescriptor: @escaping @MainActor (SidecarSubtitleDescriptor) -> Void,
+        // M5: register-only (no auto-select) for the `subtitle_ready` broadcast.
+        // Falls back to the selecting closure when omitted.
+        registerDescriptorWithoutSelecting: (@MainActor (SidecarSubtitleDescriptor) -> Void)? = nil,
         // Test seam for the handoff listing fetch. Nil in production → the call
         // site uses `api.downloadedSubtitles`. Injected by unit tests so the
         // poller-vs-websocket handoff race can be exercised without the network.
@@ -181,7 +225,7 @@ final class SubtitleAIController {
     ) {
         self.api = api
         self.poller = poller
-        self.capabilities = capabilities
+        self.capabilities = capabilities ?? .shared
         self.mediaFileIdProvider = mediaFileId
         self.currentTimeProvider = currentTime
         self.sessionIdProvider = sessionId
@@ -189,6 +233,7 @@ final class SubtitleAIController {
         self.liveCoordinator = liveCoordinator
         self.handoffContextProvider = handoffContext
         self.registerAndSelectDescriptor = registerAndSelectDescriptor
+        self.registerDescriptorWithoutSelecting = registerDescriptorWithoutSelecting ?? registerAndSelectDescriptor
         self.downloadedSubtitlesFetch = downloadedSubtitlesFetch
     }
 
@@ -259,6 +304,7 @@ final class SubtitleAIController {
         // Tear down any live presentation (restores selection / resumes).
         liveCoordinator?.teardown()
         handoffJobId = nil
+        clearEarlyFrameBuffer()
         Task { [api, poller] in
             await poller.cancel()
             try? await api.cancelSubtitleJob(id: jobId)
@@ -281,6 +327,7 @@ final class SubtitleAIController {
         Task { await poller.cancel() }
         liveCoordinator?.teardown()
         handoffJobId = nil
+        clearEarlyFrameBuffer()
         activeJob = nil
         phase = .idle
         errorMessage = nil
@@ -306,6 +353,10 @@ final class SubtitleAIController {
         // shared handoff latch so the new job's terminal action can run.
         liveCoordinator?.teardown()
         handoffJobId = nil
+        // Discard any frames left buffered from a previous submit window before
+        // opening this one (so a superseded job's racing cues can't replay into
+        // the new job).
+        clearEarlyFrameBuffer()
 
         phase = .submitting
         errorMessage = nil
@@ -351,9 +402,33 @@ final class SubtitleAIController {
     private func onJobAccepted(_ job: SubtitleJob) {
         activeJob = job
         if job.status.isTerminal {
+            // A job that's already terminal at accept time never streams live;
+            // its buffered frames (if any) are irrelevant — discard them.
+            clearEarlyFrameBuffer()
             handleTerminal(job, isASR: job.kind != .translate, generation: generation)
         } else {
             phase = .running
+            // M5 — replay the early frames that beat the 202. Only the frames
+            // for THIS job's `track_key` (in arrival order); anything else
+            // buffered (a stale racing job) is discarded with the buffer.
+            replayEarlyFrames(for: job)
+        }
+    }
+
+    /// Replay buffered early frames whose `track_key` matches the now-landed
+    /// `job`, in arrival order, through the normal coordinator path — so a
+    /// `started`/`cues` pair that beat the 202 still engages the live cue
+    /// experience. Frames for any other key are dropped. The buffer is cleared
+    /// afterwards (the in-flight window is over; subsequent frames route live).
+    private func replayEarlyFrames(for job: SubtitleJob) {
+        guard !earlyFrameBuffer.isEmpty else { return }
+        let trackKey = Self.trackKey(for: job.id)
+        let matching = earlyFrameBuffer.filter { $0.trackKey == trackKey }
+        clearEarlyFrameBuffer()
+        guard !matching.isEmpty else { return }
+        Self.logger.info("[AI-LIVE] replaying \(matching.count, privacy: .public) buffered early frame(s) for trackKey=\(trackKey, privacy: .public)")
+        for event in matching {
+            liveCoordinator?.handle(event)
         }
     }
 
@@ -366,11 +441,31 @@ final class SubtitleAIController {
     // (the real paths run through `submit`/`drainPoll`); kept internal so
     // `@testable import` reaches them.
 
+    /// Enter the in-flight submit window (`phase == .submitting`, no
+    /// `activeJob`) without the network, so `SubtitleAIControllerTests` can
+    /// exercise the M5 early-frame buffer: frames delivered after this and
+    /// before `seedAcceptedJobForTesting` are buffered and then replayed.
+    /// Test-only.
+    func beginSubmitWindowForTesting() {
+        pollDrainTask?.cancel()
+        pollDrainTask = nil
+        liveCoordinator?.teardown()
+        handoffJobId = nil
+        clearEarlyFrameBuffer()
+        phase = .submitting
+        errorMessage = nil
+        activeJob = nil
+    }
+
     /// Seed `activeJob` as if the 202 accept landed (non-terminal), without
     /// hitting the network. Test-only.
     func seedAcceptedJobForTesting(_ job: SubtitleJob) {
         onJobAccepted(job)
     }
+
+    /// The number of frames currently buffered in the in-flight window
+    /// (test-only assertion hook for the early-frame buffer).
+    var bufferedEarlyFrameCountForTesting: Int { earlyFrameBuffer.count }
 
     /// Drive a poller-terminal snapshot through the real terminal handler,
     /// exactly as `drainPoll` would on a terminal poll. Test-only.
@@ -466,12 +561,18 @@ final class SubtitleAIController {
     /// `generation` is the value captured at submit time; a reset mid-fetch
     /// invalidates the handoff so a stale completion can't land on the next
     /// account/session.
+    /// - Parameter autoSelect: when `true` (a job this client owns) the handed-off
+    ///   track is registered AND selected; when `false` (a `subtitle_ready`
+    ///   broadcast) it is registered only — it becomes selectable without
+    ///   hijacking the viewer's current choice — and a not-found / unresolvable
+    ///   result is treated as a silent no-op rather than a user-facing failure.
     private func completePersistedHandoff(
         jobId: String,
         mediaFileId: Int,
         resultSubtitleId: Int?,
         generation gen: Int,
-        viaWebsocket: Bool
+        viaWebsocket: Bool,
+        autoSelect: Bool = true
     ) {
         // Latch: only the first driver to reach completion registers the track.
         guard handoffJobId != jobId else {
@@ -488,10 +589,11 @@ final class SubtitleAIController {
 
         guard let resultId = resultSubtitleId else {
             Self.logger.warning("[AI-SUB] completed job \(jobId, privacy: .public) has no result_subtitle_id")
-            // Without the id we can't synthesize the persisted track. Let the
-            // coordinator restore the prior selection rather than stranding the
-            // synthetic live track selected.
-            failHandoff("Translation finished but the track couldn't be added.")
+            // Without the id we can't synthesize the persisted track. For a job
+            // we own, let the coordinator restore the prior selection rather than
+            // stranding the synthetic live track selected; for a `ready`
+            // broadcast there's nothing to do.
+            if autoSelect { failHandoff("Translation finished but the track couldn't be added.") }
             return
         }
 
@@ -508,19 +610,26 @@ final class SubtitleAIController {
             // A reset while the listing was in flight invalidates this handoff.
             guard gen == self.generation else { return }
 
+            // A handoff failure for an owned job surfaces a soft notice +
+            // restores selection; for a `ready` broadcast (register-only) it is
+            // a silent no-op (nothing was selected, nothing to restore).
+            let softFail: (String) -> Void = { [weak self] message in
+                if autoSelect { self?.failHandoff(message) }
+            }
+
             // Match by DB id (Android: `it.id == resultSubtitleId`); the
             // matched entry's position in the listing fixes its combined index.
             guard let position = downloaded.firstIndex(where: { $0.id == resultId }) else {
                 Self.logger.warning(
                     "[AI-SUB] result subtitle id=\(resultId, privacy: .public) not found among \(downloaded.count, privacy: .public) downloaded subtitles"
                 )
-                self.failHandoff("Translation finished but the track couldn't be added.")
+                softFail("Translation finished but the track couldn't be added.")
                 return
             }
 
             guard let context = self.handoffContextProvider() else {
                 Self.logger.warning("[AI-SUB] no active session/track context for completed subtitle id=\(resultId, privacy: .public)")
-                self.failHandoff("Translation finished but the track couldn't be added.")
+                softFail("Translation finished but the track couldn't be added.")
                 return
             }
 
@@ -531,14 +640,18 @@ final class SubtitleAIController {
                 resolveURL: context.resolveURL
             ) else {
                 Self.logger.warning("[AI-SUB] could not synthesize stream URL for completed subtitle id=\(resultId, privacy: .public)")
-                self.failHandoff("Translation finished but the track couldn't be added.")
+                softFail("Translation finished but the track couldn't be added.")
                 return
             }
 
             Self.logger.info(
-                "[AI-SUB] handing off completed subtitle id=\(resultId, privacy: .public) combinedIndex=\(descriptor.index, privacy: .public) viaWebsocket=\(viaWebsocket, privacy: .public)"
+                "[AI-SUB] handing off subtitle id=\(resultId, privacy: .public) combinedIndex=\(descriptor.index, privacy: .public) viaWebsocket=\(viaWebsocket, privacy: .public) autoSelect=\(autoSelect, privacy: .public)"
             )
-            self.registerAndSelectDescriptor(descriptor)
+            if autoSelect {
+                self.registerAndSelectDescriptor(descriptor)
+            } else {
+                self.registerDescriptorWithoutSelecting(descriptor)
+            }
 
             // FIX 2: when the POLLER is first to complete (the websocket's
             // `completed` frame was lost — e.g. a transient socket drop with no
@@ -579,12 +692,23 @@ final class SubtitleAIController {
 
         // Scope track-keyed events to the active job. A late frame for a job
         // we've already torn down (or never started) is ignored.
-        //
-        // TODO(M5): buffer `started`/`cues` frames that race ahead of the 202
-        // (which sets `activeJob`), then replay them once the job lands. Today
-        // such early frames are dropped here; the path degrades safely because
-        // the poller still completes the job and the user can re-open the menu.
         guard let trackKey = event.trackKey else { return }
+
+        // M5 — early-frame buffering: while a submit is in flight the 202 hasn't
+        // set `activeJob` yet, so we can't know the job's `track_key`. Stash the
+        // racing frame (bounded) instead of dropping it; `onJobAccepted` replays
+        // the ones that match the landed job. Only buffer during this in-flight
+        // window — once `activeJob` is set, the match below handles routing and
+        // a stale-key frame is correctly ignored.
+        if activeJob == nil, phase == .submitting {
+            earlyFrameBuffer.append(event)
+            if earlyFrameBuffer.count > Self.earlyFrameBufferCap {
+                earlyFrameBuffer.removeFirst(earlyFrameBuffer.count - Self.earlyFrameBufferCap)
+            }
+            Self.logger.debug("[AI-LIVE] buffering early frame trackKey=\(trackKey, privacy: .public) buffered=\(self.earlyFrameBuffer.count, privacy: .public)")
+            return
+        }
+
         guard let job = activeJob, Self.trackKey(for: job.id) == trackKey else {
             Self.logger.debug("[AI-LIVE] ignoring event for stale/unknown trackKey=\(trackKey, privacy: .public)")
             return
@@ -593,27 +717,39 @@ final class SubtitleAIController {
         liveCoordinator?.handle(event)
     }
 
-    /// Handle a file-scoped `subtitle_ready` broadcast (M5 fleshes this out).
-    /// Today: if it carries a usable id and matches the current file, run the
-    /// shared handoff so the track becomes selectable — guarded by the latch so
-    /// it never collides with a job-driven completion.
+    /// Handle a file-scoped `subtitle_ready` broadcast (M5).
+    ///
+    /// The server broadcasts `subtitle_ready` to **any** active session of a
+    /// file when a downloaded subtitle becomes available — including a
+    /// translation started elsewhere or on another device. If it matches the
+    /// CURRENT file and isn't already the active job's result, register the
+    /// downloaded track so it becomes selectable in the picker — **without**
+    /// auto-selecting it (it isn't this viewer's choice).
+    ///
+    /// Latch-safe two ways: (1) a `ready` whose id equals the active job's
+    /// `resultSubtitleId` is ignored (that job's own completion handoff registers
+    /// + selects it), and (2) the per-id `ready-<id>` latch key means a repeated
+    /// broadcast registers the track at most once.
     private func handleSubtitleReady(_ ready: PlaybackRealtimeSubtitleEvent.Ready) {
         guard let mediaFileId = mediaFileIdProvider(),
               let fileId = ready.fileId, fileId == mediaFileId,
               let subtitleId = ready.subtitleId else {
             return
         }
-        // Only adopt a `ready` that isn't already owned by the active job's
-        // completion (that path handles its own handoff + selection).
+        // Don't double-handle the active job's own result — its completion path
+        // owns that track's registration + selection.
         if let job = activeJob, job.resultSubtitleId == subtitleId { return }
         Self.logger.info("[AI-LIVE] subtitle_ready broadcast subtitleId=\(subtitleId, privacy: .public) fileId=\(fileId, privacy: .public)")
-        // Use a synthetic job key so the latch doesn't clash with a real job.
+        // A per-id synthetic latch key so a repeated broadcast registers once
+        // and never clashes with a real job's `ai-<jobID>` key. Register-only
+        // (`autoSelect: false`): make it selectable, don't hijack the selection.
         completePersistedHandoff(
             jobId: "ready-\(subtitleId)",
             mediaFileId: mediaFileId,
             resultSubtitleId: subtitleId,
             generation: generation,
-            viaWebsocket: true
+            viaWebsocket: true,
+            autoSelect: false
         )
     }
 
@@ -643,6 +779,9 @@ final class SubtitleAIController {
     // MARK: - Helpers
 
     private func fail(with message: String) {
+        // A submit that fails (incl. the 202 never returning) ends the in-flight
+        // window — discard any frames that were buffered waiting for it.
+        clearEarlyFrameBuffer()
         phase = .failed
         errorMessage = message
     }
@@ -658,11 +797,28 @@ final class SubtitleAIController {
     }
 
     private static func message(for error: Error) -> String {
-        // `HTTPError` is a `LocalizedError` whose `errorDescription` already
-        // surfaces the server's parsed error message; fall through to it.
         if let http = error as? HTTPError {
+            // 503 from the AI endpoints means the feature is configured but the
+            // AI service is unreachable right now — give a clearer line than the
+            // generic "Server returned status 503". A server-supplied message (if
+            // any) still wins via `errorDescription`.
+            if http.statusCode == 503, Self.parsedServerMessage(http) == nil {
+                return "AI subtitles aren't available right now. Try again later."
+            }
+            // `HTTPError` is a `LocalizedError` whose `errorDescription` already
+            // surfaces the server's parsed error message; fall through to it.
             return http.errorDescription ?? "Couldn't start subtitle translation."
         }
         return "Couldn't start subtitle translation."
+    }
+
+    /// True-ish helper: whether the server attached a human message to the
+    /// error body (so we prefer it over our generic 503 copy).
+    private static func parsedServerMessage(_ http: HTTPError) -> String? {
+        guard case .http = http else { return nil }
+        // `errorDescription` returns the parsed server message when present,
+        // otherwise the "Server returned status N" fallback — detect the latter.
+        let description = http.errorDescription ?? ""
+        return description.hasPrefix("Server returned status") ? nil : description
     }
 }

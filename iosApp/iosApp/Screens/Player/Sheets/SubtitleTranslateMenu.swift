@@ -285,6 +285,10 @@ struct SubtitleTranslateMenu: View {
                 }
             } header: {
                 Text("Transcribe")
+            } footer: {
+                if isQuotaExhausted {
+                    Text("You've used all your transcription credits for this period. Translating an existing subtitle track still works.")
+                }
             }
         }
     }
@@ -338,6 +342,13 @@ struct SubtitleTranslateMenu: View {
                 isDisabled: isQuotaExhausted
             ) {
                 beginTranscribeAndTranslate()
+            }
+            if isQuotaExhausted {
+                Text("You've used all your transcription credits for this period. Translating an existing subtitle track still works.")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
             }
         }
     }
@@ -409,6 +420,7 @@ struct SubtitleTranslateMenu: View {
 
     private var quotaText: String? {
         guard let quota = controller.quota, quota.limited else { return nil }
+        if isQuotaExhausted { return "Transcription limit reached" }
         let used = quota.used ?? 0
         if let limit = quota.limit {
             let period = quota.period.map { " / \($0)" } ?? ""

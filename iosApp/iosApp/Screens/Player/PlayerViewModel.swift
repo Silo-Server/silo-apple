@@ -601,20 +601,31 @@ class PlayerViewModel {
     /// Lazy so the `@MainActor`-isolated controller is constructed on first
     /// access (always on the main actor — the player UI, job commands, and
     /// `cleanup()` are all main-isolated) rather than from the nonisolated
-    /// `init()`, which can't synchronously build a main-actor type. This
-    /// replaces the previous `MainActor.assumeIsolated` construction.
+    /// `init()`, which can't synchronously build a main-actor type.
+    ///
+    /// The controller (and its coordinator/adapters) are `@MainActor`-isolated
+    /// initializers, so they are built inside `MainActor.assumeIsolated`: the
+    /// lazy initializer body runs in this Swift-5-mode type's nonisolated
+    /// context, but first access is always on the main actor, so asserting that
+    /// here is correct and keeps the seams' initializers properly isolated (no
+    /// Swift-6 actor-isolation warnings).
     @ObservationIgnored
-    private(set) lazy var subtitleAI: SubtitleAIController = SubtitleAIController(
-        mediaFileId: { [weak self] in self?.currentSelectedVersion?.fileId },
-        currentTime: { [weak self] in self?.currentTime ?? 0 },
-        sessionId: { [weak self] in self?.activePlaybackSessionId },
-        realtimeUnavailable: { [weak self] in self?.realtimeUnavailableSnapshot ?? true },
-        liveCoordinator: self.makeLiveSubtitleCoordinator(),
-        handoffContext: { [weak self] in self?.makeSubtitleHandoffContext() },
-        registerAndSelectDescriptor: { [weak self] descriptor in
-            self?.registerCompletedAISubtitle(descriptor)
-        }
-    )
+    private(set) lazy var subtitleAI: SubtitleAIController = MainActor.assumeIsolated {
+        SubtitleAIController(
+            mediaFileId: { [weak self] in self?.currentSelectedVersion?.fileId },
+            currentTime: { [weak self] in self?.currentTime ?? 0 },
+            sessionId: { [weak self] in self?.activePlaybackSessionId },
+            realtimeUnavailable: { [weak self] in self?.realtimeUnavailableSnapshot ?? true },
+            liveCoordinator: self.makeLiveSubtitleCoordinator(),
+            handoffContext: { [weak self] in self?.makeSubtitleHandoffContext() },
+            registerAndSelectDescriptor: { [weak self] descriptor in
+                self?.registerCompletedAISubtitle(descriptor)
+            },
+            registerDescriptorWithoutSelecting: { [weak self] descriptor in
+                self?.registerCompletedAISubtitle(descriptor, autoSelect: false)
+            }
+        )
+    }
 
     /// Last-known realtime websocket availability, mirrored from the actor's
     /// `isRealtimeUnavailable` via `observeUnavailability` so the (synchronous,
@@ -631,10 +642,11 @@ class PlayerViewModel {
 
     /// Build the live-subtitle coordinator with adapters bound to this VM. The
     /// adapters touch the VM's playback + live-track + notice surface, so they
-    /// live in this file. `nonisolated` (and the adapters/coordinator have
-    /// `nonisolated init`s) so it can run from the nonisolated `subtitleAI`
-    /// lazy initializer, mirroring `SubtitleAIController`'s construction. It
-    /// only wires immutable closures; no main-actor state is touched.
+    /// live in this file. Called only from the `subtitleAI` lazy initializer,
+    /// which already runs inside `MainActor.assumeIsolated`; the adapters and
+    /// coordinator have `@MainActor` initializers, so this constructs them on
+    /// the asserted main actor. It only wires immutable closures.
+    @MainActor
     private func makeLiveSubtitleCoordinator() -> LiveSubtitleCoordinator {
         let controls = LiveSubtitlePlaybackAdapter(owner: self)
         let sink = LiveSubtitleSinkAdapter(owner: self)
@@ -772,6 +784,17 @@ class PlayerViewModel {
     /// reload/resume has to remember the synthesised sidecar `trackId`
     /// and re-apply it once `subtitle_urls` have been registered again.
     private var pendingSidecarSubtitleTrackId: Int64?
+    /// M5 seamless live→persisted swap: the synthetic AI-live track id whose
+    /// row + libass track must be closed AFTER the handed-off persisted track is
+    /// selected. Set by `armDeferredLiveSubtitleClose` when a live job completes;
+    /// consumed in `appendSidecarTracks` immediately after the persisted
+    /// selection is applied, so there is never a frame with no subtitle between
+    /// dropping the live row and the persisted track landing.
+    private var pendingLiveSubtitleCloseTrackId: Int64?
+    /// Bounded fallback timer that closes a deferred live track if the persisted
+    /// selection never lands. Cancelled when the seamless close fires or on
+    /// cleanup.
+    private var deferredLiveSubtitleCloseTask: Task<Void, Never>?
     /// Snapshot of the server-cascaded subtitle prefs for the currently
     /// loaded content. Captured from `WatchDetail.effective_*` at
     /// session-start time and consumed once the player reports its
@@ -4118,7 +4141,10 @@ class PlayerViewModel {
     /// auto-selects it once registered, and (3) call the active backend's
     /// `registerSidecarSubtitles`, which fires `onSidecarTracksRegistered` →
     /// `appendSidecarTracks`. No new selection plumbing.
-    private func registerCompletedAISubtitle(_ descriptor: SidecarSubtitleDescriptor) {
+    private func registerCompletedAISubtitle(
+        _ descriptor: SidecarSubtitleDescriptor,
+        autoSelect: Bool = true
+    ) {
         guard backendCapabilities.supportsExternalPrimarySubtitles else {
             Self.logger.info(
                 "[AI-SUB] backend \(self.activeRouteKind.label, privacy: .public) can't host downloaded subtitles; skipping handoff"
@@ -4140,12 +4166,16 @@ class PlayerViewModel {
             ))
         }
 
-        // Seed the pending selection so the append path selects it for us.
+        // Seed the pending selection so the append path selects it for us —
+        // unless this is a `subtitle_ready` broadcast (M5), which registers the
+        // track as selectable WITHOUT hijacking the viewer's current choice.
         let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: descriptor.index)
-        pendingSidecarSubtitleTrackId = trackId
+        if autoSelect {
+            pendingSidecarSubtitleTrackId = trackId
+        }
 
         Self.logger.info(
-            "[AI-SUB] registering completed subtitle index=\(descriptor.index, privacy: .public) lang=\(descriptor.language ?? "nil", privacy: .public) trackId=\(trackId, privacy: .public)"
+            "[AI-SUB] registering completed subtitle index=\(descriptor.index, privacy: .public) lang=\(descriptor.language ?? "nil", privacy: .public) trackId=\(trackId, privacy: .public) autoSelect=\(autoSelect, privacy: .public)"
         )
         switch activePlayer {
         case .none:
@@ -4216,6 +4246,41 @@ class PlayerViewModel {
         closeLiveSubtitleTrack(slot: .primary)
     }
 
+    /// M5 seamless swap: arm the live track `trackId` to be closed AFTER the
+    /// handed-off persisted track is selected (in `appendSidecarTracks`), rather
+    /// than synchronously. A bounded fallback timer guarantees the row is never
+    /// stranded if the persisted selection never lands (e.g. the handoff listing
+    /// fetch failed after the server reported completion): the live track is
+    /// closed anyway once the window elapses.
+    func armDeferredLiveSubtitleClose(trackId: Int64) {
+        pendingLiveSubtitleCloseTrackId = trackId
+        deferredLiveSubtitleCloseTask?.cancel()
+        deferredLiveSubtitleCloseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard let self, !Task.isCancelled else { return }
+            // Selection never landed — close the orphaned live row as a fallback
+            // and clear any lingering live selection.
+            guard self.pendingLiveSubtitleCloseTrackId == trackId else { return }
+            self.pendingLiveSubtitleCloseTrackId = nil
+            self.closeLiveSubtitleTrackRow(trackId: trackId)
+            if self.selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true {
+                self.disableSubtitles()
+            }
+            Self.logger.warning("[AI-SUB] deferred live-track close fired on fallback timeout (persisted selection never landed)")
+        }
+    }
+
+    /// Perform the deferred live-track close, if armed. Called from
+    /// `appendSidecarTracks` once the persisted AI track is selected, so the
+    /// swap is seamless (selection has already moved off the live row).
+    private func performDeferredLiveSubtitleCloseIfNeeded() {
+        guard let trackId = pendingLiveSubtitleCloseTrackId else { return }
+        pendingLiveSubtitleCloseTrackId = nil
+        deferredLiveSubtitleCloseTask?.cancel()
+        deferredLiveSubtitleCloseTask = nil
+        closeLiveSubtitleTrackRow(trackId: trackId)
+    }
+
     /// Restore a prior subtitle selection (or disable if there was none).
     /// Selecting an AI-live id is refused — that track is being torn down.
     func restoreLiveSubtitleSelection(_ trackId: Int64?) {
@@ -4232,12 +4297,14 @@ class PlayerViewModel {
         selectSubtitle(track)
     }
 
-    /// The "Preparing… subtitles" notice shown while the first live cues land.
+    /// The "Preparing subtitles" notice shown while the first live cues land.
+    /// Kind-agnostic copy (this live path serves translate, transcribe, and
+    /// transcribe+translate jobs alike), so it avoids "Translating…" wording.
     @MainActor
     func showLiveSubtitlePreparingNotice() {
         showNotice(
             title: "Preparing subtitles",
-            message: "Translating the current scene — playback resumes in a moment.",
+            message: "Generating subtitles for the current scene — playback resumes in a moment.",
             tone: .info,
             duration: 30
         )
@@ -4410,6 +4477,9 @@ class PlayerViewModel {
         autoSkipIntroCancelledKey = nil
         knownExternalSubtitles = []
         subtitleAI.reset()
+        deferredLiveSubtitleCloseTask?.cancel()
+        deferredLiveSubtitleCloseTask = nil
+        pendingLiveSubtitleCloseTrackId = nil
         pendingRecoveredAudioSelection = nil
         pendingRecoveredSubtitleSelection = nil
         pendingRecoveredSecondarySubtitleId = nil
@@ -4449,6 +4519,10 @@ class PlayerViewModel {
 
         let finalPosition = currentTime
         activePlayer.dispose()
+        // Drop the disposed backend so any post-teardown call is an explicit
+        // no-op (the `.none` case) rather than relying on each backend's
+        // `isDisposed` guard. `finalPosition` is captured above, before this.
+        activePlayer = .none
         sourceProxy?.stop()
         sourceProxy = nil
 
@@ -5567,6 +5641,10 @@ class PlayerViewModel {
                     selectedSubtitleId = pendingTrackId
                     applySubtitleTrackSelection(pendingTrackId)
                 }
+                // M5 seamless swap: the persisted AI track is now selected; it's
+                // safe to drop the synthetic live row + libass track with no
+                // no-subtitle flicker. (No-op unless a deferred close is armed.)
+                performDeferredLiveSubtitleCloseIfNeeded()
             }
         }
 
@@ -6065,7 +6143,7 @@ extension PlayerViewModel {
 private final class LiveSubtitlePlaybackAdapter: LivePlaybackControls {
     private weak var owner: PlayerViewModel?
 
-    nonisolated init(owner: PlayerViewModel) { self.owner = owner }
+    init(owner: PlayerViewModel) { self.owner = owner }
 
     func pause() { owner?.activePlayer.pause() }
     func play() { owner?.activePlayer.play() }
@@ -6092,7 +6170,7 @@ private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
     /// The `track_key` of the currently installed live track.
     private var installedTrackKey: String?
 
-    nonisolated init(owner: PlayerViewModel) { self.owner = owner }
+    init(owner: PlayerViewModel) { self.owner = owner }
 
     func installLiveTrack(trackKey: String, label: String?, language: String?) {
         guard let owner else { return }
@@ -6146,6 +6224,20 @@ private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
         guard let owner else { return }
         if let trackId = installedTrackId, installedTrackKey == trackKey {
             owner.closeLiveSubtitleTrackRow(trackId: trackId)
+            installedTrackId = nil
+            installedTrackKey = nil
+        }
+        converters[trackKey] = nil
+    }
+
+    func closeLiveTrackAfterPersistedSelected(trackKey: String) {
+        guard let owner else { return }
+        // Hand the live track id to the VM to close AFTER the persisted track is
+        // selected (M5 seamless swap). Clear our own bookkeeping now: from the
+        // coordinator's perspective this track is finished, and the VM owns the
+        // deferred row removal + libass teardown from here.
+        if let trackId = installedTrackId, installedTrackKey == trackKey {
+            owner.armDeferredLiveSubtitleClose(trackId: trackId)
             installedTrackId = nil
             installedTrackKey = nil
         }

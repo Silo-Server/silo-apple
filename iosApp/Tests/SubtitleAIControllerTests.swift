@@ -42,6 +42,12 @@ final class SubtitleAIControllerTests: XCTestCase {
         func feedCue(_ cue: PlaybackRealtimeSubtitleCue) {}
         func selectLive(trackKey: String) {}
         func closeLiveTrack(trackKey: String) { closeCount += 1; closedKeys.append(trackKey) }
+        // The M5 seamless-swap variant: in production the VM performs the close
+        // after the persisted selection lands; headless, we count it the same
+        // (the coordinator has finished with the synthetic track either way).
+        func closeLiveTrackAfterPersistedSelected(trackKey: String) {
+            closeCount += 1; closedKeys.append(trackKey)
+        }
         func restorePriorSelection(_ selection: Int64?) {}
         func registerPersisted(subtitleId: Int) { registerCount += 1; lastRegisteredId = subtitleId }
         func showPreparingNotice() {}
@@ -223,6 +229,53 @@ final class SubtitleAIControllerTests: XCTestCase {
         XCTAssertEqual(h.coordinator.phase, .completed, "coordinator must not strand in .streaming")
         XCTAssertEqual(h.sink.closeCount, 1, "synthetic live track closed")
         XCTAssertTrue(h.sink.closedKeys.contains("ai-5"))
+    }
+
+    // MARK: - (d) early-frame buffering (M5)
+
+    /// `started` + `cues` race ahead of the 202 (so `activeJob` isn't set yet):
+    /// they must be buffered during the in-flight submit window, then replayed
+    /// in order once the accepted job lands — so the coordinator engages the
+    /// live cue experience (preparing → streaming) even on a fast LAN where the
+    /// websocket beats the HTTP response.
+    func testEarlyFramesBeforeAcceptAreBufferedThenReplayed() async {
+        let h = makeHarness(downloaded: [persisted(id: 99)])
+
+        // Submit is in flight; the 202 hasn't returned the job id yet.
+        h.controller.beginSubmitWindowForTesting()
+
+        // Early frames arrive over the websocket BEFORE `activeJob` is known.
+        h.controller.handle(started("ai-77"))
+        h.controller.handle(cues("ai-77"))
+
+        // They are buffered (not dropped) and the coordinator hasn't engaged yet.
+        XCTAssertEqual(h.controller.bufferedEarlyFrameCountForTesting, 2, "early frames buffered")
+        XCTAssertEqual(h.coordinator.phase, .idle, "coordinator idle until the job lands")
+
+        // The 202 lands: the buffered frames replay through the coordinator.
+        h.controller.seedAcceptedJobForTesting(runningJob(id: "77"))
+
+        XCTAssertEqual(h.controller.bufferedEarlyFrameCountForTesting, 0, "buffer drained after replay")
+        XCTAssertEqual(h.coordinator.phase, .streaming, "replayed started+cues drove preparing→streaming")
+        XCTAssertEqual(h.controls.isPlaying, true, "resumed on the replayed first cue batch")
+    }
+
+    /// Buffered frames whose `track_key` doesn't match the landed job are
+    /// discarded (a stale racing job), and the matching ones still replay.
+    func testEarlyFramesForOtherTrackKeyDiscardedOnAccept() async {
+        let h = makeHarness(downloaded: [persisted(id: 1)])
+        h.controller.beginSubmitWindowForTesting()
+
+        // A frame for a different (stale) job key, plus the real one.
+        h.controller.handle(started("ai-OTHER"))
+        h.controller.handle(started("ai-3"))
+        XCTAssertEqual(h.controller.bufferedEarlyFrameCountForTesting, 2)
+
+        h.controller.seedAcceptedJobForTesting(runningJob(id: "3"))
+
+        // Only `ai-3` replayed → coordinator installed exactly that track.
+        XCTAssertEqual(h.controller.bufferedEarlyFrameCountForTesting, 0)
+        XCTAssertEqual(h.coordinator.phase, .preparing, "matching started replayed (no cues yet)")
     }
 }
 

@@ -73,8 +73,17 @@ protocol LiveSubtitleSink: AnyObject {
     func feedCue(_ cue: PlaybackRealtimeSubtitleCue)
     /// Select the live track installed for `trackKey`.
     func selectLive(trackKey: String)
-    /// Close the synthetic live track for `trackKey` and remove its picker row.
+    /// Close the synthetic live track for `trackKey` and remove its picker row,
+    /// immediately. Used on the failure / timeout / teardown / supersede paths,
+    /// where no persisted track is arriving to take over the caption.
     func closeLiveTrack(trackKey: String)
+    /// Close the synthetic live track for `trackKey`, but DEFER the row removal
+    /// + libass teardown until AFTER the handed-off persisted track is selected
+    /// (M5 seamless swap). Used on the success path so there is never a frame
+    /// with no subtitle selected between dropping the live row and the persisted
+    /// track landing. If the persisted selection never lands (handoff failed),
+    /// the deferred close is dropped — the failure path closes the track itself.
+    func closeLiveTrackAfterPersistedSelected(trackKey: String)
     /// Restore whatever subtitle selection was active before the live job
     /// began (the snapshot the coordinator captured and passed back here).
     func restorePriorSelection(_ selection: Int64?)
@@ -109,9 +118,10 @@ protocol LiveSubtitleClock {
 /// Production clock: a cancellable `Task.sleep` on the main actor.
 @MainActor
 final class RealLiveSubtitleClock: LiveSubtitleClock {
-    /// `nonisolated` so it can be used as a default-argument value for the
-    /// coordinator's (main-actor) initializer — default arguments evaluate in
-    /// a nonisolated context. The body stores nothing, so it is main-safe.
+    /// `nonisolated` so it can be the default-argument value for the
+    /// coordinator's (main-actor) initializer — default arguments evaluate in a
+    /// nonisolated context, so a `@MainActor` init couldn't be called there.
+    /// The body stores nothing, so it is main-safe.
     nonisolated init() {}
 
     func scheduleSafetyResume(
@@ -174,12 +184,14 @@ final class LiveSubtitleCoordinator {
     private let sink: LiveSubtitleSink
     private let clock: LiveSubtitleClock
 
-    /// `nonisolated` so the owning `PlayerViewModel` (Swift-5 mode, not globally
-    /// `@MainActor`) can construct this `@MainActor` coordinator from its lazy
-    /// `subtitleAI` property initializer without an `assumeIsolated` wrapper —
-    /// the same pattern `SubtitleAIController.init` uses. The body only stores
-    /// immutable references and never touches `@Observable` main-actor state.
-    nonisolated init(
+    /// `@MainActor`-isolated (the type default). The owning `PlayerViewModel`
+    /// is a Swift-5-mode type that isn't globally `@MainActor`, so it builds
+    /// this coordinator inside a `MainActor.assumeIsolated` block (see
+    /// `makeLiveSubtitleCoordinator`) — the same construction `SubtitleAIController`
+    /// uses. The selection snapshot hook is injected here as an immutable `let`
+    /// (constructor injection) rather than a settable property, so the seam is
+    /// fixed at construction and the Swift-6 actor-isolation warnings stay off.
+    init(
         controls: LivePlaybackControls,
         sink: LiveSubtitleSink,
         clock: LiveSubtitleClock = RealLiveSubtitleClock(),
@@ -219,11 +231,12 @@ final class LiveSubtitleCoordinator {
     /// timer or late frame can't act on a finished job.
     private var generation = 0
 
-    /// Optional hook the adapter sets so the coordinator can read the live
-    /// `selectedSubtitleId` at `started` time (the snapshot it restores on
-    /// failure). Infrastructure, not observable UI state.
+    /// Hook the adapter injects at construction so the coordinator can read the
+    /// live `selectedSubtitleId` at `started` time (the snapshot it restores on
+    /// failure). A `let` (constructor injection), not a settable property:
+    /// infrastructure, not observable UI state.
     @ObservationIgnored
-    var selectionSnapshotProvider: (@MainActor () -> Int64?)?
+    private let selectionSnapshotProvider: (@MainActor () -> Int64?)?
 
     // MARK: - Driver entry point
 
@@ -341,8 +354,12 @@ final class LiveSubtitleCoordinator {
             Self.logger.warning("[AI-LIVE] completed trackKey=\(completed.trackKey, privacy: .public) carried no subtitle_id; relying on poller handoff")
         }
 
-        // The persisted track now owns the caption; drop the synthetic one.
-        sink.closeLiveTrack(trackKey: completed.trackKey)
+        // M5 seamless swap: the persisted track is being registered + selected
+        // asynchronously (the registration hops the main queue). Defer closing
+        // the synthetic live row until that selection lands so there is no
+        // no-subtitle flicker; the live track keeps rendering its last cues in
+        // the meantime.
+        sink.closeLiveTrackAfterPersistedSelected(trackKey: completed.trackKey)
         phase = .completed
         clearJob()
         Self.logger.info("[AI-LIVE] completed trackKey=\(completed.trackKey, privacy: .public) subtitleId=\(completed.subtitleId ?? -1, privacy: .public)")
@@ -398,11 +415,15 @@ final class LiveSubtitleCoordinator {
         }
         didResume = true
         if let active = activeTrackKey {
-            sink.closeLiveTrack(trackKey: active)
+            // M5 seamless swap: the poller authority has already registered +
+            // selected the persisted track (or is doing so on the main queue);
+            // defer the live-row close until that selection lands so there is no
+            // no-subtitle flicker.
+            sink.closeLiveTrackAfterPersistedSelected(trackKey: active)
         }
         phase = .completed
         clearJob()
-        Self.logger.info("[AI-LIVE] poller authority completed handoff; closed live track")
+        Self.logger.info("[AI-LIVE] poller authority completed handoff; deferred live-track close to persisted selection")
     }
 
     // MARK: - Teardown
