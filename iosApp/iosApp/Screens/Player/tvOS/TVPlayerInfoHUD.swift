@@ -1679,6 +1679,7 @@ private struct SubtitlesPane: View {
     let onMoveToTabs: () -> Void
 
     @State private var showAppearanceDialog = false
+    @State private var showAITranslateMenu = false
     @State private var activePicker: HUDPickerPresentation?
     @State private var pickerReturnField: FocusTarget?
     @State private var appearanceReturnField: FocusTarget?
@@ -1706,8 +1707,8 @@ private struct SubtitlesPane: View {
                 PaneColumn("Options") { optionRows }
                     .frame(width: 440, alignment: .topLeading)
             }
-            .disabled(showAppearanceDialog || activePicker != nil)
-            .opacity(showAppearanceDialog || activePicker != nil ? 0.28 : 1)
+            .disabled(showAppearanceDialog || activePicker != nil || showAITranslateMenu)
+            .opacity(showAppearanceDialog || activePicker != nil || showAITranslateMenu ? 0.28 : 1)
 
             if showAppearanceDialog {
                 SubtitleAppearanceDialog(
@@ -1726,9 +1727,28 @@ private struct SubtitlesPane: View {
                     onClose: closePicker
                 )
             }
+
+            // The AI translate/transcribe flow reuses the shared
+            // `SubtitleTranslateMenu` as a modal overlay — same presentation
+            // idiom as the appearance dialog above (columns dimmed + disabled).
+            if showAITranslateMenu {
+                SubtitleTranslateMenu(viewModel: viewModel) {
+                    showAITranslateMenu = false
+                }
+                .transition(.opacity)
+            }
         }
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showAppearanceDialog)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: activePicker?.id)
+        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showAITranslateMenu)
+    }
+
+    /// Whether the server's AI capabilities + the current track list offer any
+    /// AI subtitle action (translate an existing text track, or transcribe
+    /// audio). Gates the "Translate with AI…" row so it never opens an empty
+    /// menu. Shared with the iOS `TrackSelectionSheet` via the same helper.
+    private var aiSubtitlesAvailable: Bool {
+        SubtitleTranslateMenu.hasActionableSource(viewModel)
     }
 
     private var appearanceSummary: String {
@@ -1894,6 +1914,26 @@ private struct SubtitlesPane: View {
                         ) {
                             viewModel.selectSecondarySubtitle(track)
                         }
+                    }
+                }
+
+                if aiSubtitlesAvailable {
+                    Text("AI SUBTITLES")
+                        .font(.system(size: 14, weight: .semibold))
+                        .tracking(1.6)
+                        .foregroundStyle(.white.opacity(0.45))
+                        .padding(.top, 20)
+                        .padding(.bottom, 4)
+                        .padding(.leading, 14)
+                    HUDFocusedTrackRow(
+                        name: "Translate with AI…",
+                        attributes: "Translate a subtitle track or transcribe audio",
+                        isSelected: false,
+                        focused: $focusedSubtitleField,
+                        focusID: .primary("ai-translate"),
+                        onMoveRight: focusFirstOption
+                    ) {
+                        showAITranslateMenu = true
                     }
                 }
             }
