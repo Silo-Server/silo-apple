@@ -592,6 +592,13 @@ class PlayerViewModel {
     private var realtimeClient: PlaybackRealtimeClient!
     @ObservationIgnored
     private var playbackCoordinator: PlaybackCoordinator!
+    /// Owns the in-player AI subtitle suite (translate / transcribe over
+    /// polling). Constructed in `init` with closures into this VM's session
+    /// state + the sidecar-registration handoff, and `reset()` on teardown.
+    /// `@ObservationIgnored` because the UI binds to the controller's own
+    /// `@Observable` state, not through the VM.
+    @ObservationIgnored
+    private(set) var subtitleAI: SubtitleAIController!
     private var hideControlsTask: Task<Void, Never>?
     private var noticeDismissTask: Task<Void, Never>?
     private var remoteDismissTask: Task<Void, Never>?
@@ -850,6 +857,18 @@ class PlayerViewModel {
                 await self.handleRealtimeEvent(event)
             }
         )
+        // `PlayerViewModel` is constructed on the main actor (SwiftUI `@State`),
+        // but the type isn't globally `@MainActor` in Swift 5 mode, so build the
+        // `@MainActor` controller via `assumeIsolated`.
+        subtitleAI = MainActor.assumeIsolated {
+            SubtitleAIController(
+                mediaFileId: { [weak self] in self?.currentSelectedVersion?.fileId },
+                currentTime: { [weak self] in self?.currentTime ?? 0 },
+                registerAndSelectDownloadedSubtitle: { [weak self] subtitle in
+                    self?.registerCompletedAISubtitle(subtitle)
+                }
+            )
+        }
         // Choose a concrete backend only after playback bootstrap
         // resolves the execution plan, so loading HLS does not spin up and
         // immediately tear down an unused PlayerCore.
@@ -3965,6 +3984,92 @@ class PlayerViewModel {
         scheduleHideControls()
     }
 
+    // MARK: - AI subtitles (translate / transcribe over polling)
+
+    /// Start an AI translation of an existing text subtitle track into
+    /// `targetLanguage`. Forwarded to ``SubtitleAIController`` which POSTs the
+    /// job and polls it to completion, then hands the result back through
+    /// `registerCompletedAISubtitle`.
+    @MainActor
+    func startSubtitleTranslation(track: PlayerTrack, to targetLanguage: String) {
+        subtitleAI.translateExisting(track: track, to: targetLanguage)
+    }
+
+    /// Start an AI transcription of an audio track (`audioIndex`, `-1` =
+    /// server default), optionally translating the transcript into
+    /// `translateTo`.
+    @MainActor
+    func startSubtitleTranscription(audioIndex: Int, translateTo: String?) {
+        subtitleAI.transcribe(audioIndex: audioIndex, translateTo: translateTo)
+    }
+
+    /// Cancel the in-flight AI subtitle job, if any.
+    @MainActor
+    func cancelSubtitleAIJob() {
+        subtitleAI.cancelActiveJob()
+    }
+
+    /// Completion handoff for a finished AI subtitle job: take the downloaded
+    /// subtitle the controller located by `result_subtitle_id` and register it
+    /// through the **same** sidecar path the playback session uses, then
+    /// auto-select it.
+    ///
+    /// Reuse strategy: a completed AI track is a real downloaded subtitle
+    /// (`source:"downloaded"`), identical in shape to a session sidecar. So we
+    /// (1) resolve its URL against the playback server base via
+    /// `resolveServerUrl`, (2) build a `SidecarSubtitleDescriptor`, (3) seed
+    /// `pendingSidecarSubtitleTrackId` so `appendSidecarTracks` auto-selects it
+    /// once registered, (4) record it in `knownExternalSubtitles` so it
+    /// survives route/quality switches, and (5) call the active backend's
+    /// `registerSidecarSubtitles`, which fires `onSidecarTracksRegistered` →
+    /// `appendSidecarTracks` (appends the `PlayerTrack` and selects the pending
+    /// id). No new selection plumbing.
+    private func registerCompletedAISubtitle(_ subtitle: SubtitleUrl) {
+        guard backendCapabilities.supportsExternalPrimarySubtitles else {
+            Self.logger.info(
+                "[AI-SUB] backend \(self.activeRouteKind.label, privacy: .public) can't host downloaded subtitles; skipping handoff"
+            )
+            return
+        }
+        guard let url = resolveServerUrl(subtitle.url, serverUrl: resolvedServerUrl) else {
+            Self.logger.warning("[AI-SUB] could not resolve completed subtitle url: \(subtitle.url, privacy: .public)")
+            return
+        }
+
+        // Remember it so a later route/quality switch re-registers it like any
+        // other sidecar (de-dupes on index).
+        if !knownExternalSubtitles.contains(where: { $0.index == subtitle.index }) {
+            knownExternalSubtitles.append(subtitle)
+        }
+
+        // Seed the pending selection so the append path selects it for us.
+        let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: subtitle.index)
+        pendingSidecarSubtitleTrackId = trackId
+
+        let descriptor = SidecarSubtitleDescriptor(
+            index: subtitle.index,
+            language: subtitle.language,
+            codec: subtitle.codec,
+            label: subtitle.label,
+            source: subtitle.source,
+            forced: subtitle.forced,
+            url: url
+        )
+        Self.logger.info(
+            "[AI-SUB] registering completed subtitle index=\(subtitle.index, privacy: .public) lang=\(subtitle.language ?? "nil", privacy: .public) trackId=\(trackId, privacy: .public)"
+        )
+        switch activePlayer {
+        case .none:
+            // No backend yet — it will be picked up on the next file load via
+            // `loadPendingExternalSubtitles`/`knownExternalSubtitles`.
+            break
+        case .coreMedia(let core):
+            core.registerSidecarSubtitles([descriptor])
+        case .avPlayer(let backend):
+            backend.registerSidecarSubtitles([descriptor])
+        }
+    }
+
     func cycleAudioTrack() {
         guard !isBackgroundSuspended, !audioTracks.isEmpty else { return }
         let nextIndex: Int
@@ -4119,6 +4224,7 @@ class PlayerViewModel {
         autoSkippedIntroKey = nil
         autoSkipIntroCancelledKey = nil
         knownExternalSubtitles = []
+        MainActor.assumeIsolated { subtitleAI?.reset() }
         pendingRecoveredAudioSelection = nil
         pendingRecoveredSubtitleSelection = nil
         pendingRecoveredSecondarySubtitleId = nil
