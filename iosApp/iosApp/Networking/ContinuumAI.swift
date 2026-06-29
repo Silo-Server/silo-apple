@@ -1,0 +1,90 @@
+import Foundation
+
+/// Typed facade over the native Silo **AI** endpoints — metadata
+/// translation and subtitle translation/transcription.
+///
+/// Sibling to ``ContinuumAPI``: a separate actor keeps the AI surface
+/// cohesive and independently testable rather than swelling the much
+/// larger `ContinuumAPI`. Methods are thin pass-throughs over
+/// ``HTTPClient/shared``; snake_case auto-converts both ways, so the wire
+/// shapes in ``AIModels`` stay camelCase.
+///
+/// All paths are on the native API (`/api/v1/...`). The Jellyfin-compat
+/// API does not mirror the AI trigger/status/job endpoints; the Apple
+/// clients use the native API exclusively.
+actor ContinuumAI {
+    static let shared = ContinuumAI()
+
+    private let http: HTTPClient
+
+    init(http: HTTPClient = .shared) {
+        self.http = http
+    }
+
+    // MARK: - Metadata
+
+    /// Server-wide metadata-translation capability + the on-view mode.
+    func metadataAIStatus() async throws -> MetadataAIStatus {
+        try await http.get("/api/v1/metadata/ai/status")
+    }
+
+    /// Kick off an on-demand description translation for `contentId`.
+    /// Returns `202` with no body; observe completion by re-fetching the
+    /// item detail until `pendingTranslationLanguage` clears.
+    func translateDescription(contentId: String, targetLanguage: String) async throws {
+        try await http.postVoid(
+            "/api/v1/items/\(contentId)/translate-description",
+            body: TranslateDescriptionBody(targetLanguage: targetLanguage)
+        )
+    }
+
+    // MARK: - Subtitles
+
+    /// Server-wide subtitle-AI capability (translate + transcribe).
+    func subtitleAIStatus() async throws -> SubtitleAIStatus {
+        try await http.get("/api/v1/subtitles/ai/status")
+    }
+
+    /// The current user's ASR quota.
+    func subtitleAIQuota() async throws -> SubtitleAIQuota {
+        try await http.get("/api/v1/subtitles/ai/quota")
+    }
+
+    /// Start a subtitle translate / transcribe / transcribe-translate job.
+    func translateSubtitle(_ body: TranslateSubtitleBody) async throws -> SubtitleJob {
+        let envelope: SubtitleJobEnvelope = try await http.post(
+            "/api/v1/subtitles/ai/translate",
+            body: body
+        )
+        return envelope.job
+    }
+
+    /// Poll a single job by id.
+    func subtitleJob(id: String) async throws -> SubtitleJob {
+        let envelope: SubtitleJobEnvelope = try await http.get("/api/v1/subtitles/ai/jobs/\(id)")
+        return envelope.job
+    }
+
+    /// All jobs for a media file (e.g. to resume an in-flight job on reopen).
+    func subtitleJobs(mediaFileId: Int) async throws -> [SubtitleJob] {
+        let envelope: SubtitleJobsEnvelope = try await http.get(
+            "/api/v1/subtitles/ai/jobs",
+            query: ["media_file_id": String(mediaFileId)]
+        )
+        return envelope.jobs
+    }
+
+    /// Request cancellation of a running job (204, no body).
+    func cancelSubtitleJob(id: String) async throws {
+        try await http.postVoid("/api/v1/subtitles/ai/jobs/\(id)/cancel")
+    }
+
+    /// Downloaded subtitle tracks for a media file. Used to locate the
+    /// persisted track by `result_subtitle_id` after a job completes.
+    func downloadedSubtitles(mediaFileId: Int) async throws -> [SubtitleUrl] {
+        let response: DownloadedSubtitlesResponse = try await http.get(
+            "/api/v1/subtitles/\(mediaFileId)"
+        )
+        return response.subtitles
+    }
+}
