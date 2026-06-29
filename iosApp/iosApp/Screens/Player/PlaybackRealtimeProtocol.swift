@@ -36,9 +36,66 @@ let supportedApplePlaybackRealtimeCommands: [PlaybackRealtimeCommandName] = [
     .serverShuttingDown,
 ]
 
-enum PlaybackRealtimeEventName: String, Codable {
-    case chapterThumbnailReady = "chapter_thumbnail_ready"
-    case markersUpdated = "markers_updated"
+/// Names of `type:"event"` envelopes the server pushes over the playback
+/// control websocket.
+///
+/// Tolerant by design: the raw enum used to be strict (`String`-backed), so
+/// an unrecognized event name failed to decode the whole envelope and the
+/// event was silently dropped — a future server event would simply vanish.
+/// This is now a custom-decoded enum with an ``unknown(_:)`` fallback, so
+/// every well-formed `event` envelope decodes; consumers switch on the known
+/// cases and ignore ``unknown(_:)``. New cases can be added here without
+/// changing the parser.
+enum PlaybackRealtimeEventName: Codable, Equatable {
+    case chapterThumbnailReady
+    case markersUpdated
+    // AI subtitle live-streaming events (Milestone 4). These ride the same
+    // socket; payloads are decoded by `PlaybackRealtimeSubtitleEvent`.
+    case subtitleTranslationStarted
+    case subtitleTranslationCues
+    case subtitleTranslationCompleted
+    case subtitleTranslationFailed
+    case subtitleReady
+    /// Any event name not recognized above. Carries the raw wire string so
+    /// nothing is lost; current consumers ignore it.
+    case unknown(String)
+
+    /// The wire string for this event name.
+    var rawValue: String {
+        switch self {
+        case .chapterThumbnailReady: return "chapter_thumbnail_ready"
+        case .markersUpdated: return "markers_updated"
+        case .subtitleTranslationStarted: return "subtitle_translation_started"
+        case .subtitleTranslationCues: return "subtitle_translation_cues"
+        case .subtitleTranslationCompleted: return "subtitle_translation_completed"
+        case .subtitleTranslationFailed: return "subtitle_translation_failed"
+        case .subtitleReady: return "subtitle_ready"
+        case .unknown(let raw): return raw
+        }
+    }
+
+    init(rawValue: String) {
+        switch rawValue {
+        case "chapter_thumbnail_ready": self = .chapterThumbnailReady
+        case "markers_updated": self = .markersUpdated
+        case "subtitle_translation_started": self = .subtitleTranslationStarted
+        case "subtitle_translation_cues": self = .subtitleTranslationCues
+        case "subtitle_translation_completed": self = .subtitleTranslationCompleted
+        case "subtitle_translation_failed": self = .subtitleTranslationFailed
+        case "subtitle_ready": self = .subtitleReady
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PlaybackRealtimeEventName(rawValue: raw)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 enum PlaybackRealtimeAckStatus: String, Codable {

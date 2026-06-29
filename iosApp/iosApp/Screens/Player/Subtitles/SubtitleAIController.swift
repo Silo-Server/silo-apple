@@ -7,18 +7,23 @@
 //  translate. Owned by ``PlayerViewModel`` and constructed/reset alongside
 //  the playback session lifecycle.
 //
-//  Milestone 3 (this file) ships the complete feature over **polling**, the
-//  same contract the Android client uses:
+//  Milestone 3 ships the complete feature over **polling**, the same contract
+//  the Android client uses:
 //    POST /subtitles/ai/translate  →  store the job  →  poll
 //    GET  /subtitles/ai/jobs/{id}   until terminal    →  on `completed`,
 //    fetch GET /subtitles/{media_file_id}, locate the result subtitle, and
 //    register it as a normal downloaded sidecar track (then auto-select it).
 //
-//  The POST deliberately **omits `session_id`** in M3: passing it would make
-//  the server stream cues over the playback websocket, which this milestone
-//  can't consume yet. M4 adds `session_id` + a live cue driver layered on top
-//  of this controller — the job lifecycle + completion handoff here stay the
-//  authority underneath, so a socket drop always degrades to polling.
+//  Milestone 4 (now) layers REAL-TIME cue streaming over the websocket on top
+//  of that polling authority. The POST now passes `session_id` (the active
+//  playback session) so the server streams cues live; a ``LiveSubtitleCoordinator``
+//  drives the started→pause→synthetic-track→resume→handoff→fail experience
+//  while the poller keeps running underneath as the source of truth for
+//  `result_subtitle_id`. The websocket and the poller SHARE ONE terminal
+//  action — the persisted-track handoff — guarded by `handoffJobId` so the
+//  track is registered exactly once regardless of which path wins. When the
+//  socket is unavailable (`PlaybackRealtimeClient.isRealtimeUnavailable`) the
+//  controller behaves exactly like M3: poll, no live cues.
 //
 //  Isolation: `@MainActor @Observable` so the UI binds its state directly and
 //  all mutations stay on main. The networking lives behind the ``ContinuumAI``
@@ -95,6 +100,29 @@ final class SubtitleAIController {
     private let mediaFileIdProvider: @MainActor () -> Int?
     private let currentTimeProvider: @MainActor () -> Double
 
+    /// The active playback session id. M4 passes this in the translate POST so
+    /// the server streams cues live over the playback control websocket. Nil
+    /// when no session is bound (then the POST omits `session_id` and the job
+    /// runs poll-only, exactly like M3).
+    private let sessionIdProvider: @MainActor () -> String?
+
+    /// Whether the realtime websocket is currently unavailable (circuit broken
+    /// / never connected). When true the controller does not arm the live
+    /// coordinator and relies purely on the poller.
+    private let realtimeUnavailableProvider: @MainActor () -> Bool
+
+    /// The live cue state machine. Driven by the 5 websocket events the VM
+    /// forwards (and, on the shared terminal action, by the poller). Optional
+    /// so unit tests that only exercise the M3 polling path can omit it.
+    private let liveCoordinator: LiveSubtitleCoordinator?
+
+    /// The job id whose persisted-track handoff has been (or is being)
+    /// performed. The websocket-`completed` path and the poller-terminal path
+    /// both route through `completePersistedHandoff` and check this latch, so
+    /// the track is registered exactly once even when both fire. Cleared on a
+    /// new submission and on `reset()`.
+    private var handoffJobId: String?
+
     /// Context the controller needs to synthesize a completed subtitle's
     /// player descriptor (the server's listing carries no URL/index). Fetched
     /// lazily at handoff time so it always reflects the live session +
@@ -141,6 +169,9 @@ final class SubtitleAIController {
         capabilities: AICapabilities = .shared,
         mediaFileId: @escaping @MainActor () -> Int?,
         currentTime: @escaping @MainActor () -> Double,
+        sessionId: @escaping @MainActor () -> String? = { nil },
+        realtimeUnavailable: @escaping @MainActor () -> Bool = { true },
+        liveCoordinator: LiveSubtitleCoordinator? = nil,
         handoffContext: @escaping @MainActor () -> HandoffContext?,
         registerAndSelectDescriptor: @escaping @MainActor (SidecarSubtitleDescriptor) -> Void
     ) {
@@ -149,9 +180,17 @@ final class SubtitleAIController {
         self.capabilities = capabilities
         self.mediaFileIdProvider = mediaFileId
         self.currentTimeProvider = currentTime
+        self.sessionIdProvider = sessionId
+        self.realtimeUnavailableProvider = realtimeUnavailable
+        self.liveCoordinator = liveCoordinator
         self.handoffContextProvider = handoffContext
         self.registerAndSelectDescriptor = registerAndSelectDescriptor
     }
+
+    /// The `track_key` the server uses for `jobId`'s live stream
+    /// (`"ai-<jobID>"`). Used to scope forwarded websocket events to the
+    /// active job and to address the coordinator's synthetic track.
+    static func trackKey(for jobId: String) -> String { "ai-\(jobId)" }
 
     // MARK: - Quota
 
@@ -209,6 +248,9 @@ final class SubtitleAIController {
         let jobId = job.id
         pollDrainTask?.cancel()
         pollDrainTask = nil
+        // Tear down any live presentation (restores selection / resumes).
+        liveCoordinator?.teardown()
+        handoffJobId = nil
         Task { [api, poller] in
             await poller.cancel()
             try? await api.cancelSubtitleJob(id: jobId)
@@ -229,6 +271,8 @@ final class SubtitleAIController {
         pollDrainTask = nil
         let poller = self.poller
         Task { await poller.cancel() }
+        liveCoordinator?.teardown()
+        handoffJobId = nil
         activeJob = nil
         phase = .idle
         errorMessage = nil
@@ -250,20 +294,27 @@ final class SubtitleAIController {
         // Replace any prior in-flight job.
         pollDrainTask?.cancel()
         pollDrainTask = nil
+        // Tear down any prior live job before starting a new one, and clear the
+        // shared handoff latch so the new job's terminal action can run.
+        liveCoordinator?.teardown()
+        handoffJobId = nil
 
         phase = .submitting
         errorMessage = nil
         activeJob = nil
 
-        // OMIT session_id in M3 (poll-only). start_position is still sent so
-        // the watched region translates first.
+        // M4: pass `session_id` so the server streams cues live over the
+        // playback control websocket — UNLESS realtime is unavailable, in which
+        // case we omit it and behave exactly like M3 (poll, no live cues). The
+        // poller runs regardless and remains the completion authority.
+        let liveSessionId = realtimeUnavailableProvider() ? nil : sessionIdProvider()
         let body = TranslateSubtitleBody(
             mediaFileId: mediaFileId,
             kind: kind,
             sourceIndex: sourceIndex,
             sourceLanguage: sourceLanguage,
             targetLanguage: targetLanguage,
-            sessionId: nil,
+            sessionId: liveSessionId,
             startPosition: currentTimeProvider()
         )
 
@@ -323,8 +374,21 @@ final class SubtitleAIController {
         case .completed:
             phase = .completed
             errorMessage = nil
-            performCompletionHandoff(for: job, generation: gen)
+            // Poller-as-authority terminal handoff. Shares the `handoffJobId`
+            // latch with the websocket `completed` path so the persisted track
+            // is registered exactly once. If the websocket already handed off,
+            // this no-ops (and just tells the coordinator the poller authority
+            // closed things, in case the socket dropped before `completed`).
+            completePersistedHandoff(
+                jobId: job.id,
+                mediaFileId: job.mediaFileId,
+                resultSubtitleId: job.resultSubtitleId,
+                generation: gen,
+                viaWebsocket: false
+            )
         case .failed:
+            // Tear the live track down on a poller-observed failure too.
+            liveCoordinator?.liveDriverDidGiveUp(message: job.errorMessage ?? "Subtitle translation failed.")
             fail(with: job.errorMessage ?? "Subtitle translation failed.")
         case .cancelled:
             phase = .idle
@@ -348,30 +412,61 @@ final class SubtitleAIController {
 
     // MARK: - Completion handoff
 
-    /// On `completed`, fetch the file's downloaded subtitles, find the entry
-    /// whose **`id`** equals the job's `result_subtitle_id`, synthesize its
+    /// The single terminal action shared by the poller-authority path and the
+    /// live websocket `completed` path: fetch the file's downloaded subtitles,
+    /// find the entry whose **`id`** equals `resultSubtitleId`, synthesize its
     /// player descriptor (URL + combined index — the listing carries neither),
-    /// and hand it to the VM to register + auto-select via the existing
-    /// sidecar path.
+    /// and hand it to the VM to register + auto-select via the existing sidecar
+    /// path.
+    ///
+    /// Whichever driver reaches completion first claims the `handoffJobId`
+    /// latch and performs the registration; the other call no-ops the
+    /// registration (so the track is never double-registered) but, when it is
+    /// the poller learning the socket already finished, tells the coordinator
+    /// the authority closed out so a dropped socket never leaves a stuck live
+    /// track.
     ///
     /// The listing (`GET /subtitles/{media_file_id}`) returns the server's
     /// `DownloadedSubtitle` shape: a DB `id` plus metadata, **no** stream
-    /// `url` and **no** combined player index. We therefore synthesize the
-    /// descriptor exactly like Android's `SubtitleTrackMerge` (combined index
-    /// past the existing external+embedded+downloaded tracks; stream URL on
-    /// the session-scoped `/stream/{session}/subtitles/{combined-index}<ext>`
+    /// `url` and **no** combined player index. We synthesize the descriptor
+    /// exactly like Android's `SubtitleTrackMerge` (combined index past the
+    /// existing external+embedded+downloaded tracks; stream URL on the
+    /// session-scoped `/stream/{session}/subtitles/{combined-index}<ext>`
     /// mount, which keys on the combined index — verified server-side).
     ///
     /// `generation` is the value captured at submit time; a reset mid-fetch
     /// invalidates the handoff so a stale completion can't land on the next
     /// account/session.
-    private func performCompletionHandoff(for job: SubtitleJob, generation gen: Int) {
-        guard let resultId = job.resultSubtitleId else {
-            Self.logger.warning("[AI-SUB] completed job \(job.id, privacy: .public) has no result_subtitle_id")
+    private func completePersistedHandoff(
+        jobId: String,
+        mediaFileId: Int,
+        resultSubtitleId: Int?,
+        generation gen: Int,
+        viaWebsocket: Bool
+    ) {
+        // Latch: only the first driver to reach completion registers the track.
+        guard handoffJobId != jobId else {
+            // The other driver already (is) handling it. If this is the poller
+            // arriving after the websocket, nothing more to do — the websocket
+            // path also closed the live track. If this is the websocket
+            // arriving after the poller, let the coordinator close cleanly.
+            if !viaWebsocket {
+                liveCoordinator?.persistedHandoffAlreadyDone(trackKey: Self.trackKey(for: jobId))
+            }
+            return
+        }
+        handoffJobId = jobId
+
+        guard let resultId = resultSubtitleId else {
+            Self.logger.warning("[AI-SUB] completed job \(jobId, privacy: .public) has no result_subtitle_id")
+            // Without the id we can't synthesize the persisted track. Let the
+            // coordinator restore the prior selection rather than stranding the
+            // synthetic live track selected.
+            liveCoordinator?.liveDriverDidGiveUp(message: "Translation finished but the track couldn't be added.")
             fail(with: "Translation finished but the track couldn't be added.")
             return
         }
-        let mediaFileId = job.mediaFileId
+
         Task { [weak self] in
             guard let self else { return }
             let downloaded = (try? await self.api.downloadedSubtitles(mediaFileId: mediaFileId)) ?? []
@@ -384,12 +479,14 @@ final class SubtitleAIController {
                 Self.logger.warning(
                     "[AI-SUB] result subtitle id=\(resultId, privacy: .public) not found among \(downloaded.count, privacy: .public) downloaded subtitles"
                 )
+                self.liveCoordinator?.liveDriverDidGiveUp(message: "Translation finished but the track couldn't be added.")
                 self.fail(with: "Translation finished but the track couldn't be added.")
                 return
             }
 
             guard let context = self.handoffContextProvider() else {
                 Self.logger.warning("[AI-SUB] no active session/track context for completed subtitle id=\(resultId, privacy: .public)")
+                self.liveCoordinator?.liveDriverDidGiveUp(message: "Translation finished but the track couldn't be added.")
                 self.fail(with: "Translation finished but the track couldn't be added.")
                 return
             }
@@ -401,15 +498,94 @@ final class SubtitleAIController {
                 resolveURL: context.resolveURL
             ) else {
                 Self.logger.warning("[AI-SUB] could not synthesize stream URL for completed subtitle id=\(resultId, privacy: .public)")
+                self.liveCoordinator?.liveDriverDidGiveUp(message: "Translation finished but the track couldn't be added.")
                 self.fail(with: "Translation finished but the track couldn't be added.")
                 return
             }
 
             Self.logger.info(
-                "[AI-SUB] handing off completed subtitle id=\(resultId, privacy: .public) combinedIndex=\(descriptor.index, privacy: .public)"
+                "[AI-SUB] handing off completed subtitle id=\(resultId, privacy: .public) combinedIndex=\(descriptor.index, privacy: .public) viaWebsocket=\(viaWebsocket, privacy: .public)"
             )
             self.registerAndSelectDescriptor(descriptor)
         }
+    }
+
+    // MARK: - Live websocket events (M4)
+
+    /// Route a decoded subtitle event from the playback websocket. Track-scoped
+    /// events (`started`/`cues`/`completed`/`failed`) for the active job drive
+    /// the ``LiveSubtitleCoordinator``; `ready` is file-scoped and handled here.
+    ///
+    /// The completion path is special: the live `completed` event must run the
+    /// SAME shared handoff the poller uses, so it is intercepted here and
+    /// routed through `completePersistedHandoff` (which the coordinator's
+    /// `registerPersisted` sink call also reaches) — the latch keeps it to one
+    /// registration.
+    func handle(_ event: PlaybackRealtimeSubtitleEvent) {
+        switch event {
+        case .ready(let ready):
+            handleSubtitleReady(ready)
+            return
+        case .started, .cues, .completed, .failed:
+            break
+        }
+
+        // Scope track-keyed events to the active job. A late frame for a job
+        // we've already torn down (or never started) is ignored.
+        guard let trackKey = event.trackKey else { return }
+        guard let job = activeJob, Self.trackKey(for: job.id) == trackKey else {
+            Self.logger.debug("[AI-LIVE] ignoring event for stale/unknown trackKey=\(trackKey, privacy: .public)")
+            return
+        }
+
+        liveCoordinator?.handle(event)
+    }
+
+    /// Handle a file-scoped `subtitle_ready` broadcast (M5 fleshes this out).
+    /// Today: if it carries a usable id and matches the current file, run the
+    /// shared handoff so the track becomes selectable — guarded by the latch so
+    /// it never collides with a job-driven completion.
+    private func handleSubtitleReady(_ ready: PlaybackRealtimeSubtitleEvent.Ready) {
+        guard let mediaFileId = mediaFileIdProvider(),
+              let fileId = ready.fileId, fileId == mediaFileId,
+              let subtitleId = ready.subtitleId else {
+            return
+        }
+        // Only adopt a `ready` that isn't already owned by the active job's
+        // completion (that path handles its own handoff + selection).
+        if let job = activeJob, job.resultSubtitleId == subtitleId { return }
+        Self.logger.info("[AI-LIVE] subtitle_ready broadcast subtitleId=\(subtitleId, privacy: .public) fileId=\(fileId, privacy: .public)")
+        // Use a synthetic job key so the latch doesn't clash with a real job.
+        completePersistedHandoff(
+            jobId: "ready-\(subtitleId)",
+            mediaFileId: mediaFileId,
+            resultSubtitleId: subtitleId,
+            generation: generation,
+            viaWebsocket: true
+        )
+    }
+
+    /// Bridge for the coordinator's `registerPersisted` sink call: the live
+    /// `completed` event tells the coordinator the persisted id, the coordinator
+    /// asks its sink to register it, and the sink routes back here so the
+    /// SHARED latched handoff runs (never a second registration path).
+    func completeLivePersistedHandoff(subtitleId: Int) {
+        guard let job = activeJob else { return }
+        completePersistedHandoff(
+            jobId: job.id,
+            mediaFileId: job.mediaFileId,
+            resultSubtitleId: subtitleId,
+            generation: generation,
+            viaWebsocket: true
+        )
+    }
+
+    /// Called by the VM when the realtime socket's availability flips to
+    /// unavailable mid-job. If a live job is in flight, the coordinator gives
+    /// up the live presentation and the poller (still running) completes the
+    /// handoff.
+    func realtimeDidBecomeUnavailable() {
+        liveCoordinator?.liveDriverDidGiveUp()
     }
 
     // MARK: - Helpers

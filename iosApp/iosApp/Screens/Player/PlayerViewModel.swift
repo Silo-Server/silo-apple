@@ -607,11 +607,39 @@ class PlayerViewModel {
     private(set) lazy var subtitleAI: SubtitleAIController = SubtitleAIController(
         mediaFileId: { [weak self] in self?.currentSelectedVersion?.fileId },
         currentTime: { [weak self] in self?.currentTime ?? 0 },
+        sessionId: { [weak self] in self?.activePlaybackSessionId },
+        realtimeUnavailable: { [weak self] in self?.realtimeUnavailableSnapshot ?? true },
+        liveCoordinator: self.makeLiveSubtitleCoordinator(),
         handoffContext: { [weak self] in self?.makeSubtitleHandoffContext() },
         registerAndSelectDescriptor: { [weak self] descriptor in
             self?.registerCompletedAISubtitle(descriptor)
         }
     )
+
+    /// Last-known realtime websocket availability, mirrored from the actor's
+    /// `isRealtimeUnavailable` via `observeUnavailability` so the (synchronous,
+    /// main-actor) `SubtitleAIController` can read it when deciding whether to
+    /// request live cue streaming. Defaults to unavailable until the first
+    /// observation lands.
+    private var realtimeUnavailableSnapshot = true
+
+    /// Build the live-subtitle coordinator with adapters bound to this VM. The
+    /// adapters touch the VM's playback + live-track + notice surface, so they
+    /// live in this file. `nonisolated` (and the adapters/coordinator have
+    /// `nonisolated init`s) so it can run from the nonisolated `subtitleAI`
+    /// lazy initializer, mirroring `SubtitleAIController`'s construction. It
+    /// only wires immutable closures; no main-actor state is touched.
+    private func makeLiveSubtitleCoordinator() -> LiveSubtitleCoordinator {
+        let controls = LiveSubtitlePlaybackAdapter(owner: self)
+        let sink = LiveSubtitleSinkAdapter(owner: self)
+        return LiveSubtitleCoordinator(
+            controls: controls,
+            sink: sink,
+            // The coordinator snapshots the live `selectedSubtitleId` at
+            // `started` (the selection it restores on failure).
+            selectionSnapshot: { [weak self] in self?.selectedSubtitleId }
+        )
+    }
     private var hideControlsTask: Task<Void, Never>?
     private var noticeDismissTask: Task<Void, Never>?
     private var remoteDismissTask: Task<Void, Never>?
@@ -870,6 +898,20 @@ class PlayerViewModel {
                 await self.handleRealtimeEvent(event)
             }
         )
+        // Mirror the socket's availability so the (synchronous) controller can
+        // decide whether to request live cue streaming, and so a mid-job flip
+        // to unavailable degrades the live presentation to the poller.
+        let client = realtimeClient
+        Task { [weak self] in
+            await client?.observeUnavailability { [weak self] unavailable in
+                guard let self else { return }
+                let wasAvailable = !self.realtimeUnavailableSnapshot
+                self.realtimeUnavailableSnapshot = unavailable
+                if unavailable && wasAvailable {
+                    self.subtitleAI.realtimeDidBecomeUnavailable()
+                }
+            }
+        }
         // `subtitleAI` is a lazy `@MainActor` property (see its declaration):
         // constructed on first access on the main actor, so no eager build or
         // `assumeIsolated` wrapper is needed here.
@@ -4098,6 +4140,84 @@ class PlayerViewModel {
         }
     }
 
+    // MARK: - Live AI subtitle bridge (M4)
+    //
+    // Thin internal accessors the `LiveSubtitleCoordinator` adapters call.
+    // They exist because the adapters are distinct fileprivate types and so
+    // can't reach the VM's `private` playback/notice state directly. Each is a
+    // one-liner over an existing primitive; the interesting logic (offset-aware
+    // cue conversion, dedupe) lives in the sink adapter.
+
+    /// The media-time → movie-time (libass tick) offset. A live cue carries an
+    /// **absolute media-time** timestamp; the libass renderer is ticked in
+    /// backend movie time (`currentTime - playbackTimelineOffset`). So a cue at
+    /// media time `t` must be fed at movie time `t - offset`. Routing the
+    /// conversion through this single source of truth keeps live cues aligned
+    /// under transcode (where the offset is non-zero) and on direct play (0).
+    var liveSubtitlePlaybackTimelineOffset: Double { playbackTimelineOffset }
+
+    /// Open the synthetic live track on the active backend and add its picker
+    /// row. Returns the live track id.
+    @discardableResult
+    func installLiveSubtitleTrackRow(ordinal: Int, label: String?, language: String?) -> Int64 {
+        openLiveSubtitleTrack(slot: .primary, label: label, language: language)
+        return appendLiveSubtitleTrack(ordinal: ordinal, label: label, language: language)
+    }
+
+    /// Select the live track (no-op selection of an already-installed track is
+    /// handled in the backends).
+    func selectLiveSubtitleTrack(trackId: Int64) {
+        if let track = subtitleTracks.first(where: { $0.trackId == trackId }) {
+            selectSubtitle(track)
+        }
+    }
+
+    /// Close the live track and remove its picker row. If it was selected,
+    /// `restoreLiveSubtitleSelection` is expected to follow (the coordinator
+    /// drives that separately).
+    func closeLiveSubtitleTrackRow(trackId: Int64) {
+        subtitleTracks.removeAll { $0.trackId == trackId }
+        closeLiveSubtitleTrack(slot: .primary)
+    }
+
+    /// Restore a prior subtitle selection (or disable if there was none).
+    /// Selecting an AI-live id is refused — that track is being torn down.
+    func restoreLiveSubtitleSelection(_ trackId: Int64?) {
+        guard let trackId,
+              !SubtitleTrackIdSpace.isAILive(trackId),
+              let track = subtitleTracks.first(where: { $0.trackId == trackId }) else {
+            // Only actively disable if a live track is still the selection; a
+            // restore to "none" shouldn't clobber a selection the user changed.
+            if selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true {
+                disableSubtitles()
+            }
+            return
+        }
+        selectSubtitle(track)
+    }
+
+    /// The "Preparing… subtitles" notice shown while the first live cues land.
+    @MainActor
+    func showLiveSubtitlePreparingNotice() {
+        showNotice(
+            title: "Preparing subtitles",
+            message: "Translating the current scene — playback resumes in a moment.",
+            tone: .info,
+            duration: 30
+        )
+    }
+
+    /// Soft failure notice for the live subtitle path.
+    @MainActor
+    func showLiveSubtitleFailureNotice(_ message: String) {
+        showNotice(
+            title: "Subtitles unavailable",
+            message: message,
+            tone: .warning,
+            duration: 5
+        )
+    }
+
     func cycleAudioTrack() {
         guard !isBackgroundSuspended, !audioTracks.isEmpty else { return }
         let nextIndex: Int
@@ -4347,6 +4467,24 @@ class PlayerViewModel {
             )
         case .chapterThumbnailReady:
             break
+        case .subtitleTranslationStarted,
+             .subtitleTranslationCues,
+             .subtitleTranslationCompleted,
+             .subtitleTranslationFailed,
+             .subtitleReady:
+            // AI subtitle live-streaming events (M4). Decode the typed payload
+            // and hand it to the controller, which scopes it to the active job
+            // and drives the live coordinator.
+            guard let subtitleEvent = PlaybackRealtimeSubtitleEvent(
+                name: event.name,
+                payload: event.payload
+            ) else {
+                Self.logger.warning("[AI-LIVE] ignored malformed \(event.name.rawValue, privacy: .public) event")
+                return
+            }
+            subtitleAI.handle(subtitleEvent)
+        case .unknown(let raw):
+            Self.logger.debug("[CMP-RT] ignoring unknown realtime event \(raw, privacy: .public)")
         }
     }
 
@@ -5871,5 +6009,120 @@ extension PlayerViewModel {
             label: option.labelWithBitrate,
             detail: option.subtitle
         )
+    }
+}
+
+// MARK: - Live AI subtitle coordinator adapters (M4)
+
+/// `LivePlaybackControls` over the VM's playback transport. The coordinator is
+/// the single owner of pause/resume intent during a live job; this adapter
+/// just forwards. Holds the VM weakly so a torn-down player can't be revived
+/// by a late coordinator call.
+@MainActor
+private final class LiveSubtitlePlaybackAdapter: LivePlaybackControls {
+    private weak var owner: PlayerViewModel?
+
+    nonisolated init(owner: PlayerViewModel) { self.owner = owner }
+
+    func pause() { owner?.activePlayer.pause() }
+    func play() { owner?.activePlayer.play() }
+    func seek(to seconds: Double) { owner?.seekTo(seconds: seconds) }
+    func currentTime() -> Double { owner?.currentTime ?? 0 }
+    var isPlaying: Bool { owner?.isPlaying ?? false }
+}
+
+/// `LiveSubtitleSink` over the VM's live-track primitives, selection plumbing,
+/// completion handoff, and notice surface. Owns the per-`track_key`
+/// `LiveSubtitleTrack` converters (cue dedupe + ASS escaping) and the
+/// `track_key → ordinal` mapping, and applies the media-time → movie-time
+/// offset before feeding libass.
+@MainActor
+private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
+    private weak var owner: PlayerViewModel?
+
+    /// One cue converter per live `track_key` (holds dedupe state).
+    private var converters: [String: LiveSubtitleTrack] = [:]
+    /// `track_key → live-track ordinal`. Assigned monotonically; typically 0
+    /// (one live job at a time), but stable per key so re-entrancy is safe.
+    private var ordinals: [String: Int] = [:]
+    private var nextOrdinal = 0
+    /// The currently installed live track id (for selection / close).
+    private var installedTrackId: Int64?
+    /// The `track_key` of the currently installed live track.
+    private var installedTrackKey: String?
+
+    nonisolated init(owner: PlayerViewModel) { self.owner = owner }
+
+    func installLiveTrack(trackKey: String, label: String?, language: String?) {
+        guard let owner else { return }
+        let ordinal: Int
+        if let existing = ordinals[trackKey] {
+            ordinal = existing
+        } else {
+            ordinal = nextOrdinal
+            nextOrdinal += 1
+            ordinals[trackKey] = ordinal
+        }
+        converters[trackKey] = LiveSubtitleTrack()
+        let trackId = owner.installLiveSubtitleTrackRow(
+            ordinal: ordinal,
+            label: label ?? "AI subtitles",
+            language: language
+        )
+        installedTrackId = trackId
+        installedTrackKey = trackKey
+    }
+
+    func feedCue(_ cue: PlaybackRealtimeSubtitleCue) {
+        guard let owner, let key = installedTrackKey else { return }
+        // Cue timestamps are absolute MEDIA time; the renderer ticks in movie
+        // time. Subtract the timeline offset so the cue renders at the right
+        // moment under transcode (offset > 0) and on direct play (offset 0).
+        let offset = owner.liveSubtitlePlaybackTimelineOffset
+        let movieStart = cue.start - offset
+        let movieEnd = cue.end - offset
+        guard var converter = converters[key] else { return }
+        let converted = converter.makeCue(start: movieStart, end: movieEnd, text: cue.text)
+        converters[key] = converter // persist dedupe state (value type)
+        guard let converted else { return }
+        owner.feedLiveSubtitleCue(
+            slot: .primary,
+            eventText: converted.eventText,
+            startMs: converted.startMs,
+            durationMs: converted.durationMs
+        )
+    }
+
+    func selectLive(trackKey: String) {
+        guard let owner, let trackId = installedTrackId, installedTrackKey == trackKey else { return }
+        owner.selectLiveSubtitleTrack(trackId: trackId)
+    }
+
+    func closeLiveTrack(trackKey: String) {
+        guard let owner else { return }
+        if let trackId = installedTrackId, installedTrackKey == trackKey {
+            owner.closeLiveSubtitleTrackRow(trackId: trackId)
+            installedTrackId = nil
+            installedTrackKey = nil
+        }
+        converters[trackKey] = nil
+    }
+
+    func restorePriorSelection(_ selection: Int64?) {
+        owner?.restoreLiveSubtitleSelection(selection)
+    }
+
+    func registerPersisted(subtitleId: Int) {
+        // Route through the controller's shared, latched handoff so the
+        // websocket and poller never double-register the track.
+        owner?.subtitleAI.completeLivePersistedHandoff(subtitleId: subtitleId)
+    }
+
+    func showPreparingNotice() {
+        owner?.showLiveSubtitlePreparingNotice()
+    }
+
+    func showFailureNotice(_ message: String) {
+        owner?.showLiveSubtitleFailureNotice(message)
     }
 }
