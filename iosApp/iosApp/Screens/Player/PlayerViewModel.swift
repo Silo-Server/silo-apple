@@ -1599,7 +1599,10 @@ class PlayerViewModel {
         let subtitleSelectionSnapshot = selectedSubtitleId
             .flatMap { selectedId in subtitleTracks.first(where: { $0.trackId == selectedId }) }
             .flatMap { track in
-                SubtitleTrackIdSpace.isSidecar(track.trackId) ? nil : TrackSelectionSnapshot(track: track)
+                // Synthetic (sidecar / AI-live) ids must not be recovered as
+                // embedded tracks; sidecar has its own recovery path and
+                // live re-selection is M4's responsibility.
+                SubtitleTrackIdSpace.isSyntheticNonEmbedded(track.trackId) ? nil : TrackSelectionSnapshot(track: track)
             }
         let secondarySubtitleSelectionSnapshot = selectedSecondarySubtitleId
         resetPublishedLoadState(
@@ -3662,6 +3665,11 @@ class PlayerViewModel {
                 )
                 self.pendingExternalSubtitles = session.subtitleUrls ?? externalSubtitleSnapshot
                 self.knownExternalSubtitles = self.pendingExternalSubtitles
+                // Only a sidecar selection is re-established across the
+                // backend rebuild. An AI-live selection is intentionally
+                // dropped here (not restored as sidecar and not as embedded):
+                // its cues can't be replayed, so live re-selection is M4's
+                // responsibility via the live coordinator.
                 if let selectedSubtitleSnapshot,
                    SubtitleTrackIdSpace.isSidecar(selectedSubtitleSnapshot) {
                     self.pendingSidecarSubtitleTrackId = selectedSubtitleSnapshot
@@ -4142,6 +4150,11 @@ class PlayerViewModel {
         nowPlaying.detach()
         clearForegroundInterruptionState()
         clearSuspendedPlaybackState()
+        #if DEBUG
+        // Stop the DEBUG live-subtitle cue pump so its repeating timer can't
+        // outlive the player and keep firing into a torn-down session.
+        debugStopFakeLiveSubtitles()
+        #endif
 
         let finalPosition = currentTime
         activePlayer.dispose()
@@ -4166,6 +4179,10 @@ class PlayerViewModel {
         serverOutageRecoveryTask?.cancel()
         interruptionRecoveryTask?.cancel()
         autoSkipIntroCountdownTask?.cancel()
+        #if DEBUG
+        debugLiveSubtitleTimer?.invalidate()
+        debugLiveSubtitleTimer = nil
+        #endif
         activePlayer.dispose()
         sourceProxy?.stop()
         let realtimeClient = self.realtimeClient

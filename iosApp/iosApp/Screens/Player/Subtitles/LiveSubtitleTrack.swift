@@ -13,9 +13,10 @@
 //    - `eventText`: the FFmpeg `rect.ass` *chunk* event body, which is
 //      `ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text`.
 //      Crucially this is NOT the full `Dialogue:` line — the Start/End
-//      timestamps are passed separately as `startMs`/`durationMs`. (This
-//      is why `SubtitleRenderer` disables `ass_set_check_readorder`: the
-//      first field of the chunk *is* `ReadOrder`.)
+//      timestamps are passed separately as `startMs`/`durationMs`. The
+//      first field is `ReadOrder`; because `SubtitleRenderer` disables
+//      `ass_set_check_readorder`, libass parses it but does not use it for
+//      dedup, so the value supplied here is not load-bearing.
 //    - `startMs` / `durationMs`: absolute start and duration in whole
 //      milliseconds.
 //
@@ -28,7 +29,11 @@ import Foundation
 
 /// A single converted live subtitle cue, ready to hand to
 /// `SubtitleRenderer.feedChunk(slot:eventText:startMs:durationMs:)`.
-struct LiveSubtitleCue: Equatable, Hashable {
+///
+/// `Sendable`: all stored properties are immutable value types
+/// (`String`/`Int64`), so a cue is safe to hand across actor / queue
+/// boundaries (e.g. M4's websocket actor → main).
+struct LiveSubtitleCue: Equatable, Hashable, Sendable {
     /// FFmpeg `rect.ass` chunk-event body:
     /// `ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text`.
     let eventText: String
@@ -42,17 +47,26 @@ struct LiveSubtitleCue: Equatable, Hashable {
 }
 
 /// Stateful converter that turns streamed AI cues into libass chunk
-/// events. Holds a monotonic `ReadOrder` counter (libass parses but, with
-/// readorder-dedup disabled in the renderer, does not act on it) and a
-/// dedupe set keyed by `(startMs, endMs, text)` so a re-delivered cue
+/// events. Holds a monotonic `ReadOrder` counter (used only as the first
+/// chunk field — the renderer disables `ass_set_check_readorder`, so libass
+/// parses the value but does not use it for dedup; any value, including a
+/// constant, would be safe, but a monotonic counter is the natural choice)
+/// and a dedupe set keyed by `(startMs, endMs, text)` so a re-delivered cue
 /// (the live websocket can resend on reconnect) is fed at most once.
 ///
 /// Value semantics: a copy carries its own counter + dedupe state. The
 /// owning session keeps a single instance per live slot.
+///
+/// Intentionally single-owner and NOT `Sendable`: it has mutable state
+/// (`nextReadOrder`, `seen`). M4's websocket actor must own one instance
+/// and call `makeCue` from its own isolation, handing the resulting
+/// `Sendable` `LiveSubtitleCue` across boundaries — not the track itself.
 struct LiveSubtitleTrack {
 
     /// Monotonic ReadOrder fed as the first chunk field. Each accepted cue
     /// increments it. Starts at 0 to match FFmpeg's per-packet ordering.
+    /// With `ass_set_check_readorder` disabled in the renderer this value is
+    /// parsed but not acted on, so the exact sequence is not load-bearing.
     private var nextReadOrder: Int = 0
 
     /// Cues already emitted, keyed by their identity. Prevents duplicate

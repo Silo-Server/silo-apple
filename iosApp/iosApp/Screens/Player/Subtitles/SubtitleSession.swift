@@ -40,12 +40,35 @@ final class SubtitleSession {
     private let renderer: SubtitleRenderer
     private let fetcher: SidecarSubtitleFetcher
 
+    /// Guards the lock-free mutable session state (`sidecarDescriptors`,
+    /// `sidecarCache`, `fetchTasks`, `liveSlots`, `stylingParams`). Mirrors
+    /// the `handleLock` idiom in `SubtitleRenderer`.
+    ///
+    /// The two playback backends call into this session from different
+    /// queues — the CoreMedia route from `PlayerCore.controlQueue`, the
+    /// AVPlayer route's live methods from main while
+    /// `AVPlayerEmbeddedSubtitleExtractor` mutates the same fields from a
+    /// global queue — so caller serialization is not sufficient.
+    ///
+    /// CRITICAL: hold this lock ONLY around field access. Snapshot the
+    /// needed values under the lock, release, THEN call into `renderer.*`
+    /// (the renderer has its own `sessionQueue`, some calls run `.sync`) or
+    /// across any `await`. Never hold this lock across a renderer call or a
+    /// suspension point — doing so risks deadlock against `sessionQueue`.
+    private let lock = NSLock()
+
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
     /// Sidecar descriptors keyed by their server-assigned URL index.
     /// Populated once on playback start; read on demand when the user
-    /// selects a sidecar track.
+    /// selects a sidecar track. Guarded by `lock`.
     private var sidecarDescriptors: [Int: SidecarSubtitleDescriptor] = [:]
     var hasRegisteredSidecars: Bool {
-        !sidecarDescriptors.isEmpty
+        withLock { !sidecarDescriptors.isEmpty }
     }
 
     /// Caller-supplied way to read the current playback position in
@@ -55,20 +78,22 @@ final class SubtitleSession {
 
     /// In-flight or completed sidecar content. Prevents re-fetching a
     /// track the user toggles on/off repeatedly. Cleared on teardown.
+    /// Guarded by `lock`.
     private var sidecarCache: [Int: String] = [:]
 
     /// Active per-slot fetch Task so switching tracks cancels the
-    /// previous fetch cleanly.
+    /// previous fetch cleanly. Guarded by `lock`.
     private var fetchTasks: [SubtitleSlot: Task<Void, Never>] = [:]
 
     /// Slots currently driven by a live AI subtitle track (cues streamed
     /// in via `feedLiveCue`). A live track must NOT be flushed on seek —
     /// re-feeding past cues isn't possible once they've streamed by — so
     /// `flushOnSeek()` skips these slots. Cleared in `teardown()`.
+    /// Guarded by `lock`.
     private var liveSlots: Set<SubtitleSlot> = []
 
     /// Current user styling parameters. Snapshot updated by PlayerCore
-    /// when `applySubtitleStyling` is called.
+    /// when `applySubtitleStyling` is called. Guarded by `lock`.
     private var stylingParams: SubtitleStylingOverride.Parameters = .default
 
     /// Fires on main when a slot's loading status changes.
@@ -94,11 +119,13 @@ final class SubtitleSession {
     // MARK: - Configuration
 
     func applyStyling(_ params: SubtitleStylingOverride.Parameters) {
-        stylingParams = params
+        withLock { stylingParams = params }
         renderer.applySettings(params)
     }
 
-    var currentParams: SubtitleStylingOverride.Parameters { stylingParams }
+    var currentParams: SubtitleStylingOverride.Parameters {
+        withLock { stylingParams }
+    }
 
     // MARK: - Sidecar track registry
 
@@ -106,9 +133,11 @@ final class SubtitleSession {
     /// Fires `onSidecarTracksRegistered` on main so the VM can append
     /// synthesised `PlayerTrack` entries to `subtitleTracks`.
     func registerSidecarTracks(_ descriptors: [SidecarSubtitleDescriptor]) {
-        sidecarDescriptors.removeAll()
-        for d in descriptors {
-            sidecarDescriptors[d.index] = d
+        withLock {
+            sidecarDescriptors.removeAll()
+            for d in descriptors {
+                sidecarDescriptors[d.index] = d
+            }
         }
         Self.logger.info(
             "[CMP-SUB] session registered sidecar descriptors=\(descriptors.count, privacy: .public) indices=\(descriptors.map { String($0.index) }.joined(separator: ","), privacy: .public)"
@@ -147,8 +176,9 @@ final class SubtitleSession {
             // with codec-specific PlayRes/font defaults. Feed the same
             // controlled header used by external text sidecars so appearance
             // does not change when switching subtitle source types.
+            let params = withLock { stylingParams }
             let header = SubtitleStylingOverride.syntheticHeader(
-                params: stylingParams,
+                params: params,
                 slot: slot
             )
             Data(header.utf8).withUnsafeBytes { raw in
@@ -171,7 +201,7 @@ final class SubtitleSession {
     /// SSA are passed through as authored documents; SRT, VTT, and MOV_TEXT
     /// are converted into a generated ASS document first.
     func openSidecar(urlIndex: Int, slot: SubtitleSlot) {
-        guard let descriptor = sidecarDescriptors[urlIndex] else {
+        guard let descriptor = withLock({ sidecarDescriptors[urlIndex] }) else {
             Self.logger.warning("openSidecar: no descriptor for index \(urlIndex)")
             publishStatus(slot: slot, .error("Subtitle track not found"))
             return
@@ -198,7 +228,7 @@ final class SubtitleSession {
         slot: SubtitleSlot
     ) {
         // Fast path: cached.
-        if let cached = sidecarCache[urlIndex] {
+        if let cached = withLock({ sidecarCache[urlIndex] }) {
             installSidecarContent(
                 content: cached,
                 codecHint: descriptor.codec,
@@ -221,7 +251,7 @@ final class SubtitleSession {
                 Self.logger.info(
                     "[CMP-SUB] fetched sidecar index=\(urlIndex, privacy: .public) slot=\(slot.rawValue, privacy: .public) format=\(String(describing: result.format), privacy: .public) chars=\(result.content.count, privacy: .public)"
                 )
-                self.sidecarCache[urlIndex] = result.content
+                self.withLock { self.sidecarCache[urlIndex] = result.content }
                 self.installSidecarContent(
                     content: result.content,
                     codecHint: descriptor.codec,
@@ -234,14 +264,14 @@ final class SubtitleSession {
                 self?.publishStatus(slot: slot, .error("Couldn't load subtitle"))
             }
         }
-        fetchTasks[slot] = task
+        withLock { fetchTasks[slot] = task }
     }
 
     /// Close the given slot. Drops the libass track and cancels any
     /// in-flight fetch.
     func closeSlot(_ slot: SubtitleSlot) {
         cancelFetchTask(for: slot)
-        liveSlots.remove(slot)
+        withLock { _ = liveSlots.remove(slot) }
         renderer.dropTrack(slot: slot)
         publishStatus(slot: slot, .idle)
     }
@@ -251,10 +281,15 @@ final class SubtitleSession {
     /// their cues are streamed once and can't be re-fed, so flushing them
     /// on seek would silently lose already-delivered captions.
     func flushOnSeek() {
-        if !liveSlots.contains(.primary) {
+        // Snapshot live-slot membership under the lock, then call the
+        // renderer outside it (never hold `lock` across a renderer call).
+        let (primaryIsLive, secondaryIsLive) = withLock {
+            (liveSlots.contains(.primary), liveSlots.contains(.secondary))
+        }
+        if !primaryIsLive {
             renderer.flushTrack(slot: .primary)
         }
-        if !liveSlots.contains(.secondary) {
+        if !secondaryIsLive {
             renderer.flushTrack(slot: .secondary)
         }
     }
@@ -306,8 +341,9 @@ final class SubtitleSession {
     ///   - language: optional ISO language tag (also informational).
     func openLive(slot: SubtitleSlot, label: String? = nil, language: String? = nil) {
         cancelFetchTask(for: slot)
+        let params = withLock { stylingParams }
         let header = SubtitleStylingOverride.syntheticHeader(
-            params: stylingParams,
+            params: params,
             slot: slot
         )
         Data(header.utf8).withUnsafeBytes { raw in
@@ -318,7 +354,7 @@ final class SubtitleSession {
                 extradataSize: raw.count
             )
         }
-        liveSlots.insert(slot)
+        withLock { _ = liveSlots.insert(slot) }
         Self.logger.info(
             "[CMP-SUB] opened live AI track slot=\(slot.rawValue, privacy: .public) label=\(label ?? "nil", privacy: .public) lang=\(language ?? "nil", privacy: .public)"
         )
@@ -347,33 +383,43 @@ final class SubtitleSession {
     /// Close the live track in the given slot. Drops the libass track and
     /// clears the live-slot flag. Safe to call on a slot that isn't live.
     func closeLive(slot: SubtitleSlot) {
-        liveSlots.remove(slot)
+        withLock { _ = liveSlots.remove(slot) }
         renderer.dropTrack(slot: slot)
         publishStatus(slot: slot, .idle)
     }
 
     /// Whether the given slot is currently a live AI track.
     func isLiveSlot(_ slot: SubtitleSlot) -> Bool {
-        liveSlots.contains(slot)
+        withLock { liveSlots.contains(slot) }
     }
 
     // MARK: - Lifecycle
 
     /// Stop all fetches, drop all tracks. Called by `PlayerCore.dispose`.
     func teardown() {
-        for task in fetchTasks.values { task.cancel() }
-        fetchTasks.removeAll()
-        sidecarCache.removeAll()
-        sidecarDescriptors.removeAll()
-        liveSlots.removeAll()
+        // Snapshot + clear all guarded state under the lock, then cancel
+        // the captured tasks and drop renderer tracks outside it.
+        let tasks = withLock { () -> [Task<Void, Never>] in
+            let snapshot = Array(fetchTasks.values)
+            fetchTasks.removeAll()
+            sidecarCache.removeAll()
+            sidecarDescriptors.removeAll()
+            liveSlots.removeAll()
+            return snapshot
+        }
+        for task in tasks { task.cancel() }
         renderer.dropAllTracks()
     }
 
     // MARK: - Internals
 
     private func cancelFetchTask(for slot: SubtitleSlot) {
-        fetchTasks[slot]?.cancel()
-        fetchTasks[slot] = nil
+        let task = withLock { () -> Task<Void, Never>? in
+            let existing = fetchTasks[slot]
+            fetchTasks[slot] = nil
+            return existing
+        }
+        task?.cancel()
     }
 
     private func publishStatus(slot: SubtitleSlot, _ status: SubtitleLoadStatus) {
@@ -397,10 +443,11 @@ final class SubtitleSession {
         case .ass:
             assDocument = content
         case .vtt, .srt:
+            let params = withLock { stylingParams }
             assDocument = VTTToASSConverter.convert(
                 vtt: content,
                 header: SubtitleStylingOverride.syntheticHeader(
-                    params: stylingParams,
+                    params: params,
                     slot: slot
                 )
             )

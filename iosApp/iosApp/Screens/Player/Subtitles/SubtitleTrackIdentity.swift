@@ -85,6 +85,15 @@ enum SubtitleTrackIdSpace {
     static func aiLiveOrdinal(from trackId: Int64) -> Int {
         Int(trackId & (Self.aiLiveBase - 1))
     }
+
+    /// True for any synthetic id that is NOT a real embedded FFmpeg /
+    /// AVFoundation track — i.e. sidecar or AI-live. Used by the
+    /// selection-recovery snapshots, which must never re-establish such an
+    /// id as an embedded track after a route/quality switch (sidecar has
+    /// its own recovery path; AI-live recovery is M4's responsibility).
+    static func isSyntheticNonEmbedded(_ trackId: Int64) -> Bool {
+        isSidecar(trackId) || isAILive(trackId)
+    }
 }
 
 /// The result of fetching a sidecar subtitle URL. Used by the fetcher

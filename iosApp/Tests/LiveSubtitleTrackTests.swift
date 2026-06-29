@@ -205,4 +205,42 @@ final class LiveSubtitleTrackTests: XCTestCase {
         let cue = track.makeCue(start: 0, end: 1, text: "")
         XCTAssertEqual(cue?.eventText, "0,0,Default,,0,0,0,,")
     }
+
+    // MARK: - Field-shape edge cases
+
+    func testCommasInTextAreNotEscapedAndDoNotShiftFields() {
+        // Text is the final, rest-of-line field in the chunk body, so commas
+        // in cue text are kept verbatim — they must NOT be escaped and must
+        // not be mistaken for field separators. The fixed 8-field prefix
+        // (`0,0,Default,,0,0,0,,`) is unchanged; everything after it is text.
+        var track = LiveSubtitleTrack()
+        let cue = track.makeCue(start: 0, end: 1, text: "Hello, world, again")
+        XCTAssertEqual(cue?.eventText, "0,0,Default,,0,0,0,,Hello, world, again")
+    }
+
+    func testOverrideBraceInjectionIsStripped() {
+        // A real ASS override-tag injection: braces and backslashes are
+        // dropped so the cue can't smuggle positioning/alignment overrides
+        // (`{\an8\pos(0,0)}`) into the rendered line. The inner text loses
+        // its braces and backslashes, leaving the bare tokens. The trailing
+        // "x" survives. Commas inside the (now brace-less) text stay verbatim.
+        var track = LiveSubtitleTrack()
+        let cue = track.makeCue(start: 0, end: 1, text: "{\\an8\\pos(0,0)}x")
+        XCTAssertEqual(cue?.eventText, "0,0,Default,,0,0,0,,an8pos(0,0)x")
+        // No brace or backslash may survive into the event body.
+        XCTAssertFalse(cue!.eventText.contains("{"))
+        XCTAssertFalse(cue!.eventText.contains("}"))
+        XCTAssertFalse(cue!.eventText.contains("\\"))
+    }
+
+    func testVeryLongTextIsPreservedVerbatim() {
+        // A long single-line cue should pass through unescaped (no braces /
+        // backslashes / newlines present) and keep the fixed field prefix.
+        var track = LiveSubtitleTrack()
+        let longText = String(repeating: "word ", count: 1000) + "end"
+        let cue = track.makeCue(start: 0, end: 1, text: longText)
+        XCTAssertEqual(cue?.eventText, "0,0,Default,,0,0,0,," + longText)
+        // Sanity: the body is the prefix plus exactly the source text length.
+        XCTAssertEqual(cue?.eventText.count, "0,0,Default,,0,0,0,,".count + longText.count)
+    }
 }
