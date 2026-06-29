@@ -80,7 +80,7 @@ struct MacPlayerOptionsPanel: View {
                 ) {
                     viewModel.disableSubtitles()
                 }
-                ForEach(viewModel.subtitleTracks) { track in
+                ForEach(viewModel.orderedSubtitleTracks) { track in
                     trackButton(
                         title: track.primaryLabel,
                         detail: subtitleDetail(for: track),

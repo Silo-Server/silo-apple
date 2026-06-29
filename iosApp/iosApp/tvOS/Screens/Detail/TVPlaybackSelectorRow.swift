@@ -35,6 +35,7 @@ struct TVPlaybackSelectorRow: View {
     @Namespace private var selectorFocusScope
     @FocusState private var focusedSelector: SelectorFocus?
     @State private var defaultSelectorFocus: SelectorFocus?
+    @State private var preferredSubtitleLanguage: String?
 
     private var editions: [PlaybackEditions.Edition] { PlaybackEditions.editions(from: versions) }
 
@@ -65,6 +66,10 @@ struct TVPlaybackSelectorRow: View {
             .focusScope(selectorFocusScope)
             .focusSection()
             .modifier(SelectorDefaultFocus(focus: defaultSelectorFocus, binding: $focusedSelector))
+            .task {
+                await ProfilePrefsStore.shared.hydrateIfNeeded()
+                preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
+            }
         }
     }
 
@@ -244,7 +249,8 @@ struct TVPlaybackSelectorRow: View {
                 }
                 ForEach(DetailPlaybackFormatting.subtitleOptions(
                     version: currentVersion,
-                    selectedSubtitleTrackIndex: selectedSubtitleTrackIndex
+                    selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+                    preferredLanguage: preferredSubtitleLanguage
                 )) { option in
                     if option.isSelectable, let selectionIndex = option.selectionIndex {
                         Button { selectSubtitleTrack(selectionIndex) } label: {

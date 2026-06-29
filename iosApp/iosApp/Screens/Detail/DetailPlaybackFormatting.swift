@@ -196,9 +196,28 @@ enum DetailPlaybackFormatting {
 
     static func subtitleOptions(
         version: FileVersion?,
-        selectedSubtitleTrackIndex: Int?
+        selectedSubtitleTrackIndex: Int?,
+        preferredLanguage: String?
     ) -> [SubtitleOption] {
-        (version?.subtitleTracks ?? []).enumerated().map { ordinal, track in
+        // Group by language + sort by preferred format. The original array
+        // index is carried through as `ordinal` so the stable id and any
+        // "Track N" fallback label stay put regardless of display order —
+        // selection keys off the FFmpeg `index`, never the position.
+        let indexed = Array((version?.subtitleTracks ?? []).enumerated())
+        let ordered = SubtitleDisplayOrder.order(
+            indexed,
+            preferredLanguage: preferredLanguage
+        ) { _, track in
+            let title = track.title?.lowercased() ?? ""
+            return SubtitleDisplayOrder.Descriptor(
+                language: track.language,
+                codec: track.codec,
+                isForced: track.forced ?? false,
+                isHearingImpaired: title.contains("sdh") || title.contains("hearing"),
+                isDefault: track.isDefault ?? false
+            )
+        }
+        return ordered.map { ordinal, track in
             let index = track.index
             let isSelectable = index != nil
             return SubtitleOption(
@@ -412,46 +431,23 @@ enum DetailPlaybackFormatting {
 
     private static func languageDisplayName(_ value: String?) -> String? {
         guard let value = nonEmpty(value) else { return nil }
-        let normalized = value
+        let primary = value
             .lowercased()
             .replacingOccurrences(of: "_", with: "-")
-        let primary = normalized.split(separator: "-").first.map(String.init) ?? normalized
+            .split(separator: "-").first.map(String.init) ?? ""
+        // A token longer than a 3-letter ISO tag is already a spelled-out
+        // name (e.g. free-text metadata); show it as-is.
         if primary.count > 3 {
             return value.capitalized
         }
-        let languageCode = languageCodeAliases[primary] ?? primary
-        if let displayName = Locale(identifier: "en_US_POSIX")
-            .localizedString(forLanguageCode: languageCode) {
-            return displayName.capitalized
+        // Share the canonical ISO 639 folding + English display-name table
+        // with the track-ordering core so the detail page's grouping and
+        // its row labels never disagree on a language.
+        if let key = SubtitleDisplayOrder.canonicalLanguageKey(value) {
+            return SubtitleDisplayOrder.languageDisplayName(key)
         }
         return value.uppercased()
     }
-
-    private static let languageCodeAliases: [String: String] = [
-        "ara": "ar",
-        "chi": "zh",
-        "cze": "cs",
-        "dan": "da",
-        "deu": "de",
-        "dut": "nl",
-        "eng": "en",
-        "fin": "fi",
-        "fra": "fr",
-        "fre": "fr",
-        "ger": "de",
-        "hin": "hi",
-        "ita": "it",
-        "jpn": "ja",
-        "kor": "ko",
-        "nld": "nl",
-        "nor": "no",
-        "pol": "pl",
-        "por": "pt",
-        "rus": "ru",
-        "spa": "es",
-        "swe": "sv",
-        "zho": "zh",
-    ]
 
     private static func normalizedFileName(_ value: String?) -> String? {
         guard let value = nonEmpty(value) else { return nil }

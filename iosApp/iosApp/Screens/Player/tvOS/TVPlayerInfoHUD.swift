@@ -1874,7 +1874,7 @@ private struct SubtitlesPane: View {
                 ) {
                     viewModel.disableSubtitles()
                 }
-                ForEach(viewModel.subtitleTracks) { track in
+                ForEach(viewModel.orderedSubtitleTracks) { track in
                     HUDFocusedTrackRow(
                         name: track.primaryLabel,
                         attributes: track.attributesLabel,

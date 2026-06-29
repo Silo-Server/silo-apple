@@ -176,7 +176,7 @@ struct TrackSelectionSheet: View {
             else           { viewModel.disableSubtitles() }
         }
 
-        ForEach(isSecondary ? viewModel.availableSecondarySubtitleTracks : viewModel.subtitleTracks) { track in
+        ForEach(isSecondary ? viewModel.availableSecondarySubtitleTracks : viewModel.orderedSubtitleTracks) { track in
             let isSelected = isSecondary
                 ? viewModel.selectedSecondarySubtitleId == track.trackId
                 : viewModel.selectedSubtitleId == track.trackId

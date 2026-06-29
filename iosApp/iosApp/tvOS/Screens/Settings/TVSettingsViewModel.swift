@@ -209,6 +209,8 @@ final class TVSettingsViewModel {
         do {
             try await ContinuumAPI.shared.updateProfile(profileId: profileId, body: body)
             prefSaveState = .saved
+            // Keep the detail-page track-ordering preference in sync.
+            ProfilePrefsStore.shared.setPreferredSubtitleLanguage(body.subtitleLanguage)
             // Refresh the local profile snapshot so a re-load reflects
             // what we just wrote.
             if let prof = activeProfile {

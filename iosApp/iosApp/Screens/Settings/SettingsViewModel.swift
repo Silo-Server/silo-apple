@@ -182,6 +182,8 @@ class SettingsViewModel {
         do {
             try await ContinuumAPI.shared.updateProfile(profileId: profileId, body: body)
             prefSaveState = .saved
+            // Keep the detail-page track-ordering preference in sync.
+            ProfilePrefsStore.shared.setPreferredSubtitleLanguage(body.subtitleLanguage)
             if let prof = activeProfile {
                 activeProfile = UserProfile(
                     id: prof.id,

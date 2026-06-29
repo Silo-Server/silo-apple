@@ -322,7 +322,8 @@ final class DetailVersionSelectionTests: XCTestCase {
 
         let options = DetailPlaybackFormatting.subtitleOptions(
             version: versions[0],
-            selectedSubtitleTrackIndex: -1
+            selectedSubtitleTrackIndex: -1,
+            preferredLanguage: nil
         )
 
         XCTAssertTrue(options.count == 1)
@@ -363,7 +364,8 @@ final class DetailVersionSelectionTests: XCTestCase {
 
         let options = DetailPlaybackFormatting.subtitleOptions(
             version: versions[0],
-            selectedSubtitleTrackIndex: 2
+            selectedSubtitleTrackIndex: 2,
+            preferredLanguage: nil
         )
         let selectedLabel = DetailPlaybackFormatting.subtitleValueLabel(
             version: versions[0],

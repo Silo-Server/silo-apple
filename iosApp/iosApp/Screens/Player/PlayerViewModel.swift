@@ -366,6 +366,10 @@ class PlayerViewModel {
     var remoteDismissToken: UUID?
     var audioTracks: [PlayerTrack] = []
     var subtitleTracks: [PlayerTrack] = []
+    /// Server-resolved preferred subtitle language for the current item,
+    /// snapshotted at prepare time. Used only to float the matching
+    /// language group to the top of the displayed track lists.
+    private var subtitleOrderingLanguage: String?
     var chapters: [PlayerChapterInfo] = []
     var introRange: TimeRange?
     var creditsRange: TimeRange?
@@ -551,15 +555,33 @@ class PlayerViewModel {
     }
     var hasTrackSelectionOptions: Bool { !audioTracks.isEmpty || !subtitleTracks.isEmpty }
     var supportsSecondarySubtitles: Bool { backendCapabilities.supportsSecondarySubtitles }
+    /// `subtitleTracks` grouped by language and sorted by preferred format
+    /// for display. The stored array stays in source/append order (the
+    /// selection and track-replacement logic depends on it); ordering is a
+    /// display-only projection. The two in-player pickers iterate this.
+    var orderedSubtitleTracks: [PlayerTrack] {
+        orderedSubtitles(subtitleTracks)
+    }
     var availableSecondarySubtitleTracks: [PlayerTrack] {
         guard backendCapabilities.supportsSecondarySubtitles else { return [] }
         switch activePlayer {
         case .none:
             return []
         case .coreMedia:
-            return subtitleTracks
+            return orderedSubtitles(subtitleTracks)
         case .avPlayer:
-            return subtitleTracks.filter { SubtitleTrackIdSpace.isSidecar($0.trackId) }
+            return orderedSubtitles(subtitleTracks.filter { SubtitleTrackIdSpace.isSidecar($0.trackId) })
+        }
+    }
+    private func orderedSubtitles(_ tracks: [PlayerTrack]) -> [PlayerTrack] {
+        SubtitleDisplayOrder.order(tracks, preferredLanguage: subtitleOrderingLanguage) { track in
+            SubtitleDisplayOrder.Descriptor(
+                language: track.lang,
+                codec: track.codec,
+                isForced: track.isForced,
+                isHearingImpaired: track.isHearingImpaired,
+                isDefault: track.isDefault
+            )
         }
     }
     /// Set in `cleanup()` / `deinit`. All async callbacks into the VM gate
@@ -2704,6 +2726,11 @@ class PlayerViewModel {
                 self.autoSkipIntroCancelledKey = nil
                 self.cancelPendingIntroAutoSkip()
                 self.staleSessionRecoverySessionId = nil
+
+                // Snapshot the preferred language for track-list ordering
+                // unconditionally (even with an explicit choice) so the
+                // displayed groups float the user's language to the top.
+                self.subtitleOrderingLanguage = prepared.watchDetail.effectiveSubtitleLanguage
 
                 // Snapshot the server-resolved subtitle policy so the
                 // track-list callback (which fires post-FFmpeg-open)

@@ -232,6 +232,7 @@ private struct PhonePlaybackSelectorSheet: View {
     let onSelectSubtitleTrack: (Int?) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var preferredSubtitleLanguage: String?
 
     private var editions: [PlaybackEditions.Edition] {
         PlaybackEditions.editions(from: versions)
@@ -256,6 +257,10 @@ private struct PhonePlaybackSelectorSheet: View {
             #endif
             .scrollContentBackground(.hidden)
             .background(Color.continuumBackground.ignoresSafeArea())
+            .task {
+                await ProfilePrefsStore.shared.hydrateIfNeeded()
+                preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
+            }
             .navigationTitle(kind.title)
             #if !os(macOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -404,7 +409,8 @@ private struct PhonePlaybackSelectorSheet: View {
             }
             ForEach(DetailPlaybackFormatting.subtitleOptions(
                 version: currentVersion,
-                selectedSubtitleTrackIndex: selectedSubtitleTrackIndex
+                selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+                preferredLanguage: preferredSubtitleLanguage
             )) { option in
                 optionButton(
                     title: option.title,

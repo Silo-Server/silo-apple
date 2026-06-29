@@ -196,6 +196,9 @@ final class AuthService: @unchecked Sendable {
         // restart; (b) defensive — if the server ever moves overlays to
         // a per-profile scope, this path keeps working.
         OverlayPrefsStore.shared.clear()
+        // Profile's preferred subtitle language drives detail-page track
+        // ordering; drop it so the next profile re-hydrates its own.
+        ProfilePrefsStore.shared.clear()
         // Server-wide AI capability + per-user ASR quota are reset on every
         // profile switch; `selectProfile` re-fetches after the switch lands.
         AICapabilities.shared.reset()
@@ -264,6 +267,7 @@ final class AuthService: @unchecked Sendable {
     private func clearAllCaches() {
         ResponseCache.shared.clearAll()
         OverlayPrefsStore.shared.clear()
+        ProfilePrefsStore.shared.clear()
         AICapabilities.shared.reset()
         #if os(tvOS)
         ItemDetailCache.shared.clearAll()
