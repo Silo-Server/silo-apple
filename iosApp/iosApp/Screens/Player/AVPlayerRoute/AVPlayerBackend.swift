@@ -572,6 +572,21 @@ final class AVPlayerBackend {
             return
         }
 
+        // Live AI path: the synthetic live track is already installed in
+        // the renderer (and being fed cues). Selecting it just records the
+        // selection and drops any AVFoundation/extractor caption in the
+        // slot; the live track stays installed and visible. Checked BEFORE
+        // the sidecar branch so a live id is never routed to `openSidecar`.
+        if let trackId, SubtitleTrackIdSpace.isAILive(trackId) {
+            if let state = subtitleSelectionState {
+                item.select(nil, in: state.group)
+            }
+            embeddedSubtitleExtractor?.clear(slot: .primary)
+            selectedControlledSubtitleTrackId = trackId
+            emitTrackList()
+            return
+        }
+
         if let trackId, SubtitleTrackIdSpace.isSidecar(trackId) {
             if let state = subtitleSelectionState {
                 item.select(nil, in: state.group)
@@ -654,6 +669,35 @@ final class AVPlayerBackend {
         )
         subtitleSession?.registerSidecarTracks(descriptors)
         emitTrackList()
+    }
+
+    // MARK: - Live AI subtitle track
+
+    /// Open a synthetic live AI subtitle track in `slot`. The underlying
+    /// `SubtitleSession`/`SubtitleRenderer` serialise the work on their own
+    /// queue, so this forwards directly (mirroring `openSidecar`).
+    func openLiveSubtitleTrack(slot: SubtitleSlot, label: String?, language: String?) {
+        subtitleSession?.openLive(slot: slot, label: label, language: language)
+    }
+
+    /// Feed a single converted live AI cue to the live track in `slot`.
+    func feedLiveSubtitleCue(
+        slot: SubtitleSlot,
+        eventText: String,
+        startMs: Int64,
+        durationMs: Int64
+    ) {
+        subtitleSession?.feedLiveCue(
+            slot: slot,
+            eventText: eventText,
+            startMs: startMs,
+            durationMs: durationMs
+        )
+    }
+
+    /// Close the live AI subtitle track in `slot`.
+    func closeLiveSubtitleTrack(slot: SubtitleSlot) {
+        subtitleSession?.closeLive(slot: slot)
     }
 
     func setServerChapters(_ chapters: [PlayerChapterInfo]) {

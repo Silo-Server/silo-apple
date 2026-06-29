@@ -23,12 +23,26 @@ enum SubtitleSlot: Int, CaseIterable, Hashable {
 /// AVFoundation's small per-kind ids. FFmpeg stream indices realistically
 /// fit in the bottom 16 bits; shifting into high ranges is collision-free.
 ///
-/// Used by `PlayerViewModel.selectSubtitle` to dispatch: trackId >=
-/// `sidecarBase` means sidecar, while `avPlayerEmbeddedBase..<sidecarBase`
-/// means AVPlayer FFmpeg-extracted embedded subtitle.
+/// Three disjoint synthetic partitions, each carrying an ordinal in its
+/// low bits:
+///   - `avPlayerEmbeddedBase` (`0x2000_0000 ..< 0x4000_0000`): AVPlayer
+///     FFmpeg-extracted embedded subtitle, ordinal = FFmpeg stream index.
+///   - `sidecarBase` (`0x4000_0000 ..< 0x6000_0000`): server-provided
+///     sidecar URL, ordinal = `subtitle_urls[].index`.
+///   - `aiLiveBase` (`0x6000_0000 ..< 0x8000_0000`): synthetic live AI
+///     subtitle track (cues streamed in over the playback websocket and
+///     injected via `ass_process_chunk`), ordinal = a controller-assigned
+///     slot ordinal (the `track_key` string → ordinal mapping lives in the
+///     controller, since `track_key` is not numeric).
+///
+/// Used by `PlayerViewModel.selectSubtitle` and both player backends'
+/// subtitle-switch paths to dispatch on which partition an id falls in.
+/// All partitions stay below `0x8000_0000` so an `Int64` id never goes
+/// negative when narrowed to `Int32` for the embedded-stream path.
 enum SubtitleTrackIdSpace {
     static let avPlayerEmbeddedBase: Int64 = 0x2000_0000
     static let sidecarBase: Int64 = 0x4000_0000
+    static let aiLiveBase: Int64 = 0x6000_0000
 
     static func makeAVPlayerEmbeddedTrackId(streamIndex: Int32) -> Int64 {
         Self.avPlayerEmbeddedBase | Int64(streamIndex)
@@ -36,6 +50,13 @@ enum SubtitleTrackIdSpace {
 
     static func makeSidecarTrackId(urlIndex: Int) -> Int64 {
         Self.sidecarBase | Int64(urlIndex)
+    }
+
+    /// Build a live AI subtitle track id from a controller-assigned slot
+    /// ordinal. The ordinal must fit in the low bits below `aiLiveBase`
+    /// (realistically a handful of live tracks per session).
+    static func makeAILiveTrackId(_ ordinal: Int) -> Int64 {
+        Self.aiLiveBase | Int64(ordinal)
     }
 
     static func isAVPlayerEmbedded(_ trackId: Int64) -> Bool {
@@ -46,12 +67,23 @@ enum SubtitleTrackIdSpace {
         Int32(trackId & (Self.avPlayerEmbeddedBase - 1))
     }
 
+    /// Sidecar ids occupy `[sidecarBase, aiLiveBase)` — the upper bound
+    /// keeps AI-live ids from being misclassified as sidecar.
     static func isSidecar(_ trackId: Int64) -> Bool {
-        trackId >= Self.sidecarBase
+        trackId >= Self.sidecarBase && trackId < Self.aiLiveBase
     }
 
     static func sidecarIndex(from trackId: Int64) -> Int {
         Int(trackId & (Self.sidecarBase - 1))
+    }
+
+    /// Live AI subtitle ids occupy `[aiLiveBase, 0x8000_0000)`.
+    static func isAILive(_ trackId: Int64) -> Bool {
+        trackId >= Self.aiLiveBase && trackId < 0x8000_0000
+    }
+
+    static func aiLiveOrdinal(from trackId: Int64) -> Int {
+        Int(trackId & (Self.aiLiveBase - 1))
     }
 }
 

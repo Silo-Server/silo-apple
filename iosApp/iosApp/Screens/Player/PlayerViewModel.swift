@@ -463,6 +463,14 @@ class PlayerViewModel {
     /// pattern-match on this.
     private(set) var activePlayer: ActivePlayer
     private var activeRouteKind: PlaybackEngineKind
+
+    #if DEBUG
+    /// Drives the `debugStartFakeLiveSubtitles()` stub. Repeating timer
+    /// that feeds canned live cues at `currentTime+` to prove the M2 live
+    /// subtitle render seam end-to-end with no server. DEBUG-only.
+    private var debugLiveSubtitleTimer: Timer?
+    private var debugLiveSubtitleTrack = LiveSubtitleTrack()
+    #endif
     /// Canonical user volume/mute, owned by the VM rather than the backend.
     /// Backends are rebuilt on every quality switch / loopback fallback and
     /// come up at full volume, so the VM re-applies these after each swap and
@@ -5033,6 +5041,151 @@ class PlayerViewModel {
         }
     }
 
+    // MARK: - Live AI subtitle track seam
+
+    /// Open a synthetic live AI subtitle track in the given slot on the
+    /// active backend. Cues are then streamed in via `feedLiveSubtitleCue`.
+    /// Route-agnostic so a backend switch keeps working.
+    func openLiveSubtitleTrack(slot: SubtitleSlot = .primary, label: String?, language: String?) {
+        switch activePlayer {
+        case .none:
+            return
+        case .coreMedia(let core):
+            core.openLiveSubtitleTrack(slot: slot, label: label, language: language)
+        case .avPlayer(let backend):
+            backend.openLiveSubtitleTrack(slot: slot, label: label, language: language)
+        }
+    }
+
+    /// Feed a single converted live AI cue (from `LiveSubtitleTrack`) to
+    /// the live track in the given slot on the active backend.
+    func feedLiveSubtitleCue(
+        slot: SubtitleSlot = .primary,
+        eventText: String,
+        startMs: Int64,
+        durationMs: Int64
+    ) {
+        switch activePlayer {
+        case .none:
+            return
+        case .coreMedia(let core):
+            core.feedLiveSubtitleCue(slot: slot, eventText: eventText, startMs: startMs, durationMs: durationMs)
+        case .avPlayer(let backend):
+            backend.feedLiveSubtitleCue(slot: slot, eventText: eventText, startMs: startMs, durationMs: durationMs)
+        }
+    }
+
+    /// Close the live AI subtitle track in the given slot on the active
+    /// backend.
+    func closeLiveSubtitleTrack(slot: SubtitleSlot = .primary) {
+        switch activePlayer {
+        case .none:
+            return
+        case .coreMedia(let core):
+            core.closeLiveSubtitleTrack(slot: slot)
+        case .avPlayer(let backend):
+            backend.closeLiveSubtitleTrack(slot: slot)
+        }
+    }
+
+    /// Append a synthetic live AI subtitle row to `subtitleTracks` so the
+    /// picker can select it, and return its track id. De-dupes by id.
+    @discardableResult
+    func appendLiveSubtitleTrack(ordinal: Int, label: String?, language: String?) -> Int64 {
+        let trackId = SubtitleTrackIdSpace.makeAILiveTrackId(ordinal)
+        if !subtitleTracks.contains(where: { $0.trackId == trackId }) {
+            subtitleTracks.append(PlayerTrack(
+                trackId: trackId,
+                kind: .sub,
+                title: label,
+                lang: language,
+                codec: nil,
+                audioChannelsLayout: nil,
+                audioChannelCount: nil,
+                bitrate: nil,
+                isDefault: false,
+                isForced: false,
+                isHearingImpaired: false,
+                isVisualImpaired: false,
+                isExternal: false,
+                isSelected: false,
+                ffIndex: nil,
+                srcId: nil
+            ))
+        }
+        return trackId
+    }
+
+    #if DEBUG
+    /// DEBUG-only: prove the live subtitle render seam without any server.
+    /// Opens a synthetic live AI track, adds + selects its picker row, and
+    /// feeds canned cues on a timer at `currentTime + offset` so synthetic
+    /// captions render over the video and can be toggled via the existing
+    /// picker. Call again to stop.
+    func debugStartFakeLiveSubtitles() {
+        if debugLiveSubtitleTimer != nil {
+            debugStopFakeLiveSubtitles()
+            return
+        }
+
+        let ordinal = 0
+        let label = "AI Live (debug)"
+        let language = "en"
+        debugLiveSubtitleTrack = LiveSubtitleTrack()
+
+        openLiveSubtitleTrack(slot: .primary, label: label, language: language)
+        let trackId = appendLiveSubtitleTrack(ordinal: ordinal, label: label, language: language)
+        if let track = subtitleTracks.first(where: { $0.trackId == trackId }) {
+            selectSubtitle(track)
+        }
+
+        Self.logger.info("[CMP-SUB] DEBUG fake live subtitles started trackId=\(trackId, privacy: .public)")
+
+        var lineIndex = 0
+        let cannedLines = [
+            "Live AI subtitle seam is working.",
+            "Cue two — fed via ass_process_chunk.",
+            "Multi-line cue:\nsecond line here.",
+            "Escapes are stripped: {not an override}.",
+            "These cues stream at currentTime+.",
+        ]
+
+        let timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let now = self.currentTime
+            let start = now + 0.3
+            let end = start + 2.6
+            let text = cannedLines[lineIndex % cannedLines.count]
+            lineIndex += 1
+            if let cue = self.debugLiveSubtitleTrack.makeCue(start: start, end: end, text: text) {
+                self.feedLiveSubtitleCue(
+                    slot: .primary,
+                    eventText: cue.eventText,
+                    startMs: cue.startMs,
+                    durationMs: cue.durationMs
+                )
+                Self.logger.info(
+                    "[CMP-SUB] DEBUG fed live cue startMs=\(cue.startMs, privacy: .public) durMs=\(cue.durationMs, privacy: .public) event=\(cue.eventText, privacy: .public)"
+                )
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        debugLiveSubtitleTimer = timer
+    }
+
+    /// DEBUG-only: stop the fake-live-subtitle stub and close the track.
+    func debugStopFakeLiveSubtitles() {
+        debugLiveSubtitleTimer?.invalidate()
+        debugLiveSubtitleTimer = nil
+        if selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true {
+            disableSubtitles()
+        }
+        subtitleTracks.removeAll { SubtitleTrackIdSpace.isAILive($0.trackId) }
+        closeLiveSubtitleTrack(slot: .primary)
+        Self.logger.info("[CMP-SUB] DEBUG fake live subtitles stopped")
+    }
+    #endif
+
     /// Append sidecar tracks to `subtitleTracks` as synthesised
     /// `PlayerTrack` rows so the picker shows every available caption
     /// track alongside embedded ones. Called on main by the session.
@@ -5118,8 +5271,14 @@ class PlayerViewModel {
     private func applyTrackList(_ tracks: [PlayerTrack]) {
         audioTracks = tracks.filter { $0.kind == .audio }
         let embeddedSubs = tracks.filter { $0.kind == .sub }
+        // Preserve separately-layered subtitle rows that `onTracksChange`
+        // does not enumerate: server sidecars (from
+        // `onSidecarTracksRegistered`) and synthetic live AI tracks (from
+        // the live-subtitle seam). Both live outside the embedded-stream
+        // id space, so a track-list refresh must not drop them.
         let existingSidecars = subtitleTracks.filter { SubtitleTrackIdSpace.isSidecar($0.trackId) }
-        subtitleTracks = embeddedSubs + existingSidecars
+        let existingLive = subtitleTracks.filter { SubtitleTrackIdSpace.isAILive($0.trackId) }
+        subtitleTracks = embeddedSubs + existingSidecars + existingLive
 
         if let selectedSubtitleId,
            !subtitleTracks.contains(where: { $0.trackId == selectedSubtitleId }) {

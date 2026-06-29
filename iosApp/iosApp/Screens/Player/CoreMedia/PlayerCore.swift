@@ -1832,6 +1832,48 @@ final class PlayerCore: NSObject {
         subtitleSession?.registerSidecarTracks(descriptors)
     }
 
+    // MARK: - Live AI subtitle track
+
+    /// Open a synthetic live AI subtitle track in the given slot. Cues are
+    /// then streamed in via `feedLiveSubtitleCue`. Dispatches onto
+    /// `controlQueue` so it serialises with subtitle track switching and
+    /// the decode loop, matching every other subtitle-session mutation.
+    func openLiveSubtitleTrack(slot: SubtitleSlot, label: String?, language: String?) {
+        guard !isDisposed else { return }
+        controlQueue.async { [weak self] in
+            self?.subtitleSession?.openLive(slot: slot, label: label, language: language)
+        }
+    }
+
+    /// Feed a single converted live AI cue to the live track in `slot`.
+    /// `eventText`/`startMs`/`durationMs` come straight from
+    /// `LiveSubtitleTrack`. Dispatched onto `controlQueue` for ordering.
+    func feedLiveSubtitleCue(
+        slot: SubtitleSlot,
+        eventText: String,
+        startMs: Int64,
+        durationMs: Int64
+    ) {
+        guard !isDisposed else { return }
+        controlQueue.async { [weak self] in
+            self?.subtitleSession?.feedLiveCue(
+                slot: slot,
+                eventText: eventText,
+                startMs: startMs,
+                durationMs: durationMs
+            )
+        }
+    }
+
+    /// Close the live AI subtitle track in `slot`. Dispatched onto
+    /// `controlQueue` for ordering.
+    func closeLiveSubtitleTrack(slot: SubtitleSlot) {
+        guard !isDisposed else { return }
+        controlQueue.async { [weak self] in
+            self?.subtitleSession?.closeLive(slot: slot)
+        }
+    }
+
     /// Re-apply the current negotiated format to the audio engine after an
     /// output-route change.
     func reloadAudioOutput() {
@@ -4575,6 +4617,18 @@ final class PlayerCore: NSObject {
     /// down the current subtitle decoder in the given slot and
     /// optionally opens a new one. Video + audio keep playing.
     private func performSubtitleTrackSwitch(newId: Int64?, slot: SubtitleSlot) {
+        // Live AI path: the track is a synthetic in-memory libass track
+        // already installed (and being fed cues) by `openLiveSubtitleTrack`.
+        // Selecting it is a no-op — it stays installed and visible; there
+        // is no decoder to spin up and no fetch to start. Must be checked
+        // BEFORE the sidecar branch (the id ranges are disjoint, but the
+        // intent is explicit: never tear down or re-open a live track on
+        // selection).
+        if let newId, SubtitleTrackIdSpace.isAILive(newId) {
+            embeddedSubtitlePipeline.tearDownEmbeddedSlot(slot: slot)
+            return
+        }
+
         // Sidecar path: trackId >= sidecarBase means the user picked a
         // server-provided URL, not an embedded stream. Route to the
         // session and tear down any embedded decoder we had open in

@@ -61,6 +61,12 @@ final class SubtitleSession {
     /// previous fetch cleanly.
     private var fetchTasks: [SubtitleSlot: Task<Void, Never>] = [:]
 
+    /// Slots currently driven by a live AI subtitle track (cues streamed
+    /// in via `feedLiveCue`). A live track must NOT be flushed on seek —
+    /// re-feeding past cues isn't possible once they've streamed by — so
+    /// `flushOnSeek()` skips these slots. Cleared in `teardown()`.
+    private var liveSlots: Set<SubtitleSlot> = []
+
     /// Current user styling parameters. Snapshot updated by PlayerCore
     /// when `applySubtitleStyling` is called.
     private var stylingParams: SubtitleStylingOverride.Parameters = .default
@@ -235,15 +241,22 @@ final class SubtitleSession {
     /// in-flight fetch.
     func closeSlot(_ slot: SubtitleSlot) {
         cancelFetchTask(for: slot)
+        liveSlots.remove(slot)
         renderer.dropTrack(slot: slot)
         publishStatus(slot: slot, .idle)
     }
 
     /// Called on seek so libass clears cached events past the new
-    /// position. Does not affect fetch state.
+    /// position. Does not affect fetch state. Live AI slots are skipped:
+    /// their cues are streamed once and can't be re-fed, so flushing them
+    /// on seek would silently lose already-delivered captions.
     func flushOnSeek() {
-        renderer.flushTrack(slot: .primary)
-        renderer.flushTrack(slot: .secondary)
+        if !liveSlots.contains(.primary) {
+            renderer.flushTrack(slot: .primary)
+        }
+        if !liveSlots.contains(.secondary) {
+            renderer.flushTrack(slot: .secondary)
+        }
     }
 
     // MARK: - Embedded event feed
@@ -271,6 +284,79 @@ final class SubtitleSession {
         renderer.addEmbeddedFont(name: name, data: data)
     }
 
+    // MARK: - Live AI subtitle track
+
+    /// Open a synthetic, empty, user-styled libass track in the given slot
+    /// to receive live AI subtitle cues. The track is created from the
+    /// same synthetic ASS header (`[Script Info]` + `[V4+ Styles]` Default
+    /// style + `[Events]`) that the controlled embedded/sidecar text path
+    /// uses, so live cues inherit the user's subtitle styling and render
+    /// identically. Cues are then appended one at a time via
+    /// `feedLiveCue` (→ `ass_process_chunk`).
+    ///
+    /// This is the live counterpart of `openEmbedded(isNativeASS: false)`,
+    /// minus an upstream decoder: nothing decodes packets, the controller
+    /// feeds cues directly.
+    ///
+    /// - Parameters:
+    ///   - slot: target slot. Live AI cues land in `.primary` in v1.
+    ///   - label: optional human label (currently unused by the renderer;
+    ///     accepted for parity with the embedded/sidecar open calls and to
+    ///     keep the call sites self-documenting).
+    ///   - language: optional ISO language tag (also informational).
+    func openLive(slot: SubtitleSlot, label: String? = nil, language: String? = nil) {
+        cancelFetchTask(for: slot)
+        let header = SubtitleStylingOverride.syntheticHeader(
+            params: stylingParams,
+            slot: slot
+        )
+        Data(header.utf8).withUnsafeBytes { raw in
+            renderer.createTrack(
+                slot: slot,
+                isNativeASS: false,
+                extradata: raw.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                extradataSize: raw.count
+            )
+        }
+        liveSlots.insert(slot)
+        Self.logger.info(
+            "[CMP-SUB] opened live AI track slot=\(slot.rawValue, privacy: .public) label=\(label ?? "nil", privacy: .public) lang=\(language ?? "nil", privacy: .public)"
+        )
+        publishStatus(slot: slot, .ready)
+    }
+
+    /// Append a single live AI cue to the live track in the given slot.
+    /// `eventText` must be the `ass_process_chunk` event body produced by
+    /// `LiveSubtitleTrack` (the FFmpeg `rect.ass` chunk format —
+    /// `ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text`,
+    /// with Start/End carried separately as `startMs`/`durationMs`).
+    func feedLiveCue(
+        slot: SubtitleSlot,
+        eventText: String,
+        startMs: Int64,
+        durationMs: Int64
+    ) {
+        renderer.feedChunk(
+            slot: slot,
+            eventText: eventText,
+            startMs: startMs,
+            durationMs: durationMs
+        )
+    }
+
+    /// Close the live track in the given slot. Drops the libass track and
+    /// clears the live-slot flag. Safe to call on a slot that isn't live.
+    func closeLive(slot: SubtitleSlot) {
+        liveSlots.remove(slot)
+        renderer.dropTrack(slot: slot)
+        publishStatus(slot: slot, .idle)
+    }
+
+    /// Whether the given slot is currently a live AI track.
+    func isLiveSlot(_ slot: SubtitleSlot) -> Bool {
+        liveSlots.contains(slot)
+    }
+
     // MARK: - Lifecycle
 
     /// Stop all fetches, drop all tracks. Called by `PlayerCore.dispose`.
@@ -279,6 +365,7 @@ final class SubtitleSession {
         fetchTasks.removeAll()
         sidecarCache.removeAll()
         sidecarDescriptors.removeAll()
+        liveSlots.removeAll()
         renderer.dropAllTracks()
     }
 
