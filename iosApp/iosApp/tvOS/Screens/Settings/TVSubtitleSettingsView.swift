@@ -13,6 +13,9 @@ struct TVSubtitleSettingsView: View {
         NavigationStack {
             Form {
                 profileSection
+                if AICapabilities.shared.metadataEnabled {
+                    metadataLanguageSection
+                }
                 appearanceSection
             }
             .navigationTitle("Subtitles")
@@ -54,6 +57,21 @@ struct TVSubtitleSettingsView: View {
                 Text("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
                 prefSaveFooter
             }
+        }
+    }
+
+    private var metadataLanguageSection: some View {
+        Section {
+            Button { activePicker = .metadataLanguage } label: {
+                FocusAwareValueRow(
+                    title: "Metadata Language",
+                    value: TVSettingsOptions.label(for: viewModel.editorPreferredMetadataLanguage, in: TVSettingsOptions.metadataLanguage)
+                )
+            }
+        } header: {
+            Text("Metadata")
+        } footer: {
+            Text("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
         }
     }
 
@@ -146,6 +164,12 @@ struct TVSubtitleSettingsView: View {
                 options: TVSettingsOptions.subtitleMode,
                 selection: $viewModel.editorSubtitleMode
             )
+        case .metadataLanguage:
+            TVSettingsPickerSheet(
+                title: "Metadata Language",
+                options: TVSettingsOptions.metadataLanguage,
+                selection: $viewModel.editorPreferredMetadataLanguage
+            )
         case .fontSize:
             TVSettingsPickerSheet(
                 title: "Font Size",
@@ -201,6 +225,7 @@ struct TVSubtitleSettingsView: View {
     enum PickerKind: String, Identifiable {
         case language
         case mode
+        case metadataLanguage
         case fontSize
         case fontFamily
         case fontColor

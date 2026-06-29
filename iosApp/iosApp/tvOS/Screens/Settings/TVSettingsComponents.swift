@@ -41,6 +41,10 @@ enum TVSettingsOptions {
         [.init(id: PlaybackPrefSentinel.none, label: "None")]
             + PlaybackLanguageOption.all.map { .init(id: $0.code, label: $0.label) }
 
+    static let metadataLanguage: [TVSettingsOption] =
+        [.init(id: PlaybackPrefSentinel.none, label: "Library Default")]
+            + PlaybackLanguageOption.all.map { .init(id: $0.code, label: $0.label) }
+
     static let subtitleMode: [TVSettingsOption] =
         SubtitleMode.allCases.map { .init(id: $0.rawValue, label: $0.displayLabel) }
 

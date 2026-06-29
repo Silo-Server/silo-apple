@@ -15,6 +15,9 @@ struct UserProfile: Codable, Identifiable, Hashable {
     let subtitleLanguage: String?
     let subtitleMode: String?
     let showForcedSubtitles: Bool?
+    /// Preferred metadata language (ISO 639-1; `""`/nil = inherit the
+    /// library default). Drives server-side overview/tagline translation.
+    let preferredMetadataLanguage: String?
 
     init(
         id: String,
@@ -25,7 +28,8 @@ struct UserProfile: Codable, Identifiable, Hashable {
         isPrimary: Bool = false,
         subtitleLanguage: String? = nil,
         subtitleMode: String? = nil,
-        showForcedSubtitles: Bool? = nil
+        showForcedSubtitles: Bool? = nil,
+        preferredMetadataLanguage: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -36,6 +40,7 @@ struct UserProfile: Codable, Identifiable, Hashable {
         self.subtitleLanguage = subtitleLanguage
         self.subtitleMode = subtitleMode
         self.showForcedSubtitles = showForcedSubtitles
+        self.preferredMetadataLanguage = preferredMetadataLanguage
     }
 }
 

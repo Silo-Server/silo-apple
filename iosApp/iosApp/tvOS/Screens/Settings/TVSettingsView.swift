@@ -47,6 +47,9 @@ struct TVSettingsView: View {
         .onChange(of: viewModel.editorShowForcedSubtitles) { _, _ in
             Task { await viewModel.saveProfilePrefs() }
         }
+        .onChange(of: viewModel.editorPreferredMetadataLanguage) { _, _ in
+            Task { await viewModel.saveMetadataLanguage() }
+        }
         .alert("Sign Out", isPresented: $showSignOutConfirm) {
             Button("Sign Out", role: .destructive) {
                 router.signOutAndReset()

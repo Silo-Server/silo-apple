@@ -49,6 +49,23 @@ final class ResponseCache {
         entries = entries.filter { !$0.key.hasPrefix(prefix) }
     }
 
+    /// Drop every cached response whose contents carry a translatable
+    /// overview/tagline, so the next fetch picks up the server-side
+    /// translation for a newly-changed preferred metadata language.
+    ///
+    /// The language is profile-global and changes rarely, so rather than
+    /// adding a language dimension to every cache key we flush the whole
+    /// `item:` family (detail / seasons / episodes / watch detail) plus
+    /// the home-sections and recommendations rows that embed item
+    /// summaries. Call this ONLY when the metadata language actually
+    /// changed. tvOS additionally holds an `ItemDetailCache` — clear that
+    /// at the same call site.
+    func invalidateAllItemMetadata() {
+        removeAll(withPrefix: "item:")
+        remove(CacheKey.homeSections)
+        remove(CacheKey.recommendations)
+    }
+
     func clearAll() {
         entries.removeAll()
     }

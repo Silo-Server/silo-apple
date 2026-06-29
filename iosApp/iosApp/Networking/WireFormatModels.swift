@@ -21,6 +21,10 @@ struct Profile: Codable {
     let subtitleLanguage: String?
     let subtitleMode: String?
     let showForcedSubtitles: Bool?
+    /// Preferred metadata language (ISO 639-1). `""`/nil = inherit the
+    /// library default. Drives server-side translation of overviews and
+    /// taglines in the normal detail/browse responses.
+    let preferredMetadataLanguage: String?
     let autoSkipIntro: Bool?
     let autoSkipCredits: Bool?
     let libraryRestrictionsEnabled: Bool?
@@ -40,7 +44,8 @@ struct Profile: Codable {
             isPrimary: isPrimary ?? false,
             subtitleLanguage: subtitleLanguage,
             subtitleMode: subtitleMode,
-            showForcedSubtitles: showForcedSubtitles
+            showForcedSubtitles: showForcedSubtitles,
+            preferredMetadataLanguage: preferredMetadataLanguage
         )
     }
 }
@@ -52,6 +57,9 @@ struct UpdateProfileBody: Encodable {
     var subtitleLanguage: String?
     var subtitleMode: String?
     var showForcedSubtitles: Bool?
+    /// Preferred metadata language (ISO 639-1; `""` = inherit the library
+    /// default). Encodes as `preferred_metadata_language`.
+    var preferredMetadataLanguage: String?
 }
 
 struct ProfilesResponse: Codable {

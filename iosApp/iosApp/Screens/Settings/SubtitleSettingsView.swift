@@ -11,6 +11,9 @@ struct SubtitleSettingsView: View {
     var body: some View {
         List {
             profileBackedSection
+            if AICapabilities.shared.metadataEnabled {
+                metadataLanguageSection
+            }
             appearanceSection
         }
         .continuumGroupedListStyle()
@@ -28,6 +31,36 @@ struct SubtitleSettingsView: View {
         .onChange(of: viewModel.editorShowForcedSubtitles) { _, _ in
             Task { await viewModel.saveProfilePrefs() }
         }
+        .onChange(of: viewModel.editorPreferredMetadataLanguage) { _, _ in
+            Task { await viewModel.saveMetadataLanguage() }
+        }
+    }
+
+    // MARK: - Metadata language (server-backed, AI-gated)
+
+    @ViewBuilder
+    private var metadataLanguageSection: some View {
+        Section {
+            Picker("Metadata Language", selection: $viewModel.editorPreferredMetadataLanguage) {
+                Text("Library Default").tag(PlaybackPrefSentinel.none)
+                ForEach(PlaybackLanguageOption.all) { option in
+                    Text(option.label).tag(option.code)
+                }
+            }
+            .foregroundStyle(Color.continuumOnSurface)
+            #if os(macOS)
+            .pickerStyle(.menu)
+            #else
+            .pickerStyle(.navigationLink)
+            #endif
+        } header: {
+            Text("Metadata")
+                .foregroundStyle(Color.continuumSecondaryText)
+        } footer: {
+            Text("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
+                .foregroundStyle(Color.continuumSecondaryText)
+        }
+        .listRowBackground(Color.continuumSurfaceElevated)
     }
 
     // MARK: - Profile prefs (server-backed)

@@ -51,6 +51,10 @@ final class TVSettingsViewModel {
     /// false the same way at the cascade root (false), so we always
     /// send a concrete bool.
     var editorShowForcedSubtitles: String = "on"
+    /// Preferred metadata language. `PlaybackPrefSentinel.none` maps to
+    /// the empty string ("inherit the library default") on the wire.
+    /// Gated on `AICapabilities.shared.metadataEnabled` at the row.
+    var editorPreferredMetadataLanguage: String = PlaybackPrefSentinel.none
 
     /// Surfaces the most recent server save state. Settings UI shows a
     /// transient message when prefSaveState != nil.
@@ -216,8 +220,55 @@ final class TVSettingsViewModel {
                     isChild: prof.isChild,
                     subtitleLanguage: body.subtitleLanguage,
                     subtitleMode: body.subtitleMode,
-                    showForcedSubtitles: body.showForcedSubtitles
+                    showForcedSubtitles: body.showForcedSubtitles,
+                    preferredMetadataLanguage: prof.preferredMetadataLanguage
                 )
+            }
+        } catch {
+            prefSaveState = .failed(
+                (error as? LocalizedError)?.errorDescription
+                    ?? String(describing: error)
+            )
+        }
+    }
+
+    /// Persist the preferred metadata language as a profile patch. Kept
+    /// separate from `saveProfilePrefs()` because it has a side effect the
+    /// subtitle prefs don't: when the language actually changes we flush
+    /// the cached overviews/taglines (and the tvOS `ItemDetailCache`) so
+    /// the next detail/browse fetch picks up the server-side translation.
+    @MainActor
+    func saveMetadataLanguage() async {
+        guard let profileId = activeProfile?.id, !profileId.isEmpty else { return }
+
+        let newValue = outboundSubtitleLanguage(editorPreferredMetadataLanguage)
+        let oldValue = activeProfile?.preferredMetadataLanguage ?? ""
+        let changed = newValue != oldValue
+
+        prefSaveState = .saving
+
+        let body = UpdateProfileBody(preferredMetadataLanguage: newValue)
+        do {
+            try await ContinuumAPI.shared.updateProfile(profileId: profileId, body: body)
+            prefSaveState = .saved
+            if let prof = activeProfile {
+                activeProfile = UserProfile(
+                    id: prof.id,
+                    name: prof.name,
+                    avatarEmoji: prof.avatarEmoji,
+                    hasPin: prof.hasPin,
+                    isChild: prof.isChild,
+                    subtitleLanguage: prof.subtitleLanguage,
+                    subtitleMode: prof.subtitleMode,
+                    showForcedSubtitles: prof.showForcedSubtitles,
+                    preferredMetadataLanguage: newValue
+                )
+            }
+            if changed {
+                ResponseCache.shared.invalidateAllItemMetadata()
+                #if os(tvOS)
+                ItemDetailCache.shared.clearAll()
+                #endif
             }
         } catch {
             prefSaveState = .failed(
@@ -237,6 +288,9 @@ final class TVSettingsViewModel {
         editorSubtitleMode = mode.isEmpty ? SubtitleMode.auto.rawValue : mode
 
         editorShowForcedSubtitles = (activeProfile?.showForcedSubtitles ?? true) ? "on" : "off"
+
+        let metaLang = activeProfile?.preferredMetadataLanguage ?? ""
+        editorPreferredMetadataLanguage = metaLang.isEmpty ? PlaybackPrefSentinel.none : metaLang
     }
 
     /// `__none__` sentinel maps to the empty string the server expects
