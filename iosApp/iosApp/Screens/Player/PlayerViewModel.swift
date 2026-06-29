@@ -597,8 +597,21 @@ class PlayerViewModel {
     /// state + the sidecar-registration handoff, and `reset()` on teardown.
     /// `@ObservationIgnored` because the UI binds to the controller's own
     /// `@Observable` state, not through the VM.
+    ///
+    /// Lazy so the `@MainActor`-isolated controller is constructed on first
+    /// access (always on the main actor — the player UI, job commands, and
+    /// `cleanup()` are all main-isolated) rather than from the nonisolated
+    /// `init()`, which can't synchronously build a main-actor type. This
+    /// replaces the previous `MainActor.assumeIsolated` construction.
     @ObservationIgnored
-    private(set) var subtitleAI: SubtitleAIController!
+    private(set) lazy var subtitleAI: SubtitleAIController = SubtitleAIController(
+        mediaFileId: { [weak self] in self?.currentSelectedVersion?.fileId },
+        currentTime: { [weak self] in self?.currentTime ?? 0 },
+        handoffContext: { [weak self] in self?.makeSubtitleHandoffContext() },
+        registerAndSelectDescriptor: { [weak self] descriptor in
+            self?.registerCompletedAISubtitle(descriptor)
+        }
+    )
     private var hideControlsTask: Task<Void, Never>?
     private var noticeDismissTask: Task<Void, Never>?
     private var remoteDismissTask: Task<Void, Never>?
@@ -857,18 +870,9 @@ class PlayerViewModel {
                 await self.handleRealtimeEvent(event)
             }
         )
-        // `PlayerViewModel` is constructed on the main actor (SwiftUI `@State`),
-        // but the type isn't globally `@MainActor` in Swift 5 mode, so build the
-        // `@MainActor` controller via `assumeIsolated`.
-        subtitleAI = MainActor.assumeIsolated {
-            SubtitleAIController(
-                mediaFileId: { [weak self] in self?.currentSelectedVersion?.fileId },
-                currentTime: { [weak self] in self?.currentTime ?? 0 },
-                registerAndSelectDownloadedSubtitle: { [weak self] subtitle in
-                    self?.registerCompletedAISubtitle(subtitle)
-                }
-            )
-        }
+        // `subtitleAI` is a lazy `@MainActor` property (see its declaration):
+        // constructed on first access on the main actor, so no eager build or
+        // `assumeIsolated` wrapper is needed here.
         // Choose a concrete backend only after playback bootstrap
         // resolves the execution plan, so loading HLS does not spin up and
         // immediately tear down an unused PlayerCore.
@@ -4003,60 +4007,84 @@ class PlayerViewModel {
         subtitleAI.transcribe(audioIndex: audioIndex, translateTo: translateTo)
     }
 
-    /// Cancel the in-flight AI subtitle job, if any.
+    /// Build the context ``SubtitleAIController`` needs to synthesize a
+    /// completed subtitle's player descriptor. Returns `nil` when no active
+    /// session exists or the current backend can't host downloaded sidecars —
+    /// the controller treats `nil` as a soft failure so the user isn't left on
+    /// a dismissed menu with no track.
+    ///
+    /// `baseTrackCount` mirrors Android's `SubtitleTrackMerge` `baseIndex`:
+    /// `(max combined index over the session's non-downloaded subtitle_urls) + 1`
+    /// — computed `+1` over the max, not the count, so server-side burn-in
+    /// skipping (which can leave index gaps) is honored and the synthesized
+    /// stream URL still resolves on the combined-index stream mount.
     @MainActor
-    func cancelSubtitleAIJob() {
-        subtitleAI.cancelActiveJob()
+    private func makeSubtitleHandoffContext() -> SubtitleAIController.HandoffContext? {
+        guard backendCapabilities.supportsExternalPrimarySubtitles else {
+            Self.logger.info(
+                "[AI-SUB] backend \(self.activeRouteKind.label, privacy: .public) can't host downloaded subtitles; handoff unavailable"
+            )
+            return nil
+        }
+        guard let sessionId = activePlaybackSessionId, !sessionId.isEmpty else {
+            Self.logger.warning("[AI-SUB] no active session id for subtitle handoff")
+            return nil
+        }
+        let serverUrl = resolvedServerUrl
+        let baseTrackCount = (
+            knownExternalSubtitles
+                .filter { ($0.source ?? "").caseInsensitiveCompare("downloaded") != .orderedSame }
+                .map(\.index)
+                .max() ?? -1
+        ) + 1
+        return SubtitleAIController.HandoffContext(
+            sessionId: sessionId,
+            baseTrackCount: baseTrackCount,
+            resolveURL: { [weak self] path in self?.resolveServerUrl(path, serverUrl: serverUrl) }
+        )
     }
 
-    /// Completion handoff for a finished AI subtitle job: take the downloaded
-    /// subtitle the controller located by `result_subtitle_id` and register it
-    /// through the **same** sidecar path the playback session uses, then
-    /// auto-select it.
+    /// Completion handoff for a finished AI subtitle job: register the
+    /// controller-synthesized descriptor through the **same** sidecar path the
+    /// playback session uses, then auto-select it.
     ///
-    /// Reuse strategy: a completed AI track is a real downloaded subtitle
-    /// (`source:"downloaded"`), identical in shape to a session sidecar. So we
-    /// (1) resolve its URL against the playback server base via
-    /// `resolveServerUrl`, (2) build a `SidecarSubtitleDescriptor`, (3) seed
-    /// `pendingSidecarSubtitleTrackId` so `appendSidecarTracks` auto-selects it
-    /// once registered, (4) record it in `knownExternalSubtitles` so it
-    /// survives route/quality switches, and (5) call the active backend's
+    /// The controller has already synthesized the combined index + stream URL
+    /// (the server's downloaded-subtitle listing carries neither) the way
+    /// Android's `SubtitleTrackMerge` does. Here we (1) record it in
+    /// `knownExternalSubtitles` as a `SubtitleUrl` so a later route/quality
+    /// switch re-registers it like any other sidecar (de-dupes on index),
+    /// (2) seed `pendingSidecarSubtitleTrackId` so `appendSidecarTracks`
+    /// auto-selects it once registered, and (3) call the active backend's
     /// `registerSidecarSubtitles`, which fires `onSidecarTracksRegistered` →
-    /// `appendSidecarTracks` (appends the `PlayerTrack` and selects the pending
-    /// id). No new selection plumbing.
-    private func registerCompletedAISubtitle(_ subtitle: SubtitleUrl) {
+    /// `appendSidecarTracks`. No new selection plumbing.
+    private func registerCompletedAISubtitle(_ descriptor: SidecarSubtitleDescriptor) {
         guard backendCapabilities.supportsExternalPrimarySubtitles else {
             Self.logger.info(
                 "[AI-SUB] backend \(self.activeRouteKind.label, privacy: .public) can't host downloaded subtitles; skipping handoff"
             )
             return
         }
-        guard let url = resolveServerUrl(subtitle.url, serverUrl: resolvedServerUrl) else {
-            Self.logger.warning("[AI-SUB] could not resolve completed subtitle url: \(subtitle.url, privacy: .public)")
-            return
-        }
 
-        // Remember it so a later route/quality switch re-registers it like any
-        // other sidecar (de-dupes on index).
-        if !knownExternalSubtitles.contains(where: { $0.index == subtitle.index }) {
-            knownExternalSubtitles.append(subtitle)
+        // Remember it (as a `SubtitleUrl`, the cache's shape) so a later
+        // route/quality switch re-registers it. De-dupe on combined index.
+        if !knownExternalSubtitles.contains(where: { $0.index == descriptor.index }) {
+            knownExternalSubtitles.append(SubtitleUrl(
+                index: descriptor.index,
+                language: descriptor.language,
+                codec: descriptor.codec,
+                label: descriptor.label,
+                source: descriptor.source,
+                forced: descriptor.forced,
+                url: descriptor.url.absoluteString
+            ))
         }
 
         // Seed the pending selection so the append path selects it for us.
-        let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: subtitle.index)
+        let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: descriptor.index)
         pendingSidecarSubtitleTrackId = trackId
 
-        let descriptor = SidecarSubtitleDescriptor(
-            index: subtitle.index,
-            language: subtitle.language,
-            codec: subtitle.codec,
-            label: subtitle.label,
-            source: subtitle.source,
-            forced: subtitle.forced,
-            url: url
-        )
         Self.logger.info(
-            "[AI-SUB] registering completed subtitle index=\(subtitle.index, privacy: .public) lang=\(subtitle.language ?? "nil", privacy: .public) trackId=\(trackId, privacy: .public)"
+            "[AI-SUB] registering completed subtitle index=\(descriptor.index, privacy: .public) lang=\(descriptor.language ?? "nil", privacy: .public) trackId=\(trackId, privacy: .public)"
         )
         switch activePlayer {
         case .none:
@@ -4207,6 +4235,7 @@ class PlayerViewModel {
         scheduleHideControls()
     }
 
+    @MainActor
     func cleanup() {
         guard !isDisposed else { return }
         Self.logger.info("PlayerViewModel.cleanup()")
@@ -4224,7 +4253,7 @@ class PlayerViewModel {
         autoSkippedIntroKey = nil
         autoSkipIntroCancelledKey = nil
         knownExternalSubtitles = []
-        MainActor.assumeIsolated { subtitleAI?.reset() }
+        subtitleAI.reset()
         pendingRecoveredAudioSelection = nil
         pendingRecoveredSubtitleSelection = nil
         pendingRecoveredSecondarySubtitleId = nil

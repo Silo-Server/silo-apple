@@ -92,33 +92,65 @@ final class SubtitleAIController {
     /// Accessors the controller reads at submit time. Injected as closures so
     /// the controller stays decoupled from `PlayerViewModel`'s private state
     /// and is unit-testable.
-    private let mediaFileIdProvider: () -> Int?
-    private let currentTimeProvider: () -> Double
+    private let mediaFileIdProvider: @MainActor () -> Int?
+    private let currentTimeProvider: @MainActor () -> Double
 
-    /// Completion handoff: hand the located downloaded subtitle to the VM,
-    /// which resolves its URL against the server base, registers it through
-    /// the existing sidecar path, and auto-selects the resulting track. Kept
-    /// as a closure so this controller never imports the player backends.
-    private let registerAndSelectDownloadedSubtitle: (SubtitleUrl) -> Void
+    /// Context the controller needs to synthesize a completed subtitle's
+    /// player descriptor (the server's listing carries no URL/index). Fetched
+    /// lazily at handoff time so it always reflects the live session +
+    /// current track list. Nil when no session is active (then the handoff is
+    /// reported as a soft failure rather than silently dropped).
+    ///
+    /// Mirrors Android's `SubtitleTrackMerge`: `sessionId` scopes the stream
+    /// mount, `baseTrackCount` is `(max(existing non-downloaded index) + 1)`,
+    /// and `resolveURL` turns the synthesized API-relative path into an
+    /// absolute URL against the active server base.
+    struct HandoffContext {
+        let sessionId: String
+        let baseTrackCount: Int
+        let resolveURL: (String) -> URL?
+    }
+    private let handoffContextProvider: @MainActor () -> HandoffContext?
+
+    /// Completion handoff: hand the synthesized descriptor to the VM, which
+    /// registers it through the existing sidecar path and auto-selects the
+    /// resulting track. Kept as a closure so this controller never imports the
+    /// player backends.
+    private let registerAndSelectDescriptor: @MainActor (SidecarSubtitleDescriptor) -> Void
 
     /// The in-flight Task draining the poller stream. Cancelled on a new
     /// submission, on `cancelActiveJob()`, and on `reset()`.
     private var pollDrainTask: Task<Void, Never>?
 
-    init(
+    /// Bumped on every `reset()`. Each async step that mutates observable
+    /// state after an `await` (poll drain, completion handoff, quota refresh)
+    /// captures this before its awaits and discards results when it no longer
+    /// matches — so a stale completion from a previous account/session can't
+    /// register after a reset. Mirrors ``AICapabilities``'s `generation`.
+    private var generation = 0
+
+    /// `nonisolated` so the owning ``PlayerViewModel`` (a Swift-5-mode type
+    /// that isn't globally `@MainActor`) can construct this `@MainActor`
+    /// controller from its own initializer / lazy property without an
+    /// `assumeIsolated` wrapper. The body only stores the injected
+    /// collaborators (immutable `let`s) and never touches the `@Observable`
+    /// main-actor state, so it is main-safe.
+    nonisolated init(
         api: ContinuumAI = .shared,
         poller: AIJobPoller = AIJobPoller(),
         capabilities: AICapabilities = .shared,
-        mediaFileId: @escaping () -> Int?,
-        currentTime: @escaping () -> Double,
-        registerAndSelectDownloadedSubtitle: @escaping (SubtitleUrl) -> Void
+        mediaFileId: @escaping @MainActor () -> Int?,
+        currentTime: @escaping @MainActor () -> Double,
+        handoffContext: @escaping @MainActor () -> HandoffContext?,
+        registerAndSelectDescriptor: @escaping @MainActor (SidecarSubtitleDescriptor) -> Void
     ) {
         self.api = api
         self.poller = poller
         self.capabilities = capabilities
         self.mediaFileIdProvider = mediaFileId
         self.currentTimeProvider = currentTime
-        self.registerAndSelectDownloadedSubtitle = registerAndSelectDownloadedSubtitle
+        self.handoffContextProvider = handoffContext
+        self.registerAndSelectDescriptor = registerAndSelectDescriptor
     }
 
     // MARK: - Quota
@@ -187,8 +219,12 @@ final class SubtitleAIController {
     }
 
     /// Tear down on session end / controller replacement. Stops polling and
-    /// clears state so a later session never inherits this one's job.
+    /// clears state so a later session never inherits this one's job. Bumps
+    /// `generation` first so any in-flight poll/handoff/quota that finishes
+    /// after this reset discards its results instead of landing on the next
+    /// account's player.
     func reset() {
+        generation &+= 1
         pollDrainTask?.cancel()
         pollDrainTask = nil
         let poller = self.poller
@@ -235,14 +271,19 @@ final class SubtitleAIController {
             "[AI-SUB] submit kind=\(kind.rawValue, privacy: .public) mediaFileId=\(mediaFileId, privacy: .public) sourceIndex=\(sourceIndex, privacy: .public) target=\(targetLanguage ?? "nil", privacy: .public)"
         )
 
+        let gen = generation
         pollDrainTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let job = try await self.api.translateSubtitle(body)
+                // A reset (sign-out / profile or session switch) while the POST
+                // was in flight invalidates this submission.
+                guard gen == self.generation else { return }
                 self.onJobAccepted(job)
-                await self.drainPoll(jobId: job.id, isASR: kind != .translate)
+                await self.drainPoll(jobId: job.id, isASR: kind != .translate, generation: gen)
             } catch {
                 if Task.isCancelled { return }
+                guard gen == self.generation else { return }
                 self.fail(with: Self.message(for: error))
             }
         }
@@ -251,22 +292,25 @@ final class SubtitleAIController {
     private func onJobAccepted(_ job: SubtitleJob) {
         activeJob = job
         if job.status.isTerminal {
-            handleTerminal(job, isASR: job.kind != .translate)
+            handleTerminal(job, isASR: job.kind != .translate, generation: generation)
         } else {
             phase = .running
         }
     }
 
     /// Drain the poller stream, updating `activeJob` per snapshot and acting
-    /// on the terminal snapshot.
-    private func drainPoll(jobId: String, isASR: Bool) async {
+    /// on the terminal snapshot. `generation` is the value captured at submit
+    /// time; a reset mid-poll invalidates the remaining snapshots.
+    private func drainPoll(jobId: String, isASR: Bool, generation gen: Int) async {
+        let api = self.api
         let stream = await poller.poll(jobId: jobId) { id in
-            try await ContinuumAI.shared.subtitleJob(id: id)
+            try await api.subtitleJob(id: id)
         }
         for await snapshot in stream {
+            guard gen == self.generation else { return }
             activeJob = snapshot
             if snapshot.status.isTerminal {
-                handleTerminal(snapshot, isASR: isASR)
+                handleTerminal(snapshot, isASR: isASR, generation: gen)
                 break
             } else {
                 phase = .running
@@ -274,12 +318,12 @@ final class SubtitleAIController {
         }
     }
 
-    private func handleTerminal(_ job: SubtitleJob, isASR: Bool) {
+    private func handleTerminal(_ job: SubtitleJob, isASR: Bool, generation gen: Int) {
         switch job.status {
         case .completed:
             phase = .completed
             errorMessage = nil
-            performCompletionHandoff(for: job)
+            performCompletionHandoff(for: job, generation: gen)
         case .failed:
             fail(with: job.errorMessage ?? "Subtitle translation failed.")
         case .cancelled:
@@ -292,39 +336,79 @@ final class SubtitleAIController {
         }
 
         // An ASR job consumes quota; refresh the gauge afterwards regardless
-        // of outcome so the menu reflects the new balance.
+        // of outcome so the menu reflects the new balance. Skip if a reset
+        // happened so a stale balance can't repopulate the next account's menu.
         if isASR {
-            Task { [weak self] in await self?.refreshQuota() }
+            Task { [weak self] in
+                guard let self, gen == self.generation else { return }
+                await self.refreshQuota()
+            }
         }
     }
 
     // MARK: - Completion handoff
 
     /// On `completed`, fetch the file's downloaded subtitles, find the entry
-    /// whose `index` matches `result_subtitle_id`, and hand it to the VM to
-    /// register + select via the existing sidecar path.
+    /// whose **`id`** equals the job's `result_subtitle_id`, synthesize its
+    /// player descriptor (URL + combined index — the listing carries neither),
+    /// and hand it to the VM to register + auto-select via the existing
+    /// sidecar path.
     ///
-    /// The downloaded-subtitle listing (`GET /subtitles/{media_file_id}`)
-    /// returns entries in the same shape as `PlaybackSessionResponse.subtitle_urls`;
-    /// the persisted AI track's `index` equals the job's `result_subtitle_id`.
-    private func performCompletionHandoff(for job: SubtitleJob) {
+    /// The listing (`GET /subtitles/{media_file_id}`) returns the server's
+    /// `DownloadedSubtitle` shape: a DB `id` plus metadata, **no** stream
+    /// `url` and **no** combined player index. We therefore synthesize the
+    /// descriptor exactly like Android's `SubtitleTrackMerge` (combined index
+    /// past the existing external+embedded+downloaded tracks; stream URL on
+    /// the session-scoped `/stream/{session}/subtitles/{combined-index}<ext>`
+    /// mount, which keys on the combined index — verified server-side).
+    ///
+    /// `generation` is the value captured at submit time; a reset mid-fetch
+    /// invalidates the handoff so a stale completion can't land on the next
+    /// account/session.
+    private func performCompletionHandoff(for job: SubtitleJob, generation gen: Int) {
         guard let resultId = job.resultSubtitleId else {
             Self.logger.warning("[AI-SUB] completed job \(job.id, privacy: .public) has no result_subtitle_id")
+            fail(with: "Translation finished but the track couldn't be added.")
             return
         }
         let mediaFileId = job.mediaFileId
-        Task { [weak self, api, register = registerAndSelectDownloadedSubtitle] in
-            let downloaded = (try? await api.downloadedSubtitles(mediaFileId: mediaFileId)) ?? []
-            guard let match = downloaded.first(where: { $0.index == resultId }) else {
+        Task { [weak self] in
+            guard let self else { return }
+            let downloaded = (try? await self.api.downloadedSubtitles(mediaFileId: mediaFileId)) ?? []
+            // A reset while the listing was in flight invalidates this handoff.
+            guard gen == self.generation else { return }
+
+            // Match by DB id (Android: `it.id == resultSubtitleId`); the
+            // matched entry's position in the listing fixes its combined index.
+            guard let position = downloaded.firstIndex(where: { $0.id == resultId }) else {
                 Self.logger.warning(
                     "[AI-SUB] result subtitle id=\(resultId, privacy: .public) not found among \(downloaded.count, privacy: .public) downloaded subtitles"
                 )
+                self.fail(with: "Translation finished but the track couldn't be added.")
                 return
             }
-            await MainActor.run {
-                guard self != nil else { return }
-                register(match)
+
+            guard let context = self.handoffContextProvider() else {
+                Self.logger.warning("[AI-SUB] no active session/track context for completed subtitle id=\(resultId, privacy: .public)")
+                self.fail(with: "Translation finished but the track couldn't be added.")
+                return
             }
+
+            guard let descriptor = downloaded[position].synthesizedDescriptor(
+                sessionId: context.sessionId,
+                baseTrackCount: context.baseTrackCount,
+                position: position,
+                resolveURL: context.resolveURL
+            ) else {
+                Self.logger.warning("[AI-SUB] could not synthesize stream URL for completed subtitle id=\(resultId, privacy: .public)")
+                self.fail(with: "Translation finished but the track couldn't be added.")
+                return
+            }
+
+            Self.logger.info(
+                "[AI-SUB] handing off completed subtitle id=\(resultId, privacy: .public) combinedIndex=\(descriptor.index, privacy: .public)"
+            )
+            self.registerAndSelectDescriptor(descriptor)
         }
     }
 

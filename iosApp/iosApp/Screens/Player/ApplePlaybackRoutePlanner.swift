@@ -123,7 +123,11 @@ struct ApplePlaybackRoutePlanner {
     private static let siloTextSubtitleCodecs: Set<String> = [
         "ass", "ssa", "srt", "subrip", "webvtt", "mov_text", "tx3g"
     ]
-    private static let siloBitmapSubtitleCodecs: Set<String> = [
+    /// Canonical bitmap-subtitle codec identifiers (PGS/DVD/DVB/VobSub).
+    /// Bitmap subs have no text representation, so they can't be AI-translated
+    /// (`SubtitleTranslateMenu` reads this to offer "Transcribe" instead) and
+    /// gate routing here. Exposed `static` so callers share one source of truth.
+    static let siloBitmapSubtitleCodecs: Set<String> = [
         "pgs", "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "vobsub"
     ]
 

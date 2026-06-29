@@ -46,17 +46,12 @@ struct SubtitleTranslateMenu: View {
 
     @State private var stage: Stage = .chooseSource
 
-    /// Codecs the server treats as bitmap subtitles (cannot be AI-translated).
-    /// Mirrors `ApplePlaybackRoutePlanner.siloBitmapSubtitleCodecs`.
-    private static let bitmapSubtitleCodecs: Set<String> = [
-        "pgs", "hdmv_pgs_subtitle", "dvd_subtitle", "dvdsub", "dvb_subtitle", "vobsub"
-    ]
-
     private var controller: SubtitleAIController { viewModel.subtitleAI }
 
-    private static func isBitmap(_ track: PlayerTrack) -> Bool {
+    static func isBitmap(_ track: PlayerTrack) -> Bool {
         guard let codec = track.codec?.lowercased(), !codec.isEmpty else { return false }
-        if bitmapSubtitleCodecs.contains(codec) { return true }
+        // Canonical set is the route planner's single source of truth.
+        if ApplePlaybackRoutePlanner.siloBitmapSubtitleCodecs.contains(codec) { return true }
         // Tolerant substring match — codec strings vary across demuxers
         // (e.g. "hdmv_pgs_subtitle", "dvb_subtitle (dvbsub)").
         return codec.contains("pgs") || codec.contains("dvdsub")
@@ -66,8 +61,23 @@ struct SubtitleTranslateMenu: View {
 
     /// Text subtitle tracks with a resolvable combined index — the only ones
     /// that can be AI-translated in v1.
+    static func translatableSubtitleTracks(_ viewModel: PlayerViewModel) -> [PlayerTrack] {
+        viewModel.subtitleTracks.filter { !isBitmap($0) && $0.srcId != nil }
+    }
+
+    /// Whether the menu would show at least one actionable source, so the
+    /// entry row doesn't open an empty menu. True when there's a translatable
+    /// text track, or transcription is enabled and there's an audio track to
+    /// transcribe (which also covers the bitmap-only "Transcribe instead" case).
+    static func hasActionableSource(_ viewModel: PlayerViewModel) -> Bool {
+        let caps = AICapabilities.shared
+        if caps.subtitleEnabled, !translatableSubtitleTracks(viewModel).isEmpty { return true }
+        if caps.transcribeEnabled, !viewModel.audioTracks.isEmpty { return true }
+        return false
+    }
+
     private var translatableSubtitleTracks: [PlayerTrack] {
-        viewModel.subtitleTracks.filter { !Self.isBitmap($0) && $0.srcId != nil }
+        Self.translatableSubtitleTracks(viewModel)
     }
 
     /// Bitmap subtitle tracks — offered "Transcribe" instead of "Translate".

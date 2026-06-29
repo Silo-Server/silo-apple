@@ -14,10 +14,10 @@ struct TrackSelectionSheet: View {
     @State private var showAITranslateMenu = false
 
     /// Whether any AI subtitle action is available (translate or transcribe),
-    /// per the server's capability probes. Gates the "Translate with AI…" row.
+    /// per the server's capability probes **and** the current track list.
+    /// Gates the "Translate with AI…" row so it never opens an empty menu.
     private var aiSubtitlesAvailable: Bool {
-        let caps = AICapabilities.shared
-        return caps.subtitleEnabled || caps.transcribeEnabled
+        SubtitleTranslateMenu.hasActionableSource(viewModel)
     }
 
     var body: some View {
@@ -78,6 +78,11 @@ struct TrackSelectionSheet: View {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .stroke(Color.white.opacity(0.12), lineWidth: 1)
             )
+            // While the AI translate menu is up, exclude the base panel from
+            // focus and dim it so the d-pad can't escape behind the overlay.
+            // Mirrors the `TVPlayerInfoHUD` appearance-dialog precedent.
+            .disabled(showAITranslateMenu)
+            .opacity(showAITranslateMenu ? 0.28 : 1)
 
             if showAITranslateMenu {
                 SubtitleTranslateMenu(viewModel: viewModel) { showAITranslateMenu = false }

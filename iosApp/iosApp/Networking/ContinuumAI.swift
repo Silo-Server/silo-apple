@@ -81,7 +81,11 @@ actor ContinuumAI {
 
     /// Downloaded subtitle tracks for a media file. Used to locate the
     /// persisted track by `result_subtitle_id` after a job completes.
-    func downloadedSubtitles(mediaFileId: Int) async throws -> [SubtitleUrl] {
+    ///
+    /// Returns the server's `DownloadedSubtitle` shape (`id` + metadata, **no**
+    /// combined `index`, **no** stream `url`); the player synthesizes those at
+    /// handoff time, mirroring Android's `SubtitleTrackMerge`.
+    func downloadedSubtitles(mediaFileId: Int) async throws -> [DownloadedSubtitle] {
         let response: DownloadedSubtitlesResponse = try await http.get(
             "/api/v1/subtitles/\(mediaFileId)"
         )

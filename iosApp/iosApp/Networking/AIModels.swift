@@ -207,16 +207,146 @@ struct SubtitleJobsEnvelope: Codable {
     }
 }
 
-/// `GET /api/v1/subtitles/{media_file_id}` → the downloaded subtitle
-/// tracks for a file, in the same shape as
-/// `PlaybackSessionResponse.subtitle_urls`. Used after a job completes to
-/// locate the persisted track by `result_subtitle_id` and merge it into
-/// the player's track list.
-struct DownloadedSubtitlesResponse: Codable {
-    let subtitles: [SubtitleUrl]
+/// One server-stored downloaded subtitle, as listed by
+/// `GET /api/v1/subtitles/{media_file_id}`.
+///
+/// This is the server's `internal/subtitles.DownloadedSubtitle` JSON shape —
+/// **not** the playback-session `subtitle_urls[]` shape. It carries the
+/// subtitle's DB **`id`** (which the job's `result_subtitle_id` references)
+/// but **no combined `index` and no `url`**: the server never includes a
+/// stream URL here. The player synthesizes both at handoff time the way the
+/// Android client does (see ``synthesizedDescriptor(sessionId:baseTrackCount:position:serverBaseURL:)``
+/// and `SubtitleTrackMerge.kt`).
+///
+/// Decoders are tolerant: only `id` is required, everything else defaults so
+/// a provider that omits e.g. `score` / `created_at` still decodes.
+struct DownloadedSubtitle: Codable, Identifiable, Equatable {
+    /// Subtitle DB id — what a job's `result_subtitle_id` points at.
+    let id: Int
+    let mediaFileId: Int
+    let provider: String
+    let language: String
+    /// Stored format (`srt`/`subrip`/`ass`/`ssa`/`webvtt`/`vtt`/`pgs`/…).
+    let format: String
+    let releaseName: String
+    let score: Double?
+    let hearingImpaired: Bool?
+    let createdAt: String?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        subtitles = try c.decodeIfPresent([SubtitleUrl].self, forKey: .subtitles) ?? []
+        id = try c.decode(Int.self, forKey: .id)
+        mediaFileId = try c.decodeIfPresent(Int.self, forKey: .mediaFileId) ?? 0
+        provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? ""
+        language = try c.decodeIfPresent(String.self, forKey: .language) ?? ""
+        format = try c.decodeIfPresent(String.self, forKey: .format) ?? ""
+        releaseName = try c.decodeIfPresent(String.self, forKey: .releaseName) ?? ""
+        score = try c.decodeIfPresent(Double.self, forKey: .score)
+        hearingImpaired = try c.decodeIfPresent(Bool.self, forKey: .hearingImpaired)
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
+    }
+
+    /// Memberwise init for tests / synthesis.
+    init(
+        id: Int,
+        mediaFileId: Int = 0,
+        provider: String = "",
+        language: String = "",
+        format: String = "",
+        releaseName: String = "",
+        score: Double? = nil,
+        hearingImpaired: Bool? = nil,
+        createdAt: String? = nil
+    ) {
+        self.id = id
+        self.mediaFileId = mediaFileId
+        self.provider = provider
+        self.language = language
+        self.format = format
+        self.releaseName = releaseName
+        self.score = score
+        self.hearingImpaired = hearingImpaired
+        self.createdAt = createdAt
+    }
+}
+
+extension DownloadedSubtitle {
+    /// The URL-path extension the playback stream mount expects for this
+    /// subtitle's stored `format`, matching the server's `subtitleURLExt`
+    /// (playback.go) and Android's `subtitleUrlExtension`
+    /// (SubtitleTrackMerge.kt):
+    ///   - `ass` / `ssa` → `.ass` (raw ASS for client-side libass rendering)
+    ///   - `pgs` / `hdmv_pgs_subtitle` → `.sup` (raw PGS bitmap)
+    ///   - everything else (srt/subrip/webvtt/…) → `.vtt`
+    var streamURLExtension: String {
+        switch format.trimmingCharacters(in: .whitespaces).lowercased() {
+        case "ass", "ssa":
+            return ".ass"
+        case "pgs", "hdmv_pgs_subtitle":
+            return ".sup"
+        default:
+            return ".vtt"
+        }
+    }
+
+    /// Synthesize the player-track descriptor for this downloaded subtitle.
+    ///
+    /// The server's `GET /subtitles/{media_file_id}` listing carries no
+    /// stream URL and no combined player index, so the client builds both —
+    /// **identically to Android's `SubtitleTrackMerge.mergeDownloadedSubtitles`**
+    /// — because the `/stream/{session_id}/subtitles/{track}` route keys on the
+    /// **combined** subtitle index (external → embedded → downloaded), not the
+    /// subtitle DB id (verified in server `StreamHandler.HandleSubtitle` +
+    /// `ParseSubtitleTrackParam`).
+    ///
+    /// - Parameters:
+    ///   - sessionId: the active playback session id (the stream mount is
+    ///     session-scoped).
+    ///   - baseTrackCount: the combined index the **first** downloaded track
+    ///     occupies — Android's `(max(existing non-downloaded .index) + 1)`,
+    ///     computed `+1` over the max rather than the list size so server-side
+    ///     burn-in skipping (which can leave index gaps) is honored.
+    ///   - position: this subtitle's position within the downloaded listing
+    ///     (0-based). The combined index is `baseTrackCount + position`,
+    ///     matching Android's `baseIndex + i`.
+    ///   - resolveURL: turns the synthesized API-relative stream path into an
+    ///     absolute `URL` against the active server base (the player's
+    ///     existing `resolveServerUrl`). Returns `nil` if it can't resolve.
+    /// - Returns: a ready-to-register descriptor, or `nil` if the URL can't be
+    ///   resolved.
+    func synthesizedDescriptor(
+        sessionId: String,
+        baseTrackCount: Int,
+        position: Int,
+        resolveURL: (String) -> URL?
+    ) -> SidecarSubtitleDescriptor? {
+        let combinedIndex = baseTrackCount + position
+        let path = "/stream/\(sessionId)/subtitles/\(combinedIndex)\(streamURLExtension)"
+        guard let url = resolveURL(path) else { return nil }
+        let label = releaseName.isEmpty
+            ? (provider.isEmpty ? language : provider)
+            : (provider.isEmpty ? releaseName : "\(releaseName) (\(provider))")
+        return SidecarSubtitleDescriptor(
+            index: combinedIndex,
+            language: language.isEmpty ? nil : language,
+            codec: format.isEmpty ? nil : format,
+            label: label.isEmpty ? nil : label,
+            source: "downloaded",
+            forced: false,
+            url: url
+        )
+    }
+}
+
+/// Envelope for `GET /api/v1/subtitles/{media_file_id}` → the downloaded
+/// subtitle tracks for a file. Used after a job completes to locate the
+/// persisted track by `result_subtitle_id` and merge it into the player's
+/// track list.
+struct DownloadedSubtitlesResponse: Codable {
+    let subtitles: [DownloadedSubtitle]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        subtitles = try c.decodeIfPresent([DownloadedSubtitle].self, forKey: .subtitles) ?? []
     }
 }
