@@ -192,7 +192,8 @@ class ItemDetailViewModel {
                 intro: watchDetail.intro,
                 credits: watchDetail.credits,
                 overlaySummary: item.overlaySummary,
-                audiobook: item.audiobook
+                audiobook: item.audiobook,
+                pendingTranslationLanguage: item.pendingTranslationLanguage
             )
         } catch {
             return item

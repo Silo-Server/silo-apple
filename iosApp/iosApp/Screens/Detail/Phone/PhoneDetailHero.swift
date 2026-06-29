@@ -26,6 +26,10 @@ struct PhoneDetailHero<Actions: View>: View {
     /// (e.g. when the detail payload didn't carry an OverlaySummary).
     var overlayData: OverlayData? = nil
     @ViewBuilder let actions: () -> Actions
+    /// Optional affordance rendered directly under the overview (e.g. the
+    /// on-view description-translation control). Defaults to nothing so
+    /// existing call sites are unaffected.
+    var belowOverview: () -> AnyView = { AnyView(EmptyView()) }
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showFullOverview = false
@@ -115,6 +119,7 @@ struct PhoneDetailHero<Actions: View>: View {
             actions()
                 .padding(.top, 6)
             overviewBlock
+            belowOverview()
             factsRow
         }
         .frame(maxWidth: .infinity)

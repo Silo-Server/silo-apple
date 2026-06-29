@@ -9,6 +9,9 @@ import SwiftUI
 /// next-up Play action, same horizontal episode rail — sized for touch.
 struct SeriesDetailContent: View {
     let detail: ItemDetail
+    /// Owning view model — lent to the on-view description-translation
+    /// affordance so a refreshed (translated) detail re-renders in place.
+    let viewModel: ItemDetailViewModel
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
@@ -70,7 +73,12 @@ struct SeriesDetailContent: View {
             overview: detail.overview,
             factsLine: PhoneHeroMetadata.seriesFactsLine(from: detail),
             overlayData: OverlayData.from(detail),
-            actions: { actionStack }
+            actions: { actionStack },
+            belowOverview: {
+                AnyView(
+                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
+                )
+            }
         )
     }
 

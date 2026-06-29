@@ -386,6 +386,11 @@ struct ItemDetail: Codable {
     let credits: TimeRange?
     let overlaySummary: OverlaySummary?
     let audiobook: AudiobookDetail?
+    /// Set by the server (omitted when empty) when a description exists
+    /// but is not yet available in the viewer's resolved metadata
+    /// language. Drives the on-view "translate this description"
+    /// affordance; clears once the localized overview lands.
+    let pendingTranslationLanguage: String?
 }
 
 extension ItemDetail {

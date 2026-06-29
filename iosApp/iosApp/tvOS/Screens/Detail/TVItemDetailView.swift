@@ -74,6 +74,7 @@ struct TVItemDetailView: View {
         } else if detail.type == "season" {
             TVSeasonDetailView(
                 detail: detail,
+                viewModel: viewModel,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
@@ -166,6 +167,7 @@ struct TVItemDetailView: View {
         } else if detail.type == "series" {
             TVSeriesDetailView(
                 detail: detail,
+                viewModel: viewModel,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
@@ -255,6 +257,7 @@ struct TVItemDetailView: View {
         } else {
             TVMovieDetailView(
                 detail: detail,
+                viewModel: viewModel,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
@@ -590,7 +593,8 @@ struct TVItemDetailView: View {
                 intro: watchDetail.intro,
                 credits: watchDetail.credits,
                 overlaySummary: item.overlaySummary,
-                audiobook: item.audiobook
+                audiobook: item.audiobook,
+                pendingTranslationLanguage: item.pendingTranslationLanguage
             )
         } catch {
             return item

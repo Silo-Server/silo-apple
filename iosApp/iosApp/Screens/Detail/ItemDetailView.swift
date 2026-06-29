@@ -161,6 +161,7 @@ private struct ItemDetailPhoneContent: View {
         } else if detail.type == "season" {
             SeasonDetailContent(
                 detail: detail,
+                viewModel: viewModel,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
@@ -249,6 +250,7 @@ private struct ItemDetailPhoneContent: View {
         } else if detail.type == "series" {
             SeriesDetailContent(
                 detail: detail,
+                viewModel: viewModel,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
@@ -332,6 +334,7 @@ private struct ItemDetailPhoneContent: View {
         } else {
             MovieDetailContent(
                 detail: detail,
+                viewModel: viewModel,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,

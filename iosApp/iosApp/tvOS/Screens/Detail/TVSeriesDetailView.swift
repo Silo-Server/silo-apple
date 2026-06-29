@@ -5,6 +5,9 @@ import SwiftUI
 /// a horizontal episode rail + cast + facts below.
 struct TVSeriesDetailView: View {
     let detail: ItemDetail
+    /// Owning view model — lent to the on-view description-translation
+    /// affordance so a refreshed (translated) detail re-renders in place.
+    let viewModel: ItemDetailViewModel
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
@@ -54,7 +57,12 @@ struct TVSeriesDetailView: View {
                     tagline: detail.tagline,
                     factsLine: TVHeroMetadata.seriesFactsLine(from: detail),
                     starringText: TVHeroMetadata.starringText(from: detail),
-                    actions: { actionColumn }
+                    actions: { actionColumn },
+                    belowSynopsis: {
+                        AnyView(
+                            DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
+                        )
+                    }
                 )
 
                 VStack(alignment: .leading, spacing: 72) {
