@@ -103,10 +103,6 @@ struct TVSettingsView: View {
                     )
                 )
             }
-
-            Button { activeScreen = .cardOverlays } label: {
-                FocusAwareRowLabel(title: "Card Overlays")
-            }
         }
     }
 
@@ -158,11 +154,6 @@ struct TVSettingsView: View {
             TVPlaybackSettingsView(viewModel: viewModel)
         case .subtitles:
             TVSubtitleSettingsView(viewModel: viewModel)
-        case .cardOverlays:
-            NavigationStack {
-                TVCardOverlaySettingsView()
-                    .navigationTitle("Card Overlays")
-            }
         }
     }
 
@@ -170,7 +161,6 @@ struct TVSettingsView: View {
         case general
         case playback
         case subtitles
-        case cardOverlays
 
         var id: String { rawValue }
     }

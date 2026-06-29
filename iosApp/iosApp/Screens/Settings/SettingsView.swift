@@ -159,16 +159,6 @@ struct SettingsView: View {
                     value: subtitleLanguageName(viewModel.editorSubtitleLanguage)
                 )
             }
-
-            NavigationLink {
-                CardOverlaySettingsView()
-            } label: {
-                SettingsRowLabel(
-                    title: "Card Overlays",
-                    systemImage: "rectangle.stack.badge.plus",
-                    color: .indigo
-                )
-            }
         }
     }
 
