@@ -9,11 +9,8 @@ import SwiftUI
 /// same primary play + circle action row, same single consolidated
 /// version selector — but every element is sized and laid out for
 /// touch on a phone.
-struct MovieDetailContent: View {
+struct MovieDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
-    /// Owning view model — lent to the on-view description-translation
-    /// affordance so a refreshed (translated) detail re-renders in place.
-    let viewModel: ItemDetailViewModel
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
@@ -35,6 +32,9 @@ struct MovieDetailContent: View {
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     let onEpisodeTap: (String) -> Void
+    /// On-view description-translation affordance, built at the detail call
+    /// site (which owns the view model) and rendered under the overview.
+    @ViewBuilder let belowOverview: () -> BelowOverview
 
     @State private var showResumeDialog = false
 
@@ -73,11 +73,7 @@ struct MovieDetailContent: View {
             factsLine: PhoneHeroMetadata.movieFactsLine(from: detail, version: effectiveVersion),
             overlayData: OverlayData.from(detail),
             actions: { actionStack },
-            belowOverview: {
-                AnyView(
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                )
-            }
+            belowOverview: belowOverview
         )
     }
 

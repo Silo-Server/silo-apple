@@ -43,7 +43,7 @@ final class DescriptionTranslationCoordinator {
     func translate(
         contentId: String,
         targetLanguage: String,
-        apply: @escaping (ItemDetail) -> Void
+        apply: @MainActor @escaping (ItemDetail) -> Void
     ) {
         guard task == nil else { return }
         phase = .translating
@@ -63,7 +63,7 @@ final class DescriptionTranslationCoordinator {
     private func run(
         contentId: String,
         targetLanguage: String,
-        apply: @escaping (ItemDetail) -> Void
+        apply: @MainActor @escaping (ItemDetail) -> Void
     ) async {
         defer { task = nil }
 
@@ -82,6 +82,10 @@ final class DescriptionTranslationCoordinator {
             guard let refreshed = try? await catalog.itemDetail(contentId: contentId) else {
                 continue
             }
+            // A cancellation (disappear / item change) may have landed during
+            // the fetch above; bail before applying so a stale poll can't
+            // clobber the view model / cache with the previous item's detail.
+            if Task.isCancelled { return }
             apply(refreshed)
             ResponseCache.shared.set(refreshed, for: CacheKey.itemDetail(contentId))
 

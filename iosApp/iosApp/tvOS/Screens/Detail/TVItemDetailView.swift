@@ -74,7 +74,6 @@ struct TVItemDetailView: View {
         } else if detail.type == "season" {
             TVSeasonDetailView(
                 detail: detail,
-                viewModel: viewModel,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
@@ -159,6 +158,10 @@ struct TVItemDetailView: View {
                 },
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
+                },
+                belowSynopsis: {
+                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
+                        .id(detail.contentId)
                 }
             )
             .task(id: seasonNextUpEpisodeContentId(for: detail)) {
@@ -167,7 +170,6 @@ struct TVItemDetailView: View {
         } else if detail.type == "series" {
             TVSeriesDetailView(
                 detail: detail,
-                viewModel: viewModel,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
@@ -249,6 +251,10 @@ struct TVItemDetailView: View {
                 },
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
+                },
+                belowSynopsis: {
+                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
+                        .id(detail.contentId)
                 }
             )
             .task(id: seriesNextUpEpisodeContentId(for: detail)) {
@@ -257,7 +263,6 @@ struct TVItemDetailView: View {
         } else {
             TVMovieDetailView(
                 detail: detail,
-                viewModel: viewModel,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
@@ -335,6 +340,10 @@ struct TVItemDetailView: View {
                 },
                 onEpisodeTap: { id in
                     router.navigate(to: .itemDetail(contentId: id))
+                },
+                belowSynopsis: {
+                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
+                        .id(detail.contentId)
                 }
             )
         }

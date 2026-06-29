@@ -9,11 +9,8 @@ import SwiftUI
 /// Mirrors `TVSeasonDetailView` semantically — same next-up Play
 /// targeting, same season-level Mark Watched fan-out — sized for
 /// touch on a phone.
-struct SeasonDetailContent: View {
+struct SeasonDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
-    /// Owning view model — lent to the on-view description-translation
-    /// affordance so a refreshed (translated) detail re-renders in place.
-    let viewModel: ItemDetailViewModel
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
@@ -36,6 +33,9 @@ struct SeasonDetailContent: View {
     let onToggleWatched: () -> Void
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
+    /// On-view description-translation affordance, built at the detail call
+    /// site (which owns the view model) and rendered under the overview.
+    @ViewBuilder let belowOverview: () -> BelowOverview
 
     @State private var showResumeDialog = false
 
@@ -79,11 +79,7 @@ struct SeasonDetailContent: View {
             factsLine: [],
             overlayData: OverlayData.from(detail),
             actions: { actionStack },
-            belowOverview: {
-                AnyView(
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                )
-            }
+            belowOverview: belowOverview
         )
     }
 

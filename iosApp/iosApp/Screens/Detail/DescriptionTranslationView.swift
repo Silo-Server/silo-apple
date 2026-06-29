@@ -23,6 +23,12 @@ struct DescriptionTranslationView: View {
     let contentId: String
 
     @State private var coordinator = DescriptionTranslationCoordinator()
+    /// Per-item latch for `.auto` mode. The auto branch fires from
+    /// `onAppear`, which re-runs every time the row re-appears (scrolling,
+    /// re-layout) while `pendingTranslationLanguage` is still set. Without
+    /// this, each re-appear would re-kick the translation. Keyed on
+    /// `contentId` so a genuinely different item still auto-fires once.
+    @State private var autoFiredFor: String?
 
     private var pendingLanguage: String? {
         viewModel.detail?.pendingTranslationLanguage
@@ -70,10 +76,16 @@ struct DescriptionTranslationView: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                // .auto — fire once when the row appears.
+                // .auto — fire once per item when the row appears. The latch
+                // prevents a re-appear from re-kicking while the pending flag
+                // is still set.
                 Color.clear
                     .frame(height: 0)
-                    .onAppear { startTranslation(targetLanguage: targetLanguage) }
+                    .onAppear {
+                        guard autoFiredFor != contentId else { return }
+                        autoFiredFor = contentId
+                        startTranslation(targetLanguage: targetLanguage)
+                    }
             }
         }
     }

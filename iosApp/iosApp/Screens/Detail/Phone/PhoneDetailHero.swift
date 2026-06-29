@@ -11,7 +11,7 @@ import SwiftUI
 /// artwork breathe; centering the metadata column matches the Apple TV
 /// app's identity-first layout and gives every CTA a strong horizontal
 /// anchor (especially the full-width Play button).
-struct PhoneDetailHero<Actions: View>: View {
+struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     let title: String
     let seriesTitle: String?
     let logoUrl: String?
@@ -26,10 +26,10 @@ struct PhoneDetailHero<Actions: View>: View {
     /// (e.g. when the detail payload didn't carry an OverlaySummary).
     var overlayData: OverlayData? = nil
     @ViewBuilder let actions: () -> Actions
-    /// Optional affordance rendered directly under the overview (e.g. the
-    /// on-view description-translation control). Defaults to nothing so
-    /// existing call sites are unaffected.
-    var belowOverview: () -> AnyView = { AnyView(EmptyView()) }
+    /// Affordance rendered directly under the overview (e.g. the on-view
+    /// description-translation control). Pass `{ EmptyView() }` when there's
+    /// nothing to show.
+    @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showFullOverview = false

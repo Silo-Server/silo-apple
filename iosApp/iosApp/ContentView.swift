@@ -66,6 +66,12 @@ struct ContentView: View {
                     handleDeepLink(pending)
                 }
                 await overlayPrefs.hydrateIfNeeded()
+                // Hydrate AI capabilities on a cold relaunch into a restored
+                // session — `selectProfile` only refreshes on a fresh sign-in,
+                // so without this the metadata-language / on-view-translate
+                // features stay hidden until a profile switch. Idempotent and
+                // failure-tolerant, so double-calling with `selectProfile` is safe.
+                await AICapabilities.shared.refresh()
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -92,6 +98,11 @@ struct ContentView: View {
             guard newPhase == .active,
                   router.authState == .authenticated else { return }
             Task { await overlayPrefs.hydrateIfNeeded() }
+            // Same rationale as overlay hydration above: a transiently-failed
+            // capability probe (or one skipped on a cold restore) gets a
+            // natural retry on foreground. `refresh()` is idempotent, so the
+            // happy path costs nothing.
+            Task { await AICapabilities.shared.refresh() }
             #if os(tvOS)
             NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
             #endif

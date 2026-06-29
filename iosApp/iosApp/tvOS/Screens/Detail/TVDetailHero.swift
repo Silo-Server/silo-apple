@@ -11,7 +11,7 @@ import SwiftUI
 /// bottom that the viewer instinctively drifts down when they want
 /// episodes / similar titles — rather than reaching the "end" of the
 /// hero.
-struct TVDetailHero<Actions: View>: View {
+struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     let title: String
     let seriesTitle: String?
     let logoUrl: String?
@@ -36,10 +36,10 @@ struct TVDetailHero<Actions: View>: View {
     /// at mid-height. Hidden when nil.
     let starringText: String?
     @ViewBuilder let actions: () -> Actions
-    /// Optional affordance rendered directly under the synopsis (e.g. the
-    /// on-view description-translation control). Defaults to nothing so
-    /// existing call sites are unaffected.
-    var belowSynopsis: () -> AnyView = { AnyView(EmptyView()) }
+    /// Affordance rendered directly under the synopsis (e.g. the on-view
+    /// description-translation control). Pass `{ EmptyView() }` when there's
+    /// nothing to show.
+    @ViewBuilder let belowSynopsis: () -> BelowSynopsis
 
     private let heroHeight: CGFloat = 980
     private let contentMaxWidth: CGFloat = 1200

@@ -7,11 +7,8 @@ import SwiftUI
 ///
 /// Mirrors `TVSeriesDetailView` semantically — same hero metadata, same
 /// next-up Play action, same horizontal episode rail — sized for touch.
-struct SeriesDetailContent: View {
+struct SeriesDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
-    /// Owning view model — lent to the on-view description-translation
-    /// affordance so a refreshed (translated) detail re-renders in place.
-    let viewModel: ItemDetailViewModel
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
@@ -34,6 +31,9 @@ struct SeriesDetailContent: View {
     let onToggleWatched: () -> Void
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
+    /// On-view description-translation affordance, built at the detail call
+    /// site (which owns the view model) and rendered under the overview.
+    @ViewBuilder let belowOverview: () -> BelowOverview
 
     @State private var showResumeDialog = false
 
@@ -74,11 +74,7 @@ struct SeriesDetailContent: View {
             factsLine: PhoneHeroMetadata.seriesFactsLine(from: detail),
             overlayData: OverlayData.from(detail),
             actions: { actionStack },
-            belowOverview: {
-                AnyView(
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                )
-            }
+            belowOverview: belowOverview
         )
     }
 
