@@ -174,7 +174,19 @@ struct SubtitleJob: Codable, Identifiable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
+        // The server serializes the job's `ID int64` bare, so `id` arrives as a
+        // JSON **number** (`{"id":42}`), not a string. Decoding `String.self`
+        // against a number throws — which used to make EVERY real 202/poll
+        // response fail to decode, silently disabling the whole pipeline. Decode
+        // tolerantly: accept a number or a string and normalize to `String` so
+        // the `"ai-<id>"` track-key join still matches the server's
+        // `liveTrackKey` (`fmt.Sprintf("ai-%d", jobID)`). An integer normalizes
+        // to its plain decimal form (`42` → `"42"`).
+        if let intID = try? c.decode(Int64.self, forKey: .id) {
+            id = String(intID)
+        } else {
+            id = try c.decode(String.self, forKey: .id)
+        }
         mediaFileId = try c.decodeIfPresent(Int.self, forKey: .mediaFileId) ?? 0
         kind = try c.decodeIfPresent(SubtitleAIKind.self, forKey: .kind) ?? .translate
         sourceIndex = try c.decodeIfPresent(Int.self, forKey: .sourceIndex) ?? -1

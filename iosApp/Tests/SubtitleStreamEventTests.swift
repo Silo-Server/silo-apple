@@ -86,7 +86,7 @@ final class SubtitleStreamEventTests: XCTestCase {
           "name": "subtitle_translation_cues",
           "payload": {
             "track_key": "ai-job-7",
-            "done": false,
+            "done": 3,
             "total": 3,
             "cues": [
               { "start": 12.5, "end": 14.0, "text": "First line." },
@@ -100,7 +100,8 @@ final class SubtitleStreamEventTests: XCTestCase {
             return XCTFail("expected .cues, got \(String(describing: event))")
         }
         XCTAssertEqual(batch.trackKey, "ai-job-7")
-        XCTAssertFalse(batch.done)
+        // `done` is the server's integer progress counter.
+        XCTAssertEqual(batch.done, 3)
         XCTAssertEqual(batch.total, 3)
         XCTAssertEqual(batch.cues.count, 3)
 
@@ -113,15 +114,20 @@ final class SubtitleStreamEventTests: XCTestCase {
         XCTAssertEqual(batch.cues[1].text, "Two lines:\nsecond line.")
     }
 
-    func testCuesDoneHeartbeatWithEmptyArray() {
+    /// An empty-cues progress frame: `cues` is empty but `done`/`total` advance.
+    /// The coordinator gates resume on `!cues.isEmpty` (NOT on `done`), so the
+    /// load-bearing fact here is that such a frame decodes with no cues; `done`
+    /// is just the integer counter carried alongside.
+    func testCuesEmptyProgressFrameDecodes() {
         let event = decodeEvent("""
         { "type": "event", "session_id": "s", "name": "subtitle_translation_cues",
-          "payload": { "track_key": "ai-1", "done": true, "total": 0, "cues": [] } }
+          "payload": { "track_key": "ai-1", "done": 0, "total": 128, "cues": [] } }
         """)
         guard case .cues(let batch)? = event else {
             return XCTFail("expected .cues")
         }
-        XCTAssertTrue(batch.done)
+        XCTAssertEqual(batch.done, 0)
+        XCTAssertEqual(batch.total, 128)
         XCTAssertTrue(batch.cues.isEmpty)
     }
 
@@ -142,16 +148,16 @@ final class SubtitleStreamEventTests: XCTestCase {
         XCTAssertEqual(batch.cues.first?.text, "kept")
     }
 
-    /// `done` may arrive as a numeric 0/1 rather than a JSON bool.
-    func testCuesDoneToleratesNumericBoolean() {
+    /// `done` is the server's integer progress counter and decodes as `Int`.
+    func testCuesDoneDecodesAsIntegerCounter() {
         let event = decodeEvent("""
         { "type": "event", "session_id": "s", "name": "subtitle_translation_cues",
-          "payload": { "track_key": "ai-1", "done": 1, "cues": [] } }
+          "payload": { "track_key": "ai-1", "done": 42, "cues": [] } }
         """)
         guard case .cues(let batch)? = event else {
             return XCTFail("expected .cues")
         }
-        XCTAssertTrue(batch.done)
+        XCTAssertEqual(batch.done, 42)
     }
 
     // MARK: - completed

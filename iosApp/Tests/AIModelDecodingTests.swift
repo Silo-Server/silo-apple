@@ -30,9 +30,11 @@ final class AIModelDecodingTests: XCTestCase {
     // MARK: - SubtitleJob + envelopes
 
     func testSubtitleJobFullDecode() {
+        // REAL server wire shape: `id` is a JSON number (`ID int64`, serialized
+        // bare), not a string. The tolerant decoder normalizes it to "123".
         let job = decode(SubtitleJob.self, """
         {
-          "id": "job-123",
+          "id": 123,
           "media_file_id": 42,
           "kind": "translate",
           "source_index": 3,
@@ -49,7 +51,7 @@ final class AIModelDecodingTests: XCTestCase {
           "updated_at": "2026-06-29T10:01:00Z"
         }
         """)
-        XCTAssertTrue(job.id == "job-123")
+        XCTAssertTrue(job.id == "123")
         XCTAssertTrue(job.mediaFileId == 42)
         XCTAssertTrue(job.kind == .translate)
         XCTAssertTrue(job.sourceIndex == 3)
@@ -83,7 +85,7 @@ final class AIModelDecodingTests: XCTestCase {
     func testSubtitleJobTranscribeTranslateRawValue() {
         let job = decode(SubtitleJob.self, """
         {
-          "id": "job-tt",
+          "id": 5150,
           "media_file_id": 7,
           "kind": "transcribe_translate",
           "source_index": -1,
@@ -92,6 +94,7 @@ final class AIModelDecodingTests: XCTestCase {
           "result_subtitle_id": 99
         }
         """)
+        XCTAssertTrue(job.id == "5150")
         XCTAssertTrue(job.kind == .transcribeTranslate)
         XCTAssertTrue(job.status == .completed)
         XCTAssertTrue(job.status.isTerminal)
@@ -118,7 +121,26 @@ final class AIModelDecodingTests: XCTestCase {
         XCTAssertFalse(job.status.isTerminal)
     }
 
-    func testSubtitleJobEnvelope() {
+    /// Regression for the critical decode bug: the server's 202 / `jobs/{id}`
+    /// response is `{"job":{"id":42,...}}` where `id` is a JSON **number**. The
+    /// old `decode(String.self)` threw on this, so `translateSubtitle` /
+    /// `subtitleJob` failed on every real response and the live/poller pipeline
+    /// never ran. Decoding must succeed and normalize the id to "42", and the
+    /// `"ai-<id>"` track key must match the server's `liveTrackKey("ai-42")`.
+    @MainActor
+    func testSubtitleJobEnvelopeWithIntegerIdDecodesAndJoinsTrackKey() {
+        let env = decode(SubtitleJobEnvelope.self, """
+        { "job": { "id": 42, "kind": "translate", "source_index": 0, "status": "pending", "progress": 0 } }
+        """)
+        XCTAssertTrue(env.job.id == "42")
+        XCTAssertTrue(env.job.status == .pending)
+        // The track key must match the server's `liveTrackKey("ai-42")`.
+        XCTAssertEqual(SubtitleAIController.trackKey(for: env.job.id), "ai-42")
+    }
+
+    /// The decoder is still tolerant of a string id (defensive; the helpers in
+    /// other suites encode string ids).
+    func testSubtitleJobEnvelopeWithStringIdStillDecodes() {
         let env = decode(SubtitleJobEnvelope.self, """
         { "job": { "id": "j1", "kind": "translate", "source_index": 0, "status": "pending", "progress": 0 } }
         """)
@@ -130,13 +152,13 @@ final class AIModelDecodingTests: XCTestCase {
         let env = decode(SubtitleJobsEnvelope.self, """
         {
           "jobs": [
-            { "id": "a", "kind": "translate", "source_index": 0, "status": "completed", "progress": 1, "result_subtitle_id": 5 },
-            { "id": "b", "kind": "transcribe", "source_index": -1, "status": "running", "progress": 0.2 }
+            { "id": 1, "kind": "translate", "source_index": 0, "status": "completed", "progress": 1, "result_subtitle_id": 5 },
+            { "id": 2, "kind": "transcribe", "source_index": -1, "status": "running", "progress": 0.2 }
           ]
         }
         """)
         XCTAssertTrue(env.jobs.count == 2)
-        XCTAssertTrue(env.jobs[0].id == "a")
+        XCTAssertTrue(env.jobs[0].id == "1")
         XCTAssertTrue(env.jobs[0].resultSubtitleId == 5)
         XCTAssertTrue(env.jobs[1].kind == .transcribe)
     }

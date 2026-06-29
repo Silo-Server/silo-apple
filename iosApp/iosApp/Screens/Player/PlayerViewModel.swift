@@ -619,9 +619,15 @@ class PlayerViewModel {
     /// Last-known realtime websocket availability, mirrored from the actor's
     /// `isRealtimeUnavailable` via `observeUnavailability` so the (synchronous,
     /// main-actor) `SubtitleAIController` can read it when deciding whether to
-    /// request live cue streaming. Defaults to unavailable until the first
-    /// observation lands.
-    private var realtimeUnavailableSnapshot = true
+    /// request live cue streaming. Seeded synchronously from the client's
+    /// current availability at bind time (see `bind`), then kept fresh by the
+    /// observer.
+    private var realtimeUnavailableSnapshot = false
+
+    /// The `observeUnavailability` token, retained so `cleanup()` can remove
+    /// the observer explicitly. (Belt-and-suspenders: `unbind()` also clears
+    /// all observers, which is the primary leak fix.)
+    private var realtimeUnavailabilityObserverToken: UUID?
 
     /// Build the live-subtitle coordinator with adapters bound to this VM. The
     /// adapters touch the VM's playback + live-track + notice surface, so they
@@ -901,9 +907,21 @@ class PlayerViewModel {
         // Mirror the socket's availability so the (synchronous) controller can
         // decide whether to request live cue streaming, and so a mid-job flip
         // to unavailable degrades the live presentation to the poller.
+        //
+        // FIX 4: the snapshot defaults to `false` (optimistic / available)
+        // rather than `true`. The actor's `isRealtimeUnavailable` is
+        // actor-isolated and can't be read synchronously from here, so a fast
+        // first submit (before the observer's async callback lands) would, with
+        // a `true` default, wrongly omit `session_id` and run poll-only even on
+        // a healthy socket. Optimistic-available is the safe default: if the
+        // socket is in fact down, the server simply doesn't stream cues and the
+        // poller still completes the job. `observeUnavailability` delivers the
+        // true current value once at subscription, so the snapshot converges
+        // immediately afterward.
         let client = realtimeClient
         Task { [weak self] in
-            await client?.observeUnavailability { [weak self] unavailable in
+            guard let self, let client else { return }
+            let token = await client.observeUnavailability { [weak self] unavailable in
                 guard let self else { return }
                 let wasAvailable = !self.realtimeUnavailableSnapshot
                 self.realtimeUnavailableSnapshot = unavailable
@@ -911,6 +929,7 @@ class PlayerViewModel {
                     self.subtitleAI.realtimeDidBecomeUnavailable()
                 }
             }
+            self.realtimeUnavailabilityObserverToken = token
         }
         // `subtitleAI` is a lazy `@MainActor` property (see its declaration):
         // constructed on first access on the main actor, so no eager build or
@@ -4148,13 +4167,30 @@ class PlayerViewModel {
     // one-liner over an existing primitive; the interesting logic (offset-aware
     // cue conversion, dedupe) lives in the sink adapter.
 
-    /// The media-time → movie-time (libass tick) offset. A live cue carries an
-    /// **absolute media-time** timestamp; the libass renderer is ticked in
-    /// backend movie time (`currentTime - playbackTimelineOffset`). So a cue at
-    /// media time `t` must be fed at movie time `t - offset`. Routing the
-    /// conversion through this single source of truth keeps live cues aligned
-    /// under transcode (where the offset is non-zero) and on direct play (0).
-    var liveSubtitlePlaybackTimelineOffset: Double { playbackTimelineOffset }
+    /// The amount (seconds) to subtract from a live cue's **absolute media-time**
+    /// timestamp to land it on the ACTIVE backend's libass tick clock.
+    ///
+    /// A streamed cue carries absolute media time, but the two backends tick the
+    /// libass renderer on different clocks (FIX 5):
+    ///   - CoreMedia (`PlayerCore`) ticks at `currentPlaybackTimeSeconds()` =
+    ///     **offset-relative movie time** (`media − playbackTimelineOffset`), so
+    ///     a media-time cue must be shifted by `playbackTimelineOffset`.
+    ///   - `AVPlayerBackend` ticks at `mediaTime(for: playerTime)` =
+    ///     `playerTime + mediaTimelineOffsetSeconds` = **absolute media time**,
+    ///     so a media-time cue is fed as-is (offset 0). Subtracting
+    ///     `playbackTimelineOffset` here would render cues `offset` seconds early
+    ///     on an AVPlayer transcode.
+    /// Routing the conversion through this single backend-aware accessor keeps
+    /// live cues aligned on whichever backend is active.
+    var liveSubtitleCueMediaTimeShift: Double {
+        switch activePlayer {
+        case .coreMedia:
+            return playbackTimelineOffset
+        case .avPlayer, .none:
+            // AVPlayer renderer ticks in absolute media time → no shift.
+            return 0
+        }
+    }
 
     /// Open the synthetic live track on the active backend and add its picker
     /// row. Returns the live track id.
@@ -4416,7 +4452,14 @@ class PlayerViewModel {
         sourceProxy?.stop()
         sourceProxy = nil
 
+        let unavailabilityToken = realtimeUnavailabilityObserverToken
+        realtimeUnavailabilityObserverToken = nil
         Task {
+            // Remove our availability observer first (belt-and-suspenders;
+            // `unbind()` also clears all observers).
+            if let unavailabilityToken {
+                await realtimeClient.removeUnavailabilityObserver(unavailabilityToken)
+            }
             await realtimeClient.unbind()
             await sessionBridge.stopSession(position: finalPosition, isPaused: true)
         }
@@ -6026,8 +6069,6 @@ private final class LiveSubtitlePlaybackAdapter: LivePlaybackControls {
 
     func pause() { owner?.activePlayer.pause() }
     func play() { owner?.activePlayer.play() }
-    func seek(to seconds: Double) { owner?.seekTo(seconds: seconds) }
-    func currentTime() -> Double { owner?.currentTime ?? 0 }
     var isPlaying: Bool { owner?.isPlaying ?? false }
 }
 
@@ -6075,12 +6116,15 @@ private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
 
     func feedCue(_ cue: PlaybackRealtimeSubtitleCue) {
         guard let owner, let key = installedTrackKey else { return }
-        // Cue timestamps are absolute MEDIA time; the renderer ticks in movie
-        // time. Subtract the timeline offset so the cue renders at the right
-        // moment under transcode (offset > 0) and on direct play (offset 0).
-        let offset = owner.liveSubtitlePlaybackTimelineOffset
-        let movieStart = cue.start - offset
-        let movieEnd = cue.end - offset
+        // Cue timestamps are absolute MEDIA time. Shift them onto the ACTIVE
+        // backend's libass tick clock: CoreMedia ticks in movie time (shift by
+        // the timeline offset), AVPlayer ticks in absolute media time (shift 0).
+        // The VM owns the backend-aware conversion (see
+        // `liveSubtitleCueMediaTimeShift`) so this stays correct on either
+        // backend and under transcode.
+        let shift = owner.liveSubtitleCueMediaTimeShift
+        let movieStart = cue.start - shift
+        let movieEnd = cue.end - shift
         guard var converter = converters[key] else { return }
         let converted = converter.makeCue(start: movieStart, end: movieEnd, text: cue.text)
         converters[key] = converter // persist dedupe state (value type)

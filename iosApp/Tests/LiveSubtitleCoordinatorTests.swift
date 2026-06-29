@@ -30,15 +30,11 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
         var isPlaying: Bool
         private(set) var pauseCount = 0
         private(set) var playCount = 0
-        private(set) var seeks: [Double] = []
-        var time: Double = 100
 
         init(isPlaying: Bool) { self.isPlaying = isPlaying }
 
         func pause() { pauseCount += 1; isPlaying = false }
         func play() { playCount += 1; isPlaying = true }
-        func seek(to seconds: Double) { seeks.append(seconds) }
-        func currentTime() -> Double { time }
     }
 
     /// Records every sink interaction so tests can assert ordering + payloads.
@@ -117,7 +113,7 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
     private func started(_ trackKey: String) -> PlaybackRealtimeSubtitleEvent {
         .started(.init(fileId: 1, jobId: nil, trackKey: trackKey, language: "es", label: "Spanish", totalCues: 10))
     }
-    private func cues(_ trackKey: String, _ cues: [(Double, Double, String)], done: Bool = false) -> PlaybackRealtimeSubtitleEvent {
+    private func cues(_ trackKey: String, _ cues: [(Double, Double, String)], done: Int? = nil) -> PlaybackRealtimeSubtitleEvent {
         .cues(.init(trackKey: trackKey, cues: cues.map { PlaybackRealtimeSubtitleCue(start: $0.0, end: $0.1, text: $0.2) }, done: done, total: nil))
     }
     private func completed(_ trackKey: String, subtitleId: Int?) -> PlaybackRealtimeSubtitleEvent {
@@ -174,9 +170,10 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
         let (coordinator, controls, sink, clock) = makeCoordinator(isPlaying: true, priorSelection: nil)
         coordinator.handle(started("ai-7"))
 
-        // A `done`-heartbeat with no cues must not trip the resume; the timer
-        // stays armed so a job that never streams a cue still recovers.
-        coordinator.handle(cues("ai-7", [], done: true))
+        // An empty-cues progress frame must not trip the resume; the timer
+        // stays armed so a job that never streams a cue still recovers. Resume
+        // is gated on `!cues.isEmpty`, never on `done`.
+        coordinator.handle(cues("ai-7", [], done: 0))
         XCTAssertEqual(controls.playCount, 0)
         XCTAssertEqual(coordinator.phase, .preparing)
         XCTAssertEqual(clock.lastHandle?.cancelled, false)

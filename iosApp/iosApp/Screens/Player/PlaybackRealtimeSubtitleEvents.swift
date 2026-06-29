@@ -71,7 +71,10 @@ enum PlaybackRealtimeSubtitleEvent: Equatable {
     struct Cues: Equatable {
         let trackKey: String
         let cues: [PlaybackRealtimeSubtitleCue]
-        let done: Bool
+        /// Server progress counter (`Done int` — cues produced so far), not a
+        /// boolean flag. Carried through for diagnostics; the resume decision is
+        /// gated on `!cues.isEmpty`, never on `done`.
+        let done: Int?
         let total: Int?
     }
 
@@ -127,7 +130,8 @@ enum PlaybackRealtimeSubtitleEvent: Equatable {
             self = .cues(Cues(
                 trackKey: trackKey,
                 cues: payload.subtitleCues(forKey: "cues"),
-                done: payload.bool(forKeys: "done") ?? false,
+                // `done` is the server's integer progress counter, not a bool.
+                done: payload.int(forKeys: "done"),
                 total: payload.int(forKeys: "total")
             ))
 
@@ -164,22 +168,6 @@ enum PlaybackRealtimeSubtitleEvent: Equatable {
 // MARK: - Payload helpers
 
 extension Dictionary where Key == String, Value == PlaybackRealtimeValue {
-    /// Read a boolean for the first matching key. Tolerant of a numeric `0/1`
-    /// encoding (`done: 1`) in addition to a JSON bool.
-    func bool(forKeys keys: String...) -> Bool? {
-        for key in keys {
-            switch self[key] {
-            case .bool(let value)?:
-                return value
-            case .number(let value)? where value.isFinite:
-                return value != 0
-            default:
-                continue
-            }
-        }
-        return nil
-    }
-
     /// Decode the `cues` array (`[{start,end,text}]`) into typed cues, in
     /// absolute media-time seconds. Entries missing finite `start`/`end` are
     /// skipped; `text` defaults to empty (an empty cue is harmless — it is

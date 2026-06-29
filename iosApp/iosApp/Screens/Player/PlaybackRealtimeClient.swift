@@ -82,6 +82,11 @@ actor PlaybackRealtimeClient {
         runTask = nil
         notificationTask?.cancel()
         notificationTask = nil
+        // Drop availability observers as part of teardown. The owning
+        // `PlayerViewModel` registers a fresh observer on every `bind`, so
+        // without this the listener array grows unbounded across
+        // bind/unbind cycles and old (weak-captured) closures linger.
+        unavailabilityListeners.removeAll()
         closeSocket()
     }
 

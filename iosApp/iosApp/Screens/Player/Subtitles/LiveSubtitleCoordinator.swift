@@ -48,13 +48,12 @@ import OSLog
 // MARK: - Seams
 
 /// Playback transport the coordinator drives. The coordinator is the only
-/// thing that pauses/resumes/seeks during a live job.
+/// thing that pauses/resumes during a live job — it is pause/resume only, so
+/// the seam is just `pause`/`play`/`isPlaying`.
 @MainActor
 protocol LivePlaybackControls: AnyObject {
     func pause()
     func play()
-    func seek(to seconds: Double)
-    func currentTime() -> Double
     var isPlaying: Bool { get }
 }
 
@@ -256,9 +255,14 @@ final class LiveSubtitleCoordinator {
     private func onStarted(_ started: PlaybackRealtimeSubtitleEvent.Started) {
         // A second `started` for a DIFFERENT job supersedes the current one —
         // tear the old live track down first so we never leave two installed.
+        // FIX 8: tear down with `resume: false` — the new job is about to
+        // re-pause anyway, so resuming here would cause a resume-then-repause
+        // flicker. The new job's own `wasPlaying` snapshot (captured just below,
+        // after this teardown restores the prior selection) decides the final
+        // play/pause state.
         if let active = activeTrackKey, active != started.trackKey {
             Self.logger.info("[AI-LIVE] superseding active job \(active, privacy: .public) with \(started.trackKey, privacy: .public)")
-            teardownActiveTrack(restoreSelection: true, resume: true)
+            teardownActiveTrack(restoreSelection: true, resume: false)
         } else if activeTrackKey == started.trackKey {
             // Duplicate `started` (e.g. websocket replay) — ignore.
             return

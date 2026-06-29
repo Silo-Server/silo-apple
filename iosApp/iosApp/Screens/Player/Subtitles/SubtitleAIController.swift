@@ -173,7 +173,11 @@ final class SubtitleAIController {
         realtimeUnavailable: @escaping @MainActor () -> Bool = { true },
         liveCoordinator: LiveSubtitleCoordinator? = nil,
         handoffContext: @escaping @MainActor () -> HandoffContext?,
-        registerAndSelectDescriptor: @escaping @MainActor (SidecarSubtitleDescriptor) -> Void
+        registerAndSelectDescriptor: @escaping @MainActor (SidecarSubtitleDescriptor) -> Void,
+        // Test seam for the handoff listing fetch. Nil in production → the call
+        // site uses `api.downloadedSubtitles`. Injected by unit tests so the
+        // poller-vs-websocket handoff race can be exercised without the network.
+        downloadedSubtitlesFetch: (@Sendable (Int) async throws -> [DownloadedSubtitle])? = nil
     ) {
         self.api = api
         self.poller = poller
@@ -185,7 +189,11 @@ final class SubtitleAIController {
         self.liveCoordinator = liveCoordinator
         self.handoffContextProvider = handoffContext
         self.registerAndSelectDescriptor = registerAndSelectDescriptor
+        self.downloadedSubtitlesFetch = downloadedSubtitlesFetch
     }
+
+    /// See the `downloadedSubtitlesFetch` init parameter.
+    private let downloadedSubtitlesFetch: (@Sendable (Int) async throws -> [DownloadedSubtitle])?
 
     /// The `track_key` the server uses for `jobId`'s live stream
     /// (`"ai-<jobID>"`). Used to scope forwarded websocket events to the
@@ -349,6 +357,28 @@ final class SubtitleAIController {
         }
     }
 
+    // MARK: - Test seams
+    //
+    // These mirror the two ways a job's `activeJob` is set + completed in
+    // production (the 202 accept and a poller-terminal snapshot) WITHOUT the
+    // network, so `SubtitleAIControllerTests` can exercise the poller-vs-
+    // websocket completion race headless. They are not called in production
+    // (the real paths run through `submit`/`drainPoll`); kept internal so
+    // `@testable import` reaches them.
+
+    /// Seed `activeJob` as if the 202 accept landed (non-terminal), without
+    /// hitting the network. Test-only.
+    func seedAcceptedJobForTesting(_ job: SubtitleJob) {
+        onJobAccepted(job)
+    }
+
+    /// Drive a poller-terminal snapshot through the real terminal handler,
+    /// exactly as `drainPoll` would on a terminal poll. Test-only.
+    func deliverPollerTerminalForTesting(_ job: SubtitleJob) {
+        activeJob = job
+        handleTerminal(job, isASR: job.kind != .translate, generation: generation)
+    }
+
     /// Drain the poller stream, updating `activeJob` per snapshot and acting
     /// on the terminal snapshot. `generation` is the value captured at submit
     /// time; a reset mid-poll invalidates the remaining snapshots.
@@ -388,8 +418,7 @@ final class SubtitleAIController {
             )
         case .failed:
             // Tear the live track down on a poller-observed failure too.
-            liveCoordinator?.liveDriverDidGiveUp(message: job.errorMessage ?? "Subtitle translation failed.")
-            fail(with: job.errorMessage ?? "Subtitle translation failed.")
+            failHandoff(job.errorMessage ?? "Subtitle translation failed.")
         case .cancelled:
             phase = .idle
             activeJob = nil
@@ -462,14 +491,20 @@ final class SubtitleAIController {
             // Without the id we can't synthesize the persisted track. Let the
             // coordinator restore the prior selection rather than stranding the
             // synthetic live track selected.
-            liveCoordinator?.liveDriverDidGiveUp(message: "Translation finished but the track couldn't be added.")
-            fail(with: "Translation finished but the track couldn't be added.")
+            failHandoff("Translation finished but the track couldn't be added.")
             return
         }
 
+        let fetch = self.downloadedSubtitlesFetch
+        let api = self.api
         Task { [weak self] in
             guard let self else { return }
-            let downloaded = (try? await self.api.downloadedSubtitles(mediaFileId: mediaFileId)) ?? []
+            let downloaded: [DownloadedSubtitle]
+            if let fetch {
+                downloaded = (try? await fetch(mediaFileId)) ?? []
+            } else {
+                downloaded = (try? await api.downloadedSubtitles(mediaFileId: mediaFileId)) ?? []
+            }
             // A reset while the listing was in flight invalidates this handoff.
             guard gen == self.generation else { return }
 
@@ -479,15 +514,13 @@ final class SubtitleAIController {
                 Self.logger.warning(
                     "[AI-SUB] result subtitle id=\(resultId, privacy: .public) not found among \(downloaded.count, privacy: .public) downloaded subtitles"
                 )
-                self.liveCoordinator?.liveDriverDidGiveUp(message: "Translation finished but the track couldn't be added.")
-                self.fail(with: "Translation finished but the track couldn't be added.")
+                self.failHandoff("Translation finished but the track couldn't be added.")
                 return
             }
 
             guard let context = self.handoffContextProvider() else {
                 Self.logger.warning("[AI-SUB] no active session/track context for completed subtitle id=\(resultId, privacy: .public)")
-                self.liveCoordinator?.liveDriverDidGiveUp(message: "Translation finished but the track couldn't be added.")
-                self.fail(with: "Translation finished but the track couldn't be added.")
+                self.failHandoff("Translation finished but the track couldn't be added.")
                 return
             }
 
@@ -498,8 +531,7 @@ final class SubtitleAIController {
                 resolveURL: context.resolveURL
             ) else {
                 Self.logger.warning("[AI-SUB] could not synthesize stream URL for completed subtitle id=\(resultId, privacy: .public)")
-                self.liveCoordinator?.liveDriverDidGiveUp(message: "Translation finished but the track couldn't be added.")
-                self.fail(with: "Translation finished but the track couldn't be added.")
+                self.failHandoff("Translation finished but the track couldn't be added.")
                 return
             }
 
@@ -507,6 +539,21 @@ final class SubtitleAIController {
                 "[AI-SUB] handing off completed subtitle id=\(resultId, privacy: .public) combinedIndex=\(descriptor.index, privacy: .public) viaWebsocket=\(viaWebsocket, privacy: .public)"
             )
             self.registerAndSelectDescriptor(descriptor)
+
+            // FIX 2: when the POLLER is first to complete (the websocket's
+            // `completed` frame was lost — e.g. a transient socket drop with no
+            // server replay), the coordinator is still in `.streaming` with the
+            // synthetic live row in the picker. Now that the persisted track is
+            // registered + selected, tell the coordinator the authority closed
+            // out so it closes the live track and reaches `.completed`. The
+            // websocket path drives the coordinator itself (`onCompleted`), so
+            // only do this on the poller path. Safe if no live job is active
+            // (the coordinator guards on `isActive`).
+            if !viaWebsocket {
+                self.liveCoordinator?.persistedHandoffAlreadyDone(
+                    trackKey: Self.trackKey(for: jobId)
+                )
+            }
         }
     }
 
@@ -532,6 +579,11 @@ final class SubtitleAIController {
 
         // Scope track-keyed events to the active job. A late frame for a job
         // we've already torn down (or never started) is ignored.
+        //
+        // TODO(M5): buffer `started`/`cues` frames that race ahead of the 202
+        // (which sets `activeJob`), then replay them once the job lands. Today
+        // such early frames are dropped here; the path degrades safely because
+        // the poller still completes the job and the user can re-open the menu.
         guard let trackKey = event.trackKey else { return }
         guard let job = activeJob, Self.trackKey(for: job.id) == trackKey else {
             Self.logger.debug("[AI-LIVE] ignoring event for stale/unknown trackKey=\(trackKey, privacy: .public)")
@@ -593,6 +645,16 @@ final class SubtitleAIController {
     private func fail(with message: String) {
         phase = .failed
         errorMessage = message
+    }
+
+    /// Fail a job over BOTH surfaces with the same message. This dual surfacing
+    /// is intentional: `liveDriverDidGiveUp` closes/restores the live
+    /// presentation and shows the soft notice (covers the dismissed-menu case),
+    /// while `fail` sets `errorMessage`/`.failed` for the open translate menu.
+    /// Extracted so the message literal lives in one place.
+    private func failHandoff(_ message: String) {
+        liveCoordinator?.liveDriverDidGiveUp(message: message)
+        fail(with: message)
     }
 
     private static func message(for error: Error) -> String {
