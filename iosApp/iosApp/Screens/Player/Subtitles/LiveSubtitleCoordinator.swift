@@ -268,7 +268,7 @@ final class LiveSubtitleCoordinator {
     private func onStarted(_ started: PlaybackRealtimeSubtitleEvent.Started) {
         // A second `started` for a DIFFERENT job supersedes the current one —
         // tear the old live track down first so we never leave two installed.
-        // FIX 8: tear down with `resume: false` — the new job is about to
+        // Tear down with `resume: false` — the new job is about to
         // re-pause anyway, so resuming here would cause a resume-then-repause
         // flicker. The new job's own `wasPlaying` snapshot (captured just below,
         // after this teardown restores the prior selection) decides the final

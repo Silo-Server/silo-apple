@@ -123,6 +123,17 @@ final class SubtitleAIController {
     /// new submission and on `reset()`.
     private var handoffJobId: String?
 
+    /// The `result_subtitle_id` of the OWNED job whose persisted-track handoff
+    /// this controller just registered (set the moment the owned handoff lands
+    /// its descriptor, on either the websocket or the poller path). The
+    /// websocket `completed` path registers the track WITHOUT writing
+    /// `activeJob.resultSubtitleId`, so the back-to-back `subtitle_ready`
+    /// broadcast for the SAME id wouldn't be recognized by the
+    /// `activeJob.resultSubtitleId` guard alone — `handleSubtitleReady`
+    /// short-circuits on this id too, avoiding a redundant second listing fetch
+    /// + register. Cleared on a new submission and on `reset()`.
+    private var ownedHandoffSubtitleId: Int?
+
     /// Context the controller needs to synthesize a completed subtitle's
     /// player descriptor (the server's listing carries no URL/index). Fetched
     /// lazily at handoff time so it always reflects the live session +
@@ -304,6 +315,7 @@ final class SubtitleAIController {
         // Tear down any live presentation (restores selection / resumes).
         liveCoordinator?.teardown()
         handoffJobId = nil
+        ownedHandoffSubtitleId = nil
         clearEarlyFrameBuffer()
         Task { [api, poller] in
             await poller.cancel()
@@ -327,6 +339,7 @@ final class SubtitleAIController {
         Task { await poller.cancel() }
         liveCoordinator?.teardown()
         handoffJobId = nil
+        ownedHandoffSubtitleId = nil
         clearEarlyFrameBuffer()
         activeJob = nil
         phase = .idle
@@ -353,6 +366,7 @@ final class SubtitleAIController {
         // shared handoff latch so the new job's terminal action can run.
         liveCoordinator?.teardown()
         handoffJobId = nil
+        ownedHandoffSubtitleId = nil
         // Discard any frames left buffered from a previous submit window before
         // opening this one (so a superseded job's racing cues can't replay into
         // the new job).
@@ -451,6 +465,7 @@ final class SubtitleAIController {
         pollDrainTask = nil
         liveCoordinator?.teardown()
         handoffJobId = nil
+        ownedHandoffSubtitleId = nil
         clearEarlyFrameBuffer()
         phase = .submitting
         errorMessage = nil
@@ -648,12 +663,19 @@ final class SubtitleAIController {
                 "[AI-SUB] handing off subtitle id=\(resultId, privacy: .public) combinedIndex=\(descriptor.index, privacy: .public) viaWebsocket=\(viaWebsocket, privacy: .public) autoSelect=\(autoSelect, privacy: .public)"
             )
             if autoSelect {
+                // Record the OWNED handoff's subtitle id so a back-to-back
+                // `subtitle_ready` broadcast for this same id is recognized as a
+                // self-handoff and skipped (the websocket `completed` path never
+                // writes `activeJob.resultSubtitleId`, so that guard alone misses
+                // it). Register-only (`ready`) handoffs don't set this — they
+                // aren't this viewer's owned job.
+                self.ownedHandoffSubtitleId = resultId
                 self.registerAndSelectDescriptor(descriptor)
             } else {
                 self.registerDescriptorWithoutSelecting(descriptor)
             }
 
-            // FIX 2: when the POLLER is first to complete (the websocket's
+            // When the POLLER is first to complete (the websocket's
             // `completed` frame was lost — e.g. a transient socket drop with no
             // server replay), the coordinator is still in `.streaming` with the
             // synthetic live row in the picker. Now that the persisted track is
@@ -737,8 +759,16 @@ final class SubtitleAIController {
             return
         }
         // Don't double-handle the active job's own result — its completion path
-        // owns that track's registration + selection.
+        // owns that track's registration + selection. Two checks, because the
+        // websocket `completed` path registers the persisted track WITHOUT
+        // populating `activeJob.resultSubtitleId`: (1) the poller eventually sets
+        // `resultSubtitleId`, and (2) the owned handoff records
+        // `ownedHandoffSubtitleId` the moment it registers — so the back-to-back
+        // `subtitle_ready` broadcast for the just-completed id is recognized
+        // immediately, before the ~1.5s poller snapshot, and skips a redundant
+        // downloaded-subtitles fetch + register.
         if let job = activeJob, job.resultSubtitleId == subtitleId { return }
+        if ownedHandoffSubtitleId == subtitleId { return }
         Self.logger.info("[AI-LIVE] subtitle_ready broadcast subtitleId=\(subtitleId, privacy: .public) fileId=\(fileId, privacy: .public)")
         // A per-id synthetic latch key so a repeated broadcast registers once
         // and never clashes with a real job's `ai-<jobID>` key. Register-only

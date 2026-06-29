@@ -65,15 +65,6 @@ actor ContinuumAI {
         return envelope.job
     }
 
-    /// All jobs for a media file (e.g. to resume an in-flight job on reopen).
-    func subtitleJobs(mediaFileId: Int) async throws -> [SubtitleJob] {
-        let envelope: SubtitleJobsEnvelope = try await http.get(
-            "/api/v1/subtitles/ai/jobs",
-            query: ["media_file_id": String(mediaFileId)]
-        )
-        return envelope.jobs
-    }
-
     /// Request cancellation of a running job (204, no body).
     func cancelSubtitleJob(id: String) async throws {
         try await http.postVoid("/api/v1/subtitles/ai/jobs/\(id)/cancel")

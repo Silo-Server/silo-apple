@@ -209,16 +209,6 @@ struct SubtitleJobEnvelope: Codable {
     let job: SubtitleJob
 }
 
-/// Envelope for `GET /api/v1/subtitles/ai/jobs?media_file_id=N`.
-struct SubtitleJobsEnvelope: Codable {
-    let jobs: [SubtitleJob]
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        jobs = try c.decodeIfPresent([SubtitleJob].self, forKey: .jobs) ?? []
-    }
-}
-
 /// One server-stored downloaded subtitle, as listed by
 /// `GET /api/v1/subtitles/{media_file_id}`.
 ///

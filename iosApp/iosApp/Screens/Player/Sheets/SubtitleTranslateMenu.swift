@@ -287,7 +287,7 @@ struct SubtitleTranslateMenu: View {
                 Text("Transcribe")
             } footer: {
                 if isQuotaExhausted {
-                    Text("You've used all your transcription credits for this period. Translating an existing subtitle track still works.")
+                    Text(Self.quotaExhaustedFooter)
                 }
             }
         }
@@ -344,7 +344,7 @@ struct SubtitleTranslateMenu: View {
                 beginTranscribeAndTranslate()
             }
             if isQuotaExhausted {
-                Text("You've used all your transcription credits for this period. Translating an existing subtitle track still works.")
+                Text(Self.quotaExhaustedFooter)
                     .font(.system(size: 16))
                     .foregroundStyle(.white.opacity(0.45))
                     .padding(.horizontal, 16)
@@ -467,6 +467,12 @@ struct SubtitleTranslateMenu: View {
     private var transcribeDetail: String? {
         "Generate captions from the spoken audio."
     }
+
+    /// Footer shown under the Transcribe section when ASR quota is exhausted.
+    /// Hoisted so the iOS `List` footer and the tvOS inline footer render the
+    /// identical copy from one source.
+    private static let quotaExhaustedFooter =
+        "You've used all your transcription credits for this period. Translating an existing subtitle track still works."
 }
 
 // MARK: - Section header (tvOS inline) + quota row

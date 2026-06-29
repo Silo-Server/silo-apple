@@ -148,27 +148,6 @@ final class AIModelDecodingTests: XCTestCase {
         XCTAssertTrue(env.job.status == .pending)
     }
 
-    func testSubtitleJobsEnvelope() {
-        let env = decode(SubtitleJobsEnvelope.self, """
-        {
-          "jobs": [
-            { "id": 1, "kind": "translate", "source_index": 0, "status": "completed", "progress": 1, "result_subtitle_id": 5 },
-            { "id": 2, "kind": "transcribe", "source_index": -1, "status": "running", "progress": 0.2 }
-          ]
-        }
-        """)
-        XCTAssertTrue(env.jobs.count == 2)
-        XCTAssertTrue(env.jobs[0].id == "1")
-        XCTAssertTrue(env.jobs[0].resultSubtitleId == 5)
-        XCTAssertTrue(env.jobs[1].kind == .transcribe)
-    }
-
-    func testSubtitleJobsEnvelopeMissingArray() {
-        // Tolerant: an envelope with no `jobs` key decodes to an empty array.
-        let env = decode(SubtitleJobsEnvelope.self, "{}")
-        XCTAssertTrue(env.jobs.isEmpty)
-    }
-
     // MARK: - Quota
 
     func testSubtitleAIQuotaFull() {

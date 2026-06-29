@@ -81,7 +81,15 @@ final class SubtitleAIControllerTests: XCTestCase {
         let coordinator: LiveSubtitleCoordinator
         let sink: FakeSink
         let controls: FakeControls
+        /// OWNED handoffs (auto-select): the shared latched handoff for a job
+        /// this client started.
         let registerSelectCount: () -> Int
+        /// REGISTER-ONLY handoffs (no auto-select): the `subtitle_ready`
+        /// broadcast path for a track finished elsewhere. The descriptor carries
+        /// the synthesized combined `index`, not the DB id, so we record that.
+        let registerOnlyCount: () -> Int
+        /// The combined `index` of the last register-only (`ready`) handoff.
+        let lastRegisterOnlyIndex: () -> Int?
     }
 
     private func makeHarness(
@@ -98,7 +106,7 @@ final class SubtitleAIControllerTests: XCTestCase {
             selectionSnapshot: { nil }
         )
 
-        var registerSelectCount = 0
+        let counters = HandoffCounters()
         let controller = SubtitleAIController(
             mediaFileId: { mediaFileId },
             currentTime: { 0 },
@@ -112,7 +120,11 @@ final class SubtitleAIControllerTests: XCTestCase {
                     resolveURL: { path in URL(string: "https://host\(path)") }
                 )
             },
-            registerAndSelectDescriptor: { _ in registerSelectCount += 1 },
+            registerAndSelectDescriptor: { _ in counters.selectCount += 1 },
+            registerDescriptorWithoutSelecting: { descriptor in
+                counters.onlyCount += 1
+                counters.lastOnlyIndex = descriptor.index
+            },
             downloadedSubtitlesFetch: { _ in downloaded }
         )
         return Harness(
@@ -120,8 +132,20 @@ final class SubtitleAIControllerTests: XCTestCase {
             coordinator: coordinator,
             sink: sink,
             controls: controls,
-            registerSelectCount: { registerSelectCount }
+            registerSelectCount: { counters.selectCount },
+            registerOnlyCount: { counters.onlyCount },
+            lastRegisterOnlyIndex: { counters.lastOnlyIndex }
         )
+    }
+
+    /// Reference box so the controller's `@MainActor` register closures can
+    /// mutate shared counters the test reads back (a `var` captured by an
+    /// `@escaping @MainActor` closure isn't shareable across the boundary).
+    @MainActor
+    private final class HandoffCounters {
+        var selectCount = 0
+        var onlyCount = 0
+        var lastOnlyIndex: Int?
     }
 
     /// A persisted downloaded subtitle whose `id` matches a job's
@@ -145,6 +169,9 @@ final class SubtitleAIControllerTests: XCTestCase {
     }
     private func completedEvent(_ trackKey: String, subtitleId: Int) -> PlaybackRealtimeSubtitleEvent {
         .completed(.init(trackKey: trackKey, subtitleId: subtitleId, language: "es", label: "Spanish"))
+    }
+    private func readyEvent(fileId: Int = 1, subtitleId: Int) -> PlaybackRealtimeSubtitleEvent {
+        .ready(.init(fileId: fileId, subtitleId: subtitleId, language: "es", label: "Spanish"))
     }
 
     /// Pump the main run loop so the handoff's detached `Task` (the listing
@@ -229,6 +256,71 @@ final class SubtitleAIControllerTests: XCTestCase {
         XCTAssertEqual(h.coordinator.phase, .completed, "coordinator must not strand in .streaming")
         XCTAssertEqual(h.sink.closeCount, 1, "synthetic live track closed")
         XCTAssertTrue(h.sink.closedKeys.contains("ai-5"))
+    }
+
+    // MARK: - (c2) ready-broadcast dedup against the owned WS completion (M5 FIX 1)
+
+    /// The server broadcasts `subtitle_ready` for a file to ALL its sessions —
+    /// INCLUDING the session that just completed the job. When the websocket
+    /// `completed` path registers the persisted track it does NOT write
+    /// `activeJob.resultSubtitleId` (the poller does, ~1.5s later), so the
+    /// back-to-back `subtitle_ready` for the SAME id would slip past the
+    /// `activeJob.resultSubtitleId` guard and trigger a redundant second
+    /// downloaded-subtitles fetch + register. The controller records the owned
+    /// handoff's subtitle id at registration time and short-circuits `ready` on
+    /// it, so the self-handoff broadcast is a no-op.
+    func testReadyMatchingJustWebsocketCompletedJobDoesNotReregister() async {
+        let h = makeHarness(downloaded: [persisted(id: 555)])
+        // Accepted running job with NO result id yet — exactly the state the
+        // websocket `completed` path runs in (poller hasn't snapshotted it).
+        h.controller.seedAcceptedJobForTesting(runningJob(id: "42", resultSubtitleId: nil))
+        h.controller.handle(started("ai-42"))
+        h.controller.handle(cues("ai-42"))
+        XCTAssertEqual(h.coordinator.phase, .streaming)
+
+        // Websocket completes: registers the owned persisted track exactly once
+        // and records its id as the owned handoff.
+        h.controller.handle(completedEvent("ai-42", subtitleId: 555))
+        h.controller.completeLivePersistedHandoff(subtitleId: 555)
+        await drainMainQueue()
+        XCTAssertEqual(h.registerSelectCount(), 1, "owned WS completion registered once")
+
+        // The server's `subtitle_ready` for that SAME id arrives right after. It
+        // must be recognized as this client's own just-completed handoff and
+        // skipped — NOT a second register on either path.
+        h.controller.handle(readyEvent(subtitleId: 555))
+        await drainMainQueue()
+        XCTAssertEqual(
+            h.registerSelectCount(), 1,
+            "ready for the just-WS-completed id must not trigger a second owned register"
+        )
+        XCTAssertEqual(
+            h.registerOnlyCount(), 0,
+            "ready for the just-WS-completed id must not take the register-only path either"
+        )
+    }
+
+    /// A `subtitle_ready` for a DIFFERENT subtitle id (a translation finished
+    /// elsewhere / on another device) is NOT the owned handoff, so it still
+    /// registers — register-only (no auto-select). Guards against the dedup
+    /// over-matching and swallowing legitimate broadcasts.
+    func testReadyForDifferentIdStillRegisters() async {
+        let h = makeHarness(downloaded: [persisted(id: 555), persisted(id: 900)])
+        h.controller.seedAcceptedJobForTesting(runningJob(id: "42", resultSubtitleId: nil))
+        h.controller.handle(started("ai-42"))
+        h.controller.handle(cues("ai-42"))
+        h.controller.handle(completedEvent("ai-42", subtitleId: 555))
+        h.controller.completeLivePersistedHandoff(subtitleId: 555)
+        await drainMainQueue()
+        XCTAssertEqual(h.registerSelectCount(), 1)
+
+        // A different file-scoped subtitle becomes ready → register-only.
+        h.controller.handle(readyEvent(subtitleId: 900))
+        await drainMainQueue()
+        XCTAssertEqual(h.registerSelectCount(), 1, "owned auto-select count unchanged")
+        XCTAssertEqual(h.registerOnlyCount(), 1, "different ready id registered once (register-only)")
+        // baseTrackCount (3) + position of id 900 in the listing (1) == combined index 4.
+        XCTAssertEqual(h.lastRegisterOnlyIndex(), 4)
     }
 
     // MARK: - (d) early-frame buffering (M5)

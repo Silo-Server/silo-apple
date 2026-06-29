@@ -931,7 +931,7 @@ class PlayerViewModel {
         // decide whether to request live cue streaming, and so a mid-job flip
         // to unavailable degrades the live presentation to the poller.
         //
-        // FIX 4: the snapshot defaults to `false` (optimistic / available)
+        // The snapshot defaults to `false` (optimistic / available)
         // rather than `true`. The actor's `isRealtimeUnavailable` is
         // actor-isolated and can't be read synchronously from here, so a fast
         // first submit (before the observer's async callback lands) would, with
@@ -4115,6 +4115,20 @@ class PlayerViewModel {
             return nil
         }
         let serverUrl = resolvedServerUrl
+        // KNOWN LIMITATION (intentionally inherited from Android's
+        // `SubtitleTrackMerge`; do NOT "fix" Apple-side — no purely-client fix is
+        // correct). The server's `buildSubtitleURLs` (`playback.go:1503`) OMITS
+        // non-PGS burn-in subtitle tracks from `subtitle_urls`, yet still counts
+        // them in the downloaded combined-index offset (`downloadedOffset` at
+        // `playback.go:1520`, served by the combined-index stream mount in
+        // `stream.go:244`). So `max(visible index) + 1` here UNDERCOUNTS whenever
+        // the LAST embedded track is a non-PGS bitmap sub: the synthesized stream
+        // URL then targets the wrong combined index and the live→persisted handoff
+        // SOFT-FAILS. This is graceful — the job already completed server-side, and
+        // a fresh playback session re-indexes the persisted track correctly. The
+        // robust fix is cross-repo: have the server carry the combined index (or a
+        // ready-to-use stream URL) in `subtitle_translation_completed` /
+        // `subtitle_ready` so the client never has to reconstruct it.
         let baseTrackCount = (
             knownExternalSubtitles
                 .filter { ($0.source ?? "").caseInsensitiveCompare("downloaded") != .orderedSame }
@@ -4201,7 +4215,7 @@ class PlayerViewModel {
     /// timestamp to land it on the ACTIVE backend's libass tick clock.
     ///
     /// A streamed cue carries absolute media time, but the two backends tick the
-    /// libass renderer on different clocks (FIX 5):
+    /// libass renderer on different clocks:
     ///   - CoreMedia (`PlayerCore`) ticks at `currentPlaybackTimeSeconds()` =
     ///     **offset-relative movie time** (`media − playbackTimelineOffset`), so
     ///     a media-time cue must be shifted by `playbackTimelineOffset`.
@@ -4253,6 +4267,15 @@ class PlayerViewModel {
     /// fetch failed after the server reported completion): the live track is
     /// closed anyway once the window elapses.
     func armDeferredLiveSubtitleClose(trackId: Int64) {
+        // Single-slot pending id: if a DIFFERENT live track is still awaiting its
+        // deferred close when a second job completes back-to-back, overwriting the
+        // pending id here (and cancelling its fallback timer below) would orphan
+        // the previous synthetic row forever. Close it now before re-arming so the
+        // earlier track is never stranded. (Common case: nothing pending, or the
+        // same id re-armed — both no-op this guard.)
+        if let previousId = pendingLiveSubtitleCloseTrackId, previousId != trackId {
+            closeLiveSubtitleTrackRow(trackId: previousId)
+        }
         pendingLiveSubtitleCloseTrackId = trackId
         deferredLiveSubtitleCloseTask?.cancel()
         deferredLiveSubtitleCloseTask = Task { @MainActor [weak self] in

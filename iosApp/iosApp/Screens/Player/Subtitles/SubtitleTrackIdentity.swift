@@ -82,10 +82,6 @@ enum SubtitleTrackIdSpace {
         trackId >= Self.aiLiveBase && trackId < 0x8000_0000
     }
 
-    static func aiLiveOrdinal(from trackId: Int64) -> Int {
-        Int(trackId & (Self.aiLiveBase - 1))
-    }
-
     /// True for any synthetic id that is NOT a real embedded FFmpeg /
     /// AVFoundation track — i.e. sidecar or AI-live. Used by the
     /// selection-recovery snapshots, which must never re-establish such an

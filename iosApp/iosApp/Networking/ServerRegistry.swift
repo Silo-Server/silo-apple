@@ -183,6 +183,14 @@ final class ServerRegistry {
         // `HTTPClient.cancelInFlightRequests` for the ordering contract.
         await HTTPClient.shared.cancelInFlightRequests()
 
+        // Switching between already-added servers is a per-server boundary too:
+        // drop the previous server's AI capability/quota probes so the new
+        // server's gating starts clean (it re-probes via `refresh()`; this just
+        // makes the reset immediate instead of waiting for the next refresh).
+        // Profile switch / sign-out reset these in `AuthService`; this covers the
+        // distinct server-activation path that doesn't pass through there.
+        await MainActor.run { AICapabilities.shared.reset() }
+
         let entry = entries.first(where: { $0.id == serverId })!
         defaults.set(entry.url, forKey: "serverUrl")
         if let pid = entry.profileId {

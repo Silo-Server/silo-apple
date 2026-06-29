@@ -43,8 +43,8 @@ final class TVSettingsViewModel {
     var subtitleUsesDeviceAppearanceOverride: Bool = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
 
     // Server-backed profile prefs editor. Each editor field is either
-    // a sentinel ("__none__" or "__inherit__") or a concrete value.
-    // We persist directly to the active profile via PUT /profiles/{id}.
+    // the `PlaybackPrefSentinel.none` sentinel ("__none__") or a concrete
+    // value. We persist directly to the active profile via PUT /profiles/{id}.
     var editorSubtitleLanguage: String = PlaybackPrefSentinel.none
     var editorSubtitleMode: String = SubtitleMode.auto.rawValue
     /// Tri-state stored as "on" / "off". The server treats nil and
