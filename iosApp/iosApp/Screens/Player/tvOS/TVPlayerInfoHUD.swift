@@ -1692,6 +1692,7 @@ private struct SubtitlesPane: View {
     }
 
     private enum Option: Hashable {
+        case translate
         case delay
         case save
         case size
@@ -1758,6 +1759,9 @@ private struct SubtitlesPane: View {
 
     private var optionOrder: [Option] {
         var options: [Option] = []
+        if aiSubtitlesAvailable {
+            options.append(.translate)
+        }
         if viewModel.backendCapabilities.supportsSubtitleDelay {
             options.append(.delay)
         }
@@ -1768,7 +1772,9 @@ private struct SubtitlesPane: View {
     }
 
     private func focusFirstOption() {
-        if viewModel.backendCapabilities.supportsSubtitleDelay {
+        if aiSubtitlesAvailable {
+            focusedSubtitleField = .option(.translate)
+        } else if viewModel.backendCapabilities.supportsSubtitleDelay {
             focusedSubtitleField = .option(.delay)
         } else if viewModel.backendCapabilities.supportsSubtitleStyling {
             focusedSubtitleField = .option(.save)
@@ -1916,26 +1922,6 @@ private struct SubtitlesPane: View {
                         }
                     }
                 }
-
-                if aiSubtitlesAvailable {
-                    Text("AI SUBTITLES")
-                        .font(.system(size: 14, weight: .semibold))
-                        .tracking(1.6)
-                        .foregroundStyle(.white.opacity(0.45))
-                        .padding(.top, 20)
-                        .padding(.bottom, 4)
-                        .padding(.leading, 14)
-                    HUDFocusedTrackRow(
-                        name: "Translate with AI…",
-                        attributes: "Translate a subtitle track or transcribe audio",
-                        isSelected: false,
-                        focused: $focusedSubtitleField,
-                        focusID: .primary("ai-translate"),
-                        onMoveRight: focusFirstOption
-                    ) {
-                        showAITranslateMenu = true
-                    }
-                }
             }
         }
     }
@@ -1943,6 +1929,21 @@ private struct SubtitlesPane: View {
     @ViewBuilder
     private var optionRows: some View {
         VStack(spacing: 2) {
+            if aiSubtitlesAvailable {
+                HUDFocusedSettingRow(
+                    label: "Translate with AI…",
+                    value: "",
+                    systemImage: "sparkles",
+                    focused: $focusedSubtitleField,
+                    focusID: .option(.translate),
+                    onMoveUp: moveOptionUp(from: .translate),
+                    onMoveDown: moveOptionDown(from: .translate),
+                    onMoveLeft: focusSelectedTrack,
+                    onMoveRight: holdOption(.translate)
+                ) {
+                    showAITranslateMenu = true
+                }
+            }
             if viewModel.backendCapabilities.supportsSubtitleDelay {
                 HUDFocusedSettingRow(
                     label: "Delay",
