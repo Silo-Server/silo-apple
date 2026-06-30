@@ -164,9 +164,10 @@ actor PlaybackRealtimeClient {
     @discardableResult
     func observeConnectivity(_ handler: @escaping @MainActor (Bool) -> Void) async -> UUID {
         let id = UUID()
-        connectivityListeners.append(ConnectivityObserver(id: id, handler: handler))
+        let observer = ConnectivityObserver(id: id, handler: handler)
+        connectivityListeners.append(observer)
         let snapshot = isRealtimeConnected
-        await MainActor.run { handler(snapshot) }
+        notifyConnectivity(snapshot, listeners: [observer])
         return id
     }
 
@@ -181,7 +182,10 @@ actor PlaybackRealtimeClient {
     private func setRealtimeConnected(_ value: Bool) {
         guard isRealtimeConnected != value else { return }
         isRealtimeConnected = value
-        let listeners = connectivityListeners
+        notifyConnectivity(value, listeners: connectivityListeners)
+    }
+
+    private func notifyConnectivity(_ value: Bool, listeners: [ConnectivityObserver]) {
         connectivityNotificationTask?.cancel()
         connectivityNotificationTask = Task { @MainActor in
             for observer in listeners {

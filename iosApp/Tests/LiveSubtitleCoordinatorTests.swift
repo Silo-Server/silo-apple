@@ -251,7 +251,12 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(controls.playCount, 1, "cancel should resume submit pause")
         XCTAssertEqual(coordinator.phase, .idle)
-        XCTAssertFalse(sink.calls.contains(.showFailure("Live subtitles were interrupted.")))
+        XCTAssertFalse(
+            sink.calls.contains { call in
+                if case .showFailure = call { return true }
+                return false
+            }
+        )
     }
 
     // MARK: - safety timeout
