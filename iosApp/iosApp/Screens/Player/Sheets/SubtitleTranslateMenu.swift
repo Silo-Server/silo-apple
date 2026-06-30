@@ -149,15 +149,27 @@ struct SubtitleTranslateMenu: View {
 
     /// The best existing text subtitle to translate into `target`: a track in a
     /// *different* language (or one with an unknown language, which the server
-    /// detects), preferring the selected / default / first. Nil when only the
-    /// target language itself is available, or translation is disabled.
+    /// detects). An **English** source is preferred when available — AI
+    /// translation is highest-quality from English, and English subs are
+    /// usually the most complete track — then the selected / default / first.
+    /// Nil when only the target language itself is available, or translation is
+    /// disabled.
     private func bestTranslationSource(excluding target: String) -> PlayerTrack? {
         guard capabilities.subtitleEnabled else { return nil }
+        let targetKey = SubtitleDisplayOrder.canonicalLanguageKey(target)
         let candidates = translatableSubtitleTracks.filter { track in
-            guard let lang = track.normalizedLanguageCode else { return true }
-            return lang.caseInsensitiveCompare(target) != .orderedSame
+            // Keep unknown-language tracks (the server detects the language);
+            // exclude any track already in the target language. Compare on the
+            // canonical key so "eng"/"en" (and regional variants) collapse, so
+            // we never pick a pointless same-language "translation" source.
+            guard let key = SubtitleDisplayOrder.canonicalLanguageKey(track.normalizedLanguageCode) else {
+                return true
+            }
+            return key != targetKey
         }
-        return candidates.first(where: { $0.isSelected })
+        // English first as the translation base, then selected / default / first.
+        return candidates.first(where: { SubtitleDisplayOrder.canonicalLanguageKey($0.normalizedLanguageCode) == "en" })
+            ?? candidates.first(where: { $0.isSelected })
             ?? candidates.first(where: { $0.isDefault })
             ?? candidates.first
     }
