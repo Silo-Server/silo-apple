@@ -59,4 +59,15 @@ struct TVLibraryFilterPayload: Hashable {
     var yearMin: Int? = nil
     var yearMax: Int? = nil
     var sort: String = "title"
+
+    /// Lower the deep-link payload into the shared filter state used by the
+    /// grid view model.
+    func toFilterState() -> CatalogFilterState {
+        var state = CatalogFilterState()
+        state.namePrefix = namePrefix
+        if let genre { state.genres = [genre] }
+        if let yearMin { state.decades = [(yearMin / 10) * 10] }
+        state.sort = CatalogSortKey(rawValue: sort) ?? .title
+        return state
+    }
 }

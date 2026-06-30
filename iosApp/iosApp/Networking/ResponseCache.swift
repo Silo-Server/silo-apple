@@ -93,8 +93,15 @@ enum CacheKey {
     }
     static func itemUserState(_ contentId: String) -> String { "item:\(contentId):userState" }
     static func itemWatchDetail(_ contentId: String) -> String { "item:\(contentId):watchDetail" }
-    static func browse(libraryId: Int?, genre: String?, sort: String) -> String {
-        "browse:\(libraryId.map(String.init) ?? "all"):\(genre ?? "all"):\(sort)"
+    /// Browse grid page-1 cache, keyed by the full filter/sort state so
+    /// distinct filter combinations never collide (the old genre+sort-only
+    /// key did). `filterKey` is `CatalogFilterState.cacheKeyFragment`.
+    static func browse(libraryId: Int?, filterKey: String) -> String {
+        "browse:\(libraryId.map(String.init) ?? "all"):\(filterKey)"
+    }
+    /// Per-library facet vocabulary from `/catalog/filters`.
+    static func catalogFilters(libraryId: Int?) -> String {
+        "catalogFilters:\(libraryId.map(String.init) ?? "all")"
     }
     static func librarySections(_ libraryId: Int) -> String {
         "library:\(libraryId):sections"
@@ -118,5 +125,10 @@ enum CacheKey {
         "collections:",
         "calendar:",
         "user:",
+        // Browse pages and facet lists are access-filtered per profile, and
+        // watch-status filters make a page profile-specific.
+        "browse:",
+        "tvlibrary:",
+        "catalogFilters:",
     ]
 }

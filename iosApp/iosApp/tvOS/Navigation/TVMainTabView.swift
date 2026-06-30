@@ -919,13 +919,7 @@ struct TVMainTabView: View {
                 libraryId: libraryId,
                 libraryName: libraryName,
                 libraryType: libraryType,
-                initialFilter: TVLibraryFilter(
-                    namePrefix: payload.namePrefix,
-                    genre: payload.genre,
-                    yearMin: payload.yearMin,
-                    yearMax: payload.yearMax,
-                    sort: payload.sort
-                ),
+                initialFilter: payload.toFilterState(),
                 subtitle: subtitle
             )
         default:

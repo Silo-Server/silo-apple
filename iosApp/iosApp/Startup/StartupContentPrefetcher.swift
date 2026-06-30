@@ -170,35 +170,33 @@ enum StartupContentPrefetcher {
         }
     }
 
-    static func prefetchBrowseFirstPage(libraryId: Int?, genre: String? = nil, sort: String = "title") {
+    static func prefetchBrowseFirstPage(libraryId: Int?, state: CatalogFilterState = .none) {
         Task {
-            _ = try? await fetchBrowseFirstPage(libraryId: libraryId, genre: genre, sort: sort)
+            _ = try? await fetchBrowseFirstPage(libraryId: libraryId, state: state)
         }
     }
 
     static func fetchBrowseFirstPage(
         libraryId: Int?,
-        genre: String? = nil,
-        sort: String = "title"
+        state: CatalogFilterState = .none
     ) async throws -> CatalogResponse {
-        let key = CacheKey.browse(libraryId: libraryId, genre: genre, sort: sort)
+        let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment)
         let task: Task<CatalogResponse, Error>
         if let existing = browseFirstPageTasks[key] {
             task = existing
         } else {
             task = Task {
-                var query: [String: String] = [
-                    "offset": "0",
-                    "limit": String(browsePageSize),
-                    "sort": sort,
-                ]
-                if let libraryId {
-                    query["library_id"] = String(libraryId)
-                }
-                if let genre {
-                    query["genre"] = genre
-                }
-
+                // iOS omits `type` (library_id already scopes the page); the
+                // builder is the single source of the wire format shared with
+                // BrowseViewModel so prefetch and live fetch hit the same key.
+                let query = CatalogQueryBuilder.build(
+                    state,
+                    libraryId: libraryId,
+                    mediaType: .movie,
+                    offset: 0,
+                    limit: browsePageSize,
+                    includeType: false
+                )
                 return try await ContinuumAPI.shared.catalog(query: query)
             }
             browseFirstPageTasks[key] = task

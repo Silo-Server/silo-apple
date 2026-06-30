@@ -11,7 +11,7 @@ struct TVLibraryGridView: View {
     let libraryId: Int
     let libraryName: String
     let libraryType: String
-    let initialFilter: TVLibraryFilter
+    let initialFilter: CatalogFilterState
     let subtitle: String?
     /// Pushed full-screen entries render the big library header; Skyline
     /// pill embeds hide it — the top bar + pill row already say where the
@@ -26,6 +26,7 @@ struct TVLibraryGridView: View {
 
     @State private var viewModel: TVLibraryGridViewModel
     @State private var selectedPrefix: String? = nil
+    @State private var openPanel: TVBrowsePanel? = nil
 
     @Environment(AppRouter.self) private var router
 
@@ -33,7 +34,7 @@ struct TVLibraryGridView: View {
         libraryId: Int,
         libraryName: String,
         libraryType: String,
-        initialFilter: TVLibraryFilter = .none,
+        initialFilter: CatalogFilterState = .none,
         subtitle: String? = nil,
         showsHeader: Bool = true,
         showsAlphabetRail: Bool = true,
@@ -56,23 +57,73 @@ struct TVLibraryGridView: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            gridColumn
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .focusSection()
+        ZStack {
+            HStack(alignment: .top, spacing: 0) {
+                gridColumn
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .focusSection()
 
-            if showsAlphabetRail {
-                TVAlphabetRail(selected: $selectedPrefix) { prefix in
-                    Task { await viewModel.jumpToPrefix(prefix) }
+                if showsAlphabetRail {
+                    TVAlphabetRail(selected: $selectedPrefix) { prefix in
+                        Task { await viewModel.jumpToPrefix(prefix) }
+                    }
+                    .padding(.trailing, 32)
                 }
-                .padding(.trailing, 32)
+            }
+            // While a panel is open the grid is inert, so focus moves into the
+            // panel and returns to the control row when it closes.
+            .disabled(openPanel != nil)
+
+            if let panel = openPanel {
+                Color.black.opacity(0.55)
+                    .ignoresSafeArea()
+                panelOverlay(panel)
             }
         }
+        .animation(.easeOut(duration: 0.18), value: openPanel)
         .continuumBackground()
         .task {
             if viewModel.items.isEmpty {
                 await viewModel.loadInitial()
             }
+            await viewModel.loadFacetsIfNeeded()
+        }
+    }
+
+    @ViewBuilder
+    private func panelOverlay(_ panel: TVBrowsePanel) -> some View {
+        switch panel {
+        case .sort:
+            TVBrowseSortPanel(
+                mediaType: viewModel.mediaType,
+                current: viewModel.filter.sort,
+                order: viewModel.filter.effectiveOrder,
+                onSelect: { key in
+                    Task { await viewModel.setSort(key) }
+                    openPanel = nil
+                },
+                onClose: { openPanel = nil }
+            )
+        case .filter:
+            TVBrowseFilterPanel(
+                mediaType: viewModel.mediaType,
+                facets: viewModel.facets ?? CatalogFacets(),
+                initial: viewModel.filter,
+                preserveEnabled: viewModel.preserveEnabled,
+                resultNoun: resultNoun,
+                onPreview: { await viewModel.resultCount(for: $0) },
+                onApply: { state in Task { await viewModel.applyFilter(state) } },
+                onPreserveChange: { viewModel.setPreserveEnabled($0) },
+                onClose: { openPanel = nil }
+            )
+        }
+    }
+
+    private var resultNoun: String {
+        switch viewModel.mediaType {
+        case .audiobook: return "audiobooks"
+        case .series: return "shows"
+        case .movie: return "movies"
         }
     }
 
@@ -89,6 +140,15 @@ struct TVLibraryGridView: View {
                     Color.clear
                         .frame(height: topContentInset)
                 }
+
+                TVBrowseControlRow(
+                    sortLabel: viewModel.filter.sort.label,
+                    sortDirection: viewModel.filter.sort.directionLabel(for: viewModel.filter.effectiveOrder),
+                    filterCount: viewModel.filter.activeFacetCount,
+                    onSort: { openPanel = .sort },
+                    onFilter: { openPanel = .filter }
+                )
+                .padding(.horizontal, ContinuumTheme.safePadding)
 
                 if viewModel.items.isEmpty && viewModel.isLoading {
                     Color.clear

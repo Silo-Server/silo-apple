@@ -120,6 +120,11 @@ struct CatalogFilters: Codable, Hashable {
     let audioLanguages: [String]?
     let subtitleLanguages: [String]?
     let originalLanguages: [String]?
+    /// Audiobook-native facets. Always returned by the server; optional here
+    /// so older servers still decode.
+    let authors: [String]?
+    let narrators: [String]?
+    let series: [String]?
 }
 
 struct CatalogResponse: Codable {

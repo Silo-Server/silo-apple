@@ -38,39 +38,13 @@ struct BrowseView: View {
             }
         }
         .continuumBackground()
-        .toolbar {
-            #if os(macOS)
-            ToolbarItem {
-                Button {
-                    showFilters = true
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
-                        .foregroundColor(hasActiveFilters ? .continuumOnSurface : .continuumSecondaryText)
-                }
-            }
-            #else
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showFilters = true
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
-                        .foregroundColor(hasActiveFilters ? .continuumOnSurface : .continuumSecondaryText)
-                }
-            }
-            #endif
-        }
         .sheet(isPresented: $showFilters) {
-            FilterView(
-                selectedGenre: $viewModel.selectedGenre,
-                sortBy: $viewModel.sortBy,
-                onApply: {
-                    Task { await viewModel.loadItems(reset: true) }
-                }
-            )
+            FilterView(viewModel: viewModel)
         }
         .task {
             viewModel.configure(libraryId: libraryId)
             await viewModel.loadItems(reset: true)
+            await viewModel.loadFacetsIfNeeded()
         }
         .refreshable {
             await viewModel.loadItems(reset: true)
@@ -85,6 +59,8 @@ struct BrowseView: View {
                 if showsSearchShortcut {
                     searchBar
                 }
+
+                controlBar
 
                 if hasActiveFilters {
                     activeFilterChips
@@ -133,23 +109,85 @@ struct BrowseView: View {
         .padding(.horizontal, ContinuumTheme.padding)
     }
 
+    // MARK: - Control bar (Sort + Filter)
+
+    private var controlBar: some View {
+        HStack(spacing: 9) {
+            sortMenu
+            Button { showFilters = true } label: {
+                controlChip(
+                    icon: "line.3.horizontal.decrease",
+                    text: "Filter",
+                    badge: viewModel.filterState.activeFacetCount
+                )
+            }
+            .buttonStyle(.plain)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, ContinuumTheme.padding)
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            ForEach(CatalogSortKey.available(for: viewModel.mediaType), id: \.self) { key in
+                Button {
+                    Task { await viewModel.setSort(key) }
+                } label: {
+                    if viewModel.filterState.sort == key {
+                        Label(
+                            key.label,
+                            systemImage: viewModel.filterState.effectiveOrder == .asc ? "arrow.up" : "arrow.down"
+                        )
+                    } else {
+                        Text(key.label)
+                    }
+                }
+            }
+        } label: {
+            controlChip(
+                icon: "arrow.up.arrow.down",
+                text: viewModel.filterState.sort.label,
+                trailing: viewModel.filterState.sort.directionLabel(for: viewModel.filterState.effectiveOrder)
+            )
+        }
+    }
+
+    private func controlChip(icon: String, text: String, trailing: String? = nil, badge: Int? = nil) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+            Text(text)
+                .font(.continuumBody)
+            if let trailing {
+                Text(trailing)
+                    .font(.continuumCaption)
+                    .foregroundColor(.continuumSecondaryText)
+            }
+            if let badge, badge > 0 {
+                Text("\(badge)")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.continuumBackground)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(Color.continuumOnSurface))
+            }
+        }
+        .foregroundColor(.continuumOnSurface)
+        .padding(.horizontal, 13)
+        .padding(.vertical, 8)
+        .siloGlass(in: .capsule)
+    }
+
     // MARK: - Active Filters
 
-    private var hasActiveFilters: Bool {
-        viewModel.selectedGenre != nil || viewModel.sortBy != "title"
-    }
+    private var hasActiveFilters: Bool { viewModel.hasActiveFilters }
 
     private var activeFilterChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                if let genre = viewModel.selectedGenre {
-                    filterChip(label: genre) {
-                        Task { await viewModel.applyGenre(nil) }
-                    }
-                }
-                if viewModel.sortBy != "title" {
-                    filterChip(label: "Sort: \(viewModel.sortBy.capitalized)") {
-                        Task { await viewModel.applySort("title") }
+                ForEach(viewModel.filterState.activeChips()) { chip in
+                    filterChip(label: chip.label) {
+                        Task { await viewModel.removeChip(chip) }
                     }
                 }
             }

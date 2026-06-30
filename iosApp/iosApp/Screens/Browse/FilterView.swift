@@ -1,101 +1,185 @@
 import SwiftUI
 
-/// Sheet for selecting browse filters — Plezy style.
-/// Pill chips: selected = white bg/dark text, unselected = surface bg/muted text.
+/// Full-facet filter sheet. Edits a draft `CatalogFilterState`; the apply
+/// button shows a live result count and commits the draft to the view model.
 struct FilterView: View {
-    @Binding var selectedGenre: String?
-    @Binding var sortBy: String
-    let onApply: () -> Void
+    let viewModel: BrowseViewModel
+
+    @State private var draft: CatalogFilterState
+    @State private var preserve: Bool
+    @State private var liveCount: Int?
+    @State private var isCounting = false
+    @State private var previewTask: Task<Void, Never>?
     @Environment(\.dismiss) private var dismiss
 
-    private let genres = [
-        "Action", "Adventure", "Animation", "Comedy", "Crime",
-        "Documentary", "Drama", "Family", "Fantasy", "History",
-        "Horror", "Music", "Mystery", "Romance", "Science Fiction",
-        "Thriller", "War", "Western"
-    ]
+    init(viewModel: BrowseViewModel) {
+        self.viewModel = viewModel
+        _draft = State(initialValue: viewModel.filterState)
+        _preserve = State(initialValue: viewModel.preserveEnabled)
+    }
 
-    private let sortOptions = [
-        ("title", "Title"),
-        ("year", "Year"),
-        ("rating", "Rating"),
-        ("added", "Recently Added")
-    ]
+    private var hasProfile: Bool { AuthService.shared.profileId?.isEmpty == false }
+
+    private var resultNoun: String {
+        switch viewModel.mediaType {
+        case .audiobook: return "audiobooks"
+        case .series: return "shows"
+        case .movie: return "items"
+        }
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: ContinuumTheme.largePadding) {
-                    sortSection
-                    genreSection
+                    matchSection
+                    ForEach(CatalogFacet.available(for: viewModel.mediaType), id: \.self) { facet in
+                        facetSection(facet)
+                    }
                 }
                 .padding(ContinuumTheme.padding)
             }
             .continuumBackground()
-            .navigationTitle("Filters")
+            .navigationTitle("Filter")
             .continuumNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Reset") {
-                        selectedGenre = nil
-                        sortBy = "title"
-                    }
-                    .foregroundColor(.continuumSecondaryText)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Apply") {
-                        onApply()
-                        dismiss()
-                    }
-                    .foregroundColor(.continuumOnSurface)
+                    Button("Reset") { draft.resetFilters() }
+                        .foregroundColor(.continuumSecondaryText)
+                        .disabled(draft.isDefault)
                 }
             }
             .continuumNavigationBarSurfaceBackground()
+            .safeAreaInset(edge: .bottom) { footer }
         }
         .presentationDetents([.medium, .large])
+        .task {
+            await viewModel.loadFacetsIfNeeded()
+            schedulePreview()
+        }
+        .onChange(of: draft) { _, _ in schedulePreview() }
     }
 
-    // MARK: - Sort Section
+    // MARK: - Match all/any
 
-    private var sortSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Sort By")
+    private var matchSection: some View {
+        HStack(spacing: 12) {
+            Text("Match")
                 .font(.continuumHeadline)
                 .foregroundColor(.continuumOnSurface)
+            HStack(spacing: 2) {
+                matchOption("All", isOn: draft.matchAll) { draft.matchAll = true }
+                matchOption("Any", isOn: !draft.matchAll) { draft.matchAll = false }
+            }
+            .padding(2)
+            .background(Capsule().fill(Color.continuumSurfaceElevated))
+            Spacer(minLength: 0)
+        }
+    }
 
-            FlowLayout(spacing: 8) {
-                ForEach(sortOptions, id: \.0) { value, label in
-                    chipButton(label: label, isSelected: sortBy == value) {
-                        sortBy = value
+    private func matchOption(_ label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.continuumCaption)
+                .foregroundColor(isOn ? .continuumBackground : .continuumSecondaryText)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(isOn ? Color.continuumOnSurface : Color.clear))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Facet section
+
+    @ViewBuilder
+    private func facetSection(_ facet: CatalogFacet) -> some View {
+        let options = valueOptions(for: facet)
+        if !options.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(facet.title)
+                    .font(.continuumHeadline)
+                    .foregroundColor(.continuumOnSurface)
+                FlowLayout(spacing: 8) {
+                    ForEach(options, id: \.value) { option in
+                        chipButton(label: option.label, isSelected: draft.isSelected(facet, value: option.value)) {
+                            draft.toggle(facet, value: option.value)
+                        }
                     }
                 }
             }
         }
     }
 
-    // MARK: - Genre Section
+    /// (value, label) options for a facet — fixed vocab for derived facets,
+    /// server vocab otherwise.
+    private func valueOptions(for facet: CatalogFacet) -> [(value: String, label: String)] {
+        (viewModel.facets ?? CatalogFacets()).optionPairs(for: facet, hasProfile: hasProfile)
+    }
 
-    private var genreSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Genre")
-                .font(.continuumHeadline)
-                .foregroundColor(.continuumOnSurface)
+    // MARK: - Footer (preserve + apply)
 
-            FlowLayout(spacing: 8) {
-                chipButton(label: "All", isSelected: selectedGenre == nil) {
-                    selectedGenre = nil
-                }
-
-                ForEach(genres, id: \.self) { genre in
-                    chipButton(label: genre, isSelected: selectedGenre == genre) {
-                        selectedGenre = genre
-                    }
-                }
+    private var footer: some View {
+        VStack(spacing: 0) {
+            Divider().background(Color.continuumDivider)
+            preserveRow
+                .padding(.horizontal, ContinuumTheme.padding)
+                .padding(.top, 12)
+            Button {
+                let committed = draft
+                dismiss()
+                Task { await viewModel.apply(committed) }
+            } label: {
+                Text(applyTitle)
+                    .font(.continuumBody.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+                    .background(Color.continuumOnSurface, in: RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+                    .foregroundColor(.continuumBackground)
             }
+            .buttonStyle(.plain)
+            .padding(ContinuumTheme.padding)
+        }
+        .background(.regularMaterial)
+    }
+
+    private var preserveRow: some View {
+        Toggle(isOn: $preserve) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Preserve sort & filters")
+                    .font(.continuumBody)
+                    .foregroundColor(.continuumOnSurface)
+                Text("Reopen this library exactly as you left it")
+                    .font(.continuumCaption)
+                    .foregroundColor(.continuumSecondaryText)
+            }
+        }
+        .tint(Color.continuumOnSurface)
+        .onChange(of: preserve) { _, newValue in
+            viewModel.setPreserveEnabled(newValue)
         }
     }
 
-    // MARK: - Chip (Plezy: selected = inverted white/black, unselected = surface/muted)
+    private var applyTitle: String {
+        guard let liveCount else { return isCounting ? "Counting…" : "Show results" }
+        return "Show \(liveCount.formatted()) \(resultNoun)"
+    }
+
+    // MARK: - Live count
+
+    private func schedulePreview() {
+        previewTask?.cancel()
+        isCounting = true
+        previewTask = Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            let count = await viewModel.resultCount(for: draft)
+            guard !Task.isCancelled else { return }
+            liveCount = count
+            isCounting = false
+        }
+    }
+
+    // MARK: - Chip
 
     private func chipButton(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {

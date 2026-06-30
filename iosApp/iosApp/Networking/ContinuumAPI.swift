@@ -502,9 +502,11 @@ actor ContinuumAPI {
         try await http.get("/api/v1/catalog/items/\(contentId)")
     }
 
-    func catalogFilters(libraryId: Int?) async throws -> CatalogFilters {
+    func catalogFilters(libraryId: Int?, includeTechnical: Bool = true) async throws -> CatalogFilters {
         var query: [String: String] = [:]
         if let libraryId { query["library_id"] = String(libraryId) }
+        // include_technical unlocks the resolution / audio / subtitle facets.
+        if includeTechnical { query["include_technical"] = "true" }
         return try await http.get("/api/v1/catalog/filters", query: query)
     }
 
