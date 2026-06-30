@@ -112,6 +112,8 @@ enum CacheKey {
     static let perProfilePrefixes: [String] = [
         "home:",
         "recommendations:",
+        "browse:",
+        "library:",
         "personal:",
         "item:",
         "collection:",

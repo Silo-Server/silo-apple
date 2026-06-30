@@ -182,6 +182,7 @@ final class ServerRegistry {
         // not be able to land on the new server's token slot. See
         // `HTTPClient.cancelInFlightRequests` for the ordering contract.
         await HTTPClient.shared.cancelInFlightRequests()
+        await StartupContentPrefetcher.resetAllPrefetches()
 
         let entry = entries.first(where: { $0.id == serverId })!
         defaults.set(entry.url, forKey: "serverUrl")
