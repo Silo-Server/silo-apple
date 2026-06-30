@@ -93,8 +93,17 @@ protocol LiveSubtitleSink: AnyObject {
     func registerPersisted(subtitleId: Int)
     /// Show the "Preparing… subtitles" notice while the first cues arrive.
     func showPreparingNotice()
+    /// Retract the "Preparing… subtitles" notice once playback has resumed
+    /// (first cues) or the job finished, so it doesn't linger past its purpose.
+    func hidePreparingNotice()
     /// Surface a soft failure notice (job failed / timed out / gave up).
     func showFailureNotice(_ message: String)
+}
+
+extension LiveSubtitleSink {
+    /// Default no-op: surfaces that don't show a preparing notice (e.g. test
+    /// fakes) need no change when the notice is retracted.
+    func hidePreparingNotice() {}
 }
 
 /// A cancellable handle for the safety-resume timer.
@@ -327,6 +336,10 @@ final class LiveSubtitleCoordinator {
             if wasPlaying {
                 controls.play()
             }
+            // Playback has resumed with the first cue on screen — retract the
+            // "playback resumes in a moment" notice so it doesn't outlive the
+            // pause it described.
+            sink.hidePreparingNotice()
             Self.logger.info(
                 "[AI-LIVE] first cues trackKey=\(batch.trackKey, privacy: .public) count=\(batch.cues.count, privacy: .public) resumed=\(self.wasPlaying, privacy: .public)"
             )
@@ -344,6 +357,7 @@ final class LiveSubtitleCoordinator {
             controls.play()
         }
         didResume = true
+        sink.hidePreparingNotice()
 
         // Hand off to the persisted track. The adapter de-dupes with the
         // poller so the track is registered once; selection swaps live→persisted
@@ -414,6 +428,7 @@ final class LiveSubtitleCoordinator {
             controls.play()
         }
         didResume = true
+        sink.hidePreparingNotice()
         if let active = activeTrackKey {
             // M5 seamless swap: the poller authority has already registered +
             // selected the persisted track (or is doing so on the main queue);

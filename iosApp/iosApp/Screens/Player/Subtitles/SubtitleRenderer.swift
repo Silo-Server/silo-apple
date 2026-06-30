@@ -66,6 +66,12 @@ final class ASSTrackHandle {
 struct SubtitleRenderOutput {
     let image: CGImage?
     let isDirty: Bool
+    /// Whether libass produced an image list for *this* timestamp, i.e. a cue
+    /// is actually being rasterized right now — independent of `isDirty` (which
+    /// only flags a change since the previous frame). Used by the live-subtitle
+    /// diagnostic to tell "cue painted" from "cue fed but rendered nothing"
+    /// (e.g. a font/shaping miss).
+    var hasContent: Bool = false
 }
 
 final class SubtitleRenderer {
@@ -469,9 +475,10 @@ final class SubtitleRenderer {
             guard let renderer = primaryRenderer else { return nil }
             return ass_render_frame(renderer, $0.ptr, now, &changePrimary)
         }
+        let hasContent = imgPrimary != nil || imgSecondary != nil
         let anyChange = changePrimary != 0 || changeSecondary != 0 || frameSizeDirty
         if !anyChange {
-            return SubtitleRenderOutput(image: nil, isDirty: false)
+            return SubtitleRenderOutput(image: nil, isDirty: false, hasContent: hasContent)
         }
 
         // Composite into the canvas. Secondary first so primary draws
@@ -484,7 +491,7 @@ final class SubtitleRenderer {
         frameSizeDirty = false
 
         let cgImage = canvas.snapshot(scale: scale)
-        return SubtitleRenderOutput(image: cgImage, isDirty: true)
+        return SubtitleRenderOutput(image: cgImage, isDirty: true, hasContent: hasContent)
     }
 
     private func ensureFrameSizeOnSessionQueue(

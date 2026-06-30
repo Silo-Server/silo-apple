@@ -439,6 +439,9 @@ final class PlayerCore: NSObject {
     private var diagnosticsTimer: Timer?
     private var diagStartWall: CFTimeInterval = 0
     private var diagStartSyncTime: Double = 0
+    /// Last playhead second at which the live-subtitle render diagnostic logged,
+    /// so `pumpSubtitleOverlay` samples it ~1×/s instead of every vsync.
+    private var lastLiveOverlayDiagSeconds: Double = -1
     private var lastDiagEnqueueCount: UInt64 = 0
     private var lastDiagAudioEnqueueCount: UInt64 = 0
     private var vSyncHolds: UInt64 = 0
@@ -4741,12 +4744,31 @@ final class PlayerCore: NSObject {
         let scale = overlay.window?.screen.scale ?? overlay.traitCollection.displayScale
         #endif
 
+        // DIAG: while a live AI subtitle slot is active, sample the render once
+        // a second to record whether libass is actually rasterizing a cue
+        // (`hasContent`) at the current playhead. `hasContent=0` while cues are
+        // being fed at the right time ⇒ the miss is in shaping/font/style, not
+        // the cue pipeline; `hasContent=1` while nothing shows ⇒ the miss is in
+        // compositing/overlay.
+        let liveDiag: Bool
+        if session.isLiveSlot(.primary), nowSeconds - lastLiveOverlayDiagSeconds >= 1.0 {
+            lastLiveOverlayDiagSeconds = nowSeconds
+            liveDiag = true
+        } else {
+            liveDiag = false
+        }
+
         renderer.sessionQueue.async { [weak overlay] in
             let out = renderer.renderOnSessionQueue(
                 atMilliseconds: assNowMs,
                 frameSize: bounds.size,
                 scale: scale
             )
+            if liveDiag {
+                Self.logger.info(
+                    "[AI-LIVE-DIAG] render assNowMs=\(assNowMs, privacy: .public) hasContent=\(out.hasContent ? 1 : 0, privacy: .public) dirty=\(out.isDirty ? 1 : 0, privacy: .public) frame=\(Int(bounds.width), privacy: .public)x\(Int(bounds.height), privacy: .public)"
+                )
+            }
             guard out.isDirty else { return }
             let image = out.image
             DispatchQueue.main.async {

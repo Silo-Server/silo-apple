@@ -657,6 +657,14 @@ class PlayerViewModel {
     /// observer.
     private var realtimeUnavailableSnapshot = false
 
+    /// Whether the realtime websocket can currently drive the live AI-subtitle
+    /// overlay (pause → "Preparing subtitles" → live cues → resume). The
+    /// in-player AI subtitle menu reads this to decide whether to dismiss the
+    /// whole subtitle UI down to the player on submit — so the live overlay is
+    /// visible — or stay open with its in-place progress (the poll-only
+    /// fallback, which has no player-surface overlay).
+    var subtitleAILiveOverlayAvailable: Bool { !realtimeUnavailableSnapshot }
+
     /// The `observeUnavailability` token, retained so `cleanup()` can remove
     /// the observer explicitly. (Belt-and-suspenders: `unbind()` also clears
     /// all observers, which is the primary leak fix.)
@@ -682,6 +690,10 @@ class PlayerViewModel {
     }
     private var hideControlsTask: Task<Void, Never>?
     private var noticeDismissTask: Task<Void, Never>?
+    /// Id of the live-subtitle "Preparing subtitles" notice while it's on
+    /// screen, so `dismissLiveSubtitlePreparingNotice()` can clear it the moment
+    /// playback resumes without clobbering a newer, unrelated notice.
+    private var liveSubtitlePreparingNoticeId: UUID?
     private var remoteDismissTask: Task<Void, Never>?
     private var progressTask: Task<Void, Never>?
     private var staleSessionRecoveryTask: Task<Void, Never>?
@@ -4358,6 +4370,24 @@ class PlayerViewModel {
             tone: .info,
             duration: 30
         )
+        // Remember which notice is the preparing one so we can retract it the
+        // instant playback resumes — otherwise the 30s safety duration leaves
+        // "playback resumes in a moment" on screen long after it already has,
+        // which reads as a stuck/broken pause.
+        liveSubtitlePreparingNoticeId = activeNotice?.id
+    }
+
+    /// Clear the live-subtitle "Preparing subtitles" notice once playback has
+    /// resumed (first cues) or the job finished. No-ops if it has already been
+    /// replaced by a newer notice, so an unrelated message is never clobbered.
+    @MainActor
+    func dismissLiveSubtitlePreparingNotice() {
+        guard let id = liveSubtitlePreparingNoticeId else { return }
+        liveSubtitlePreparingNoticeId = nil
+        guard activeNotice?.id == id else { return }
+        noticeDismissTask?.cancel()
+        noticeDismissTask = nil
+        activeNotice = nil
     }
 
     /// Soft failure notice for the live subtitle path.
@@ -6207,7 +6237,18 @@ private final class LiveSubtitlePlaybackAdapter: LivePlaybackControls {
 /// offset before feeding libass.
 @MainActor
 private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        category: "LiveSubtitle"
+    )
+
     private weak var owner: PlayerViewModel?
+
+    /// How many fed cues still get a `[AI-LIVE-DIAG]` line. Bounded so the log
+    /// shows the opening cues' timing (cue start vs playhead vs the shift) — the
+    /// thing that tells us whether streamed cues land at the playhead — without
+    /// spamming a line per cue. Reset when a new live track is installed.
+    private var diagCueLogBudget = 0
 
     /// One cue converter per live `track_key` (holds dedupe state).
     private var converters: [String: LiveSubtitleTrack] = [:]
@@ -6233,6 +6274,7 @@ private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
             ordinals[trackKey] = ordinal
         }
         converters[trackKey] = LiveSubtitleTrack()
+        diagCueLogBudget = 5
         let trackId = owner.installLiveSubtitleTrackRow(
             ordinal: ordinal,
             label: label ?? "AI subtitles",
@@ -6257,6 +6299,18 @@ private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
         let converted = converter.makeCue(start: movieStart, end: movieEnd, text: cue.text)
         converters[key] = converter // persist dedupe state (value type)
         guard let converted else { return }
+        if diagCueLogBudget > 0 {
+            diagCueLogBudget -= 1
+            // playhead = the libass tick clock the renderer paints against.
+            // For a cue to be visible its [startMs, startMs+durationMs] window
+            // must straddle playheadMs. If startMs is far from playheadMs, the
+            // streamed cue lands off the current scene (timing); if it straddles
+            // but nothing shows, the miss is downstream (render / shaping / font).
+            let playheadMs = Int64((owner.currentTime - shift) * 1000.0)
+            Self.logger.info(
+                "[AI-LIVE-DIAG] feed cue start=\(cue.start, privacy: .public) shift=\(shift, privacy: .public) startMs=\(converted.startMs, privacy: .public) durMs=\(converted.durationMs, privacy: .public) playheadMs=\(playheadMs, privacy: .public) Δms=\(converted.startMs - playheadMs, privacy: .public) textLen=\(converted.eventText.count, privacy: .public)"
+            )
+        }
         owner.feedLiveSubtitleCue(
             slot: .primary,
             eventText: converted.eventText,
@@ -6306,6 +6360,10 @@ private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
 
     func showPreparingNotice() {
         owner?.showLiveSubtitlePreparingNotice()
+    }
+
+    func hidePreparingNotice() {
+        owner?.dismissLiveSubtitlePreparingNotice()
     }
 
     func showFailureNotice(_ message: String) {

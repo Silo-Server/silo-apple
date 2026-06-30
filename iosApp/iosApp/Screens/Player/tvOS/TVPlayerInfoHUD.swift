@@ -91,7 +91,7 @@ struct TVPlayerInfoHUD: View {
             case .stats:     StatsPane(viewModel: viewModel, onMoveToTabs: focusActiveTab)
             case .video:     VideoPane(viewModel: viewModel, onMoveToTabs: focusActiveTab)
             case .audio:     AudioPane(viewModel: viewModel, onMoveToTabs: focusActiveTab)
-            case .subtitles: SubtitlesPane(viewModel: viewModel, onMoveToTabs: focusActiveTab)
+            case .subtitles: SubtitlesPane(viewModel: viewModel, onMoveToTabs: focusActiveTab, onCloseHUD: onDismiss)
             case .chapters:  ChaptersPane(viewModel: viewModel, onSelect: onDismiss, onMoveToTabs: focusActiveTab)
             }
         }
@@ -1677,6 +1677,9 @@ private struct AudioPane: View {
 private struct SubtitlesPane: View {
     let viewModel: PlayerViewModel
     let onMoveToTabs: () -> Void
+    /// Dismiss the whole HUD (back to the player). Used when an AI subtitle job
+    /// is accepted so the live "Preparing subtitles" overlay is visible.
+    let onCloseHUD: () -> Void
 
     @State private var showAppearanceDialog = false
     @State private var showAITranslateMenu = false
@@ -1733,9 +1736,16 @@ private struct SubtitlesPane: View {
             // `SubtitleTranslateMenu` as a modal overlay — same presentation
             // idiom as the appearance dialog above (columns dimmed + disabled).
             if showAITranslateMenu {
-                SubtitleTranslateMenu(viewModel: viewModel) {
-                    showAITranslateMenu = false
-                }
+                SubtitleTranslateMenu(
+                    viewModel: viewModel,
+                    onDismiss: { showAITranslateMenu = false },
+                    // Job accepted: close the menu AND the HUD so the live
+                    // "Preparing subtitles" overlay is visible on the player.
+                    onJobStarted: {
+                        showAITranslateMenu = false
+                        onCloseHUD()
+                    }
+                )
                 .transition(.opacity)
             }
         }
@@ -1931,7 +1941,7 @@ private struct SubtitlesPane: View {
         VStack(spacing: 2) {
             if aiSubtitlesAvailable {
                 HUDFocusedSettingRow(
-                    label: "Translate with AI…",
+                    label: "AI Subtitles…",
                     value: "",
                     systemImage: "sparkles",
                     focused: $focusedSubtitleField,

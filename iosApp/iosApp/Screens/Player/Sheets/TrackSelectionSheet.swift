@@ -85,8 +85,17 @@ struct TrackSelectionSheet: View {
             .opacity(showAITranslateMenu ? 0.28 : 1)
 
             if showAITranslateMenu {
-                SubtitleTranslateMenu(viewModel: viewModel) { showAITranslateMenu = false }
-                    .transition(.opacity)
+                SubtitleTranslateMenu(
+                    viewModel: viewModel,
+                    onDismiss: { showAITranslateMenu = false },
+                    // Job accepted: close both this menu and the track panel so
+                    // the live overlay is visible on the player.
+                    onJobStarted: {
+                        showAITranslateMenu = false
+                        onDismiss()
+                    }
+                )
+                .transition(.opacity)
             }
         }
         .onExitCommand { onDismiss() }
@@ -103,7 +112,7 @@ struct TrackSelectionSheet: View {
                 Image(systemName: "sparkles")
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(.white)
-                Text("Translate with AI…")
+                Text("AI Subtitles…")
                     .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(.white)
             }
@@ -119,7 +128,7 @@ struct TrackSelectionSheet: View {
             .onTapGesture(perform: action)
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
             .accessibilityAddTraits(.isButton)
-            .accessibilityLabel("Translate with AI")
+            .accessibilityLabel("AI Subtitles")
         }
     }
 
@@ -217,7 +226,7 @@ struct TrackSelectionSheet: View {
                     Button {
                         showAITranslateMenu = true
                     } label: {
-                        Label("Translate with AI…", systemImage: "sparkles")
+                        Label("AI Subtitles…", systemImage: "sparkles")
                     }
                 }
             }
@@ -228,8 +237,17 @@ struct TrackSelectionSheet: View {
         .listStyle(.insetGrouped)
         #endif
         .sheet(isPresented: $showAITranslateMenu) {
-            SubtitleTranslateMenu(viewModel: viewModel) { showAITranslateMenu = false }
-                .presentationDetents([.medium, .large])
+            SubtitleTranslateMenu(
+                viewModel: viewModel,
+                onDismiss: { showAITranslateMenu = false },
+                // Job accepted: close both this menu and the track sheet so the
+                // live overlay is visible on the player.
+                onJobStarted: {
+                    showAITranslateMenu = false
+                    onDismiss()
+                }
+            )
+            .presentationDetents([.medium, .large])
         }
     }
     #endif
