@@ -68,10 +68,6 @@ struct PlayerView: View {
                         playbackLoadingIndicator
                     }
 
-                    if let notice = viewModel.activeNotice ?? viewModel.suspendedNotice {
-                        PlayerNoticeOverlay(notice: notice)
-                    }
-
                     #if os(tvOS)
                     // Focus sink with UIKit-backed press capture. Mounted
                     // whenever the transport overlay is hidden OR a seek
@@ -153,6 +149,10 @@ struct PlayerView: View {
                         )
                     }
                     #endif
+
+                    if let notice = viewModel.activeNotice ?? viewModel.suspendedNotice {
+                        PlayerNoticeOverlay(notice: notice)
+                    }
                 }
             }
         }

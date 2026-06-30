@@ -7,8 +7,10 @@
 //  clock. No libass, no websocket, no player.
 //
 //  Transitions under test (spec Data flow (e)):
-//    started        → snapshot selection, pause if playing, install + select
-//                     the live track, show "Preparing…", arm the 30s timer.
+//    beginPreparing → snapshot selection, pause if playing, show "Preparing…".
+//    started        → install + select the live track, arm the 30s timer.
+//                     If no beginPreparing ran first, started performs that
+//                     same snapshot/pause/notice setup itself.
 //    first cues     → feed cues, cancel the timer, resume (playhead-first).
 //    safety timeout → resume + fail out + restore selection.
 //    completed      → register the persisted track, close the live track.
@@ -137,6 +139,33 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
 
     // MARK: - started
 
+    func testBeginPreparingPausesAndShowsNoticeBeforeStarted() {
+        let (coordinator, controls, sink, clock) = makeCoordinator(isPlaying: true, priorSelection: 0x4000_0001)
+        coordinator.beginPreparing()
+
+        XCTAssertEqual(coordinator.phase, .preparing)
+        XCTAssertEqual(controls.pauseCount, 1, "submit should pause immediately")
+        XCTAssertEqual(controls.playCount, 0, "must not resume before completion/cues/cancel")
+        XCTAssertTrue(sink.contains(.showPreparing))
+        XCTAssertEqual(clock.scheduleCount, 0, "cue safety timer starts only once websocket started lands")
+    }
+
+    func testStartedAfterBeginPreparingReusesPauseSnapshotAndResumesOnCues() {
+        let (coordinator, controls, sink, clock) = makeCoordinator(isPlaying: true, priorSelection: nil)
+        coordinator.beginPreparing()
+        coordinator.handle(started("ai-7"))
+
+        XCTAssertEqual(controls.pauseCount, 1, "started must not pause a second time")
+        XCTAssertEqual(sink.calls.filter { $0 == .showPreparing }.count, 1, "preparing notice shown once")
+        XCTAssertTrue(sink.contains(.install(trackKey: "ai-7", label: "Spanish", language: "es")))
+        XCTAssertTrue(sink.contains(.selectLive(trackKey: "ai-7")))
+        XCTAssertEqual(clock.scheduleCount, 1)
+
+        coordinator.handle(cues("ai-7", [(10, 12, "hi")]))
+        XCTAssertEqual(controls.playCount, 1, "resume still uses the submit-time pause snapshot")
+        XCTAssertEqual(coordinator.phase, .streaming)
+    }
+
     func testStartedPausesInstallsSelectsAndArmsTimer() {
         let (coordinator, controls, sink, clock) = makeCoordinator(isPlaying: true, priorSelection: 0x4000_0001)
         coordinator.handle(started("ai-7"))
@@ -202,6 +231,27 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
         coordinator.handle(cues("ai-7", [(10, 12, "a")]))
         coordinator.handle(cues("ai-7", [(14, 16, "b")]))
         XCTAssertEqual(controls.playCount, 1, "resume exactly once")
+    }
+
+    func testPollerCompletionBeforeStartedResumesSubmitPause() {
+        let (coordinator, controls, _, _) = makeCoordinator(isPlaying: true, priorSelection: nil)
+        coordinator.beginPreparing()
+
+        coordinator.persistedHandoffAlreadyDone(trackKey: "ai-7")
+
+        XCTAssertEqual(controls.playCount, 1, "poll-only completion should resume submit pause")
+        XCTAssertEqual(coordinator.phase, .completed)
+    }
+
+    func testCancelBeforeStartedResumesSubmitPauseWithoutFailure() {
+        let (coordinator, controls, sink, _) = makeCoordinator(isPlaying: true, priorSelection: nil)
+        coordinator.beginPreparing()
+
+        coordinator.cancelActivePresentation()
+
+        XCTAssertEqual(controls.playCount, 1, "cancel should resume submit pause")
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertFalse(sink.calls.contains(.showFailure("Live subtitles were interrupted.")))
     }
 
     // MARK: - safety timeout

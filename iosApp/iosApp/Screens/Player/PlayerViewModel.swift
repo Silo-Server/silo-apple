@@ -637,7 +637,7 @@ class PlayerViewModel {
             mediaFileId: { [weak self] in self?.currentSelectedVersion?.fileId },
             currentTime: { [weak self] in self?.currentTime ?? 0 },
             sessionId: { [weak self] in self?.activePlaybackSessionId },
-            realtimeUnavailable: { [weak self] in self?.realtimeUnavailableSnapshot ?? true },
+            realtimeUnavailable: { [weak self] in !(self?.subtitleAILiveOverlayAvailable ?? false) },
             liveCoordinator: self.makeLiveSubtitleCoordinator(),
             handoffContext: { [weak self] in self?.makeSubtitleHandoffContext() },
             registerAndSelectDescriptor: { [weak self] descriptor in
@@ -649,26 +649,31 @@ class PlayerViewModel {
         )
     }
 
-    /// Last-known realtime websocket availability, mirrored from the actor's
-    /// `isRealtimeUnavailable` via `observeUnavailability` so the (synchronous,
-    /// main-actor) `SubtitleAIController` can read it when deciding whether to
-    /// request live cue streaming. Seeded synchronously from the client's
-    /// current availability at bind time (see `bind`), then kept fresh by the
-    /// observer.
+    /// Last-known realtime websocket connectivity, mirrored from the actor so
+    /// the synchronous subtitle-AI submit path can tell the difference between
+    /// "socket connected" and "not failed yet". A fast first iOS submit can
+    /// beat the websocket handshake; treating that as live-ready asks the
+    /// server to stream cues into a socket that cannot receive them yet.
+    private var realtimeConnectedSnapshot = false
+
+    /// Last-known realtime websocket availability. This flips only when the
+    /// circuit breaker gives up; the separate connectivity snapshot above
+    /// covers normal connecting/reconnecting gaps.
     private var realtimeUnavailableSnapshot = false
 
-    /// Whether the realtime websocket can currently drive the live AI-subtitle
-    /// overlay (pause → "Preparing subtitles" → live cues → resume). The
-    /// in-player AI subtitle menu reads this to decide whether to dismiss the
-    /// whole subtitle UI down to the player on submit — so the live overlay is
-    /// visible — or stay open with its in-place progress (the poll-only
-    /// fallback, which has no player-surface overlay).
-    var subtitleAILiveOverlayAvailable: Bool { !realtimeUnavailableSnapshot }
+    /// Whether the realtime websocket can currently receive live AI-subtitle
+    /// cues. The player-surface preparing/pause flow now starts immediately on
+    /// submit for both live and poll-only jobs; this flag only decides whether
+    /// the request includes `session_id` for realtime cue streaming.
+    var subtitleAILiveOverlayAvailable: Bool {
+        realtimeConnectedSnapshot && !realtimeUnavailableSnapshot && activePlaybackSessionId != nil
+    }
 
     /// The `observeUnavailability` token, retained so `cleanup()` can remove
     /// the observer explicitly. `unbind()` preserves observers across fresh
     /// load cycles because this snapshot is a long-lived PlayerViewModel concern.
     private var realtimeUnavailabilityObserverToken: UUID?
+    private var realtimeConnectivityObserverToken: UUID?
 
     /// Build the live-subtitle coordinator with adapters bound to this VM. The
     /// adapters touch the VM's playback + live-track + notice surface, so they
@@ -961,23 +966,22 @@ class PlayerViewModel {
                 await self.handleRealtimeEvent(event)
             }
         )
-        // Mirror the socket's availability so the (synchronous) controller can
-        // decide whether to request live cue streaming, and so a mid-job flip
-        // to unavailable degrades the live presentation to the poller.
-        //
-        // The snapshot defaults to `false` (optimistic / available)
-        // rather than `true`. The actor's `isRealtimeUnavailable` is
-        // actor-isolated and can't be read synchronously from here, so a fast
-        // first submit (before the observer's async callback lands) would, with
-        // a `true` default, wrongly omit `session_id` and run poll-only even on
-        // a healthy socket. Optimistic-available is the safe default: if the
-        // socket is in fact down, the server simply doesn't stream cues and the
-        // poller still completes the job. `observeUnavailability` delivers the
-        // true current value once at subscription, so the snapshot converges
-        // immediately afterward.
+        // Mirror websocket connectivity so the synchronous subtitle-AI
+        // controller requests live cue streaming only when the socket is
+        // actually ready. If the first iOS submit beats the handshake, the job
+        // still uses the shared paused preparing flow, but completes via the
+        // poller instead of waiting for websocket `started`/`cues` frames.
         let client = realtimeClient
         Task { [weak self] in
             guard let self, let client else { return }
+            let connectivityToken = await client.observeConnectivity { [weak self] connected in
+                guard let self else { return }
+                let wasConnected = self.realtimeConnectedSnapshot
+                self.realtimeConnectedSnapshot = connected
+                if !connected && wasConnected {
+                    self.subtitleAI.realtimeDidBecomeUnavailable()
+                }
+            }
             let token = await client.observeUnavailability { [weak self] unavailable in
                 guard let self else { return }
                 let wasAvailable = !self.realtimeUnavailableSnapshot
@@ -986,6 +990,7 @@ class PlayerViewModel {
                     self.subtitleAI.realtimeDidBecomeUnavailable()
                 }
             }
+            self.realtimeConnectivityObserverToken = connectivityToken
             self.realtimeUnavailabilityObserverToken = token
         }
         // `subtitleAI` is a lazy `@MainActor` property (see its declaration):
@@ -4612,11 +4617,16 @@ class PlayerViewModel {
         sourceProxy?.stop()
         sourceProxy = nil
 
+        let connectivityToken = realtimeConnectivityObserverToken
+        realtimeConnectivityObserverToken = nil
         let unavailabilityToken = realtimeUnavailabilityObserverToken
         realtimeUnavailabilityObserverToken = nil
         Task {
             // Remove our availability observer before tearing down the realtime
             // client; normal fresh-load unbinds preserve this observer.
+            if let connectivityToken {
+                await realtimeClient.removeConnectivityObserver(connectivityToken)
+            }
             if let unavailabilityToken {
                 await realtimeClient.removeUnavailabilityObserver(unavailabilityToken)
             }

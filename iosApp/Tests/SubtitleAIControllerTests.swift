@@ -235,6 +235,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         h.controller.handle(started("ai-42"))
         h.controller.handle(cues("ai-42"))
         XCTAssertEqual(h.coordinator.phase, .streaming)
+        XCTAssertTrue(h.controller.livePresentationActive)
 
         // Websocket wins: the coordinator's `completed` drives its own teardown,
         // and the sink-adapter callback (simulated here) routes the persisted id
@@ -249,6 +250,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         XCTAssertEqual(h.registerSelectCount(), 1, "persisted track registered exactly once")
         XCTAssertEqual(h.coordinator.phase, .completed, "coordinator completed")
         XCTAssertEqual(h.controller.phase, .completed, "controller completed")
+        XCTAssertFalse(h.controller.livePresentationActive)
     }
 
     // MARK: - (b) poller-completed-then-websocket
@@ -286,6 +288,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         h.controller.handle(started("ai-5"))
         h.controller.handle(cues("ai-5"))
         XCTAssertEqual(h.coordinator.phase, .streaming)
+        XCTAssertTrue(h.controller.livePresentationActive)
 
         // The `completed` websocket frame is LOST (socket drop, no replay). Only
         // the poller reaches completion.
@@ -298,6 +301,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         XCTAssertEqual(h.coordinator.phase, .completed, "coordinator must not strand in .streaming")
         XCTAssertEqual(h.sink.closeCount, 1, "synthetic live track closed")
         XCTAssertTrue(h.sink.closedKeys.contains("ai-5"))
+        XCTAssertFalse(h.controller.livePresentationActive)
     }
 
     // MARK: - (c2) ready-broadcast dedup against the owned WS completion (M5 FIX 1)
@@ -376,14 +380,18 @@ final class SubtitleAIControllerTests: XCTestCase {
 
         // Submit is in flight; the 202 hasn't returned the job id yet.
         h.controller.beginSubmitWindowForTesting()
+        XCTAssertEqual(h.coordinator.phase, .preparing, "submit starts the visible preparing state")
+        XCTAssertTrue(h.controller.livePresentationActive)
+        XCTAssertFalse(h.controls.isPlaying, "submit pauses playback before websocket started")
 
         // Early frames arrive over the websocket BEFORE `activeJob` is known.
         h.controller.handle(started("ai-77"))
         h.controller.handle(cues("ai-77"))
 
-        // They are buffered (not dropped) and the coordinator hasn't engaged yet.
+        // They are buffered (not dropped) until the accepted job id lands.
         XCTAssertEqual(h.controller.bufferedEarlyFrameCountForTesting, 2, "early frames buffered")
-        XCTAssertEqual(h.coordinator.phase, .idle, "coordinator idle until the job lands")
+        XCTAssertEqual(h.coordinator.phase, .preparing, "coordinator waits with playback paused")
+        XCTAssertTrue(h.controller.livePresentationActive)
 
         // The 202 lands: the buffered frames replay through the coordinator.
         h.controller.seedAcceptedJobForTesting(runningJob(id: "77"))
@@ -391,6 +399,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         XCTAssertEqual(h.controller.bufferedEarlyFrameCountForTesting, 0, "buffer drained after replay")
         XCTAssertEqual(h.coordinator.phase, .streaming, "replayed started+cues drove preparing→streaming")
         XCTAssertEqual(h.controls.isPlaying, true, "resumed on the replayed first cue batch")
+        XCTAssertTrue(h.controller.livePresentationActive)
     }
 
     /// Buffered frames whose `track_key` doesn't match the landed job are
@@ -398,6 +407,8 @@ final class SubtitleAIControllerTests: XCTestCase {
     func testEarlyFramesForOtherTrackKeyDiscardedOnAccept() async {
         let h = makeHarness(downloaded: [persisted(id: 1)])
         h.controller.beginSubmitWindowForTesting()
+        XCTAssertEqual(h.coordinator.phase, .preparing)
+        XCTAssertTrue(h.controller.livePresentationActive)
 
         // A frame for a different (stale) job key, plus the real one.
         h.controller.handle(started("ai-OTHER"))
@@ -409,6 +420,19 @@ final class SubtitleAIControllerTests: XCTestCase {
         // Only `ai-3` replayed → coordinator installed exactly that track.
         XCTAssertEqual(h.controller.bufferedEarlyFrameCountForTesting, 0)
         XCTAssertEqual(h.coordinator.phase, .preparing, "matching started replayed (no cues yet)")
+    }
+
+    func testCancelDuringSubmitWindowResumesSubmitPause() {
+        let h = makeHarness(downloaded: [persisted(id: 1)])
+        h.controller.beginSubmitWindowForTesting()
+        XCTAssertFalse(h.controls.isPlaying)
+
+        h.controller.cancelActiveJob()
+
+        XCTAssertTrue(h.controls.isPlaying, "cancel resumes playback when submit paused it")
+        XCTAssertEqual(h.coordinator.phase, .idle)
+        XCTAssertFalse(h.controller.livePresentationActive)
+        XCTAssertEqual(h.controller.phase, .idle)
     }
 }
 

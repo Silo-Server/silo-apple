@@ -77,6 +77,12 @@ final class SubtitleAIController {
     /// Human-readable failure reason when `phase == .failed`.
     private(set) var errorMessage: String?
 
+    /// True while the AI subtitle job owns the player-surface preparing/live
+    /// presentation. This starts immediately on submit so the menu can hand off
+    /// to the same pause/notice flow on iOS and tvOS; later websocket events
+    /// attach the synthetic live track and cues to that presentation.
+    private(set) var livePresentationActive = false
+
     /// Whether a job is in flight (submitting or polling). The menu disables
     /// re-submission and shows progress/cancel while this is true.
     var isBusy: Bool {
@@ -310,19 +316,25 @@ final class SubtitleAIController {
 
     /// Cancel the in-flight job (best-effort) and return to idle.
     func cancelActiveJob() {
-        guard let job = activeJob, !job.status.isTerminal else { return }
+        let job = activeJob
+        guard phase == .submitting || job?.status.isTerminal == false else { return }
         generation &+= 1
-        let jobId = job.id
+        let jobId = job?.id
         pollDrainTask?.cancel()
         pollDrainTask = nil
-        // Tear down any live presentation (restores selection / resumes).
-        liveCoordinator?.teardown()
+        // Tear down any live presentation (restores selection / resumes). This
+        // also covers a cancel while the initial POST is still in flight, before
+        // `activeJob` is known.
+        liveCoordinator?.cancelActivePresentation()
+        livePresentationActive = false
         handoffJobId = nil
         ownedHandoffSubtitleId = nil
         clearEarlyFrameBuffer()
         Task { [api, poller] in
             await poller.cancel()
-            try? await api.cancelSubtitleJob(id: jobId)
+            if let jobId {
+                try? await api.cancelSubtitleJob(id: jobId)
+            }
         }
         phase = .idle
         activeJob = nil
@@ -341,6 +353,7 @@ final class SubtitleAIController {
         let poller = self.poller
         Task { await poller.cancel() }
         liveCoordinator?.teardown()
+        livePresentationActive = false
         handoffJobId = nil
         ownedHandoffSubtitleId = nil
         clearEarlyFrameBuffer()
@@ -370,6 +383,7 @@ final class SubtitleAIController {
         // Tear down any prior live job before starting a new one, and clear the
         // shared handoff latch so the new job's terminal action can run.
         liveCoordinator?.teardown()
+        livePresentationActive = false
         handoffJobId = nil
         ownedHandoffSubtitleId = nil
         // Discard any frames left buffered from a previous submit window before
@@ -380,11 +394,14 @@ final class SubtitleAIController {
         phase = .submitting
         errorMessage = nil
         activeJob = nil
+        liveCoordinator?.beginPreparing()
+        refreshLivePresentationState()
 
         // M4: pass `session_id` so the server streams cues live over the
-        // playback control websocket — UNLESS realtime is unavailable, in which
-        // case we omit it and behave exactly like M3 (poll, no live cues). The
-        // poller runs regardless and remains the completion authority.
+        // playback control websocket — UNLESS realtime is not live-ready, in
+        // which case we omit it and behave exactly like M3 (poll, no live
+        // cues). The poller runs regardless and remains the completion
+        // authority.
         let liveSessionId = realtimeUnavailableProvider() ? nil : sessionIdProvider()
         let body = TranslateSubtitleBody(
             mediaFileId: mediaFileId,
@@ -448,6 +465,7 @@ final class SubtitleAIController {
         for event in matching {
             liveCoordinator?.handle(event)
         }
+        refreshLivePresentationState()
     }
 
     // MARK: - Test seams
@@ -468,6 +486,7 @@ final class SubtitleAIController {
         pollDrainTask?.cancel()
         pollDrainTask = nil
         liveCoordinator?.teardown()
+        livePresentationActive = false
         generation &+= 1
         handoffJobId = nil
         ownedHandoffSubtitleId = nil
@@ -475,6 +494,8 @@ final class SubtitleAIController {
         phase = .submitting
         errorMessage = nil
         activeJob = nil
+        liveCoordinator?.beginPreparing()
+        refreshLivePresentationState()
     }
 
     /// Seed `activeJob` as if the 202 accept landed (non-terminal), without
@@ -535,6 +556,8 @@ final class SubtitleAIController {
             // Tear the live track down on a poller-observed failure too.
             failHandoff(job.errorMessage ?? "Subtitle translation failed.")
         case .cancelled:
+            liveCoordinator?.cancelActivePresentation()
+            refreshLivePresentationState()
             phase = .idle
             activeJob = nil
             errorMessage = nil
@@ -669,6 +692,7 @@ final class SubtitleAIController {
             guard self.handoffJobId != jobId else {
                 if !viaWebsocket {
                     self.liveCoordinator?.persistedHandoffAlreadyDone(trackKey: Self.trackKey(for: jobId))
+                    self.refreshLivePresentationState()
                 }
                 return
             }
@@ -703,6 +727,7 @@ final class SubtitleAIController {
                 self.liveCoordinator?.persistedHandoffAlreadyDone(
                     trackKey: Self.trackKey(for: jobId)
                 )
+                self.refreshLivePresentationState()
             }
         }
     }
@@ -752,6 +777,7 @@ final class SubtitleAIController {
         }
 
         liveCoordinator?.handle(event)
+        refreshLivePresentationState()
     }
 
     /// Handle a file-scoped `subtitle_ready` broadcast (M5).
@@ -819,14 +845,21 @@ final class SubtitleAIController {
     /// handoff.
     func realtimeDidBecomeUnavailable() {
         liveCoordinator?.liveDriverDidGiveUp()
+        refreshLivePresentationState()
     }
 
     // MARK: - Helpers
+
+    private func refreshLivePresentationState() {
+        livePresentationActive = liveCoordinator?.isActive ?? false
+    }
 
     private func fail(with message: String) {
         // A submit that fails (incl. the 202 never returning) ends the in-flight
         // window — discard any frames that were buffered waiting for it.
         clearEarlyFrameBuffer()
+        liveCoordinator?.liveDriverDidGiveUp(message: message)
+        refreshLivePresentationState()
         phase = .failed
         errorMessage = message
     }

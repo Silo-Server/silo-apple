@@ -31,17 +31,24 @@ actor PlaybackRealtimeClient {
     private var socket: URLSessionWebSocketTask?
     private var runTask: Task<Void, Never>?
     private var seenCommandIds = Set<String>()
+    private(set) var isRealtimeConnected = false
     private(set) var isRealtimeUnavailable = false
+    private struct ConnectivityObserver {
+        let id: UUID
+        let handler: (@MainActor (Bool) -> Void)
+    }
     private struct UnavailabilityObserver {
         let id: UUID
         let handler: (@MainActor (Bool) -> Void)
     }
+    private var connectivityListeners: [ConnectivityObserver] = []
     private var unavailabilityListeners: [UnavailabilityObserver] = []
     /// Serializes notification delivery to listeners. Without this, rapid
     /// state flips can be observed out of order on the MainActor because
     /// independent `Task { @MainActor in }` hops have no FIFO guarantee.
     /// Tracking the in-flight task also lets `unbind` cancel pending
     /// deliveries that no consumer is going to act on.
+    private var connectivityNotificationTask: Task<Void, Never>?
     private var notificationTask: Task<Void, Never>?
 
     init(
@@ -80,6 +87,8 @@ actor PlaybackRealtimeClient {
         seenCommandIds.removeAll()
         runTask?.cancel()
         runTask = nil
+        connectivityNotificationTask?.cancel()
+        connectivityNotificationTask = nil
         notificationTask?.cancel()
         notificationTask = nil
         closeSocket()
@@ -102,6 +111,7 @@ actor PlaybackRealtimeClient {
                 try await send(makePlaybackRealtimeHello(sessionId: sessionId), on: socket)
                 attempt = 0
                 consecutiveFailures = 0
+                setRealtimeConnected(true)
                 setRealtimeUnavailable(false)
                 try await receiveLoop(on: socket, sessionId: sessionId, generation: generation)
             } catch is CancellationError {
@@ -148,8 +158,37 @@ actor PlaybackRealtimeClient {
         return id
     }
 
+    /// Subscribe to changes in websocket readiness. This is stricter than
+    /// `isRealtimeUnavailable`: it is false before the session websocket has
+    /// connected and sent hello, during reconnect gaps, and after unbind.
+    @discardableResult
+    func observeConnectivity(_ handler: @escaping @MainActor (Bool) -> Void) async -> UUID {
+        let id = UUID()
+        connectivityListeners.append(ConnectivityObserver(id: id, handler: handler))
+        let snapshot = isRealtimeConnected
+        await MainActor.run { handler(snapshot) }
+        return id
+    }
+
     func removeUnavailabilityObserver(_ id: UUID) {
         unavailabilityListeners.removeAll { $0.id == id }
+    }
+
+    func removeConnectivityObserver(_ id: UUID) {
+        connectivityListeners.removeAll { $0.id == id }
+    }
+
+    private func setRealtimeConnected(_ value: Bool) {
+        guard isRealtimeConnected != value else { return }
+        isRealtimeConnected = value
+        let listeners = connectivityListeners
+        connectivityNotificationTask?.cancel()
+        connectivityNotificationTask = Task { @MainActor in
+            for observer in listeners {
+                if Task.isCancelled { return }
+                observer.handler(value)
+            }
+        }
     }
 
     private func setRealtimeUnavailable(_ value: Bool) {
@@ -294,6 +333,7 @@ actor PlaybackRealtimeClient {
     }
 
     private func closeSocket() {
+        setRealtimeConnected(false)
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
     }

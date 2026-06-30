@@ -61,6 +61,7 @@ struct PlayerNoticeOverlay: View {
             .move(edge: .top)
             .combined(with: .opacity)
         )
+        .allowsHitTesting(false)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(notice.title). \(notice.message)")
     }

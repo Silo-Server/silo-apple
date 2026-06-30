@@ -40,12 +40,12 @@ struct SubtitleTranslateMenu: View {
     let viewModel: PlayerViewModel
     let onDismiss: () -> Void
 
-    /// Called when a job is accepted and the live overlay will take over on the
-    /// player: dismisses the WHOLE subtitle UI (this menu plus the enclosing HUD
-    /// / sheet) down to the player, so the live "Preparing subtitles" pause →
-    /// resume plays out where the user can see it. Distinct from `onDismiss`,
-    /// which only backs out of this menu (returning to the container). Defaults
-    /// to `onDismiss` for call sites that don't distinguish the two.
+    /// Called when the AI job has started owning the player-surface preparing
+    /// flow: dismisses the WHOLE subtitle UI (this menu plus the enclosing HUD /
+    /// sheet) down to the player, so the "Preparing subtitles" pause → resume
+    /// plays out where the user can see it. Distinct from `onDismiss`, which
+    /// only backs out of this menu (returning to the container). Defaults to
+    /// `onDismiss` for call sites that don't distinguish the two.
     var onJobStarted: () -> Void = {}
 
     /// The profile's preferred subtitle language, floated to the top of the
@@ -189,13 +189,10 @@ struct SubtitleTranslateMenu: View {
                 spokenLanguageCode?.caseInsensitiveCompare(target) == .orderedSame ? nil : target
             viewModel.startSubtitleTranscription(audioIndex: -1, translateTo: translateTo)
         }
-        // The job is in flight. When the live overlay will drive it, close the
-        // whole subtitle UI so the player-surface pause → "Preparing subtitles"
-        // → resume is visible (otherwise it plays out hidden behind this menu).
-        // Keep the menu open on a synchronous submit failure (so its error is
-        // shown) and on the poll-only fallback (which has only this in-place
-        // progress, no overlay).
-        guard controller.phase != .failed, viewModel.subtitleAILiveOverlayAvailable else { return }
+        // The shared controller now enters the player-surface preparing state
+        // immediately on submit. Close the whole subtitle UI at that point so
+        // iOS follows the same pause/notice handoff as tvOS.
+        guard controller.phase != .failed, controller.livePresentationActive else { return }
         onJobStarted()
     }
 

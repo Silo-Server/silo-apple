@@ -238,6 +238,7 @@ final class ServerRegistry {
                 defaults.removeObject(forKey: "profileId")
                 await TokenStore.shared.switchActiveServer(serverId: "")
             }
+            await MainActor.run { AICapabilities.shared.reset() }
         }
         persist()
     }

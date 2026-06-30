@@ -174,8 +174,9 @@ final class LiveSubtitleCoordinator {
     enum Phase: Equatable {
         /// No live job.
         case idle
-        /// `started` received: paused, synthetic track installed + selected,
-        /// overlay up, safety timer armed, waiting for the first cue batch.
+        /// Submit/start received: paused, overlay up, waiting for either the
+        /// live `started` frame or poller completion. Once `started` lands, the
+        /// synthetic track is installed/selected and the cue safety timer arms.
         case preparing
         /// First cues arrived: resumed, cues rendering live.
         case streaming
@@ -252,6 +253,23 @@ final class LiveSubtitleCoordinator {
     /// Whether a live job is currently in flight (preparing or streaming).
     var isActive: Bool { phase == .preparing || phase == .streaming }
 
+    /// Start the user-visible AI subtitle wait as soon as the user submits the
+    /// job, before the websocket's `started` event exists. This keeps the
+    /// pause/progress UX tied to the user's action instead of backend timing.
+    func beginPreparing() {
+        guard !isActive else { return }
+        generation &+= 1
+        activeTrackKey = nil
+        didResume = false
+        priorSelection = currentSelectionSnapshot()
+        wasPlaying = controls.isPlaying
+        if wasPlaying {
+            controls.pause()
+        }
+        sink.showPreparingNotice()
+        phase = .preparing
+    }
+
     /// Feed one decoded subtitle event into the machine. The owning controller
     /// forwards both websocket events and poller-derived events here; the
     /// machine itself is driver-agnostic.
@@ -275,6 +293,8 @@ final class LiveSubtitleCoordinator {
     // MARK: - Transitions
 
     private func onStarted(_ started: PlaybackRealtimeSubtitleEvent.Started) {
+        let hasPendingPreparation = phase == .preparing && activeTrackKey == nil
+
         // A second `started` for a DIFFERENT job supersedes the current one —
         // tear the old live track down first so we never leave two installed.
         // Tear down with `resume: false` — the new job is about to
@@ -290,16 +310,19 @@ final class LiveSubtitleCoordinator {
             return
         }
 
-        generation &+= 1
         activeTrackKey = started.trackKey
-        didResume = false
+        if !hasPendingPreparation {
+            generation &+= 1
+            didResume = false
 
-        // Snapshot selection + pause intent BEFORE we install/select the live
-        // track, so the snapshot reflects the user's real prior choice.
-        priorSelection = currentSelectionSnapshot()
-        wasPlaying = controls.isPlaying
-        if wasPlaying {
-            controls.pause()
+            // Snapshot selection + pause intent BEFORE we install/select the live
+            // track, so the snapshot reflects the user's real prior choice.
+            priorSelection = currentSelectionSnapshot()
+            wasPlaying = controls.isPlaying
+            if wasPlaying {
+                controls.pause()
+            }
+            sink.showPreparingNotice()
         }
 
         sink.installLiveTrack(
@@ -308,7 +331,6 @@ final class LiveSubtitleCoordinator {
             language: started.language
         )
         sink.selectLive(trackKey: started.trackKey)
-        sink.showPreparingNotice()
         phase = .preparing
 
         Self.logger.info(
@@ -403,10 +425,19 @@ final class LiveSubtitleCoordinator {
     /// and a socket-lost-with-no-poll-completion give-up: close the live
     /// track, restore the prior selection, resume if we paused, soft notice.
     private func failOut(message: String) {
-        guard activeTrackKey != nil else { return }
+        guard isActive || activeTrackKey != nil else { return }
         teardownActiveTrack(restoreSelection: true, resume: true)
         phase = .failed
         sink.showFailureNotice(message)
+    }
+
+    /// User-cancel path: restore the prior selection and resume if this
+    /// coordinator paused playback, without surfacing a failure notice.
+    func cancelActivePresentation() {
+        guard isActive || activeTrackKey != nil else { return }
+        teardownActiveTrack(restoreSelection: true, resume: true)
+        sink.hidePreparingNotice()
+        phase = .idle
     }
 
     /// Called by the controller when the live driver gives up (socket lost and
@@ -450,8 +481,9 @@ final class LiveSubtitleCoordinator {
     /// outstanding scheduled work no-ops.
     func teardown() {
         generation &+= 1
-        if activeTrackKey != nil {
+        if isActive || activeTrackKey != nil {
             teardownActiveTrack(restoreSelection: true, resume: false)
+            sink.hidePreparingNotice()
         }
         cancelSafetyTimer()
         phase = .idle
