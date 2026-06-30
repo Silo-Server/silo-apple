@@ -56,7 +56,11 @@ enum SubtitleTrackIdSpace {
     /// ordinal. The ordinal must fit in the low bits below `aiLiveBase`
     /// (realistically a handful of live tracks per session).
     static func makeAILiveTrackId(_ ordinal: Int) -> Int64 {
-        Self.aiLiveBase | Int64(ordinal)
+        precondition(
+            ordinal >= 0 && Int64(ordinal) < (Self.aiLiveBase - Self.sidecarBase),
+            "AI-live subtitle ordinal is outside the synthetic partition"
+        )
+        return Self.aiLiveBase | Int64(ordinal)
     }
 
     static func isAVPlayerEmbedded(_ trackId: Int64) -> Bool {

@@ -22,23 +22,22 @@ final class AIJobPollerTests: XCTestCase {
         let poller = AIJobPoller()
         let stream = await poller.poll(jobId: "job", fetch: fetch)
 
-        var collected: [SubtitleJob] = []
-        let drain = Task {
-            for await snapshot in stream {
-                collected.append(snapshot)
-            }
-            return collected
-        }
         let result = await withTaskGroup(of: [SubtitleJob]?.self) { group -> [SubtitleJob] in
-            group.addTask { await drain.value }
+            group.addTask {
+                var collected: [SubtitleJob] = []
+                for await snapshot in stream {
+                    collected.append(snapshot)
+                }
+                return collected
+            }
             group.addTask {
                 try? await Task.sleep(for: .seconds(timeout))
                 return nil
             }
             let first = await group.next() ?? nil
             group.cancelAll()
-            drain.cancel()
-            return first ?? collected
+            await poller.cancel()
+            return first ?? []
         }
         return result
     }

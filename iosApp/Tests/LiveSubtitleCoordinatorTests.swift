@@ -258,6 +258,22 @@ final class LiveSubtitleCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.phase, .completed)
     }
 
+    func testCompletedWithoutSubtitleIdWaitsForPollerHandoff() {
+        let (coordinator, _, sink, _) = makeCoordinator(isPlaying: true, priorSelection: 0x4000_0003)
+        coordinator.handle(started("ai-7"))
+        coordinator.handle(cues("ai-7", [(10, 12, "a")]))
+
+        coordinator.handle(completed("ai-7", subtitleId: nil))
+
+        XCTAssertEqual(coordinator.phase, .streaming)
+        XCTAssertFalse(sink.calls.contains { if case .registerPersisted = $0 { return true }; return false })
+        XCTAssertFalse(sink.contains(.close(trackKey: "ai-7")))
+
+        coordinator.persistedHandoffAlreadyDone(trackKey: "ai-7")
+        XCTAssertEqual(coordinator.phase, .completed)
+        XCTAssertTrue(sink.contains(.close(trackKey: "ai-7")))
+    }
+
     // MARK: - failed → restore + resume
 
     func testFailedClosesRestoresAndResumes() {

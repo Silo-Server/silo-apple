@@ -246,12 +246,13 @@ struct SubtitleTranslateMenu: View {
             .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
     }
 
-    /// Show the ASR quota gauge only when the file relies on transcription
-    /// (no translatable text source) — translating never spends quota.
+    /// Show the ASR quota gauge whenever at least one offered target would rely
+    /// on transcription. A file can have a translatable subtitle for most targets
+    /// while same-language targets still fall back to ASR.
     private var showsQuota: Bool {
         capabilities.transcribeEnabled
             && !viewModel.audioTracks.isEmpty
-            && !translationAvailable
+            && orderedLanguages.contains { requiresTranscription(for: $0.code) }
             && quotaText != nil
     }
 
@@ -421,11 +422,11 @@ struct SubtitleTranslateMenu: View {
                             Text(explainer)
                         }
                     }
-                    .listStyle(.insetGrouped)
+                    .continuumGroupedListStyle()
                 }
             }
             .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
+            .continuumNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { onDismiss() }

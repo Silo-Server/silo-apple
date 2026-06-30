@@ -1748,11 +1748,11 @@ private struct SubtitlesPane: View {
             if showAITranslateMenu {
                 SubtitleTranslateMenu(
                     viewModel: viewModel,
-                    onDismiss: { showAITranslateMenu = false },
+                    onDismiss: closeAITranslateMenu,
                     // Job accepted: close the menu AND the HUD so the live
                     // "Preparing subtitles" overlay is visible on the player.
                     onJobStarted: {
-                        showAITranslateMenu = false
+                        closeAITranslateMenu()
                         onCloseHUD()
                     }
                 )
@@ -1762,6 +1762,11 @@ private struct SubtitlesPane: View {
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showAppearanceDialog)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: activePicker?.id)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showAITranslateMenu)
+    }
+
+    private func closeAITranslateMenu() {
+        showAITranslateMenu = false
+        focusedSubtitleField = .option(.translate)
     }
 
     /// Whether the server's AI capabilities + the current track list offer any

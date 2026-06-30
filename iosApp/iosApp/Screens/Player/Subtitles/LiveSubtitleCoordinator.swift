@@ -361,12 +361,14 @@ final class LiveSubtitleCoordinator {
 
         // Hand off to the persisted track. The adapter de-dupes with the
         // poller so the track is registered once; selection swaps live→persisted
-        // there. Only attempt when the server actually told us the id.
-        if let subtitleId = completed.subtitleId {
-            sink.registerPersisted(subtitleId: subtitleId)
-        } else {
+        // there. If the websocket completion lacks the id, keep the active job
+        // recoverable so the poller authority can perform the handoff.
+        guard let subtitleId = completed.subtitleId else {
             Self.logger.warning("[AI-LIVE] completed trackKey=\(completed.trackKey, privacy: .public) carried no subtitle_id; relying on poller handoff")
+            phase = .streaming
+            return
         }
+        sink.registerPersisted(subtitleId: subtitleId)
 
         // M5 seamless swap: the persisted track is being registered + selected
         // asynchronously (the registration hops the main queue). Defer closing

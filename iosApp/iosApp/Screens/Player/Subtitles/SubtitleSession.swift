@@ -164,6 +164,7 @@ final class SubtitleSession {
         extradataSize: Int
     ) {
         cancelFetchTask(for: slot)
+        withLock { _ = liveSlots.remove(slot) }
         if isNativeASS {
             renderer.createTrack(
                 slot: slot,
@@ -208,6 +209,7 @@ final class SubtitleSession {
         }
 
         cancelFetchTask(for: slot)
+        withLock { _ = liveSlots.remove(slot) }
         publishStatus(slot: slot, .fetching)
 
         // The server/CDN subtitle endpoint can buffer text responses long
@@ -372,6 +374,7 @@ final class SubtitleSession {
         startMs: Int64,
         durationMs: Int64
     ) {
+        guard withLock({ liveSlots.contains(slot) }) else { return }
         renderer.feedChunk(
             slot: slot,
             eventText: eventText,

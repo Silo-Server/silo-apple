@@ -260,7 +260,9 @@ final class SubtitleAIController {
 
     /// Refresh the ASR quota (used by the menu on open). Tolerant of failure.
     func refreshQuota() async {
+        let gen = generation
         await capabilities.refreshQuota()
+        guard gen == generation else { return }
         quota = capabilities.subtitleQuota
     }
 
@@ -309,6 +311,7 @@ final class SubtitleAIController {
     /// Cancel the in-flight job (best-effort) and return to idle.
     func cancelActiveJob() {
         guard let job = activeJob, !job.status.isTerminal else { return }
+        generation &+= 1
         let jobId = job.id
         pollDrainTask?.cancel()
         pollDrainTask = nil
@@ -359,6 +362,8 @@ final class SubtitleAIController {
             fail(with: "Playback isn't ready yet.")
             return
         }
+        generation &+= 1
+        let gen = generation
         // Replace any prior in-flight job.
         pollDrainTask?.cancel()
         pollDrainTask = nil
@@ -395,7 +400,6 @@ final class SubtitleAIController {
             "[AI-SUB] submit kind=\(kind.rawValue, privacy: .public) mediaFileId=\(mediaFileId, privacy: .public) sourceIndex=\(sourceIndex, privacy: .public) target=\(targetLanguage ?? "nil", privacy: .public)"
         )
 
-        let gen = generation
         pollDrainTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -464,6 +468,7 @@ final class SubtitleAIController {
         pollDrainTask?.cancel()
         pollDrainTask = nil
         liveCoordinator?.teardown()
+        generation &+= 1
         handoffJobId = nil
         ownedHandoffSubtitleId = nil
         clearEarlyFrameBuffer()
@@ -590,6 +595,9 @@ final class SubtitleAIController {
         autoSelect: Bool = true
     ) {
         // Latch: only the first driver to reach completion registers the track.
+        // The latch is claimed after the downloaded listing and descriptor are
+        // ready so a transient listing miss doesn't permanently block the other
+        // completion path from retrying the same job.
         guard handoffJobId != jobId else {
             // The other driver already (is) handling it. If this is the poller
             // arriving after the websocket, nothing more to do — the websocket
@@ -600,7 +608,6 @@ final class SubtitleAIController {
             }
             return
         }
-        handoffJobId = jobId
 
         guard let resultId = resultSubtitleId else {
             Self.logger.warning("[AI-SUB] completed job \(jobId, privacy: .public) has no result_subtitle_id")
@@ -658,6 +665,14 @@ final class SubtitleAIController {
                 softFail("Translation finished but the track couldn't be added.")
                 return
             }
+
+            guard self.handoffJobId != jobId else {
+                if !viaWebsocket {
+                    self.liveCoordinator?.persistedHandoffAlreadyDone(trackKey: Self.trackKey(for: jobId))
+                }
+                return
+            }
+            self.handoffJobId = jobId
 
             Self.logger.info(
                 "[AI-SUB] handing off subtitle id=\(resultId, privacy: .public) combinedIndex=\(descriptor.index, privacy: .public) viaWebsocket=\(viaWebsocket, privacy: .public) autoSelect=\(autoSelect, privacy: .public)"

@@ -207,13 +207,13 @@ enum DetailPlaybackFormatting {
         let ordered = SubtitleDisplayOrder.order(
             indexed,
             preferredLanguage: preferredLanguage
-        ) { _, track in
-            let title = track.title?.lowercased() ?? ""
+        ) { ordinal, track in
+            let type = subtitleType(track, ordinal: ordinal)
             return SubtitleDisplayOrder.Descriptor(
                 language: track.language,
                 codec: track.codec,
                 isForced: track.forced ?? false,
-                isHearingImpaired: title.contains("sdh") || title.contains("hearing"),
+                isHearingImpaired: type == "SDH" || type == "CC",
                 isDefault: track.isDefault ?? false
             )
         }

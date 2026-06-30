@@ -90,6 +90,8 @@ final class SubtitleAIControllerTests: XCTestCase {
         let registerOnlyCount: () -> Int
         /// The combined `index` of the last register-only (`ready`) handoff.
         let lastRegisterOnlyIndex: () -> Int?
+        let waitForRegisterSelectCount: (Int) async -> Void
+        let waitForRegisterOnlyCount: (Int) async -> Void
     }
 
     private func makeHarness(
@@ -120,10 +122,9 @@ final class SubtitleAIControllerTests: XCTestCase {
                     resolveURL: { path in URL(string: "https://host\(path)") }
                 )
             },
-            registerAndSelectDescriptor: { _ in counters.selectCount += 1 },
+            registerAndSelectDescriptor: { _ in counters.recordSelect() },
             registerDescriptorWithoutSelecting: { descriptor in
-                counters.onlyCount += 1
-                counters.lastOnlyIndex = descriptor.index
+                counters.recordOnly(index: descriptor.index)
             },
             downloadedSubtitlesFetch: { _ in downloaded }
         )
@@ -134,7 +135,9 @@ final class SubtitleAIControllerTests: XCTestCase {
             controls: controls,
             registerSelectCount: { counters.selectCount },
             registerOnlyCount: { counters.onlyCount },
-            lastRegisterOnlyIndex: { counters.lastOnlyIndex }
+            lastRegisterOnlyIndex: { counters.lastOnlyIndex },
+            waitForRegisterSelectCount: { count in await counters.waitForSelectCount(count) },
+            waitForRegisterOnlyCount: { count in await counters.waitForOnlyCount(count) }
         )
     }
 
@@ -143,9 +146,56 @@ final class SubtitleAIControllerTests: XCTestCase {
     /// `@escaping @MainActor` closure isn't shareable across the boundary).
     @MainActor
     private final class HandoffCounters {
+        private struct Waiter {
+            let target: Int
+            let continuation: CheckedContinuation<Void, Never>
+        }
+
         var selectCount = 0
         var onlyCount = 0
         var lastOnlyIndex: Int?
+        private var selectWaiters: [Waiter] = []
+        private var onlyWaiters: [Waiter] = []
+
+        func recordSelect() {
+            selectCount += 1
+            resumeSatisfiedWaiters(&selectWaiters, currentCount: selectCount)
+        }
+
+        func recordOnly(index: Int) {
+            onlyCount += 1
+            lastOnlyIndex = index
+            resumeSatisfiedWaiters(&onlyWaiters, currentCount: onlyCount)
+        }
+
+        func waitForSelectCount(_ target: Int) async {
+            guard selectCount < target else { return }
+            await withCheckedContinuation { continuation in
+                selectWaiters.append(Waiter(target: target, continuation: continuation))
+            }
+        }
+
+        func waitForOnlyCount(_ target: Int) async {
+            guard onlyCount < target else { return }
+            await withCheckedContinuation { continuation in
+                onlyWaiters.append(Waiter(target: target, continuation: continuation))
+            }
+        }
+
+        private func resumeSatisfiedWaiters(
+            _ waiters: inout [Waiter],
+            currentCount: Int
+        ) {
+            var remaining: [Waiter] = []
+            for waiter in waiters {
+                if currentCount >= waiter.target {
+                    waiter.continuation.resume()
+                } else {
+                    remaining.append(waiter)
+                }
+            }
+            waiters = remaining
+        }
     }
 
     /// A persisted downloaded subtitle whose `id` matches a job's
@@ -174,12 +224,6 @@ final class SubtitleAIControllerTests: XCTestCase {
         .ready(.init(fileId: fileId, subtitleId: subtitleId, language: "es", label: "Spanish"))
     }
 
-    /// Pump the main run loop so the handoff's detached `Task` (the listing
-    /// fetch → register) runs to completion before assertions.
-    private func drainMainQueue() async {
-        for _ in 0..<8 { await Task.yield() }
-    }
-
     // MARK: - (a) websocket-completed-then-poller
 
     func testWebsocketCompletesThenPollerRegistersExactlyOnce() async {
@@ -197,11 +241,10 @@ final class SubtitleAIControllerTests: XCTestCase {
         // through the controller's shared latched handoff.
         h.controller.handle(completedEvent("ai-42", subtitleId: 555))
         h.controller.completeLivePersistedHandoff(subtitleId: 555)
-        await drainMainQueue()
+        await h.waitForRegisterSelectCount(1)
 
         // Poller arrives second with the same completion.
         h.controller.deliverPollerTerminalForTesting(completedJob(id: "42", resultSubtitleId: 555))
-        await drainMainQueue()
 
         XCTAssertEqual(h.registerSelectCount(), 1, "persisted track registered exactly once")
         XCTAssertEqual(h.coordinator.phase, .completed, "coordinator completed")
@@ -219,7 +262,7 @@ final class SubtitleAIControllerTests: XCTestCase {
 
         // Poller wins.
         h.controller.deliverPollerTerminalForTesting(completedJob(id: "9", resultSubtitleId: 777))
-        await drainMainQueue()
+        await h.waitForRegisterSelectCount(1)
 
         XCTAssertEqual(h.registerSelectCount(), 1)
         XCTAssertEqual(h.coordinator.phase, .completed, "poller authority closed the live track")
@@ -228,7 +271,6 @@ final class SubtitleAIControllerTests: XCTestCase {
         // Websocket arrives second — must NOT double-register.
         h.controller.handle(completedEvent("ai-9", subtitleId: 777))
         h.controller.completeLivePersistedHandoff(subtitleId: 777)
-        await drainMainQueue()
 
         XCTAssertEqual(h.registerSelectCount(), 1, "still registered exactly once after late websocket")
         XCTAssertEqual(h.coordinator.phase, .completed)
@@ -248,7 +290,7 @@ final class SubtitleAIControllerTests: XCTestCase {
         // The `completed` websocket frame is LOST (socket drop, no replay). Only
         // the poller reaches completion.
         h.controller.deliverPollerTerminalForTesting(completedJob(id: "5", resultSubtitleId: 321))
-        await drainMainQueue()
+        await h.waitForRegisterSelectCount(1)
 
         // FIX 2: the persisted track registers once AND the coordinator closes
         // the orphaned live track + reaches `.completed` (not stuck `.streaming`).
@@ -282,14 +324,13 @@ final class SubtitleAIControllerTests: XCTestCase {
         // and records its id as the owned handoff.
         h.controller.handle(completedEvent("ai-42", subtitleId: 555))
         h.controller.completeLivePersistedHandoff(subtitleId: 555)
-        await drainMainQueue()
+        await h.waitForRegisterSelectCount(1)
         XCTAssertEqual(h.registerSelectCount(), 1, "owned WS completion registered once")
 
         // The server's `subtitle_ready` for that SAME id arrives right after. It
         // must be recognized as this client's own just-completed handoff and
         // skipped — NOT a second register on either path.
         h.controller.handle(readyEvent(subtitleId: 555))
-        await drainMainQueue()
         XCTAssertEqual(
             h.registerSelectCount(), 1,
             "ready for the just-WS-completed id must not trigger a second owned register"
@@ -311,12 +352,12 @@ final class SubtitleAIControllerTests: XCTestCase {
         h.controller.handle(cues("ai-42"))
         h.controller.handle(completedEvent("ai-42", subtitleId: 555))
         h.controller.completeLivePersistedHandoff(subtitleId: 555)
-        await drainMainQueue()
+        await h.waitForRegisterSelectCount(1)
         XCTAssertEqual(h.registerSelectCount(), 1)
 
         // A different file-scoped subtitle becomes ready → register-only.
         h.controller.handle(readyEvent(subtitleId: 900))
-        await drainMainQueue()
+        await h.waitForRegisterOnlyCount(1)
         XCTAssertEqual(h.registerSelectCount(), 1, "owned auto-select count unchanged")
         XCTAssertEqual(h.registerOnlyCount(), 1, "different ready id registered once (register-only)")
         // baseTrackCount (3) + position of id 900 in the listing (1) == combined index 4.

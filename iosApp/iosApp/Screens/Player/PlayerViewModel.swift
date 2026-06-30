@@ -666,8 +666,8 @@ class PlayerViewModel {
     var subtitleAILiveOverlayAvailable: Bool { !realtimeUnavailableSnapshot }
 
     /// The `observeUnavailability` token, retained so `cleanup()` can remove
-    /// the observer explicitly. (Belt-and-suspenders: `unbind()` also clears
-    /// all observers, which is the primary leak fix.)
+    /// the observer explicitly. `unbind()` preserves observers across fresh
+    /// load cycles because this snapshot is a long-lived PlayerViewModel concern.
     private var realtimeUnavailabilityObserverToken: UUID?
 
     /// Build the live-subtitle coordinator with adapters bound to this VM. The
@@ -4295,8 +4295,14 @@ class PlayerViewModel {
     /// `restoreLiveSubtitleSelection` is expected to follow (the coordinator
     /// drives that separately).
     func closeLiveSubtitleTrackRow(trackId: Int64) {
-        subtitleTracks.removeAll { $0.trackId == trackId }
+        removeLiveSubtitleTrackRow(trackId: trackId)
         closeLiveSubtitleTrack(slot: .primary)
+    }
+
+    /// Remove only the picker row for a stale synthetic live track. Used when a
+    /// newer live renderer already owns the single primary libass slot.
+    func removeLiveSubtitleTrackRow(trackId: Int64) {
+        subtitleTracks.removeAll { $0.trackId == trackId }
     }
 
     /// M5 seamless swap: arm the live track `trackId` to be closed AFTER the
@@ -4313,7 +4319,7 @@ class PlayerViewModel {
         // earlier track is never stranded. (Common case: nothing pending, or the
         // same id re-armed — both no-op this guard.)
         if let previousId = pendingLiveSubtitleCloseTrackId, previousId != trackId {
-            closeLiveSubtitleTrackRow(trackId: previousId)
+            removeLiveSubtitleTrackRow(trackId: previousId)
         }
         pendingLiveSubtitleCloseTrackId = trackId
         deferredLiveSubtitleCloseTask?.cancel()
@@ -4609,8 +4615,8 @@ class PlayerViewModel {
         let unavailabilityToken = realtimeUnavailabilityObserverToken
         realtimeUnavailabilityObserverToken = nil
         Task {
-            // Remove our availability observer first (belt-and-suspenders;
-            // `unbind()` also clears all observers).
+            // Remove our availability observer before tearing down the realtime
+            // client; normal fresh-load unbinds preserve this observer.
             if let unavailabilityToken {
                 await realtimeClient.removeUnavailabilityObserver(unavailabilityToken)
             }

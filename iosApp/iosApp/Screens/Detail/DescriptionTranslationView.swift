@@ -23,12 +23,18 @@ struct DescriptionTranslationView: View {
     let contentId: String
 
     @State private var coordinator = DescriptionTranslationCoordinator()
-    /// Per-item latch for `.auto` mode. The auto branch fires from
+    /// Per-item/language latch for `.auto` mode. The auto branch fires from
     /// `onAppear`, which re-runs every time the row re-appears (scrolling,
     /// re-layout) while `pendingTranslationLanguage` is still set. Without
-    /// this, each re-appear would re-kick the translation. Keyed on
-    /// `contentId` so a genuinely different item still auto-fires once.
-    @State private var autoFiredFor: String?
+    /// this, each re-appear would re-kick the translation. Keying on the target
+    /// language too lets a changed metadata preference translate the same item
+    /// again.
+    @State private var autoFiredFor: AutoFireKey?
+
+    private struct AutoFireKey: Equatable {
+        let contentId: String
+        let targetLanguage: String
+    }
 
     private var pendingLanguage: String? {
         viewModel.detail?.pendingTranslationLanguage
@@ -82,8 +88,9 @@ struct DescriptionTranslationView: View {
                 Color.clear
                     .frame(height: 0)
                     .onAppear {
-                        guard autoFiredFor != contentId else { return }
-                        autoFiredFor = contentId
+                        let key = AutoFireKey(contentId: contentId, targetLanguage: targetLanguage)
+                        guard autoFiredFor != key else { return }
+                        autoFiredFor = key
                         startTranslation(targetLanguage: targetLanguage)
                     }
             }
@@ -105,6 +112,7 @@ struct DescriptionTranslationView: View {
             targetLanguage: targetLanguage
         ) { refreshed in
             viewModel.detail = refreshed
+            ResponseCache.shared.set(refreshed, for: CacheKey.itemDetail(contentId))
         }
     }
 }

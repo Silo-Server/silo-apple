@@ -122,6 +122,7 @@ struct LiveSubtitleTrack {
         guard seconds.isFinite else { return 0 }
         let ms = (seconds * 1000.0).rounded()
         if ms <= 0 { return 0 }
+        if !ms.isFinite || ms >= Double(Int64.max) { return Int64.max }
         return Int64(ms)
     }
 
@@ -158,6 +159,7 @@ struct LiveSubtitleTrack {
         let normalised = text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
         var out = String()
         out.reserveCapacity(normalised.count)
@@ -176,6 +178,6 @@ struct LiveSubtitleTrack {
                 out.append(ch)
             }
         }
-        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return out
     }
 }

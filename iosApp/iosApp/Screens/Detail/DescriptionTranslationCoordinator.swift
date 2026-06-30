@@ -26,11 +26,12 @@ final class DescriptionTranslationCoordinator {
     private let api: ContinuumAI
     private let catalog: ContinuumAPI
     private var task: Task<Void, Never>?
+    private var activeRunID: UUID?
 
     /// Re-poll schedule (seconds). The overview typically lands within the
     /// first couple of passes; the tail covers a slow translation. The sum
     /// is the hard cap (~31s) after which we give up and surface `.failed`.
-    private let backoff: [UInt64] = [1, 2, 3, 5, 5, 5, 5, 5]
+    private let backoff: [TimeInterval] = [1, 2, 3, 5, 5, 5, 5, 5]
 
     init(api: ContinuumAI = .shared, catalog: ContinuumAPI = .shared) {
         self.api = api
@@ -47,14 +48,17 @@ final class DescriptionTranslationCoordinator {
     ) {
         guard task == nil else { return }
         phase = .translating
+        let runID = UUID()
+        activeRunID = runID
         task = Task { [weak self] in
-            await self?.run(contentId: contentId, targetLanguage: targetLanguage, apply: apply)
+            await self?.run(contentId: contentId, targetLanguage: targetLanguage, runID: runID, apply: apply)
         }
     }
 
     /// Cancel any in-flight translation and reset to idle. Safe to call
     /// from `onDisappear`.
     func cancel() {
+        activeRunID = nil
         task?.cancel()
         task = nil
         if phase == .translating { phase = .idle }
@@ -63,21 +67,28 @@ final class DescriptionTranslationCoordinator {
     private func run(
         contentId: String,
         targetLanguage: String,
+        runID: UUID,
         apply: @MainActor @escaping (ItemDetail) -> Void
     ) async {
-        defer { task = nil }
+        defer {
+            if activeRunID == runID {
+                activeRunID = nil
+                task = nil
+            }
+        }
 
         do {
             try await api.translateDescription(contentId: contentId, targetLanguage: targetLanguage)
         } catch {
+            guard isCurrentRun(runID) else { return }
             phase = .failed
             return
         }
 
         for delay in backoff {
-            if Task.isCancelled { return }
-            try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
-            if Task.isCancelled { return }
+            guard isCurrentRun(runID) else { return }
+            try? await Task.sleep(for: .seconds(delay))
+            guard isCurrentRun(runID) else { return }
 
             guard let refreshed = try? await catalog.itemDetail(contentId: contentId) else {
                 continue
@@ -85,17 +96,23 @@ final class DescriptionTranslationCoordinator {
             // A cancellation (disappear / item change) may have landed during
             // the fetch above; bail before applying so a stale poll can't
             // clobber the view model / cache with the previous item's detail.
-            if Task.isCancelled { return }
+            guard isCurrentRun(runID) else { return }
             apply(refreshed)
             ResponseCache.shared.set(refreshed, for: CacheKey.itemDetail(contentId))
 
             if refreshed.pendingTranslationLanguage == nil {
+                guard isCurrentRun(runID) else { return }
                 phase = .idle
                 return
             }
         }
 
         // Cap hit without the pending flag clearing.
+        guard isCurrentRun(runID) else { return }
         phase = .failed
+    }
+
+    private func isCurrentRun(_ runID: UUID) -> Bool {
+        activeRunID == runID && !Task.isCancelled
     }
 }

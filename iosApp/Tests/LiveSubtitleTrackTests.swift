@@ -65,6 +65,10 @@ final class LiveSubtitleTrackTests: XCTestCase {
         XCTAssertEqual(LiveSubtitleTrack.secondsToMs(.infinity), 0)
     }
 
+    func testHugeFiniteSecondsClampToInt64Max() {
+        XCTAssertEqual(LiveSubtitleTrack.secondsToMs(Double.greatestFiniteMagnitude), Int64.max)
+    }
+
     // MARK: - Newline → \N
 
     func testNewlineBecomesHardBreak() {
@@ -119,6 +123,12 @@ final class LiveSubtitleTrackTests: XCTestCase {
         var track = LiveSubtitleTrack()
         let cue = track.makeCue(start: 0, end: 1, text: "   padded   ")
         XCTAssertEqual(cue?.eventText, "0,0,Default,,0,0,0,,padded")
+    }
+
+    func testLeadingAndTrailingBlankLinesTrimmedBeforeHardBreaks() {
+        var track = LiveSubtitleTrack()
+        let cue = track.makeCue(start: 0, end: 1, text: "\nhello\n")
+        XCTAssertEqual(cue?.eventText, "0,0,Default,,0,0,0,,hello")
     }
 
     func testUnicodeIsPreserved() {

@@ -57,6 +57,8 @@ class SettingsViewModel {
     /// Surfaces the most recent server save state. The subtitle screen
     /// shows a transient message when this is non-nil.
     var prefSaveState: PrefSaveState?
+    private var isSavingMetadataLanguage = false
+    private var pendingMetadataLanguageValue: String?
 
     enum PrefSaveState: Equatable {
         case saving
@@ -213,17 +215,34 @@ class SettingsViewModel {
     /// `onChange` handler.
     @MainActor
     func saveMetadataLanguage() async {
-        guard let profileId = activeProfile?.id, !profileId.isEmpty else { return }
+        guard activeProfile?.id.isEmpty == false else { return }
+        pendingMetadataLanguageValue = outboundSubtitleLanguage(editorPreferredMetadataLanguage)
+        guard !isSavingMetadataLanguage else { return }
 
-        let newValue = outboundSubtitleLanguage(editorPreferredMetadataLanguage)
+        isSavingMetadataLanguage = true
+        defer { isSavingMetadataLanguage = false }
+
+        while let newValue = pendingMetadataLanguageValue {
+            pendingMetadataLanguageValue = nil
+            await saveMetadataLanguageValue(newValue)
+        }
+    }
+
+    @MainActor
+    private func saveMetadataLanguageValue(_ newValue: String) async {
+        guard let profileId = activeProfile?.id, !profileId.isEmpty else { return }
         let oldValue = activeProfile?.preferredMetadataLanguage ?? ""
-        let changed = newValue != oldValue
+        guard newValue != oldValue else { return }
 
         prefSaveState = .saving
 
         let body = UpdateProfileBody(preferredMetadataLanguage: newValue)
         do {
             try await ContinuumAPI.shared.updateProfile(profileId: profileId, body: body)
+            guard activeProfile?.id == profileId,
+                  outboundSubtitleLanguage(editorPreferredMetadataLanguage) == newValue else {
+                return
+            }
             prefSaveState = .saved
             if let prof = activeProfile {
                 activeProfile = UserProfile(
@@ -238,13 +257,15 @@ class SettingsViewModel {
                     preferredMetadataLanguage: newValue
                 )
             }
-            if changed {
-                ResponseCache.shared.invalidateAllItemMetadata()
-                #if os(tvOS)
-                ItemDetailCache.shared.clearAll()
-                #endif
-            }
+            ResponseCache.shared.invalidateAllItemMetadata()
+            #if os(tvOS)
+            ItemDetailCache.shared.clearAll()
+            #endif
         } catch {
+            guard activeProfile?.id == profileId,
+                  outboundSubtitleLanguage(editorPreferredMetadataLanguage) == newValue else {
+                return
+            }
             prefSaveState = .failed(
                 (error as? LocalizedError)?.errorDescription
                     ?? String(describing: error)
