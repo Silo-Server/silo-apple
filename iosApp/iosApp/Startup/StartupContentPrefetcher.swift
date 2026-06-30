@@ -20,6 +20,31 @@ enum StartupContentPrefetcher {
     private static var userLibrariesTask: Task<LibrariesResponse, Error>?
     private static var librarySectionsTasks: [Int: Task<SectionsResponse, Error>] = [:]
     private static var browseFirstPageTasks: [String: Task<CatalogResponse, Error>] = [:]
+    private static var profileScopedGeneration = 0
+    private static var profilesGeneration = 0
+
+    static func resetProfileScopedPrefetches() {
+        profileScopedGeneration += 1
+
+        homeSectionsTask?.cancel()
+        recommendationsTask?.cancel()
+        userLibrariesTask?.cancel()
+        librarySectionsTasks.values.forEach { $0.cancel() }
+        browseFirstPageTasks.values.forEach { $0.cancel() }
+
+        homeSectionsTask = nil
+        recommendationsTask = nil
+        userLibrariesTask = nil
+        librarySectionsTasks.removeAll()
+        browseFirstPageTasks.removeAll()
+    }
+
+    static func resetAllPrefetches() {
+        profilesGeneration += 1
+        profilesTask?.cancel()
+        profilesTask = nil
+        resetProfileScopedPrefetches()
+    }
 
     static func prefetchProfiles() {
         Task {
@@ -28,6 +53,7 @@ enum StartupContentPrefetcher {
     }
 
     static func fetchProfiles() async throws -> [UserProfile] {
+        let generation = profilesGeneration
         let task: Task<[UserProfile], Error>
         if let profilesTask {
             task = profilesTask
@@ -40,12 +66,17 @@ enum StartupContentPrefetcher {
 
         do {
             let profiles = try await task.value
-            profilesTask = nil
+            try validateProfilesGeneration(generation)
+            if profilesGeneration == generation {
+                profilesTask = nil
+            }
             ResponseCache.shared.set(profiles, for: CacheKey.profiles)
             prefetchProfileArtwork(for: profiles)
             return profiles
         } catch {
-            profilesTask = nil
+            if profilesGeneration == generation {
+                profilesTask = nil
+            }
             throw error
         }
     }
@@ -57,6 +88,7 @@ enum StartupContentPrefetcher {
     }
 
     static func fetchHomeSections() async throws -> SectionsResponse {
+        let generation = profileScopedGeneration
         let task: Task<SectionsResponse, Error>
         if let homeSectionsTask {
             task = homeSectionsTask
@@ -69,12 +101,17 @@ enum StartupContentPrefetcher {
 
         do {
             let response = try await task.value
-            homeSectionsTask = nil
+            try validateProfileScopedGeneration(generation)
+            if profileScopedGeneration == generation {
+                homeSectionsTask = nil
+            }
             ResponseCache.shared.set(response, for: CacheKey.homeSections)
             prefetchHomeArtwork(for: response)
             return response
         } catch {
-            homeSectionsTask = nil
+            if profileScopedGeneration == generation {
+                homeSectionsTask = nil
+            }
             throw error
         }
     }
@@ -86,6 +123,7 @@ enum StartupContentPrefetcher {
     }
 
     static func fetchRecommendations() async throws -> SectionsResponse {
+        let generation = profileScopedGeneration
         let task: Task<SectionsResponse, Error>
         if let recommendationsTask {
             task = recommendationsTask
@@ -98,12 +136,17 @@ enum StartupContentPrefetcher {
 
         do {
             let response = try await task.value
-            recommendationsTask = nil
+            try validateProfileScopedGeneration(generation)
+            if profileScopedGeneration == generation {
+                recommendationsTask = nil
+            }
             ResponseCache.shared.set(response, for: CacheKey.recommendations)
             prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
             return response
         } catch {
-            recommendationsTask = nil
+            if profileScopedGeneration == generation {
+                recommendationsTask = nil
+            }
             throw error
         }
     }
@@ -115,6 +158,7 @@ enum StartupContentPrefetcher {
     }
 
     static func fetchUserLibraries() async throws -> LibrariesResponse {
+        let generation = profileScopedGeneration
         let task: Task<LibrariesResponse, Error>
         if let userLibrariesTask {
             task = userLibrariesTask
@@ -127,11 +171,16 @@ enum StartupContentPrefetcher {
 
         do {
             let response = try await task.value
-            userLibrariesTask = nil
+            try validateProfileScopedGeneration(generation)
+            if profileScopedGeneration == generation {
+                userLibrariesTask = nil
+            }
             ResponseCache.shared.set(response, for: CacheKey.userLibraries)
             return response
         } catch {
-            userLibrariesTask = nil
+            if profileScopedGeneration == generation {
+                userLibrariesTask = nil
+            }
             throw error
         }
     }
@@ -148,6 +197,7 @@ enum StartupContentPrefetcher {
     }
 
     static func fetchLibrarySections(libraryId: Int) async throws -> SectionsResponse {
+        let generation = profileScopedGeneration
         let task: Task<SectionsResponse, Error>
         if let existing = librarySectionsTasks[libraryId] {
             task = existing
@@ -160,12 +210,17 @@ enum StartupContentPrefetcher {
 
         do {
             let response = try await task.value
-            librarySectionsTasks[libraryId] = nil
+            try validateProfileScopedGeneration(generation)
+            if profileScopedGeneration == generation {
+                librarySectionsTasks[libraryId] = nil
+            }
             ResponseCache.shared.set(response, for: CacheKey.librarySections(libraryId))
             prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
             return response
         } catch {
-            librarySectionsTasks[libraryId] = nil
+            if profileScopedGeneration == generation {
+                librarySectionsTasks[libraryId] = nil
+            }
             throw error
         }
     }
@@ -180,6 +235,7 @@ enum StartupContentPrefetcher {
         libraryId: Int?,
         state: CatalogFilterState = .none
     ) async throws -> CatalogResponse {
+        let generation = profileScopedGeneration
         let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment)
         let task: Task<CatalogResponse, Error>
         if let existing = browseFirstPageTasks[key] {
@@ -204,12 +260,17 @@ enum StartupContentPrefetcher {
 
         do {
             let response = try await task.value
-            browseFirstPageTasks[key] = nil
+            try validateProfileScopedGeneration(generation)
+            if profileScopedGeneration == generation {
+                browseFirstPageTasks[key] = nil
+            }
             ResponseCache.shared.set(response, for: key)
             prefetchBrowseArtwork(for: response)
             return response
         } catch {
-            browseFirstPageTasks[key] = nil
+            if profileScopedGeneration == generation {
+                browseFirstPageTasks[key] = nil
+            }
             throw error
         }
     }
@@ -246,9 +307,13 @@ enum StartupContentPrefetcher {
 
     private static func preferredLibrary(from libraries: [Library]) -> Library? {
         AppNavPreferences.shared.refresh()
-        let visibleLibraries = libraries.filter {
-            AppNavPreferences.shared.showAudiobooks || !$0.isAudiobookLibrary
-        }
+        let visibleLibraries = libraries
+            .filter {
+                AppNavPreferences.shared.showAudiobooks || !$0.isAudiobookLibrary
+            }
+            .sorted {
+                ($0.sortOrder ?? Int.max, $0.id) < ($1.sortOrder ?? Int.max, $1.id)
+            }
         let storedId = UserDefaults.standard.integer(forKey: selectedLibraryDefaultsKey)
         if storedId != 0,
            let stored = visibleLibraries.first(where: { $0.id == storedId }) {
@@ -376,6 +441,18 @@ enum StartupContentPrefetcher {
 
         guard !urls.isEmpty else { return }
         PosterImageCache.prefetcher.startPrefetching(with: urls)
+    }
+
+    private static func validateProfileScopedGeneration(_ generation: Int) throws {
+        guard profileScopedGeneration == generation else {
+            throw CancellationError()
+        }
+    }
+
+    private static func validateProfilesGeneration(_ generation: Int) throws {
+        guard profilesGeneration == generation else {
+            throw CancellationError()
+        }
     }
 
     private static func normalizedURL(from urlString: String?) -> URL? {

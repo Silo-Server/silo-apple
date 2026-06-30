@@ -185,6 +185,7 @@ final class AuthService: @unchecked Sendable {
     /// watchlist, home recommendations) doesn't leak between accounts.
     @MainActor
     private func clearPerProfileCaches() {
+        StartupContentPrefetcher.resetProfileScopedPrefetches()
         for prefix in CacheKey.perProfilePrefixes {
             ResponseCache.shared.removeAll(withPrefix: prefix)
         }
@@ -265,6 +266,7 @@ final class AuthService: @unchecked Sendable {
     /// the next session must start clean.
     @MainActor
     private func clearAllCaches() {
+        StartupContentPrefetcher.resetAllPrefetches()
         ResponseCache.shared.clearAll()
         OverlayPrefsStore.shared.clear()
         ProfilePrefsStore.shared.clear()

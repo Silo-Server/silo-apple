@@ -119,6 +119,8 @@ enum CacheKey {
     static let perProfilePrefixes: [String] = [
         "home:",
         "recommendations:",
+        "browse:",
+        "library:",
         "personal:",
         "item:",
         "collection:",
@@ -127,7 +129,6 @@ enum CacheKey {
         "user:",
         // Browse pages and facet lists are access-filtered per profile, and
         // watch-status filters make a page profile-specific.
-        "browse:",
         "tvlibrary:",
         "catalogFilters:",
     ]
