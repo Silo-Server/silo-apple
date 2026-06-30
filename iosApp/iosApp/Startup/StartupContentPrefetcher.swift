@@ -3,7 +3,11 @@ import Foundation
 @MainActor
 enum StartupContentPrefetcher {
     private static let maxHomeArtworkURLs = 12
+    private static let maxSectionArtworkURLs = 12
+    private static let maxBrowseArtworkURLs = 12
     private static let maxProfileArtworkURLs = 8
+    private static let browsePageSize = 60
+    private static let selectedLibraryDefaultsKey = "librariesTabSelectedLibraryId"
     private static let episodeSectionTypes: Set<String> = [
         "continue_watching",
         "in_progress",
@@ -12,6 +16,10 @@ enum StartupContentPrefetcher {
 
     private static var profilesTask: Task<[UserProfile], Error>?
     private static var homeSectionsTask: Task<SectionsResponse, Error>?
+    private static var recommendationsTask: Task<SectionsResponse, Error>?
+    private static var userLibrariesTask: Task<LibrariesResponse, Error>?
+    private static var librarySectionsTasks: [Int: Task<SectionsResponse, Error>] = [:]
+    private static var browseFirstPageTasks: [String: Task<CatalogResponse, Error>] = [:]
 
     static func prefetchProfiles() {
         Task {
@@ -71,18 +79,184 @@ enum StartupContentPrefetcher {
         }
     }
 
+    static func prefetchRecommendations() {
+        Task {
+            _ = try? await fetchRecommendations()
+        }
+    }
+
+    static func fetchRecommendations() async throws -> SectionsResponse {
+        let task: Task<SectionsResponse, Error>
+        if let recommendationsTask {
+            task = recommendationsTask
+        } else {
+            task = Task {
+                try await ContinuumAPI.shared.recommendationsDiscover()
+            }
+            recommendationsTask = task
+        }
+
+        do {
+            let response = try await task.value
+            recommendationsTask = nil
+            ResponseCache.shared.set(response, for: CacheKey.recommendations)
+            prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
+            return response
+        } catch {
+            recommendationsTask = nil
+            throw error
+        }
+    }
+
+    static func prefetchUserLibraries() {
+        Task {
+            _ = try? await fetchUserLibraries()
+        }
+    }
+
+    static func fetchUserLibraries() async throws -> LibrariesResponse {
+        let task: Task<LibrariesResponse, Error>
+        if let userLibrariesTask {
+            task = userLibrariesTask
+        } else {
+            task = Task {
+                try await ContinuumAPI.shared.libraries()
+            }
+            userLibrariesTask = task
+        }
+
+        do {
+            let response = try await task.value
+            userLibrariesTask = nil
+            ResponseCache.shared.set(response, for: CacheKey.userLibraries)
+            return response
+        } catch {
+            userLibrariesTask = nil
+            throw error
+        }
+    }
+
+    static func prefetchLibraryLanding(libraryId: Int) {
+        prefetchLibrarySections(libraryId: libraryId)
+        prefetchBrowseFirstPage(libraryId: libraryId)
+    }
+
+    static func prefetchLibrarySections(libraryId: Int) {
+        Task {
+            _ = try? await fetchLibrarySections(libraryId: libraryId)
+        }
+    }
+
+    static func fetchLibrarySections(libraryId: Int) async throws -> SectionsResponse {
+        let task: Task<SectionsResponse, Error>
+        if let existing = librarySectionsTasks[libraryId] {
+            task = existing
+        } else {
+            task = Task {
+                try await ContinuumAPI.shared.librarySections(libraryId: libraryId)
+            }
+            librarySectionsTasks[libraryId] = task
+        }
+
+        do {
+            let response = try await task.value
+            librarySectionsTasks[libraryId] = nil
+            ResponseCache.shared.set(response, for: CacheKey.librarySections(libraryId))
+            prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
+            return response
+        } catch {
+            librarySectionsTasks[libraryId] = nil
+            throw error
+        }
+    }
+
+    static func prefetchBrowseFirstPage(libraryId: Int?, genre: String? = nil, sort: String = "title") {
+        Task {
+            _ = try? await fetchBrowseFirstPage(libraryId: libraryId, genre: genre, sort: sort)
+        }
+    }
+
+    static func fetchBrowseFirstPage(
+        libraryId: Int?,
+        genre: String? = nil,
+        sort: String = "title"
+    ) async throws -> CatalogResponse {
+        let key = CacheKey.browse(libraryId: libraryId, genre: genre, sort: sort)
+        let task: Task<CatalogResponse, Error>
+        if let existing = browseFirstPageTasks[key] {
+            task = existing
+        } else {
+            task = Task {
+                var query: [String: String] = [
+                    "offset": "0",
+                    "limit": String(browsePageSize),
+                    "sort": sort,
+                ]
+                if let libraryId {
+                    query["library_id"] = String(libraryId)
+                }
+                if let genre {
+                    query["genre"] = genre
+                }
+
+                return try await ContinuumAPI.shared.catalog(query: query)
+            }
+            browseFirstPageTasks[key] = task
+        }
+
+        do {
+            let response = try await task.value
+            browseFirstPageTasks[key] = nil
+            ResponseCache.shared.set(response, for: key)
+            prefetchBrowseArtwork(for: response)
+            return response
+        } catch {
+            browseFirstPageTasks[key] = nil
+            throw error
+        }
+    }
+
+    static func prefetchAuthenticatedContent() {
+        prefetchHomeSections()
+        prefetchRecommendations()
+        prefetchActiveLibraryLanding()
+        Task {
+            await OverlayPrefsStore.shared.hydrateIfNeeded()
+        }
+    }
+
     static func prefetchForInitialRoute(_ state: AppRouter.AuthState) {
         switch state {
         case .authenticated:
-            prefetchHomeSections()
-            Task {
-                await OverlayPrefsStore.shared.hydrateIfNeeded()
-            }
+            prefetchAuthenticatedContent()
         case .needsProfile:
             prefetchProfiles()
         case .loading, .needsServerSetup, .needsLogin:
             break
         }
+    }
+
+    private static func prefetchActiveLibraryLanding() {
+        Task {
+            guard let response = try? await fetchUserLibraries(),
+                  let library = preferredLibrary(from: response.libraries) else {
+                return
+            }
+            prefetchLibraryLanding(libraryId: library.id)
+        }
+    }
+
+    private static func preferredLibrary(from libraries: [Library]) -> Library? {
+        AppNavPreferences.shared.refresh()
+        let visibleLibraries = libraries.filter {
+            AppNavPreferences.shared.showAudiobooks || !$0.isAudiobookLibrary
+        }
+        let storedId = UserDefaults.standard.integer(forKey: selectedLibraryDefaultsKey)
+        if storedId != 0,
+           let stored = visibleLibraries.first(where: { $0.id == storedId }) {
+            return stored
+        }
+        return visibleLibraries.first
     }
 
     private static func prefetchHomeArtwork(for response: SectionsResponse) {
@@ -130,6 +304,54 @@ enum StartupContentPrefetcher {
                 if urls.count >= maxHomeArtworkURLs { break }
             }
             if urls.count >= maxHomeArtworkURLs { break }
+        }
+
+        guard !urls.isEmpty else { return }
+        PosterImageCache.prefetcher.startPrefetching(with: urls)
+    }
+
+    private static func prefetchSectionArtwork(for response: SectionsResponse, maxCount: Int) {
+        var urls: [URL] = []
+        var seen = Set<String>()
+
+        func append(_ urlString: String?) {
+            guard urls.count < maxCount,
+                  let url = normalizedURL(from: urlString) else {
+                return
+            }
+            let key = url.absoluteString
+            guard seen.insert(key).inserted else { return }
+            urls.append(url)
+        }
+
+        for section in response.sections where !section.isFeatured && !section.items.isEmpty {
+            for item in section.items {
+                if episodeSectionTypes.contains(section.sectionType) {
+                    append(item.backdropUrl ?? item.posterUrl)
+                } else {
+                    append(item.posterUrl)
+                }
+                if urls.count >= maxCount { break }
+            }
+            if urls.count >= maxCount { break }
+        }
+
+        guard !urls.isEmpty else { return }
+        PosterImageCache.prefetcher.startPrefetching(with: urls)
+    }
+
+    private static func prefetchBrowseArtwork(for response: CatalogResponse) {
+        var urls: [URL] = []
+        var seen = Set<String>()
+
+        for item in response.items {
+            guard urls.count < maxBrowseArtworkURLs,
+                  let url = normalizedURL(from: item.posterUrl) else {
+                continue
+            }
+            let key = url.absoluteString
+            guard seen.insert(key).inserted else { continue }
+            urls.append(url)
         }
 
         guard !urls.isEmpty else { return }

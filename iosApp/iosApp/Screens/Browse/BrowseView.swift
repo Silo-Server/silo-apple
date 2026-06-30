@@ -277,7 +277,7 @@ struct LibraryDetailView: View {
         guard initialTitle == nil else { return }
 
         do {
-            let response: LibrariesResponse = try await ContinuumAPI.shared.get("/api/v1/user/libraries")
+            let response = try await StartupContentPrefetcher.fetchUserLibraries()
             if let matchedLibrary = response.libraries.first(where: { $0.id == libraryId }) {
                 title = matchedLibrary.name
             }
@@ -300,7 +300,7 @@ private class LibraryRecommendedViewModel {
     }
 
     func loadSections(libraryId: Int) async {
-        let key = "library:\(libraryId):sections"
+        let key = CacheKey.librarySections(libraryId)
         if sections.isEmpty,
            let cached: SectionsResponse = ResponseCache.shared.get(key) {
             sections = cached.sections.filter { !$0.items.isEmpty }
@@ -313,10 +313,7 @@ private class LibraryRecommendedViewModel {
         error = nil
 
         do {
-            let response: SectionsResponse = try await ContinuumAPI.shared.get(
-                "/api/v1/library/\(libraryId)/sections"
-            )
-            ResponseCache.shared.set(response, for: key)
+            let response = try await StartupContentPrefetcher.fetchLibrarySections(libraryId: libraryId)
             sections = response.sections.filter { !$0.items.isEmpty }
         } catch let err {
             if sections.isEmpty {

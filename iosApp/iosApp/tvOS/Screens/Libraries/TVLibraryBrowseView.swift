@@ -78,10 +78,14 @@ struct TVLibraryBrowseView: View {
     // MARK: - Data
 
     private func loadContent() async {
+        if sections.isEmpty,
+           let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.librarySections(library.id)) {
+            sections = cached.sections
+        }
         isLoadingSections = true
         sectionsError = nil
         do {
-            let response = try await ContinuumAPI.shared.librarySections(libraryId: library.id)
+            let response = try await StartupContentPrefetcher.fetchLibrarySections(libraryId: library.id)
             sections = response.sections
         } catch {
             sectionsError = ErrorState(error)

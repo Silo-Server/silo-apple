@@ -63,9 +63,18 @@ class BrowseViewModel {
                 query["genre"] = genre
             }
 
-            let response: CatalogResponse = try await ContinuumAPI.shared.get(
-                "/api/v1/catalog", query: query
-            )
+            let response: CatalogResponse
+            if reset && currentPage == 0 {
+                response = try await StartupContentPrefetcher.fetchBrowseFirstPage(
+                    libraryId: libraryId,
+                    genre: selectedGenre,
+                    sort: sortBy
+                )
+            } else {
+                response = try await ContinuumAPI.shared.get(
+                    "/api/v1/catalog", query: query
+                )
+            }
             if reset {
                 items = response.items
                 ResponseCache.shared.set(response, for: currentCacheKey)

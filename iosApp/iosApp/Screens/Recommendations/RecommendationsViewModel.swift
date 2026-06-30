@@ -28,10 +28,7 @@ class RecommendationsViewModel {
         error = nil
 
         do {
-            let response: SectionsResponse = try await ContinuumAPI.shared.get(
-                "/api/v1/recommendations/discover"
-            )
-            ResponseCache.shared.set(response, for: CacheKey.recommendations)
+            let response = try await StartupContentPrefetcher.fetchRecommendations()
             sections = sortedNonEmptySections(from: response.sections)
         } catch let err {
             if sections.isEmpty {
@@ -48,10 +45,7 @@ class RecommendationsViewModel {
     func refresh() async {
         isRefreshing = true
         do {
-            let response: SectionsResponse = try await ContinuumAPI.shared.get(
-                "/api/v1/recommendations/discover"
-            )
-            ResponseCache.shared.set(response, for: CacheKey.recommendations)
+            let response = try await StartupContentPrefetcher.fetchRecommendations()
             sections = sortedNonEmptySections(from: response.sections)
             error = nil
         } catch let err {

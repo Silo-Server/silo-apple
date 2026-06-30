@@ -700,8 +700,7 @@ struct TVMainTabView: View {
         }
 
         do {
-            let response: LibrariesResponse = try await ContinuumAPI.shared.get("/api/v1/user/libraries")
-            ResponseCache.shared.set(response, for: CacheKey.userLibraries)
+            let response = try await StartupContentPrefetcher.fetchUserLibraries()
             libraries = response.libraries
             ensureSelectedRootIsVisible()
         } catch {

@@ -96,6 +96,9 @@ enum CacheKey {
     static func browse(libraryId: Int?, genre: String?, sort: String) -> String {
         "browse:\(libraryId.map(String.init) ?? "all"):\(genre ?? "all"):\(sort)"
     }
+    static func librarySections(_ libraryId: Int) -> String {
+        "library:\(libraryId):sections"
+    }
     static func tvLibrary(libraryId: Int, filterKey: String) -> String {
         "tvlibrary:\(libraryId):\(filterKey)"
     }

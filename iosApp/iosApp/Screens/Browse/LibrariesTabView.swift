@@ -59,6 +59,7 @@ struct LibrariesTabView: View {
                     selectedLibraryId = id
                     storedLibraryId = id
                     showPicker = false
+                    StartupContentPrefetcher.prefetchLibraryLanding(libraryId: id)
                 }
             )
         }
@@ -128,7 +129,7 @@ struct LibrariesTabView: View {
         // Hydrate from cache so a returning visit paints last-known
         // libraries instantly while the refresh runs.
         if libraries.isEmpty,
-           let cached: LibrariesResponse = ResponseCache.shared.get("libraries:list") {
+           let cached: LibrariesResponse = ResponseCache.shared.get(CacheKey.userLibraries) {
             libraries = cached.libraries
             applyLibrarySelection()
         }
@@ -137,10 +138,12 @@ struct LibrariesTabView: View {
         }
         error = nil
         do {
-            let response: LibrariesResponse = try await ContinuumAPI.shared.get("/api/v1/user/libraries")
-            ResponseCache.shared.set(response, for: "libraries:list")
+            let response = try await StartupContentPrefetcher.fetchUserLibraries()
             libraries = response.libraries
             applyLibrarySelection()
+            if let selectedLibraryId {
+                StartupContentPrefetcher.prefetchLibraryLanding(libraryId: selectedLibraryId)
+            }
         } catch {
             if libraries.isEmpty {
                 self.error = ErrorState(error)
