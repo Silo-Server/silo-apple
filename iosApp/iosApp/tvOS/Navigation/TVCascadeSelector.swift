@@ -209,10 +209,13 @@ struct TVCascadeSelector: View {
 
         if libraries.count > ContinuumTheme.Skyline.cascadeMaxVisibleRows {
             // Cap the visible height at the spec's 6 rows, then scroll
-            // internally. The focus engine scrolls the focused row into
-            // view as the list rolls.
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) { rows }
+            // internally as the composite cascade focus rolls the list.
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 0) { rows }
+                }
+                .onAppear { scrollFocusedLibrary(with: proxy) }
+                .onChange(of: focus) { _, _ in scrollFocusedLibrary(with: proxy) }
             }
             .frame(maxHeight: estimatedRowHeight * CGFloat(ContinuumTheme.Skyline.cascadeMaxVisibleRows))
         } else {
@@ -232,6 +235,7 @@ struct TVCascadeSelector: View {
         )
 
         label
+            .id(Focus.library(library.id))
             // Report this row's center in the level-1 HStack's coordinate
             // space so the flyout can align its first section row with it.
             // This survives the panel's ScrollView / nested stacks, which a
@@ -469,6 +473,13 @@ struct TVCascadeSelector: View {
         ContinuumTheme.Skyline.cascadeRowTextSize
             + ContinuumTheme.Skyline.cascadeRowPaddingVertical * 2
             + 6 // row spacing slack so the 6th row isn't clipped mid-glyph
+    }
+
+    private func scrollFocusedLibrary(with proxy: ScrollViewProxy) {
+        guard case .library(let libraryId) = focus else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.Skyline.flyoutOpenDuration)) {
+            proxy.scrollTo(Focus.library(libraryId), anchor: .center)
+        }
     }
 
     private func accessibilityLabel(for library: Library, isCurrent: Bool) -> String {
