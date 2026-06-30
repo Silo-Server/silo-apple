@@ -100,8 +100,8 @@ enum CacheKey {
         "browse:\(libraryId.map(String.init) ?? "all"):\(filterKey)"
     }
     /// Per-library facet vocabulary from `/catalog/filters`.
-    static func catalogFilters(libraryId: Int?) -> String {
-        "catalogFilters:\(libraryId.map(String.init) ?? "all")"
+    static func catalogFilters(libraryId: Int?, includeTechnical: Bool = true) -> String {
+        "catalogFilters:\(libraryId.map(String.init) ?? "all"):\(includeTechnical ? "technical" : "basic")"
     }
     static func librarySections(_ libraryId: Int) -> String {
         "library:\(libraryId):sections"

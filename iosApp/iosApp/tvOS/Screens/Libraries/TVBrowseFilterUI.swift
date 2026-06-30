@@ -389,8 +389,8 @@ struct TVBrowseFilterPanel: View {
         }
         .buttonStyle(TVBrowsePanelRowStyle())
         .focused($focusedTarget, equals: .reset)
-        .disabled(draft.isDefault)
-        .opacity(draft.isDefault ? 0.45 : 1)
+        .disabled(!draft.canResetFilters)
+        .opacity(draft.canResetFilters ? 1 : 0.45)
     }
 
     private var doneRow: some View {

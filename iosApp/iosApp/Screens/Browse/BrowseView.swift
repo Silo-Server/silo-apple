@@ -30,11 +30,7 @@ struct BrowseView: View {
             } else if viewModel.isLoading {
                 Color.clear
             } else {
-                EmptyStateView(
-                    icon: "film",
-                    title: "No items found",
-                    subtitle: "Try adjusting your filters"
-                )
+                emptyContent
             }
         }
         .continuumBackground()
@@ -52,6 +48,31 @@ struct BrowseView: View {
     }
 
     // MARK: - Content
+
+    private var emptyContent: some View {
+        ScrollView {
+            VStack(spacing: ContinuumTheme.padding) {
+                if showsSearchShortcut {
+                    searchBar
+                }
+
+                controlBar
+
+                if hasActiveFilters {
+                    activeFilterChips
+                }
+
+                EmptyStateView(
+                    icon: "film",
+                    title: "No items found",
+                    subtitle: "Try adjusting your filters"
+                )
+                .frame(minHeight: 320)
+                .padding(.horizontal, ContinuumTheme.padding)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
 
     private var scrollContent: some View {
         ScrollView {

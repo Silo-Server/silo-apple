@@ -83,6 +83,22 @@ final class CatalogQueryBuilderTests: XCTestCase {
         XCTAssertEqual(q["groups[0][rules][0][value]"], "true")
     }
 
+    func testDynamicRangeValuesShareOneAnyGroup() {
+        var s = CatalogFilterState()
+        s.hdr = true
+        s.dolbyVision = true
+
+        let q = build(s)
+        XCTAssertEqual(q["groups[0][match]"], "any")
+        XCTAssertEqual(q["groups[0][rules][0][field]"], "hdr")
+        XCTAssertEqual(q["groups[0][rules][0][op]"], "is")
+        XCTAssertEqual(q["groups[0][rules][0][value]"], "true")
+        XCTAssertEqual(q["groups[0][rules][1][field]"], "dolby_vision")
+        XCTAssertEqual(q["groups[0][rules][1][op]"], "is")
+        XCTAssertEqual(q["groups[0][rules][1][value]"], "true")
+        XCTAssertNil(q["groups[1][match]"])
+    }
+
     func testMatchAnyTopLevel() {
         var s = CatalogFilterState(); s.matchAll = false
         XCTAssertEqual(build(s)["match"], "any")
@@ -98,5 +114,34 @@ final class CatalogQueryBuilderTests: XCTestCase {
         var a = CatalogFilterState(); a.genres = ["Drama", "Action"]; a.decades = [2010]
         var b = CatalogFilterState(); b.genres = ["Action", "Drama"]; b.decades = [2010]
         XCTAssertEqual(a.cacheKeyFragment, b.cacheKeyFragment)
+    }
+
+    func testCacheKeyFragmentEscapesValueDelimiters() {
+        var grouped = CatalogFilterState(); grouped.genres = ["A,B"]
+        var split = CatalogFilterState(); split.genres = ["A", "B"]
+        XCTAssertNotEqual(grouped.cacheKeyFragment, split.cacheKeyFragment)
+
+        var piped = CatalogFilterState(); piped.namePrefix = "A|B"
+        var plain = CatalogFilterState(); plain.namePrefix = "A"; plain.genres = ["B"]
+        XCTAssertNotEqual(piped.cacheKeyFragment, plain.cacheKeyFragment)
+    }
+
+    func testResetFiltersPreservesSortOrderAndPrefix() {
+        var s = CatalogFilterState()
+        s.sort = .addedAt
+        s.order = .asc
+        s.namePrefix = "M"
+        s.genres = ["Drama"]
+        s.hdr = true
+        s.matchAll = false
+
+        s.resetFilters()
+
+        XCTAssertEqual(s.sort, .addedAt)
+        XCTAssertEqual(s.order, .asc)
+        XCTAssertEqual(s.namePrefix, "M")
+        XCTAssertTrue(s.genres.isEmpty)
+        XCTAssertFalse(s.hdr)
+        XCTAssertTrue(s.matchAll)
     }
 }

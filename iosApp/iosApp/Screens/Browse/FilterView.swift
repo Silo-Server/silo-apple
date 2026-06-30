@@ -38,7 +38,7 @@ struct FilterView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Reset") { draft.resetFilters() }
                         .foregroundColor(.continuumSecondaryText)
-                        .disabled(draft.isDefault)
+                        .disabled(!draft.canResetFilters)
                 }
             }
             .continuumNavigationBarSurfaceBackground()

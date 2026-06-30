@@ -158,7 +158,11 @@ actor ContinuumAPI {
         // Catalog filters
         if components == ["api", "v1", "catalog", "filters"] {
             let libraryId = queryInt(query["library_id"])
-            return try cast(try await catalogFilters(libraryId: libraryId))
+            let includeTechnical = query["include_technical"].map { $0 == "true" } ?? true
+            return try cast(try await catalogFilters(
+                libraryId: libraryId,
+                includeTechnical: includeTechnical
+            ))
         }
 
         // Watch detail

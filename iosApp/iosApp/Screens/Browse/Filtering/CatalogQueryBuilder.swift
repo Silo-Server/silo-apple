@@ -53,8 +53,7 @@ enum CatalogQueryBuilder {
         groups.add(field: "narrator", op: "is", values: state.narrators)
         groups.add(field: "series", op: "is", values: state.seriesNames)
         groups.addYearRanges(state.decades)
-        if state.hdr { groups.addBool(field: "hdr", value: true) }
-        if state.dolbyVision { groups.addBool(field: "dolby_vision", value: true) }
+        groups.addDynamicRange(hdr: state.hdr, dolbyVision: state.dolbyVision)
         if let status = state.watchStatus { groups.addWatchStatus(status) }
         groups.encode(into: &q)
 
@@ -82,6 +81,14 @@ private struct GroupAccumulator {
 
     mutating func addBool(field: String, value: Bool) {
         groups.append((match: "all", rules: [Rule(field: field, op: "is", values: [value ? "true" : "false"])]))
+    }
+
+    mutating func addDynamicRange(hdr: Bool, dolbyVision: Bool) {
+        var rules: [Rule] = []
+        if hdr { rules.append(Rule(field: "hdr", op: "is", values: ["true"])) }
+        if dolbyVision { rules.append(Rule(field: "dolby_vision", op: "is", values: ["true"])) }
+        guard !rules.isEmpty else { return }
+        groups.append((match: "any", rules: rules))
     }
 
     mutating func addWatchStatus(_ status: WatchStatusFilter) {

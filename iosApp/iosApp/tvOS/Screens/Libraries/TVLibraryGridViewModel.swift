@@ -175,13 +175,15 @@ final class TVLibraryGridViewModel {
             isRefreshing = false
         }
 
+        let requestOffset = reset ? 0 : nextOffset
+        let requestSnapshot = reset ? nil : snapshot
         let query = CatalogQueryBuilder.build(
             filter,
             libraryId: libraryId,
             mediaType: mediaType,
-            offset: nextOffset,
+            offset: requestOffset,
             limit: pageSize,
-            snapshot: snapshot,
+            snapshot: requestSnapshot,
             includeType: sendsType
         )
 
@@ -196,12 +198,14 @@ final class TVLibraryGridViewModel {
             if reset {
                 items = response.items
                 ResponseCache.shared.set(response, for: currentCacheKey)
+                nextOffset = response.items.count
+                snapshot = response.snapshot
             } else {
                 items.append(contentsOf: response.items)
+                nextOffset += response.items.count
+                if snapshot == nil { snapshot = response.snapshot }
             }
             hasMore = response.hasMore ?? false
-            nextOffset += response.items.count
-            if snapshot == nil { snapshot = response.snapshot }
         } catch {
             guard myGeneration == generation else { return }
             if items.isEmpty {

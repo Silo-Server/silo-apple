@@ -155,10 +155,13 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
                     originalLanguages, authors, narrators, seriesNames]
         where !set.isEmpty { n += 1 }
         if !decades.isEmpty { n += 1 }
-        if hdr { n += 1 }
-        if dolbyVision { n += 1 }
+        if hdr || dolbyVision { n += 1 }
         if watchStatus != nil { n += 1 }
         return n
+    }
+
+    var canResetFilters: Bool {
+        hasActiveFilters || !matchAll
     }
 
     /// True when this is the untouched default view (Title, natural order,
@@ -248,10 +251,15 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
         }
     }
 
-    /// Reset every facet, sort, and order to defaults (keeps namePrefix).
+    /// Reset filter facets and matching mode to defaults (keeps sort/order
+    /// and namePrefix).
     mutating func resetFilters() {
+        let currentSort = sort
+        let currentOrder = order
         let prefix = namePrefix
         self = .none
+        sort = currentSort
+        order = currentOrder
         namePrefix = prefix
     }
 
@@ -296,13 +304,16 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
     /// persistence, this DOES include `namePrefix` — the fetched page content
     /// depends on it.
     var cacheKeyFragment: String {
-        func join(_ s: Set<String>) -> String { s.sorted().joined(separator: ",") }
+        func encode(_ value: String) -> String {
+            value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? value
+        }
+        func join(_ s: Set<String>) -> String { s.sorted().map(encode).joined(separator: ",") }
         var parts: [String] = [
             "s=\(sort.field)",
             "o=\(effectiveOrder.rawValue)",
             "m=\(matchAll ? "all" : "any")",
         ]
-        if let p = namePrefix { parts.append("p=\(p)") }
+        if let p = namePrefix { parts.append("p=\(encode(p))") }
         if !genres.isEmpty { parts.append("g=\(join(genres))") }
         if !contentRatings.isEmpty { parts.append("cr=\(join(contentRatings))") }
         if !studios.isEmpty { parts.append("st=\(join(studios))") }
@@ -318,7 +329,7 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
         if !decades.isEmpty { parts.append("dec=\(decades.sorted().map(String.init).joined(separator: ","))") }
         if hdr { parts.append("hdr") }
         if dolbyVision { parts.append("dv") }
-        if let w = watchStatus { parts.append("ws=\(w.rawValue)") }
+        if let w = watchStatus { parts.append("ws=\(encode(w.rawValue))") }
         return parts.joined(separator: "|")
     }
 }

@@ -66,7 +66,17 @@ struct TVLibraryFilterPayload: Hashable {
         var state = CatalogFilterState()
         state.namePrefix = namePrefix
         if let genre { state.genres = [genre] }
-        if let yearMin { state.decades = [(yearMin / 10) * 10] }
+        if let yearMin, let yearMax {
+            let lower = min(yearMin, yearMax)
+            let upper = max(yearMin, yearMax)
+            let start = (lower / 10) * 10
+            let end = (upper / 10) * 10
+            state.decades = Set(stride(from: start, through: end, by: 10))
+        } else if let yearMin {
+            state.decades = [(yearMin / 10) * 10]
+        } else if let yearMax {
+            state.decades = [(yearMax / 10) * 10]
+        }
         state.sort = CatalogSortKey(rawValue: sort) ?? .title
         return state
     }

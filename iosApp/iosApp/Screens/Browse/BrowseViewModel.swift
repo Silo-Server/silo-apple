@@ -40,32 +40,29 @@ class BrowseViewModel {
     // MARK: - Load Items
 
     func loadItems(reset: Bool = false) async {
-        guard !isLoading else { return }
         if reset {
             generation += 1
-            // Surface the cached page-1 snapshot instantly so the grid
-            // doesn't blank out while the network call runs.
             if !items.isEmpty {
                 isRefreshing = true
-            } else if let cached: CatalogResponse = ResponseCache.shared.get(currentCacheKey) {
-                items = cached.items
-                hasMore = cached.hasMore ?? false
-                isRefreshing = true
+            } else {
+                // Surface the cached page-1 snapshot instantly so the grid
+                // doesn't blank out while the network call runs.
+                hydratePage1FromCache()
+                isRefreshing = !items.isEmpty
             }
             currentPage = 0
-            if items.isEmpty {
-                hasMore = true
-            }
-        }
-        guard hasMore else {
-            isRefreshing = false
+            hasMore = true
+        } else if isLoading {
             return
         }
 
         let myGeneration = generation
-        if items.isEmpty {
-            isLoading = true
+        guard hasMore else {
+            finishLoading(for: myGeneration)
+            return
         }
+
+        isLoading = true
         error = nil
 
         do {
@@ -104,8 +101,7 @@ class BrowseViewModel {
                 self.error = ErrorState(err)
             }
         }
-        isLoading = false
-        isRefreshing = false
+        finishLoading(for: myGeneration)
     }
 
     // MARK: - Filters / Sort
@@ -167,7 +163,7 @@ class BrowseViewModel {
         return response?.total
     }
 
-    var hasActiveFilters: Bool { !filterState.isDefault }
+    var hasActiveFilters: Bool { filterState.hasActiveFilters }
 
     // MARK: - Preserve toggle
 
@@ -193,6 +189,13 @@ class BrowseViewModel {
         }
         items = cached.items
         hasMore = cached.hasMore ?? false
+        refineMediaType(from: cached)
+    }
+
+    private func finishLoading(for completedGeneration: Int) {
+        guard completedGeneration == generation else { return }
+        isLoading = false
+        isRefreshing = false
     }
 
     /// Refine the media family from the first loaded item so the sort/facet

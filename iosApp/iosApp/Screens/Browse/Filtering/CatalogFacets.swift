@@ -86,7 +86,7 @@ final class FacetLoader {
     private var inFlight: [String: Task<CatalogFilters, Error>] = [:]
 
     func facets(libraryId: Int?, includeTechnical: Bool = true) async throws -> CatalogFacets {
-        let key = CacheKey.catalogFilters(libraryId: libraryId)
+        let key = CacheKey.catalogFilters(libraryId: libraryId, includeTechnical: includeTechnical)
         if let cached: CatalogFilters = ResponseCache.shared.get(key) {
             return CatalogFacets(cached)
         }
@@ -95,15 +95,15 @@ final class FacetLoader {
 
     /// Returns a cached facet set synchronously if present (for instant
     /// sheet/panel open), else `nil`.
-    func cachedFacets(libraryId: Int?) -> CatalogFacets? {
-        let key = CacheKey.catalogFilters(libraryId: libraryId)
+    func cachedFacets(libraryId: Int?, includeTechnical: Bool = true) -> CatalogFacets? {
+        let key = CacheKey.catalogFilters(libraryId: libraryId, includeTechnical: includeTechnical)
         guard let cached: CatalogFilters = ResponseCache.shared.get(key) else { return nil }
         return CatalogFacets(cached)
     }
 
     /// Warm the cache without awaiting (e.g. on library selection).
     func prefetch(libraryId: Int?) {
-        let key = CacheKey.catalogFilters(libraryId: libraryId)
+        let key = CacheKey.catalogFilters(libraryId: libraryId, includeTechnical: true)
         guard ResponseCache.shared.get(key) as CatalogFilters? == nil else { return }
         Task { _ = try? await fetch(libraryId: libraryId, includeTechnical: true, key: key) }
     }
