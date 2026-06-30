@@ -35,10 +35,20 @@ struct TVPlayerInfoHUD: View {
     /// Tabs shown for the current session. Info + Video are always available;
     /// Audio / Subtitles / Chapters disappear when the stream has none of
     /// those — Infuse hides rather than disables, which keeps the bar tidy.
+    ///
+    /// Subtitles also appear when the stream has *no* tracks but the server's
+    /// AI can produce them (ASR transcription, or translating an existing text
+    /// track). Without this, a file with no subtitles would hide the Subtitles
+    /// tab entirely — and with it the only entry point to "AI Subtitles…",
+    /// which is exactly the case where transcription is most useful. Uses the
+    /// same `hasActionableSource` probe the pane gates its AI row on.
     private var availableTabs: [Tab] {
         var tabs: [Tab] = [.info, .stats, .video]
         if !viewModel.audioTracks.isEmpty { tabs.append(.audio) }
-        if !viewModel.subtitleTracks.isEmpty { tabs.append(.subtitles) }
+        if !viewModel.subtitleTracks.isEmpty
+            || SubtitleTranslateMenu.hasActionableSource(viewModel) {
+            tabs.append(.subtitles)
+        }
         if !viewModel.chapters.isEmpty { tabs.append(.chapters) }
         return tabs
     }
