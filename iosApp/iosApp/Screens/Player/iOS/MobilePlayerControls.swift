@@ -24,19 +24,29 @@ struct MobilePlayerControls: View {
         // back, because @State activeSheet survives the rebuild.
         ZStack {
             if viewModel.showControls {
-                ZStack {
-                    Color.black.opacity(0.4)
-                        .ignoresSafeArea()
-                        .onTapGesture { viewModel.toggleControls() }
+                // GeometryReader pins the control stack to the player's own
+                // bounds. The bars are siblings of the shared player notice in
+                // `PlayerView`'s ZStack; inside the player's `.fullScreenCover`
+                // a too-wide bar would otherwise stretch that shared layer past
+                // the screen and drag the notice off both edges in portrait.
+                // Clamping the stack to `proxy.size` keeps every overlay inside
+                // the visible frame regardless of how wide a bar wants to be.
+                GeometryReader { proxy in
+                    ZStack {
+                        Color.black.opacity(0.4)
+                            .ignoresSafeArea()
+                            .onTapGesture { viewModel.toggleControls() }
 
-                    VStack {
-                        topBar
-                        Spacer()
-                        centerControls
-                        Spacer()
-                        bottomBar
+                        VStack {
+                            topBar
+                            Spacer()
+                            centerControls
+                            Spacer()
+                            bottomBar
+                        }
+                        .padding()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
                     }
-                    .padding()
                 }
                 .transition(.opacity)
             }
@@ -72,17 +82,24 @@ struct MobilePlayerControls: View {
 
     private var topBar: some View {
         GlassEffectContainer {
-            HStack(spacing: 16) {
+            // Tighter spacing than the other bars: in portrait this row packs
+            // the close button, title and up to four trailing controls into the
+            // ~370pt width, so the gaps stay small enough that the end buttons
+            // never spill off-screen. The title takes the lowest layout
+            // priority so it truncates before the buttons are squeezed.
+            HStack(spacing: 8) {
                 controlButton(systemName: "chevron.left", action: onDismiss)
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 Text(viewModel.title)
                     .font(.subheadline)
                     .foregroundStyle(.white)
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(-1)
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 controlButton(
                     systemName: orientationCoordinator.isLandscapeLocked ? "lock.fill" : "lock.open"
@@ -328,11 +345,15 @@ struct MobilePlayerControls: View {
     private func controlButton(systemName: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 44, height: 44)
         }
+        // `.circle` keeps each glass control a compact 44pt circle instead of
+        // the default wider capsule, so the full top-bar row (close, title and
+        // up to four trailing controls) fits within an iPhone's portrait width.
         .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
     }
 
     // MARK: - Sheet identifier
