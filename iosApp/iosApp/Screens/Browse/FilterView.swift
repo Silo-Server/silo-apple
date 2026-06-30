@@ -1,16 +1,16 @@
 import SwiftUI
 
-/// Full-facet filter sheet. Edits a draft `CatalogFilterState`; the apply
-/// button shows a live result count and commits the draft to the view model.
+/// Plex-style filter sheet. The top level is a compact, instantly-rendered
+/// list: quick one-tap toggles (watch status, dynamic range) followed by
+/// drill-in category rows. Each category pushes a lazy value picker so the
+/// sheet never has to lay out every facet's values up front. Edits a draft
+/// `CatalogFilterState` and commits it to the view model when the sheet is
+/// dismissed — no apply button, the results just update on close.
 struct FilterView: View {
     let viewModel: BrowseViewModel
 
     @State private var draft: CatalogFilterState
     @State private var preserve: Bool
-    @State private var liveCount: Int?
-    @State private var isCounting = false
-    @State private var previewTask: Task<Void, Never>?
-    @Environment(\.dismiss) private var dismiss
 
     init(viewModel: BrowseViewModel) {
         self.viewModel = viewModel
@@ -20,25 +20,17 @@ struct FilterView: View {
 
     private var hasProfile: Bool { AuthService.shared.profileId?.isEmpty == false }
 
-    private var resultNoun: String {
-        switch viewModel.mediaType {
-        case .audiobook: return "audiobooks"
-        case .series: return "shows"
-        case .movie: return "items"
-        }
-    }
-
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: ContinuumTheme.largePadding) {
-                    matchSection
-                    ForEach(CatalogFacet.available(for: viewModel.mediaType), id: \.self) { facet in
-                        facetSection(facet)
-                    }
-                }
-                .padding(ContinuumTheme.padding)
+            List {
+                quickSection
+                categoriesSection
+                matchSection
+                preserveSection
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 50)
             .continuumBackground()
             .navigationTitle("Filter")
             .continuumNavigationTitleDisplayMode(.inline)
@@ -50,30 +42,135 @@ struct FilterView: View {
                 }
             }
             .continuumNavigationBarSurfaceBackground()
-            .safeAreaInset(edge: .bottom) { footer }
         }
         .presentationDetents([.medium, .large])
-        .task {
-            await viewModel.loadFacetsIfNeeded()
-            schedulePreview()
+        .presentationDragIndicator(.visible)
+        .task { await viewModel.loadFacetsIfNeeded() }
+        .onDisappear { commitIfChanged() }
+    }
+
+    /// Apply the accumulated draft once, when the sheet closes. Skipped when
+    /// nothing changed so we don't trigger a redundant reload.
+    private func commitIfChanged() {
+        guard draft != viewModel.filterState else { return }
+        let committed = draft
+        Task { await viewModel.apply(committed) }
+    }
+
+    // MARK: - Quick toggles (watch status + dynamic range)
+
+    /// One-tap boolean/single-select rows, surfaced as a flat group at the top
+    /// like Plex's "Unwatched / HDR" cluster.
+    private struct QuickToggle: Identifiable {
+        let facet: CatalogFacet
+        let value: String
+        let label: String
+        var id: String { "\(facet.rawValue):\(value)" }
+    }
+
+    private var quickToggles: [QuickToggle] {
+        let available = CatalogFacet.available(for: viewModel.mediaType)
+        var result: [QuickToggle] = []
+        for facet in [CatalogFacet.watchStatus, .dynamicRange] where available.contains(facet) {
+            for pair in valueOptions(for: facet) {
+                result.append(QuickToggle(facet: facet, value: pair.value, label: pair.label))
+            }
         }
-        .onChange(of: draft) { _, _ in schedulePreview() }
+        return result
+    }
+
+    @ViewBuilder
+    private var quickSection: some View {
+        let toggles = quickToggles
+        if !toggles.isEmpty {
+            Section {
+                ForEach(toggles) { toggle in
+                    checkRow(label: toggle.label,
+                             isOn: draft.isSelected(toggle.facet, value: toggle.value)) {
+                        draft.toggle(toggle.facet, value: toggle.value)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Categories (drill-in value pickers)
+
+    /// Multi-value facets that get their own pushed picker. Excludes the quick
+    /// facets and any facet whose option list resolves empty.
+    private var categoryFacets: [CatalogFacet] {
+        CatalogFacet.available(for: viewModel.mediaType)
+            .filter { $0 != .watchStatus && $0 != .dynamicRange }
+            .filter { !valueOptions(for: $0).isEmpty }
+    }
+
+    @ViewBuilder
+    private var categoriesSection: some View {
+        let facets = categoryFacets
+        if !facets.isEmpty {
+            Section {
+                ForEach(facets, id: \.self) { facet in
+                    categoryRow(facet)
+                }
+            }
+        }
+    }
+
+    private func categoryRow(_ facet: CatalogFacet) -> some View {
+        NavigationLink {
+            FacetValuePicker(facet: facet, options: valueOptions(for: facet), draft: $draft)
+        } label: {
+            HStack {
+                Text(facet.title)
+                    .font(.continuumBody)
+                    .foregroundColor(.continuumOnSurface)
+                Spacer(minLength: 12)
+                if let summary = selectionSummary(facet) {
+                    Text(summary)
+                        .font(.continuumCaption)
+                        .foregroundColor(.continuumSecondaryText)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .listRowBackground(Color.clear)
+        .listRowSeparatorTint(.continuumDivider)
+    }
+
+    /// Trailing summary for a category row: the single value's label, or
+    /// "First +N" once several are selected.
+    private func selectionSummary(_ facet: CatalogFacet) -> String? {
+        let selected = draft.selectedValues(facet)
+        guard !selected.isEmpty else { return nil }
+        let labels = selected.sorted().map { CatalogFilterState.chipLabel(facet: facet, value: $0) }
+        guard let first = labels.first else { return nil }
+        return labels.count == 1 ? first : "\(first) +\(labels.count - 1)"
     }
 
     // MARK: - Match all/any
 
     private var matchSection: some View {
-        HStack(spacing: 12) {
-            Text("Match")
-                .font(.continuumHeadline)
-                .foregroundColor(.continuumOnSurface)
-            HStack(spacing: 2) {
-                matchOption("All", isOn: draft.matchAll) { draft.matchAll = true }
-                matchOption("Any", isOn: !draft.matchAll) { draft.matchAll = false }
+        Section {
+            HStack {
+                Text("Match")
+                    .font(.continuumBody)
+                    .foregroundColor(.continuumOnSurface)
+                Spacer(minLength: 12)
+                HStack(spacing: 2) {
+                    matchOption("All", isOn: draft.matchAll) { draft.matchAll = true }
+                    matchOption("Any", isOn: !draft.matchAll) { draft.matchAll = false }
+                }
+                .padding(2)
+                .background(Capsule().fill(Color.continuumSurfaceElevated))
             }
-            .padding(2)
-            .background(Capsule().fill(Color.continuumSurfaceElevated))
-            Spacer(minLength: 0)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        } footer: {
+            Text(draft.matchAll
+                 ? "Results match every selected filter."
+                 : "Results match any selected filter.")
+                .font(.continuumCaption)
+                .foregroundColor(.continuumSecondaryText)
         }
     }
 
@@ -89,25 +186,50 @@ struct FilterView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Facet section
+    // MARK: - Preserve
 
-    @ViewBuilder
-    private func facetSection(_ facet: CatalogFacet) -> some View {
-        let options = valueOptions(for: facet)
-        if !options.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(facet.title)
-                    .font(.continuumHeadline)
+    private var preserveSection: some View {
+        Section {
+            Toggle(isOn: $preserve) {
+                Text("Preserve sort & filters")
+                    .font(.continuumBody)
                     .foregroundColor(.continuumOnSurface)
-                FlowLayout(spacing: 8) {
-                    ForEach(options, id: \.value) { option in
-                        chipButton(label: option.label, isSelected: draft.isSelected(facet, value: option.value)) {
-                            draft.toggle(facet, value: option.value)
-                        }
-                    }
+            }
+            .tint(Color.continuumOnSurface)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .onChange(of: preserve) { _, newValue in
+                viewModel.setPreserveEnabled(newValue)
+            }
+        } footer: {
+            Text("Reopen this library exactly as you left it")
+                .font(.continuumCaption)
+                .foregroundColor(.continuumSecondaryText)
+        }
+    }
+
+    // MARK: - Rows
+
+    /// A tappable row that shows a trailing checkmark when active. Used for the
+    /// quick toggles and inside the value picker.
+    private func checkRow(label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(label)
+                    .font(.continuumBody)
+                    .foregroundColor(.continuumOnSurface)
+                Spacer(minLength: 12)
+                if isOn {
+                    Image(systemName: "checkmark")
+                        .font(.continuumBody.weight(.semibold))
+                        .foregroundColor(.continuumOnSurface)
                 }
             }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .listRowBackground(Color.clear)
+        .listRowSeparatorTint(.continuumDivider)
     }
 
     /// (value, label) options for a facet — fixed vocab for derived facets,
@@ -115,85 +237,79 @@ struct FilterView: View {
     private func valueOptions(for facet: CatalogFacet) -> [(value: String, label: String)] {
         (viewModel.facets ?? CatalogFacets()).optionPairs(for: facet, hasProfile: hasProfile)
     }
+}
 
-    // MARK: - Footer (preserve + apply)
+// MARK: - Facet value picker
 
-    private var footer: some View {
-        VStack(spacing: 0) {
-            Divider().background(Color.continuumDivider)
-            preserveRow
-                .padding(.horizontal, ContinuumTheme.padding)
-                .padding(.top, 12)
-            Button {
-                let committed = draft
-                dismiss()
-                Task { await viewModel.apply(committed) }
-            } label: {
-                Text(applyTitle)
-                    .font(.continuumBody.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 48)
-                    .background(Color.continuumOnSurface, in: RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
-                    .foregroundColor(.continuumBackground)
+/// Pushed list of a single facet's values, multi-select with checkmarks. Long
+/// vocabularies (genres, studios, languages) get an inline search field. Edits
+/// the shared draft binding so the parent commits the combined result on close.
+private struct FacetValuePicker: View {
+    let facet: CatalogFacet
+    let options: [(value: String, label: String)]
+    @Binding var draft: CatalogFilterState
+    @State private var query = ""
+
+    private var filtered: [(value: String, label: String)] {
+        guard !query.isEmpty else { return options }
+        return options.filter { $0.label.localizedCaseInsensitiveContains(query) }
+    }
+
+    var body: some View {
+        List {
+            ForEach(filtered, id: \.value) { option in
+                Button {
+                    draft.toggle(facet, value: option.value)
+                } label: {
+                    HStack {
+                        Text(option.label)
+                            .font(.continuumBody)
+                            .foregroundColor(.continuumOnSurface)
+                        Spacer(minLength: 12)
+                        if draft.isSelected(facet, value: option.value) {
+                            Image(systemName: "checkmark")
+                                .font(.continuumBody.weight(.semibold))
+                                .foregroundColor(.continuumOnSurface)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(Color.clear)
+                .listRowSeparatorTint(.continuumDivider)
             }
-            .buttonStyle(.plain)
-            .padding(ContinuumTheme.padding)
         }
-        .background(.regularMaterial)
-    }
-
-    private var preserveRow: some View {
-        Toggle(isOn: $preserve) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Preserve sort & filters")
-                    .font(.continuumBody)
-                    .foregroundColor(.continuumOnSurface)
-                Text("Reopen this library exactly as you left it")
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 50)
+        .continuumBackground()
+        .navigationTitle(facet.title)
+        .continuumNavigationTitleDisplayMode(.inline)
+        .continuumNavigationBarSurfaceBackground()
+        .toolbar {
+            if !draft.selectedValues(facet).isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Clear") { draft.clear(facet) }
+                        .foregroundColor(.continuumSecondaryText)
+                }
             }
         }
-        .tint(Color.continuumOnSurface)
-        .onChange(of: preserve) { _, newValue in
-            viewModel.setPreserveEnabled(newValue)
-        }
+        .modifier(ConditionalSearchable(text: $query, isActive: options.count > 12))
     }
+}
 
-    private var applyTitle: String {
-        guard let liveCount else { return isCounting ? "Counting…" : "Show results" }
-        return "Show \(liveCount.formatted()) \(resultNoun)"
-    }
+/// Adds a search field only for long value lists, so short fixed-vocab facets
+/// (decade, content rating) don't carry a needless search bar.
+private struct ConditionalSearchable: ViewModifier {
+    @Binding var text: String
+    let isActive: Bool
 
-    // MARK: - Live count
-
-    private func schedulePreview() {
-        previewTask?.cancel()
-        isCounting = true
-        previewTask = Task {
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled else { return }
-            let count = await viewModel.resultCount(for: draft)
-            guard !Task.isCancelled else { return }
-            liveCount = count
-            isCounting = false
+    func body(content: Content) -> some View {
+        if isActive {
+            content.searchable(text: $text, placement: .navigationBarDrawer(displayMode: .always))
+        } else {
+            content
         }
-    }
-
-    // MARK: - Chip
-
-    private func chipButton(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(.continuumCaption)
-                .foregroundColor(isSelected ? Color.continuumBackground : .continuumSecondaryText)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(
-                    Capsule()
-                        .fill(isSelected ? Color.continuumOnSurface : Color.continuumSurfaceElevated)
-                )
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -204,12 +320,16 @@ struct FlowLayout: Layout {
     var spacing: CGFloat = 8
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let result = computeLayout(proposal: proposal, subviews: subviews)
-        return result.size
+        let maxWidth = proposal.width ?? .infinity
+        let result = computeLayout(maxWidth: maxWidth, subviews: subviews)
+        // Never report wider than we were offered — otherwise the single-row
+        // intrinsic width inflates the enclosing ScrollView and pushes the
+        // sheet past the screen edges.
+        return CGSize(width: min(result.size.width, maxWidth), height: result.size.height)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let result = computeLayout(proposal: proposal, subviews: subviews)
+        let result = computeLayout(maxWidth: bounds.width, subviews: subviews)
         for (index, position) in result.positions.enumerated() {
             subviews[index].place(at: CGPoint(x: bounds.minX + position.x, y: bounds.minY + position.y), proposal: .unspecified)
         }
@@ -220,17 +340,17 @@ struct FlowLayout: Layout {
         var positions: [CGPoint]
     }
 
-    private func computeLayout(proposal: ProposedViewSize, subviews: Subviews) -> LayoutResult {
-        let maxWidth = proposal.width ?? .infinity
+    private func computeLayout(maxWidth: CGFloat, subviews: Subviews) -> LayoutResult {
         var positions: [CGPoint] = []
         var x: CGFloat = 0
         var y: CGFloat = 0
         var rowHeight: CGFloat = 0
-        var maxX: CGFloat = 0
+        var widestRow: CGFloat = 0
 
         for subview in subviews {
             let size = subview.sizeThatFits(.unspecified)
             if x + size.width > maxWidth, x > 0 {
+                widestRow = max(widestRow, x - spacing) // x carries trailing spacing
                 x = 0
                 y += rowHeight + spacing
                 rowHeight = 0
@@ -238,11 +358,11 @@ struct FlowLayout: Layout {
             positions.append(CGPoint(x: x, y: y))
             rowHeight = max(rowHeight, size.height)
             x += size.width + spacing
-            maxX = max(maxX, x)
         }
+        widestRow = max(widestRow, x - spacing) // last row
 
         return LayoutResult(
-            size: CGSize(width: maxX, height: y + rowHeight),
+            size: CGSize(width: max(0, widestRow), height: y + rowHeight),
             positions: positions
         )
     }
