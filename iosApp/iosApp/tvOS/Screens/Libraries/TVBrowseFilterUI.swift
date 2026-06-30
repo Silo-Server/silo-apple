@@ -15,8 +15,14 @@ struct TVBrowseControlRow: View {
     let sortLabel: String
     let sortDirection: String
     let filterCount: Int
+    var focusRequest: Int = 0
+    var onMoveUp: (() -> Void)? = nil
+    var onMoveDown: (() -> Void)? = nil
     let onSort: () -> Void
     let onFilter: () -> Void
+
+    @FocusState private var focusedControl: TVBrowseControlFocus?
+    @State private var lastAppliedFocusRequest = 0
 
     var body: some View {
         HStack(spacing: 16) {
@@ -29,6 +35,10 @@ struct TVBrowseControlRow: View {
                 }
             }
             .buttonStyle(TVBrowseControlPillStyle())
+            .focused($focusedControl, equals: .sort)
+            .onMoveCommand { direction in
+                handleMove(from: .sort, direction)
+            }
 
             Button(action: onFilter) {
                 HStack(spacing: 10) {
@@ -44,12 +54,44 @@ struct TVBrowseControlRow: View {
                 }
             }
             .buttonStyle(TVBrowseControlPillStyle(active: filterCount > 0))
+            .focused($focusedControl, equals: .filter)
+            .onMoveCommand { direction in
+                handleMove(from: .filter, direction)
+            }
 
             Spacer(minLength: 0)
         }
         .font(.system(size: 24, weight: .medium))
         .focusSection()
+        .onAppear { applyFocusRequest(focusRequest) }
+        .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
     }
+
+    private func applyFocusRequest(_ request: Int) {
+        guard request > 0, request != lastAppliedFocusRequest else { return }
+        lastAppliedFocusRequest = request
+        focusedControl = .sort
+    }
+
+    private func handleMove(from control: TVBrowseControlFocus, _ direction: MoveCommandDirection) {
+        switch direction {
+        case .up:
+            onMoveUp?()
+        case .down:
+            onMoveDown?()
+        case .left where control == .filter:
+            focusedControl = .sort
+        case .right where control == .sort:
+            focusedControl = .filter
+        default:
+            break
+        }
+    }
+}
+
+private enum TVBrowseControlFocus: Hashable {
+    case sort
+    case filter
 }
 
 // MARK: - Sort panel
@@ -60,6 +102,10 @@ struct TVBrowseSortPanel: View {
     let order: CatalogSortOrder
     let onSelect: (CatalogSortKey) -> Void
     let onClose: () -> Void
+
+    @Environment(\.resetFocus) private var resetFocus
+    @Namespace private var sortFocusScope
+    @FocusState private var focusedSort: CatalogSortKey?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -86,32 +132,69 @@ struct TVBrowseSortPanel: View {
                     .font(.system(size: 26))
                 }
                 .buttonStyle(TVBrowsePanelRowStyle())
+                .focused($focusedSort, equals: key)
             }
         }
         .padding(14)
         .frame(width: 460)
         .modifier(TVSkylinePanelChrome())
+        .focusScope(sortFocusScope)
+        .focusSection()
         .onExitCommand(perform: onClose)
+        .onAppear { claimFocus() }
+        .onChange(of: current) { _, _ in claimFocus() }
+    }
+
+    private var focusTarget: CatalogSortKey? {
+        let keys = CatalogSortKey.available(for: mediaType)
+        if keys.contains(current) { return current }
+        return keys.first
+    }
+
+    private func claimFocus() {
+        focusedSort = focusTarget
+        Task { @MainActor in
+            await Task.yield()
+            resetFocus(in: sortFocusScope)
+            focusedSort = focusTarget
+        }
     }
 }
 
-// MARK: - Filter panel (two-pane: facet list → values)
+// MARK: - Filter panel (list → values)
 
 struct TVBrowseFilterPanel: View {
     let mediaType: BrowseMediaType
     let facets: CatalogFacets
-    let resultNoun: String
-    let onPreview: (CatalogFilterState) async -> Int?
     let onApply: (CatalogFilterState) -> Void
     let onPreserveChange: (Bool) -> Void
     let onClose: () -> Void
 
+    private enum Screen: Hashable {
+        case filters
+        case values(CatalogFacet)
+    }
+
+    private enum FocusTarget: Hashable {
+        case facet(CatalogFacet)
+        case back
+        case value(CatalogFacet, String)
+        case clear(CatalogFacet)
+        case matchAll
+        case matchAny
+        case preserve
+        case reset
+        case done
+    }
+
+    @Environment(\.resetFocus) private var resetFocus
+    @Namespace private var panelFocusScope
+
     @State private var draft: CatalogFilterState
     @State private var preserve: Bool
-    @State private var activeFacet: CatalogFacet
-    @FocusState private var focusedFacet: CatalogFacet?
-    @State private var liveCount: Int?
-    @State private var previewTask: Task<Void, Never>?
+    @State private var screen: Screen = .filters
+    @State private var lastFacet: CatalogFacet?
+    @FocusState private var focusedTarget: FocusTarget?
 
     private let availableFacets: [CatalogFacet]
 
@@ -119,15 +202,11 @@ struct TVBrowseFilterPanel: View {
          facets: CatalogFacets,
          initial: CatalogFilterState,
          preserveEnabled: Bool,
-         resultNoun: String,
-         onPreview: @escaping (CatalogFilterState) async -> Int?,
          onApply: @escaping (CatalogFilterState) -> Void,
          onPreserveChange: @escaping (Bool) -> Void,
          onClose: @escaping () -> Void) {
         self.mediaType = mediaType
         self.facets = facets
-        self.resultNoun = resultNoun
-        self.onPreview = onPreview
         self.onApply = onApply
         self.onPreserveChange = onPreserveChange
         self.onClose = onClose
@@ -136,118 +215,273 @@ struct TVBrowseFilterPanel: View {
         self.availableFacets = visible
         _draft = State(initialValue: initial)
         _preserve = State(initialValue: preserveEnabled)
-        _activeFacet = State(initialValue: visible.first ?? .genre)
+        _lastFacet = State(initialValue: visible.first)
     }
 
     private static var hasProfile: Bool { AuthService.shared.profileId?.isEmpty == false }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 18) {
-                facetList
-                    .frame(width: 300)
-                    .focusSection()
-                Divider().overlay(Color.continuumDivider)
-                valuesPane
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .focusSection()
-            }
-            footer
-                .focusSection()
-        }
-        .padding(20)
-        .frame(width: 1140, height: 560)
-        .modifier(TVSkylinePanelChrome())
-        .onExitCommand(perform: onClose)
-        .onChange(of: focusedFacet) { _, new in
-            if let new { activeFacet = new }
-        }
-        .onChange(of: draft) { _, _ in schedulePreview() }
-        .task { schedulePreview() }
-    }
+        VStack(alignment: .leading, spacing: 0) {
+            panelHeader
 
-    // MARK: Panes
+            Divider()
+                .overlay(Color.continuumDivider)
+                .padding(.vertical, 12)
 
-    private var facetList: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("FILTER BY")
-                    .font(.system(size: 16, weight: .semibold, design: .monospaced))
-                    .tracking(2)
-                    .foregroundColor(.continuumSecondaryText)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
-
-                ForEach(availableFacets, id: \.self) { facet in
-                    Button {} label: {
-                        HStack(spacing: 12) {
-                            Text(facet.title)
-                            Spacer(minLength: 0)
-                            Text(facetSummary(facet))
-                                .foregroundColor(.continuumSecondaryText)
-                                .lineLimit(1)
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 16))
-                                .opacity(0.6)
-                        }
-                        .font(.system(size: 22))
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 4) {
+                    switch screen {
+                    case .filters:
+                        filterList
+                    case .values(let facet):
+                        valueList(for: facet)
                     }
-                    .buttonStyle(TVBrowsePanelRowStyle())
-                    .focused($focusedFacet, equals: facet)
                 }
+                .padding(.vertical, 4)
             }
         }
-    }
-
-    private var valuesPane: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text(activeFacet.title.uppercased())
-                    .font(.system(size: 16, weight: .semibold, design: .monospaced))
-                    .tracking(2)
-                    .foregroundColor(.continuumSecondaryText)
-
-                TVBrowseChipCloud(
-                    options: facets.optionPairs(for: activeFacet, hasProfile: Self.hasProfile),
-                    isSelected: { draft.isSelected(activeFacet, value: $0) },
-                    toggle: { draft.toggle(activeFacet, value: $0) }
-                )
+        .padding(22)
+        .frame(width: 680, height: 680, alignment: .topLeading)
+        .modifier(TVSkylinePanelChrome())
+        .focusScope(panelFocusScope)
+        .focusSection()
+        .onExitCommand(perform: handleExit)
+        .onMoveCommand { direction in
+            if direction == .left, case .values = screen {
+                showFilterList()
             }
-            .padding(.trailing, 8)
         }
+        .onChange(of: screen) { _, _ in claimFocus(defaultFocusTarget) }
+        .onAppear { claimFocus(defaultFocusTarget) }
     }
 
-    private var footer: some View {
-        HStack(spacing: 24) {
-            Button { preserve.toggle(); onPreserveChange(preserve) } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: preserve ? "checkmark.square.fill" : "square")
-                    Text("Preserve sort & filters")
-                }
-                .font(.system(size: 20))
-            }
-            .buttonStyle(TVBrowsePanelRowStyle())
+    // MARK: Header
 
-            Spacer(minLength: 0)
-
-            Text(countLabel)
-                .font(.system(size: 18, design: .monospaced))
+    private var panelHeader: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(headerEyebrow)
+                .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                .tracking(2)
                 .foregroundColor(.continuumSecondaryText)
 
-            Button {
-                onApply(draft)
-                onClose()
-            } label: {
-                Text(applyTitle)
-                    .font(.system(size: 22, weight: .semibold))
-                    .padding(.horizontal, 28)
-            }
-            .buttonStyle(TVBrowseApplyStyle())
+            Text(headerTitle)
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundColor(.continuumOnSurface)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
         }
-        .padding(.top, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: Helpers
+    private var headerEyebrow: String {
+        switch screen {
+        case .filters: return "FILTER BY"
+        case .values: return "FILTER"
+        }
+    }
+
+    private var headerTitle: String {
+        switch screen {
+        case .filters: return "Filters"
+        case .values(let facet): return facet.title
+        }
+    }
+
+    // MARK: Filter list
+
+    @ViewBuilder
+    private var filterList: some View {
+        if availableFacets.isEmpty {
+            Text("No filters available")
+                .font(.system(size: 24))
+                .foregroundColor(.continuumSecondaryText)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 18)
+        } else {
+            ForEach(availableFacets, id: \.self) { facet in
+                filterRow(for: facet)
+            }
+        }
+
+        sectionHeader("MATCH")
+        matchRow(title: "All selected filters", isSelected: draft.matchAll, focus: .matchAll) {
+            draft.matchAll = true
+        }
+        matchRow(title: "Any selected filter", isSelected: !draft.matchAll, focus: .matchAny) {
+            draft.matchAll = false
+        }
+
+        sectionHeader("OPTIONS")
+        preserveRow
+        resetRow
+        doneRow
+    }
+
+    private func filterRow(for facet: CatalogFacet) -> some View {
+        Button { showValues(for: facet) } label: {
+            HStack(spacing: 14) {
+                Text(facet.title)
+                    .lineLimit(1)
+
+                Spacer(minLength: 16)
+
+                Text(facetSummary(facet))
+                    .opacity(0.68)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 18, weight: .semibold))
+                    .opacity(0.55)
+            }
+            .font(.system(size: 25))
+        }
+        .buttonStyle(TVBrowsePanelRowStyle())
+        .focused($focusedTarget, equals: .facet(facet))
+    }
+
+    private func matchRow(title: String, isSelected: Bool, focus: FocusTarget, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22, weight: .semibold))
+                Text(title)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 23))
+        }
+        .buttonStyle(TVBrowsePanelRowStyle())
+        .focused($focusedTarget, equals: focus)
+    }
+
+    private var preserveRow: some View {
+        Button {
+            preserve.toggle()
+            onPreserveChange(preserve)
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: preserve ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 22, weight: .semibold))
+                Text("Preserve sort & filters")
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 23))
+        }
+        .buttonStyle(TVBrowsePanelRowStyle())
+        .focused($focusedTarget, equals: .preserve)
+    }
+
+    private var resetRow: some View {
+        Button {
+            draft.resetFilters()
+            claimFocus(.done)
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 22, weight: .semibold))
+                Text("Reset filters")
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 23))
+        }
+        .buttonStyle(TVBrowsePanelRowStyle())
+        .focused($focusedTarget, equals: .reset)
+        .disabled(draft.isDefault)
+        .opacity(draft.isDefault ? 0.45 : 1)
+    }
+
+    private var doneRow: some View {
+        Button(action: commitAndClose) {
+            HStack(spacing: 14) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 22, weight: .semibold))
+                Text("Done")
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 25, weight: .semibold))
+        }
+        .buttonStyle(TVBrowsePanelRowStyle())
+        .focused($focusedTarget, equals: .done)
+    }
+
+    // MARK: Value list
+
+    @ViewBuilder
+    private func valueList(for facet: CatalogFacet) -> some View {
+        Button(action: showFilterList) {
+            HStack(spacing: 14) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 20, weight: .semibold))
+                Text("All filters")
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 24))
+        }
+        .buttonStyle(TVBrowsePanelRowStyle())
+        .focused($focusedTarget, equals: .back)
+
+        if !draft.selectedValues(facet).isEmpty {
+            clearRow(for: facet)
+        }
+
+        ForEach(valueOptions(for: facet), id: \.value) { option in
+            valueRow(for: facet, option: option)
+        }
+    }
+
+    private func clearRow(for facet: CatalogFacet) -> some View {
+        Button {
+            draft.clear(facet)
+            claimFocus(defaultValueFocus(for: facet))
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: "xmark.circle")
+                    .font(.system(size: 22, weight: .semibold))
+                Text("Clear \(facet.title)")
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 23))
+        }
+        .buttonStyle(TVBrowsePanelRowStyle())
+        .focused($focusedTarget, equals: .clear(facet))
+    }
+
+    private func valueRow(for facet: CatalogFacet, option: (value: String, label: String)) -> some View {
+        let isSelected = draft.isSelected(facet, value: option.value)
+        return Button {
+            draft.toggle(facet, value: option.value)
+            claimFocus(.value(facet, option.value))
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22, weight: .semibold))
+                Text(option.label)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 24))
+        }
+        .buttonStyle(TVBrowsePanelRowStyle())
+        .focused($focusedTarget, equals: .value(facet, option.value))
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 15, weight: .semibold, design: .monospaced))
+            .tracking(2)
+            .foregroundColor(.continuumSecondaryText)
+            .padding(.horizontal, 16)
+            .padding(.top, 20)
+            .padding(.bottom, 6)
+    }
+
+    // MARK: Actions
 
     private func facetSummary(_ facet: CatalogFacet) -> String {
         let values = draft.selectedValues(facet)
@@ -258,47 +492,63 @@ struct TVBrowseFilterPanel: View {
         return "\(values.count) selected"
     }
 
-    private var countLabel: String {
-        guard let liveCount else { return "" }
-        return "\(liveCount.formatted()) \(resultNoun.uppercased())"
+    private func valueOptions(for facet: CatalogFacet) -> [(value: String, label: String)] {
+        facets.optionPairs(for: facet, hasProfile: Self.hasProfile)
     }
 
-    private var applyTitle: String {
-        guard let liveCount else { return "Apply" }
-        return "Show \(liveCount.formatted())"
-    }
-
-    private func schedulePreview() {
-        previewTask?.cancel()
-        previewTask = Task {
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled else { return }
-            let count = await onPreview(draft)
-            guard !Task.isCancelled else { return }
-            liveCount = count
+    private var defaultFocusTarget: FocusTarget? {
+        switch screen {
+        case .filters:
+            if let lastFacet, availableFacets.contains(lastFacet) {
+                return .facet(lastFacet)
+            }
+            return availableFacets.first.map(FocusTarget.facet) ?? .done
+        case .values(let facet):
+            return defaultValueFocus(for: facet)
         }
     }
-}
 
-/// Wrapping multi-select chip cloud for the values pane.
-private struct TVBrowseChipCloud: View {
-    let options: [(value: String, label: String)]
-    let isSelected: (String) -> Bool
-    let toggle: (String) -> Void
+    private func defaultValueFocus(for facet: CatalogFacet) -> FocusTarget {
+        let selected = draft.selectedValues(facet)
+        let options = valueOptions(for: facet)
+        if let selectedOption = options.first(where: { selected.contains($0.value) }) {
+            return .value(facet, selectedOption.value)
+        }
+        if let first = options.first {
+            return .value(facet, first.value)
+        }
+        return .back
+    }
 
-    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 320), spacing: 12, alignment: .leading)]
+    private func showValues(for facet: CatalogFacet) {
+        lastFacet = facet
+        screen = .values(facet)
+    }
 
-    var body: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-            ForEach(options, id: \.value) { option in
-                Button { toggle(option.value) } label: {
-                    Text(option.label)
-                        .font(.system(size: 20))
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(TVBrowseChipStyle(selected: isSelected(option.value)))
-            }
+    private func showFilterList() {
+        screen = .filters
+    }
+
+    private func handleExit() {
+        switch screen {
+        case .filters:
+            commitAndClose()
+        case .values:
+            showFilterList()
+        }
+    }
+
+    private func commitAndClose() {
+        onApply(draft)
+        onClose()
+    }
+
+    private func claimFocus(_ target: FocusTarget?) {
+        focusedTarget = target
+        Task { @MainActor in
+            await Task.yield()
+            resetFocus(in: panelFocusScope)
+            focusedTarget = target
         }
     }
 }
@@ -359,59 +609,6 @@ private struct TVBrowsePanelRowBody: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(isFocused ? Color.continuumOnSurface : Color.clear)
             )
-            .animation(.easeOut(duration: 0.12), value: isFocused)
-    }
-}
-
-struct TVBrowseChipStyle: ButtonStyle {
-    let selected: Bool
-    func makeBody(configuration: Configuration) -> some View {
-        TVBrowseChipBody(configuration: configuration, selected: selected)
-    }
-}
-
-private struct TVBrowseChipBody: View {
-    let configuration: ButtonStyleConfiguration
-    let selected: Bool
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        configuration.label
-            .padding(.horizontal, 16)
-            .padding(.vertical, 11)
-            .foregroundColor(foreground)
-            .background(
-                Capsule().fill(selected ? Color.continuumOnSurface : Color.continuumSurfaceElevated)
-            )
-            .overlay(
-                Capsule().strokeBorder(Color.white, lineWidth: isFocused ? 3 : 0)
-            )
-            .scaleEffect(isFocused ? 1.05 : 1)
-            .animation(.easeOut(duration: 0.12), value: isFocused)
-    }
-
-    private var foreground: Color {
-        selected ? .continuumBackground : .continuumOnSurface
-    }
-}
-
-struct TVBrowseApplyStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        TVBrowseApplyBody(configuration: configuration)
-    }
-}
-
-private struct TVBrowseApplyBody: View {
-    let configuration: ButtonStyleConfiguration
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        configuration.label
-            .padding(.vertical, 14)
-            .foregroundColor(.continuumBackground)
-            .background(Capsule().fill(Color.continuumOnSurface))
-            .overlay(Capsule().strokeBorder(Color.white, lineWidth: isFocused ? 4 : 0))
-            .scaleEffect(isFocused ? 1.05 : 1)
             .animation(.easeOut(duration: 0.12), value: isFocused)
     }
 }

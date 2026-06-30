@@ -26,8 +26,11 @@ struct TVCatalogGrid: View {
     /// overflow their grid cells.
     var cardWidth: CGFloat = ContinuumTheme.posterCardWidth
     var prefersDefaultFocusOnFirstItem: Bool = false
+    var focusRequest: Int = 0
 
     @Namespace private var gridFocusNamespace
+    @FocusState private var focusedItemId: String?
+    @State private var lastAppliedFocusRequest = 0
 
     private var columns: [GridItem] {
         Array(
@@ -57,7 +60,9 @@ struct TVCatalogGrid: View {
                     cardWidth: cardWidth,
                     aspect: item.isAudiobook ? .square : .poster,
                     prefersDefaultFocus: prefersDefaultFocusOnFirstItem && indexed.index == 0,
-                    defaultFocusNamespace: gridFocusNamespace
+                    defaultFocusNamespace: gridFocusNamespace,
+                    focusBinding: $focusedItemId,
+                    focusContentId: item.contentId
                 )
                 .frame(maxWidth: .infinity)
                 .onAppear { onCellAppear(index: indexed.index) }
@@ -65,6 +70,9 @@ struct TVCatalogGrid: View {
         }
         .focusScope(gridFocusNamespace)
         .focusSection()
+        .onAppear { applyFocusRequest(focusRequest) }
+        .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
+        .onChange(of: items.map(\.contentId)) { _, _ in applyFocusRequest(focusRequest) }
 
         if isLoading {
             HStack {
@@ -83,6 +91,13 @@ struct TVCatalogGrid: View {
         if index >= threshold {
             onNearEnd(index)
         }
+    }
+
+    private func applyFocusRequest(_ request: Int) {
+        guard request > 0, request != lastAppliedFocusRequest else { return }
+        guard let firstItemId = items.first?.contentId else { return }
+        lastAppliedFocusRequest = request
+        focusedItemId = firstItemId
     }
 }
 

@@ -29,7 +29,7 @@ struct FilterView: View {
                 preserveSection
             }
             .listStyle(.plain)
-            .scrollContentBackground(.hidden)
+            .filterScrollContentBackgroundHidden()
             .environment(\.defaultMinListRowHeight, 50)
             .continuumBackground()
             .navigationTitle("Filter")
@@ -134,7 +134,7 @@ struct FilterView: View {
             }
         }
         .listRowBackground(Color.clear)
-        .listRowSeparatorTint(.continuumDivider)
+        .filterListRowSeparatorTint(.continuumDivider)
     }
 
     /// Trailing summary for a category row: the single value's label, or
@@ -164,7 +164,7 @@ struct FilterView: View {
                 .background(Capsule().fill(Color.continuumSurfaceElevated))
             }
             .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+            .filterListRowSeparatorHidden()
         } footer: {
             Text(draft.matchAll
                  ? "Results match every selected filter."
@@ -197,7 +197,7 @@ struct FilterView: View {
             }
             .tint(Color.continuumOnSurface)
             .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+            .filterListRowSeparatorHidden()
             .onChange(of: preserve) { _, newValue in
                 viewModel.setPreserveEnabled(newValue)
             }
@@ -229,7 +229,7 @@ struct FilterView: View {
         }
         .buttonStyle(.plain)
         .listRowBackground(Color.clear)
-        .listRowSeparatorTint(.continuumDivider)
+        .filterListRowSeparatorTint(.continuumDivider)
     }
 
     /// (value, label) options for a facet — fixed vocab for derived facets,
@@ -276,11 +276,11 @@ private struct FacetValuePicker: View {
                 }
                 .buttonStyle(.plain)
                 .listRowBackground(Color.clear)
-                .listRowSeparatorTint(.continuumDivider)
+                .filterListRowSeparatorTint(.continuumDivider)
             }
         }
         .listStyle(.plain)
-        .scrollContentBackground(.hidden)
+        .filterScrollContentBackgroundHidden()
         .environment(\.defaultMinListRowHeight, 50)
         .continuumBackground()
         .navigationTitle(facet.title)
@@ -306,10 +306,43 @@ private struct ConditionalSearchable: ViewModifier {
 
     func body(content: Content) -> some View {
         if isActive {
+#if os(tvOS)
+            content
+#else
             content.searchable(text: $text, placement: .navigationBarDrawer(displayMode: .always))
+#endif
         } else {
             content
         }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func filterScrollContentBackgroundHidden() -> some View {
+#if os(tvOS)
+        self
+#else
+        scrollContentBackground(.hidden)
+#endif
+    }
+
+    @ViewBuilder
+    func filterListRowSeparatorTint(_ color: Color) -> some View {
+#if os(tvOS)
+        self
+#else
+        listRowSeparatorTint(color)
+#endif
+    }
+
+    @ViewBuilder
+    func filterListRowSeparatorHidden() -> some View {
+#if os(tvOS)
+        self
+#else
+        listRowSeparator(.hidden)
+#endif
     }
 }
 

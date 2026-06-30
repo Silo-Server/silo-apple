@@ -193,7 +193,7 @@ struct TVTopMenuBar: View {
         // the content zone (§5.1; §4.2 acceptance: no drift animations).
         .animation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.normalDuration), value: isMenuFocused)
         .focusSection()
-        .disabled(isFocusSuppressed)
+        .disabled(isFocusSuppressed || panelEntersFocus)
         // Menu handling must not be conditionally wrapped around the focused
         // tab buttons. Toggling an `onExitCommand` ancestor when `openPanel`
         // changes invalidates tvOS focus and produces the preview-open flash.

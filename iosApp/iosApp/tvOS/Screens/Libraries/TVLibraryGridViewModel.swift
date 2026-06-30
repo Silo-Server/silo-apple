@@ -119,22 +119,6 @@ final class TVLibraryGridViewModel {
         facets = try? await FacetLoader.shared.facets(libraryId: libraryId)
     }
 
-    /// Probe the result count for a candidate state (live count on the filter
-    /// panel's apply row).
-    func resultCount(for candidate: CatalogFilterState) async -> Int? {
-        let query = CatalogQueryBuilder.build(
-            candidate,
-            libraryId: libraryId,
-            mediaType: mediaType,
-            offset: 0,
-            limit: 1,
-            includeTotal: true,
-            includeType: sendsType
-        )
-        let response: CatalogResponse? = try? await ContinuumAPI.shared.get("/api/v1/catalog", query: query)
-        return response?.total
-    }
-
     var preserveEnabled: Bool { BrowsePrefsStore.shared.preserveEnabled(libraryId: libraryId) }
 
     func setPreserveEnabled(_ enabled: Bool) {

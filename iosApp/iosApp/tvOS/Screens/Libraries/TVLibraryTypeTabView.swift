@@ -86,7 +86,10 @@ struct TVLibraryTypeTabView: View {
                 initialFilter: .none,
                 showsHeader: false,
                 showsAlphabetRail: true,
-                topContentInset: ContinuumTheme.Skyline.libraryContentTopInset
+                topContentInset: ContinuumTheme.Skyline.libraryContentTopInset,
+                focusRequest: focusRequest,
+                isTopMenuFocused: isTopMenuFocused,
+                onTopMenuFocusRequest: onTopMenuFocusRequest
             )
         }
     }
