@@ -12,6 +12,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     case libraries = "Libraries"
     case recommendations = "For You"
     case calendar = "Calendar"
+    case downloads = "Downloads"
     case settings = "Settings"
     case switchProfile = "Profile"
     case switchServer = "Server"
@@ -34,6 +35,9 @@ enum AppTab: String, CaseIterable, Identifiable {
         #if os(tvOS)
         return [.home, .libraries, .search, .recommendations, .settings, .switchProfile, .switchServer]
         #else
+        // Downloads is appended dynamically by `MainTabView` only when the
+        // server advertises the capability, so it stays hidden when the
+        // feature is off rather than showing an empty tab.
         return [.home, .libraries, .recommendations, .calendar]
         #endif
     }
@@ -46,6 +50,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .search: return "magnifyingglass"
         case .recommendations: return "sparkles"
         case .calendar: return "calendar"
+        case .downloads: return "arrow.down.circle"
         case .settings: return "gearshape"
         case .switchProfile: return "person.crop.circle"
         case .switchServer: return "server.rack"
@@ -60,6 +65,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .search: return "magnifyingglass"
         case .recommendations: return "sparkles"
         case .calendar: return "calendar"
+        case .downloads: return "arrow.down.circle.fill"
         case .settings: return "gearshape.fill"
         case .switchProfile: return "person.crop.circle.fill"
         case .switchServer: return "server.rack"

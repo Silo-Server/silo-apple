@@ -139,10 +139,25 @@ struct MovieDetailContent<BelowOverview: View>: View {
                 action: onToggleWatched
             )
 
+            if showsDownloadButton {
+                DownloadActionButton(
+                    detail: detail,
+                    versions: availableVersions,
+                    selectedVersionFileId: selectedVersionFileId
+                )
+            }
+
             if hasOverflowNavigation {
                 overflowMenu
             }
         }
+    }
+
+    /// Download is offered for movies and individual episodes once the
+    /// server advertises the capability for this profile.
+    private var showsDownloadButton: Bool {
+        DownloadManager.shared.downloadsEnabled
+            && (detail.type == "movie" || detail.type == "episode")
     }
 
     private var hasOverflowNavigation: Bool {

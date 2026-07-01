@@ -138,7 +138,10 @@ class ItemDetailViewModel {
     }
 
     private func enrichPlaybackMetadata(for item: ItemDetail, contentId: String) async -> ItemDetail {
-        guard item.type != "series" else { return item }
+        // Series and season containers have no single watch target — `/watch/{id}`
+        // returns 404 "Watch target not found" for them. Only enrich playable
+        // leaf items, rather than firing a request we know will fail.
+        guard item.type != "series", item.type != "season" else { return item }
 
         do {
             let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)

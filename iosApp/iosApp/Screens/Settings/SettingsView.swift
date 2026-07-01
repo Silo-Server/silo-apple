@@ -165,6 +165,28 @@ struct SettingsView: View {
                     value: subtitleLanguageName(viewModel.editorSubtitleLanguage)
                 )
             }
+
+            NavigationLink {
+                CardOverlaySettingsView()
+            } label: {
+                SettingsRowLabel(
+                    title: "Card Overlays",
+                    systemImage: "rectangle.stack.badge.plus",
+                    color: .indigo
+                )
+            }
+
+            if DownloadManager.shared.downloadsEnabled {
+                NavigationLink {
+                    DownloadsSettingsView()
+                } label: {
+                    SettingsRowLabel(
+                        title: "Downloads",
+                        systemImage: "arrow.down.circle.fill",
+                        color: .blue
+                    )
+                }
+            }
         }
     }
 

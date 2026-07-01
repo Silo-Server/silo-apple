@@ -132,6 +132,30 @@ actor HTTPClient {
         _ = try await sendRaw(method: "DELETE", path: path, query: query, body: Optional<String>.none)
     }
 
+    func patch<T: Decodable>(
+        _ path: String,
+        body: (any Encodable)? = nil,
+        query: [String: String] = [:]
+    ) async throws -> T {
+        try await send(method: "PATCH", path: path, query: query, body: body)
+    }
+
+    func patchVoid(
+        _ path: String,
+        body: (any Encodable)? = nil,
+        query: [String: String] = [:]
+    ) async throws {
+        _ = try await sendRaw(method: "PATCH", path: path, query: query, body: body)
+    }
+
+    /// GET an endpoint that returns raw bytes (not JSON) — e.g. the
+    /// download artwork/subtitle proxies. Goes through the same auth +
+    /// 401-refresh path as the decoding `get`, but hands the caller the
+    /// undecoded body.
+    func getData(_ path: String, query: [String: String] = [:]) async throws -> Data {
+        try await sendRaw(method: "GET", path: path, query: query, body: Optional<String>.none)
+    }
+
     /// Cancel all in-flight tasks on the shared session and drop any
     /// pending refresh. Called by the registry *before* retargeting
     /// `TokenStore` on a server switch so a response from the old server
@@ -158,7 +182,15 @@ actor HTTPClient {
     /// decoding, which would otherwise throw on an empty 204 response.
     func exists(_ path: String, query: [String: String] = [:]) async throws -> Bool {
         do {
-            _ = try await sendRaw(method: "GET", path: path, query: query, body: Optional<String>.none)
+            // A 404 here is the documented "not found" signal, not a failure,
+            // so mark it quiet to keep it out of the error log.
+            _ = try await sendRaw(
+                method: "GET",
+                path: path,
+                query: query,
+                body: Optional<String>.none,
+                quietStatuses: [404]
+            )
             return true
         } catch HTTPError.http(let code, _) where code == 404 {
             return false
@@ -222,7 +254,8 @@ actor HTTPClient {
         method: String,
         path: String,
         query: [String: String],
-        body: (any Encodable)?
+        body: (any Encodable)?,
+        quietStatuses: Set<Int> = []
     ) async throws -> Data {
         let serverUrl = await tokenStore.getServerUrl()
         guard !serverUrl.isEmpty else {
@@ -255,12 +288,12 @@ actor HTTPClient {
                 )
                 await attachAuthHeaders(&retry, accessToken: refreshedToken)
                 let (retryData, retryResponse) = try await perform(request: retry)
-                try ensureSuccess(retryData, retryResponse, method: method)
+                try ensureSuccess(retryData, retryResponse, method: method, quietStatuses: quietStatuses)
                 return retryData
             }
         }
 
-        try ensureSuccess(data, response, method: method)
+        try ensureSuccess(data, response, method: method, quietStatuses: quietStatuses)
         return data
     }
 
@@ -356,12 +389,19 @@ actor HTTPClient {
         return (data, http)
     }
 
-    private func ensureSuccess(_ data: Data, _ response: HTTPURLResponse, method: String) throws {
+    private func ensureSuccess(_ data: Data, _ response: HTTPURLResponse, method: String, quietStatuses: Set<Int> = []) throws {
         guard (200..<300).contains(response.statusCode) else {
             let bodyStr = String(data: data, encoding: .utf8)
             let urlStr = response.url?.absoluteString ?? ""
             let preview = (bodyStr ?? "").prefix(512)
-            Self.logger.error("HTTP \(response.statusCode, privacy: .public) \(method, privacy: .public) \(urlStr, privacy: .public) body=\(preview, privacy: .private)")
+            // A status the caller treats as an expected signal (e.g. a 404
+            // existence probe) is demoted to debug so it doesn't read as a
+            // failure in the log; everything else stays at error level.
+            if quietStatuses.contains(response.statusCode) {
+                Self.logger.debug("HTTP \(response.statusCode, privacy: .public) \(method, privacy: .public) \(urlStr, privacy: .public) body=\(preview, privacy: .private)")
+            } else {
+                Self.logger.error("HTTP \(response.statusCode, privacy: .public) \(method, privacy: .public) \(urlStr, privacy: .public) body=\(preview, privacy: .private)")
+            }
             throw HTTPError.http(
                 statusCode: response.statusCode,
                 body: bodyStr

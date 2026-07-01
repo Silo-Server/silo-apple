@@ -139,6 +139,14 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 accessibilityLabel: isWatched ? "Mark Series Unwatched" : "Mark Series Watched",
                 action: onToggleWatched
             )
+
+            if DownloadManager.shared.downloadsEnabled {
+                SeriesDownloadMenuButton(
+                    detail: detail,
+                    seasons: seasons,
+                    selectedSeason: selectedSeason
+                )
+            }
         }
     }
 

@@ -145,6 +145,14 @@ struct SeasonDetailContent<BelowOverview: View>: View {
                 action: onToggleWatched
             )
 
+            if DownloadManager.shared.downloadsEnabled {
+                SeriesDownloadMenuButton(
+                    detail: detail,
+                    seasons: seasons,
+                    selectedSeason: selectedSeason ?? seasons.first(where: { $0.seasonNumber == detail.seasonNumber })
+                )
+            }
+
             if let seriesId = detail.seriesId {
                 PhoneCircleMenuButton(accessibilityLabel: "More options") {
                     Button {

@@ -17,7 +17,9 @@ import Foundation
 actor ContinuumAPI {
     static let shared = ContinuumAPI()
 
-    private let http: HTTPClient
+    /// Non-private so endpoint methods declared in extensions (e.g. the
+    /// downloads API) can reuse the same injected transport.
+    let http: HTTPClient
     private let tokenStore: TokenStore
 
     init(http: HTTPClient = .shared, tokenStore: TokenStore = .shared) {

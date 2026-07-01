@@ -57,6 +57,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .continuumSessionExpired)) { _ in
             audioStore.dismissFullPlayer()
             Task { await audioStore.player.close() }
+            #if !os(tvOS)
+            DownloadManager.shared.clearForSignOut()
+            #endif
             router.expiredSession()
         }
         .task {
@@ -84,6 +87,9 @@ struct ContentView: View {
                 await AICapabilities.shared.refresh()
                 #if os(iOS)
                 await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
+                #endif
+                #if !os(tvOS)
+                await DownloadManager.shared.onAppActive()
                 #endif
             }
         }
@@ -124,6 +130,9 @@ struct ContentView: View {
             #endif
             #if os(tvOS)
             NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+            #endif
+            #if !os(tvOS)
+            Task { await DownloadManager.shared.onAppActive() }
             #endif
         }
     }
@@ -568,6 +577,7 @@ struct MainTabView: View {
                 preferredSubtitleTrackIndex: payload.subtitleTrackIndex,
                 startFromBeginning: payload.startFromBeginning,
                 resumePositionOverride: payload.resumePosition,
+                offlineDownloadId: payload.offlineDownloadId,
                 posterURLHint: payload.posterURL,
                 backdropURLHint: payload.backdropURL
             )
@@ -597,11 +607,25 @@ struct MainTabView: View {
         #endif
     }
 
+    /// Visible tabs, plus a Downloads tab when the server advertises the
+    /// downloads capability for this profile. Reading
+    /// `DownloadManager.shared.downloadsEnabled` here registers the tab bar
+    /// as an observer, so the tab appears as soon as capability loads.
+    private var visibleTabs: [AppTab] {
+        var tabs = AppTab.visibleCases
+        #if !os(tvOS)
+        if DownloadManager.shared.downloadsEnabled {
+            tabs.append(.downloads)
+        }
+        #endif
+        return tabs
+    }
+
     /// iPhone + iPad compact width: bottom tab bar, single navigation stack.
     private var tabLayout: some View {
         NavigationStack(path: $router.path) {
             TabView(selection: $selectedTab) {
-                ForEach(AppTab.visibleCases) { tab in
+                ForEach(visibleTabs) { tab in
                     #if os(tvOS)
                     // Text-only tabs on tvOS keep the top bar compact — adding an
                     // icon blows up each tab's focus pill. The value-based `Tab`
@@ -648,7 +672,7 @@ struct MainTabView: View {
                 get: { selectedTab },
                 set: { if let v = $0 { selectedTab = v } }
             )) {
-                ForEach(AppTab.visibleCases) { tab in
+                ForEach(visibleTabs) { tab in
                     Label(
                         tab.rawValue,
                         systemImage: selectedTab == tab ? tab.selectedIcon : tab.icon
@@ -697,6 +721,13 @@ struct MainTabView: View {
 
         case .calendar:
             CalendarView()
+
+        case .downloads:
+            #if os(tvOS)
+            EmptyView()
+            #else
+            DownloadsView()
+            #endif
 
         case .settings:
             SettingsView()
@@ -787,6 +818,39 @@ struct MainTabView: View {
             RecommendationsView()
         case .serverList:
             ServerListView()
+        case .downloads:
+            #if os(tvOS)
+            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+                .continuumBackground()
+            #else
+            DownloadsView()
+            #endif
+        case .offlinePlayer(let downloadId, let contentId, let resumePosition):
+            #if os(macOS)
+            PlayerView(
+                contentId: contentId,
+                resumePositionOverride: resumePosition,
+                offlineDownloadId: downloadId
+            )
+            #else
+            // Presented as a full-screen cover (see MainTabView). This arm
+            // exists only for switch exhaustiveness.
+            EmptyView()
+            #endif
+        case .offlineSeriesBrowse(let seriesId):
+            #if os(tvOS)
+            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+                .continuumBackground()
+            #else
+            OfflineSeriesBrowseView(seriesId: seriesId)
+            #endif
+        case .offlineDownloadDetail(let downloadId):
+            #if os(tvOS)
+            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+                .continuumBackground()
+            #else
+            OfflineDownloadDetailView(downloadId: downloadId)
+            #endif
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .continuumBackground()

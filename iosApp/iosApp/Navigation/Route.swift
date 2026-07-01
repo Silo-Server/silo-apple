@@ -37,6 +37,20 @@ enum Route: Hashable {
     case recommendations
     case admin
     case serverList
+    case downloads
+
+    /// Offline playback of a completed download. Distinct from `.player`
+    /// so the player reads the local file + stored manifest instead of
+    /// starting a server session.
+    case offlinePlayer(downloadId: String, contentId: String, resumePosition: Double?)
+
+    /// Offline series browse, reached from the Downloads tab: a season /
+    /// episode list scoped to downloaded content, rendered entirely from
+    /// stored records + manifests (no network).
+    case offlineSeriesBrowse(seriesId: String)
+
+    /// Offline leaf detail for one downloaded movie or episode.
+    case offlineDownloadDetail(downloadId: String)
 
     // tvOS-specific: deep-linked library grid with a pre-applied filter.
     // Pushed from `TVLibraryLandingView` when the user picks a genre,

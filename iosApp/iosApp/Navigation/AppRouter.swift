@@ -57,6 +57,8 @@ class AppRouter {
         let subtitleTrackIndex: Int?
         let startFromBeginning: Bool
         let resumePosition: Double?
+        /// Set for offline playback of a completed download.
+        var offlineDownloadId: String? = nil
         /// Hints supplied by the originating screen (e.g. the detail page,
         /// which has just loaded the catalog item) so the player's now-
         /// playing widget can publish artwork without re-fetching the
@@ -107,6 +109,34 @@ class AppRouter {
             resumePosition: resumePosition,
             posterURL: posterURL,
             backdropURL: backdropURL
+        )
+        #endif
+    }
+
+    /// Present offline playback of a completed download. iOS/iPadOS use a
+    /// full-window cover; macOS pushes the offline player route.
+    func presentOfflinePlayer(
+        downloadId: String,
+        contentId: String,
+        resumePosition: Double? = nil
+    ) {
+        #if os(macOS)
+        navigate(to: .offlinePlayer(
+            downloadId: downloadId,
+            contentId: contentId,
+            resumePosition: resumePosition
+        ))
+        #else
+        presentedPlayer = PlayerPresentation(
+            contentId: contentId,
+            fileId: nil,
+            audioTrackIndex: nil,
+            subtitleTrackIndex: nil,
+            startFromBeginning: false,
+            resumePosition: resumePosition,
+            offlineDownloadId: downloadId,
+            posterURL: nil,
+            backdropURL: nil
         )
         #endif
     }

@@ -1237,6 +1237,24 @@ struct SyncProgressItem: Codable {
     let position: Double
     let duration: Double
     let forceOverwrite: Bool
+    /// Client **event** time for offline-queued items (RFC3339). Present →
+    /// last-write-wins merge on the bounded event time; absent → server
+    /// uses `now()`. See §5.1 of `docs/download-api.md`.
+    let updatedAt: Date?
+
+    init(
+        mediaItemId: String,
+        position: Double,
+        duration: Double,
+        forceOverwrite: Bool,
+        updatedAt: Date? = nil
+    ) {
+        self.mediaItemId = mediaItemId
+        self.position = position
+        self.duration = duration
+        self.forceOverwrite = forceOverwrite
+        self.updatedAt = updatedAt
+    }
 }
 
 // MARK: - Playback Start Request (sent to server)
