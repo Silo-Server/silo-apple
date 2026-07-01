@@ -57,9 +57,37 @@ jobs:
           echo "platform=$P" >> "$GITHUB_OUTPUT"
           echo "Release platform: $P"
 
-  ios:
+  # Reserve the next build number per platform ONCE, before the platform builds
+  # fan out. The ios/tvos jobs then consume these fixed values instead of each
+  # querying latest_testflight_build_number concurrently — which lets them run in
+  # parallel with no build-number race. Query-only, so it runs on Linux with just
+  # the ASC API key (no signing/match/team secrets).
+  build-numbers:
     needs: setup
+    runs-on: ubuntu-latest
+    outputs:
+      ios_build: ${{ steps.bn.outputs.ios_build }}
+      tvos_build: ${{ steps.bn.outputs.tvos_build }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+      - name: Reserve per-platform build numbers
+        id: bn
+        env:
+          APP_STORE_CONNECT_API_KEY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
+        run: |
+          # The lane appends ios_build=/tvos_build= lines to BUILD_NUMBERS_FILE.
+          BUILD_NUMBERS_FILE="$GITHUB_OUTPUT" bundle exec fastlane ios reserve_build_numbers
+
+  ios:
+    needs: [setup, build-numbers]
     # Skip only when the selection is tvOS-only. 'both' and 'ios' both run iOS.
+    # No status function in the if -> implicit success() gate on needs, so a
+    # failed build-numbers job skips this build.
     if: ${{ needs.setup.outputs.platform != 'tvos' }}
     runs-on: macos-15
     steps:
@@ -102,6 +130,7 @@ jobs:
         run: bundle exec fastlane ios beta_ios
         env:
           MARKETING_VERSION: ${{ steps.ver.outputs.value }}
+          BUILD_NUMBER: ${{ needs.build-numbers.outputs.ios_build }}
           TEAM_ID: ${{ secrets.TEAM_ID }}
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
@@ -112,15 +141,13 @@ jobs:
           TESTFLIGHT_EXTERNAL_GROUPS: ${{ secrets.TESTFLIGHT_EXTERNAL_GROUPS }}
 
   tvos:
-    needs: [setup, ios]   # enforce iOS-before-tvOS build-number ordering when both run
-    # Run when the selection isn't iOS-only. `needs: ios` keeps the ordering for
-    # "both", but a skipped iOS job (tvOS-only) must not block tvOS — hence
-    # !cancelled() and the explicit "iOS didn't fail" check rather than the
-    # default success() gate (which would also skip on a skipped dependency).
-    if: >-
-      ${{ !cancelled()
-          && needs.ios.result != 'failure'
-          && needs.setup.outputs.platform != 'ios' }}
+    # No longer needs: ios — build numbers are reserved up front, so tvOS runs in
+    # parallel with iOS rather than after it. (Trade-off: on a both run, tvOS now
+    # releases even if iOS fails; the platforms' build-number sequences are
+    # independent, so a gap is harmless.)
+    needs: [setup, build-numbers]
+    # Skip only when the selection is iOS-only. Implicit success() gate on needs.
+    if: ${{ needs.setup.outputs.platform != 'ios' }}
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -162,6 +189,7 @@ jobs:
         run: bundle exec fastlane ios beta_tvos
         env:
           MARKETING_VERSION: ${{ steps.ver.outputs.value }}
+          BUILD_NUMBER: ${{ needs.build-numbers.outputs.tvos_build }}
           TEAM_ID: ${{ secrets.TEAM_ID }}
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}

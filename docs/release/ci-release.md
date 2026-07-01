@@ -14,8 +14,11 @@
 On a both-platform run, tvOS is skipped if the iOS job fails (build-number
 ordering); a tvOS-only run builds tvOS on its own.
 
-The git tag is the marketing version. Build numbers auto-increment per platform
-from App Store Connect. iOS builds before tvOS (build-number ordering).
+The git tag is the marketing version. A preflight `build-numbers` job reserves
+the next per-platform build number from App Store Connect once, then the iOS and
+tvOS jobs **build in parallel** consuming those fixed numbers (no build-number
+race). On a both-platform run the two are independent — tvOS still releases even
+if iOS fails; their build-number sequences are separate, so a gap is harmless.
 
 ## Required repository secrets
 | Secret | Purpose |

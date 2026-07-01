@@ -78,6 +78,34 @@ def marketing_version_xcarg
   "MARKETING_VERSION=#{value} "
 end
 
+# Returns the build number to stamp on a TestFlight build.
+#
+# In CI the reserve_build_numbers job computes the next number per platform once
+# and passes it to the (parallel) ios/tvos jobs via BUILD_NUMBER — so the two
+# jobs never race latest_testflight_build_number against each other. Local and
+# ad-hoc runs leave BUILD_NUMBER unset and fall back to querying App Store
+# Connect directly.
+#
+# BUILD_NUMBER is validated as a positive integer before use: it flows into
+# xcodebuild's xcargs as CURRENT_PROJECT_VERSION, so it must never carry spaces
+# or shell metacharacters (same threat model as marketing_version_xcarg).
+def resolve_build_number(api_key:, app_identifier:, platform:)
+  injected = ENV["BUILD_NUMBER"].to_s.strip
+  unless injected.empty?
+    unless injected.match?(/\A\d+\z/)
+      UI.user_error!("Invalid BUILD_NUMBER #{injected.inspect}; expected a positive integer")
+    end
+    UI.message("Using injected BUILD_NUMBER=#{injected} for #{platform}")
+    return injected.to_i
+  end
+
+  latest_testflight_build_number(
+    api_key:        api_key,
+    app_identifier: app_identifier,
+    platform:       platform
+  ) + 1
+end
+
 # Regenerates Silo.xcodeproj from project.yml, resolves SPM packages for the
 # given scheme (populating DerivedData), and applies the FFmpeg module-map patch.
 # Shared by the unsigned IPA lanes. Returns the absolute iosApp directory.
@@ -255,14 +283,15 @@ platform :ios do
       api_key:        api_key
     )
 
-    # Query the iOS-specific build number and increment by 1.
-    # platform: "ios" scopes the query to iOS builds only — tvOS tracks
-    # its own build sequence independently under Universal Purchase.
-    build_number = latest_testflight_build_number(
+    # iOS-specific build number (injected by CI's reserve_build_numbers job, or
+    # queried directly for local runs). platform: "ios" scopes the query to iOS
+    # builds only — tvOS tracks its own sequence independently under Universal
+    # Purchase.
+    build_number = resolve_build_number(
       api_key:        api_key,
       app_identifier: app_id,
       platform:       "ios"
-    ) + 1
+    )
 
     # Resolve SPM packages so DerivedData is populated before the FFmpeg patch.
     sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
@@ -344,14 +373,14 @@ platform :ios do
       api_key:        api_key
     )
 
-    # Query the tvOS-specific build number and increment by 1.
-    # platform: "appletvos" scopes the query to tvOS builds only — independent
-    # from the iOS sequence under Universal Purchase.
-    build_number = latest_testflight_build_number(
+    # tvOS-specific build number (injected by CI's reserve_build_numbers job, or
+    # queried directly for local runs). platform: "appletvos" scopes the query to
+    # tvOS builds only — independent from the iOS sequence under Universal Purchase.
+    build_number = resolve_build_number(
       api_key:        api_key,
       app_identifier: app_id,
       platform:       "appletvos"
-    ) + 1
+    )
 
     # Resolve SPM packages for DerivedData population.
     sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
@@ -426,6 +455,34 @@ platform :ios do
       distribute_external:     testflight_upload[:distribute_external],
       notify_external_testers: testflight_upload[:notify_external_testers]
     )
+  end
+
+  # ── Build-number reservation ────────────────────────────────────────────────
+
+  desc "Reserve the next per-platform TestFlight build numbers (CI preflight)"
+  lane :reserve_build_numbers do
+    # Query-only: no keychain/signing setup needed, so this runs on a plain
+    # Linux runner. Computes the next iOS and tvOS build numbers once so the
+    # parallel beta_ios / beta_tvos jobs consume fixed values instead of each
+    # racing latest_testflight_build_number.
+    api_key = setup_api_key
+    app_id  = "org.siloserver.silo"
+
+    ios_build = latest_testflight_build_number(
+      api_key: api_key, app_identifier: app_id, platform: "ios"
+    ) + 1
+    tvos_build = latest_testflight_build_number(
+      api_key: api_key, app_identifier: app_id, platform: "appletvos"
+    ) + 1
+
+    # Emit key=value lines to BUILD_NUMBERS_FILE (CI points this at
+    # $GITHUB_OUTPUT). Append so we never clobber other outputs already there.
+    out = ENV.fetch("BUILD_NUMBERS_FILE", "build_numbers.env")
+    File.open(out, "a") do |f|
+      f.puts "ios_build=#{ios_build}"
+      f.puts "tvos_build=#{tvos_build}"
+    end
+    UI.success("Reserved build numbers — iOS: #{ios_build}, tvOS: #{tvos_build}")
   end
 
   # ── Unsigned IPAs for third-party signing / sideloading ─────────────────────
