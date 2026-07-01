@@ -1,6 +1,7 @@
 #if os(tvOS)
 import SwiftUI
 import UIKit
+import os
 
 enum TVTopMenuLayout {
     /// Vertical clearance needed when a root tvOS page does not render a
@@ -162,6 +163,10 @@ struct TVTopMenuBar: View {
     @State private var dwellSuppressedElement: TVTopMenuFocus?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        category: "TVFocus"
+    )
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -209,6 +214,8 @@ struct TVTopMenuBar: View {
             }
         }
         .onChange(of: focusRequest) { _, _ in
+            let target = focusRequestTarget.map { String(describing: $0) } ?? "nil"
+            Self.logger.debug("topMenu.focusRequest request=\(focusRequest, privacy: .public) suppressed=\(isFocusSuppressed, privacy: .public) target=\(target, privacy: .public)")
             requestMenuFocus()
         }
         .onChange(of: isMenuFocused) { _, newValue in
@@ -226,6 +233,8 @@ struct TVTopMenuBar: View {
             isMenuFocused = focusedItem != nil && !newValue
         }
         .onChange(of: focusedItem) { _, newValue in
+            let item = newValue.map { String(describing: $0) } ?? "nil"
+            Self.logger.debug("topMenu.focus item=\(item, privacy: .public) panelHasFocus=\(panelHasFocus, privacy: .public) panelEntersFocus=\(panelEntersFocus, privacy: .public)")
             if let newValue {
                 lastBarFocus = newValue
                 refocusAfterClose = false
@@ -376,7 +385,10 @@ struct TVTopMenuBar: View {
     }
 
     private func requestMenuFocus() {
-        guard !isFocusSuppressed else { return }
+        guard !isFocusSuppressed else {
+            Self.logger.debug("topMenu.requestMenuFocus blocked suppressed=true")
+            return
+        }
         switch focusRequestTarget {
         // A non-nil target means focus is returning from an explicit panel
         // close (focusTopMenuIfVisible(focusing:) is only called that way).
@@ -392,6 +404,8 @@ struct TVTopMenuBar: View {
         case .none:
             focusedItem = .root(selectedRoot)
         }
+        let item = focusedItem.map { String(describing: $0) } ?? "nil"
+        Self.logger.debug("topMenu.requestMenuFocus focusedItem=\(item, privacy: .public)")
     }
 
     // MARK: - Search
@@ -465,6 +479,8 @@ struct TVTopMenuBar: View {
     }
 
     private func handleExitPress() {
+        let item = focusedItem.map { String(describing: $0) } ?? "nil"
+        Self.logger.debug("topMenu.exitPress focusedItem=\(item, privacy: .public) openPanel=\(openPanel != nil, privacy: .public) selectedRoot=\(String(describing: selectedRoot), privacy: .public)")
         if openPanel != nil {
             onDwell(nil)
             return

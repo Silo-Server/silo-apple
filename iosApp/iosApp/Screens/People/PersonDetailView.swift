@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 
 enum PersonMediaFilter: String, CaseIterable, Identifiable {
     case all
@@ -36,11 +37,20 @@ final class PersonDetailViewModel {
     var hasMore = true
     var selectedFilter: PersonMediaFilter = .all
     var totalItems: Int?
+    var isRefreshingMetadata = false
 
+    private static let metadataRefreshWindowSeconds: TimeInterval = 120
+    private static let metadataRefreshPollInterval: Duration = .seconds(3)
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        category: "PersonDetail"
+    )
     private let pageSize = 60
     private var nextOffset = 0
     private var snapshot: String?
     private var generation = 0
+    private var metadataRefreshTask: Task<Void, Never>?
+    private var autoRefreshRequestedPersonId: Int?
 
     #if os(tvOS)
     private var prefetchedPosterURLs: Set<URL> = []
@@ -48,6 +58,21 @@ final class PersonDetailViewModel {
 
     init(personId: Int) {
         self.personId = personId
+    }
+
+    /// Cancel the manually-spawned refresh poll when this page leaves the
+    /// nav stack. SwiftUI only auto-cancels `.task`; this task otherwise
+    /// retains the view model and keeps mutating state after the route pops.
+    func stopMetadataRefresh() {
+        guard metadataRefreshTask != nil || isRefreshingMetadata else { return }
+        Self.logger.debug("stopMetadataRefresh personId=\(self.personId, privacy: .public)")
+        metadataRefreshTask?.cancel()
+        metadataRefreshTask = nil
+        isRefreshingMetadata = false
+    }
+
+    func resumeMetadataRefreshIfNeeded() {
+        scheduleMetadataRefreshIfNeeded(for: person)
     }
 
     var isInitialLoading: Bool {
@@ -72,6 +97,7 @@ final class PersonDetailViewModel {
             if person == nil {
                 person = try await ContinuumAPI.shared.person(id: personId)
             }
+            scheduleMetadataRefreshIfNeeded(for: person)
             await fetchPage(reset: true, generation: currentGeneration)
         } catch {
             guard currentGeneration == generation else { return }
@@ -105,6 +131,72 @@ final class PersonDetailViewModel {
         PosterImageCache.prefetcher.startPrefetching(with: newURLs)
     }
     #endif
+
+    private func scheduleMetadataRefreshIfNeeded(for person: Person?) {
+        guard let person else { return }
+        guard person.isMetadataIncomplete else {
+            metadataRefreshTask?.cancel()
+            metadataRefreshTask = nil
+            isRefreshingMetadata = false
+            return
+        }
+        guard metadataRefreshTask == nil else { return }
+
+        let shouldQueueRefresh = autoRefreshRequestedPersonId != person.id
+        if shouldQueueRefresh {
+            autoRefreshRequestedPersonId = person.id
+        }
+        isRefreshingMetadata = true
+        Self.logger.debug("startMetadataRefresh personId=\(person.id, privacy: .public) queue=\(shouldQueueRefresh, privacy: .public)")
+        metadataRefreshTask = Task { [weak self] in
+            await self?.runMetadataAutoRefresh(
+                for: person.id,
+                shouldQueueRefresh: shouldQueueRefresh
+            )
+        }
+    }
+
+    private func runMetadataAutoRefresh(for personId: Int, shouldQueueRefresh: Bool) async {
+        defer {
+            let wasCancelled = Task.isCancelled
+            metadataRefreshTask = nil
+            isRefreshingMetadata = false
+            if !wasCancelled, person?.isMetadataIncomplete == true {
+                autoRefreshRequestedPersonId = nil
+            }
+            Self.logger.debug("finishMetadataRefresh personId=\(personId, privacy: .public) cancelled=\(wasCancelled, privacy: .public)")
+        }
+
+        if shouldQueueRefresh,
+           let token = await ContinuumAPI.shared.currentAccessToken(),
+           !token.isEmpty {
+            _ = try? await ContinuumAPI.shared.refreshPerson(id: personId)
+        }
+
+        let deadline = Date.now.addingTimeInterval(Self.metadataRefreshWindowSeconds)
+        while !Task.isCancelled && Date.now < deadline {
+            do {
+                try await Task.sleep(for: Self.metadataRefreshPollInterval)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+
+            do {
+                let updatedPerson = try await ContinuumAPI.shared.person(id: personId)
+                guard personId == self.personId else { return }
+                person = updatedPerson
+                if !updatedPerson.isMetadataIncomplete {
+                    Self.logger.debug("completeMetadataRefresh personId=\(personId, privacy: .public)")
+                    isRefreshingMetadata = false
+                    return
+                }
+            } catch {
+                continue
+            }
+        }
+    }
 
     private func fetchPage(reset: Bool, generation currentGeneration: Int) async {
         guard hasMore, !isLoadingItems else { return }
@@ -162,8 +254,14 @@ struct PersonDetailView: View {
         rootContent
             .navigationTitle(viewModel.person?.name ?? "Person")
             .continuumNavigationTitleDisplayMode(.inline)
+            .onAppear {
+                viewModel.resumeMetadataRefreshIfNeeded()
+            }
             .task {
                 await viewModel.loadInitial()
+            }
+            .onDisappear {
+                viewModel.stopMetadataRefresh()
             }
     }
 
@@ -284,6 +382,10 @@ private struct TVPersonDetailContent: View {
                         Capsule()
                             .fill(Color.continuumSurfaceVariant)
                     )
+            }
+
+            if viewModel.isRefreshingMetadata {
+                PersonMetadataRefreshIndicator()
             }
         }
     }
@@ -406,6 +508,10 @@ private struct PhonePersonDetailContent: View {
                             .fill(Color.continuumSurfaceVariant)
                     )
             }
+
+            if viewModel.isRefreshingMetadata {
+                PersonMetadataRefreshIndicator()
+            }
         }
     }
 
@@ -468,6 +574,51 @@ private struct PersonPortrait: View {
             RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
                 .stroke(Color.white.opacity(0.10), lineWidth: 1)
         )
+    }
+}
+
+private struct PersonMetadataRefreshIndicator: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(controlSize)
+                .tint(.continuumOnSurface)
+
+            Text("Loading metadata")
+                .font(.continuumSmall)
+                .foregroundColor(.continuumSecondaryText)
+        }
+        .padding(.horizontal, horizontalPadding)
+        .padding(.vertical, verticalPadding)
+        .background(
+            Capsule()
+                .fill(Color.continuumSurfaceVariant.opacity(0.72))
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    private var controlSize: ControlSize {
+        #if os(tvOS)
+        .regular
+        #else
+        .small
+        #endif
+    }
+
+    private var horizontalPadding: CGFloat {
+        #if os(tvOS)
+        16
+        #else
+        9
+        #endif
+    }
+
+    private var verticalPadding: CGFloat {
+        #if os(tvOS)
+        8
+        #else
+        5
+        #endif
     }
 }
 
@@ -564,6 +715,10 @@ private struct PersonFilterButton: View {
 }
 
 private extension Person {
+    var isMetadataIncomplete: Bool {
+        clean(bio) == nil || clean(photoUrl) == nil || clean(birthDate) == nil
+    }
+
     var initials: String {
         let parts = name
             .split(separator: " ")

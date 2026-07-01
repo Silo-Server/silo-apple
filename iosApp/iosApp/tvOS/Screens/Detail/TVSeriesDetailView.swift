@@ -256,7 +256,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         } else {
             TVEpisodeRail(
                 episodes: episodes,
-                onSelect: onEpisodeTap
+                onSelect: onEpisodeTap,
+                currentContentId: nextUpEpisode?.contentId
             )
         }
     }

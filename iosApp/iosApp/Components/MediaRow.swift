@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(tvOS)
+import os
+#endif
 
 /// Layout mode for a horizontal media row.
 /// Poster rows use tall (2:3) poster cards; thumbnail rows use wide 16:9
@@ -58,6 +61,10 @@ struct MediaRow: View {
     /// identity per page, so the kick has to land on `onAppear`, not only
     /// on a `focusRequest` change).
     @State private var lastAppliedFocusRequest = 0
+    private static let focusLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        category: "TVFocus"
+    )
     #endif
 
     var body: some View {
@@ -74,6 +81,7 @@ struct MediaRow: View {
         .onChange(of: focusedItemId) { _, newValue in
             guard let newValue,
                   let item = items.first(where: { $0.contentId == newValue }) else { return }
+            Self.focusLogger.debug("mediaRow.focus item=\(newValue, privacy: .public)")
             onItemFocus?(item)
         }
         #endif
@@ -85,6 +93,7 @@ struct MediaRow: View {
               let firstItem = items.first else { return }
         lastAppliedFocusRequest = request
         focusedItemId = firstItem.contentId
+        Self.focusLogger.debug("mediaRow.applyFocus request=\(request, privacy: .public) first=\(firstItem.contentId, privacy: .public)")
         onItemFocus?(firstItem)
     }
     #endif

@@ -7,12 +7,12 @@ import SwiftUI
 /// start playback — the rail is a browsing surface, not a direct play
 /// launcher.
 ///
-/// When rendered on an episode detail page, pass `currentContentId` to
-/// highlight the episode the user is currently viewing. The rail will
-/// also scroll that card to the horizontal center on first appearance
-/// and make it the default focus target when the user d-pads down into
-/// the rail, so they land on the episode they're already on rather than
-/// the first card in the season.
+/// Pass `currentContentId` to highlight the episode currently represented
+/// by the surrounding detail experience. The rail will also scroll that
+/// card to the horizontal center on first appearance and make it the
+/// default focus target when the user d-pads down into the rail, so they
+/// land on the episode represented by the page's primary action rather
+/// than the first card in the season.
 struct TVEpisodeRail: View {
     let episodes: [EpisodeListItem]
     let onSelect: (String) -> Void

@@ -248,7 +248,11 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                     .font(.system(size: 22, weight: .regular))
                     .foregroundColor(.continuumSecondaryText)
             } else {
-                TVEpisodeRail(episodes: episodes, onSelect: onEpisodeTap)
+                TVEpisodeRail(
+                    episodes: episodes,
+                    onSelect: onEpisodeTap,
+                    currentContentId: nextUpEpisode?.contentId
+                )
             }
         }
     }

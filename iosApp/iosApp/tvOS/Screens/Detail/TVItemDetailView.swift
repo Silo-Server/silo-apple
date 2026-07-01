@@ -1,5 +1,6 @@
 #if os(tvOS)
 import SwiftUI
+import os
 
 /// Cinematic item-detail screen for tvOS. Replaces the shared
 /// `MovieDetailContent` / `SeriesDetailContent` layouts on tvOS only; the
@@ -22,6 +23,10 @@ struct TVItemDetailView: View {
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
     @Environment(AppRouter.self) private var router
+    private static let focusLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        category: "TVFocus"
+    )
 
     init(contentId: String) {
         self.contentId = contentId
@@ -48,6 +53,12 @@ struct TVItemDetailView: View {
         .continuumBackground()
         .continuumNavigationTitleDisplayMode(.inline)
         .continuumNavigationBarBackgroundHidden()
+        .onAppear {
+            Self.focusLogger.debug("itemDetail.appear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
+        }
+        .onDisappear {
+            Self.focusLogger.debug("itemDetail.disappear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
+        }
         .task(id: contentId) {
             preferredVersionFileId = nil
             preferredAudioTrackIndex = nil

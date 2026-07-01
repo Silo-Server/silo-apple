@@ -227,6 +227,14 @@ actor ContinuumAPI {
                 isChild: request.isChild
             ))
         }
+        if components.count == 5,
+           components[0] == "api", components[1] == "v1",
+           components[2] == "people", components[4] == "refresh" {
+            guard let personId = Int(components[3]) else {
+                throw APIError.invalidPathParameter(name: "personId", value: components[3])
+            }
+            return try cast(try await refreshPerson(id: personId))
+        }
 
         throw APIError.unsupportedPath(path)
     }
@@ -528,6 +536,10 @@ actor ContinuumAPI {
 
     func person(id: Int) async throws -> Person {
         try await http.get("/api/v1/people/\(id)")
+    }
+
+    func refreshPerson(id: Int) async throws -> PersonRefreshQueuedResponse {
+        try await http.post("/api/v1/people/\(id)/refresh")
     }
 
     func personCatalogItems(

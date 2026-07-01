@@ -513,6 +513,11 @@ struct Person: Codable, Identifiable, Hashable {
     let plexGuid: String?
 }
 
+struct PersonRefreshQueuedResponse: Codable, Hashable {
+    let status: String
+    let personId: Int
+}
+
 struct Season: Codable, Identifiable, Hashable {
     let contentId: String
     let seasonNumber: Int
