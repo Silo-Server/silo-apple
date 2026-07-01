@@ -145,9 +145,15 @@ struct TVCascadeSelector: View {
                 .frame(width: ContinuumTheme.Skyline.flyoutWidth, alignment: .top)
                 .opacity(flyoutAnchorId != nil ? 1 : 0)
                 .padding(.top, flyoutTopPadding)
+                // Animate the follow on the *discrete* anchor change, never on
+                // `flyoutTopPadding` itself. `flyoutTopPadding` is derived from
+                // live GeometryReader→preference measurements; animating on it
+                // makes sub-pixel re-measure jitter re-arm the animation every
+                // layout pass, so `AnimatorState.combine` accumulates without
+                // bound and the CA transaction never commits (hard UI freeze).
                 .animation(
                     reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.Skyline.flyoutOpenDuration),
-                    value: flyoutTopPadding
+                    value: flyoutAnchorId
                 )
         }
         .coordinateSpace(name: Self.cascadeSpace)
