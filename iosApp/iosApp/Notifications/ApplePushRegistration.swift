@@ -144,6 +144,16 @@ final class ApplePushRegistrationCoordinator {
         guard let lastDeviceToken else {
             return
         }
+        // The cached token can outlive the user's permission: if they revoke
+        // notification authorization in Settings, a later foreground or
+        // profile switch must not re-upload the token for the new context.
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            break
+        default:
+            return
+        }
 
         let request = makeRegistrationRequest(deviceToken: lastDeviceToken)
         let fingerprint = registrationFingerprint(for: request)

@@ -81,6 +81,8 @@ final class ApplePushRegistrationTests: XCTestCase {
         XCTAssertEqual(response.notifications.count, 1)
         XCTAssertEqual(response.notifications.first?.id, "delivery-1")
         XCTAssertEqual(response.notifications.first?.profileId, "profile-1")
+        XCTAssertNotNil(response.notifications.first?.createdAt)
+        XCTAssertNil(response.notifications.first?.readAt)
         XCTAssertEqual(response.nextCursor, "cursor-1")
         XCTAssertEqual(response.unreadCount, 3)
     }

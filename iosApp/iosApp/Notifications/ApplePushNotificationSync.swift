@@ -52,6 +52,11 @@ final class ApplePushNotificationSyncCoordinator {
         guard !inFlight else {
             return false
         }
+        // Claimed before the first await: the retarget below suspends, and a
+        // second push/foreground/tap sync re-entering during that window
+        // would pass the guard and race the cursor bookkeeping.
+        inFlight = true
+        defer { inFlight = false }
 
         // A background remote-notification wake can launch a killed app and
         // land here before ContentView.checkInitialState() has pointed
@@ -73,9 +78,6 @@ final class ApplePushNotificationSyncCoordinator {
             cursorContext = context
             nextCursor = nil
         }
-
-        inFlight = true
-        defer { inFlight = false }
 
         do {
             let response: ApplePushNotificationSyncResponse = try await HTTPClient.shared.get(
