@@ -71,6 +71,11 @@ targets:
         SDKROOT: iphoneos
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
+      configs:
+        Debug:
+          APS_ENVIRONMENT: development
+        Release:
+          APS_ENVIRONMENT: production
     dependencies:
       - package: FFmpeg
         product: FFmpeg
@@ -78,6 +83,8 @@ targets:
         product: Nuke
       - package: Nuke
         product: NukeUI
+      - target: SiloNotificationService
+        embed: true
 
   # NOTE: tvOS-specific source files live under iosApp/tvOS/. They are guarded
   # by #if os(tvOS) so they compile out on the iOS target even though the
@@ -203,6 +210,31 @@ targets:
         SUPPORTED_PLATFORMS: "appletvos appletvsimulator"
     dependencies:
       - sdk: TVServices.framework
+
+  # iOS Notification Service extension: enriches generic APNs alerts by
+  # fetching compact display metadata directly from the user's Silo server.
+  # Shares active server/profile/token state via the App Group + shared
+  # Keychain access group, but does not link the main app's AuthService.
+  SiloNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: NotificationService
+      - path: iosApp/Notifications/ApplePushDisplayMetadata.swift
+      - path: iosApp/Shared/SharedStorage.swift
+    configFiles:
+      Debug: Signing/SiloNotificationService.xcconfig
+      Release: Signing/SiloNotificationService.xcconfig
+    settings:
+      base:
+        PRODUCT_NAME: SiloNotificationService
+        INFOPLIST_FILE: NotificationService/Info.plist
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: 1
+        SDKROOT: iphoneos
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+    dependencies:
+      - sdk: UserNotifications.framework
 
   # Unit-test bundle for the iOS Silo app. Hosts the XCTest cases under
   # Tests/ and loads the Silo.app binary so `@testable import Silo` can

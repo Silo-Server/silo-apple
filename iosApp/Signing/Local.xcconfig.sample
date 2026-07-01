@@ -1,13 +1,15 @@
 // Copy this file to `Local.xcconfig` (gitignored) to override the signing
-// defaults in `Silo.xcconfig`, `SiloTV.xcconfig`, and
-// `SiloTVTopShelf.xcconfig`. Use this when you don't have access to
-// the Silo Media L.L.C Apple Developer team that owns
-// `org.siloserver.silo` and the `group.org.siloserver.silo` App Group.
+// defaults in `Silo.xcconfig`, `SiloTV.xcconfig`,
+// `SiloTVTopShelf.xcconfig`, and `SiloNotificationService.xcconfig`. Use
+// this when you don't have access to the Silo Media L.L.C Apple Developer
+// team that owns `org.siloserver.silo` and the `group.org.siloserver.silo`
+// App Group.
 //
 // Every target xcconfig ends with `#include? "Local.xcconfig"`, so any
 // variable you redefine here wins. Each target reads its own indirection
 // variable (SILO_IOS_BUNDLE_ID / SILO_TV_BUNDLE_ID /
-// SILO_MAC_BUNDLE_ID / SILO_TOPSHELF_BUNDLE_ID, plus the
+// SILO_MAC_BUNDLE_ID / SILO_TOPSHELF_BUNDLE_ID /
+// SILO_NOTIFICATION_SERVICE_BUNDLE_ID, plus the
 // `_ENTITLEMENTS` variables), so
 // you can change one target without affecting the others.
 //
@@ -26,18 +28,28 @@
 // SILO_MAC_BUNDLE_ID      = com.example.silo.mac
 // SILO_TOPSHELF_BUNDLE_ID = com.example.silo.topshelf
 //
+// The Notification Service extension is embedded in the iOS app, so its
+// bundle ID must be prefixed by SILO_IOS_BUNDLE_ID or embedded-binary
+// validation fails at install:
+//
+// SILO_NOTIFICATION_SERVICE_BUNDLE_ID = com.example.silo.NotificationService
+//
 // ----- Entitlements -------------------------------------------------------
 //
-// Personal Teams can't join App Groups. Only the tvOS app and Top Shelf
-// extension need that shared container, so point just those targets at
-// the stripped `.personal.entitlements` variants:
+// Personal Teams can't join App Groups or sign the `aps-environment` push
+// entitlement. The iOS app, the Notification Service extension, the tvOS
+// app, and Top Shelf all need stripped `.personal.entitlements` variants:
 //
-// SILO_TV_ENTITLEMENTS       = SiloTV.personal.entitlements
-// SILO_TOPSHELF_ENTITLEMENTS = TopShelf/TopShelf.personal.entitlements
+// SILO_IOS_ENTITLEMENTS                  = Silo.personal.entitlements
+// SILO_NOTIFICATION_SERVICE_ENTITLEMENTS = NotificationService/NotificationService.personal.entitlements
+// SILO_TV_ENTITLEMENTS                   = SiloTV.personal.entitlements
+// SILO_TOPSHELF_ENTITLEMENTS             = TopShelf/TopShelf.personal.entitlements
 //
 // Note: Top Shelf → host-app state handoff uses that App Group, so the
 // Apple TV Home Screen rows stay empty when you build under a Personal
-// Team. Everything else (playback, auth, library browsing) works.
+// Team. Likewise, push notifications and notification enrichment are
+// unavailable on Personal Team iOS builds (registration fails gracefully).
+// Everything else (playback, auth, library browsing) works.
 //
 // ----- Development team --------------------------------------------------
 //

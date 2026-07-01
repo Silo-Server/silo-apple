@@ -42,7 +42,17 @@ struct ContentView: View {
         ))
         .onReceive(NotificationCenter.default.publisher(for: .continuumDeepLink)) { notification in
             guard let url = notification.userInfo?["url"] as? URL else { return }
+            #if os(iOS)
+            ApplePushDeepLinkCoordinator.shared.clearPendingDeepLink(matching: url)
+            #endif
             handleDeepLink(url)
+        }
+        .onAppear {
+            #if os(iOS)
+            if let url = ApplePushDeepLinkCoordinator.shared.consumePendingDeepLink() {
+                handleDeepLink(url)
+            }
+            #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: .continuumSessionExpired)) { _ in
             audioStore.dismissFullPlayer()
@@ -72,6 +82,9 @@ struct ContentView: View {
                 // features stay hidden until a profile switch. Idempotent and
                 // failure-tolerant, so double-calling with `selectProfile` is safe.
                 await AICapabilities.shared.refresh()
+                #if os(iOS)
+                await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
+                #endif
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -103,6 +116,12 @@ struct ContentView: View {
             // natural retry on foreground. `refresh()` is idempotent, so the
             // happy path costs nothing.
             Task { await AICapabilities.shared.refresh() }
+            #if os(iOS)
+            Task {
+                await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
+                await ApplePushRegistrationCoordinator.shared.registerCurrentDeviceTokenIfPossible()
+            }
+            #endif
             #if os(tvOS)
             NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
             #endif

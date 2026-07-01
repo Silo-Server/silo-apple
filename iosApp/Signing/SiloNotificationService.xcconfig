@@ -1,0 +1,12 @@
+// iOS Notification Service extension signing defaults. CI and the paid
+// team use these as-is. Local contributors without access to the paid team
+// can override any of these by dropping a `Local.xcconfig` into this
+// directory.
+
+SILO_NOTIFICATION_SERVICE_BUNDLE_ID = org.siloserver.silo.NotificationService
+SILO_NOTIFICATION_SERVICE_ENTITLEMENTS = NotificationService/NotificationService.entitlements
+
+PRODUCT_BUNDLE_IDENTIFIER = $(SILO_NOTIFICATION_SERVICE_BUNDLE_ID)
+CODE_SIGN_ENTITLEMENTS = $(SILO_NOTIFICATION_SERVICE_ENTITLEMENTS)
+
+#include? "Local.xcconfig"
