@@ -9,6 +9,10 @@ DerivedData/
 .build/
 iosApp/Pods/
 
+# Fastlane build outputs (IPAs, archives from the ipa_*_unsigned lanes)
+build/
+fastlane/README.md
+
 # Local signing and secrets
 iosApp/Signing/Local.xcconfig
 .env
