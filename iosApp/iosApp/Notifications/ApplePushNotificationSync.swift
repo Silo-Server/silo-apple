@@ -53,6 +53,15 @@ final class ApplePushNotificationSyncCoordinator {
             return false
         }
 
+        // A background remote-notification wake can launch a killed app and
+        // land here before ContentView.checkInitialState() has pointed
+        // TokenStore at the active registry server — HTTPClient would then
+        // send this sync unauthenticated and 401. Retarget first; it's an
+        // idempotent no-op on every subsequent call.
+        if let serverId = ServerRegistry.shared.activeServerId, !serverId.isEmpty {
+            await TokenStore.shared.retargetActiveServer(serverId: serverId)
+        }
+
         // The cursor is only meaningful for the server+profile that minted
         // it; a cursor from server A sent as ?since= to server B silently
         // skips B's older notifications.
