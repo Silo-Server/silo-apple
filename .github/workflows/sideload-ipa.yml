@@ -16,21 +16,34 @@ on:
         required: true
         type: string
 
-# Attach IPAs to the GitHub Release on tag builds; workflow_dispatch just
-# publishes artifacts, so it only needs read.
-permissions:
-  contents: write
-
 env:
   XCODEGEN_VERSION: "2.43.0"
 
 jobs:
-  ios:
+  build:
     runs-on: macos-15
+    # Only the release-upload step (tag builds) needs write; scope it to the job
+    # rather than the whole workflow to keep the rest at least privilege.
+    permissions:
+      contents: write
+    strategy:
+      # Let one platform finish/publish even if the other fails.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: iOS
+            lane: ipa_ios_unsigned
+            artifact: Silo-iOS-unsigned-ipa
+            ipa_path: build/ios-unsigned/Silo-unsigned.ipa
+          - platform: tvOS
+            lane: ipa_tvos_unsigned
+            artifact: SiloTV-tvOS-unsigned-ipa
+            ipa_path: build/tvos-unsigned/SiloTV-unsigned.ipa
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # tags + history for version resolution
+          fetch-depth: 0            # tags + history for version resolution
+          persist-credentials: false  # don't leave GITHUB_TOKEN in git config for xcodegen/SPM
 
       - name: Select Xcode 26
         run: sudo xcode-select -s /Applications/Xcode_26.3.app
@@ -63,76 +76,32 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Resolved marketing version: $V"
 
-      - name: Build unsigned iOS IPA
-        run: bundle exec fastlane ios ipa_ios_unsigned
+      - name: Build unsigned ${{ matrix.platform }} IPA
+        run: bundle exec fastlane ios ${{ matrix.lane }}
         env:
           MARKETING_VERSION: ${{ steps.ver.outputs.value }}
 
-      - name: Upload iOS IPA artifact
+      - name: Upload ${{ matrix.platform }} IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Silo-iOS-unsigned-ipa
-          path: build/ios-unsigned/Silo-unsigned.ipa
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.ipa_path }}
           if-no-files-found: error
 
-      - name: Attach iOS IPA to release
+      - name: Attach ${{ matrix.platform }} IPA to release
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" build/ios-unsigned/Silo-unsigned.ipa --clobber
-
-  tvos:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Select Xcode 26
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app
-
-      - name: Install XcodeGen (pinned)
+          IPA_PATH: ${{ matrix.ipa_path }}
         run: |
-          curl -fsSL -o /tmp/xcodegen.zip \
-            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
-          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
-          sudo /tmp/xcodegen-dist/xcodegen/install.sh /usr/local
-          xcodegen --version
-
-      - uses: ruby/setup-ruby@v1
-        with:
-          bundler-cache: true
-
-      - name: Resolve marketing version
-        id: ver
-        env:
-          GH_EVENT_NAME: ${{ github.event_name }}
-          GH_REF_NAME: ${{ github.ref_name }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          V="$(scripts/ci/resolve-marketing-version.sh \
-                "$GH_EVENT_NAME" "$GH_REF_NAME" "$INPUT_VERSION")"
-          {
-            echo "value<<EOF"
-            echo "$V"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-          echo "Resolved marketing version: $V"
-
-      - name: Build unsigned tvOS IPA
-        run: bundle exec fastlane ios ipa_tvos_unsigned
-        env:
-          MARKETING_VERSION: ${{ steps.ver.outputs.value }}
-
-      - name: Upload tvOS IPA artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SiloTV-tvOS-unsigned-ipa
-          path: build/tvos-unsigned/SiloTV-unsigned.ipa
-          if-no-files-found: error
-
-      - name: Attach tvOS IPA to release
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" build/tvos-unsigned/SiloTV-unsigned.ipa --clobber
+          # release.yml (TestFlight) never creates a GitHub Release, so one may
+          # not exist for this tag. Create it if missing before uploading. Both
+          # matrix jobs can race here, so tolerate an "already exists" error and
+          # re-check that the release is present before uploading.
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes "Unsigned iOS/tvOS IPAs for third-party signing / sideloading. See docs/release/sideloading.md." \
+              || true
+          fi
+          gh release upload "$GITHUB_REF_NAME" "$IPA_PATH" --clobber

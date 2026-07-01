@@ -78,6 +78,22 @@ def marketing_version_xcarg
   "MARKETING_VERSION=#{value} "
 end
 
+# Regenerates Silo.xcodeproj from project.yml, resolves SPM packages for the
+# given scheme (populating DerivedData), and applies the FFmpeg module-map patch.
+# Shared by the unsigned IPA lanes. Returns the absolute iosApp directory.
+#
+# Note: beta_ios/beta_tvos intentionally do NOT use this helper — they interleave
+# match() and the build-number query between xcodegen and resolvePackageDependencies,
+# so the three steps are not contiguous there.
+def prepare_xcode_project(scheme:)
+  ios_app_dir = File.expand_path("../iosApp", __dir__)
+  sh("xcodegen generate --spec '#{ios_app_dir}/project.yml'")
+  sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
+     "-scheme #{scheme} -resolvePackageDependencies")
+  sh("bash '#{ios_app_dir}/scripts/patch-libavutil-modulemap.sh'")
+  ios_app_dir
+end
+
 # Repackages a compiled .app from an unsigned .xcarchive into an unsigned .ipa.
 #
 # An .ipa is just a zip with the app under Payload/. We build the archive with
@@ -424,14 +440,9 @@ platform :ios do
 
   desc "Build an unsigned iOS IPA for third-party signing / sideloading (no upload)"
   lane :ipa_ios_unsigned do
-    ios_app_dir  = File.expand_path("../iosApp", __dir__)
+    ios_app_dir  = prepare_xcode_project(scheme: "Silo")
     output_dir   = File.expand_path("../build/ios-unsigned", __dir__)
     archive_path = "#{output_dir}/Silo.xcarchive"
-
-    sh("xcodegen generate --spec '#{ios_app_dir}/project.yml'")
-    sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
-       "-scheme Silo -resolvePackageDependencies")
-    sh("bash '#{ios_app_dir}/scripts/patch-libavutil-modulemap.sh'")
 
     # Archive with signing disabled — no certs required. CURRENT_PROJECT_VERSION
     # comes from CI when set; local runs fall back to the project.yml value.
@@ -458,14 +469,9 @@ platform :ios do
 
   desc "Build an unsigned tvOS IPA for third-party signing / sideloading (no upload)"
   lane :ipa_tvos_unsigned do
-    ios_app_dir  = File.expand_path("../iosApp", __dir__)
+    ios_app_dir  = prepare_xcode_project(scheme: "SiloTV")
     output_dir   = File.expand_path("../build/tvos-unsigned", __dir__)
     archive_path = "#{output_dir}/SiloTV.xcarchive"
-
-    sh("xcodegen generate --spec '#{ios_app_dir}/project.yml'")
-    sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
-       "-scheme SiloTV -resolvePackageDependencies")
-    sh("bash '#{ios_app_dir}/scripts/patch-libavutil-modulemap.sh'")
 
     # The embedded Top Shelf extension is archived as part of SiloTV.app, so no
     # per-target signing handling is needed here. Re-signers that cannot sign the
