@@ -1,0 +1,138 @@
+name: Sideload IPA Build
+
+# Builds UNSIGNED iOS and tvOS IPAs for third-party signing / sideloading.
+# These artifacts are not installable as-is: the end user re-signs them with
+# their own account (AltStore / Sideloadly / SideStore / etc.). No signing
+# certs, Match repo, or App Store Connect key is used — this workflow reads no
+# release secrets. See docs/release/sideloading.md.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Marketing version (e.g. 1.4.0)'
+        required: true
+        type: string
+
+# Attach IPAs to the GitHub Release on tag builds; workflow_dispatch just
+# publishes artifacts, so it only needs read.
+permissions:
+  contents: write
+
+env:
+  XCODEGEN_VERSION: "2.43.0"
+
+jobs:
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # tags + history for version resolution
+
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+
+      - name: Install XcodeGen (pinned)
+        run: |
+          curl -fsSL -o /tmp/xcodegen.zip \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
+          sudo /tmp/xcodegen-dist/xcodegen/install.sh /usr/local
+          xcodegen --version
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - name: Resolve marketing version
+        id: ver
+        env:
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GH_REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          V="$(scripts/ci/resolve-marketing-version.sh \
+                "$GH_EVENT_NAME" "$GH_REF_NAME" "$INPUT_VERSION")"
+          {
+            echo "value<<EOF"
+            echo "$V"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved marketing version: $V"
+
+      - name: Build unsigned iOS IPA
+        run: bundle exec fastlane ios ipa_ios_unsigned
+        env:
+          MARKETING_VERSION: ${{ steps.ver.outputs.value }}
+
+      - name: Upload iOS IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Silo-iOS-unsigned-ipa
+          path: build/ios-unsigned/Silo-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Attach iOS IPA to release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" build/ios-unsigned/Silo-unsigned.ipa --clobber
+
+  tvos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+
+      - name: Install XcodeGen (pinned)
+        run: |
+          curl -fsSL -o /tmp/xcodegen.zip \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
+          sudo /tmp/xcodegen-dist/xcodegen/install.sh /usr/local
+          xcodegen --version
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - name: Resolve marketing version
+        id: ver
+        env:
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GH_REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          V="$(scripts/ci/resolve-marketing-version.sh \
+                "$GH_EVENT_NAME" "$GH_REF_NAME" "$INPUT_VERSION")"
+          {
+            echo "value<<EOF"
+            echo "$V"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved marketing version: $V"
+
+      - name: Build unsigned tvOS IPA
+        run: bundle exec fastlane ios ipa_tvos_unsigned
+        env:
+          MARKETING_VERSION: ${{ steps.ver.outputs.value }}
+
+      - name: Upload tvOS IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SiloTV-tvOS-unsigned-ipa
+          path: build/tvos-unsigned/SiloTV-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Attach tvOS IPA to release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" build/tvos-unsigned/SiloTV-unsigned.ipa --clobber

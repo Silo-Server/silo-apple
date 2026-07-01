@@ -78,6 +78,32 @@ def marketing_version_xcarg
   "MARKETING_VERSION=#{value} "
 end
 
+# Repackages a compiled .app from an unsigned .xcarchive into an unsigned .ipa.
+#
+# An .ipa is just a zip with the app under Payload/. We build the archive with
+# code signing disabled (no certs, no match, no ASC secrets needed) and wrap the
+# product here. The resulting IPA is NOT installable as-is — it is meant to be
+# re-signed by the end user with their own certificate via AltStore, Sideloadly,
+# SideStore, etc. before sideloading. See docs/release/sideloading.md.
+def package_unsigned_ipa(archive_path:, app_name:, output_dir:, output_ipa:)
+  app_path = "#{archive_path}/Products/Applications/#{app_name}.app"
+  UI.user_error!("Expected app not found at #{app_path}") unless File.exist?(app_path)
+
+  # zip must run from output_dir so the archive root is Payload/, not an
+  # absolute path. Rebuild Payload/ from scratch each run for idempotency.
+  sh(<<~SH)
+    set -euo pipefail
+    cd #{output_dir.shellescape}
+    rm -rf Payload #{output_ipa.shellescape}
+    mkdir Payload
+    cp -R #{app_path.shellescape} Payload/
+    zip -qry #{output_ipa.shellescape} Payload
+    rm -rf Payload
+  SH
+
+  UI.success("Unsigned IPA written to #{output_dir}/#{output_ipa}")
+end
+
 def testflight_distribution
   mode = ENV.fetch("TESTFLIGHT_DISTRIBUTION", "internal").strip.downcase
 
@@ -383,6 +409,85 @@ platform :ios do
       groups:                  testflight_upload[:groups],
       distribute_external:     testflight_upload[:distribute_external],
       notify_external_testers: testflight_upload[:notify_external_testers]
+    )
+  end
+
+  # ── Unsigned IPAs for third-party signing / sideloading ─────────────────────
+  #
+  # These lanes build an installable-once-re-signed IPA with NO code signing:
+  # no match, no distribution cert, no App Store Connect key. The user re-signs
+  # the artifact with their own account (AltStore / Sideloadly / SideStore / etc.)
+  # before sideloading. Because nothing is uploaded and no secrets are read, they
+  # run on any macOS runner without release credentials. See
+  # docs/release/sideloading.md for the caveats (entitlement remapping, 7-day
+  # free-account expiry, and the tvOS host-pairing / Top Shelf notes).
+
+  desc "Build an unsigned iOS IPA for third-party signing / sideloading (no upload)"
+  lane :ipa_ios_unsigned do
+    ios_app_dir  = File.expand_path("../iosApp", __dir__)
+    output_dir   = File.expand_path("../build/ios-unsigned", __dir__)
+    archive_path = "#{output_dir}/Silo.xcarchive"
+
+    sh("xcodegen generate --spec '#{ios_app_dir}/project.yml'")
+    sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
+       "-scheme Silo -resolvePackageDependencies")
+    sh("bash '#{ios_app_dir}/scripts/patch-libavutil-modulemap.sh'")
+
+    # Archive with signing disabled — no certs required. CURRENT_PROJECT_VERSION
+    # comes from CI when set; local runs fall back to the project.yml value.
+    xcodebuild(
+      archive:      true,
+      project:      "#{ios_app_dir}/Silo.xcodeproj",
+      scheme:       "Silo",
+      destination:  "generic/platform=iOS",
+      archive_path: archive_path,
+      xcargs:       "#{marketing_version_xcarg}" \
+                    "CODE_SIGNING_ALLOWED=NO " \
+                    "CODE_SIGNING_REQUIRED=NO " \
+                    "CODE_SIGN_IDENTITY='' " \
+                    "CODE_SIGN_ENTITLEMENTS=''"
+    )
+
+    package_unsigned_ipa(
+      archive_path: archive_path,
+      app_name:     "Silo",
+      output_dir:   output_dir,
+      output_ipa:   "Silo-unsigned.ipa"
+    )
+  end
+
+  desc "Build an unsigned tvOS IPA for third-party signing / sideloading (no upload)"
+  lane :ipa_tvos_unsigned do
+    ios_app_dir  = File.expand_path("../iosApp", __dir__)
+    output_dir   = File.expand_path("../build/tvos-unsigned", __dir__)
+    archive_path = "#{output_dir}/SiloTV.xcarchive"
+
+    sh("xcodegen generate --spec '#{ios_app_dir}/project.yml'")
+    sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
+       "-scheme SiloTV -resolvePackageDependencies")
+    sh("bash '#{ios_app_dir}/scripts/patch-libavutil-modulemap.sh'")
+
+    # The embedded Top Shelf extension is archived as part of SiloTV.app, so no
+    # per-target signing handling is needed here. Re-signers that cannot sign the
+    # extension (e.g. free accounts) can strip it before sideloading.
+    xcodebuild(
+      archive:      true,
+      project:      "#{ios_app_dir}/Silo.xcodeproj",
+      scheme:       "SiloTV",
+      destination:  "generic/platform=tvOS",
+      archive_path: archive_path,
+      xcargs:       "#{marketing_version_xcarg}" \
+                    "CODE_SIGNING_ALLOWED=NO " \
+                    "CODE_SIGNING_REQUIRED=NO " \
+                    "CODE_SIGN_IDENTITY='' " \
+                    "CODE_SIGN_ENTITLEMENTS=''"
+    )
+
+    package_unsigned_ipa(
+      archive_path: archive_path,
+      app_name:     "SiloTV",
+      output_dir:   output_dir,
+      output_ipa:   "SiloTV-unsigned.ipa"
     )
   end
 
