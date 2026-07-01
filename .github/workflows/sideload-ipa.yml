@@ -15,12 +15,43 @@ on:
         description: 'Marketing version (e.g. 1.4.0)'
         required: true
         type: string
+      platform:
+        description: 'Which platform(s) to build'
+        required: true
+        type: choice
+        default: both
+        options:
+          - both
+          - ios
+          - tvos
 
 env:
   XCODEGEN_VERSION: "2.43.0"
 
 jobs:
+  # Compute the build matrix from the dispatch input. Tag pushes (and any run
+  # without an explicit choice) build both platforms.
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        env:
+          PLATFORM: ${{ github.event_name == 'workflow_dispatch' && inputs.platform || 'both' }}
+        run: |
+          ios='{"platform":"iOS","lane":"ipa_ios_unsigned","artifact":"Silo-iOS-unsigned-ipa","ipa_path":"build/ios-unsigned/Silo-unsigned.ipa"}'
+          tvos='{"platform":"tvOS","lane":"ipa_tvos_unsigned","artifact":"SiloTV-tvOS-unsigned-ipa","ipa_path":"build/tvos-unsigned/SiloTV-unsigned.ipa"}'
+          case "$PLATFORM" in
+            ios)  include="[$ios]" ;;
+            tvos) include="[$tvos]" ;;
+            *)    include="[$ios,$tvos]" ;;
+          esac
+          echo "Building matrix for platform=$PLATFORM"
+          echo "matrix={\"include\":$include}" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: setup
     runs-on: macos-15
     # Only the release-upload step (tag builds) needs write; scope it to the job
     # rather than the whole workflow to keep the rest at least privilege.
@@ -29,16 +60,7 @@ jobs:
     strategy:
       # Let one platform finish/publish even if the other fails.
       fail-fast: false
-      matrix:
-        include:
-          - platform: iOS
-            lane: ipa_ios_unsigned
-            artifact: Silo-iOS-unsigned-ipa
-            ipa_path: build/ios-unsigned/Silo-unsigned.ipa
-          - platform: tvOS
-            lane: ipa_tvos_unsigned
-            artifact: SiloTV-tvOS-unsigned-ipa
-            ipa_path: build/tvos-unsigned/SiloTV-unsigned.ipa
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
