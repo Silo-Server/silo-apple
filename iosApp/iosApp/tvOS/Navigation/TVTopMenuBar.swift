@@ -938,6 +938,7 @@ private enum TVProfileAction: Hashable {
     case watchlist
     case favorites
     case history
+    case requests
     case settings
     case switchServer
     case signOut
@@ -964,12 +965,19 @@ struct TVProfileDropdown: View {
     let onWatchlist: () -> Void
     let onFavorites: () -> Void
     let onHistory: () -> Void
+    let onRequests: () -> Void
     let onSettings: () -> Void
     let onSwitchServer: () -> Void
     let onSignOut: () -> Void
 
     @FocusState private var focusedAction: TVProfileAction?
     @State private var lastAppliedEntryToken = 0
+
+    /// Capability-gated: the Requests row only exists (and only takes a
+    /// focus slot) when the server reports `requests_enabled`.
+    private var showRequests: Bool {
+        RequestsFeatureStore.shared.isEnabled
+    }
 
     var body: some View {
         panel
@@ -1001,6 +1009,9 @@ struct TVProfileDropdown: View {
             actionButton("Watchlist", systemImage: "bookmark.fill", id: .watchlist, action: onWatchlist)
             actionButton("Favorites", systemImage: "heart.fill", id: .favorites, action: onFavorites)
             actionButton("History", systemImage: "clock.fill", id: .history, action: onHistory)
+            if showRequests {
+                actionButton("Requests", systemImage: "sparkles", id: .requests, action: onRequests)
+            }
 
             divider
 

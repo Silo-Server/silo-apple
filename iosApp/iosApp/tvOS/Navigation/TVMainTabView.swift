@@ -442,6 +442,7 @@ struct TVMainTabView: View {
             onWatchlist: { closePanel(then: { router.navigate(to: .watchlist) }) },
             onFavorites: { closePanel(then: { router.navigate(to: .favorites) }) },
             onHistory: { closePanel(then: { router.navigate(to: .history) }) },
+            onRequests: { closePanel(then: { router.navigate(to: .requestsHub) }) },
             onSettings: { closePanel(then: { router.navigate(to: .settings) }) },
             onSwitchServer: { closePanel(then: { showServerPicker = true }) },
             onSignOut: { closePanel(then: { router.signOutAndReset() }) }
@@ -895,6 +896,12 @@ struct TVMainTabView: View {
             CollectionDetailView(collectionId: id)
         case .browse(let libraryId):
             BrowseView(libraryId: libraryId)
+        case .requestsHub:
+            RequestsHubView()
+        case .requestDetail(let mediaType, let tmdbId):
+            RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
+        case .myRequests:
+            MyRequestsView()
         case .admin:
             AdminDashboardView()
         case .search:

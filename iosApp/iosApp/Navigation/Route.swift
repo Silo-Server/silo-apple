@@ -39,6 +39,18 @@ enum Route: Hashable {
     case serverList
     case downloads
 
+    /// Media-requests hub: discover carousels + search-to-request. Entry
+    /// points (profile menu / tvOS profile dropdown) only render when
+    /// `RequestsFeatureStore.shared.isEnabled`.
+    case requestsHub
+
+    /// TMDB title detail with the single server-state-computed request
+    /// action. Titles already in the library route to `.itemDetail` instead.
+    case requestDetail(mediaType: RequestMediaType, tmdbId: Int)
+
+    /// The signed-in user's own request queue, bucketed by state.
+    case myRequests
+
     /// Offline playback of a completed download. Distinct from `.player`
     /// so the player reads the local file + stored manifest instead of
     /// starting a server session.

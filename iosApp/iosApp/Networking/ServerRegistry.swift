@@ -199,7 +199,11 @@ final class ServerRegistry {
         // drop the previous server's AI capability/quota probes after the URL,
         // profile, active id, and token slot have all been retargeted so any
         // foreground refresh observes one consistent server context.
-        await MainActor.run { AICapabilities.shared.reset() }
+        await MainActor.run {
+            AICapabilities.shared.reset()
+            RequestsFeatureStore.shared.reset()
+            RequestsEventBus.shared.reset()
+        }
     }
 
     /// Sign out from `serverId` without removing the entry. Clears tokens
@@ -239,7 +243,11 @@ final class ServerRegistry {
                 defaults.removeObject(forKey: "profileId")
                 await TokenStore.shared.switchActiveServer(serverId: "")
             }
-            await MainActor.run { AICapabilities.shared.reset() }
+            await MainActor.run {
+                AICapabilities.shared.reset()
+                RequestsFeatureStore.shared.reset()
+                RequestsEventBus.shared.reset()
+            }
         }
         persist()
     }
