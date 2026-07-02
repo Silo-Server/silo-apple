@@ -194,10 +194,16 @@ struct TrackSelectionSheet: View {
             // so users can't pick the same sub twice.
             let isDisabled = isSecondary && viewModel.selectedSubtitleId == track.trackId
 
+            // Subtitle rows lead with the language — embedded titles are
+            // unreliable (format names, filenames) so a meaningful title
+            // demotes to the detail slot and the language pill is dropped.
+            let pills = track.attributePillLabels(includeLanguage: track.normalizedLanguageCode == nil)
+
             TrackRow(
-                name: track.primaryLabel,
-                attributes: track.attributesLabel,
-                pills: track.attributePillLabels,
+                name: track.languageFirstPrimaryLabel,
+                detail: track.languageFirstDetailLabel,
+                attributes: pills.isEmpty ? nil : pills.joined(separator: " · "),
+                pills: pills,
                 isSelected: isSelected,
                 isDisabled: isDisabled
             ) {
@@ -272,6 +278,8 @@ struct TrackSelectionSheet: View {
 /// gesture rather than a `Button` to avoid the tvOS system focus halo.
 private struct TrackRow: View {
     let name: String
+    /// Meaningful embedded title when the language leads (subtitle rows).
+    var detail: String? = nil
     let attributes: String?
     /// Unused on tvOS (the panel keeps its one-line attribute text) but part
     /// of the shared row-builder call signature.
@@ -282,6 +290,12 @@ private struct TrackRow: View {
 
     @FocusState private var isFocused: Bool
 
+    /// One-line secondary text: detail first, then the attribute summary.
+    private var secondaryText: String? {
+        let combined = [detail, attributes].compactMap { $0 }.joined(separator: " · ")
+        return combined.isEmpty ? nil : combined
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
@@ -290,8 +304,8 @@ private struct TrackRow: View {
                     .foregroundStyle(.white)
                     .lineLimit(1)
 
-                if let attributes {
-                    Text(attributes)
+                if let secondaryText {
+                    Text(secondaryText)
                         .font(.system(size: 18, weight: .regular))
                         .foregroundStyle(.white.opacity(0.55))
                         .lineLimit(1)
@@ -327,9 +341,13 @@ private struct TrackRow: View {
 #else
 /// Track row for iOS/macOS: name plus a row of small metadata pills
 /// (language, layout, codec, SDH/Forced/External flags), trailing checkmark
-/// on the selected track.
+/// on the selected track. Uses `.plain` so text stays label-colored — the
+/// default borderless List button tints every row blue, which reads as a
+/// page of links instead of a picker.
 private struct TrackRow: View {
     let name: String
+    /// Meaningful embedded title when the language leads (subtitle rows).
+    var detail: String? = nil
     let attributes: String?
     var pills: [String] = []
     let isSelected: Bool
@@ -338,10 +356,23 @@ private struct TrackRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(name)
-                        .foregroundStyle(.primary)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    // Name leads; a meaningful embedded title ("Dub (SDH)",
+                    // "Signs & Songs") trails in secondary color.
+                    HStack(spacing: 6) {
+                        Text(name)
+                            .lineLimit(1)
+                            // Sidecar tracks are often named after the media
+                            // file; the interesting part is at both ends.
+                            .truncationMode(.middle)
+                        if let detail {
+                            Text(detail)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
                     if !pills.isEmpty {
                         pillRow
                     } else if let attributes {
@@ -350,7 +381,7 @@ private struct TrackRow: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Spacer()
+                Spacer(minLength: 8)
                 if isSelected {
                     Image(systemName: "checkmark")
                         .fontWeight(.semibold)
@@ -359,20 +390,22 @@ private struct TrackRow: View {
             }
             .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .disabled(isDisabled)
+        .opacity(isDisabled ? 0.4 : 1)
     }
 
     private var pillRow: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 4) {
             ForEach(pills, id: \.self) { pill in
                 Text(pill.uppercased())
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
+                    .padding(.horizontal, 5)
                     .padding(.vertical, 2)
                     .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(Color.primary.opacity(0.08))
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Color.primary.opacity(0.09))
                     )
             }
         }

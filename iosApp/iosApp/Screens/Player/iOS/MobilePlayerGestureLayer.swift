@@ -82,6 +82,13 @@ struct MobilePlayerGestureLayer: View {
             }
         }
         .ignoresSafeArea()
+        .onDisappear {
+            // The layer can be torn out mid-gesture (loading state flips,
+            // player transitions) without a final onPressingChanged(false).
+            viewModel.endHoldFastForward()
+            skipFlashHideTask?.cancel()
+            gaugeHideTask?.cancel()
+        }
     }
 
     // MARK: - Gestures
@@ -93,11 +100,14 @@ struct MobilePlayerGestureLayer: View {
     private func doubleTapGesture(in size: CGSize) -> some Gesture {
         SpatialTapGesture(count: 2).onEnded { value in
             let x = value.location.x
+            // revealingControls: false — the flash below is the feedback;
+            // summoning the overlay would drop its scrim on top of this
+            // layer and swallow the next double-tap.
             if x < size.width * Self.skipZoneFraction {
-                viewModel.skipBackward(10)
+                viewModel.skipBackward(10, revealingControls: false)
                 showSkipFlash(forward: false)
             } else if x > size.width * (1 - Self.skipZoneFraction) {
-                viewModel.skipForward(10)
+                viewModel.skipForward(10, revealingControls: false)
                 showSkipFlash(forward: true)
             } else {
                 viewModel.togglePlayPause()

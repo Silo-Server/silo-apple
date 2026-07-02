@@ -2363,13 +2363,18 @@ class PlayerViewModel {
     /// Touch-and-hold fast forward (iOS). Applies `rate` directly to the
     /// backend without touching `settings.playbackSpeed`, so releasing the
     /// hold restores whatever speed the user had configured. No-op while
-    /// paused — `setSpeed` on a paused AVPlayer would start playback.
+    /// paused — holding 2× on a paused player means nothing (both backends
+    /// only apply rates to an already-running clock, so this is UX, not
+    /// safety).
     func beginHoldFastForward(rate: Double = 2.0) {
         guard !isHoldFastForwarding, isPlaying else { return }
         isHoldFastForwarding = true
         activePlayer.setSpeed(rate)
     }
 
+    /// Always restores the configured speed, even if playback paused during
+    /// the hold: backends don't start a paused clock on `setSpeed`, and
+    /// leaving the hold rate behind would make the next play resume at 2×.
     func endHoldFastForward() {
         guard isHoldFastForwarding else { return }
         isHoldFastForwarding = false
@@ -3504,28 +3509,34 @@ class PlayerViewModel {
         #endif
     }
 
-    /// Skip by ±`seconds` relative to the current preview position. Always
-    /// summons the transport overlay — skip is the kind of interaction the
-    /// user needs visual feedback on, and the scrubber's preview gives
-    /// exactly that.
-    func skipForward(_ seconds: Double = 30) {
+    /// Skip by ±`seconds` relative to the current preview position. By
+    /// default this summons the transport overlay so the scrubber's preview
+    /// gives visual feedback. The iOS double-tap gesture passes
+    /// `revealingControls: false` — it draws its own flash, and popping the
+    /// overlay would put the scrim on top of the gesture layer and eat the
+    /// next double-tap.
+    func skipForward(_ seconds: Double = 30, revealingControls: Bool = true) {
         guard !isBackgroundSuspended else { return }
         guard !hasReachedEndOfFile else { return }
         Self.logger.info(
             "[CMP-SEEK] skip forward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
         )
         queueSkipDebounce(delta: seconds)
-        scheduleHideControls()
+        if revealingControls || showControls {
+            scheduleHideControls()
+        }
     }
 
-    func skipBackward(_ seconds: Double = 10) {
+    func skipBackward(_ seconds: Double = 10, revealingControls: Bool = true) {
         guard !isBackgroundSuspended else { return }
         guard !hasReachedEndOfFile else { return }
         Self.logger.info(
             "[CMP-SEEK] skip backward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
         )
         queueSkipDebounce(delta: -seconds)
-        scheduleHideControls()
+        if revealingControls || showControls {
+            scheduleHideControls()
+        }
     }
 
     func skipIntro() {

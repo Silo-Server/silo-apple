@@ -69,10 +69,47 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
         attributeParts()
     }
 
-    private func attributeParts() -> [String] {
+    /// Pill labels with the language optionally omitted — for rows that
+    /// already surface the language as the primary name.
+    func attributePillLabels(includeLanguage: Bool) -> [String] {
+        attributeParts(includeLanguage: includeLanguage)
+    }
+
+    /// Language-first display name for subtitle pickers. Embedded subtitle
+    /// titles are unreliable (frequently the format name or the media
+    /// filename), so the language leads and the title demotes to
+    /// `languageFirstDetailLabel` when it actually carries meaning.
+    var languageFirstPrimaryLabel: String {
+        if let lang = normalizedLanguageCode {
+            return languageDisplayName(lang)
+        }
+        return primaryLabel
+    }
+
+    /// The embedded title, but only when it says something the language,
+    /// codec, and flags don't already — e.g. "Dub (SDH)" or "Signs & Songs"
+    /// survives; "ASS", "SubRip", or a repeat of the language is dropped.
+    var languageFirstDetailLabel: String? {
+        guard let lang = normalizedLanguageCode else { return nil }
+        guard let title = normalizedTitle else { return nil }
+
+        let lowered = title.lowercased()
+        let formatNames: Set<String> = [
+            "ass", "ssa", "srt", "subrip", "pgs", "sup", "sub",
+            "vtt", "webvtt", "vobsub", "dvdsub", "mov_text",
+        ]
+        if formatNames.contains(lowered) { return nil }
+        if let codec, lowered == codec.lowercased() { return nil }
+        if title.caseInsensitiveCompare(languageDisplayName(lang)) == .orderedSame { return nil }
+        if title.caseInsensitiveCompare(lang) == .orderedSame { return nil }
+        return title
+    }
+
+    private func attributeParts(includeLanguage: Bool = true) -> [String] {
         var parts: [String] = []
 
-        if let lang = normalizedLanguageCode,
+        if includeLanguage,
+           let lang = normalizedLanguageCode,
            let title = normalizedTitle,
            !title.localizedCaseInsensitiveContains(lang) {
             parts.append(languageDisplayName(lang))

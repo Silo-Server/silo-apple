@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Touch-driven overlay used on iOS/iPadOS. Layout (see
 /// docs/ios-player-redesign/mockups.html):
-/// - Top strip: close, title block (series eyebrow + episode title), AirPlay
+/// - Top strip: close, title block (series eyebrow + episode title)
 /// - Center: skip back 10s, play/pause, skip forward 10s
 /// - Bottom stack: time row (elapsed / status chips / remaining), capsule
 ///   scrubber with buffered range + intro tint + chapter ticks + scrub
@@ -59,7 +59,12 @@ struct MobilePlayerControls: View {
                             Spacer()
                             bottomStack
                         }
-                        .padding()
+                        .padding(.horizontal)
+                        .padding(.top)
+                        // Hug the bottom: the safe-area inset already keeps
+                        // the action row clear of the home indicator, so only
+                        // a hairline of extra breathing room is needed.
+                        .padding(.bottom, 2)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                         .animation(.easeOut(duration: 0.18), value: viewModel.isScrubbing)
                     }
@@ -112,11 +117,6 @@ struct MobilePlayerControls: View {
             titleBlock
 
             Spacer(minLength: 12)
-
-            AirPlayRoutePicker()
-                .frame(width: 44, height: 44)
-                .siloGlass(in: Circle())
-                .accessibilityLabel("AirPlay")
         }
     }
 
@@ -124,13 +124,13 @@ struct MobilePlayerControls: View {
         VStack(alignment: .leading, spacing: 1) {
             if let eyebrow = titleEyebrow {
                 Text(eyebrow)
-                    .font(.caption2.weight(.semibold))
+                    .font(.system(size: 10, weight: .semibold))
                     .tracking(0.8)
                     .foregroundStyle(.white.opacity(0.65))
                     .lineLimit(1)
             }
             Text(heroTitle)
-                .font(.subheadline.weight(.semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -165,41 +165,60 @@ struct MobilePlayerControls: View {
 
     // MARK: - Center
 
+    /// Fixed circle sizes keep the three buttons proportioned as a family
+    /// (content-driven glass sizing made the play disc balloon relative to
+    /// the skips). The play/pause disc is white prominent glass with a dark
+    /// glyph rather than accent-tinted.
     private var centerCluster: some View {
-        HStack(spacing: 48) {
+        HStack(spacing: 36) {
             Button {
                 viewModel.skipBackward(10)
             } label: {
                 Image(systemName: "gobackward.10")
-                    .font(.system(size: 32))
+                    .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.white)
+                    .frame(width: 50, height: 50)
             }
             .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("Skip Back 10 Seconds")
 
             Button {
                 viewModel.togglePlayPause()
             } label: {
-                if viewModel.isBuffering {
-                    ProgressView()
-                        .tint(.white)
-                        .scaleEffect(1.5)
-                        .frame(width: 60, height: 60)
-                } else {
-                    Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 48))
-                        .foregroundStyle(.white)
+                Group {
+                    if viewModel.isBuffering {
+                        ProgressView()
+                            .tint(.black.opacity(0.8))
+                    } else {
+                        Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 26, weight: .semibold))
+                            .foregroundStyle(.black.opacity(0.85))
+                            // play.fill reads left-heavy inside a circle;
+                            // nudge it toward the optical center.
+                            .offset(x: viewModel.isPlaying ? 0 : 1.5)
+                    }
                 }
+                .frame(width: 64, height: 64)
             }
             .buttonStyle(.glassProminent)
+            .buttonBorderShape(.circle)
+            .tint(.white.opacity(0.9))
+            .accessibilityLabel(
+                viewModel.isBuffering ? "Buffering" : (viewModel.isPlaying ? "Pause" : "Play")
+            )
 
             Button {
                 viewModel.skipForward(10)
             } label: {
                 Image(systemName: "goforward.10")
-                    .font(.system(size: 32))
+                    .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.white)
+                    .frame(width: 50, height: 50)
             }
             .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("Skip Forward 10 Seconds")
         }
     }
 
@@ -217,7 +236,7 @@ struct MobilePlayerControls: View {
     private var timeRow: some View {
         HStack {
             Text(PlayerTimeFormatter.formatHMS(displayTime))
-                .font(.caption)
+                .font(.caption2)
                 .foregroundStyle(.white.opacity(0.85))
                 .monospacedDigit()
 
@@ -236,7 +255,7 @@ struct MobilePlayerControls: View {
                 showsRemainingTime.toggle()
             } label: {
                 Text(trailingTimeText)
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.white.opacity(0.6))
                     .monospacedDigit()
             }
@@ -280,7 +299,7 @@ struct MobilePlayerControls: View {
             let progress = viewModel.duration > 0
                 ? min(max(displayTime / viewModel.duration, 0), 1)
                 : 0
-            let barHeight: CGFloat = viewModel.isScrubbing ? 14 : 8
+            let barHeight: CGFloat = viewModel.isScrubbing ? 12 : 6
 
             ZStack(alignment: .leading) {
                 // Base track
@@ -306,7 +325,7 @@ struct MobilePlayerControls: View {
                         let fraction = chapter.time / viewModel.duration
                         Capsule()
                             .fill(Color.white.opacity(0.6))
-                            .frame(width: 2, height: barHeight + 6)
+                            .frame(width: 2, height: barHeight + 5)
                             .offset(x: width * min(max(fraction, 0), 1) - 1)
                     }
                 }
@@ -343,6 +362,20 @@ struct MobilePlayerControls: View {
                         )
                         .transition(.opacity)
                         .allowsHitTesting(false)
+                }
+            }
+            // The custom scrubber is drag-only; expose it to VoiceOver as an
+            // adjustable element that seeks through the same skip path.
+            .accessibilityElement()
+            .accessibilityLabel("Playback Position")
+            .accessibilityValue(
+                "\(PlayerTimeFormatter.formatHMS(displayTime)) of \(PlayerTimeFormatter.formatHMS(viewModel.duration))"
+            )
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: viewModel.skipForward(10)
+                case .decrement: viewModel.skipBackward(10)
+                @unknown default: break
                 }
             }
         }
@@ -477,23 +510,23 @@ struct MobilePlayerControls: View {
                 }
             }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 Image(systemName: "gauge.with.dots.needle.67percent")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                 if compact {
                     Text(speedValueText)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                 } else {
                     Text("Speed")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                     Text(speedValueText)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
                         .opacity(0.7)
                 }
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 14)
-            .frame(height: 38)
+            .padding(.horizontal, 12)
+            .frame(height: 34)
         }
         .menuStyle(.button)
 
@@ -549,15 +582,15 @@ struct MobilePlayerControls: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 14)
-            .frame(height: 38)
+            .padding(.horizontal, 12)
+            .frame(height: 34)
         }
         .buttonStyle(.glass)
         .buttonBorderShape(.capsule)
@@ -591,28 +624,36 @@ struct MobilePlayerControls: View {
                     Button {
                         viewModel.skipIntro()
                     } label: {
-                        HStack(spacing: 7) {
+                        HStack(spacing: 6) {
                             Image(systemName: "forward.end.fill")
                             Text("Skip Intro")
                             if let countdown = viewModel.introAutoSkipCountdownSeconds {
                                 Text("· \(countdown)")
-                                    .opacity(0.65)
+                                    .opacity(0.55)
                                     .monospacedDigit()
                             }
                         }
-                        .font(.system(size: 15, weight: .semibold))
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 11)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.black.opacity(0.85))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
                     }
+                    // White prominent glass with a dark glyph, matching the
+                    // play/pause disc — accent-tinted prominent reads as an
+                    // app-colored web button over video.
                     .buttonStyle(.glassProminent)
+                    .tint(.white.opacity(0.9))
                     .accessibilityLabel(
                         viewModel.introAutoSkipCountdownSeconds == nil ? "Skip Intro" : "Skip Intro Now"
                     )
                 }
             }
             .padding(.horizontal, 24)
-            .padding(.bottom, 96)
+            // Clear the bottom stack while the controls are up; hug the
+            // bottom edge when the pill is floating alone.
+            .padding(.bottom, viewModel.showControls ? 88 : 24)
         }
+        .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
         .transition(.opacity)
     }
 
@@ -621,9 +662,9 @@ struct MobilePlayerControls: View {
     private func controlButton(systemName: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 44, height: 44)
+                .frame(width: 40, height: 40)
         }
         // `.circle` keeps each glass control a compact circle instead of the
         // default wider capsule so rows of controls stay dense.
