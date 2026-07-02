@@ -85,6 +85,7 @@ struct ContentView: View {
                 // features stay hidden until a profile switch. Idempotent and
                 // failure-tolerant, so double-calling with `selectProfile` is safe.
                 await AICapabilities.shared.refresh()
+                await RequestsFeatureStore.shared.refresh()
                 #if os(iOS)
                 await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
                 #endif
@@ -127,6 +128,7 @@ struct ContentView: View {
             // natural retry on foreground. `refresh()` is idempotent, so the
             // happy path costs nothing.
             Task { await AICapabilities.shared.refresh() }
+            Task { await RequestsFeatureStore.shared.refresh() }
             #if os(iOS)
             Task {
                 await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
@@ -839,6 +841,12 @@ struct MainTabView: View {
             CollectionDetailView(collectionId: id)
         case .browse(let libraryId):
             BrowseView(libraryId: libraryId)
+        case .requestsHub:
+            RequestsHubView()
+        case .requestDetail(let mediaType, let tmdbId):
+            RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
+        case .myRequests:
+            MyRequestsView()
         case .admin:
             AdminDashboardView()
         case .search:

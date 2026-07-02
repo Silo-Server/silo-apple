@@ -55,7 +55,8 @@ struct TVPlayerInfoHUD: View {
         var tabs: [Tab] = [.info, .stats, .video]
         if !viewModel.audioTracks.isEmpty { tabs.append(.audio) }
         if !viewModel.subtitleTracks.isEmpty
-            || SubtitleTranslateMenu.hasActionableSource(viewModel) {
+            || SubtitleTranslateMenu.hasActionableSource(viewModel)
+            || viewModel.subtitleSearchAvailable {
             tabs.append(.subtitles)
         }
         if !viewModel.chapters.isEmpty { tabs.append(.chapters) }
@@ -1436,14 +1437,16 @@ private struct SubtitlesPane: View {
 
     @State private var showAppearanceDialog = false
     @State private var showAITranslateMenu = false
+    @State private var showSubtitleSearchMenu = false
     @State private var activePicker: HUDPickerPresentation?
     @State private var pickerReturnField: Option?
     @FocusState private var focusedOption: Option?
 
     /// Identity for the options-column rows, used only to restore focus when
-    /// a picker dialog, the appearance dialog, or the AI menu closes.
+    /// a picker dialog, the appearance dialog, or the AI/search menu closes.
     private enum Option: Hashable {
         case translate
+        case search
         case delay
         case size
         case position
@@ -1452,6 +1455,7 @@ private struct SubtitlesPane: View {
 
     private var overlayActive: Bool {
         showAppearanceDialog || activePicker != nil || showAITranslateMenu
+            || showSubtitleSearchMenu
     }
 
     var body: some View {
@@ -1501,15 +1505,37 @@ private struct SubtitlesPane: View {
                 )
                 .transition(.opacity)
             }
+
+            // Provider subtitle search — same modal-overlay idiom as the AI
+            // menu above.
+            if showSubtitleSearchMenu {
+                SubtitleSearchMenu(
+                    viewModel: viewModel,
+                    onDismiss: closeSubtitleSearchMenu,
+                    // Download succeeded (track registered + selected): close
+                    // the menu AND the HUD so the player is visible.
+                    onDownloaded: {
+                        closeSubtitleSearchMenu()
+                        onCloseHUD()
+                    }
+                )
+                .transition(.opacity)
+            }
         }
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showAppearanceDialog)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: activePicker?.id)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showAITranslateMenu)
+        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSubtitleSearchMenu)
     }
 
     private func closeAITranslateMenu() {
         showAITranslateMenu = false
         focusedOption = .translate
+    }
+
+    private func closeSubtitleSearchMenu() {
+        showSubtitleSearchMenu = false
+        focusedOption = .search
     }
 
     /// Whether the server's AI capabilities + the current track list offer any
@@ -1625,6 +1651,16 @@ private struct SubtitlesPane: View {
                     showAITranslateMenu = true
                 }
                 .focused($focusedOption, equals: .translate)
+            }
+            if viewModel.subtitleSearchAvailable {
+                HUDSettingRow(
+                    label: "Search Subtitles…",
+                    value: "",
+                    systemImage: "magnifyingglass"
+                ) {
+                    showSubtitleSearchMenu = true
+                }
+                .focused($focusedOption, equals: .search)
             }
             if viewModel.backendCapabilities.supportsSubtitleDelay {
                 HUDSettingRow(label: "Delay", value: delayText) {

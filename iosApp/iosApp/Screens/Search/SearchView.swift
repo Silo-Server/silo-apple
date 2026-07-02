@@ -3,6 +3,7 @@ import SwiftUI
 /// Full-screen search with debounced query and grid results — Plezy style.
 struct SearchView: View {
     @State private var viewModel = SearchViewModel()
+    @State private var requestsViewModel = RequestSearchSectionViewModel()
     @State private var navPrefs = AppNavPreferences.shared
     @Environment(AppRouter.self) private var router
     #if os(iOS)
@@ -34,6 +35,11 @@ struct SearchView: View {
                 }
 
                 content
+
+                // TMDB titles the library can't answer — the request
+                // system's organic entry point. Renders nothing when the
+                // server has requests disabled.
+                RequestSearchSectionView(viewModel: requestsViewModel)
             }
             .padding(.horizontal, ContinuumTheme.padding)
             #if os(tvOS)
@@ -62,6 +68,7 @@ struct SearchView: View {
         #endif
         .onChange(of: viewModel.query) { _, _ in
             viewModel.onQueryChanged()
+            requestsViewModel.onQueryChanged(viewModel.query)
         }
         .onChange(of: viewModel.selectedMediaType) { _, _ in
             Task { await viewModel.applyMediaType() }

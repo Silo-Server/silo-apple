@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Silo Requests — iOS &amp; tvOS UX Concepts</title>
+<style>
+  :root {
+    --bg: #000000;
+    --surface: #0A0A0A;
+    --elevated: #15171C;
+    --text: #EDEDED;
+    --text2: rgba(237,237,237,.6);
+    --text3: rgba(237,237,237,.38);
+    --hairline: rgba(255,255,255,.12);
+    --chip-bg: rgba(255,255,255,.07);
+    --amber: #FFC107;
+    --emerald: #34D399;
+    --sky: #38BDF8;
+    --rose: #FB7185;
+    --page-bg: #060607;
+    --r-sm: 8px; --r-md: 12px; --r-lg: 18px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--page-bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 56px 40px 120px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  /* ---------- page chrome ---------- */
+  .eyebrow {
+    font-size: 12px; font-weight: 700; letter-spacing: .3em; text-transform: uppercase;
+    color: var(--text3); display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow::before { content: ""; width: 26px; height: 3px; border-radius: 2px; background: rgba(255,255,255,.85); }
+  h1 { font-size: 44px; font-weight: 800; letter-spacing: -.02em; margin: 14px 0 10px; }
+  .lede { font-size: 17px; line-height: 1.6; color: var(--text2); max-width: 720px; }
+  h2 { font-size: 26px; font-weight: 800; letter-spacing: -.01em; margin: 90px 0 6px; }
+  h2 .num { color: var(--text3); font-variant-numeric: tabular-nums; margin-right: 10px; }
+  .sub { font-size: 15px; line-height: 1.6; color: var(--text2); max-width: 760px; margin-bottom: 34px; }
+  .sub strong { color: var(--text); font-weight: 600; }
+
+  .insight {
+    border: 1px solid var(--hairline); border-radius: var(--r-lg);
+    background: var(--surface); padding: 26px 30px; margin: 36px 0 0;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px;
+  }
+  .insight h3 { font-size: 13px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; color: var(--text3); margin-bottom: 10px; }
+  .insight p { font-size: 14px; line-height: 1.55; color: var(--text2); }
+  .insight p b { color: var(--text); font-weight: 600; }
+
+  .gallery { display: flex; flex-wrap: wrap; gap: 44px; align-items: flex-start; }
+  .frame-block { display: flex; flex-direction: column; gap: 14px; }
+  .caption { max-width: 400px; font-size: 13.5px; line-height: 1.55; color: var(--text2); }
+  .caption b { color: var(--text); font-weight: 600; }
+  .caption .tag {
+    display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--text3); border: 1px solid var(--hairline); border-radius: 99px; padding: 3px 9px; margin-bottom: 8px;
+  }
+
+  /* ---------- phone frame ---------- */
+  .phone {
+    width: 393px; border-radius: 46px; background: #101012;
+    padding: 10px; box-shadow: 0 30px 80px rgba(0,0,0,.6), inset 0 0 0 1px rgba(255,255,255,.09);
+    flex-shrink: 0;
+  }
+  .phone .screen {
+    border-radius: 38px; background: var(--bg); overflow: hidden; position: relative;
+    min-height: 740px; display: flex; flex-direction: column;
+  }
+  .statusbar {
+    height: 48px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 30px; font-size: 14px; font-weight: 600; flex-shrink: 0;
+  }
+  .statusbar .pill { width: 108px; height: 30px; border-radius: 99px; background: #0c0c0e; margin: 0 auto; position: absolute; left: 50%; transform: translateX(-50%); top: 10px; }
+  .statusbar .right { display: flex; gap: 6px; align-items: center; font-size: 12px; letter-spacing: .04em; color: var(--text2); }
+
+  .p-body { padding: 6px 18px 0; flex: 1; display: flex; flex-direction: column; gap: 18px; overflow: hidden; }
+  .p-titlerow { display: flex; align-items: center; justify-content: space-between; }
+  .p-title { font-size: 30px; font-weight: 800; letter-spacing: -.02em; }
+  .p-title-actions { display: flex; gap: 14px; align-items: center; }
+  .icon-btn {
+    width: 36px; height: 36px; border-radius: 50%; background: var(--chip-bg);
+    display: flex; align-items: center; justify-content: center; font-size: 15px; color: var(--text);
+  }
+  .avatar { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg,#5b6ee1,#8b5cf6); display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; }
+
+  .searchfield {
+    height: 42px; border-radius: 13px; background: var(--chip-bg);
+    display: flex; align-items: center; gap: 9px; padding: 0 14px;
+    font-size: 15.5px; color: var(--text);
+  }
+  .searchfield .mag { color: var(--text3); font-size: 15px; }
+  .searchfield.placeholder { color: var(--text3); }
+  .searchfield .cursor { width: 2px; height: 20px; background: var(--sky); border-radius: 1px; }
+
+  .chiprow { display: flex; gap: 8px; }
+  .chip {
+    font-size: 13px; font-weight: 600; padding: 7px 15px; border-radius: 99px;
+    background: var(--chip-bg); color: var(--text2); border: 1px solid rgba(255,255,255,.09);
+  }
+  .chip.on { background: #fff; color: #000; border-color: #fff; }
+
+  .sec-h { display: flex; align-items: baseline; justify-content: space-between; }
+  .sec-h .t { font-size: 18px; font-weight: 700; letter-spacing: -.01em; }
+  .sec-h .t .cnt { font-size: 12px; color: var(--text3); font-weight: 500; margin-left: 7px; letter-spacing: .06em; }
+  .sec-h .more { font-size: 13px; color: var(--text2); font-weight: 600; }
+  .sec-note { font-size: 12px; color: var(--text3); margin-top: -12px; }
+
+  .posterrow { display: flex; gap: 12px; }
+  .pcard { display: flex; flex-direction: column; gap: 7px; width: 108px; flex-shrink: 0; }
+  .pcard.wide { width: 112px; }
+  .poster {
+    width: 100%; aspect-ratio: 2/3; border-radius: var(--r-md); position: relative; overflow: hidden;
+    display: flex; align-items: flex-end; padding: 9px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+  }
+  .poster .ptitle { font-size: 11px; font-weight: 700; line-height: 1.25; text-shadow: 0 1px 8px rgba(0,0,0,.8); }
+  .pcard .meta { font-size: 11px; color: var(--text3); font-weight: 500; padding: 0 2px; }
+
+  /* poster art */
+  .art1 { background: linear-gradient(160deg,#3d2c17 0%,#191008 60%,#0a0705 100%); }
+  .art2 { background: linear-gradient(160deg,#12303c 0%,#0a1a24 55%,#05090d 100%); }
+  .art3 { background: linear-gradient(160deg,#3a1a2e 0%,#1c0d19 55%,#0b060d 100%); }
+  .art4 { background: linear-gradient(160deg,#1c3a24 0%,#0e1f14 55%,#060d08 100%); }
+  .art5 { background: linear-gradient(160deg,#33262e 0%,#141017 60%,#08060a 100%); }
+  .art6 { background: linear-gradient(160deg,#20344f 0%,#101b2c 55%,#070b12 100%); }
+  .art7 { background: linear-gradient(160deg,#43301a 0%,#241a0e 55%,#0e0a06 100%); }
+  .art8 { background: linear-gradient(160deg,#233a3a 0%,#122020 55%,#080e0e 100%); }
+
+  /* status ribbons + chips */
+  .ribbon {
+    position: absolute; top: 8px; right: 8px; font-size: 9px; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase; padding: 4px 8px; border-radius: 99px;
+    background: rgba(0,0,0,.62); backdrop-filter: blur(6px);
+    display: flex; align-items: center; gap: 5px; color: var(--text);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.14);
+  }
+  .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .dot.amber { background: var(--amber); box-shadow: 0 0 7px rgba(255,193,7,.7); }
+  .dot.sky { background: var(--sky); box-shadow: 0 0 7px rgba(56,189,248,.7); }
+  .dot.emerald { background: var(--emerald); box-shadow: 0 0 7px rgba(52,211,153,.7); }
+  .dot.rose { background: var(--rose); box-shadow: 0 0 7px rgba(251,113,133,.7); }
+  .dot.dim { background: rgba(255,255,255,.4); }
+
+  .req-pill {
+    position: absolute; bottom: 8px; left: 8px; right: 8px;
+    background: rgba(255,255,255,.95); color: #000; border-radius: 99px;
+    font-size: 10.5px; font-weight: 700; padding: 6px 0; text-align: center; letter-spacing: .02em;
+  }
+  .req-pill.ghost { background: rgba(0,0,0,.55); color: var(--text2); box-shadow: inset 0 0 0 1px rgba(255,255,255,.16); backdrop-filter: blur(6px); }
+
+  .statuschip {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 99px;
+    background: var(--chip-bg); box-shadow: inset 0 0 0 1px rgba(255,255,255,.1);
+  }
+
+  /* request list rows (My Requests) */
+  .reqrow {
+    display: flex; gap: 13px; align-items: center;
+    background: var(--surface); border-radius: var(--r-lg); padding: 11px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.07);
+  }
+  .reqrow .thumb { width: 46px; aspect-ratio: 2/3; border-radius: 8px; flex-shrink: 0; box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); }
+  .reqrow .info { flex: 1; min-width: 0; }
+  .reqrow .rt { font-size: 14.5px; font-weight: 650; }
+  .reqrow .rm { font-size: 11.5px; color: var(--text3); margin-top: 3px; }
+  .reqrow .trail { text-align: right; flex-shrink: 0; }
+  .progressline { height: 3px; border-radius: 2px; background: rgba(255,255,255,.1); margin-top: 7px; overflow: hidden; }
+  .progressline i { display: block; height: 100%; border-radius: 2px; background: var(--sky); }
+
+  .swipe-cancel {
+    position: relative; overflow: hidden; border-radius: var(--r-lg);
+  }
+  .swipe-cancel .under {
+    position: absolute; inset: 0; background: #3d1218; display: flex; align-items: center; justify-content: flex-end;
+    padding-right: 20px; font-size: 12px; font-weight: 700; color: #ffb4be; letter-spacing: .05em;
+  }
+  .swipe-cancel .reqrow { position: relative; transform: translateX(-84px); }
+
+  /* iOS tab bar */
+  .tabbar {
+    margin-top: auto; flex-shrink: 0; display: flex; justify-content: space-around; align-items: center;
+    padding: 12px 10px 26px; border-top: 1px solid rgba(255,255,255,.06);
+    background: rgba(10,10,12,.9); backdrop-filter: blur(20px);
+  }
+  .tab { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 10px; color: var(--text3); font-weight: 600; }
+  .tab .g { font-size: 20px; }
+  .tab.on { color: var(--text); }
+
+  /* iOS detail screen */
+  .hero { position: relative; height: 218px; flex-shrink: 0; margin: -6px -18px 0; }
+  .hero .bg { position: absolute; inset: 0; }
+  .hero .fade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,.15) 0%, rgba(0,0,0,.5) 60%, #000 100%); }
+  .hero .backbtn { position: absolute; top: 14px; left: 18px; }
+  .detailhead { display: flex; gap: 15px; margin-top: -66px; position: relative; z-index: 2; align-items: flex-end; }
+  .detailhead .poster { width: 108px; flex-shrink: 0; box-shadow: 0 12px 32px rgba(0,0,0,.6), inset 0 0 0 1px rgba(255,255,255,.1); }
+  .detailhead .dt { font-size: 23px; font-weight: 800; letter-spacing: -.02em; line-height: 1.08; }
+  .detailhead .dm { font-size: 12.5px; color: var(--text2); margin-top: 7px; line-height: 1.5; }
+  .badges { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .badge { font-size: 9.5px; font-weight: 700; letter-spacing: .08em; padding: 3px 7px; border-radius: 5px; background: var(--chip-bg); color: var(--text2); box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); }
+  .cta {
+    height: 50px; border-radius: 15px; background: #fff; color: #000;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    font-size: 16px; font-weight: 750;
+  }
+  .cta .plus { font-size: 19px; font-weight: 800; margin-top: -2px; }
+  .cta-note { text-align: center; font-size: 11.5px; color: var(--text3); margin-top: -8px; }
+  .overview { font-size: 13.5px; line-height: 1.6; color: var(--text2); }
+
+  /* variant strip */
+  .variants {
+    display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px;
+    padding: 18px; border: 1px dashed rgba(255,255,255,.14); border-radius: var(--r-lg); background: var(--surface);
+    max-width: 400px;
+  }
+  .variants .vlab { width: 100%; font-size: 10.5px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--text3); margin-bottom: 2px; }
+
+  /* menu mock */
+  .menupop {
+    width: 250px; background: rgba(28,29,34,.98); border-radius: 16px; padding: 7px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.7), inset 0 0 0 1px rgba(255,255,255,.09);
+    position: absolute; top: 96px; right: 16px; z-index: 30;
+  }
+  .menupop .mi { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; font-size: 15px; font-weight: 500; border-radius: 10px; }
+  .menupop .mi .g { color: var(--text2); font-size: 15px; }
+  .menupop .mi.hl { background: rgba(255,255,255,.1); }
+  .menupop .div { height: 1px; background: rgba(255,255,255,.08); margin: 6px 4px; }
+  .menupop .mi.danger { color: #ff6b6b; }
+  .dimmed { opacity: .34; filter: saturate(.7); }
+
+  /* ---------- TV frame ---------- */
+  .tv {
+    width: 100%; max-width: 1080px; aspect-ratio: 16/9; border-radius: 18px; background: var(--bg);
+    overflow: hidden; position: relative; flex-shrink: 0;
+    box-shadow: 0 30px 90px rgba(0,0,0,.65), inset 0 0 0 1px rgba(255,255,255,.09);
+    container-type: inline-size;
+  }
+  .tv-inner { position: absolute; inset: 0; padding: 3.2% 4.6% 0; display: flex; flex-direction: column; }
+  .tv-topbar { display: flex; align-items: center; gap: 2.4%; flex-shrink: 0; }
+  .tv-wordmark { font-size: 15px; font-weight: 800; letter-spacing: .34em; }
+  .tv-tabs { display: flex; gap: 6px; margin: 0 auto; }
+  .tv-tab { font-size: 12.5px; font-weight: 600; color: rgba(237,237,237,.62); padding: 7px 15px; border-radius: 99px; }
+  .tv-tab.sel { background: rgba(255,255,255,.14); color: #fff; box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); }
+  .tv-tab.foc { background: #fff; color: #000; }
+  .tv-right { display: flex; gap: 12px; align-items: center; }
+  .tv-iconbtn { width: 30px; height: 30px; border-radius: 50%; background: var(--chip-bg); display:flex; align-items:center; justify-content:center; font-size: 13px; }
+  .tv-avatar { width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg,#5b6ee1,#8b5cf6); display:flex; align-items:center; justify-content:center; font-size: 12px; font-weight: 700; }
+
+  .tv-row-title { font-size: 16px; font-weight: 700; display: flex; align-items: baseline; gap: 9px; }
+  .tv-row-title .cnt { font-size: 10.5px; color: var(--text3); font-weight: 500; letter-spacing: .06em; }
+  .tv-cards { display: flex; gap: 13px; margin-top: 10px; }
+  .tv-pcard { width: 108px; flex-shrink: 0; }
+  .tv-pcard .poster { border-radius: 10px; }
+  .tv-pcard .meta { font-size: 10px; color: var(--text3); margin-top: 6px; padding: 0 2px; font-weight: 500; }
+  .tv-pcard.focused .poster { transform: scale(1.06); box-shadow: 0 0 0 2px #fff, 0 16px 40px rgba(0,0,0,.7); }
+  .tv-pcard.focused .meta { color: var(--text2); }
+
+  .tv-marquee { padding: 2.4% 0 1.8%; max-width: 58%; }
+  .tv-marquee .eyebrow { font-size: 9.5px; letter-spacing: .3em; }
+  .tv-marquee .mtitle { font-size: 34px; font-weight: 800; letter-spacing: -.015em; line-height: 1.02; margin: 8px 0 7px; }
+  .tv-marquee .mmeta { font-size: 11px; color: var(--text2); font-weight: 500; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .tv-marquee .msyn { font-size: 11.5px; line-height: 1.5; color: var(--text2); margin-top: 9px; max-width: 92%; }
+
+  .tv-backdrop { position: absolute; inset: 0; z-index: 0; }
+  .tv-backdrop .fade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,.34) 0%, rgba(0,0,0,.72) 46%, #000 88%), linear-gradient(90deg, rgba(0,0,0,.6) 0%, rgba(0,0,0,.15) 60%); }
+  .tv-inner.overbg { position: relative; z-index: 1; }
+
+  .tv-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 12px; font-weight: 700; padding: 10px 22px; border-radius: 99px;
+    background: var(--chip-bg); color: var(--text); box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
+  }
+  .tv-pill.primary-foc { background: #fff; color: #000; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+  .tv-actionrow { display: flex; gap: 11px; margin-top: 16px; align-items: center; }
+  .tv-hint { font-size: 10px; color: var(--text3); letter-spacing: .05em; }
+
+  .tv-searchfield {
+    height: 40px; border-radius: 11px; background: var(--chip-bg); box-shadow: inset 0 0 0 1px rgba(255,255,255,.1);
+    display: flex; align-items: center; gap: 10px; padding: 0 15px; font-size: 14px; max-width: 46%;
+  }
+
+  /* status table */
+  table.status { border-collapse: collapse; width: 100%; margin-top: 26px; }
+  table.status th {
+    text-align: left; font-size: 11px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--text3); padding: 0 18px 12px 0; border-bottom: 1px solid var(--hairline);
+  }
+  table.status td { padding: 13px 18px 13px 0; border-bottom: 1px solid rgba(255,255,255,.06); font-size: 13.5px; color: var(--text2); vertical-align: middle; }
+  table.status td:first-child { color: var(--text); font-weight: 600; white-space: nowrap; }
+
+  .foot { margin-top: 100px; font-size: 12px; color: var(--text3); border-top: 1px solid var(--hairline); padding-top: 22px; }
+  @media (max-width: 900px) { .insight { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">Silo · Apple Clients · Concept</div>
+  <h1>Requests on iPhone &amp; Apple&nbsp;TV</h1>
+  <p class="lede">
+    Bringing the server's media-request system to iOS and tvOS. The web app already ships a full
+    Discover / Yours hub; Android shipped phone + TV clients. These mockups adapt the same
+    one-tap contract to each Apple surface, following how people actually use requests.
+  </p>
+
+  <div class="insight">
+    <div>
+      <h3>Job 1 · Capture the impulse</h3>
+      <p>“Someone just mentioned a movie.” This happens <b>on the phone</b>, and the user's first instinct
+      is to search the library. The request affordance must live <b>inside search</b> — the moment the library
+      comes up empty is the moment the request happens, with the query already typed.</p>
+    </div>
+    <div>
+      <h3>Job 2 · Fill the gap on the couch</h3>
+      <p>“Nothing to watch → I looked for it → it's not here.” On the TV the same rule applies, but typing is
+      expensive — so the <b>existing Search screen</b> does double duty. A separate hub that makes you re-type
+      the title would be the failure mode.</p>
+    </div>
+    <div>
+      <h3>Job 3 · Track the pipeline</h3>
+      <p>“Where's my movie?” — checked like a package tracker, mostly <b>on the phone</b>, occasionally on TV.
+      Needs a findable home (hub + My Requests), glanceable status language, and a straight jump into the
+      library the moment a request lands.</p>
+    </div>
+  </div>
+
+  <!-- ================================================================ -->
+  <h2><span class="num">01</span>iPhone — request from search</h2>
+  <p class="sub">
+    The primary entry point. Library results render first, exactly as today. When the library can't fully answer
+    the query, an <strong>“Available to request”</strong> section appears below with TMDB matches — the same inline
+    weave the web app uses in <code>⌘K</code> search. Every card carries server-computed state, so a user can never
+    double-request: requestable cards get the white pill, everything else shows why not.
+  </p>
+
+  <div class="gallery">
+    <div class="frame-block">
+      <div class="phone"><div class="screen">
+        <div class="statusbar"><span>9:41</span><span class="pill"></span><span class="right">􀙇 􀋂 􀛨</span></div>
+        <div class="p-body">
+          <div class="searchfield"><span class="mag">􀊫</span>dune<span class="cursor"></span></div>
+          <div class="chiprow"><span class="chip on">All</span><span class="chip">Movies</span><span class="chip">Series</span></div>
+
+          <div class="sec-h"><span class="t">In your library <span class="cnt">2</span></span></div>
+          <div class="posterrow">
+            <div class="pcard"><div class="poster art1"><span class="ptitle">Dune</span></div><div class="meta">2021 · Movie</div></div>
+            <div class="pcard"><div class="poster art7"><span class="ptitle">Dune: Part Two</span></div><div class="meta">2024 · Movie</div></div>
+          </div>
+
+          <div class="sec-h"><span class="t">✦ Available to request</span></div>
+          <p class="sec-note">Not in the library yet · matched on TMDB</p>
+          <div class="posterrow">
+            <div class="pcard">
+              <div class="poster art2">
+                <span class="ptitle">Dune: Part Three</span>
+                <div class="req-pill">＋ Request</div>
+              </div><div class="meta">2026 · Movie</div>
+            </div>
+            <div class="pcard">
+              <div class="poster art3">
+                <div class="ribbon"><span class="dot amber"></span>Pending</div>
+                <span class="ptitle">Dune: Prophecy</span>
+              </div><div class="meta">2024 · Series</div>
+            </div>
+            <div class="pcard">
+              <div class="poster art5">
+                <span class="ptitle">Jodorowsky's Dune</span>
+                <div class="req-pill">＋ Request</div>
+              </div><div class="meta">2013 · Movie</div>
+            </div>
+          </div>
+
+          <div class="tabbar">
+            <div class="tab on"><span class="g">􀎞</span>Home</div>
+            <div class="tab"><span class="g">􀐩</span>Libraries</div>
+            <div class="tab"><span class="g">􀋂</span>For You</div>
+            <div class="tab"><span class="g">􀉉</span>Calendar</div>
+          </div>
+        </div>
+      </div></div>
+      <p class="caption"><span class="tag">iOS · Search</span>
+      <b>Zero extra navigation.</b> The query is already typed; the request section only appears when the
+      library answer is thin (or on the explicit “not finding it?” affordance). Tapping the poster opens the
+      request detail page; tapping <b>＋ Request</b> submits in place — the pill morphs into a Pending ribbon.</p>
+    </div>
+  </div>
+
+  <!-- ================================================================ -->
+  <h2><span class="num">02</span>iPhone — the Requests hub</h2>
+  <p class="sub">
+    The deliberate destination for browsing and tracking. Search-first (it's the number-one action),
+    your active requests one row down so status is glanceable without another hop, then TMDB discovery
+    rows for the “what should I wish for” mood. Trimmed from the web version: no studio/network/genre
+    brand-browse in v1.
+  </p>
+
+  <div class="gallery">
+    <div class="frame-block">
+      <div class="phone"><div class="screen">
+        <div class="statusbar"><span>9:41</span><span class="pill"></span><span class="right">􀙇 􀋂 􀛨</span></div>
+        <div class="p-body">
+          <div class="p-titlerow">
+            <span class="p-title">Requests</span>
+            <div class="p-title-actions"><span class="statuschip"><span class="dot amber"></span>3 active</span></div>
+          </div>
+          <div class="searchfield placeholder"><span class="mag">􀊫</span>Search movies &amp; series to request</div>
+
+          <div class="sec-h"><span class="t">Your requests</span><span class="more">See all ›</span></div>
+          <div class="posterrow">
+            <div class="pcard"><div class="poster art3"><div class="ribbon"><span class="dot amber"></span>Pending</div><span class="ptitle">Dune: Prophecy</span></div></div>
+            <div class="pcard"><div class="poster art6"><div class="ribbon"><span class="dot sky"></span>Downloading</div><span class="ptitle">The Odyssey</span></div></div>
+            <div class="pcard"><div class="poster art4"><div class="ribbon"><span class="dot emerald"></span>In library</div><span class="ptitle">Sinners</span></div></div>
+            <div class="pcard"><div class="poster art8"><div class="ribbon"><span class="dot rose"></span>Declined</div><span class="ptitle">Project Hail M…</span></div></div>
+          </div>
+
+          <div class="sec-h"><span class="t">Trending now</span></div>
+          <div class="posterrow">
+            <div class="pcard"><div class="poster art2"><span class="ptitle">Dune: Part Three</span><div class="req-pill">＋ Request</div></div></div>
+            <div class="pcard"><div class="poster art5"><div class="ribbon">In library</div><span class="ptitle">Weapons</span></div></div>
+            <div class="pcard"><div class="poster art7"><span class="ptitle">Hamnet</span><div class="req-pill">＋ Request</div></div></div>
+            <div class="pcard"><div class="poster art1"><span class="ptitle">Bugonia</span><div class="req-pill">＋ Request</div></div></div>
+          </div>
+
+          <div class="sec-h"><span class="t">Crowd favorites</span></div>
+          <div class="posterrow">
+            <div class="pcard"><div class="poster art6"><span class="ptitle">Frankenstein</span><div class="req-pill">＋ Request</div></div></div>
+            <div class="pcard"><div class="poster art8"><span class="ptitle">Marty Supreme</span><div class="req-pill">＋ Request</div></div></div>
+            <div class="pcard"><div class="poster art4"><div class="ribbon"><span class="dot amber"></span>Pending</div><span class="ptitle">Wake Up Dead…</span></div></div>
+          </div>
+
+          <div class="tabbar">
+            <div class="tab"><span class="g">􀎞</span>Home</div>
+            <div class="tab"><span class="g">􀐩</span>Libraries</div>
+            <div class="tab"><span class="g">􀋂</span>For You</div>
+            <div class="tab"><span class="g">􀉉</span>Calendar</div>
+          </div>
+        </div>
+      </div></div>
+      <p class="caption"><span class="tag">iOS · Requests hub</span>
+      <b>Status is above the fold.</b> The “Your requests” strip means the most common
+      revisit (“any movement?”) is answered in one glance; “See all” pushes the full My Requests queue.
+      Discovery rows reuse the trending/crowd-favorites endpoints the web hub already calls.</p>
+    </div>
+
+    <div class="frame-block">
+      <div class="phone"><div class="screen">
+        <div class="statusbar"><span>9:41</span><span class="pill"></span><span class="right">􀙇 􀋂 􀛨</span></div>
+        <div class="p-body" style="position:relative">
+          <div class="p-titlerow dimmed">
+            <span class="p-title">Home</span>
+            <div class="p-title-actions"><div class="icon-btn">􀊫</div><div class="avatar">N</div></div>
+          </div>
+          <div class="menupop">
+            <div class="mi"><span>Favorites</span><span class="g">􀊵</span></div>
+            <div class="mi"><span>Watchlist</span><span class="g">􀉚</span></div>
+            <div class="mi hl"><span>Requests</span><span class="g">✦</span></div>
+            <div class="div"></div>
+            <div class="mi"><span>Settings</span><span class="g">􀣋</span></div>
+            <div class="mi"><span>Switch Profile</span><span class="g">􀉬</span></div>
+            <div class="mi"><span>Switch Server</span><span class="g">􀪫</span></div>
+            <div class="div"></div>
+            <div class="mi danger"><span>Sign Out</span><span class="g">􀱍</span></div>
+          </div>
+          <div class="dimmed">
+            <div class="posterrow" style="margin-top:56px">
+              <div class="pcard wide"><div class="poster art1"></div></div>
+              <div class="pcard wide"><div class="poster art2"></div></div>
+              <div class="pcard wide"><div class="poster art4"></div></div>
+            </div>
+            <div class="posterrow" style="margin-top:16px">
+              <div class="pcard wide"><div class="poster art6"></div></div>
+              <div class="pcard wide"><div class="poster art5"></div></div>
+              <div class="pcard wide"><div class="poster art7"></div></div>
+            </div>
+          </div>
+          <div class="tabbar" style="position:absolute;left:0;right:0;bottom:0">
+            <div class="tab on"><span class="g">􀎞</span>Home</div>
+            <div class="tab"><span class="g">􀐩</span>Libraries</div>
+            <div class="tab"><span class="g">􀋂</span>For You</div>
+            <div class="tab"><span class="g">􀉉</span>Calendar</div>
+          </div>
+        </div>
+      </div></div>
+      <p class="caption"><span class="tag">iOS · Entry point</span>
+      <b>Profile menu, not a fifth tab</b> — the same call Android made. The tab bar stays a pure
+      consumption surface (Home / Libraries / For You / Calendar, + Downloads when enabled); Requests joins
+      the personal-shelf cluster in the avatar menu. The whole feature is hidden unless the server reports
+      <code>requests_enabled</code>. <i>Alternative if discoverability worries you: a conditional tab à la
+      Downloads — flagged as an open question below.</i></p>
+    </div>
+  </div>
+
+  <!-- ================================================================ -->
+  <h2><span class="num">03</span>iPhone — request detail &amp; My Requests</h2>
+  <p class="sub">
+    A request detail page that reads like a real title page, not a form — backdrop, poster, meta, synopsis —
+    with exactly <strong>one</strong> primary action computed from server state. No confirmation dialog:
+    the button itself is the confirmation, and it morphs into the status pill on success (matching web + Android).
+  </p>
+
+  <div class="gallery">
+    <div class="frame-block">
+      <div class="phone"><div class="screen">
+        <div class="statusbar" style="position:relative;z-index:3"><span>9:41</span><span class="pill"></span><span class="right">􀙇 􀋂 􀛨</span></div>
+        <div class="p-body">
+          <div class="hero">
+            <div class="bg art2"></div>
+            <div class="fade"></div>
+            <div class="backbtn icon-btn">‹</div>
+          </div>
+          <div class="detailhead">
+            <div class="poster art2"><span class="ptitle" style="font-size:12px">Dune: Part Three</span></div>
+            <div>
+              <div class="dt">Dune: Part Three</div>
+              <div class="dm">2026 · Movie · Sci-Fi, Adventure<br>Denis Villeneuve</div>
+              <div class="badges"><span class="badge">TMDB 8.1</span><span class="badge">PG-13</span><span class="badge">NOT IN LIBRARY</span></div>
+            </div>
+          </div>
+          <div class="cta"><span class="plus">＋</span> Request Movie</div>
+          <p class="cta-note">Requests are reviewed by your server admin</p>
+          <p class="overview">The final chapter of Villeneuve's trilogy. Paul Atreides reigns as Emperor
+          while the consequences of his ascension ripple across the Imperium…</p>
+          <div class="sec-h"><span class="t">More like this</span></div>
+          <div class="posterrow">
+            <div class="pcard"><div class="poster art1"><div class="ribbon">In library</div></div></div>
+            <div class="pcard"><div class="poster art6"><div class="req-pill">＋ Request</div></div></div>
+            <div class="pcard"><div class="poster art8"><div class="req-pill">＋ Request</div></div></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="variants">
+        <span class="vlab">Primary-action states (server-computed)</span>
+        <span class="statuschip" style="background:#fff;color:#000">＋ Request Movie</span>
+        <span class="statuschip"><span class="dot amber"></span>Pending approval</span>
+        <span class="statuschip"><span class="dot sky"></span>Downloading</span>
+        <span class="statuschip"><span class="dot emerald"></span>In your library → Open</span>
+        <span class="statuschip"><span class="dot rose"></span>Declined — “4K space”</span>
+        <span class="statuschip"><span class="dot dim"></span>Request limit reached</span>
+      </div>
+      <p class="caption"><span class="tag">iOS · Request detail</span>
+      <b>One button, many states.</b> Requestable → white CTA. Already yours → status pill (with the admin's
+      decline reason when there is one). Already in the library → “Open” jumps straight to the real item via
+      <code>library_content_id</code>. Recommendations keep the loop going — each card is requestable inline.</p>
+    </div>
+
+    <div class="frame-block">
+      <div class="phone"><div class="screen">
+        <div class="statusbar"><span>9:41</span><span class="pill"></span><span class="right">􀙇 􀋂 􀛨</span></div>
+        <div class="p-body">
+          <div class="p-titlerow">
+            <div style="display:flex;align-items:center;gap:10px"><div class="icon-btn">‹</div><span class="p-title" style="font-size:24px">My Requests</span></div>
+            <span class="statuschip" style="font-size:11px">This month: 3 of 10</span>
+          </div>
+
+          <div class="sec-h"><span class="t">In motion <span class="cnt">2</span></span></div>
+          <div class="swipe-cancel">
+            <div class="under">CANCEL</div>
+            <div class="reqrow">
+              <div class="thumb art3"></div>
+              <div class="info"><div class="rt">Dune: Prophecy</div><div class="rm">Series · requested Jun 28</div></div>
+              <div class="trail"><span class="statuschip"><span class="dot amber"></span>Pending</span></div>
+            </div>
+          </div>
+          <div class="reqrow">
+            <div class="thumb art6"></div>
+            <div class="info"><div class="rt">The Odyssey</div><div class="rm">Movie · 1080p done · 4K downloading</div>
+              <div class="progressline"><i style="width:62%"></i></div></div>
+            <div class="trail"><span class="statuschip"><span class="dot sky"></span>Downloading</span></div>
+          </div>
+
+          <div class="sec-h" style="margin-top:6px"><span class="t">Landed in your library <span class="cnt">1</span></span></div>
+          <div class="reqrow">
+            <div class="thumb art4"></div>
+            <div class="info"><div class="rt">Sinners</div><div class="rm">Movie · completed Jun 30</div></div>
+            <div class="trail"><span class="statuschip" style="background:#fff;color:#000">▶ Open</span></div>
+          </div>
+
+          <div class="sec-h" style="margin-top:6px"><span class="t">Needs attention <span class="cnt">1</span></span></div>
+          <div class="reqrow">
+            <div class="thumb art8"></div>
+            <div class="info"><div class="rt">Project Hail Mary</div><div class="rm">Movie · “Waiting for a better release” — admin</div></div>
+            <div class="trail"><span class="statuschip"><span class="dot rose"></span>Declined</span></div>
+          </div>
+
+          <div class="tabbar">
+            <div class="tab"><span class="g">􀎞</span>Home</div>
+            <div class="tab"><span class="g">􀐩</span>Libraries</div>
+            <div class="tab"><span class="g">􀋂</span>For You</div>
+            <div class="tab"><span class="g">􀉉</span>Calendar</div>
+          </div>
+        </div>
+      </div></div>
+      <p class="caption"><span class="tag">iOS · My Requests</span>
+      <b>The package tracker.</b> Same three buckets as the web's “Yours” tab (In motion / Landed / Needs
+      attention). Swipe-to-cancel on pending requests (the server allows owner-cancel until submission).
+      Quota shown quietly in the corner — users learn the limit before hitting the 429, not after.
+      Completed rows deep-link into the real library item.</p>
+    </div>
+  </div>
+
+  <!-- ================================================================ -->
+  <h2><span class="num">04</span>Apple TV — request from Search</h2>
+  <p class="sub">
+    The single most important tvOS decision: <strong>don't build a second keyboard.</strong> The existing
+    Search screen grows one row. Library results stay primary; below them, an “Available to request” row
+    appears for what the library can't answer. The query the user already suffered through the grid keyboard
+    for is reused for free.
+  </p>
+
+  <div class="gallery">
+    <div class="frame-block" style="width:100%">
+      <div class="tv"><div class="tv-inner">
+        <div class="tv-topbar">
+          <span class="tv-wordmark">SILO</span>
+          <div class="tv-tabs">
+            <span class="tv-tab">Home</span><span class="tv-tab">Movies</span><span class="tv-tab">Series</span>
+            <span class="tv-tab">For You</span><span class="tv-tab">Calendar</span>
+          </div>
+          <div class="tv-right"><div class="tv-iconbtn" style="background:#fff;color:#000">􀊫</div><div class="tv-avatar">N</div></div>
+        </div>
+
+        <div style="margin-top:3.4%">
+          <div class="tv-searchfield"><span style="color:var(--text3)">􀊫</span>dune</div>
+        </div>
+
+        <div style="margin-top:2.8%">
+          <div class="tv-row-title">In your library <span class="cnt">2 RESULTS</span></div>
+          <div class="tv-cards">
+            <div class="tv-pcard"><div class="poster art1"><span class="ptitle">Dune</span></div><div class="meta">2021</div></div>
+            <div class="tv-pcard"><div class="poster art7"><span class="ptitle">Dune: Part Two</span></div><div class="meta">2024</div></div>
+          </div>
+        </div>
+
+        <div style="margin-top:2.6%">
+          <div class="tv-row-title">✦ Available to request <span class="cnt">NOT IN YOUR LIBRARY · TMDB</span></div>
+          <div class="tv-cards">
+            <div class="tv-pcard focused"><div class="poster art2"><span class="ptitle">Dune: Part Three</span></div><div class="meta">2026 · Movie · Press to request</div></div>
+            <div class="tv-pcard"><div class="poster art3"><div class="ribbon"><span class="dot amber"></span>Pending</div><span class="ptitle">Dune: Prophecy</span></div><div class="meta">2024 · Series</div></div>
+            <div class="tv-pcard"><div class="poster art5"><span class="ptitle">Jodorowsky's Dune</span></div><div class="meta">2013 · Movie</div></div>
+          </div>
+        </div>
+      </div></div>
+      <p class="caption" style="max-width:760px"><span class="tag">tvOS · Search</span>
+      <b>One extra row, zero extra typing.</b> Pressing a request card pushes the full-screen request detail
+      (below) — press-to-detail keeps the flow identical to library cards, so there's nothing new to learn, and
+      the detail page doubles as the confirmation step, which keeps the d-pad flow to
+      <i>select → press → press</i>. Status ribbons keep the monochrome Skyline grammar plus a single colored dot.</p>
+    </div>
+  </div>
+
+  <!-- ================================================================ -->
+  <h2><span class="num">05</span>Apple TV — request detail</h2>
+  <p class="sub">
+    A pushed full-screen route wearing the same chrome as the squared-Skyline item detail: full-bleed backdrop,
+    left content block, pill actions. One primary action, computed from state — pressing <strong>Request</strong>
+    submits and the pill morphs into the status chip in place. No modal.
+  </p>
+
+  <div class="gallery">
+    <div class="frame-block" style="width:100%">
+      <div class="tv">
+        <div class="tv-backdrop art2"><div class="fade"></div></div>
+        <div class="tv-inner overbg">
+          <div class="tv-marquee" style="margin-top:8%">
+            <div class="eyebrow">REQUEST · MOVIE · NOT IN YOUR LIBRARY</div>
+            <div class="mtitle">Dune: Part Three</div>
+            <div class="mmeta"><span>2026</span><span>·</span><span>Sci-Fi, Adventure</span><span>·</span><span>Denis Villeneuve</span><span>·</span><span class="badge">TMDB 8.1</span><span class="badge">PG-13</span></div>
+            <p class="msyn">The final chapter of Villeneuve's trilogy. Paul Atreides reigns as Emperor while the
+            consequences of his ascension ripple across the Imperium. Sequel to Dune: Part Two (in your library).</p>
+            <div class="tv-actionrow">
+              <span class="tv-pill primary-foc">＋ Request Movie</span>
+              <span class="tv-pill">More Like This</span>
+              <span class="tv-hint">Reviewed by your server admin</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="variants" style="max-width:760px">
+        <span class="vlab">The same action pill across the lifecycle</span>
+        <span class="statuschip" style="background:#fff;color:#000">＋ Request Movie</span>
+        <span class="statuschip"><span class="dot amber"></span>Requested · Pending</span>
+        <span class="statuschip"><span class="dot sky"></span>Downloading</span>
+        <span class="statuschip" style="background:#fff;color:#000"><span class="dot emerald"></span>In your library · Play</span>
+        <span class="statuschip"><span class="dot rose"></span>Declined</span>
+      </div>
+      <p class="caption" style="max-width:760px"><span class="tag">tvOS · Request detail</span>
+      <b>Completed requests come full circle:</b> once the title lands in the catalog, this route redirects to the
+      real item detail (via <code>library_content_id</code>) — the request page is only ever shown for things you
+      can't play yet.</p>
+    </div>
+  </div>
+
+  <!-- ================================================================ -->
+  <h2><span class="num">06</span>Apple TV — hub &amp; entry point</h2>
+  <p class="sub">
+    Requests joins the profile dropdown next to Watchlist / Favorites / History — the established home for
+    personal shelves — and pushes a full-screen hub: your requests first (glanceable ribbons), then TMDB
+    discovery rows for lean-back wishlisting. Search up top routes to the shared search screen.
+  </p>
+
+  <div class="gallery">
+    <div class="frame-block" style="width:100%">
+      <div class="tv"><div class="tv-inner">
+        <div class="tv-topbar" style="opacity:.5">
+          <span class="tv-wordmark">SILO</span>
+          <div class="tv-tabs">
+            <span class="tv-tab">Home</span><span class="tv-tab">Movies</span><span class="tv-tab">Series</span>
+            <span class="tv-tab">For You</span><span class="tv-tab">Calendar</span>
+          </div>
+          <div class="tv-right"><div class="tv-iconbtn">􀊫</div><div class="tv-avatar">N</div></div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:2.6%">
+          <div>
+            <div class="eyebrow" style="font-size:9.5px">YOUR WISHLIST</div>
+            <div style="font-size:26px;font-weight:800;margin-top:6px">Requests</div>
+          </div>
+          <div style="display:flex;gap:10px">
+            <span class="tv-pill">􀊫 Search</span>
+            <span class="tv-pill"><span class="dot amber"></span>3 active · 3 of 10 this month</span>
+          </div>
+        </div>
+
+        <div style="margin-top:2.2%">
+          <div class="tv-row-title">Your requests</div>
+          <div class="tv-cards">
+            <div class="tv-pcard focused"><div class="poster art6"><div class="ribbon"><span class="dot sky"></span>Downloading</div><span class="ptitle">The Odyssey</span></div><div class="meta">1080p done · 4K 62%</div></div>
+            <div class="tv-pcard"><div class="poster art3"><div class="ribbon"><span class="dot amber"></span>Pending</div><span class="ptitle">Dune: Prophecy</span></div><div class="meta">Requested Jun 28</div></div>
+            <div class="tv-pcard"><div class="poster art4"><div class="ribbon"><span class="dot emerald"></span>In library</div><span class="ptitle">Sinners</span></div><div class="meta">Press to play</div></div>
+            <div class="tv-pcard"><div class="poster art8"><div class="ribbon"><span class="dot rose"></span>Declined</div><span class="ptitle">Project Hail Mary</span></div><div class="meta">See reason</div></div>
+          </div>
+        </div>
+
+        <div style="margin-top:2.4%">
+          <div class="tv-row-title">Trending now <span class="cnt">TMDB</span></div>
+          <div class="tv-cards">
+            <div class="tv-pcard"><div class="poster art2"><span class="ptitle">Dune: Part Three</span></div><div class="meta">2026</div></div>
+            <div class="tv-pcard"><div class="poster art5"><div class="ribbon">In library</div><span class="ptitle">Weapons</span></div><div class="meta">2025</div></div>
+            <div class="tv-pcard"><div class="poster art7"><span class="ptitle">Hamnet</span></div><div class="meta">2025</div></div>
+            <div class="tv-pcard"><div class="poster art1"><span class="ptitle">Bugonia</span></div><div class="meta">2025</div></div>
+          </div>
+        </div>
+      </div></div>
+      <p class="caption" style="max-width:760px"><span class="tag">tvOS · Requests hub</span>
+      <b>Entry:</b> profile dropdown row (mirrors Watchlist/Favorites/History), shown only when the server reports
+      <code>requests_enabled</code>. The hub is a pushed route, so the Skyline top bar dims behind it like other
+      full-screen destinations. Native focus graph throughout — plain buttons and rows, no custom focus machinery.</p>
+    </div>
+  </div>
+
+  <!-- ================================================================ -->
+  <h2><span class="num">07</span>One status language, both feet</h2>
+  <p class="sub">
+    The server's lifecycle (<code>status</code> × <code>outcome</code>) collapses into five user-facing states.
+    Skyline is monochrome by charter — so chips stay monochrome and the <strong>only</strong> color is a 6-pt dot
+    (precedent: the amber rating badge is Skyline's one sanctioned chromatic token). iOS uses the identical
+    mapping so the two platforms read as one system.
+  </p>
+
+  <table class="status">
+    <tr><th>User-facing state</th><th>Server state</th><th>Dot</th><th>Behavior</th></tr>
+    <tr><td><span class="statuschip"><span class="dot amber"></span>Pending</span></td>
+        <td>status=pending · outcome=active</td><td>Amber (pulsing)</td>
+        <td>Cancelable by the requester. “Waiting for approval.”</td></tr>
+    <tr><td><span class="statuschip"><span class="dot sky"></span>On the way</span></td>
+        <td>approved / queued / downloading</td><td>Sky</td>
+        <td>Per-target detail (1080p ✓ · 4K 62%) on My Requests rows; single chip elsewhere.</td></tr>
+    <tr><td><span class="statuschip"><span class="dot emerald"></span>In your library</span></td>
+        <td>completed + library_content_id</td><td>Emerald</td>
+        <td>The chip becomes a door: press/tap opens the real item. Request UI retires itself.</td></tr>
+    <tr><td><span class="statuschip"><span class="dot rose"></span>Needs attention</span></td>
+        <td>outcome=declined / failed</td><td>Rose</td>
+        <td>Shows the admin's decline reason verbatim; failed requests can simply be re-requested (server auto-clears them).</td></tr>
+    <tr><td><span class="statuschip"><span class="dot dim"></span>Unavailable</span></td>
+        <td>requestable=false (limit / disabled / blocked)</td><td>Neutral</td>
+        <td>Quiet reason label; the Request affordance simply never renders. Nothing to press, nothing to fail.</td></tr>
+  </table>
+
+  <div class="foot">
+    Silo · Requests UX concepts for iOS &amp; tvOS · 2026-07-02 · Server contract: <code>/api/v1/requests/*</code> (TMDB movie/series, one-tap, server-computed requestability) ·
+    Parity references: web <code>Requests.tsx</code>, Android mobile/TV requests hubs
+  </div>
+</div>
+</body>
+</html>

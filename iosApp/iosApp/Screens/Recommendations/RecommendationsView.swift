@@ -60,6 +60,7 @@ struct RecommendationsView: View {
                     profile: currentProfile,
                     onSearch: { router.navigate(to: .search) },
                     onOpenSettings: { router.navigate(to: .settings) },
+                    onOpenRequests: { router.navigate(to: .requestsHub) },
                     onSwitchProfile: {
                         AuthService.shared.profileId = nil
                         router.showProfileSelection()

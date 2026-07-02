@@ -10,6 +10,9 @@ struct TabTopBarActions: View {
     let profile: UserProfile?
     let onSearch: () -> Void
     let onOpenSettings: () -> Void
+    /// Opens the media-requests hub. The menu row only renders when the
+    /// server reports `requests_enabled`, so the closure is inert otherwise.
+    let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
     let onSwitchServer: () -> Void
     let onSignOut: () -> Void
@@ -23,6 +26,7 @@ struct TabTopBarActions: View {
             ProfileAvatarMenu(
                 profile: profile,
                 onOpenSettings: onOpenSettings,
+                onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
                 onSwitchServer: onSwitchServer,
                 onSignOut: onSignOut
@@ -59,12 +63,29 @@ private struct TopBarIconButton: View {
 private struct ProfileAvatarMenu: View {
     let profile: UserProfile?
     let onOpenSettings: () -> Void
+    let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
     let onSwitchServer: () -> Void
     let onSignOut: () -> Void
 
+    /// Capability-gated: the Requests row exists only when the server has
+    /// the feature enabled (older servers 404 the probe and read as off).
+    private var requestsEnabled: Bool {
+        RequestsFeatureStore.shared.isEnabled
+    }
+
     var body: some View {
         Menu {
+            if requestsEnabled {
+                Button {
+                    onOpenRequests()
+                } label: {
+                    Label("Requests", systemImage: "sparkles")
+                }
+
+                Divider()
+            }
+
             Button {
                 onOpenSettings()
             } label: {

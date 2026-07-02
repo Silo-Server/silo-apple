@@ -59,6 +59,22 @@ extension Color {
     /// Page scrim behind anchored dropdowns — `scrim.dropdown`, black @ 55%
     static let continuumDropdownScrim = Color.black.opacity(0.55)
 
+    // MARK: - Request status dots
+
+    /// The requests UI keeps chips monochrome; these tint only the small
+    /// status dot (and match the web app's ribbon palette so both clients
+    /// speak one status language). Pending — amber.
+    static let requestAmber = Color(hex: "#F59E0B")
+
+    /// Approved / queued / downloading — sky.
+    static let requestSky = Color(hex: "#38BDF8")
+
+    /// Completed / in library — emerald.
+    static let requestEmerald = Color(hex: "#34D399")
+
+    /// Declined / failed — rose.
+    static let requestRose = Color(hex: "#FB7185")
+
     // MARK: - Semantic Aliases
 
     /// Outline/border color — white at 12%

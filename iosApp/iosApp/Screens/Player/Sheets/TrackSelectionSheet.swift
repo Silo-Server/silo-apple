@@ -13,11 +13,20 @@ struct TrackSelectionSheet: View {
     /// Drives presentation of the AI translate/transcribe menu.
     @State private var showAITranslateMenu = false
 
+    /// Drives presentation of the provider subtitle-search menu.
+    @State private var showSubtitleSearchMenu = false
+
     /// Whether any AI subtitle action is available (translate or transcribe),
     /// per the server's capability probes **and** the current track list.
     /// Gates the "Translate with AI…" row so it never opens an empty menu.
     private var aiSubtitlesAvailable: Bool {
         SubtitleTranslateMenu.hasActionableSource(viewModel)
+    }
+
+    /// Whether provider subtitle search is available (active server session +
+    /// sidecar-capable backend). Hidden for offline/local playback.
+    private var subtitleSearchAvailable: Bool {
+        viewModel.subtitleSearchAvailable
     }
 
     var body: some View {
@@ -60,8 +69,23 @@ struct TrackSelectionSheet: View {
                     }
                 }
 
-                if aiSubtitlesAvailable {
-                    AITranslateEntryRow { showAITranslateMenu = true }
+                if aiSubtitlesAvailable || subtitleSearchAvailable {
+                    HStack(spacing: 16) {
+                        if aiSubtitlesAvailable {
+                            MenuEntryRow(
+                                title: "AI Subtitles…",
+                                systemImage: "sparkles",
+                                accessibilityLabel: "AI Subtitles"
+                            ) { showAITranslateMenu = true }
+                        }
+                        if subtitleSearchAvailable {
+                            MenuEntryRow(
+                                title: "Search Subtitles…",
+                                systemImage: "magnifyingglass",
+                                accessibilityLabel: "Search Subtitles"
+                            ) { showSubtitleSearchMenu = true }
+                        }
+                    }
                 }
             }
             .padding(28)
@@ -78,11 +102,11 @@ struct TrackSelectionSheet: View {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .stroke(Color.white.opacity(0.12), lineWidth: 1)
             )
-            // While the AI translate menu is up, exclude the base panel from
+            // While an overlay menu is up, exclude the base panel from
             // focus and dim it so the d-pad can't escape behind the overlay.
             // Mirrors the `TVPlayerInfoHUD` appearance-dialog precedent.
-            .disabled(showAITranslateMenu)
-            .opacity(showAITranslateMenu ? 0.28 : 1)
+            .disabled(showAITranslateMenu || showSubtitleSearchMenu)
+            .opacity((showAITranslateMenu || showSubtitleSearchMenu) ? 0.28 : 1)
 
             if showAITranslateMenu {
                 SubtitleTranslateMenu(
@@ -96,23 +120,38 @@ struct TrackSelectionSheet: View {
                     }
                 )
                 .transition(.opacity)
+            } else if showSubtitleSearchMenu {
+                SubtitleSearchMenu(
+                    viewModel: viewModel,
+                    // Back-out returns to the track panel; a successful
+                    // download (track already selected) closes both.
+                    onDismiss: { showSubtitleSearchMenu = false },
+                    onDownloaded: {
+                        showSubtitleSearchMenu = false
+                        onDismiss()
+                    }
+                )
+                .transition(.opacity)
             }
         }
         .onExitCommand { onDismiss() }
     }
 
-    /// tvOS entry row that opens the AI translate/transcribe menu. Mirrors the
-    /// bare-`focusable` + row-fill focus idiom of `TrackRow`.
-    private struct AITranslateEntryRow: View {
+    /// tvOS entry row that opens a subtitle tools menu (AI translate / provider
+    /// search). Mirrors the bare-`focusable` + row-fill focus idiom of `TrackRow`.
+    private struct MenuEntryRow: View {
+        let title: String
+        let systemImage: String
+        let accessibilityLabel: String
         let action: () -> Void
         @FocusState private var isFocused: Bool
 
         var body: some View {
             HStack(spacing: 12) {
-                Image(systemName: "sparkles")
+                Image(systemName: systemImage)
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(.white)
-                Text("AI Subtitles…")
+                Text(title)
                     .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(.white)
             }
@@ -128,7 +167,7 @@ struct TrackSelectionSheet: View {
             .onTapGesture(perform: action)
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
             .accessibilityAddTraits(.isButton)
-            .accessibilityLabel("AI Subtitles")
+            .accessibilityLabel(accessibilityLabel)
         }
     }
 
@@ -230,12 +269,21 @@ struct TrackSelectionSheet: View {
                         Section("Secondary Subtitles") { subtitleRows(isSecondary: true) }
                     }
                 }
-                if aiSubtitlesAvailable {
+                if aiSubtitlesAvailable || subtitleSearchAvailable {
                     Section {
-                        Button {
-                            showAITranslateMenu = true
-                        } label: {
-                            Label("AI Subtitles…", systemImage: "sparkles")
+                        if aiSubtitlesAvailable {
+                            Button {
+                                showAITranslateMenu = true
+                            } label: {
+                                Label("AI Subtitles…", systemImage: "sparkles")
+                            }
+                        }
+                        if subtitleSearchAvailable {
+                            Button {
+                                showSubtitleSearchMenu = true
+                            } label: {
+                                Label("Search Subtitles…", systemImage: "magnifyingglass")
+                            }
                         }
                     }
                 }
@@ -267,6 +315,19 @@ struct TrackSelectionSheet: View {
                 }
             )
             .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showSubtitleSearchMenu) {
+            SubtitleSearchMenu(
+                viewModel: viewModel,
+                onDismiss: { showSubtitleSearchMenu = false },
+                // Download succeeded (track already selected): close both this
+                // menu and the track sheet so the player is visible.
+                onDownloaded: {
+                    showSubtitleSearchMenu = false
+                    onDismiss()
+                }
+            )
+            .presentationDetents([.large])
         }
     }
     #endif

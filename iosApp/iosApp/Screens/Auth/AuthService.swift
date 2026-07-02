@@ -177,6 +177,7 @@ final class AuthService: @unchecked Sendable {
         // so nothing blocks on this.
         Task { @MainActor in
             await AICapabilities.shared.refresh()
+            await RequestsFeatureStore.shared.refresh()
         }
     }
 
@@ -203,6 +204,8 @@ final class AuthService: @unchecked Sendable {
         // Server-wide AI capability + per-user ASR quota are reset on every
         // profile switch; `selectProfile` re-fetches after the switch lands.
         AICapabilities.shared.reset()
+        RequestsFeatureStore.shared.reset()
+        RequestsEventBus.shared.reset()
         #if os(tvOS)
         ItemDetailCache.shared.clearAll()
         #endif
@@ -271,6 +274,8 @@ final class AuthService: @unchecked Sendable {
         OverlayPrefsStore.shared.clear()
         ProfilePrefsStore.shared.clear()
         AICapabilities.shared.reset()
+        RequestsFeatureStore.shared.reset()
+        RequestsEventBus.shared.reset()
         #if os(tvOS)
         ItemDetailCache.shared.clearAll()
         #endif

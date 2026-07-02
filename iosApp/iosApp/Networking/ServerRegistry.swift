@@ -199,7 +199,17 @@ final class ServerRegistry {
         // drop the previous server's AI capability/quota probes after the URL,
         // profile, active id, and token slot have all been retargeted so any
         // foreground refresh observes one consistent server context.
-        await MainActor.run { AICapabilities.shared.reset() }
+        await MainActor.run {
+            AICapabilities.shared.reset()
+            RequestsFeatureStore.shared.reset()
+            RequestsEventBus.shared.reset()
+            // Re-probe against the just-activated server: a switch between
+            // signed-in servers can keep authState at .authenticated, so
+            // without this the Requests entry points would stay hidden
+            // until the next foreground. Fire-and-forget — the probe
+            // degrades to disabled on any failure.
+            Task { await RequestsFeatureStore.shared.refresh() }
+        }
     }
 
     /// Sign out from `serverId` without removing the entry. Clears tokens
@@ -239,7 +249,15 @@ final class ServerRegistry {
                 defaults.removeObject(forKey: "profileId")
                 await TokenStore.shared.switchActiveServer(serverId: "")
             }
-            await MainActor.run { AICapabilities.shared.reset() }
+            await MainActor.run {
+                AICapabilities.shared.reset()
+                RequestsFeatureStore.shared.reset()
+                RequestsEventBus.shared.reset()
+                // Same rationale as `switchTo`: the fallback server may
+                // already be signed in, with no auth-state change to
+                // trigger the usual probe.
+                Task { await RequestsFeatureStore.shared.refresh() }
+            }
         }
         persist()
     }
