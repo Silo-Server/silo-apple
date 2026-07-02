@@ -130,12 +130,14 @@ class AppRouter {
     func presentOfflinePlayer(
         downloadId: String,
         contentId: String,
+        startFromBeginning: Bool = false,
         resumePosition: Double? = nil
     ) {
         #if os(macOS)
         navigate(to: .offlinePlayer(
             downloadId: downloadId,
             contentId: contentId,
+            startFromBeginning: startFromBeginning,
             resumePosition: resumePosition
         ))
         #else
@@ -144,7 +146,7 @@ class AppRouter {
             fileId: nil,
             audioTrackIndex: nil,
             subtitleTrackIndex: nil,
-            startFromBeginning: false,
+            startFromBeginning: startFromBeginning,
             resumePosition: resumePosition,
             offlineDownloadId: downloadId,
             posterURL: nil,

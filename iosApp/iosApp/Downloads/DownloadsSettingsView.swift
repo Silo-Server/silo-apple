@@ -85,9 +85,7 @@ struct DownloadsSettingsView: View {
             titleVisibility: .visible
         ) {
             Button("Remove All", role: .destructive) {
-                for record in manager.records {
-                    manager.deleteDownload(id: record.id)
-                }
+                manager.deleteDownloads(ids: manager.records.map(\.id))
             }
             Button("Cancel", role: .cancel) {}
         }

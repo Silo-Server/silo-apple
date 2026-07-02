@@ -158,6 +158,10 @@ enum DownloadFilePaths {
             return "_"
         }
         let result = String(allowed)
-        return result.isEmpty ? "_" : result
+        // "." and ".." survive the character filter but traverse out of the
+        // scope directory when used as a path component — never let a
+        // dot-only value through.
+        if result.isEmpty || result.allSatisfy({ $0 == "." }) { return "_" }
+        return result
     }
 }

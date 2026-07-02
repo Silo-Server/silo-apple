@@ -12,6 +12,7 @@ struct SeriesDownloadMenuButton: View {
 
     private var manager: DownloadManager { DownloadManager.shared }
     @State private var activeSheet: SeriesDownloadSheet?
+    @State private var pendingMonitorSheet = false
 
     private var seriesId: String { detail.seriesId ?? detail.contentId }
     private var isMonitored: Bool { manager.subscription(forSeriesId: seriesId) != nil }
@@ -31,7 +32,16 @@ struct SeriesDownloadMenuButton: View {
                 )
         }
         .accessibilityLabel("Download or monitor series")
-        .sheet(item: $activeSheet) { sheet in
+        // Chaining sheets from `onDismiss` waits out the real dismiss
+        // animation instead of guessing a delay — a fixed sleep silently
+        // fails to present when teardown runs long (slow device,
+        // accessibility animations, low power).
+        .sheet(item: $activeSheet, onDismiss: {
+            if pendingMonitorSheet {
+                pendingMonitorSheet = false
+                activeSheet = .monitor
+            }
+        }) { sheet in
             switch sheet {
             case .downloadOptions:
                 SeriesDownloadOptionsSheet(
@@ -41,19 +51,11 @@ struct SeriesDownloadMenuButton: View {
                     canDownloadSeason: manager.canDownloadSeason,
                     canMonitorSeries: manager.canMonitorSeries,
                     isMonitored: isMonitored,
-                    onMonitor: openMonitorSheet
+                    onMonitor: { pendingMonitorSheet = true }
                 )
             case .monitor:
                 SeriesMonitorSheet(seriesId: seriesId, seriesTitle: detail.title, seasons: seasons)
             }
-        }
-    }
-
-    private func openMonitorSheet() {
-        activeSheet = nil
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            activeSheet = .monitor
         }
     }
 }
@@ -81,6 +83,8 @@ private struct SeriesDownloadOptionsSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     private var manager: DownloadManager { DownloadManager.shared }
+    @State private var errorMessage: String?
+    @State private var isWorking = false
 
     var body: some View {
         NavigationStack {
@@ -92,8 +96,9 @@ private struct SeriesDownloadOptionsSheet: View {
                             detail: "Original quality · \(selectedSeason.episodeCount) episode\(selectedSeason.episodeCount == 1 ? "" : "s")",
                             icon: "arrow.down.square.on.square"
                         ) {
-                            Task { try? await manager.downloadSeason(seriesId: seriesId, seasonNumber: selectedSeason.seasonNumber) }
-                            dismiss()
+                            startDownload {
+                                try await manager.downloadSeason(seriesId: seriesId, seasonNumber: selectedSeason.seasonNumber)
+                            }
                         }
                     }
 
@@ -102,8 +107,9 @@ private struct SeriesDownloadOptionsSheet: View {
                         detail: "Original quality",
                         icon: "arrow.down.circle"
                     ) {
-                        Task { try? await manager.downloadSeries(seriesId: seriesId) }
-                        dismiss()
+                        startDownload {
+                            try await manager.downloadSeries(seriesId: seriesId)
+                        }
                     }
                 } header: {
                     Text("Download")
@@ -150,6 +156,33 @@ private struct SeriesDownloadOptionsSheet: View {
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         #endif
+        .alert(
+            "Download Failed",
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    /// Run a download request, dismissing only on success — a silent
+    /// `try?` here made an offline/unauthenticated tap look like it worked.
+    private func startDownload(_ work: @escaping () async throws -> Void) {
+        guard !isWorking else { return }
+        isWorking = true
+        Task {
+            do {
+                try await work()
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isWorking = false
+        }
     }
 
     private func optionButton(
@@ -199,6 +232,7 @@ struct SeriesMonitorSheet: View {
     @State private var deleteWatched: Bool = DownloadSettings.shared.defaultDeleteWatched
     @State private var maxStorageGB: Int = DownloadSettings.shared.defaultMaxStorageGB
     @State private var isSaving = false
+    @State private var saveError: String?
 
     private var existing: DownloadSubscription? { manager.subscription(forSeriesId: seriesId) }
     private var availableModes: [SubscriptionMode] {
@@ -247,6 +281,17 @@ struct SeriesMonitorSheet: View {
                 }
             }
             .onAppear(perform: prefill)
+            .alert(
+                "Couldn't Save Monitoring",
+                isPresented: Binding(
+                    get: { saveError != nil },
+                    set: { if !$0 { saveError = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(saveError ?? "")
+            }
         }
     }
 
@@ -295,10 +340,13 @@ struct SeriesMonitorSheet: View {
                         maxStorageBytes: bytes
                     )
                 }
+                dismiss()
             } catch {
-                // Surface nothing for now; the sheet just closes.
+                // Keep the sheet up so the edits aren't lost — the user can
+                // retry or cancel once they've seen why the save failed.
+                saveError = error.localizedDescription
             }
-            dismiss()
+            isSaving = false
         }
     }
 }

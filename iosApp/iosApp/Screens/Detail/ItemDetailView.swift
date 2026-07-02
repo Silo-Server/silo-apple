@@ -29,6 +29,25 @@ private struct CastRequestBox: Identifiable {
 #endif
 
 #if !os(tvOS)
+/// A play tap paused on the downloaded-vs-stream choice. Created only when
+/// the target item has a playable offline copy; carries the original
+/// streaming parameters so "Stream" resumes exactly the tap that was
+/// interrupted.
+private struct OfflinePlayChoice: Identifiable {
+    let downloadId: String
+    /// Leaf id (episode id / movie content id) offline progress is keyed by.
+    let leafContentId: String
+    /// e.g. "Play Downloaded (10 Mbps · 2.1 GB)"
+    let downloadedLabel: String
+    let contentId: String
+    let fileId: Int?
+    let audioTrackIndex: Int?
+    let subtitleTrackIndex: Int?
+    let startFromBeginning: Bool
+    let resumePosition: Double?
+    var id: String { downloadId }
+}
+
 private struct ItemDetailPhoneContent: View {
     let contentId: String
 
@@ -41,6 +60,7 @@ private struct ItemDetailPhoneContent: View {
     @State private var preferredNextUpSubtitleTrackIndex: Int?
     @State private var nextUpWatchDetail: WatchDetail?
     @State private var refreshOnPlayerDismiss = false
+    @State private var offlinePlayChoice: OfflinePlayChoice?
     #if os(iOS)
     @Environment(SiloCastController.self) private var castController
     @State private var castRequestBox: CastRequestBox?
@@ -75,6 +95,37 @@ private struct ItemDetailPhoneContent: View {
             guard oldValue != nil, newValue == nil, refreshOnPlayerDismiss else { return }
             refreshOnPlayerDismiss = false
             Task { await viewModel.loadDetail(contentId: contentId) }
+        }
+        .alert(
+            "Downloaded on This Device",
+            isPresented: Binding(
+                get: { offlinePlayChoice != nil },
+                set: { if !$0 { offlinePlayChoice = nil } }
+            ),
+            presenting: offlinePlayChoice
+        ) { choice in
+            Button(choice.downloadedLabel) {
+                refreshOnPlayerDismiss = true
+                router.presentOfflinePlayer(
+                    downloadId: choice.downloadId,
+                    contentId: choice.leafContentId,
+                    startFromBeginning: choice.startFromBeginning,
+                    resumePosition: choice.resumePosition
+                )
+            }
+            Button("Stream from Server") {
+                presentStreamingPlayer(
+                    contentId: choice.contentId,
+                    fileId: choice.fileId,
+                    audioTrackIndex: choice.audioTrackIndex,
+                    subtitleTrackIndex: choice.subtitleTrackIndex,
+                    startFromBeginning: choice.startFromBeginning,
+                    resumePosition: choice.resumePosition
+                )
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Play the copy saved on this device, or stream from the server.")
         }
         #if os(iOS)
         .toolbar {
@@ -597,6 +648,44 @@ private struct ItemDetailPhoneContent: View {
         }
         #endif
 
+        // A playable local copy exists: pause the tap on a source choice so
+        // the user can pick the downloaded file (e.g. a saved 1080p) or the
+        // server stream (e.g. the full 4K). The cast branch above never
+        // offers this — a cast target can't read the local file.
+        if let record = DownloadManager.shared.record(forContentId: contentId),
+           record.isPlayableOffline {
+            offlinePlayChoice = OfflinePlayChoice(
+                downloadId: record.id,
+                leafContentId: record.leafMediaItemId,
+                downloadedLabel: Self.downloadedOptionLabel(for: record),
+                contentId: contentId,
+                fileId: fileId,
+                audioTrackIndex: audioTrackIndex,
+                subtitleTrackIndex: subtitleTrackIndex,
+                startFromBeginning: startFromBeginning,
+                resumePosition: resumePosition
+            )
+            return
+        }
+
+        presentStreamingPlayer(
+            contentId: contentId,
+            fileId: fileId,
+            audioTrackIndex: audioTrackIndex,
+            subtitleTrackIndex: subtitleTrackIndex,
+            startFromBeginning: startFromBeginning,
+            resumePosition: resumePosition
+        )
+    }
+
+    private func presentStreamingPlayer(
+        contentId: String,
+        fileId: Int?,
+        audioTrackIndex: Int?,
+        subtitleTrackIndex: Int?,
+        startFromBeginning: Bool,
+        resumePosition: Double?
+    ) {
         refreshOnPlayerDismiss = true
         // Pass the artwork URLs we already loaded into the detail view so
         // PlayerViewModel.pushNowPlayingArtwork can publish lock-screen art
@@ -614,6 +703,22 @@ private struct ItemDetailPhoneContent: View {
             posterURL: isOwnDetail ? viewModel.detail?.posterUrl : nil,
             backdropURL: isOwnDetail ? viewModel.detail?.backdropUrl : nil
         )
+    }
+
+    /// Dialog label for the local copy, annotated with its stored quality
+    /// and size so the choice against the stream is an informed one.
+    private static func downloadedOptionLabel(for record: DownloadRecord) -> String {
+        var parts: [String] = []
+        let quality = record.effectiveQuality ?? record.format
+        if !quality.isEmpty {
+            parts.append(DownloadFormat(rawValue: quality)?.displayName ?? quality.capitalized)
+        }
+        if record.fileSize > 0 {
+            parts.append(ByteCountFormatter.string(fromByteCount: record.fileSize, countStyle: .file))
+        }
+        return parts.isEmpty
+            ? "Play Downloaded"
+            : "Play Downloaded (\(parts.joined(separator: " · ")))"
     }
 }
 #endif

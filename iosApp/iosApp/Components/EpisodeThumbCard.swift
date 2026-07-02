@@ -168,15 +168,7 @@ struct EpisodeThumbCard: View {
             }
 
             #if !os(tvOS)
-            // Downloaded indicator — bottom-trailing keeps clear of the S/E
-            // badge (bottom-leading) and watched check (top-trailing). Gated
-            // by the manager's capability-aware lookup so nothing renders on
-            // servers without downloads.
-            if DownloadManager.shared.isDownloaded(contentId: item.contentId) {
-                DownloadedBadge()
-                    .padding(badgeInset)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-            }
+            DownloadedBadgeOverlay(contentId: item.contentId, padding: badgeInset)
             #endif
         }
         .frame(width: cardWidth, height: cardHeight)

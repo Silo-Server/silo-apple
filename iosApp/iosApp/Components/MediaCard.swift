@@ -192,15 +192,7 @@ struct MediaCard: View {
             }
 
             #if !os(tvOS)
-            // Downloaded indicator — bottom-trailing so it never fights the
-            // watched check (top-trailing) or the episode badge (bottom-
-            // leading). Gated by the manager's capability-aware lookup so
-            // nothing renders on servers without downloads.
-            if let contentId, DownloadManager.shared.isDownloaded(contentId: contentId) {
-                DownloadedBadge()
-                    .padding(checkBadgePadding)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-            }
+            DownloadedBadgeOverlay(contentId: contentId, padding: checkBadgePadding)
             #endif
         }
         .frame(width: cardWidth, height: cardHeight)

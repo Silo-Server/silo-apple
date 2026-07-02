@@ -61,6 +61,13 @@ enum DownloadBackgroundRefresh {
         // crash mid-sync doesn't drop the schedule.
         schedule()
         let work = Task { @MainActor in
+            // A cold BGTaskScheduler launch lands here before
+            // ContentView.checkInitialState() has pointed TokenStore at the
+            // active registry server, and the sync authenticates through
+            // it. Idempotent on every later call.
+            if let serverId = ServerRegistry.shared.activeServerId, !serverId.isEmpty {
+                await TokenStore.shared.retargetActiveServer(serverId: serverId)
+            }
             // Same capability-gated path as a foreground activation:
             // activate scope → refresh capability → reconcile →
             // monitoring/progress sync (which also kicks the pipeline).

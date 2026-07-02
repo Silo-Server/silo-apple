@@ -2721,7 +2721,11 @@ class PlayerViewModel {
         freshLoadGeneration &+= 1
         let currentFreshLoadGeneration = freshLoadGeneration
         let snapshotPosition = progressPosition
-        let shouldFinalizeCurrentSession = finalizeCurrentSession
+        // Offline loads never start a replacement server session, so the
+        // prior one must be finalized here — otherwise the bridge keeps
+        // holding it and a later teardown would report the offline item's
+        // position against the stale session.
+        let shouldFinalizeCurrentSession = finalizeCurrentSession || request.offlineDownloadId != nil
         freshLoadTask = Task { @MainActor [weak self] in
             guard let self, !self.isDisposed else { return }
             defer {
@@ -4677,6 +4681,10 @@ class PlayerViewModel {
         // Final offline progress flush before teardown — the counterpart of
         // the online path's `stopSession` report below. Captured into locals
         // so the detached task doesn't read torn-down player state.
+        // Offline playback has no server session of its own (the fresh-load
+        // path finalized any prior one), so skip the server stop below —
+        // it would report the offline position against a stale session.
+        let stopServerSessionOnTeardown = offlinePlaybackContext == nil
         if let offline = offlinePlaybackContext {
             let finalOfflinePosition = completionProgressPositionForCurrentItem()
             let endedNaturally = hasReachedEndOfFile || showNextUpScreen
@@ -4715,7 +4723,9 @@ class PlayerViewModel {
                 await realtimeClient.removeUnavailabilityObserver(unavailabilityToken)
             }
             await realtimeClient.unbind()
-            await sessionBridge.stopSession(position: finalPosition, isPaused: true)
+            if stopServerSessionOnTeardown {
+                await sessionBridge.stopSession(position: finalPosition, isPaused: true)
+            }
         }
     }
 

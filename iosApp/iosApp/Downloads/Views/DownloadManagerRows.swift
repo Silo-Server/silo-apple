@@ -219,6 +219,10 @@ struct DownloadSwipeRevealContainer<Content: View>: View {
         }
         .buttonStyle(.plain)
         .opacity(offset < -8 ? 1 : 0)
+        // Opacity alone leaves the closed button in the hierarchy —
+        // reachable by VoiceOver and hit testing under the row content.
+        .allowsHitTesting(isOpen)
+        .accessibilityHidden(!isOpen)
     }
 
     private var drag: some Gesture {

@@ -14,6 +14,15 @@ struct DownloadsView: View {
     @State private var isSelecting = false
     @State private var selection: Set<String> = []
     @State private var showReclaim = false
+    /// Confirmation gate for the bulk/context-menu deletes — downloads are
+    /// costly to re-fetch, so a stray tap must not remove them outright.
+    @State private var pendingDeletion: PendingDeletion?
+
+    private struct PendingDeletion: Identifiable {
+        let id = UUID()
+        let ids: [String]
+        let endsSelection: Bool
+    }
 
     var body: some View {
         Group {
@@ -36,6 +45,24 @@ struct DownloadsView: View {
         .toolbar { toolbarContent }
         .safeAreaInset(edge: .bottom) { bottomBar }
         .sheet(isPresented: $showReclaim) { DownloadReclaimSheet() }
+        .confirmationDialog(
+            "Delete downloaded files?",
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDeletion
+        ) { pending in
+            Button(
+                pending.ids.count == 1 ? "Delete Download" : "Delete \(pending.ids.count) Downloads",
+                role: .destructive
+            ) {
+                manager.deleteDownloads(ids: pending.ids)
+                if pending.endsSelection { exitSelectMode() }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
         .continuumToolbarColorSchemeDark()
     }
 
@@ -159,7 +186,10 @@ struct DownloadsView: View {
             .contextMenu {
                 if !isSelecting {
                     Button(role: .destructive) {
-                        manager.deleteDownloads(ids: group.allRecords.map(\.id))
+                        pendingDeletion = PendingDeletion(
+                            ids: group.allRecords.map(\.id),
+                            endsSelection: false
+                        )
                     } label: {
                         Label("Delete All Episodes", systemImage: "trash")
                     }
@@ -179,7 +209,7 @@ struct DownloadsView: View {
             .contextMenu {
                 if !isSelecting {
                     Button(role: .destructive) {
-                        manager.deleteDownload(id: record.id)
+                        pendingDeletion = PendingDeletion(ids: [record.id], endsSelection: false)
                     } label: {
                         Label("Delete Download", systemImage: "trash")
                     }
@@ -277,8 +307,7 @@ struct DownloadsView: View {
     private var bottomBar: some View {
         if isSelecting && !selection.isEmpty {
             Button {
-                manager.deleteDownloads(ids: selectedDownloadIds)
-                exitSelectMode()
+                pendingDeletion = PendingDeletion(ids: selectedDownloadIds, endsSelection: true)
             } label: {
                 HStack(spacing: 9) {
                     Image(systemName: "trash")

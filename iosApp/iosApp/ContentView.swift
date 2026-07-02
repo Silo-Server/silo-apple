@@ -215,6 +215,10 @@ struct ContentView: View {
                 pendingDeepLink = url
                 return
             }
+            // The tab only exists while downloads are enabled — a stale
+            // download notification tapped after a profile/capability
+            // change must not select a tab that never renders.
+            guard DownloadManager.shared.downloadsEnabled else { return }
             // Select the tab rather than pushing the route — a push stacks
             // a duplicate Downloads screen when that tab is already showing,
             // and hides the tab context from anywhere else.
@@ -852,10 +856,11 @@ struct MainTabView: View {
             #else
             DownloadsView()
             #endif
-        case .offlinePlayer(let downloadId, let contentId, let resumePosition):
+        case .offlinePlayer(let downloadId, let contentId, let startFromBeginning, let resumePosition):
             #if os(macOS)
             PlayerView(
                 contentId: contentId,
+                startFromBeginning: startFromBeginning,
                 resumePositionOverride: resumePosition,
                 offlineDownloadId: downloadId
             )

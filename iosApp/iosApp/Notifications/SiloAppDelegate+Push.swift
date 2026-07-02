@@ -40,6 +40,14 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
             // after so finished media can resolve its on-disk destination
             // even on a cold background relaunch.
             DownloadManager.shared.setBackgroundCompletionHandler(completionHandler)
+            // A cold background relaunch lands here before
+            // ContentView.checkInitialState() has pointed TokenStore at the
+            // active registry server; activating against an unresolved
+            // profile would release the held session events into an empty
+            // scope and discard the staged completions.
+            if let serverId = ServerRegistry.shared.activeServerId, !serverId.isEmpty {
+                await TokenStore.shared.retargetActiveServer(serverId: serverId)
+            }
             await DownloadManager.shared.activateScopeIfNeeded()
         }
     }
@@ -124,7 +132,14 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
                 // for a monitored series registers the episode and enqueues
                 // it into the background URLSession here, so the transfer
                 // runs out-of-process without the user opening the app.
-                await DownloadManager.shared.onAppActive()
+                //
+                // Deadline check between the phases: `withTaskGroup` only
+                // returns once this child unwinds, so when the timer has
+                // already won (cancelAll ran) don't start the download sync
+                // — it would hold the completion handler past the budget.
+                if !Task.isCancelled {
+                    await DownloadManager.shared.onAppActive()
+                }
                 return await inboxSynced
             }
             group.addTask {

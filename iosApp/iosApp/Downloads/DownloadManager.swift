@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import OSLog
 
 enum DownloadError: LocalizedError {
@@ -86,6 +87,11 @@ final class DownloadManager {
     private var rateSamples: [String: (bytes: Int64, at: Date)] = [:]
     private static let rateSampleInterval: TimeInterval = 0.5
     private static let rateSmoothing = 0.3
+    /// Last time each record's byte counter was published into the
+    /// `@Observable` `file` blob. Delegate callbacks arrive many times per
+    /// second; UI counters should tick at a readable cadence instead.
+    private var lastProgressPublish: [String: Date] = [:]
+    private static let progressPublishInterval: TimeInterval = 1.0
 
     private init() {
         // Drain background-session events for the lifetime of the app.
@@ -934,10 +940,18 @@ final class DownloadManager {
         switch event {
         case let .progress(taskId, written, total):
             guard var record = recordByTask(taskId) else { return }
+            updateTransferRate(recordId: record.id, bytes: written)
+            // Publish to the observable blob at a readable cadence — the raw
+            // callbacks fire many times per second and each reassignment
+            // redraws every byte counter "live". Skipped ticks lose nothing:
+            // `written` is cumulative, so the next publish catches up.
+            let now = Date()
+            guard now.timeIntervalSince(lastProgressPublish[record.id] ?? .distantPast)
+                >= Self.progressPublishInterval else { return }
+            lastProgressPublish[record.id] = now
             record.bytesDownloaded = written
             if total > 0 { record.fileSize = total }
             file.records[record.id] = record
-            updateTransferRate(recordId: record.id, bytes: written)
             persistProgressThrottled()
 
         case let .finished(taskId, stagedURL, _):
@@ -947,8 +961,17 @@ final class DownloadManager {
             handleMediaFailure(taskId: taskId, statusCode: statusCode, resumeData: resumeData, message: message)
 
         case .allEventsDelivered:
-            sessionDelegate.backgroundCompletionHandler?()
+            // Flush queued store writes before handing control back — iOS
+            // can suspend the process as soon as the completion handler
+            // runs, and the `.finished`/`.failed` records handled above are
+            // still on the async save chain.
+            guard let handler = sessionDelegate.backgroundCompletionHandler else { return }
             sessionDelegate.backgroundCompletionHandler = nil
+            let pendingSave = saveChain
+            Task { @MainActor in
+                await pendingSave?.value
+                handler()
+            }
         }
     }
 
@@ -1034,8 +1057,21 @@ final class DownloadManager {
                 processQueue()
                 return
             case 401:
-                file.records[record.id] = record
-                scheduleRetry(recordId: record.id, resumeData: nil, refreshToken: true)
+                // Bounded like every other retry path — a persistently
+                // expired credential would otherwise refresh-and-retry
+                // forever with the record stuck in `.downloading`.
+                if record.retryCount < Self.maxRetries {
+                    record.retryCount += 1
+                    file.records[record.id] = record
+                    scheduleRetry(recordId: record.id, resumeData: nil, refreshToken: true)
+                } else {
+                    record.localStatus = .failed
+                    record.lastError = "unauthorized"
+                    file.records[record.id] = record
+                    persist()
+                    notifyTerminalFailure(record)
+                    processQueue()
+                }
                 return
             default:
                 break
@@ -1586,15 +1622,33 @@ final class DownloadManager {
     /// download that would push its series over the cap. The server only
     /// soft-gates; the client is authoritative.
     private func exceedsStorageCap(for record: DownloadRecord) -> Bool {
-        guard let seriesId = record.seriesId,
+        guard let seriesId = capSeriesId(for: record),
               let subscription = subscription(forSeriesId: seriesId),
               subscription.maxStorageBytes > 0 else {
             return false
         }
+        // Count completed bytes plus the expected size of in-flight
+        // transfers — `processQueue` can start several episodes in one
+        // pass, and counting only `.completed` would let each of them see
+        // the same free capacity and overshoot the cap together.
         let used = file.records.values
-            .filter { $0.seriesId == seriesId && $0.localStatus == .completed }
-            .reduce(Int64(0)) { $0 + $1.fileSize }
+            .filter { other in
+                guard other.id != record.id, capSeriesId(for: other) == seriesId else { return false }
+                switch other.localStatus {
+                case .completed, .downloading, .fetchingAssets, .paused: return true
+                default: return false
+                }
+            }
+            .reduce(Int64(0)) { $0 + max($1.fileSize, $1.bytesDownloaded) }
         return used + max(record.fileSize, 0) > subscription.maxStorageBytes
+    }
+
+    /// Series identity for cap accounting. Episode rows registered by
+    /// subscription sync carry the series id in `contentId` until the
+    /// manifest hydrates `seriesId` — without the fallback, freshly synced
+    /// episodes would bypass the cap entirely.
+    private func capSeriesId(for record: DownloadRecord) -> String? {
+        record.seriesId ?? (record.episodeId != nil ? record.contentId : nil)
     }
 
     private func absoluteFileURLForNewAsset(recordId: String, filename: String) -> URL? {
@@ -1679,5 +1733,6 @@ final class DownloadManager {
     private func clearTransferRate(recordId: String) {
         rateSamples.removeValue(forKey: recordId)
         transferRates.removeValue(forKey: recordId)
+        lastProgressPublish.removeValue(forKey: recordId)
     }
 }

@@ -42,7 +42,7 @@ enum Route: Hashable {
     /// Offline playback of a completed download. Distinct from `.player`
     /// so the player reads the local file + stored manifest instead of
     /// starting a server session.
-    case offlinePlayer(downloadId: String, contentId: String, resumePosition: Double?)
+    case offlinePlayer(downloadId: String, contentId: String, startFromBeginning: Bool, resumePosition: Double?)
 
     /// Offline series browse, reached from the Downloads tab: a season /
     /// episode list scoped to downloaded content, rendered entirely from

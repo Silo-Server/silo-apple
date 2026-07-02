@@ -18,4 +18,21 @@ struct DownloadedBadge: View {
             .shadow(color: .black.opacity(0.3), radius: 4)
     }
 }
+
+/// Card ZStack layer pinning the downloaded indicator bottom-trailing —
+/// clear of the watched check (top-trailing) and episode badges
+/// (bottom-leading). Gated by the manager's capability-aware lookup so
+/// nothing renders on servers without downloads.
+struct DownloadedBadgeOverlay: View {
+    let contentId: String?
+    let padding: CGFloat
+
+    var body: some View {
+        if let contentId, DownloadManager.shared.isDownloaded(contentId: contentId) {
+            DownloadedBadge()
+                .padding(padding)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        }
+    }
+}
 #endif
