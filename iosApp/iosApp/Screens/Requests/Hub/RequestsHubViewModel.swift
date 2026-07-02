@@ -70,13 +70,22 @@ final class RequestsHubViewModel {
 
     private func performSearch(_ trimmed: String) async {
         isSearching = true
+        // Cancellation paths must still clear the spinner: a replacement
+        // search re-raises `isSearching` after its own 300ms debounce, so a
+        // cancelled task's `false` can never stomp a successor's `true`.
         do {
             let page = try await api.requestsSearch(query: trimmed)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                isSearching = false
+                return
+            }
             searchResults = page.results.filter { $0.mediaType != .unknown }
             hasSearched = true
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                isSearching = false
+                return
+            }
             searchResults = []
             hasSearched = true
         }

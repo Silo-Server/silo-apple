@@ -12,6 +12,9 @@ final class MyRequestsViewModel {
     private(set) var actionErrorMessage: String?
 
     private var hasLoaded = false
+    /// In-flight bus-triggered reload; cancelled and replaced on the next
+    /// event so a slow earlier response can't overwrite a newer one.
+    private var reloadTask: Task<Void, Never>?
     private let api: ContinuumAPI
 
     init(api: ContinuumAPI = .shared) {
@@ -56,6 +59,7 @@ final class MyRequestsViewModel {
     /// correct response.
     func applyRequestUpdate(_ record: MediaRequest) {
         guard cancellingId == nil else { return }
-        Task { await load() }
+        reloadTask?.cancel()
+        reloadTask = Task { await load() }
     }
 }

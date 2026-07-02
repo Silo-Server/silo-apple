@@ -39,6 +39,9 @@ final class RequestDetailViewModel {
     private(set) var actionErrorMessage: String?
 
     private let api: ContinuumAPI
+    /// In-flight bus-triggered reload; cancelled and replaced on the next
+    /// event so a slow earlier response can't overwrite a newer one.
+    private var reloadTask: Task<Void, Never>?
 
     init(mediaType: RequestMediaType, tmdbId: Int, api: ContinuumAPI = .shared) {
         self.mediaType = mediaType
@@ -113,6 +116,7 @@ final class RequestDetailViewModel {
               record.mediaType == detail.mediaType,
               record.tmdbId == detail.tmdbId,
               !isSubmitting else { return }
-        Task { await load() }
+        reloadTask?.cancel()
+        reloadTask = Task { await load() }
     }
 }

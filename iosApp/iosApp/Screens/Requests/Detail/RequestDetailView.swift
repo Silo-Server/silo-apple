@@ -267,9 +267,22 @@ struct RequestDetailView: View {
         #else
         .buttonStyle(.borderless)
         #endif
-        .disabled(!action.isInteractive)
+        .disabled(isButtonDisabled(for: action))
         .accessibilityLabel(buttonTitle(for: action))
         .animation(.easeOut(duration: 0.15), value: action.isInteractive)
+    }
+
+    /// tvOS keeps the CTA enabled even in non-interactive states — a
+    /// disabled Button drops out of the focus graph, which would yank focus
+    /// mid-morph after a submit (the exact drop the single-Button design
+    /// exists to prevent). The action closure already ignores presses in
+    /// non-interactive states, so the button is inert but focusable.
+    private func isButtonDisabled(for action: RequestPrimaryAction) -> Bool {
+        #if os(tvOS)
+        false
+        #else
+        !action.isInteractive
+        #endif
     }
 
     @ViewBuilder

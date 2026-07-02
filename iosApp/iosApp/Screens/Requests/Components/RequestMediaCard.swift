@@ -38,6 +38,13 @@ struct RequestMediaCard: View {
         self.onTap = onTap
     }
 
+    private var accessibilityTitle: String {
+        var label = title
+        if let year, year > 0 { label += ", \(year)" }
+        if let state { label += ", \(state.label)" }
+        return label
+    }
+
     private var width: CGFloat { RequestsUI.cardWidth }
 
     private var height: CGFloat {
@@ -51,6 +58,10 @@ struct RequestMediaCard: View {
                 posterImage
             }
             .buttonStyle(.card)
+            // The caption lives outside the button (so the .card style
+            // lifts only the poster) — without an explicit label VoiceOver
+            // would announce an image-only "Button".
+            .accessibilityLabel(accessibilityTitle)
 
             caption
         }

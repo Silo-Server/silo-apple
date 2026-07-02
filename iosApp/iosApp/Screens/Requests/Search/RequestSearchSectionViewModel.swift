@@ -40,9 +40,15 @@ final class RequestSearchSectionViewModel {
 
     private func performSearch(_ trimmed: String) async {
         isLoading = true
+        // Cancellation paths must still clear the spinner: a replacement
+        // search re-raises `isLoading` after its own 300ms debounce, so a
+        // cancelled task's `false` can never stomp a successor's `true`.
         do {
             let page = try await api.requestsSearch(query: trimmed)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                isLoading = false
+                return
+            }
             // Only titles the library can't already answer — in-library
             // matches are what the catalog grid above is for.
             results = page.results
@@ -50,7 +56,10 @@ final class RequestSearchSectionViewModel {
                 .prefix(maxResults)
                 .map { $0 }
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                isLoading = false
+                return
+            }
             // Silent: this is a supplementary strip, not the primary search.
             results = []
         }

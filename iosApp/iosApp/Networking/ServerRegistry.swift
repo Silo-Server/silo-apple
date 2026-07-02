@@ -203,6 +203,12 @@ final class ServerRegistry {
             AICapabilities.shared.reset()
             RequestsFeatureStore.shared.reset()
             RequestsEventBus.shared.reset()
+            // Re-probe against the just-activated server: a switch between
+            // signed-in servers can keep authState at .authenticated, so
+            // without this the Requests entry points would stay hidden
+            // until the next foreground. Fire-and-forget — the probe
+            // degrades to disabled on any failure.
+            Task { await RequestsFeatureStore.shared.refresh() }
         }
     }
 
@@ -247,6 +253,10 @@ final class ServerRegistry {
                 AICapabilities.shared.reset()
                 RequestsFeatureStore.shared.reset()
                 RequestsEventBus.shared.reset()
+                // Same rationale as `switchTo`: the fallback server may
+                // already be signed in, with no auth-state change to
+                // trigger the usual probe.
+                Task { await RequestsFeatureStore.shared.refresh() }
             }
         }
         persist()
