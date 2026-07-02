@@ -6,6 +6,15 @@ import SwiftUI
 /// Drops on top of the video with no dimming backdrop so playback stays
 /// visible, matching the "HUD over media" idiom rather than a modal sheet.
 /// Menu dismisses via `onExitCommand` on the host view.
+///
+/// Focus model (see docs/tvos-focus.md): every interactive row is a real
+/// `Button` and movement is owned entirely by the tvOS focus engine —
+/// columns are `.focusSection()`s and the tab bar routes entry to the
+/// active pill with `defaultFocus(priority: .userInitiated)`. `@FocusState`
+/// is used only to seed focus (HUD open, dialog open) and to restore it
+/// (dialog close), never to drive per-press movement. The two read-only
+/// panes (Info / Stats) are single composite focusables that page their
+/// scroll content, which is the sanctioned exception.
 struct TVPlayerInfoHUD: View {
     let viewModel: PlayerViewModel
     @Binding var activeTab: Tab
@@ -90,6 +99,10 @@ struct TVPlayerInfoHUD: View {
             }
         }
         .focusSection()
+        // Rail: moving Up from the panel must land on the *active* pill, not
+        // the geometrically nearest one — with focus-driven selection a
+        // nearest-pill landing would switch panes as a side effect.
+        .defaultFocus($focusedTab, activeTab, priority: .userInitiated)
     }
 
     // MARK: - Panel
@@ -99,10 +112,10 @@ struct TVPlayerInfoHUD: View {
             switch activeTab {
             case .info:      InfoPane(viewModel: viewModel, onMoveToTabs: focusActiveTab)
             case .stats:     StatsPane(viewModel: viewModel, onMoveToTabs: focusActiveTab)
-            case .video:     VideoPane(viewModel: viewModel, onMoveToTabs: focusActiveTab)
-            case .audio:     AudioPane(viewModel: viewModel, onMoveToTabs: focusActiveTab)
-            case .subtitles: SubtitlesPane(viewModel: viewModel, onMoveToTabs: focusActiveTab, onCloseHUD: onDismiss)
-            case .chapters:  ChaptersPane(viewModel: viewModel, onSelect: onDismiss, onMoveToTabs: focusActiveTab)
+            case .video:     VideoPane(viewModel: viewModel)
+            case .audio:     AudioPane(viewModel: viewModel)
+            case .subtitles: SubtitlesPane(viewModel: viewModel, onCloseHUD: onDismiss)
+            case .chapters:  ChaptersPane(viewModel: viewModel, onSelect: onDismiss)
             }
         }
         .padding(.horizontal, 28)
@@ -125,13 +138,11 @@ struct TVPlayerInfoHUD: View {
         )
         .shadow(color: .black.opacity(0.5), radius: 20, y: 10)
         .focusSection()
-        .onMoveCommand { direction in
-            if direction == .up {
-                focusActiveTab()
-            }
-        }
     }
 
+    /// Used by the composite Info/Stats panes when Up is pressed at the top
+    /// of their scroll content. Button-based panes don't need this — the
+    /// tab bar's `defaultFocus` rail routes native Up movement instead.
     private func focusActiveTab() {
         guard availableTabs.contains(activeTab) else {
             focusedTab = availableTabs.first
@@ -153,7 +164,38 @@ private struct TabPill: View {
     private var isFocused: Bool { focusedTab == tab }
 
     var body: some View {
-        Text(title)
+        Button(action: onSelect) {
+            Text(title)
+        }
+        .buttonStyle(HUDTabPillStyle(isSelected: isSelected))
+        .focused($focusedTab, equals: tab)
+        // Focus-driven selection: moving the remote across tabs swaps
+        // the pane below without requiring a Select press. Matches the
+        // native Apple TV segmented-control idiom.
+        .onChange(of: isFocused) { _, focused in
+            if focused { onSelect() }
+        }
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private struct HUDTabPillStyle: ButtonStyle {
+    let isSelected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        HUDTabPillBody(configuration: configuration, isSelected: isSelected)
+    }
+}
+
+private struct HUDTabPillBody: View {
+    let configuration: ButtonStyleConfiguration
+    let isSelected: Bool
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        configuration.label
             .font(.system(size: 22, weight: .semibold))
             .foregroundStyle(foreground)
             .padding(.horizontal, 24)
@@ -161,23 +203,10 @@ private struct TabPill: View {
             .background(Capsule(style: .continuous).fill(background))
             .overlay(Capsule(style: .continuous).stroke(strokeColor, lineWidth: 1))
             .contentShape(Capsule())
-            .focusable(true)
-            .focused($focusedTab, equals: tab)
-            // Focus-driven selection: moving the remote across tabs swaps
-            // the pane below without requiring a Select press. Matches the
-            // native Apple TV segmented-control idiom.
-            .onChange(of: isFocused) { _, focused in
-                if focused { onSelect() }
-            }
-            // Select on an already-focused pill is a no-op under
-            // focus-driven selection but stays wired for keyboard
-            // accessibility + an explicit "re-pick" interaction.
-            .onTapGesture(perform: onSelect)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .focusEffectDisabled()
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isSelected)
-            .accessibilityAddTraits(.isButton)
-            .accessibilityLabel(title)
-            .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var foreground: Color {
@@ -311,6 +340,139 @@ private struct LabelValueRow: View {
                 .lineLimit(1)
         }
         .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Row chrome
+
+/// Shared row chrome for every interactive HUD row: white fill when focused,
+/// optional faint wash when it represents the current selection. Owns all
+/// focus appearance via `@Environment(\.isFocused)` and suppresses the system
+/// halo — same idiom as `TVPillButtonStyle`.
+private struct HUDRowButtonStyle: ButtonStyle {
+    var cornerRadius: CGFloat = 10
+    var isSelected: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        HUDRowButtonBody(
+            configuration: configuration,
+            cornerRadius: cornerRadius,
+            isSelected: isSelected
+        )
+    }
+}
+
+private struct HUDRowButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let cornerRadius: CGFloat
+    let isSelected: Bool
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        configuration.label
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(background)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .focusEffectDisabled()
+            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
+    }
+
+    private var background: Color {
+        if isFocused { return .white }
+        if isSelected { return .white.opacity(0.14) }
+        return .clear
+    }
+}
+
+/// Chevron row that opens a picker dialog. Label/value colors invert when
+/// the row is focused; movement and Select handling are native.
+private struct HUDSettingRow: View {
+    let label: String
+    let value: String
+    var colorHex: String? = nil
+    var systemImage: String? = nil
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HUDSettingRowLabel(
+                label: label,
+                value: value,
+                colorHex: colorHex,
+                systemImage: systemImage,
+                showsChevron: true
+            )
+        }
+        .buttonStyle(HUDRowButtonStyle())
+        .accessibilityLabel(label)
+        .accessibilityValue(value)
+    }
+}
+
+/// Boolean row that flips on Select — one press instead of the previous
+/// open-dialog → pick → close round-trip.
+private struct HUDToggleRow: View {
+    let label: String
+    let isOn: Bool
+    let onToggle: (Bool) -> Void
+
+    var body: some View {
+        Button { onToggle(!isOn) } label: {
+            HUDSettingRowLabel(
+                label: label,
+                value: HUDPickerOptions.boolLabel(isOn),
+                showsChevron: false
+            )
+        }
+        .buttonStyle(HUDRowButtonStyle())
+        .accessibilityLabel(label)
+        .accessibilityValue(HUDPickerOptions.boolLabel(isOn))
+        .accessibilityAddTraits(.isToggle)
+    }
+}
+
+private struct HUDSettingRowLabel: View {
+    let label: String
+    let value: String
+    var colorHex: String? = nil
+    var systemImage: String? = nil
+    let showsChevron: Bool
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        HStack(spacing: 14) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 20, weight: .semibold))
+            }
+            Text(label)
+                .font(.system(size: 22, weight: .medium))
+                .lineLimit(1)
+            Spacer(minLength: 18)
+            HStack(spacing: 10) {
+                if let colorHex {
+                    ColorSwatch(hex: colorHex)
+                }
+                Text(value)
+                    .font(.system(size: 22, weight: .semibold))
+                    .lineLimit(1)
+                    .foregroundStyle(isFocused ? .black.opacity(0.78) : .white.opacity(0.72))
+                if showsChevron {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(isFocused ? .black.opacity(0.55) : .white.opacity(0.45))
+                }
+            }
+        }
+        .foregroundStyle(isFocused ? Color.black : Color.white)
     }
 }
 
@@ -476,24 +638,24 @@ private struct StatsPane: View {
 
 // MARK: - Video pane
 
-/// Playback / display / sync controls use row-triggered picker dialogs so
-/// every editable HUD option shares the same tvOS focus behavior.
+/// Playback / display / sync controls. Multi-option settings open the shared
+/// picker dialog; booleans toggle in place. Focus movement between rows and
+/// across the two columns is native.
 private struct VideoPane: View {
     let viewModel: PlayerViewModel
-    let onMoveToTabs: () -> Void
 
     @State private var activePicker: HUDPickerPresentation?
     @State private var pickerReturnField: Field?
-    @FocusState private var focusedVideoField: Field?
+    @FocusState private var focusedField: Field?
 
+    /// Identity for the picker-backed rows, used only to restore focus after
+    /// the dialog closes.
     private enum Field: Hashable {
         case quality
         case speed
         case aspect
-        case hdr
         case audioDelay
         case subtitleDelay
-        case autoPlay
     }
 
     var body: some View {
@@ -501,16 +663,7 @@ private struct VideoPane: View {
             HStack(alignment: .top, spacing: 48) {
                 PaneColumn("Playback") {
                     VStack(spacing: 2) {
-                        HUDFocusedSettingRow(
-                            label: "Quality",
-                            value: qualityValue,
-                            focused: $focusedVideoField,
-                            focusID: .quality,
-                            onMoveUp: moveUp(from: .quality),
-                            onMoveDown: moveDown(from: .quality),
-                            onMoveLeft: hold(.quality),
-                            onMoveRight: moveRight(from: .quality)
-                        ) {
+                        HUDSettingRow(label: "Quality", value: qualityValue) {
                             presentPicker(
                                 for: .quality,
                                 HUDPickerPresentation(
@@ -521,17 +674,9 @@ private struct VideoPane: View {
                                 )
                             )
                         }
+                        .focused($focusedField, equals: .quality)
 
-                        HUDFocusedSettingRow(
-                            label: "Speed",
-                            value: speedLabel(viewModel.settings.playbackSpeed),
-                            focused: $focusedVideoField,
-                            focusID: .speed,
-                            onMoveUp: moveUp(from: .speed),
-                            onMoveDown: moveDown(from: .speed),
-                            onMoveLeft: hold(.speed),
-                            onMoveRight: moveRight(from: .speed)
-                        ) {
+                        HUDSettingRow(label: "Speed", value: speedLabel(viewModel.settings.playbackSpeed)) {
                             presentPicker(
                                 for: .speed,
                                 HUDPickerPresentation(
@@ -546,18 +691,10 @@ private struct VideoPane: View {
                                 )
                             )
                         }
+                        .focused($focusedField, equals: .speed)
 
                         if viewModel.backendCapabilities.supportsVideoGravity {
-                            HUDFocusedSettingRow(
-                                label: "Aspect",
-                                value: viewModel.settings.videoGravity.label,
-                                focused: $focusedVideoField,
-                                focusID: .aspect,
-                                onMoveUp: moveUp(from: .aspect),
-                                onMoveDown: moveDown(from: .aspect),
-                                onMoveLeft: hold(.aspect),
-                                onMoveRight: moveRight(from: .aspect)
-                            ) {
+                            HUDSettingRow(label: "Aspect", value: viewModel.settings.videoGravity.label) {
                                 presentPicker(
                                     for: .aspect,
                                     HUDPickerPresentation(
@@ -572,47 +709,24 @@ private struct VideoPane: View {
                                     )
                                 )
                             }
+                            .focused($focusedField, equals: .aspect)
                         }
 
                         if viewModel.backendCapabilities.supportsHDRToggle {
-                            HUDFocusedSettingRow(
-                                label: "HDR passthrough",
-                                value: HUDPickerOptions.boolLabel(viewModel.settings.hdrEnabled),
-                                focused: $focusedVideoField,
-                                focusID: .hdr,
-                                onMoveUp: moveUp(from: .hdr),
-                                onMoveDown: moveDown(from: .hdr),
-                                onMoveLeft: hold(.hdr),
-                                onMoveRight: moveRight(from: .hdr)
-                            ) {
-                                presentPicker(
-                                    for: .hdr,
-                                    HUDPickerPresentation(
-                                        title: "HDR Passthrough",
-                                        options: HUDPickerOptions.onOff,
-                                        selection: HUDPickerOptions.boolSelection(viewModel.settings.hdrEnabled),
-                                        onSelect: { value in
-                                            viewModel.setHDREnabled(HUDPickerOptions.boolValue(for: value))
-                                        }
-                                    )
-                                )
+                            HUDToggleRow(label: "HDR passthrough", isOn: viewModel.settings.hdrEnabled) {
+                                viewModel.setHDREnabled($0)
                             }
                         }
                     }
                 }
+                .focusSection()
 
                 PaneColumn("Sync") {
                     VStack(spacing: 2) {
                         if viewModel.backendCapabilities.supportsAudioDelay {
-                            HUDFocusedSettingRow(
+                            HUDSettingRow(
                                 label: "Audio delay",
-                                value: HUDPickerOptions.delayLabel(viewModel.settings.audioSyncMs),
-                                focused: $focusedVideoField,
-                                focusID: .audioDelay,
-                                onMoveUp: moveUp(from: .audioDelay),
-                                onMoveDown: moveDown(from: .audioDelay),
-                                onMoveLeft: moveLeft(from: .audioDelay),
-                                onMoveRight: hold(.audioDelay)
+                                value: HUDPickerOptions.delayLabel(viewModel.settings.audioSyncMs)
                             ) {
                                 presentPicker(
                                     for: .audioDelay,
@@ -633,18 +747,13 @@ private struct VideoPane: View {
                                     )
                                 )
                             }
+                            .focused($focusedField, equals: .audioDelay)
                         }
 
                         if viewModel.backendCapabilities.supportsSubtitleDelay {
-                            HUDFocusedSettingRow(
+                            HUDSettingRow(
                                 label: "Subtitle delay",
-                                value: HUDPickerOptions.delayLabel(viewModel.settings.subtitleSyncMs),
-                                focused: $focusedVideoField,
-                                focusID: .subtitleDelay,
-                                onMoveUp: moveUp(from: .subtitleDelay),
-                                onMoveDown: moveDown(from: .subtitleDelay),
-                                onMoveLeft: moveLeft(from: .subtitleDelay),
-                                onMoveRight: hold(.subtitleDelay)
+                                value: HUDPickerOptions.delayLabel(viewModel.settings.subtitleSyncMs)
                             ) {
                                 presentPicker(
                                     for: .subtitleDelay,
@@ -665,32 +774,15 @@ private struct VideoPane: View {
                                     )
                                 )
                             }
+                            .focused($focusedField, equals: .subtitleDelay)
                         }
 
-                        HUDFocusedSettingRow(
-                            label: "Auto-play next",
-                            value: HUDPickerOptions.boolLabel(viewModel.settings.autoPlayNextEpisode),
-                            focused: $focusedVideoField,
-                            focusID: .autoPlay,
-                            onMoveUp: moveUp(from: .autoPlay),
-                            onMoveDown: moveDown(from: .autoPlay),
-                            onMoveLeft: moveLeft(from: .autoPlay),
-                            onMoveRight: hold(.autoPlay)
-                        ) {
-                            presentPicker(
-                                for: .autoPlay,
-                                HUDPickerPresentation(
-                                    title: "Auto-play Next",
-                                    options: HUDPickerOptions.onOff,
-                                    selection: HUDPickerOptions.boolSelection(viewModel.settings.autoPlayNextEpisode),
-                                    onSelect: { value in
-                                        viewModel.settings.setAutoPlayNextEpisode(HUDPickerOptions.boolValue(for: value))
-                                    }
-                                )
-                            )
+                        HUDToggleRow(label: "Auto-play next", isOn: viewModel.settings.autoPlayNextEpisode) {
+                            viewModel.settings.setAutoPlayNextEpisode($0)
                         }
                     }
                 }
+                .focusSection()
             }
             .disabled(activePicker != nil)
             .opacity(activePicker != nil ? 0.28 : 1)
@@ -706,29 +798,6 @@ private struct VideoPane: View {
             }
         }
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: activePicker?.id)
-    }
-
-    private var playbackFields: [Field] {
-        var fields: [Field] = [.quality, .speed]
-        if viewModel.backendCapabilities.supportsVideoGravity {
-            fields.append(.aspect)
-        }
-        if viewModel.backendCapabilities.supportsHDRToggle {
-            fields.append(.hdr)
-        }
-        return fields
-    }
-
-    private var syncFields: [Field] {
-        var fields: [Field] = []
-        if viewModel.backendCapabilities.supportsAudioDelay {
-            fields.append(.audioDelay)
-        }
-        if viewModel.backendCapabilities.supportsSubtitleDelay {
-            fields.append(.subtitleDelay)
-        }
-        fields.append(.autoPlay)
-        return fields
     }
 
     private var selectedQuality: ApplePlaybackQualityOption {
@@ -750,56 +819,8 @@ private struct VideoPane: View {
         viewModel.qualityOptions.map { .init(id: $0.id, label: $0.labelWithBitrate) }
     }
 
-    private func hold(_ field: Field) -> () -> Void {
-        { focusedVideoField = field }
-    }
-
-    private func moveUp(from field: Field) -> () -> Void {
-        {
-            guard let previous = neighbor(of: field, offset: -1) else {
-                onMoveToTabs()
-                return
-            }
-            focusedVideoField = previous
-        }
-    }
-
-    private func moveDown(from field: Field) -> () -> Void {
-        { focusedVideoField = neighbor(of: field, offset: 1) ?? field }
-    }
-
-    private func moveLeft(from field: Field) -> () -> Void {
-        { focusedVideoField = matchingField(from: field, to: playbackFields) ?? field }
-    }
-
-    private func moveRight(from field: Field) -> () -> Void {
-        { focusedVideoField = matchingField(from: field, to: syncFields) ?? field }
-    }
-
-    private func column(containing field: Field) -> [Field] {
-        playbackFields.contains(field) ? playbackFields : syncFields
-    }
-
-    private func neighbor(of field: Field, offset: Int) -> Field? {
-        let fields = column(containing: field)
-        guard let index = fields.firstIndex(of: field) else { return nil }
-        let nextIndex = index + offset
-        guard fields.indices.contains(nextIndex) else { return nil }
-        return fields[nextIndex]
-    }
-
-    private func matchingField(from field: Field, to targetFields: [Field]) -> Field? {
-        guard !targetFields.isEmpty else { return nil }
-        let sourceFields = column(containing: field)
-        guard let sourceIndex = sourceFields.firstIndex(of: field) else {
-            return targetFields.first
-        }
-        return targetFields[min(sourceIndex, targetFields.count - 1)]
-    }
-
     private func presentPicker(for field: Field, _ presentation: HUDPickerPresentation) {
         pickerReturnField = field
-        focusedVideoField = field
         activePicker = presentation
     }
 
@@ -807,7 +828,7 @@ private struct VideoPane: View {
         let field = pickerReturnField
         activePicker = nil
         if let field {
-            focusedVideoField = field
+            focusedField = field
         }
     }
 
@@ -882,6 +903,10 @@ private struct HUDPickerPresentation: Identifiable {
     let onSelect: (String) -> Void
 }
 
+/// Modal option list over a dimmed, `.disabled` pane — disabling the
+/// background is what keeps focus contained in here. Movement and
+/// keep-visible scrolling are native; focus is seeded onto the current
+/// selection when the dialog appears.
 private struct HUDPickerDialog: View {
     let title: String
     let options: [HUDDropdownOption]
@@ -899,30 +924,26 @@ private struct HUDPickerDialog: View {
 
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: options.count > 7) {
-                    LazyVStack(spacing: 4) {
+                    VStack(spacing: 4) {
                         ForEach(options) { option in
                             HUDPickerOptionRow(
                                 option: option,
-                                isSelected: option.id.caseInsensitiveCompare(selection) == .orderedSame,
-                                focusedOptionID: $focusedOptionID,
-                                onMove: moveFocus
+                                isSelected: isSelected(option)
                             ) {
                                 onSelect(option.id)
                                 onClose()
                             }
+                            .focused($focusedOptionID, equals: option.id)
                             .id(option.id)
                         }
                     }
                 }
                 .frame(maxHeight: 520)
                 .onAppear {
-                    scrollToFocusedOption(with: proxy, animated: false)
-                }
-                .onChange(of: focusedOptionID) { _, _ in
-                    scrollToFocusedOption(with: proxy)
-                }
-                .onChange(of: selection) { _, _ in
-                    scrollToFocusedOption(with: proxy)
+                    if let initialFocusID {
+                        proxy.scrollTo(initialFocusID, anchor: .center)
+                        focusedOptionID = initialFocusID
+                    }
                 }
             }
         }
@@ -939,53 +960,40 @@ private struct HUDPickerDialog: View {
         )
         .shadow(color: .black.opacity(0.62), radius: 26, y: 14)
         .focusSection()
+        .defaultFocus($focusedOptionID, initialFocusID)
         .onExitCommand(perform: onClose)
-        .onAppear(perform: focusSelection)
-        .onChange(of: focusedOptionID) { _, value in
-            if value == nil {
-                focusSelection()
-            }
-        }
         .transition(.scale(scale: 0.96).combined(with: .opacity))
     }
 
-    private func focusSelection() {
-        focusedOptionID = options.first { $0.id.caseInsensitiveCompare(selection) == .orderedSame }?.id
-            ?? options.first?.id
+    private func isSelected(_ option: HUDDropdownOption) -> Bool {
+        option.id.caseInsensitiveCompare(selection) == .orderedSame
     }
 
-    private func moveFocus(from option: HUDDropdownOption, offset: Int) {
-        guard let index = options.firstIndex(of: option) else {
-            focusSelection()
-            return
-        }
-        let nextIndex = max(0, min(options.count - 1, index + offset))
-        focusedOptionID = options[nextIndex].id
-    }
-
-    private func scrollToFocusedOption(with proxy: ScrollViewProxy, animated: Bool = true) {
-        let targetID = focusedOptionID
-            ?? options.first { $0.id.caseInsensitiveCompare(selection) == .orderedSame }?.id
-            ?? options.first?.id
-        guard let targetID else { return }
-        if animated {
-            withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
-                proxy.scrollTo(targetID, anchor: .center)
-            }
-        } else {
-            proxy.scrollTo(targetID, anchor: .center)
-        }
+    private var initialFocusID: String? {
+        options.first(where: isSelected)?.id ?? options.first?.id
     }
 }
 
 private struct HUDPickerOptionRow: View {
     let option: HUDDropdownOption
     let isSelected: Bool
-    @FocusState.Binding var focusedOptionID: String?
-    let onMove: (HUDDropdownOption, Int) -> Void
     let onSelect: () -> Void
 
-    private var isFocused: Bool { focusedOptionID == option.id }
+    var body: some View {
+        Button(action: onSelect) {
+            HUDPickerOptionLabel(option: option, isSelected: isSelected)
+        }
+        .buttonStyle(HUDRowButtonStyle(isSelected: isSelected))
+        .accessibilityLabel(option.label)
+        .accessibilityValue(isSelected ? "Selected" : "")
+    }
+}
+
+private struct HUDPickerOptionLabel: View {
+    let option: HUDDropdownOption
+    let isSelected: Bool
+
+    @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         HStack(spacing: 14) {
@@ -1001,160 +1009,7 @@ private struct HUDPickerOptionRow: View {
                     .font(.system(size: 22, weight: .semibold))
             }
         }
-        .foregroundStyle((isFocused || isSelected) ? .black : .white)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(isFocused || isSelected ? Color.white : Color.clear)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .focusable(true)
-        .focused($focusedOptionID, equals: option.id)
-        .onTapGesture(perform: onSelect)
-        .onMoveCommand { direction in
-            switch direction {
-            case .up:
-                move(-1)
-            case .down:
-                move(1)
-            default:
-                focusedOptionID = option.id
-            }
-        }
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(option.label)
-        .accessibilityValue(isSelected ? "Selected" : "")
-    }
-
-    private func move(_ offset: Int) {
-        onMove(option, offset)
-    }
-}
-
-private struct HUDFocusedTrackRow<FocusID: Hashable>: View {
-    let name: String
-    let attributes: String?
-    let isSelected: Bool
-    var isDisabled: Bool = false
-    @FocusState.Binding var focused: FocusID?
-    let focusID: FocusID
-    var onMoveUp: (() -> Void)? = nil
-    var onMoveRight: (() -> Void)? = nil
-    let action: () -> Void
-
-    private var isFocused: Bool { focused == focusID }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(name)
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(isFocused ? .black : .white)
-                    .lineLimit(1)
-                if let attributes {
-                    Text(attributes)
-                        .font(.system(size: 17))
-                        .foregroundStyle(isFocused ? .black.opacity(0.62) : .white.opacity(0.55))
-                        .lineLimit(1)
-                }
-            }
-            Spacer(minLength: 8)
-            if isSelected {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(isFocused ? .black : .white)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isFocused ? Color.white : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .focusable(true)
-        .focused($focused, equals: focusID)
-        .onTapGesture(perform: action)
-        .onMoveCommand { direction in
-            switch direction {
-            case .up: onMoveUp?()
-            case .right: onMoveRight?()
-            default: break
-            }
-        }
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.35 : 1.0)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(name)
-        .accessibilityValue(isSelected ? "Selected" : "")
-    }
-}
-
-private struct HUDFocusedSettingRow<FocusID: Hashable>: View {
-    let label: String
-    let value: String
-    var colorHex: String? = nil
-    var systemImage: String? = nil
-    @FocusState.Binding var focused: FocusID?
-    let focusID: FocusID
-    var onMoveUp: (() -> Void)? = nil
-    var onMoveDown: (() -> Void)? = nil
-    var onMoveLeft: (() -> Void)? = nil
-    var onMoveRight: (() -> Void)? = nil
-    let action: () -> Void
-
-    private var isFocused: Bool { focused == focusID }
-
-    var body: some View {
-        HStack(spacing: 14) {
-            if let systemImage {
-                Image(systemName: systemImage)
-                    .font(.system(size: 20, weight: .semibold))
-            }
-            Text(label)
-                .font(.system(size: 22, weight: .medium))
-                .lineLimit(1)
-            Spacer(minLength: 18)
-            HStack(spacing: 10) {
-                if let colorHex {
-                    ColorSwatch(hex: colorHex)
-                }
-                Text(value)
-                    .font(.system(size: 22, weight: .semibold))
-                    .lineLimit(1)
-                    .foregroundStyle(isFocused ? .black.opacity(0.78) : .white.opacity(0.72))
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(isFocused ? .black.opacity(0.55) : .white.opacity(0.45))
-            }
-        }
-        .foregroundStyle(isFocused ? .black : .white)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(isFocused ? Color.white : Color.clear)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .focusable(true)
-        .focused($focused, equals: focusID)
-        .onTapGesture(perform: action)
-        .onMoveCommand { direction in
-            switch direction {
-            case .up: onMoveUp?()
-            case .down: onMoveDown?()
-            case .left: onMoveLeft?()
-            case .right: onMoveRight?()
-            default: break
-            }
-        }
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(label)
-        .accessibilityValue(value)
+        .foregroundStyle(isFocused ? Color.black : Color.white)
     }
 }
 
@@ -1194,7 +1049,6 @@ private struct SubtitleAppearanceDialog: View {
         case font
         case size
         case textColor
-        case textOutline
         case outlineColor
         case backgroundColor
         case opacity
@@ -1218,245 +1072,177 @@ private struct SubtitleAppearanceDialog: View {
                     closeButton
                 }
 
-                ScrollViewReader { proxy in
-                    ScrollView(showsIndicators: true) {
-                        VStack(spacing: 2) {
-                            HUDFocusedSettingRow(
-                                label: "Style",
-                                value: viewModel.settings.subtitleAppearance.backgroundStyle.label,
-                                focused: $focusedField,
-                                focusID: .style,
-                                onMoveUp: moveUp(from: .style),
-                                onMoveDown: moveDown(from: .style),
-                                onMoveLeft: hold(.style),
-                                onMoveRight: hold(.style)
-                            ) {
-                                presentPicker(
-                                    for: .style,
-                                    HUDPickerPresentation(
-                                        title: "Subtitle Style",
-                                        options: Self.backgroundStyleOptions,
-                                        selection: viewModel.settings.subtitleAppearance.backgroundStyle.rawValue,
-                                        onSelect: { value in
-                                            if let style = SubtitleBackgroundStylePreset(rawValue: value) {
-                                                updateAppearance { $0.backgroundStyle = style }
-                                            }
+                ScrollView(showsIndicators: true) {
+                    VStack(spacing: 2) {
+                        HUDSettingRow(
+                            label: "Style",
+                            value: viewModel.settings.subtitleAppearance.backgroundStyle.label
+                        ) {
+                            presentPicker(
+                                for: .style,
+                                HUDPickerPresentation(
+                                    title: "Subtitle Style",
+                                    options: Self.backgroundStyleOptions,
+                                    selection: viewModel.settings.subtitleAppearance.backgroundStyle.rawValue,
+                                    onSelect: { value in
+                                        if let style = SubtitleBackgroundStylePreset(rawValue: value) {
+                                            updateAppearance { $0.backgroundStyle = style }
                                         }
-                                    )
+                                    }
                                 )
-                            }
-                            .id(Field.style)
-                            HUDFocusedSettingRow(
-                                label: "Font",
-                                value: viewModel.settings.subtitleAppearance.fontFamily.label,
-                                focused: $focusedField,
-                                focusID: .font,
-                                onMoveUp: moveUp(from: .font),
-                                onMoveDown: moveDown(from: .font),
-                                onMoveLeft: hold(.font),
-                                onMoveRight: hold(.font)
-                            ) {
-                                presentPicker(
-                                    for: .font,
-                                    HUDPickerPresentation(
-                                        title: "Subtitle Font",
-                                        options: Self.fontFamilyOptions,
-                                        selection: viewModel.settings.subtitleAppearance.fontFamily.rawValue,
-                                        onSelect: { value in
-                                            if let font = SubtitleFontFamilyPreset(rawValue: value) {
-                                                updateAppearance { $0.fontFamily = font }
-                                            }
+                            )
+                        }
+                        .focused($focusedField, equals: .style)
+
+                        HUDSettingRow(
+                            label: "Font",
+                            value: viewModel.settings.subtitleAppearance.fontFamily.label
+                        ) {
+                            presentPicker(
+                                for: .font,
+                                HUDPickerPresentation(
+                                    title: "Subtitle Font",
+                                    options: Self.fontFamilyOptions,
+                                    selection: viewModel.settings.subtitleAppearance.fontFamily.rawValue,
+                                    onSelect: { value in
+                                        if let font = SubtitleFontFamilyPreset(rawValue: value) {
+                                            updateAppearance { $0.fontFamily = font }
                                         }
-                                    )
+                                    }
                                 )
-                            }
-                            .id(Field.font)
-                            HUDFocusedSettingRow(
-                                label: "Size",
-                                value: viewModel.settings.subtitleAppearance.fontSize.label,
-                                focused: $focusedField,
-                                focusID: .size,
-                                onMoveUp: moveUp(from: .size),
-                                onMoveDown: moveDown(from: .size),
-                                onMoveLeft: hold(.size),
-                                onMoveRight: hold(.size)
-                            ) {
-                                presentPicker(
-                                    for: .size,
-                                    HUDPickerPresentation(
-                                        title: "Subtitle Size",
-                                        options: Self.sizeOptions,
-                                        selection: viewModel.settings.subtitleAppearance.fontSize.rawValue,
-                                        onSelect: { value in
-                                            if let size = SubtitleFontSizePreset(rawValue: value) {
-                                                updateAppearance { $0.fontSize = size }
-                                            }
+                            )
+                        }
+                        .focused($focusedField, equals: .font)
+
+                        HUDSettingRow(
+                            label: "Size",
+                            value: viewModel.settings.subtitleAppearance.fontSize.label
+                        ) {
+                            presentPicker(
+                                for: .size,
+                                HUDPickerPresentation(
+                                    title: "Subtitle Size",
+                                    options: Self.sizeOptions,
+                                    selection: viewModel.settings.subtitleAppearance.fontSize.rawValue,
+                                    onSelect: { value in
+                                        if let size = SubtitleFontSizePreset(rawValue: value) {
+                                            updateAppearance { $0.fontSize = size }
                                         }
-                                    )
+                                    }
                                 )
-                            }
-                            .id(Field.size)
-                            HUDFocusedSettingRow(
-                                label: "Text",
-                                value: label(for: viewModel.settings.subtitleAppearance.fontColor, in: Self.fontColorOptions),
-                                colorHex: viewModel.settings.subtitleAppearance.fontColor,
-                                focused: $focusedField,
-                                focusID: .textColor,
-                                onMoveUp: moveUp(from: .textColor),
-                                onMoveDown: moveDown(from: .textColor),
-                                onMoveLeft: hold(.textColor),
-                                onMoveRight: hold(.textColor)
-                            ) {
-                                presentPicker(
-                                    for: .textColor,
-                                    HUDPickerPresentation(
-                                        title: "Text Color",
-                                        options: Self.fontColorOptions,
-                                        selection: viewModel.settings.subtitleAppearance.fontColor,
-                                        onSelect: { value in
-                                            updateAppearance { $0.fontColor = value }
-                                        }
-                                    )
+                            )
+                        }
+                        .focused($focusedField, equals: .size)
+
+                        HUDSettingRow(
+                            label: "Text",
+                            value: label(for: viewModel.settings.subtitleAppearance.fontColor, in: Self.fontColorOptions),
+                            colorHex: viewModel.settings.subtitleAppearance.fontColor
+                        ) {
+                            presentPicker(
+                                for: .textColor,
+                                HUDPickerPresentation(
+                                    title: "Text Color",
+                                    options: Self.fontColorOptions,
+                                    selection: viewModel.settings.subtitleAppearance.fontColor,
+                                    onSelect: { value in
+                                        updateAppearance { $0.fontColor = value }
+                                    }
                                 )
-                            }
-                            .id(Field.textColor)
-                            HUDFocusedSettingRow(
-                                label: "Text outline",
-                                value: HUDPickerOptions.boolLabel(viewModel.settings.subtitleAppearance.textOutline),
-                                focused: $focusedField,
-                                focusID: .textOutline,
-                                onMoveUp: moveUp(from: .textOutline),
-                                onMoveDown: moveDown(from: .textOutline),
-                                onMoveLeft: hold(.textOutline),
-                                onMoveRight: hold(.textOutline)
-                            ) {
-                                presentPicker(
-                                    for: .textOutline,
-                                    HUDPickerPresentation(
-                                        title: "Text Outline",
-                                        options: HUDPickerOptions.onOff,
-                                        selection: HUDPickerOptions.boolSelection(viewModel.settings.subtitleAppearance.textOutline),
-                                        onSelect: { value in
-                                            updateAppearance { $0.textOutline = HUDPickerOptions.boolValue(for: value) }
-                                        }
-                                    )
+                            )
+                        }
+                        .focused($focusedField, equals: .textColor)
+
+                        HUDToggleRow(
+                            label: "Text outline",
+                            isOn: viewModel.settings.subtitleAppearance.textOutline
+                        ) { enabled in
+                            updateAppearance { $0.textOutline = enabled }
+                        }
+
+                        HUDSettingRow(
+                            label: "Outline",
+                            value: label(for: viewModel.settings.subtitleAppearance.textOutlineColor, in: Self.outlineColorOptions),
+                            colorHex: viewModel.settings.subtitleAppearance.textOutlineColor
+                        ) {
+                            presentPicker(
+                                for: .outlineColor,
+                                HUDPickerPresentation(
+                                    title: "Outline Color",
+                                    options: Self.outlineColorOptions,
+                                    selection: viewModel.settings.subtitleAppearance.textOutlineColor,
+                                    onSelect: { value in
+                                        updateAppearance { $0.textOutlineColor = value }
+                                    }
                                 )
-                            }
-                            .id(Field.textOutline)
-                            HUDFocusedSettingRow(
-                                label: "Outline",
-                                value: label(for: viewModel.settings.subtitleAppearance.textOutlineColor, in: Self.outlineColorOptions),
-                                colorHex: viewModel.settings.subtitleAppearance.textOutlineColor,
-                                focused: $focusedField,
-                                focusID: .outlineColor,
-                                onMoveUp: moveUp(from: .outlineColor),
-                                onMoveDown: moveDown(from: .outlineColor),
-                                onMoveLeft: hold(.outlineColor),
-                                onMoveRight: hold(.outlineColor)
-                            ) {
-                                presentPicker(
-                                    for: .outlineColor,
-                                    HUDPickerPresentation(
-                                        title: "Outline Color",
-                                        options: Self.outlineColorOptions,
-                                        selection: viewModel.settings.subtitleAppearance.textOutlineColor,
-                                        onSelect: { value in
-                                            updateAppearance { $0.textOutlineColor = value }
-                                        }
-                                    )
+                            )
+                        }
+                        .focused($focusedField, equals: .outlineColor)
+
+                        HUDSettingRow(
+                            label: "Background",
+                            value: label(for: viewModel.settings.subtitleAppearance.backgroundColor, in: Self.backgroundColorOptions),
+                            colorHex: viewModel.settings.subtitleAppearance.backgroundColor
+                        ) {
+                            presentPicker(
+                                for: .backgroundColor,
+                                HUDPickerPresentation(
+                                    title: "Background Color",
+                                    options: Self.backgroundColorOptions,
+                                    selection: viewModel.settings.subtitleAppearance.backgroundColor,
+                                    onSelect: { value in
+                                        updateAppearance { $0.backgroundColor = value }
+                                    }
                                 )
-                            }
-                            .id(Field.outlineColor)
-                            HUDFocusedSettingRow(
-                                label: "Background",
-                                value: label(for: viewModel.settings.subtitleAppearance.backgroundColor, in: Self.backgroundColorOptions),
-                                colorHex: viewModel.settings.subtitleAppearance.backgroundColor,
-                                focused: $focusedField,
-                                focusID: .backgroundColor,
-                                onMoveUp: moveUp(from: .backgroundColor),
-                                onMoveDown: moveDown(from: .backgroundColor),
-                                onMoveLeft: hold(.backgroundColor),
-                                onMoveRight: hold(.backgroundColor)
-                            ) {
-                                presentPicker(
-                                    for: .backgroundColor,
-                                    HUDPickerPresentation(
-                                        title: "Background Color",
-                                        options: Self.backgroundColorOptions,
-                                        selection: viewModel.settings.subtitleAppearance.backgroundColor,
-                                        onSelect: { value in
-                                            updateAppearance { $0.backgroundColor = value }
-                                        }
-                                    )
-                                )
-                            }
-                            .id(Field.backgroundColor)
-                            HUDFocusedSettingRow(
-                                label: "Opacity",
-                                value: opacityLabel,
-                                focused: $focusedField,
-                                focusID: .opacity,
-                                onMoveUp: moveUp(from: .opacity),
-                                onMoveDown: moveDown(from: .opacity),
-                                onMoveLeft: hold(.opacity),
-                                onMoveRight: hold(.opacity)
-                            ) {
-                                presentPicker(
-                                    for: .opacity,
-                                    HUDPickerPresentation(
-                                        title: "Background Opacity",
-                                        options: Self.opacityOptions,
-                                        selection: String(viewModel.settings.subtitleAppearance.backgroundOpacity),
-                                        onSelect: { value in
-                                            if let opacity = Int(value) {
-                                                updateAppearance {
-                                                    $0.backgroundOpacity = opacity
-                                                    if opacity > 0 {
-                                                        $0.backgroundStyle = .box
-                                                    }
+                            )
+                        }
+                        .focused($focusedField, equals: .backgroundColor)
+
+                        HUDSettingRow(label: "Opacity", value: opacityLabel) {
+                            presentPicker(
+                                for: .opacity,
+                                HUDPickerPresentation(
+                                    title: "Background Opacity",
+                                    options: Self.opacityOptions,
+                                    selection: String(viewModel.settings.subtitleAppearance.backgroundOpacity),
+                                    onSelect: { value in
+                                        if let opacity = Int(value) {
+                                            updateAppearance {
+                                                $0.backgroundOpacity = opacity
+                                                if opacity > 0 {
+                                                    $0.backgroundStyle = .box
                                                 }
                                             }
                                         }
-                                    )
+                                    }
                                 )
-                            }
-                            .id(Field.opacity)
-                            HUDFocusedSettingRow(
-                                label: "Position",
-                                value: viewModel.settings.subtitleAppearance.position.label,
-                                focused: $focusedField,
-                                focusID: .position,
-                                onMoveUp: moveUp(from: .position),
-                                onMoveDown: moveDown(from: .position),
-                                onMoveLeft: hold(.position),
-                                onMoveRight: hold(.position)
-                            ) {
-                                presentPicker(
-                                    for: .position,
-                                    HUDPickerPresentation(
-                                        title: "Subtitle Position",
-                                        options: Self.positionOptions,
-                                        selection: viewModel.settings.subtitleAppearance.position.rawValue,
-                                        onSelect: { value in
-                                            if let position = SubtitlePositionPreset(rawValue: value) {
-                                                updateAppearance { $0.position = position }
-                                            }
-                                        }
-                                    )
-                                )
-                            }
-                            .id(Field.position)
+                            )
                         }
-                        .padding(.trailing, 8)
+                        .focused($focusedField, equals: .opacity)
+
+                        HUDSettingRow(
+                            label: "Position",
+                            value: viewModel.settings.subtitleAppearance.position.label
+                        ) {
+                            presentPicker(
+                                for: .position,
+                                HUDPickerPresentation(
+                                    title: "Subtitle Position",
+                                    options: Self.positionOptions,
+                                    selection: viewModel.settings.subtitleAppearance.position.rawValue,
+                                    onSelect: { value in
+                                        if let position = SubtitlePositionPreset(rawValue: value) {
+                                            updateAppearance { $0.position = position }
+                                        }
+                                    }
+                                )
+                            )
+                        }
+                        .focused($focusedField, equals: .position)
                     }
-                    .frame(maxHeight: 560)
-                    .onAppear {
-                        scrollToFocusedField(with: proxy, animated: false)
-                    }
-                    .onChange(of: focusedField) { _, _ in
-                        scrollToFocusedField(with: proxy)
-                    }
+                    .padding(.trailing, 8)
                 }
+                .frame(maxHeight: 560)
             }
             .padding(.horizontal, 34)
             .padding(.vertical, 28)
@@ -1471,6 +1257,7 @@ private struct SubtitleAppearanceDialog: View {
             )
             .shadow(color: .black.opacity(0.6), radius: 26, y: 14)
             .focusSection()
+            .defaultFocus($focusedField, .style)
             .disabled(activePicker != nil)
             .opacity(activePicker != nil ? 0.28 : 1)
 
@@ -1485,66 +1272,23 @@ private struct SubtitleAppearanceDialog: View {
             }
         }
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: activePicker?.id)
+        // Defensive: the picker's own exit handler consumes Menu while it has
+        // focus, but if focus ever escapes it we still want Menu to close the
+        // picker, not tear down the whole dialog.
         .onExitCommand(perform: activePicker == nil ? onClose : closePicker)
-        .onAppear(perform: ensureDialogFocus)
-        .onChange(of: focusedField) { _, value in
-            if value == nil, activePicker == nil {
-                ensureDialogFocus()
-            }
-        }
-        .onChange(of: activePicker?.id) { _, _ in
-            if activePicker == nil {
-                ensureDialogFocus()
-            }
-        }
     }
 
     private var closeButton: some View {
-        Image(systemName: "xmark")
-            .font(.system(size: 20, weight: .bold))
-            .foregroundStyle(focusedField == .close ? .black : .white)
-            .frame(width: 46, height: 46)
-            .background(Circle().fill(focusedField == .close ? Color.white : Color.white.opacity(0.14)))
-            .contentShape(Circle())
-            .focusable(true)
-            .focused($focusedField, equals: .close)
-            .onTapGesture(perform: onClose)
-            .onMoveCommand { direction in
-                switch direction {
-                case .down:
-                    focusedField = .style
-                default:
-                    focusedField = .close
-                }
-            }
-            .accessibilityAddTraits(.isButton)
-            .accessibilityLabel("Close subtitle appearance")
-    }
-
-    private var orderedFields: [Field] {
-        [.style, .font, .size, .textColor, .textOutline, .outlineColor, .backgroundColor, .opacity, .position]
-    }
-
-    private func ensureDialogFocus() {
-        if focusedField == nil {
-            focusedField = .style
+        Button(action: onClose) {
+            HUDCloseButtonLabel()
         }
-    }
-
-    private func scrollToFocusedField(with proxy: ScrollViewProxy, animated: Bool = true) {
-        guard let field = focusedField, orderedFields.contains(field) else { return }
-        if animated {
-            withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
-                proxy.scrollTo(field, anchor: .center)
-            }
-        } else {
-            proxy.scrollTo(field, anchor: .center)
-        }
+        .buttonStyle(HUDCircleButtonStyle())
+        .focused($focusedField, equals: .close)
+        .accessibilityLabel("Close subtitle appearance")
     }
 
     private func presentPicker(for field: Field, _ presentation: HUDPickerPresentation) {
         pickerReturnField = field
-        focusedField = field
         activePicker = presentation
     }
 
@@ -1554,35 +1298,6 @@ private struct SubtitleAppearanceDialog: View {
         if let field {
             focusedField = field
         }
-    }
-
-    private func hold(_ field: Field) -> () -> Void {
-        { focusedField = field }
-    }
-
-    private func moveUp(from field: Field) -> () -> Void {
-        { focusedField = fieldBefore(field) }
-    }
-
-    private func moveDown(from field: Field) -> () -> Void {
-        { focusedField = fieldAfter(field) }
-    }
-
-    private func fieldBefore(_ field: Field) -> Field {
-        guard let index = orderedFields.firstIndex(of: field) else {
-            return .style
-        }
-        return index == 0 ? .close : orderedFields[index - 1]
-    }
-
-    private func fieldAfter(_ field: Field) -> Field {
-        if field == .close {
-            return .style
-        }
-        guard let index = orderedFields.firstIndex(of: field) else {
-            return .style
-        }
-        return orderedFields[min(index + 1, orderedFields.count - 1)]
     }
 
     private func updateAppearance(_ mutate: @escaping (inout SubtitleAppearance) -> Void) {
@@ -1628,23 +1343,53 @@ private struct SubtitleAppearanceDialog: View {
         SubtitleAppearance.backgroundColors.map { .init(id: $0.hex, label: $0.label, colorHex: $0.hex) }
 }
 
+private struct HUDCircleButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HUDCircleButtonBody(configuration: configuration)
+    }
+}
+
+private struct HUDCircleButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        configuration.label
+            .frame(width: 46, height: 46)
+            .background(Circle().fill(isFocused ? Color.white : Color.white.opacity(0.14)))
+            .contentShape(Circle())
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .focusEffectDisabled()
+            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+    }
+}
+
+private struct HUDCloseButtonLabel: View {
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        Image(systemName: "xmark")
+            .font(.system(size: 20, weight: .bold))
+            .foregroundStyle(isFocused ? Color.black : Color.white)
+    }
+}
+
 // MARK: - Audio pane
 
 private struct AudioPane: View {
     let viewModel: PlayerViewModel
-    let onMoveToTabs: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 48) {
             PaneColumn("Tracks") {
                 ScrollView(showsIndicators: false) {
                     LazyVStack(spacing: 2) {
-                        ForEach(Array(viewModel.audioTracks.enumerated()), id: \.element.id) { index, track in
+                        ForEach(viewModel.audioTracks) { track in
                             HUDTrackRow(
                                 name: track.primaryLabel,
                                 attributes: track.attributesLabel,
-                                isSelected: viewModel.selectedAudioId == track.trackId,
-                                onMoveToTabs: index == 0 ? onMoveToTabs : nil
+                                isSelected: viewModel.selectedAudioId == track.trackId
                             ) {
                                 viewModel.selectAudio(track)
                             }
@@ -1652,6 +1397,7 @@ private struct AudioPane: View {
                     }
                 }
             }
+            .focusSection()
 
             PaneColumn("Options") {
                 LabelValueRow(label: "Layout", value: selectedLayout ?? "—")
@@ -1676,9 +1422,7 @@ private struct AudioPane: View {
     }
 
     private var delayText: String {
-        let ms = viewModel.settings.audioSyncMs
-        if ms == 0 { return "0 ms" }
-        return (ms > 0 ? "+" : "") + "\(ms) ms"
+        HUDPickerOptions.delayLabel(viewModel.settings.audioSyncMs)
     }
 }
 
@@ -1686,7 +1430,6 @@ private struct AudioPane: View {
 
 private struct SubtitlesPane: View {
     let viewModel: PlayerViewModel
-    let onMoveToTabs: () -> Void
     /// Dismiss the whole HUD (back to the player). Used when an AI subtitle job
     /// is accepted so the live "Preparing subtitles" overlay is visible.
     let onCloseHUD: () -> Void
@@ -1694,23 +1437,21 @@ private struct SubtitlesPane: View {
     @State private var showAppearanceDialog = false
     @State private var showAITranslateMenu = false
     @State private var activePicker: HUDPickerPresentation?
-    @State private var pickerReturnField: FocusTarget?
-    @State private var appearanceReturnField: FocusTarget?
-    @FocusState private var focusedSubtitleField: FocusTarget?
+    @State private var pickerReturnField: Option?
+    @FocusState private var focusedOption: Option?
 
-    private enum FocusTarget: Hashable {
-        case primary(String)
-        case secondary(String)
-        case option(Option)
-    }
-
+    /// Identity for the options-column rows, used only to restore focus when
+    /// a picker dialog, the appearance dialog, or the AI menu closes.
     private enum Option: Hashable {
         case translate
         case delay
-        case save
         case size
         case position
         case appearance
+    }
+
+    private var overlayActive: Bool {
+        showAppearanceDialog || activePicker != nil || showAITranslateMenu
     }
 
     var body: some View {
@@ -1718,11 +1459,13 @@ private struct SubtitlesPane: View {
             HStack(alignment: .top, spacing: 58) {
                 PaneColumn("Tracks") { trackRows }
                     .frame(width: 470, alignment: .topLeading)
+                    .focusSection()
                 PaneColumn("Options") { optionRows }
                     .frame(width: 440, alignment: .topLeading)
+                    .focusSection()
             }
-            .disabled(showAppearanceDialog || activePicker != nil || showAITranslateMenu)
-            .opacity(showAppearanceDialog || activePicker != nil || showAITranslateMenu ? 0.28 : 1)
+            .disabled(overlayActive)
+            .opacity(overlayActive ? 0.28 : 1)
 
             if showAppearanceDialog {
                 SubtitleAppearanceDialog(
@@ -1766,7 +1509,7 @@ private struct SubtitlesPane: View {
 
     private func closeAITranslateMenu() {
         showAITranslateMenu = false
-        focusedSubtitleField = .option(.translate)
+        focusedOption = .translate
     }
 
     /// Whether the server's AI capabilities + the current track list offer any
@@ -1782,95 +1525,28 @@ private struct SubtitlesPane: View {
         return "\(appearance.backgroundStyle.label), \(appearance.fontSize.label), \(appearance.position.label)"
     }
 
-    private var optionOrder: [Option] {
-        var options: [Option] = []
-        if aiSubtitlesAvailable {
-            options.append(.translate)
-        }
-        if viewModel.backendCapabilities.supportsSubtitleDelay {
-            options.append(.delay)
-        }
-        if viewModel.backendCapabilities.supportsSubtitleStyling {
-            options.append(contentsOf: [.save, .size, .position, .appearance])
-        }
-        return options
-    }
-
-    private func focusFirstOption() {
-        if aiSubtitlesAvailable {
-            focusedSubtitleField = .option(.translate)
-        } else if viewModel.backendCapabilities.supportsSubtitleDelay {
-            focusedSubtitleField = .option(.delay)
-        } else if viewModel.backendCapabilities.supportsSubtitleStyling {
-            focusedSubtitleField = .option(.save)
-        }
-    }
-
-    private func holdOption(_ option: Option) -> () -> Void {
-        { focusedSubtitleField = .option(option) }
-    }
-
-    private func moveOptionUp(from option: Option) -> () -> Void {
-        {
-            guard let index = optionOrder.firstIndex(of: option), index > 0 else {
-                onMoveToTabs()
-                return
-            }
-            focusedSubtitleField = .option(optionOrder[index - 1])
-        }
-    }
-
-    private func moveOptionDown(from option: Option) -> () -> Void {
-        {
-            guard let index = optionOrder.firstIndex(of: option),
-                  index < optionOrder.count - 1 else {
-                focusedSubtitleField = .option(option)
-                return
-            }
-            focusedSubtitleField = .option(optionOrder[index + 1])
-        }
-    }
-
-    private func focusSelectedTrack() {
-        if let selectedSubtitleId = viewModel.selectedSubtitleId {
-            focusedSubtitleField = .primary(String(describing: selectedSubtitleId))
-        } else {
-            focusedSubtitleField = .primary("off")
-        }
-    }
-
     private func setAppearance(_ mutate: @escaping (inout SubtitleAppearance) -> Void) {
         var next = viewModel.settings.subtitleAppearance
         mutate(&next)
         Task { await viewModel.setSubtitleAppearance(next) }
     }
 
-    private func presentPicker(for target: FocusTarget, _ presentation: HUDPickerPresentation) {
-        pickerReturnField = target
-        focusedSubtitleField = target
+    private func presentPicker(for option: Option, _ presentation: HUDPickerPresentation) {
+        pickerReturnField = option
         activePicker = presentation
     }
 
     private func closePicker() {
-        let target = pickerReturnField
+        let option = pickerReturnField
         activePicker = nil
-        if let target {
-            focusedSubtitleField = target
+        if let option {
+            focusedOption = option
         }
-    }
-
-    private func presentAppearanceDialog(from target: FocusTarget) {
-        appearanceReturnField = target
-        focusedSubtitleField = target
-        showAppearanceDialog = true
     }
 
     private func closeAppearanceDialog() {
-        let target = appearanceReturnField
         showAppearanceDialog = false
-        if let target {
-            focusedSubtitleField = target
-        }
+        focusedOption = .appearance
     }
 
     private static let sizeOptions: [HUDDropdownOption] =
@@ -1883,30 +1559,23 @@ private struct SubtitlesPane: View {
     private var trackRows: some View {
         ScrollView(showsIndicators: false) {
             // LazyVStack defers off-screen `HUDTrackRow` construction. Each
-            // row carries a `.focusable(true)` and a Locale lookup; for files
+            // row carries a focusable button and a Locale lookup; for files
             // with 15+ subtitle tracks the eager VStack built (and re-built
             // on every tab swap) the entire focus subtree, which is the
             // dominant cost stalling main when the Subtitles pane appears.
             LazyVStack(alignment: .leading, spacing: 2) {
-                HUDFocusedTrackRow(
+                HUDTrackRow(
                     name: "Off",
                     attributes: nil,
-                    isSelected: viewModel.selectedSubtitleId == nil,
-                    focused: $focusedSubtitleField,
-                    focusID: .primary("off"),
-                    onMoveUp: onMoveToTabs,
-                    onMoveRight: focusFirstOption
+                    isSelected: viewModel.selectedSubtitleId == nil
                 ) {
                     viewModel.disableSubtitles()
                 }
                 ForEach(viewModel.orderedSubtitleTracks) { track in
-                    HUDFocusedTrackRow(
+                    HUDTrackRow(
                         name: track.primaryLabel,
                         attributes: track.attributesLabel,
-                        isSelected: viewModel.selectedSubtitleId == track.trackId,
-                        focused: $focusedSubtitleField,
-                        focusID: .primary(String(describing: track.trackId)),
-                        onMoveRight: focusFirstOption
+                        isSelected: viewModel.selectedSubtitleId == track.trackId
                     ) {
                         viewModel.selectSubtitle(track)
                     }
@@ -1922,26 +1591,19 @@ private struct SubtitlesPane: View {
                         .padding(.top, 20)
                         .padding(.bottom, 4)
                         .padding(.leading, 14)
-                    HUDFocusedTrackRow(
+                    HUDTrackRow(
                         name: "Off",
                         attributes: nil,
-                        isSelected: viewModel.selectedSecondarySubtitleId == nil,
-                        focused: $focusedSubtitleField,
-                        focusID: .secondary("off"),
-                        onMoveRight: focusFirstOption
+                        isSelected: viewModel.selectedSecondarySubtitleId == nil
                     ) {
                         viewModel.disableSecondarySubtitles()
                     }
                     ForEach(viewModel.availableSecondarySubtitleTracks) { track in
-                        let disabled = track.trackId == viewModel.selectedSubtitleId
-                        HUDFocusedTrackRow(
+                        HUDTrackRow(
                             name: track.primaryLabel,
                             attributes: track.attributesLabel,
                             isSelected: viewModel.selectedSecondarySubtitleId == track.trackId,
-                            isDisabled: disabled,
-                            focused: $focusedSubtitleField,
-                            focusID: .secondary(String(describing: track.trackId)),
-                            onMoveRight: focusFirstOption
+                            isDisabled: track.trackId == viewModel.selectedSubtitleId
                         ) {
                             viewModel.selectSecondarySubtitle(track)
                         }
@@ -1955,33 +1617,19 @@ private struct SubtitlesPane: View {
     private var optionRows: some View {
         VStack(spacing: 2) {
             if aiSubtitlesAvailable {
-                HUDFocusedSettingRow(
+                HUDSettingRow(
                     label: "AI Subtitles…",
                     value: "",
-                    systemImage: "sparkles",
-                    focused: $focusedSubtitleField,
-                    focusID: .option(.translate),
-                    onMoveUp: moveOptionUp(from: .translate),
-                    onMoveDown: moveOptionDown(from: .translate),
-                    onMoveLeft: focusSelectedTrack,
-                    onMoveRight: holdOption(.translate)
+                    systemImage: "sparkles"
                 ) {
                     showAITranslateMenu = true
                 }
+                .focused($focusedOption, equals: .translate)
             }
             if viewModel.backendCapabilities.supportsSubtitleDelay {
-                HUDFocusedSettingRow(
-                    label: "Delay",
-                    value: delayText,
-                    focused: $focusedSubtitleField,
-                    focusID: .option(.delay),
-                    onMoveUp: moveOptionUp(from: .delay),
-                    onMoveDown: moveOptionDown(from: .delay),
-                    onMoveLeft: focusSelectedTrack,
-                    onMoveRight: holdOption(.delay)
-                ) {
+                HUDSettingRow(label: "Delay", value: delayText) {
                     presentPicker(
-                        for: .option(.delay),
+                        for: .delay,
                         HUDPickerPresentation(
                             title: "Subtitle Delay",
                             options: HUDPickerOptions.delayOptions(
@@ -1999,44 +1647,23 @@ private struct SubtitlesPane: View {
                         )
                     )
                 }
+                .focused($focusedOption, equals: .delay)
             }
             if viewModel.backendCapabilities.supportsSubtitleStyling {
-                HUDFocusedSettingRow(
+                HUDToggleRow(
                     label: "Save for this Apple TV",
-                    value: HUDPickerOptions.boolLabel(viewModel.settings.subtitleUsesDeviceAppearanceOverride),
-                    focused: $focusedSubtitleField,
-                    focusID: .option(.save),
-                    onMoveUp: moveOptionUp(from: .save),
-                    onMoveDown: moveOptionDown(from: .save),
-                    onMoveLeft: focusSelectedTrack,
-                    onMoveRight: holdOption(.save)
-                ) {
-                    presentPicker(
-                        for: .option(.save),
-                        HUDPickerPresentation(
-                            title: "Save for this Apple TV",
-                            options: HUDPickerOptions.onOff,
-                            selection: HUDPickerOptions.boolSelection(viewModel.settings.subtitleUsesDeviceAppearanceOverride),
-                            onSelect: { value in
-                                Task {
-                                    await viewModel.setSubtitleDeviceOverrideEnabled(HUDPickerOptions.boolValue(for: value))
-                                }
-                            }
-                        )
-                    )
+                    isOn: viewModel.settings.subtitleUsesDeviceAppearanceOverride
+                ) { enabled in
+                    Task {
+                        await viewModel.setSubtitleDeviceOverrideEnabled(enabled)
+                    }
                 }
-                HUDFocusedSettingRow(
+                HUDSettingRow(
                     label: "Size",
-                    value: viewModel.settings.subtitleAppearance.fontSize.label,
-                    focused: $focusedSubtitleField,
-                    focusID: .option(.size),
-                    onMoveUp: moveOptionUp(from: .size),
-                    onMoveDown: moveOptionDown(from: .size),
-                    onMoveLeft: focusSelectedTrack,
-                    onMoveRight: holdOption(.size)
+                    value: viewModel.settings.subtitleAppearance.fontSize.label
                 ) {
                     presentPicker(
-                        for: .option(.size),
+                        for: .size,
                         HUDPickerPresentation(
                             title: "Subtitle Size",
                             options: Self.sizeOptions,
@@ -2049,18 +1676,13 @@ private struct SubtitlesPane: View {
                         )
                     )
                 }
-                HUDFocusedSettingRow(
+                .focused($focusedOption, equals: .size)
+                HUDSettingRow(
                     label: "Position",
-                    value: viewModel.settings.subtitleAppearance.position.label,
-                    focused: $focusedSubtitleField,
-                    focusID: .option(.position),
-                    onMoveUp: moveOptionUp(from: .position),
-                    onMoveDown: moveOptionDown(from: .position),
-                    onMoveLeft: focusSelectedTrack,
-                    onMoveRight: holdOption(.position)
+                    value: viewModel.settings.subtitleAppearance.position.label
                 ) {
                     presentPicker(
-                        for: .option(.position),
+                        for: .position,
                         HUDPickerPresentation(
                             title: "Subtitle Position",
                             options: Self.positionOptions,
@@ -2073,19 +1695,15 @@ private struct SubtitlesPane: View {
                         )
                     )
                 }
-                HUDFocusedSettingRow(
+                .focused($focusedOption, equals: .position)
+                HUDSettingRow(
                     label: "Appearance",
                     value: appearanceSummary,
-                    systemImage: "textformat",
-                    focused: $focusedSubtitleField,
-                    focusID: .option(.appearance),
-                    onMoveUp: moveOptionUp(from: .appearance),
-                    onMoveDown: moveOptionDown(from: .appearance),
-                    onMoveLeft: focusSelectedTrack,
-                    onMoveRight: holdOption(.appearance)
+                    systemImage: "textformat"
                 ) {
-                    presentAppearanceDialog(from: .option(.appearance))
+                    showAppearanceDialog = true
                 }
+                .focused($focusedOption, equals: .appearance)
             }
         }
     }
@@ -2100,7 +1718,6 @@ private struct SubtitlesPane: View {
 private struct ChaptersPane: View {
     let viewModel: PlayerViewModel
     let onSelect: () -> Void
-    let onMoveToTabs: () -> Void
 
     private var currentIndex: Int? {
         viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
@@ -2115,8 +1732,7 @@ private struct ChaptersPane: View {
                             number: index + 1,
                             title: chapter.title ?? "Chapter \(index + 1)",
                             time: PlayerTimeFormatter.formatHMS(chapter.time),
-                            isCurrent: currentIndex == index,
-                            onMoveToTabs: index == 0 ? onMoveToTabs : nil
+                            isCurrent: currentIndex == index
                         ) {
                             viewModel.seekTo(seconds: chapter.time)
                             onSelect()
@@ -2125,6 +1741,7 @@ private struct ChaptersPane: View {
                 }
             }
         }
+        .focusSection()
     }
 }
 
@@ -2133,22 +1750,37 @@ private struct HUDChapterRow: View {
     let title: String
     let time: String
     let isCurrent: Bool
-    let onMoveToTabs: (() -> Void)?
     let action: () -> Void
 
-    @FocusState private var isFocused: Bool
+    var body: some View {
+        Button(action: action) {
+            HUDChapterRowLabel(number: number, title: title, time: time, isCurrent: isCurrent)
+        }
+        .buttonStyle(HUDRowButtonStyle(cornerRadius: 8))
+        .accessibilityLabel(title)
+        .accessibilityValue(isCurrent ? "Currently playing" : "")
+    }
+}
+
+private struct HUDChapterRowLabel: View {
+    let number: Int
+    let title: String
+    let time: String
+    let isCurrent: Bool
+
+    @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         HStack(spacing: 16) {
             Text(String(format: "%02d", number))
                 .font(.system(size: 20, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(isFocused ? .black.opacity(0.55) : .white.opacity(0.55))
                 .monospacedDigit()
                 .frame(width: 44, alignment: .leading)
 
             Text(title)
                 .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(.white)
+                .foregroundStyle(isFocused ? .black : .white)
                 .lineLimit(1)
 
             Spacer(minLength: 12)
@@ -2156,30 +1788,14 @@ private struct HUDChapterRow: View {
             if isCurrent {
                 Image(systemName: "play.fill")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.8))
+                    .foregroundStyle(isFocused ? .black.opacity(0.8) : .white.opacity(0.8))
             }
 
             Text(time)
                 .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(.white.opacity(0.65))
+                .foregroundStyle(isFocused ? .black.opacity(0.65) : .white.opacity(0.65))
                 .monospacedDigit()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isFocused ? Color.white.opacity(0.18) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .focusable(true)
-        .focused($isFocused)
-        .onTapGesture(perform: action)
-        .onMoveCommand { direction in
-            if direction == .up {
-                onMoveToTabs?()
-            }
-        }
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
     }
 }
 
@@ -2190,10 +1806,26 @@ private struct HUDTrackRow: View {
     let attributes: String?
     let isSelected: Bool
     var isDisabled: Bool = false
-    var onMoveToTabs: (() -> Void)?
     let action: () -> Void
 
-    @FocusState private var isFocused: Bool
+    var body: some View {
+        Button(action: action) {
+            HUDTrackRowLabel(name: name, attributes: attributes, isSelected: isSelected)
+        }
+        .buttonStyle(HUDRowButtonStyle(cornerRadius: 8))
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.35 : 1.0)
+        .accessibilityLabel(name)
+        .accessibilityValue(isSelected ? "Selected" : "")
+    }
+}
+
+private struct HUDTrackRowLabel: View {
+    let name: String
+    let attributes: String?
+    let isSelected: Bool
+
+    @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
@@ -2205,7 +1837,7 @@ private struct HUDTrackRow: View {
                 if let attributes {
                     Text(attributes)
                         .font(.system(size: 17))
-                        .foregroundStyle(isFocused ? .black.opacity(0.6) : .white.opacity(0.55))
+                        .foregroundStyle(isFocused ? .black.opacity(0.62) : .white.opacity(0.55))
                         .lineLimit(1)
                 }
             }
@@ -2216,31 +1848,6 @@ private struct HUDTrackRow: View {
                     .foregroundStyle(isFocused ? .black : .white)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                // Invert on focus (white fill + dark text) to match the strong
-                // focus grammar of the other HUD rows; the previous 18% wash
-                // read as barely-focused next to them.
-                .fill(isFocused ? Color.white : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .focusable(true)
-        .focused($isFocused)
-        .onTapGesture(perform: action)
-        .onMoveCommand { direction in
-            if direction == .up {
-                onMoveToTabs?()
-            }
-        }
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.35 : 1.0)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(name)
-        .accessibilityValue(isSelected ? "Selected" : "")
     }
 }
-
 #endif
