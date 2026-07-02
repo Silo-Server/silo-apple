@@ -69,6 +69,18 @@ class AppRouter {
 
     var presentedPlayer: PlayerPresentation?
 
+    // MARK: - Tab Selection
+
+    /// One-shot tab-switch request, consumed (and cleared) by `MainTabView`,
+    /// which owns the actual selection state. Routed here so leaf screens —
+    /// e.g. the Downloads empty state's "Browse Libraries" — can jump tabs
+    /// without threading a selection binding through the tree.
+    var requestedTab: AppTab?
+
+    func switchTab(to tab: AppTab) {
+        requestedTab = tab
+    }
+
     /// Present the player using the platform-appropriate path. iOS/iPadOS use
     /// a full-window cover; macOS pushes into the main navigation content so
     /// playback replaces the detail pane instead of opening in a sheet.

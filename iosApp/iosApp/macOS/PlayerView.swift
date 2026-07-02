@@ -8,6 +8,11 @@ struct PlayerView: View {
     let preferredSubtitleTrackIndex: Int?
     let startFromBeginning: Bool
     let resumePositionOverride: Double?
+    /// Set when the caller wants offline playback of a completed download.
+    /// Routes the prepare through `OfflinePlaybackBuilder` (stored manifest
+    /// + local media file, no server session) so playback works with no
+    /// network.
+    let offlineDownloadId: String?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -21,7 +26,8 @@ struct PlayerView: View {
         preferredAudioTrackIndex: Int? = nil,
         preferredSubtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool = false,
-        resumePositionOverride: Double? = nil
+        resumePositionOverride: Double? = nil,
+        offlineDownloadId: String? = nil
     ) {
         self.contentId = contentId
         self.preferredFileId = preferredFileId
@@ -29,6 +35,7 @@ struct PlayerView: View {
         self.preferredSubtitleTrackIndex = preferredSubtitleTrackIndex
         self.startFromBeginning = startFromBeginning
         self.resumePositionOverride = resumePositionOverride
+        self.offlineDownloadId = offlineDownloadId
     }
 
     var body: some View {
@@ -103,7 +110,8 @@ struct PlayerView: View {
                 preferredAudioTrackIndex: preferredAudioTrackIndex,
                 preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
-                resumePositionOverride: resumePositionOverride
+                resumePositionOverride: resumePositionOverride,
+                offlineDownloadId: offlineDownloadId
             )
         }
         .onDisappear {

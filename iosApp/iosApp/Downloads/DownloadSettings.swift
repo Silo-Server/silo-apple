@@ -41,12 +41,6 @@ final class DownloadSettings {
         didSet { defaults.set(keepWatchedDownloads, forKey: Keys.keepWatchedDownloads) }
     }
 
-    /// When true, offline series-browse hides episodes that aren't on-device
-    /// instead of offering them for download.
-    var showOnlyDownloadedInBrowse: Bool {
-        didSet { defaults.set(showOnlyDownloadedInBrowse, forKey: Keys.showOnlyDownloadedInBrowse) }
-    }
-
     private let defaults: UserDefaults
 
     private init(defaults: UserDefaults = .standard) {
@@ -58,7 +52,6 @@ final class DownloadSettings {
             Keys.defaultMaxStorageGB: 0,
             Keys.sortOption: DownloadSortOption.largestFirst.rawValue,
             Keys.keepWatchedDownloads: false,
-            Keys.showOnlyDownloadedInBrowse: false,
         ])
         preferredFormat = defaults.string(forKey: Keys.preferredFormat) ?? DownloadFormat.original.rawValue
         wifiOnly = defaults.bool(forKey: Keys.wifiOnly)
@@ -67,7 +60,6 @@ final class DownloadSettings {
         sortOption = defaults.string(forKey: Keys.sortOption)
             .flatMap(DownloadSortOption.init(rawValue:)) ?? .largestFirst
         keepWatchedDownloads = defaults.bool(forKey: Keys.keepWatchedDownloads)
-        showOnlyDownloadedInBrowse = defaults.bool(forKey: Keys.showOnlyDownloadedInBrowse)
     }
 
     /// The quality to actually request, given what the server offers right
@@ -94,6 +86,5 @@ final class DownloadSettings {
         static let defaultMaxStorageGB = "downloads.defaultMaxStorageGB"
         static let sortOption = "downloads.sortOption"
         static let keepWatchedDownloads = "downloads.keepWatchedDownloads"
-        static let showOnlyDownloadedInBrowse = "downloads.showOnlyDownloadedInBrowse"
     }
 }

@@ -76,6 +76,24 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         }
     }
 
+    /// Suspend a transfer by cancelling it with resume data. Returns `nil`
+    /// when the server/transfer doesn't support ranged resume or the task is
+    /// no longer live — callers must treat that as "restart from zero".
+    func pause(taskId: Int) async -> Data? {
+        await withCheckedContinuation { cont in
+            session.getAllTasks { tasks in
+                guard let task = tasks.first(where: { $0.taskIdentifier == taskId })
+                    as? URLSessionDownloadTask else {
+                    cont.resume(returning: nil)
+                    return
+                }
+                task.cancel(byProducingResumeData: { data in
+                    cont.resume(returning: data)
+                })
+            }
+        }
+    }
+
     /// Identifiers of tasks still live in the (possibly relaunched) session.
     func activeTaskIdentifiers() async -> Set<Int> {
         await withCheckedContinuation { cont in

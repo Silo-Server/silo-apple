@@ -63,7 +63,8 @@ struct FavoritesView: View {
                         overlayData: OverlayData.from(item),
                         action: {
                             router.navigate(to: .itemDetail(contentId: item.contentId))
-                        }
+                        },
+                        contentId: item.contentId
                     )
                     .frame(maxWidth: .infinity)
                 }

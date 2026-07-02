@@ -28,7 +28,12 @@ struct DownloadsSettingsView: View {
             } header: {
                 Text("Downloads")
             } footer: {
-                Text("Original prefers source quality and may prepare a compatibility file if this device needs one. Bitrate presets are prepared on the server before download starts.")
+                // Quality-behavior copy only makes sense alongside the
+                // quality picker, which is hidden when the server offers a
+                // single preset.
+                if formats.count > 1 {
+                    Text("Original prefers source quality and may prepare a compatibility file if this device needs one. Bitrate presets are prepared on the server before download starts.")
+                }
             }
 
             Section("Series Monitoring Defaults") {

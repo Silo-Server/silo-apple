@@ -108,7 +108,7 @@ private struct SeriesDownloadOptionsSheet: View {
                 } header: {
                     Text("Download")
                 } footer: {
-                    Text("Series and season downloads use Original quality in the current server contract.")
+                    Text("Series and season downloads use original quality.")
                 }
 
                 if canMonitorSeries {
@@ -226,12 +226,11 @@ struct SeriesMonitorSheet: View {
                 }
                 Section("Storage") {
                     Toggle("Delete watched episodes", isOn: $deleteWatched)
-                    Stepper(
-                        maxStorageGB == 0 ? "Limit: Unlimited" : "Limit: \(maxStorageGB) GB",
-                        value: $maxStorageGB,
-                        in: 0...1000,
-                        step: 5
-                    )
+                    Picker("Limit", selection: $maxStorageGB) {
+                        ForEach(storageLimitOptionsGB, id: \.self) { gb in
+                            Text(gb == 0 ? "Unlimited" : "\(gb) GB").tag(gb)
+                        }
+                    }
                 }
             }
             .navigationTitle(existing == nil ? "Monitor Series" : "Edit Monitoring")
@@ -249,6 +248,18 @@ struct SeriesMonitorSheet: View {
             }
             .onAppear(perform: prefill)
         }
+    }
+
+    /// Common caps, plus the stored value when it doesn't match one —
+    /// subscriptions written by the old stepper (or another client) must
+    /// stay representable rather than silently snapping to a preset.
+    private var storageLimitOptionsGB: [Int] {
+        var options = [0, 10, 25, 50, 100]
+        if !options.contains(maxStorageGB) {
+            options.append(maxStorageGB)
+            options.sort()
+        }
+        return options
     }
 
     private func prefill() {

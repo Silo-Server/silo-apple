@@ -3,15 +3,45 @@ import SwiftUI
 
 // MARK: - In-progress row
 
-/// A pinned active-transfer row (downloading / queued / preparing) with a
-/// circular progress ring that doubles as a stop button.
+/// A pinned active-transfer row (downloading / paused / queued / preparing)
+/// whose circular progress ring toggles pause/resume. Cancelling is
+/// deliberately harder to reach — context menu or swipe, both behind a
+/// confirmation that states how much downloaded data would be discarded.
 struct DownloadActiveRow: View {
     let record: DownloadRecord
+    /// Smoothed transfer rate from the manager; nil until enough progress
+    /// deltas have landed for the estimate to be meaningful.
+    var bytesPerSecond: Double? = nil
+    var onPauseResume: () -> Void = {}
     var onCancel: () -> Void = {}
 
+    @State private var confirmingCancel = false
+
     var body: some View {
+        DownloadSwipeRevealContainer(actionLabel: "Cancel") {
+            confirmingCancel = true
+        } content: {
+            card
+        }
+        .padding(.horizontal, 16)
+        .contextMenu { menuItems }
+        .confirmationDialog(
+            cancelPrompt,
+            isPresented: $confirmingCancel,
+            titleVisibility: .visible
+        ) {
+            Button("Discard Download", role: .destructive, action: onCancel)
+            Button("Keep Download", role: .cancel) {}
+        }
+    }
+
+    private var card: some View {
         HStack(spacing: 12) {
-            DownloadPosterThumb(thumbhash: record.posterThumbhash, width: 40)
+            DownloadPosterThumb(
+                thumbhash: record.posterThumbhash,
+                fileURL: DownloadManager.shared.posterImageURL(for: record),
+                width: 40
+            )
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(displayTitle)
@@ -37,7 +67,30 @@ struct DownloadActiveRow: View {
                         .stroke(Color.continuumOutline, lineWidth: 1)
                 )
         )
-        .padding(.horizontal, 16)
+    }
+
+    @ViewBuilder private var menuItems: some View {
+        if record.localStatus == .downloading {
+            Button(action: onPauseResume) {
+                Label("Pause", systemImage: "pause")
+            }
+        } else if record.localStatus == .paused {
+            Button(action: onPauseResume) {
+                Label("Resume", systemImage: "play")
+            }
+        }
+        Button(role: .destructive) { confirmingCancel = true } label: {
+            Label("Cancel Download", systemImage: "xmark.circle")
+        }
+    }
+
+    /// States what a destructive cancel throws away; bytes are omitted when
+    /// nothing has transferred yet.
+    private var cancelPrompt: String {
+        if record.bytesDownloaded > 0 {
+            return "Discard \(DownloadFormatting.bytes(record.bytesDownloaded)) of downloaded data?"
+        }
+        return "Cancel this download?"
     }
 
     private var displayTitle: String {
@@ -50,8 +103,9 @@ struct DownloadActiveRow: View {
     private var statusLine: String {
         switch record.localStatus {
         case .downloading:
-            let pct = Int((record.progressFraction * 100).rounded())
-            return "\(pct)% · \(DownloadFormatting.bytes(record.bytesDownloaded)) of \(DownloadFormatting.bytes(record.fileSize))"
+            return ([percentText, sizeText] + rateParts).joined(separator: " · ")
+        case .paused:
+            return "Paused · \(percentText) · \(sizeText)"
         case .registering, .queued: return "Queued"
         case .preparing: return "Preparing on server…"
         case .fetchingAssets: return "Finishing…"
@@ -61,26 +115,133 @@ struct DownloadActiveRow: View {
         }
     }
 
+    private var percentText: String {
+        "\(Int((record.progressFraction * 100).rounded()))%"
+    }
+
+    private var sizeText: String {
+        "\(DownloadFormatting.bytes(record.bytesDownloaded)) of \(DownloadFormatting.bytes(record.fileSize))"
+    }
+
+    /// "12 MB/s · 3 min left" once the manager has a smoothed rate; omitted
+    /// while the rate is still settling so the line never shows garbage.
+    private var rateParts: [String] {
+        guard let bytesPerSecond, bytesPerSecond >= 1 else { return [] }
+        var parts = ["\(DownloadFormatting.bytes(Int64(bytesPerSecond)))/s"]
+        let remaining = record.fileSize - record.bytesDownloaded
+        if remaining > 0 {
+            parts.append(Self.remainingText(seconds: Double(remaining) / bytesPerSecond))
+        }
+        return parts
+    }
+
+    private static func remainingText(seconds: Double) -> String {
+        let minutes = Int((seconds / 60).rounded())
+        if minutes < 1 { return "under 1 min left" }
+        if minutes < 60 { return "\(minutes) min left" }
+        return "\(minutes / 60) hr \(minutes % 60) min left"
+    }
+
     @ViewBuilder private var progressRing: some View {
-        if record.localStatus == .downloading {
-            Button(action: onCancel) {
+        switch record.localStatus {
+        case .downloading, .paused:
+            let paused = record.localStatus == .paused
+            Button(action: onPauseResume) {
                 ZStack {
                     Circle().stroke(Color.continuumOnSurface.opacity(0.15), lineWidth: 3)
                     Circle()
                         .trim(from: 0, to: max(0.02, record.progressFraction))
-                        .stroke(Color.continuumOnSurface, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .stroke(
+                            Color.continuumOnSurface.opacity(paused ? 0.55 : 1),
+                            style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                        )
                         .rotationEffect(.degrees(-90))
-                    Image(systemName: "stop.fill")
+                    Image(systemName: paused ? "play.fill" : "pause.fill")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.continuumOnSurface)
                 }
                 .frame(width: 36, height: 36)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Cancel download")
-        } else {
+            .accessibilityLabel(paused ? "Resume download" : "Pause download")
+        default:
             ProgressView().controlSize(.small).tint(.continuumOnSurface)
         }
+    }
+}
+
+// MARK: - Swipe-to-reveal (LazyVStack rows)
+
+/// Trailing swipe affordance for rows hosted in the Manager's `LazyVStack`
+/// (`.swipeActions` only functions inside a `List`). The drag activates
+/// only when clearly horizontal so it doesn't fight the scroll view.
+struct DownloadSwipeRevealContainer<Content: View>: View {
+    let actionLabel: String
+    let action: () -> Void
+    @ViewBuilder let content: () -> Content
+
+    @State private var offset: CGFloat = 0
+    @State private var isOpen = false
+
+    private let revealWidth: CGFloat = 84
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            revealButton
+            content()
+                .offset(x: offset)
+                .simultaneousGesture(drag)
+                .onTapGesture {
+                    if isOpen { close() }
+                }
+        }
+        .animation(.easeInOut(duration: 0.2), value: offset)
+    }
+
+    private var revealButton: some View {
+        Button {
+            close()
+            action()
+        } label: {
+            VStack(spacing: 5) {
+                Image(systemName: "xmark.circle")
+                    .font(.system(size: 17, weight: .semibold))
+                Text(actionLabel)
+                    .font(.system(size: 11.5, weight: .semibold))
+            }
+            .foregroundColor(.white)
+            .frame(width: revealWidth - 8)
+            .frame(maxHeight: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.continuumError)
+            )
+        }
+        .buttonStyle(.plain)
+        .opacity(offset < -8 ? 1 : 0)
+    }
+
+    private var drag: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onChanged { value in
+                // Ignore mostly-vertical drags — those belong to the scroll.
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                let base: CGFloat = isOpen ? -revealWidth : 0
+                offset = min(0, max(-revealWidth, base + value.translation.width))
+            }
+            .onEnded { _ in
+                if offset < -revealWidth / 2 {
+                    offset = -revealWidth
+                    isOpen = true
+                } else {
+                    close()
+                }
+            }
+    }
+
+    private func close() {
+        offset = 0
+        isOpen = false
     }
 }
 
@@ -94,7 +255,11 @@ struct DownloadAttentionRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            DownloadPosterThumb(thumbhash: record.posterThumbhash, width: 40)
+            DownloadPosterThumb(
+                thumbhash: record.posterThumbhash,
+                fileURL: DownloadManager.shared.posterImageURL(for: record),
+                width: 40
+            )
             VStack(alignment: .leading, spacing: 4) {
                 Text(record.title ?? record.contentId)
                     .font(.system(size: 15, weight: .semibold))
@@ -147,7 +312,11 @@ struct DownloadMovieRow: View {
         Button(action: onTap) {
             HStack(spacing: 12) {
                 if selecting { DownloadSelectionCircle(selected: selected) }
-                DownloadPosterThumb(thumbhash: record.posterThumbhash, width: 40)
+                DownloadPosterThumb(
+                    thumbhash: record.posterThumbhash,
+                    fileURL: DownloadManager.shared.posterImageURL(for: record),
+                    width: 40
+                )
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 7) {
                         Text(record.title ?? record.contentId)
@@ -293,9 +462,21 @@ struct DownloadSeriesRow: View {
                 .frame(width: 46, height: 64)
                 .offset(x: 4)
                 .opacity(0.7)
-            DownloadPosterThumb(thumbhash: group.posterThumbhash, width: 46)
+            DownloadPosterThumb(
+                thumbhash: group.posterThumbhash,
+                fileURL: posterFileURL,
+                width: 46
+            )
         }
         .frame(width: 59, height: 66, alignment: .leading)
+    }
+
+    /// First on-disk poster among the group's episodes — every episode of a
+    /// series carries the same series poster in its download bundle.
+    private var posterFileURL: URL? {
+        group.allRecords.lazy
+            .compactMap { DownloadManager.shared.posterImageURL(for: $0) }
+            .first
     }
 
     private var monitorBadge: some View {

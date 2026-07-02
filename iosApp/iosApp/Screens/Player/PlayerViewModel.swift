@@ -758,6 +758,21 @@ class PlayerViewModel {
     /// offset here so UI/progress reporting remain full-runtime based.
     private var playbackTimelineOffset: Double = 0
 
+    /// Identity of the active offline download when playback was prepared
+    /// locally (no server session). While set, watch progress is routed to
+    /// `DownloadManager.recordOfflineProgress` — which queues it for the
+    /// next `/sync/progress` flush — instead of the session bridge, so
+    /// nothing on this path ever hits a server session/progress endpoint.
+    private struct OfflinePlaybackContext {
+        let downloadId: String
+        let mediaItemId: String
+    }
+    private var offlinePlaybackContext: OfflinePlaybackContext?
+    /// Mirrors the server's default watched threshold (90%) so an offline
+    /// watch latches `completed` — and with it delete-watched retention and
+    /// the reclaim sheet — the same way an online session would.
+    private static let offlineWatchedFraction: Double = 0.9
+
     /// Cached external subtitle URLs returned by the server; added to the
     /// player once the file has loaded.
     private var pendingExternalSubtitles: [SubtitleUrl] = []
@@ -869,6 +884,10 @@ class PlayerViewModel {
         let preferredSubtitleTrackIndex: Int?
         let preferredSidecarSubtitleTrackId: Int64?
         let startFromBeginning: Bool
+        /// Set for local playback of a completed download. Routes the
+        /// prepare through `OfflinePlaybackBuilder` instead of a server
+        /// session, so retry after an error stays on the offline path.
+        var offlineDownloadId: String? = nil
     }
 
     /// Where a `beginFreshLoad` invocation came from. Determines (a) whether
@@ -2500,6 +2519,21 @@ class PlayerViewModel {
             isPlaying: false
         )
 
+        // Natural end of an offline download: latch the local watched state
+        // immediately (not just at close) so retention/reclaim see it even
+        // if the process dies before `cleanup()` runs. DownloadManager is
+        // MainActor-isolated; this callback may not be.
+        if !isPremature, let offline = offlinePlaybackContext {
+            let endPosition = currentTime
+            Task { @MainActor [weak self] in
+                self?.recordOfflineProgress(
+                    context: offline,
+                    position: endPosition,
+                    markCompleted: true
+                )
+            }
+        }
+
         beginNextUpPostroll(videoEnded: true)
     }
 
@@ -2631,7 +2665,8 @@ class PlayerViewModel {
             preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
             preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
             preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-            startFromBeginning: false
+            startFromBeginning: false,
+            offlineDownloadId: lastLoadRequest.offlineDownloadId
         )
         let resumePosition = currentTime.isFinite ? max(0, currentTime) : 0
         return SuspendedPlaybackContext(
@@ -2664,6 +2699,7 @@ class PlayerViewModel {
         PosterImageCache.trimDecodedMemory()
         #endif
         lastLoadRequest = request
+        offlinePlaybackContext = nil
         contentIdsNeedingDetailRefresh.insert(request.contentId)
         hasReachedEndOfFile = false
         cancelNextUpFlow()
@@ -2723,18 +2759,37 @@ class PlayerViewModel {
                 await self.settingsRefreshTask?.value
                 guard !Task.isCancelled, !self.isDisposed else { return }
 
-                // Bound the start-session call when the load was triggered
-                // by autoplay or interruption recovery. A user-initiated load
-                // keeps the unbounded behavior — a slow manual pick is
-                // annoying but doesn't wedge the UI; a hung autoplay does
-                // (the user is stuck on a half-cross-faded Next Up screen
-                // with no obvious way out).
-                let prepared = try await self.runStartSession(
-                    request: request,
-                    resumePosition: resumePositionOverride,
-                    allowNearEndResume: allowNearEndResume,
-                    timeout: origin == .userInitiated ? nil : Self.autoplayStartSessionTimeout
-                )
+                let prepared: PreparedPlayback
+                if let offlineDownloadId = request.offlineDownloadId {
+                    // Fully local prepare from the stored record + manifest.
+                    // Must keep working in airplane mode, so nothing on this
+                    // branch (or downstream of it while
+                    // `offlinePlaybackContext` is set) may require the server.
+                    let offline = try await OfflinePlaybackBuilder.loadPreparedPlayback(
+                        downloadId: offlineDownloadId,
+                        startFromBeginning: request.startFromBeginning,
+                        resumePositionOverride: resumePositionOverride
+                    )
+                    self.offlinePlaybackContext = OfflinePlaybackContext(
+                        downloadId: offline.downloadId,
+                        mediaItemId: offline.mediaItemId
+                    )
+                    self.nowPlaying.setArtworkURL(offline.posterFileURL)
+                    prepared = offline.prepared
+                } else {
+                    // Bound the start-session call when the load was triggered
+                    // by autoplay or interruption recovery. A user-initiated load
+                    // keeps the unbounded behavior — a slow manual pick is
+                    // annoying but doesn't wedge the UI; a hung autoplay does
+                    // (the user is stuck on a half-cross-faded Next Up screen
+                    // with no obvious way out).
+                    prepared = try await self.runStartSession(
+                        request: request,
+                        resumePosition: resumePositionOverride,
+                        allowNearEndResume: allowNearEndResume,
+                        timeout: origin == .userInitiated ? nil : Self.autoplayStartSessionTimeout
+                    )
+                }
                 guard !Task.isCancelled, !self.isDisposed else { return }
 
                 let session = prepared.session
@@ -2770,9 +2825,14 @@ class PlayerViewModel {
                 self.knownExternalSubtitles = self.pendingExternalSubtitles
                 self.currentWatchDetail = prepared.watchDetail
                 self.currentSelectedVersion = prepared.selectedVersion
-                self.pushNowPlayingArtwork(contentId: prepared.watchDetail.contentId)
-                self.loadNextUpCandidate(for: prepared.watchDetail)
-                self.loadNextUpOnDeckItems(for: prepared.watchDetail)
+                // Artwork and Next Up are catalog fetches; the offline path
+                // already published its cached poster above and has no
+                // server to resolve a next episode against.
+                if request.offlineDownloadId == nil {
+                    self.pushNowPlayingArtwork(contentId: prepared.watchDetail.contentId)
+                    self.loadNextUpCandidate(for: prepared.watchDetail)
+                    self.loadNextUpOnDeckItems(for: prepared.watchDetail)
+                }
                 self.qualityOptions = ApplePlaybackQuality.playbackOptions(for: prepared.selectedVersion)
                 self.activeQualityId = prepared.activeQualityId
                 self.isQualitySwitching = false
@@ -2785,8 +2845,12 @@ class PlayerViewModel {
                     credits: prepared.selectedVersion.credits ?? prepared.watchDetail.credits
                 )
 
-                await self.realtimeClient.bind(sessionId: session.sessionId)
-                guard !Task.isCancelled, !self.isDisposed else { return }
+                // The realtime channel is a server websocket keyed by a real
+                // session id; the synthetic offline session has neither.
+                if request.offlineDownloadId == nil {
+                    await self.realtimeClient.bind(sessionId: session.sessionId)
+                    guard !Task.isCancelled, !self.isDisposed else { return }
+                }
 
                 guard let streamRequest = await self.makeStreamRequest(session: session) else {
                     self.finalizeTerminalPlaybackError("Invalid stream URL")
@@ -3244,7 +3308,8 @@ class PlayerViewModel {
         preferredAudioTrackIndex: Int? = nil,
         preferredSubtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool,
-        resumePositionOverride: Double? = nil
+        resumePositionOverride: Double? = nil,
+        offlineDownloadId: String? = nil
     ) {
         let request = LoadRequest(
             contentId: contentId,
@@ -3252,7 +3317,8 @@ class PlayerViewModel {
             preferredAudioTrackIndex: preferredAudioTrackIndex,
             preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
             preferredSidecarSubtitleTrackId: nil,
-            startFromBeginning: startFromBeginning
+            startFromBeginning: startFromBeginning,
+            offlineDownloadId: offlineDownloadId
         )
         beginFreshLoad(
             request: request,
@@ -4608,6 +4674,24 @@ class PlayerViewModel {
         debugStopFakeLiveSubtitles()
         #endif
 
+        // Final offline progress flush before teardown — the counterpart of
+        // the online path's `stopSession` report below. Captured into locals
+        // so the detached task doesn't read torn-down player state.
+        if let offline = offlinePlaybackContext {
+            let finalOfflinePosition = completionProgressPositionForCurrentItem()
+            let endedNaturally = hasReachedEndOfFile || showNextUpScreen
+            // Strong capture on purpose: this is the last write of the
+            // resume point and must not be dropped because the VM was
+            // released between dismiss and the hop to the MainActor.
+            Task { @MainActor in
+                self.recordOfflineProgress(
+                    context: offline,
+                    position: finalOfflinePosition,
+                    markCompleted: endedNaturally
+                )
+            }
+        }
+
         let finalPosition = currentTime
         activePlayer.dispose()
         // Drop the disposed backend so any post-teardown call is an explicit
@@ -4883,7 +4967,7 @@ class PlayerViewModel {
         }
 
         var headers: [String: String] = [:]
-        if let token, !token.isEmpty {
+        if let token, !token.isEmpty, !url.isFileURL {
             headers["Authorization"] = "Bearer \(token)"
         }
 
@@ -4891,8 +4975,10 @@ class PlayerViewModel {
     }
 
     /// Turns a server-supplied URL (absolute or API-relative) into an absolute URL.
+    /// Local `file://` URLs (offline downloads and their cached sidecar
+    /// subtitles) pass through untouched.
     private func resolveServerUrl(_ raw: String, serverUrl: String) -> URL? {
-        if raw.hasPrefix("http://") || raw.hasPrefix("https://") {
+        if raw.hasPrefix("http://") || raw.hasPrefix("https://") || raw.hasPrefix("file://") {
             return URL(string: raw)
         }
 
@@ -5928,6 +6014,10 @@ class PlayerViewModel {
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
                 guard !Task.isCancelled else { return }
                 guard let self else { return }
+                if let offline = self.offlinePlaybackContext {
+                    self.recordOfflineProgress(context: offline)
+                    continue
+                }
                 let result = await self.sessionBridge.reportProgress(
                     position: self.currentTime,
                     isPaused: !self.isPlaying
@@ -5940,6 +6030,30 @@ class PlayerViewModel {
                 }
             }
         }
+    }
+
+    /// Route one watch-progress sample into the offline queue. The explicit
+    /// `position` lets the terminal flushes (EOF, player close) pin the
+    /// end-state instead of relying on the last observed tick; `markCompleted`
+    /// force-latches watched on natural end even when the file's duration
+    /// never resolved.
+    @MainActor
+    private func recordOfflineProgress(
+        context: OfflinePlaybackContext,
+        position: Double? = nil,
+        markCompleted: Bool = false
+    ) {
+        let position = position ?? currentTime
+        guard position.isFinite, position >= 0 else { return }
+        let duration = duration.isFinite && duration > 0 ? duration : 0
+        let watched = markCompleted
+            || (duration > 0 && position / duration > Self.offlineWatchedFraction)
+        DownloadManager.shared.recordOfflineProgress(
+            mediaItemId: context.mediaItemId,
+            position: position,
+            duration: duration,
+            completed: watched
+        )
     }
 
     /// Duration the transport overlay stays on-screen after the last user

@@ -24,11 +24,7 @@ struct DownloadsView: View {
                     subtitle: "Downloads aren't enabled for this profile."
                 )
             } else if manager.records.isEmpty && manager.subscriptions.isEmpty {
-                EmptyStateView(
-                    icon: "arrow.down.circle",
-                    title: "No Downloads",
-                    subtitle: "Downloaded movies and episodes appear here for offline viewing."
-                )
+                noDownloadsState
             } else {
                 content
             }
@@ -49,11 +45,50 @@ struct DownloadsView: View {
         manager.downloadListItems(sortedBy: settings.sortOption)
     }
 
+    /// Mirrors `EmptyStateView` but adds a route into content: an empty
+    /// Downloads tab is most often a brand-new user, so hand them the
+    /// browse entry point rather than a dead end.
+    private var noDownloadsState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 44))
+                .foregroundColor(.continuumOnSurface.opacity(0.3))
+            Text("No Downloads")
+                .font(.continuumSubheadline)
+                .foregroundColor(.continuumOnSurface)
+            Text("Downloaded movies and episodes appear here for offline viewing.")
+                .font(.continuumCaption)
+                .foregroundColor(.continuumSecondaryText)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, ContinuumTheme.largePadding)
+            Button {
+                router.switchTab(to: .libraries)
+            } label: {
+                Text("Browse Libraries")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.continuumOnSurface)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(
+                        Capsule().fill(Color.continuumChromeSelectedFill)
+                            .overlay(Capsule().stroke(Color.continuumChromeSelectedBorder, lineWidth: 1))
+                    )
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var content: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
-                DownloadsStorageHeader(used: manager.totalBytesUsed, breakdown: manager.storageBreakdown)
-                    .padding(.top, 6)
+                DownloadsStorageHeader(
+                    used: manager.totalBytesUsed,
+                    breakdown: manager.storageBreakdown,
+                    activeCount: manager.activeRecords.count
+                )
+                .padding(.top, 6)
 
                 if showReclaimBanner {
                     DownloadReclaimBanner(
@@ -65,7 +100,15 @@ struct DownloadsView: View {
                 if !manager.activeRecords.isEmpty {
                     sectionLabel("In Progress", count: manager.activeRecords.count)
                     ForEach(manager.activeRecords) { record in
-                        DownloadActiveRow(record: record) { manager.deleteDownload(id: record.id) }
+                        DownloadActiveRow(
+                            record: record,
+                            bytesPerSecond: manager.transferRate(id: record.id),
+                            onPauseResume: {
+                                if record.localStatus == .paused { manager.resumeDownload(id: record.id) }
+                                else { manager.pauseDownload(id: record.id) }
+                            },
+                            onCancel: { manager.deleteDownload(id: record.id) }
+                        )
                     }
                 }
 
@@ -81,7 +124,9 @@ struct DownloadsView: View {
                     }
                 }
 
-                DownloadSortControl(option: $settings.sortOption, itemCount: listItems.count)
+                if !listItems.isEmpty {
+                    DownloadSortControl(option: $settings.sortOption, itemCount: listItems.count)
+                }
 
                 ForEach(listItems) { item in
                     row(for: item)

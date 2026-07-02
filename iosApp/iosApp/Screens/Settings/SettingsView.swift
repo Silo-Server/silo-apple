@@ -166,16 +166,6 @@ struct SettingsView: View {
                 )
             }
 
-            NavigationLink {
-                CardOverlaySettingsView()
-            } label: {
-                SettingsRowLabel(
-                    title: "Card Overlays",
-                    systemImage: "rectangle.stack.badge.plus",
-                    color: .indigo
-                )
-            }
-
             if DownloadManager.shared.downloadsEnabled {
                 NavigationLink {
                     DownloadsSettingsView()

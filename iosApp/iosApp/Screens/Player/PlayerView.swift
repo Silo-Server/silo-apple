@@ -14,6 +14,11 @@ struct PlayerView: View {
     /// session bridge so both direct-play and transcode paths align.
     let startFromBeginning: Bool
     let resumePositionOverride: Double?
+    /// Set when the caller wants offline playback of a completed download.
+    /// Routes the prepare through `OfflinePlaybackBuilder` (stored manifest
+    /// + local media file, no server session) so playback works with no
+    /// network and progress queues for the next `/sync/progress` flush.
+    let offlineDownloadId: String?
     /// Optional poster/backdrop URLs the presenter already has on hand.
     /// When set, the now-playing widget skips its own catalog-item fetch
     /// for artwork. Nil falls back to the prior fetch-on-prepare path.
@@ -34,6 +39,7 @@ struct PlayerView: View {
         preferredSubtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool = false,
         resumePositionOverride: Double? = nil,
+        offlineDownloadId: String? = nil,
         posterURLHint: String? = nil,
         backdropURLHint: String? = nil
     ) {
@@ -43,6 +49,7 @@ struct PlayerView: View {
         self.preferredSubtitleTrackIndex = preferredSubtitleTrackIndex
         self.startFromBeginning = startFromBeginning
         self.resumePositionOverride = resumePositionOverride
+        self.offlineDownloadId = offlineDownloadId
         self.posterURLHint = posterURLHint
         self.backdropURLHint = backdropURLHint
     }
@@ -207,7 +214,8 @@ struct PlayerView: View {
                 preferredAudioTrackIndex: preferredAudioTrackIndex,
                 preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
-                resumePositionOverride: resumePositionOverride
+                resumePositionOverride: resumePositionOverride,
+                offlineDownloadId: offlineDownloadId
             )
             #if os(tvOS)
             TVCastReceiver.shared.registerPlayer(viewModel, contentId: contentId)

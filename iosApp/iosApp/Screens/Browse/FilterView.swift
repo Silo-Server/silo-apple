@@ -308,6 +308,10 @@ private struct ConditionalSearchable: ViewModifier {
         if isActive {
 #if os(tvOS)
             content
+#elseif os(macOS)
+            // `.navigationBarDrawer` doesn't exist on macOS; the toolbar
+            // placement is the native equivalent.
+            content.searchable(text: $text, placement: .toolbar)
 #else
             content.searchable(text: $text, placement: .navigationBarDrawer(displayMode: .always))
 #endif

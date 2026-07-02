@@ -100,6 +100,11 @@ struct ContentView: View {
                 castController.appDidBecomeActive()
             case .background:
                 castController.appDidEnterBackground()
+                // Keep series monitoring alive while backgrounded; only
+                // worth a wake when the profile can download at all.
+                if DownloadManager.shared.downloadsEnabled {
+                    DownloadBackgroundRefresh.schedule()
+                }
             default:
                 break
             }
@@ -196,12 +201,29 @@ struct ContentView: View {
     /// - `continuum://item/{contentId}` — push the detail screen
     /// - `continuum://play/{contentId}` — push the player (resume from
     ///   last known position)
+    /// - `continuum://downloads` — select the Downloads tab (local
+    ///   download notifications)
     ///
     /// If the auth state isn't ready yet, the link is queued in
     /// `pendingDeepLink` and drained on the next `.authenticated`
     /// transition.
     private func handleDeepLink(_ url: URL) {
-        guard let host = url.host, !url.pathComponents.isEmpty else { return }
+        guard let host = url.host else { return }
+
+        if host == "downloads" {
+            guard router.authState == .authenticated else {
+                pendingDeepLink = url
+                return
+            }
+            // Select the tab rather than pushing the route — a push stacks
+            // a duplicate Downloads screen when that tab is already showing,
+            // and hides the tab context from anywhere else.
+            router.popToRoot()
+            router.switchTab(to: .downloads)
+            return
+        }
+
+        guard !url.pathComponents.isEmpty else { return }
         let contentId = url.pathComponents
             .dropFirst()
             .first?
@@ -562,6 +584,11 @@ struct MainTabView: View {
             }
         }
         .tint(.continuumOnSurface)
+        .onChange(of: router.requestedTab) { _, tab in
+            guard let tab else { return }
+            selectedTab = tab
+            router.requestedTab = nil
+        }
         #if !os(macOS)
         .fullScreenCover(isPresented: Binding(
             get: { audioStore.isShowingFullPlayer },

@@ -44,11 +44,16 @@ struct DownloadSeriesGroup: Identifiable, Hashable, Sendable {
 struct DownloadStorageBreakdown: Hashable, Sendable {
     let series: Int64
     let movies: Int64
-    /// Artwork, manifests, subtitles, and in-flight partials — the
-    /// remainder of true on-disk usage beyond completed media.
+    /// Bytes transferred so far by in-flight downloads. Tracked from the
+    /// records' progress rather than disk usage — partial media sits in the
+    /// session's staging area, invisible to the on-disk walk — so mid-flight
+    /// usage shows up here instead of vanishing (or bucketing as "Other").
+    let inProgress: Int64
+    /// Artwork, manifests, subtitles — the remainder of true on-disk usage
+    /// beyond completed media.
     let other: Int64
 
-    var total: Int64 { series + movies + other }
+    var total: Int64 { series + movies + inProgress + other }
 }
 
 /// A single row in the Manager list: either a whole series (collapsed to

@@ -132,7 +132,26 @@ struct DownloadOptionsSheet: View {
         let versionLabel = fileId == nil
             ? "Auto version"
             : (effectiveVersion.map(DetailPlaybackFormatting.versionPrimaryText) ?? "Selected version")
-        return "\(versionLabel) · \(qualityLabel)"
+        var parts = [versionLabel, qualityLabel]
+        if let estimate = selectionEstimate {
+            parts.append(estimate.isRange ? "\(estimate.sizeLabel) depending on server choice" : estimate.sizeLabel)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Size expectation for what the current selection would download:
+    /// candidate range for Auto, exact size for a chosen version.
+    private var selectionEstimate: DownloadSizeEstimate? {
+        DownloadSizeEstimate.estimate(versions: versions, fileId: fileId)
+    }
+
+    /// Over-threshold / insufficient-space caveat for the current selection,
+    /// mirroring the one-tap confirmation so switching versions in the sheet
+    /// keeps the warning honest.
+    private var selectionSizeWarning: String? {
+        selectionEstimate?.warningMessage(
+            availableBytes: DownloadFilePaths.deviceStorage().available
+        )
     }
 
     private var editionSection: some View {
@@ -156,24 +175,81 @@ struct DownloadOptionsSheet: View {
     }
 
     private var versionSection: some View {
-        Section("Version") {
+        Section {
             optionButton(
                 title: "Auto",
-                detail: "Let the server choose the file",
+                detail: autoVersionDetail,
                 isSelected: fileId == nil
             ) {
                 fileId = nil
             }
-            ForEach(scopedVersions) { version in
+            ForEach(versionRows, id: \.version.fileId) { row in
                 optionButton(
-                    title: DetailPlaybackFormatting.versionPrimaryText(version),
-                    detail: DetailPlaybackFormatting.versionSecondaryText(version),
-                    isSelected: fileId == version.fileId
+                    title: row.title,
+                    detail: row.detail,
+                    isSelected: fileId == row.version.fileId
                 ) {
-                    fileId = version.fileId
+                    fileId = row.version.fileId
                 }
             }
+        } header: {
+            Text("Version")
+        } footer: {
+            if let selectionSizeWarning {
+                Text(selectionSizeWarning)
+                    .foregroundColor(.orange)
+            }
         }
+    }
+
+    /// Version rows with a disambiguator appended when two distinct files
+    /// would otherwise render identical primary/secondary text (same
+    /// resolution/codec/size), so every row stays tellable-apart.
+    private var versionRows: [(version: FileVersion, title: String, detail: String?)] {
+        let rows = scopedVersions.map { version in
+            (
+                version: version,
+                title: DetailPlaybackFormatting.versionPrimaryText(version),
+                detail: DetailPlaybackFormatting.versionSecondaryText(version)
+            )
+        }
+        var counts: [String: Int] = [:]
+        for row in rows {
+            counts["\(row.title)|\(row.detail ?? "")", default: 0] += 1
+        }
+        return rows.map { row in
+            guard counts["\(row.title)|\(row.detail ?? "")", default: 0] > 1 else { return row }
+            let detail = [row.detail, disambiguator(for: row.version)]
+                .compactMap { $0 }
+                .joined(separator: " · ")
+            return (row.version, row.title, detail)
+        }
+    }
+
+    /// Edition name when the file has one, else a filename fragment — just
+    /// enough to tell apart two files whose technical summary reads the same.
+    private func disambiguator(for version: FileVersion) -> String {
+        let edition = version.editionDisplayLabel
+        if edition != "Standard" { return edition }
+        if let fragment = version.fileName?
+            .components(separatedBy: "/").last?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !fragment.isEmpty {
+            return fragment
+        }
+        return "File \(version.fileId)"
+    }
+
+    /// Auto spans every version the server might pick, so disclose the full
+    /// candidate range rather than pretending the size is unknown.
+    private var autoVersionDetail: String {
+        guard let estimate = DownloadSizeEstimate.estimate(versions: versions, fileId: nil) else {
+            return "Let the server choose the file"
+        }
+        if estimate.isRange {
+            return "\(estimate.sizeLabel) depending on server choice"
+        }
+        return "\(estimate.sizeLabel) · Let the server choose the file"
     }
 
     private var qualitySection: some View {
@@ -208,7 +284,7 @@ struct DownloadOptionsSheet: View {
         case .original:
             return "Source quality, with compatibility fallback if needed"
         case .twentyMbps, .tenMbps, .fiveMbps, .twoMbps, .oneMbps:
-            return "Prepared server-side before transfer"
+            return "Prepared on the server before download starts"
         }
     }
 
@@ -240,20 +316,26 @@ struct DownloadOptionsSheet: View {
         } header: {
             Text("Included Media")
         } footer: {
-            Text("Audio and subtitle selection is resolved by the server for the selected file. Available subtitle files are cached for offline playback.")
+            Text("Audio and subtitles are chosen automatically for the selected file. Available subtitles are saved for offline playback.")
         }
     }
 
+    /// Capped at three languages — a file with dozens of tracks would
+    /// otherwise render a wall of language names in one row.
+    private static let subtitleLanguageDisplayCap = 3
+
     private func subtitleSummary(for version: FileVersion) -> String {
         let tracks = version.subtitleTracks ?? []
-        guard !tracks.isEmpty else { return "None advertised" }
+        guard !tracks.isEmpty else { return "None" }
         let languages = tracks
             .compactMap { languageDisplayName($0.language) }
             .uniqued()
         if languages.isEmpty {
             return "\(tracks.count) track\(tracks.count == 1 ? "" : "s")"
         }
-        return languages.joined(separator: ", ")
+        let shown = languages.prefix(Self.subtitleLanguageDisplayCap).joined(separator: ", ")
+        let remainder = languages.count - Self.subtitleLanguageDisplayCap
+        return remainder > 0 ? "\(shown) +\(remainder) more" : shown
     }
 
     private func languageDisplayName(_ value: String?) -> String? {

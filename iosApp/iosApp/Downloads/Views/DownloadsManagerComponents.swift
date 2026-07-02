@@ -4,10 +4,12 @@ import SwiftUI
 // MARK: - Storage hero
 
 /// The storage hero at the top of the Downloads Manager: a big "used of
-/// device" figure with a typed breakdown bar (series / movies / other).
+/// device" figure with a typed breakdown bar (series / movies / in
+/// progress / other).
 struct DownloadsStorageHeader: View {
     let used: Int64
     let breakdown: DownloadStorageBreakdown
+    var activeCount: Int = 0
 
     @State private var device = DownloadFilePaths.deviceStorage()
 
@@ -21,6 +23,12 @@ struct DownloadsStorageHeader: View {
                     .font(.system(size: 14))
                     .foregroundColor(.continuumSecondaryText)
             )
+
+            if activeCount > 0 {
+                Text(inProgressLine)
+                    .font(.system(size: 12.5))
+                    .foregroundColor(.continuumSecondaryText)
+            }
 
             if breakdown.total > 0 {
                 breakdownBar
@@ -46,6 +54,17 @@ struct DownloadsStorageHeader: View {
             : "  downloaded"
     }
 
+    /// Mid-flight transfers are invisible to `used` (partial media sits in
+    /// the session's staging area), so this line keeps the hero honest
+    /// while something is downloading.
+    private var inProgressLine: String {
+        var line = "\(activeCount) download\(activeCount == 1 ? "" : "s") in progress"
+        if breakdown.inProgress > 0 {
+            line += " · \(DownloadFormatting.bytes(breakdown.inProgress)) so far"
+        }
+        return line
+    }
+
     private var breakdownBar: some View {
         GeometryReader { geo in
             let total = max(CGFloat(breakdown.total), 1)
@@ -53,7 +72,8 @@ struct DownloadsStorageHeader: View {
             HStack(spacing: 2) {
                 segment(width: width * CGFloat(breakdown.series) / total, opacity: 1)
                 segment(width: width * CGFloat(breakdown.movies) / total, opacity: 0.52)
-                segment(width: width * CGFloat(breakdown.other) / total, opacity: 0.22)
+                segment(width: width * CGFloat(breakdown.inProgress) / total, opacity: 0.34)
+                segment(width: width * CGFloat(breakdown.other) / total, opacity: 0.18)
             }
         }
         .frame(height: 10)
@@ -68,7 +88,8 @@ struct DownloadsStorageHeader: View {
         HStack(spacing: 16) {
             legendItem(opacity: 1, bytes: breakdown.series, label: "Series")
             legendItem(opacity: 0.52, bytes: breakdown.movies, label: "Movies")
-            legendItem(opacity: 0.22, bytes: breakdown.other, label: "Other")
+            legendItem(opacity: 0.34, bytes: breakdown.inProgress, label: "In progress")
+            legendItem(opacity: 0.18, bytes: breakdown.other, label: "Other")
         }
     }
 
@@ -217,13 +238,26 @@ struct DownloadSelectionCircle: View {
 /// A 2:3 poster tile sized for a Manager / browse row.
 struct DownloadPosterThumb: View {
     let thumbhash: String?
+    /// Poster image on local disk, fetched by the download pipeline before
+    /// the media transfer starts — drawn over the thumbhash placeholder so
+    /// in-progress rows aren't a blank tile for the whole transfer.
+    var fileURL: URL? = nil
     var width: CGFloat = 40
     var corner: CGFloat = 7
 
     var body: some View {
-        ThumbhashImage(thumbhash: thumbhash)
-            .frame(width: width, height: width * 1.5)
-            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        ZStack {
+            ThumbhashImage(thumbhash: thumbhash)
+            if let fileURL {
+                AsyncImage(url: fileURL) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Color.clear
+                }
+            }
+        }
+        .frame(width: width, height: width * 1.5)
+        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     }
 }
 

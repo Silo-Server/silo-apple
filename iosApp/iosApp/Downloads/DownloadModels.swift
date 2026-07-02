@@ -574,6 +574,12 @@ enum LocalDownloadStatus: String, Codable, Sendable {
     case queued
     /// Background `URLSession` task is transferring the media file.
     case downloading
+    /// User-suspended transfer. The task was cancelled with resume data
+    /// (persisted next to the media, see `DownloadRecord.resumeDataFilename`)
+    /// so the transfer can continue without refetching completed ranges.
+    /// Only an explicit user resume leaves this state — the pipeline and
+    /// server reconciliation must never auto-restart it.
+    case paused
     /// Media file is local; fetching manifest/artwork/subtitles.
     case fetchingAssets
     /// Everything is on disk and playable offline.
@@ -585,9 +591,12 @@ enum LocalDownloadStatus: String, Codable, Sendable {
     case revoked
 
     var isTerminalSuccess: Bool { self == .completed }
+    /// `paused` counts as active so it stays in the in-progress UI, but the
+    /// pipeline only ever starts `.queued` records — pausing both surfaces
+    /// the row and blocks any automatic restart.
     var isActive: Bool {
         switch self {
-        case .registering, .preparing, .queued, .downloading, .fetchingAssets:
+        case .registering, .preparing, .queued, .downloading, .paused, .fetchingAssets:
             return true
         case .completed, .failed, .revoked:
             return false
@@ -622,6 +631,10 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var logoFilename: String?
     /// Manifest `fetch_url` → relative on-disk filename.
     var subtitleFilenames: [String: String]
+    /// Persisted `cancel(byProducingResumeData:)` blob for a paused
+    /// transfer. Default `nil` keeps Codable backward-compatible with
+    /// stores written before pause existed.
+    var resumeDataFilename: String? = nil
 
     // Display fields cached so the Downloads list renders before the
     // manifest is fetched and offline.
