@@ -82,4 +82,25 @@ actor ContinuumAI {
         )
         return response.subtitles
     }
+
+    // MARK: - Subtitle provider search
+
+    /// Synchronous fan-out search across the server's configured external
+    /// subtitle providers. Can legitimately take 20–30s (per-provider
+    /// timeouts); the session's default 60s request timeout covers it.
+    /// No providers configured yields an empty result set, not an error.
+    func searchSubtitles(_ body: SubtitleSearchBody) async throws -> SubtitleSearchResponse {
+        try await http.post("/api/v1/subtitles/search", body: body)
+    }
+
+    /// Synchronously download one chosen search result. The server persists
+    /// it before responding; the returned ``DownloadedSubtitle`` then appears
+    /// in ``downloadedSubtitles(mediaFileId:)``.
+    func downloadSubtitle(_ body: SubtitleDownloadBody) async throws -> DownloadedSubtitle {
+        let response: SubtitleDownloadResponse = try await http.post(
+            "/api/v1/subtitles/download",
+            body: body
+        )
+        return response.subtitle
+    }
 }

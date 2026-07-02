@@ -4224,6 +4224,82 @@ class PlayerViewModel {
         subtitleAI.transcribe(audioIndex: audioIndex, translateTo: translateTo)
     }
 
+    // MARK: - Subtitle provider search (synchronous, no job machinery)
+
+    /// Whether in-player subtitle search is available: an active playback
+    /// session (the synthesized stream URL is session-scoped), a known media
+    /// file, and a backend that can host downloaded sidecars. False for
+    /// offline/local playback. Gates the "Search Subtitles…" entry row.
+    @MainActor
+    var subtitleSearchAvailable: Bool {
+        activePlaybackSessionId != nil
+            && currentSelectedVersion?.fileId != nil
+            && backendCapabilities.supportsExternalPrimarySubtitles
+    }
+
+    /// Run a provider search for the current media file. Synchronous on the
+    /// server (fan-out with 20–30s per-provider timeouts) — the caller shows
+    /// a long-running spinner. Throws `HTTPError` verbatim for the UI.
+    @MainActor
+    func searchSubtitles(languages: [String]) async throws -> SubtitleSearchResponse {
+        guard let fileId = currentSelectedVersion?.fileId else {
+            throw HTTPError.invalidURL("subtitle search requires an active media file")
+        }
+        return try await ContinuumAI.shared.searchSubtitles(
+            SubtitleSearchBody(mediaFileId: fileId, languages: languages)
+        )
+    }
+
+    /// Download a chosen search result and hand it to the picker (register +
+    /// auto-select) with **no session restart** — the same sidecar path the AI
+    /// completion uses. Returns `true` on success.
+    ///
+    /// Mirrors `SubtitleAIController.completePersistedHandoff` minus the
+    /// job/latch/websocket machinery: the download response carries the DB
+    /// `id` but no combined index or stream URL, so we re-list to find the
+    /// track's *position* and synthesize both (see ``DownloadedSubtitle``).
+    ///
+    /// Idempotency vs the server's `subtitle_ready` broadcast that follows any
+    /// download: that path is register-only (never steals selection) and
+    /// `registerCompletedAISubtitle` de-dupes on combined index, so the echo
+    /// is a harmless no-op — no ownership latch is needed here.
+    @MainActor
+    func downloadSearchedSubtitle(_ result: SubtitleSearchResult) async -> Bool {
+        guard let fileId = currentSelectedVersion?.fileId else { return false }
+        do {
+            let subtitle = try await ContinuumAI.shared.downloadSubtitle(
+                SubtitleDownloadBody(from: result, mediaFileId: fileId)
+            )
+            let downloaded = try await ContinuumAI.shared.downloadedSubtitles(mediaFileId: fileId)
+            guard let position = downloaded.firstIndex(where: { $0.id == subtitle.id }) else {
+                Self.logger.warning(
+                    "[SUB-SEARCH] downloaded subtitle id=\(subtitle.id, privacy: .public) not in listing of \(downloaded.count, privacy: .public)"
+                )
+                return false
+            }
+            guard let context = makeSubtitleHandoffContext(),
+                  let descriptor = downloaded[position].synthesizedDescriptor(
+                      sessionId: context.sessionId,
+                      baseTrackCount: context.baseTrackCount,
+                      position: position,
+                      resolveURL: context.resolveURL
+                  )
+            else {
+                Self.logger.warning(
+                    "[SUB-SEARCH] no handoff context / unresolvable URL for subtitle id=\(subtitle.id, privacy: .public)"
+                )
+                return false
+            }
+            registerCompletedAISubtitle(descriptor, autoSelect: true)
+            return true
+        } catch {
+            Self.logger.warning(
+                "[SUB-SEARCH] download failed: \(error.localizedDescription, privacy: .public)"
+            )
+            return false
+        }
+    }
+
     /// Build the context ``SubtitleAIController`` needs to synthesize a
     /// completed subtitle's player descriptor. Returns `nil` when no active
     /// session exists or the current backend can't host downloaded sidecars —
