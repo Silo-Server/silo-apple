@@ -163,6 +163,7 @@ struct TrackSelectionSheet: View {
             TrackRow(
                 name: track.primaryLabel,
                 attributes: track.attributesLabel,
+                pills: track.attributePillLabels,
                 isSelected: viewModel.selectedAudioId == track.trackId
             ) {
                 viewModel.selectAudio(track)
@@ -196,6 +197,7 @@ struct TrackSelectionSheet: View {
             TrackRow(
                 name: track.primaryLabel,
                 attributes: track.attributesLabel,
+                pills: track.attributePillLabels,
                 isSelected: isSelected,
                 isDisabled: isDisabled
             ) {
@@ -209,33 +211,44 @@ struct TrackSelectionSheet: View {
 
     #if !os(tvOS)
     private var phoneList: some View {
-        List {
-            if !viewModel.audioTracks.isEmpty {
-                Section("Audio") { audioRows }
-            }
-            if !viewModel.subtitleTracks.isEmpty {
-                Section("Subtitles") { subtitleRows(isSecondary: false) }
-                if viewModel.supportsSecondarySubtitles,
-                   viewModel.selectedSubtitleId != nil,
-                   !viewModel.availableSecondarySubtitleTracks.isEmpty {
-                    Section("Secondary Subtitles") { subtitleRows(isSecondary: true) }
+        NavigationStack {
+            List {
+                if !viewModel.audioTracks.isEmpty {
+                    Section("Audio") { audioRows }
                 }
-            }
-            if aiSubtitlesAvailable {
-                Section {
-                    Button {
-                        showAITranslateMenu = true
-                    } label: {
-                        Label("AI Subtitles…", systemImage: "sparkles")
+                if !viewModel.subtitleTracks.isEmpty {
+                    Section("Subtitles") { subtitleRows(isSecondary: false) }
+                    if viewModel.supportsSecondarySubtitles,
+                       viewModel.selectedSubtitleId != nil,
+                       !viewModel.availableSecondarySubtitleTracks.isEmpty {
+                        Section("Secondary Subtitles") { subtitleRows(isSecondary: true) }
+                    }
+                }
+                if aiSubtitlesAvailable {
+                    Section {
+                        Button {
+                            showAITranslateMenu = true
+                        } label: {
+                            Label("AI Subtitles…", systemImage: "sparkles")
+                        }
                     }
                 }
             }
+            #if os(macOS)
+            .listStyle(.inset)
+            #else
+            .listStyle(.insetGrouped)
+            #endif
+            .navigationTitle("Audio & Subtitles")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { onDismiss() }
+                }
+            }
         }
-        #if os(macOS)
-        .listStyle(.inset)
-        #else
-        .listStyle(.insetGrouped)
-        #endif
         .sheet(isPresented: $showAITranslateMenu) {
             SubtitleTranslateMenu(
                 viewModel: viewModel,
@@ -260,6 +273,9 @@ struct TrackSelectionSheet: View {
 private struct TrackRow: View {
     let name: String
     let attributes: String?
+    /// Unused on tvOS (the panel keeps its one-line attribute text) but part
+    /// of the shared row-builder call signature.
+    var pills: [String] = []
     let isSelected: Bool
     var isDisabled: Bool = false
     let action: () -> Void
@@ -309,10 +325,13 @@ private struct TrackRow: View {
     }
 }
 #else
-/// Simple track row for iOS: standard List row with a trailing checkmark.
+/// Track row for iOS/macOS: name plus a row of small metadata pills
+/// (language, layout, codec, SDH/Forced/External flags), trailing checkmark
+/// on the selected track.
 private struct TrackRow: View {
     let name: String
     let attributes: String?
+    var pills: [String] = []
     let isSelected: Bool
     var isDisabled: Bool = false
     let action: () -> Void
@@ -320,10 +339,12 @@ private struct TrackRow: View {
     var body: some View {
         Button(action: action) {
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 5) {
                     Text(name)
                         .foregroundStyle(.primary)
-                    if let attributes {
+                    if !pills.isEmpty {
+                        pillRow
+                    } else if let attributes {
                         Text(attributes)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -332,11 +353,29 @@ private struct TrackRow: View {
                 Spacer()
                 if isSelected {
                     Image(systemName: "checkmark")
+                        .fontWeight(.semibold)
                         .foregroundStyle(.tint)
                 }
             }
+            .contentShape(Rectangle())
         }
         .disabled(isDisabled)
+    }
+
+    private var pillRow: some View {
+        HStack(spacing: 5) {
+            ForEach(pills, id: \.self) { pill in
+                Text(pill.uppercased())
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.primary.opacity(0.08))
+                    )
+            }
+        }
     }
 }
 #endif

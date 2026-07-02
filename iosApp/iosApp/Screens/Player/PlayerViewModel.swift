@@ -389,6 +389,10 @@ class PlayerViewModel {
     var qualitySwitchError: String?
     var isScrubbing = false
     var scrubPreviewTime: Double = 0
+    /// True while the iOS touch-and-hold fast-forward gesture is engaged.
+    /// The temporary rate is applied straight to the backend and never
+    /// persisted, so releasing always restores `settings.playbackSpeed`.
+    var isHoldFastForwarding = false
     /// Loading status of the primary + secondary subtitle slots. Set
     /// by `PlayerCore` whenever a sidecar fetch starts, completes, or
     /// errors. UI can key a spinner / silent-failure indicator off
@@ -1060,6 +1064,11 @@ class PlayerViewModel {
         activeRouteKind = engine
         reapplyUserGain()
     }
+
+    /// Read-only view of the canonical user volume for gesture overlays
+    /// (the stored property stays private so all writes funnel through
+    /// `applyUserVolume`).
+    var currentUserVolume: Float { userVolume }
 
     /// Records the user's volume/mute as the VM-level source of truth and
     /// pushes it to the live backend.
@@ -2349,6 +2358,22 @@ class PlayerViewModel {
         settings.setPlaybackSpeed(rate)
         activePlayer.setSpeed(settings.playbackSpeed)
         scheduleHideControls()
+    }
+
+    /// Touch-and-hold fast forward (iOS). Applies `rate` directly to the
+    /// backend without touching `settings.playbackSpeed`, so releasing the
+    /// hold restores whatever speed the user had configured. No-op while
+    /// paused — `setSpeed` on a paused AVPlayer would start playback.
+    func beginHoldFastForward(rate: Double = 2.0) {
+        guard !isHoldFastForwarding, isPlaying else { return }
+        isHoldFastForwarding = true
+        activePlayer.setSpeed(rate)
+    }
+
+    func endHoldFastForward() {
+        guard isHoldFastForwarding else { return }
+        isHoldFastForwarding = false
+        activePlayer.setSpeed(settings.playbackSpeed)
     }
 
     func setVideoGravity(_ gravity: VideoGravity) {

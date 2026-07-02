@@ -59,6 +59,17 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     }
 
     var attributesLabel: String? {
+        let parts = attributeParts()
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Same attributes as `attributesLabel`, unjoined — for UIs that render
+    /// each attribute as its own pill instead of a dot-separated line.
+    var attributePillLabels: [String] {
+        attributeParts()
+    }
+
+    private func attributeParts() -> [String] {
         var parts: [String] = []
 
         if let lang = normalizedLanguageCode,
@@ -91,7 +102,7 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
             parts.append("External")
         }
 
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        return parts
     }
 
     /// Rich human-readable label for track pickers,

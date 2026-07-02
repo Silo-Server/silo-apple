@@ -67,35 +67,46 @@ struct ChapterSheet: View {
     #endif
 
     private func iosList(_ chapters: [PlayerChapterInfo]) -> some View {
-        List {
-            ForEach(chapters) { chapter in
-                Button {
-                    viewModel.seekTo(seconds: chapter.time)
-                    onSelect?()
-                } label: {
-                    HStack {
-                        Text("\(chapter.index + 1).")
-                            .foregroundStyle(.white.opacity(0.6))
-                            .frame(width: 30, alignment: .trailing)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(chapter.title ?? "Chapter \(chapter.index + 1)")
-                                .foregroundStyle(.white)
-                            Text(PlayerTimeFormatter.formatHMS(chapter.time))
-                                .font(.caption)
+        NavigationStack {
+            List {
+                ForEach(chapters) { chapter in
+                    Button {
+                        viewModel.seekTo(seconds: chapter.time)
+                        onSelect?()
+                    } label: {
+                        HStack {
+                            Text("\(chapter.index + 1).")
                                 .foregroundStyle(.white.opacity(0.6))
-                                .monospacedDigit()
+                                .frame(width: 30, alignment: .trailing)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(chapter.title ?? "Chapter \(chapter.index + 1)")
+                                    .foregroundStyle(.white)
+                                Text(PlayerTimeFormatter.formatHMS(chapter.time))
+                                    .font(.caption)
+                                    .foregroundStyle(.white.opacity(0.6))
+                                    .monospacedDigit()
+                            }
+                            Spacer()
+                            if currentChapterIndex == chapter.index {
+                                Image(systemName: "play.fill")
+                                    .foregroundStyle(.tint)
+                            }
                         }
-                        Spacer()
-                        if currentChapterIndex == chapter.index {
-                            Image(systemName: "play.fill")
-                                .foregroundStyle(.tint)
-                        }
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                }
+            }
+            .listStyle(.plain)
+            .navigationTitle("Chapters")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { onSelect?() }
                 }
             }
         }
-        .listStyle(.plain)
     }
 }
 

@@ -149,6 +149,13 @@ struct PlayerView: View {
                     }
                     #else
                     if !viewModel.isLoading {
+                        // Invisible gestures (tap-to-toggle, double-tap skip,
+                        // hold-2×, edge swipes, pinch) live in a dedicated
+                        // layer under the button overlay.
+                        MobilePlayerGestureLayer(
+                            viewModel: viewModel,
+                            onDismiss: { dismissPlayer() }
+                        )
                         MobilePlayerControls(
                             viewModel: viewModel,
                             orientationCoordinator: orientationCoordinator,
@@ -256,8 +263,9 @@ struct PlayerView: View {
         dismiss()
     }
 
-    /// Video surface. tvOS uses focus-driven transport; iOS adds a tap
-    /// gesture to toggle the overlay since there's no focus engine.
+    /// Video surface. tvOS uses focus-driven transport; on iOS the touch
+    /// gestures (tap-to-toggle, pinch, double-tap skip, …) live in
+    /// `MobilePlayerGestureLayer`, mounted above this surface.
     ///
     /// Render the active backend surface directly from the VM's route state.
     /// AVPlayer now covers HLS, the narrow native-direct allowlist, and the
@@ -273,38 +281,20 @@ struct PlayerView: View {
                 Color.black
             }
         case .avPlayer(let backend):
-            #if os(iOS)
             let surface = AVPlayerSurface(
                 backend: backend,
                 videoGravity: viewModel.settings.videoGravity.avGravity
             )
-                .onTapGesture { viewModel.toggleControls() }
-                .simultaneousGesture(videoGravityPinchGesture)
-            #else
-            let surface = AVPlayerSurface(
-                backend: backend,
-                videoGravity: viewModel.settings.videoGravity.avGravity
-            )
-            #endif
             if ignoresSafeArea {
                 surface.ignoresSafeArea()
             } else {
                 surface
             }
         case .coreMedia(let core):
-            #if os(iOS)
             let surface = PlayerSurface(
                 player: core,
                 videoGravity: viewModel.settings.videoGravity.avGravity
             )
-                .onTapGesture { viewModel.toggleControls() }
-                .simultaneousGesture(videoGravityPinchGesture)
-            #else
-            let surface = PlayerSurface(
-                player: core,
-                videoGravity: viewModel.settings.videoGravity.avGravity
-            )
-            #endif
             if ignoresSafeArea {
                 surface.ignoresSafeArea()
             } else {
@@ -312,35 +302,6 @@ struct PlayerView: View {
             }
         }
     }
-
-    #if os(iOS)
-    private var videoGravityPinchGesture: some Gesture {
-        MagnificationGesture()
-            .onEnded { scale in
-                if scale > 1.08 {
-                    viewModel.setVideoGravity(nextVideoGravity(after: viewModel.settings.videoGravity))
-                } else if scale < 0.92 {
-                    viewModel.setVideoGravity(previousVideoGravity(before: viewModel.settings.videoGravity))
-                }
-            }
-    }
-
-    private func nextVideoGravity(after gravity: VideoGravity) -> VideoGravity {
-        switch gravity {
-        case .fit: return .fill
-        case .fill: return .stretch
-        case .stretch: return .stretch
-        }
-    }
-
-    private func previousVideoGravity(before gravity: VideoGravity) -> VideoGravity {
-        switch gravity {
-        case .fit: return .fit
-        case .fill: return .fit
-        case .stretch: return .fill
-        }
-    }
-    #endif
 
     private var playbackLoadingIndicator: some View {
         ProgressView()
