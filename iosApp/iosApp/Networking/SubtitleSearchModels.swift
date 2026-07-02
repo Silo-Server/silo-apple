@@ -26,7 +26,10 @@ struct SubtitleSearchBody: Encodable {
 /// One ranked hit from a provider search. `id` is provider-scoped and,
 /// together with `provider`, is the load-bearing pair echoed back on
 /// download. Decoders are tolerant: only `id` is required.
-struct SubtitleSearchResult: Codable, Identifiable, Equatable {
+///
+/// Deliberately NOT `Identifiable`: `id` alone can collide across providers,
+/// so UI identity (ForEach, focus, download tracking) keys on ``uniqueKey``.
+struct SubtitleSearchResult: Codable, Equatable {
     let id: String
     let provider: String
     let language: String
@@ -73,6 +76,10 @@ struct SubtitleSearchResult: Codable, Identifiable, Equatable {
         self.hearingImpaired = hearingImpaired
         self.uploadDate = uploadDate
     }
+
+    /// Composite row identity — the `(provider, id)` pair the download API
+    /// also requires. Mirrors Android's `"{provider}:{id}"` download key.
+    var uniqueKey: String { "\(provider):\(id)" }
 }
 
 /// `POST /api/v1/subtitles/search` response. `warnings` carries per-provider

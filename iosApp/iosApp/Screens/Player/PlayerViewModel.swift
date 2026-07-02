@@ -4271,6 +4271,18 @@ class PlayerViewModel {
                 SubtitleDownloadBody(from: result, mediaFileId: fileId)
             )
             let downloaded = try await ContinuumAI.shared.downloadedSubtitles(mediaFileId: fileId)
+            // Revalidate after the awaits: if playback moved to a different
+            // file while the download was in flight, `makeSubtitleHandoffContext`
+            // would now describe the NEW session, and registering the OLD
+            // file's listing position against it would select a wrong or
+            // invalid track. The download itself is persisted server-side
+            // either way; the next session of that file picks it up.
+            guard currentSelectedVersion?.fileId == fileId else {
+                Self.logger.info(
+                    "[SUB-SEARCH] media file changed during download of subtitle id=\(subtitle.id, privacy: .public); skipping live handoff"
+                )
+                return false
+            }
             guard let position = downloaded.firstIndex(where: { $0.id == subtitle.id }) else {
                 Self.logger.warning(
                     "[SUB-SEARCH] downloaded subtitle id=\(subtitle.id, privacy: .public) not in listing of \(downloaded.count, privacy: .public)"

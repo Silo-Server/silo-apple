@@ -111,6 +111,15 @@ final class SubtitleSearchModelTests: XCTestCase {
         XCTAssertEqual(response.subtitle.provider, "subdl")
     }
 
+    func testUniqueKeyCombinesProviderAndId() {
+        // Provider-local ids can collide across providers; row identity must
+        // key on the (provider, id) pair.
+        let a = SubtitleSearchResult(id: "123", provider: "opensubtitles")
+        let b = SubtitleSearchResult(id: "123", provider: "subdl")
+        XCTAssertEqual(a.uniqueKey, "opensubtitles:123")
+        XCTAssertNotEqual(a.uniqueKey, b.uniqueKey)
+    }
+
     func testScoreTierThresholds() {
         XCTAssertEqual(SubtitleSearchScoreTier(score: 100), .good)
         XCTAssertEqual(SubtitleSearchScoreTier(score: 70), .good)

@@ -60,9 +60,9 @@ struct SubtitleSearchMenu: View {
 
     #if os(tvOS)
     /// Panel-level focus for language rows and result rows (keys never
-    /// collide: language codes vs provider-scoped result ids). Centralized so
-    /// the list can scroll-follow and recover a dropped focus — mirrors
-    /// ``SubtitleTranslateMenu``.
+    /// collide: language codes vs composite `provider:id` result keys).
+    /// Centralized so the list can scroll-follow and recover a dropped
+    /// focus — mirrors ``SubtitleTranslateMenu``.
     @FocusState private var focusedRowID: String?
     #endif
 
@@ -166,7 +166,7 @@ struct SubtitleSearchMenu: View {
 
     private func download(_ result: SubtitleSearchResult) {
         guard downloadingId == nil else { return }
-        downloadingId = result.id
+        downloadingId = result.uniqueKey
         Task {
             let ok = await viewModel.downloadSearchedSubtitle(result)
             if ok {
@@ -241,7 +241,9 @@ struct SubtitleSearchMenu: View {
         case .picking:
             focusedRowID = selectedLanguage ?? displayLanguages.first?.code
         case .results:
-            focusedRowID = results.first?.id
+            // Empty result set: land focus on the fallback row so the remote
+            // isn't left with nothing focused.
+            focusedRowID = results.first?.uniqueKey ?? "back-to-languages"
         case .searching, .failed:
             break
         }
@@ -421,7 +423,7 @@ struct SubtitleSearchMenu: View {
             .id("back-to-languages")
         } else {
             sectionHeader(searchedLanguage.map { displayName($0) } ?? "Results")
-            ForEach(results) { result in
+            ForEach(results, id: \.uniqueKey) { result in
                 tvResultRow(result)
             }
         }
@@ -429,9 +431,9 @@ struct SubtitleSearchMenu: View {
 
     @ViewBuilder
     private func tvResultRow(_ result: SubtitleSearchResult) -> some View {
-        let isDownloadingThis = downloadingId == result.id
+        let isDownloadingThis = downloadingId == result.uniqueKey
         TVSearchRow(
-            rowID: result.id,
+            rowID: result.uniqueKey,
             isDisabled: downloadingId != nil && !isDownloadingThis,
             focusedID: $focusedRowID,
             action: { download(result) }
@@ -455,7 +457,7 @@ struct SubtitleSearchMenu: View {
                 providerTag(result.provider, fontSize: 15)
             }
         }
-        .id(result.id)
+        .id(result.uniqueKey)
     }
 
     @ViewBuilder
@@ -629,7 +631,7 @@ struct SubtitleSearchMenu: View {
                 }
             } else {
                 Section(searchedLanguage.map { displayName($0) } ?? "Results") {
-                    ForEach(results) { result in
+                    ForEach(results, id: \.uniqueKey) { result in
                         resultRow(result)
                     }
                 }
@@ -640,7 +642,7 @@ struct SubtitleSearchMenu: View {
 
     @ViewBuilder
     private func resultRow(_ result: SubtitleSearchResult) -> some View {
-        let isDownloadingThis = downloadingId == result.id
+        let isDownloadingThis = downloadingId == result.uniqueKey
         Button {
             download(result)
         } label: {
