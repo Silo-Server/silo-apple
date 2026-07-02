@@ -44,6 +44,7 @@ final class DownloadManager {
             rebuildDownloadedIndex()
             let enabled = file.capability?.isUsable == true
             if enabled != downloadsEnabled { downloadsEnabled = enabled }
+            syncLiveActivity()
         }
     }
 
@@ -886,6 +887,26 @@ final class DownloadManager {
             notifyTerminalFailure(record)
         }
         processQueue()
+    }
+
+    /// Mirror the active queue into the lock-screen Live Activity. Hooked
+    /// into `file`'s `didSet` so every mutation flows through — including
+    /// scope deactivation (empty blob ends the activity). The controller
+    /// dedupes identical content states, so burst mutations (reconcile
+    /// loops, pipeline steps) cost a snapshot build and nothing more.
+    private func syncLiveActivity() {
+        #if os(iOS)
+        let completedIds = Set(
+            file.records.values
+                .filter { $0.localStatus == .completed }
+                .map(\.id)
+        )
+        DownloadLiveActivityController.shared.sync(
+            activeRecords: activeRecords,
+            completedRecordIds: completedIds,
+            totalBytesPerSecond: transferRates.values.reduce(0, +)
+        )
+        #endif
     }
 
     /// Notify only for transfer/pipeline failures the user would otherwise

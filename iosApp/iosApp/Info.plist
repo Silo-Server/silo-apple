@@ -54,6 +54,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Silo uses your local network to find, set up, and control Silo on your Apple TV.</string>
 	<key>NSBonjourServices</key>

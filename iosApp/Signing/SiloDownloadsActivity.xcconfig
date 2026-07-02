@@ -1,0 +1,11 @@
+// iOS Downloads Live Activity widget extension signing defaults. CI and
+// the paid team use these as-is. Local contributors without access to the
+// paid team can override any of these by dropping a `Local.xcconfig` into
+// this directory. The extension needs no entitlements (no App Group or
+// keychain access — the host app pushes all content via ActivityKit).
+
+SILO_DOWNLOADS_ACTIVITY_BUNDLE_ID = org.siloserver.silo.DownloadsActivity
+
+PRODUCT_BUNDLE_IDENTIFIER = $(SILO_DOWNLOADS_ACTIVITY_BUNDLE_ID)
+
+#include? "Local.xcconfig"

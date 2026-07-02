@@ -85,6 +85,8 @@ targets:
         product: NukeUI
       - target: SiloNotificationService
         embed: true
+      - target: SiloDownloadsActivity
+        embed: true
 
   # NOTE: tvOS-specific source files live under iosApp/tvOS/. They are guarded
   # by #if os(tvOS) so they compile out on the iOS target even though the
@@ -235,6 +237,34 @@ targets:
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
     dependencies:
       - sdk: UserNotifications.framework
+
+  # iOS WidgetKit extension hosting the downloads Live Activity: the
+  # lock-screen / Dynamic Island progress card for active downloads. The
+  # host app owns the activity lifecycle (DownloadLiveActivityController)
+  # and pushes content states through ActivityKit; this target only renders
+  # them, so it compiles just the shared attributes schema and needs no
+  # entitlements or shared storage.
+  SiloDownloadsActivity:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: DownloadsActivity
+      - path: iosApp/Downloads/DownloadActivityAttributes.swift
+    configFiles:
+      Debug: Signing/SiloDownloadsActivity.xcconfig
+      Release: Signing/SiloDownloadsActivity.xcconfig
+    settings:
+      base:
+        PRODUCT_NAME: SiloDownloadsActivity
+        INFOPLIST_FILE: DownloadsActivity/Info.plist
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: 1
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SDKROOT: iphoneos
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
 
   # Unit-test bundle for the iOS Silo app. Hosts the XCTest cases under
   # Tests/ and loads the Silo.app binary so `@testable import Silo` can

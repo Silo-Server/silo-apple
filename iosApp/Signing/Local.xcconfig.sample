@@ -9,7 +9,8 @@
 // variable you redefine here wins. Each target reads its own indirection
 // variable (SILO_IOS_BUNDLE_ID / SILO_TV_BUNDLE_ID /
 // SILO_MAC_BUNDLE_ID / SILO_TOPSHELF_BUNDLE_ID /
-// SILO_NOTIFICATION_SERVICE_BUNDLE_ID, plus the
+// SILO_NOTIFICATION_SERVICE_BUNDLE_ID /
+// SILO_DOWNLOADS_ACTIVITY_BUNDLE_ID, plus the
 // `_ENTITLEMENTS` variables), so
 // you can change one target without affecting the others.
 //
@@ -28,11 +29,15 @@
 // SILO_MAC_BUNDLE_ID      = com.example.silo.mac
 // SILO_TOPSHELF_BUNDLE_ID = com.example.silo.topshelf
 //
-// The Notification Service extension is embedded in the iOS app, so its
-// bundle ID must be prefixed by SILO_IOS_BUNDLE_ID or embedded-binary
-// validation fails at install:
+// The Notification Service and Downloads Live Activity extensions are
+// embedded in the iOS app, so their bundle IDs must be prefixed by
+// SILO_IOS_BUNDLE_ID or embedded-binary validation fails at install:
 //
 // SILO_NOTIFICATION_SERVICE_BUNDLE_ID = com.example.silo.NotificationService
+// SILO_DOWNLOADS_ACTIVITY_BUNDLE_ID   = com.example.silo.DownloadsActivity
+//
+// (The Downloads Live Activity extension has no entitlements, so it needs
+// no `.personal.entitlements` variant and works on Personal Teams.)
 //
 // ----- Entitlements -------------------------------------------------------
 //
