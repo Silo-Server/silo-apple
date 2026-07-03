@@ -942,14 +942,24 @@ final class AVPlayerBackend {
         while let current = next {
             guard vodRestartCoalescer.begin(current, authoritative: authoritative) else { return }
             cmpLog("[CMP-AVP] vod producer restart segment=\(current) authoritative=\(authoritative)")
-            segmentWriter?.stop()
+            // Recycle the retiring producer's demuxer: same source URL
+            // (reanchored spec only moves the start time), and the open
+            // input + warm cue index are the dominant fixed cost of a
+            // seek-triggered restart.
+            var handoff: LoopbackInputHandoff?
+            if let retiring = segmentWriter {
+                let h = LoopbackInputHandoff()
+                handoff = h
+                retiring.stop(recyclingInputInto: h)
+            }
             startSiloLoopbackWriter(
                 sessionID: sessionID,
                 sessionSpec: spec.reanchored(at: plan.sourceStartSeconds(ofSegment: current)),
                 sessionDir: sessionDir,
                 segmentStore: store,
                 debugDirectory: nil,
-                vodBaseIndex: current
+                vodBaseIndex: current,
+                recycledInput: handoff
             )
             next = vodRestartCoalescer.next(justRan: current)
         }
@@ -1087,7 +1097,8 @@ final class AVPlayerBackend {
         sessionDir: URL,
         segmentStore: LoopbackSegmentStore,
         debugDirectory: URL?,
-        vodBaseIndex: Int = 0
+        vodBaseIndex: Int = 0,
+        recycledInput: LoopbackInputHandoff? = nil
     ) {
         let writer = LoopbackSegmentWriter(
             sessionSpec: sessionSpec,
@@ -1095,7 +1106,8 @@ final class AVPlayerBackend {
             segmentStore: segmentStore,
             debugOutputDirectory: debugDirectory,
             vodPlan: vodPlanForCurrentSource(spec: sessionSpec),
-            vodBaseIndex: vodBaseIndex
+            vodBaseIndex: vodBaseIndex,
+            recycledInputHandoff: recycledInput
         )
         if sessionSpec.servingMode == .vodPlan {
             activeVODWriterBaseIndex = vodBaseIndex

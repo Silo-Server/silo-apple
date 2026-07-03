@@ -51,10 +51,14 @@ final class LoopbackSegmentStore {
     enum Resource {
         case memory(data: Data, mimeType: String)
         case disk(url: URL, byteCount: Int, mimeType: String)
+        /// A segment the producer is still writing: the server streams it
+        /// read-until-close via `readProgressiveSegment(named:from:deadline:)`.
+        case progressive(name: String, mimeType: String)
 
         var mimeType: String {
             switch self {
-            case .memory(_, let mimeType), .disk(_, _, let mimeType):
+            case .memory(_, let mimeType), .disk(_, _, let mimeType),
+                 .progressive(_, let mimeType):
                 return mimeType
             }
         }
@@ -65,6 +69,8 @@ final class LoopbackSegmentStore {
                 return data.count
             case .disk(_, let byteCount, _):
                 return byteCount
+            case .progressive:
+                return 0
             }
         }
     }
@@ -95,6 +101,16 @@ final class LoopbackSegmentStore {
     private var mediaPlaylist: Data?
     private var masterPlaylist: Data?
     private var segments: [String: Segment] = [:]
+    /// Anchor segments the producer is still writing, published fragment by
+    /// fragment so the server can stream them before the cut completes
+    /// (seek-latency: AVPlayer only needs the first ~2 s of a 10 s anchor
+    /// segment to render). NOT counted against `memoryBytes` — the bytes
+    /// transiently duplicate the writer's own pending buffer, bounded by
+    /// one segment. Replaced wholesale by `beginProgressiveSegment` (a
+    /// restarted producer re-publishing the same name must not append to a
+    /// dead predecessor's prefix) and cleared when the complete segment
+    /// arrives via `append` or the name leaves the VOD window.
+    private var progressiveSegments: [String: Data] = [:]
     private var spillingSegments: [String: Segment] = [:]
     private var spilledSegments: [String: URL] = [:]
     private var spilledSegmentSizes: [String: Int] = [:]
@@ -114,6 +130,7 @@ final class LoopbackSegmentStore {
     private enum ResourceLocation {
         case memory(data: Data, mimeType: String)
         case disk(url: URL, byteCount: Int, mimeType: String)
+        case progressive(name: String, mimeType: String)
         case missing
         case gone
     }
@@ -177,6 +194,9 @@ final class LoopbackSegmentStore {
         memoryBytes += data.count
         generatedMediaSeconds += duration
         evictedResources.remove(name)
+        // The complete segment supersedes any in-progress publication;
+        // streaming readers finish from the stored data.
+        progressiveSegments.removeValue(forKey: name)
         var vodDoomedURLs: [URL] = []
         if vodRetentionBudgetBytes > 0 {
             if let index = Self.segmentIndex(fromName: name) {
@@ -264,6 +284,67 @@ final class LoopbackSegmentStore {
         return segmentIndex <= vodTargetIndex + vodForwardWindow
     }
 
+    // MARK: - Progressive anchor segments
+
+    /// Opens (or wholesale-replaces) the progressive buffer for a segment
+    /// the producer is about to publish fragment by fragment.
+    func beginProgressiveSegment(named name: String) {
+        lock.lock()
+        progressiveSegments[name] = Data()
+        lock.unlock()
+    }
+
+    /// Appends published fragment bytes and wakes waiters/readers.
+    func appendProgressiveSegment(named name: String, bytes: Data) {
+        guard !bytes.isEmpty else { return }
+        lock.lock()
+        if progressiveSegments[name] != nil {
+            progressiveSegments[name]?.append(bytes)
+            lock.broadcast()
+        }
+        lock.unlock()
+    }
+
+    /// Blocking incremental read for a streaming response. Returns the
+    /// bytes available at `offset` plus a completion marker:
+    /// - complete segment stored → (remaining bytes, true)
+    /// - more progressive bytes  → (delta, false)
+    /// - nothing new by deadline → (empty, false) — caller re-polls
+    /// - entry gone / offset past a replaced buffer → (empty, true) —
+    ///   caller closes; the consumer refetches and gets the fresh state.
+    func readProgressiveSegment(
+        named name: String,
+        from offset: Int,
+        deadline: Date
+    ) -> (Data, Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        while true {
+            if let segment = segments[name] ?? spillingSegments[name] {
+                guard offset <= segment.data.count else { return (Data(), true) }
+                return (segment.data.subdata(in: offset..<segment.data.count), true)
+            }
+            if let url = spilledSegments[name],
+               let data = try? Data(contentsOf: url) {
+                guard offset <= data.count else { return (Data(), true) }
+                return (data.subdata(in: offset..<data.count), true)
+            }
+            guard let partial = progressiveSegments[name] else {
+                return (Data(), true)
+            }
+            if offset > partial.count {
+                return (Data(), true)
+            }
+            if partial.count > offset {
+                return (partial.subdata(in: offset..<partial.count), false)
+            }
+            guard Date() < deadline else {
+                return (Data(), false)
+            }
+            lock.wait(until: deadline)
+        }
+    }
+
     /// Bounded wait used by the server's miss resolver while a producer
     /// restart fills the requested segment.
     ///
@@ -291,6 +372,7 @@ final class LoopbackSegmentStore {
         lock.lock()
         print("[CMP-HLS-STORE] waitForSegment enter name=\(normalized) evicted=\(evictedResources.contains(normalized) ? 1 : 0) present=\(segments[normalized] != nil ? 1 : 0)")
         while segments[normalized] == nil,
+              progressiveSegments[normalized] == nil,
               spillingSegments[normalized] == nil,
               spilledSegments[normalized] == nil,
               Date() < deadline {
@@ -403,6 +485,15 @@ final class LoopbackSegmentStore {
             // Deliberately NOT `evictedResources`: a pruned VOD segment is
             // regenerable via a producer restart; `.gone` would 404 it for
             // the rest of the session.
+        }
+        // In-progress publications that left the consumer window belong to a
+        // superseded producer (the user seeked away mid-anchor); dropping
+        // them ends their streaming readers.
+        for name in progressiveSegments.keys {
+            guard let index = Self.segmentIndex(fromName: name) else { continue }
+            if abs(index - vodTargetIndex) > vodForwardWindow + vodBackwardWindow {
+                progressiveSegments.removeValue(forKey: name)
+            }
         }
         tempSpillBytes = max(0, tempSpillBytes)
         return doomed
@@ -560,6 +651,7 @@ final class LoopbackSegmentStore {
         if waitForNearFuture,
            normalized.hasPrefix("seg_"),
            segments[normalized] == nil,
+           progressiveSegments[normalized] == nil,
            spillingSegments[normalized] == nil,
            spilledSegments[normalized] == nil,
            !evictedResources.contains(normalized) {
@@ -575,6 +667,8 @@ final class LoopbackSegmentStore {
             result = .found(.memory(data: data, mimeType: mimeType))
         case .disk(let url, let byteCount, let mimeType):
             result = .found(.disk(url: url, byteCount: byteCount, mimeType: mimeType))
+        case .progressive(let name, let mimeType):
+            result = .found(.progressive(name: name, mimeType: mimeType))
         case .missing:
             result = .missing
         case .gone:
@@ -666,6 +760,9 @@ final class LoopbackSegmentStore {
                 let byteCount = spilledSegmentSizes[path] ?? fileSize(at: url) ?? 0
                 guard byteCount > 0 else { return .missing }
                 return .disk(url: url, byteCount: byteCount, mimeType: mimeType(for: path))
+            }
+            if progressiveSegments[path] != nil {
+                return .progressive(name: path, mimeType: mimeType(for: path))
             }
             return evictedResources.contains(path) ? .gone : .missing
         }

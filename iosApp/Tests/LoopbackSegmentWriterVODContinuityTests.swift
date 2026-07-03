@@ -15,6 +15,24 @@ import XCTest
 /// frame or two while presentation timestamps stay epoch-invariant, so
 /// byte-identity is not the right contract there.
 final class LoopbackSegmentWriterVODContinuityTests: XCTestCase {
+    private static let progressiveFlagKey = "player.apple.loopback_progressive_anchor_enabled"
+
+    /// Byte-identity is the contract of SINGLE-fragment production.
+    /// Progressive anchor serving deliberately splits a session's first
+    /// segment into interim fragments (streamed while producing), so these
+    /// tests pin the non-progressive machinery with the kill switch;
+    /// `testProgressiveAnchorPreservesTimelineAndContent` pins the
+    /// progressive shape's own invariants.
+    override func setUp() {
+        super.setUp()
+        UserDefaults.standard.set(false, forKey: Self.progressiveFlagKey)
+    }
+
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: Self.progressiveFlagKey)
+        super.tearDown()
+    }
+
     // MARK: - Harness
 
     private func fixtureURL() throws -> URL {
@@ -264,5 +282,73 @@ final class LoopbackSegmentWriterVODContinuityTests: XCTestCase {
             normalizingFragmentSequence(restartedSegment),
             "restarted segment must be byte-identical modulo mfhd sequence"
         )
+    }
+
+    func testProgressiveAnchorPreservesTimelineAndContent() throws {
+        // With progressive serving ON, a restarted producer's anchor segment
+        // is multi-fragment (interim flushes streamed while producing). The
+        // byte layout legitimately differs from the continuous twin; what
+        // must hold: the first fragment continues the session timeline
+        // (same leading tfdts) and the segment carries the identical media
+        // payload volume.
+        UserDefaults.standard.set(true, forKey: Self.progressiveFlagKey)
+        let source = try fixtureURL()
+        let continuous = runWriter(spec: makeSpec(sourceURL: source, startSeconds: 0))
+        XCTAssertNil(continuous.error)
+        let plan = try XCTUnwrap(continuous.plan)
+
+        let restartIndex = 2
+        let restarted = runWriter(
+            spec: makeSpec(
+                sourceURL: source,
+                startSeconds: plan.sourceStartSeconds(ofSegment: restartIndex)
+            ),
+            vodPlan: plan,
+            vodBaseIndex: restartIndex
+        )
+        XCTAssertNil(restarted.error)
+
+        let continuousSegment = try segmentData(continuous, restartIndex)
+        let restartedSegment = try segmentData(restarted, restartIndex)
+
+        let continuousTfdts = tfdtBaseDecodeTimes(continuousSegment)
+        let restartedTfdts = tfdtBaseDecodeTimes(restartedSegment)
+        XCTAssertEqual(
+            Array(restartedTfdts.prefix(continuousTfdts.count)),
+            continuousTfdts,
+            "progressive anchor's first fragment must continue the session timeline"
+        )
+        XCTAssertGreaterThan(
+            restartedTfdts.count,
+            continuousTfdts.count,
+            "anchor must actually be multi-fragment with progressive serving on"
+        )
+        XCTAssertEqual(
+            totalMdatPayloadBytes(restartedSegment),
+            totalMdatPayloadBytes(continuousSegment),
+            "fragmentation must not change the media payload volume"
+        )
+
+        // Steady-state segments past the anchor stay single-fragment and
+        // byte-identical to the continuous run.
+        XCTAssertEqual(
+            normalizingFragmentSequence(try segmentData(continuous, restartIndex + 1)),
+            normalizingFragmentSequence(try segmentData(restarted, restartIndex + 1)),
+            "post-anchor segments must keep byte-identity"
+        )
+    }
+
+    private func totalMdatPayloadBytes(_ data: Data) -> Int {
+        var total = 0
+        var cursor = 0
+        while cursor + 8 <= data.count {
+            let size = Int(readU32(data, at: cursor))
+            guard size >= 8, cursor + size <= data.count else { break }
+            if fourCC(data, at: cursor + 4) == "mdat" {
+                total += size - 8
+            }
+            cursor += size
+        }
+        return total
     }
 }

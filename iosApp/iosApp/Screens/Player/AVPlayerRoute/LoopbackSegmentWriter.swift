@@ -502,8 +502,10 @@ final class LoopbackSegmentWriter {
         targetSegmentDuration: Double = 4.0,
         minimumStartupMediaDuration: Double? = nil,
         vodPlan: LoopbackSegmentPlan? = nil,
-        vodBaseIndex: Int = 0
+        vodBaseIndex: Int = 0,
+        recycledInputHandoff: LoopbackInputHandoff? = nil
     ) {
+        self.recycledInputHandoff = recycledInputHandoff
         self.sessionSpec = sessionSpec
         self.sourceURL = sessionSpec.sourceURL
         self.sourceHeaders = sessionSpec.headers
@@ -536,6 +538,20 @@ final class LoopbackSegmentWriter {
     private var vodPlan: LoopbackSegmentPlan?
     private let vodPlanProvidedAtInit: Bool
     private let vodBaseIndex: Int
+    /// Incoming demuxer handoff from the producer this session replaces:
+    /// openInput claims it (bounded wait) instead of reopening the source.
+    private let recycledInputHandoff: LoopbackInputHandoff?
+    /// Outgoing handoff for the producer replacing THIS session. Set by
+    /// `stop(recyclingInputInto:)` under `cancelLock`; consumed by
+    /// `teardown()` on the mux queue.
+    private var outgoingInputHandoff: LoopbackInputHandoff?
+    /// True when this session runs on a recycled demuxer — its cue index is
+    /// already warm, so the restart re-seek skips the mid-file prewarm.
+    private var recycledInputActive = false
+    /// Teardown-completed marker (cancelLock-protected): a stop() that
+    /// arrives after teardown must cancel its handoff immediately or the
+    /// successor burns its whole claim timeout on a dead publisher.
+    private var didTeardown = false
     private var vodCutter: LoopbackSegmentCutter?
     private var vodOpenSegmentIndex = 0
     private var vodClosingSegmentIndex: Int?
@@ -579,6 +595,11 @@ final class LoopbackSegmentWriter {
         }
         guard let plan = vodPlan, plan.segmentCount > 0 else {
             print("[CMP-AVP] vod plan unavailable; degrading to EVENT serving")
+            // A failed harvest may have bailed before its rewind/start seek
+            // (openInput no longer seeks for vodPlan sessions).
+            if let inCtx = inputCtx {
+                try? seekInputToStartTimeIfNeeded(inCtx)
+            }
             return
         }
         // The effective anchor: an explicit restart passes its base, but a
@@ -738,12 +759,18 @@ final class LoopbackSegmentWriter {
 
     private func prewarmVODCueIndexAndReseek() {
         guard let inCtx = inputCtx else { return }
-        let rawDuration = inCtx.pointee.duration
-        if rawDuration > 0 {
-            let durationSeconds = Double(rawDuration) / Double(AV_TIME_BASE)
-            if durationSeconds > 1 {
-                let mid = Int64(durationSeconds * 0.5 * Double(AV_TIME_BASE))
-                _ = avformat_seek_file(inCtx, -1, Int64.min, mid, Int64.max, AVSEEK_FLAG_BACKWARD)
+        // A recycled demuxer carries the previous session's cue index — the
+        // start seek below already lands on the anchor keyframe without the
+        // mid-file warm-up seek (which costs a range request into the
+        // remote source on every restart).
+        if !recycledInputActive {
+            let rawDuration = inCtx.pointee.duration
+            if rawDuration > 0 {
+                let durationSeconds = Double(rawDuration) / Double(AV_TIME_BASE)
+                if durationSeconds > 1 {
+                    let mid = Int64(durationSeconds * 0.5 * Double(AV_TIME_BASE))
+                    _ = avformat_seek_file(inCtx, -1, Int64.min, mid, Int64.max, AVSEEK_FLAG_BACKWARD)
+                }
             }
         }
         if sourceStartTimeSeconds > 0 {
@@ -811,6 +838,18 @@ final class LoopbackSegmentWriter {
         guard vodActive, vodCutter != nil else { return }
         let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
         let target = vodCutter!.index(pts: pkt.pointee.pts, isKeyframe: isKeyframe)
+        // Progressive anchor: request an interim fragment flush roughly
+        // every 1.5 s of routed video. The flush runs after this packet is
+        // written (main loop), so the fragment includes it.
+        if vodProgressiveAccumulating, pkt.pointee.pts != Int64.min {
+            if vodLastInterimFlushPts == Int64.min {
+                vodLastInterimFlushPts = pkt.pointee.pts
+            } else if pkt.pointee.pts - vodLastInterimFlushPts
+                        >= ticks(forSeconds: 1.5, timeBase: vodVideoTimeBase) {
+                vodInterimFlushRequested = true
+                vodLastInterimFlushPts = pkt.pointee.pts
+            }
+        }
         if !vodHasRoutedVideo {
             vodHasRoutedVideo = true
             vodOpenSegmentIndex = target
@@ -896,13 +935,27 @@ final class LoopbackSegmentWriter {
         }
     }
 
-    func stop(completion: (() -> Void)? = nil) {
+    func stop(
+        recyclingInputInto handoff: LoopbackInputHandoff? = nil,
+        completion: (() -> Void)? = nil
+    ) {
         // Flip the flag synchronously so the in-flight `av_read_frame` bails
         // via the interrupt callback on its next poll, rather than waiting
         // for the muxQueue to drain.
         cancelLock.lock()
         _cancelled = true
+        var deadHandoff: LoopbackInputHandoff?
+        if let handoff {
+            if didTeardown {
+                deadHandoff = handoff
+            } else {
+                outgoingInputHandoff = handoff
+            }
+        }
         cancelLock.unlock()
+        // Teardown already ran — nothing will ever be published; release the
+        // successor to open fresh instead of waiting out its claim timeout.
+        deadHandoff?.cancelPublication()
 
         if let completion {
             muxQueue.async(execute: completion)
@@ -1034,6 +1087,10 @@ final class LoopbackSegmentWriter {
                     wr = av_interleaved_write_frame(outputCtx, pkt)
                 }
                 try evaluateMuxWriteResult(wr)
+                if vodInterimFlushRequested {
+                    vodInterimFlushRequested = false
+                    performVODInterimFragmentFlush()
+                }
             }
 
             if !isCancelled {
@@ -1162,17 +1219,14 @@ final class LoopbackSegmentWriter {
         )
     }
 
-    private func openInput() throws {
-        var ctx: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
-        guard ctx != nil else {
-            throw LoopbackWriterError.allocInput
-        }
-
-        // Install an interrupt callback so `stop()` can unblock an in-flight
-        // network read. FFmpeg polls this between / during I/O ops; returning
-        // 1 causes `av_read_frame` (or open/probe) to bail with AVERROR_EXIT.
+    /// Installs this writer's cancellation poll on a context. FFmpeg polls
+    /// it between / during I/O ops; returning 1 bails `av_read_frame` (or
+    /// open/probe) with AVERROR_EXIT.
+    private func installInterruptCallback(
+        on ctx: UnsafeMutablePointer<AVFormatContext>
+    ) {
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-        ctx!.pointee.interrupt_callback = AVIOInterruptCB(
+        ctx.pointee.interrupt_callback = AVIOInterruptCB(
             callback: { opaque in
                 guard let opaque else { return 0 }
                 let writer = Unmanaged<LoopbackSegmentWriter>.fromOpaque(opaque).takeUnretainedValue()
@@ -1180,6 +1234,45 @@ final class LoopbackSegmentWriter {
             },
             opaque: selfPtr
         )
+    }
+
+    private func openInput() throws {
+        // Producer restart: claim the retiring session's demuxer instead of
+        // reopening the source. Skips avformat_open_input +
+        // find_stream_info + the matroska cue warm — the dominant fixed
+        // cost of every seek-triggered restart. Any hiccup falls through
+        // to a fresh open.
+        if let handoff = recycledInputHandoff,
+           let recycled = handoff.claim(timeout: 1.5) {
+            installInterruptCallback(on: recycled)
+            do {
+                videoInputStreamIndex = try Self.resolveSelectedVideoStreamIndex(
+                    in: recycled,
+                    videoMode: videoMode
+                )
+                Self.discardUnusedStreamsForMux(
+                    in: recycled,
+                    keepVideoIndex: videoInputStreamIndex,
+                    keepAudioOrdinal: shouldIncludeAudio ? selectedAudioTrackIndex : -1,
+                    keepAudioFfIndex: sessionSpec.selectedAudio.ffIndex
+                )
+                inputCtx = recycled
+                recycledInputActive = true
+                print("[CMP-AVP] vod restart: recycled source demuxer")
+                return
+            } catch {
+                var doomed: UnsafeMutablePointer<AVFormatContext>? = recycled
+                avformat_close_input(&doomed)
+                print("[CMP-AVP] vod restart: recycled demuxer rejected (\(error)); reopening source")
+            }
+        }
+
+        var ctx: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
+        guard ctx != nil else {
+            throw LoopbackWriterError.allocInput
+        }
+
+        installInterruptCallback(on: ctx!)
 
         var options: OpaquePointer?
         if !sourceHeaders.isEmpty {
@@ -1238,29 +1331,18 @@ final class LoopbackSegmentWriter {
             throw LoopbackWriterError.findStreamInfo
         }
 
-        if sessionSpec.servingMode == .vodPlan,
-           vodPlan == nil,
-           sourceStartTimeSeconds > 0 {
-            // First VOD session resuming mid-title: warm the matroska cue
-            // index BEFORE the start seek. With cold cues the BACKWARD seek
-            // lands by linear estimate — potentially PAST the anchor
-            // segment's keyframe — and the producer then never generates
-            // the segment AVPlayer's resume pre-seek fetches (living-room
-            // startup stall: resume 6199.7s mid-segment-1549, first
-            // produced segment was 1550). Warm cues make BACKWARD land on
-            // the true containing keyframe. Restarted sessions already do
-            // this in prewarmVODCueIndexAndReseek.
-            let rawDuration = openedContext.pointee.duration
-            if rawDuration > 0 {
-                let durationSeconds = Double(rawDuration) / Double(AV_TIME_BASE)
-                if durationSeconds > 1 {
-                    let mid = Int64(durationSeconds * 0.5 * Double(AV_TIME_BASE))
-                    _ = avformat_seek_file(openedContext, -1, Int64.min, mid, Int64.max, AVSEEK_FLAG_BACKWARD)
-                }
-            }
+        if sessionSpec.servingMode != .vodPlan {
+            try seekInputToStartTimeIfNeeded(openedContext)
         }
-
-        try seekInputToStartTimeIfNeeded(openedContext)
+        // VOD-plan sessions seek in resolveVODPlanIfNeeded instead: both the
+        // harvest and restart paths warm the matroska cue index and then
+        // seek — with cold cues a BACKWARD seek lands by linear estimate,
+        // potentially PAST the anchor segment's keyframe, and the producer
+        // never generates the segment AVPlayer's resume pre-seek fetches
+        // (living-room startup stall: resume 6199.7s mid-segment-1549,
+        // first produced segment was 1550). Seeking here as well was a
+        // wasted cold-cue seek — extra range requests into the remote
+        // source on every producer restart.
     }
 
     /// Marks every stream we won't mux as `AVDISCARD_ALL` so libavformat
@@ -3400,15 +3482,31 @@ final class LoopbackSegmentWriter {
             let fragmentHasVideo = fragmentHasVideoTrack(in: slice)
             if pendingSegmentBytes.isEmpty {
                 startNewSegment(firstBox: slice, hasMoof: true, hasVideo: fragmentHasVideo)
-            } else if pendingSegmentHasMoof {
+            } else if pendingSegmentHasMoof,
+                      !vodProgressiveAccumulating,
+                      !pendingSegmentIsProgressive {
                 startNewSegment(firstBox: slice, hasMoof: true, hasVideo: fragmentHasVideo)
             } else {
+                // Progressive anchor: interim fragments accumulate into one
+                // multi-fragment segment instead of splitting per moof. The
+                // `pendingSegmentIsProgressive` arm keeps the CLOSING
+                // fragment in its segment — at cut time the accumulation
+                // gate is already off (vodClosingSegmentIndex set), but the
+                // cut flush's moof is the accumulated segment's tail, not
+                // the start of the next one.
                 appendMoofToCurrentSegment(slice, hasVideo: fragmentHasVideo)
             }
         case "mdat":
-            // Completes the current segment (moof+mdat pair).
             appendToCurrentSegment(slice)
-            finalizeCurrentSegment()
+            if vodProgressiveAccumulating {
+                // Anchor still open: stream the new fragment to the store;
+                // the cut (vodClosingSegmentIndex set) finalizes as usual.
+                pendingSegmentIsProgressive = true
+                publishProgressivePartial()
+            } else {
+                // Completes the current segment (moof+mdat pair).
+                finalizeCurrentSegment()
+            }
         default:
             // Any other box mid-segment: append to the current segment if any.
             appendToCurrentSegment(slice)
@@ -3544,6 +3642,80 @@ final class LoopbackSegmentWriter {
     private var pendingSegmentHasVideo = false
     private var pendingSegmentHasMoof = false
 
+    // MARK: - Progressive anchor serving
+
+    /// While a VOD session's FIRST segment (the seek anchor) is being
+    /// produced, fragments are flushed every ~1.5 s of media and streamed
+    /// to the store, so AVPlayer starts decoding the anchor while its tail
+    /// is still downloading — the dominant share of seek latency on long-GOP
+    /// sources whose anchor segments run 30–60 MB. Kill switch:
+    /// `defaults write <bundle> player.apple.loopback_progressive_anchor_enabled -bool NO`
+    /// Read per-instance (not a process-wide static) so each producer
+    /// session — and the continuity tests — honor the current default.
+    private lazy var progressiveAnchorServingEnabled =
+        UserDefaults.standard.object(
+            forKey: "player.apple.loopback_progressive_anchor_enabled"
+        ) as? Bool ?? true
+    private var vodProgressiveActiveName: String?
+    private var vodProgressivePublishedBytes = 0
+    private var vodLastInterimFlushPts = Int64.min
+    private var vodInterimFlushRequested = false
+    /// True while `pendingSegmentBytes` holds progressively-accumulated
+    /// fragments — the closing cut's flush must append to it, not open a
+    /// new segment.
+    private var pendingSegmentIsProgressive = false
+
+    /// The box sink accumulates fragments (instead of finalizing per
+    /// moof+mdat pair) only while the anchor segment is open: VOD mode, no
+    /// segment finalized yet this session, and no cut in flight.
+    private var vodProgressiveAccumulating: Bool {
+        progressiveAnchorServingEnabled
+            && vodActive
+            && segmentEntries.isEmpty
+            && vodClosingSegmentIndex == nil
+    }
+
+    /// Streams the accumulated prefix of the open anchor segment to the
+    /// store. Runs after each interim fragment lands in
+    /// `pendingSegmentBytes`; deltas mirror that buffer exactly, so the
+    /// streamed prefix is byte-identical to the segment
+    /// `finalizeCurrentSegment` eventually stores. Publication starts only
+    /// once the segment contains video — an audio-only prefix could belong
+    /// to a segment the pre-video gate later discards.
+    private func publishProgressivePartial() {
+        guard let store = segmentStore, pendingSegmentHasVideo else { return }
+        let name = String(format: "seg_%06d.m4s", vodOpenSegmentIndex)
+        if vodProgressiveActiveName != name {
+            vodProgressiveActiveName = name
+            vodProgressivePublishedBytes = 0
+            store.beginProgressiveSegment(named: name)
+        }
+        guard pendingSegmentBytes.count > vodProgressivePublishedBytes else { return }
+        let delta = pendingSegmentBytes.subdata(
+            in: vodProgressivePublishedBytes..<pendingSegmentBytes.count
+        )
+        store.appendProgressiveSegment(named: name, bytes: delta)
+        vodProgressivePublishedBytes = pendingSegmentBytes.count
+    }
+
+    /// Emits the fragment accumulated in the muxer so far WITHOUT closing
+    /// the open segment: the same drain+flush pair the cut uses, but with
+    /// `vodClosingSegmentIndex` still nil, so the box sink appends and
+    /// publishes instead of finalizing. Errors are left for the next real
+    /// write/cut to surface.
+    private func performVODInterimFragmentFlush() {
+        guard vodProgressiveAccumulating, let outCtx = outputCtx else { return }
+        let drainRC = av_interleaved_write_frame(outCtx, nil)
+        guard drainRC >= 0 else { return }
+        _ = av_write_frame(outCtx, nil)
+        if !vodDidFlushFirstFragment {
+            vodDidFlushFirstFragment = true
+            // delay_moov can split ftyp+moov and the fragment across two
+            // flush calls — same second flush the cut path performs.
+            _ = av_write_frame(outCtx, nil)
+        }
+    }
+
     private func startNewSegment(firstBox: Data, hasMoof: Bool, hasVideo: Bool) {
         // If a segment was mid-write (shouldn't happen, but defensive), flush
         // it first — `finalizeCurrentSegment` empties `pendingSegmentBytes`.
@@ -3567,6 +3739,14 @@ final class LoopbackSegmentWriter {
 
     private func finalizeCurrentSegment() {
         guard !pendingSegmentBytes.isEmpty else { return }
+        // Whatever happens below consumes the pending buffer — close out the
+        // progressive publication state alongside it. (putSegment replaces
+        // the store's progressive entry with the complete data.)
+        vodProgressiveActiveName = nil
+        vodProgressivePublishedBytes = 0
+        vodLastInterimFlushPts = Int64.min
+        vodInterimFlushRequested = false
+        pendingSegmentIsProgressive = false
         guard !isCancelled else {
             pendingSegmentBytes = Data()
             pendingSegmentHasVideo = false
@@ -4259,7 +4439,27 @@ final class LoopbackSegmentWriter {
             // avio_context_free frees the internal buffer too.
             ioBuffer = nil
         }
-        if inputCtx != nil {
+        cancelLock.lock()
+        didTeardown = true
+        let handoff = outgoingInputHandoff
+        outgoingInputHandoff = nil
+        cancelLock.unlock()
+        if let handoff {
+            if let ctx = inputCtx {
+                // Detach our interrupt callback before transfer: this writer
+                // may deallocate while the successor still owns the context,
+                // and a poll through the stale opaque pointer would crash.
+                // The successor installs its own callback on claim.
+                ctx.pointee.interrupt_callback = AVIOInterruptCB(
+                    callback: nil,
+                    opaque: nil
+                )
+                handoff.publish(ctx)
+                inputCtx = nil
+            } else {
+                handoff.cancelPublication()
+            }
+        } else if inputCtx != nil {
             avformat_close_input(&inputCtx)
         }
         if audioSwrCtx != nil {

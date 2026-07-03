@@ -409,8 +409,124 @@ final class LoopbackSegmentServer {
                 started: started,
                 on: connection
             )
+        case .progressive(let name, let mime):
+            respondWithProgressiveStream(
+                name: name,
+                mime: mime,
+                requestPath: requestPath,
+                method: method,
+                range: rangeHeader,
+                started: started,
+                on: connection
+            )
         }
     }
+
+    /// Streams a segment the producer is still writing: 200 with no
+    /// Content-Length and `Connection: close` (read-until-close body), bytes
+    /// forwarded as the store publishes fragments. Cuts seek latency — the
+    /// player parses the anchor segment while the tail is still being
+    /// produced instead of waiting for the complete 30–60 MB file. Range
+    /// headers are deliberately ignored (an origin MAY serve 200 to a Range
+    /// request; AVPlayer sends none against this server today).
+    private func respondWithProgressiveStream(
+        name: String,
+        mime: String,
+        requestPath: String,
+        method: HTTPMethod,
+        range rangeHeader: String?,
+        started: CFAbsoluteTime,
+        on connection: NWConnection
+    ) {
+        guard method == .get, let store = segmentStore else {
+            logRequest(method: method, path: requestPath, status: 200, bytes: 0, range: rangeHeader, started: started)
+            var header = "HTTP/1.1 200 OK\r\n"
+            header += "Content-Type: \(mime)\r\n"
+            header += "Cache-Control: no-store\r\n"
+            header += "Connection: close\r\n\r\n"
+            send(Data(header.utf8), on: connection, andClose: true)
+            return
+        }
+        var header = "HTTP/1.1 200 OK\r\n"
+        header += "Content-Type: \(mime)\r\n"
+        header += "Cache-Control: no-store\r\n"
+        header += "Connection: close\r\n\r\n"
+        logRequest(method: method, path: requestPath, status: 200, bytes: 0, range: rangeHeader, started: started)
+        let overallDeadline = Date().addingTimeInterval(Self.progressiveStreamMaxSeconds)
+        send(Data(header.utf8), on: connection, andClose: false) { [weak self] in
+            self?.pumpProgressiveStream(
+                name: name,
+                offset: 0,
+                store: store,
+                overallDeadline: overallDeadline,
+                requestPath: requestPath,
+                started: started,
+                on: connection
+            )
+        }
+    }
+
+    /// One pump step: blocking-read the next delta off the store (bounded
+    /// poll), send it, and reschedule until the segment completes, the
+    /// overall deadline passes, or the connection dies. Runs off the store's
+    /// condition variable on a background queue; sends are chained through
+    /// NWConnection completions so the socket applies backpressure.
+    private func pumpProgressiveStream(
+        name: String,
+        offset: Int,
+        store: LoopbackSegmentStore,
+        overallDeadline: Date,
+        requestPath: String,
+        started: CFAbsoluteTime,
+        on connection: NWConnection
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let (delta, complete) = store.readProgressiveSegment(
+                named: name,
+                from: offset,
+                deadline: min(overallDeadline, Date().addingTimeInterval(0.25))
+            )
+            let nextOffset = offset + delta.count
+            let finish: () -> Void = { [weak self] in
+                self?.logRequest(
+                    method: .get, path: requestPath + " (progressive)",
+                    status: 200, bytes: nextOffset, range: nil, started: started
+                )
+                connection.send(
+                    content: nil, contentContext: .finalMessage, isComplete: true,
+                    completion: .contentProcessed { _ in connection.cancel() }
+                )
+            }
+            let continuePump: () -> Void = { [weak self] in
+                guard Date() < overallDeadline, connection.state == .ready else {
+                    finish()
+                    return
+                }
+                self?.pumpProgressiveStream(
+                    name: name, offset: nextOffset, store: store,
+                    overallDeadline: overallDeadline, requestPath: requestPath,
+                    started: started, on: connection
+                )
+            }
+            if delta.isEmpty {
+                complete ? finish() : continuePump()
+                return
+            }
+            connection.send(
+                content: delta, contentContext: .defaultMessage, isComplete: false,
+                completion: .contentProcessed { error in
+                    if error != nil {
+                        connection.cancel()
+                        return
+                    }
+                    complete ? finish() : continuePump()
+                }
+            )
+        }
+    }
+
+    private static let progressiveStreamMaxSeconds: TimeInterval = 45
 
     private func respondWithData(
         _ data: Data,
