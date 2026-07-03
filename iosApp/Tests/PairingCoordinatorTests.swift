@@ -116,6 +116,10 @@ private let approvedPoll = DeviceLoginPollResponse(
     status: "approved", pollAfter: nil, accessToken: "ACCESS", refreshToken: "REFRESH", expiresIn: 3600, user: nil
 )
 
+private let pendingPoll = DeviceLoginPollResponse(
+    status: "pending", pollAfter: 1, accessToken: nil, refreshToken: nil, expiresIn: nil, user: nil
+)
+
 // MARK: - Companion
 
 @MainActor
@@ -174,7 +178,9 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
             if case .pickServers = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else { return }
+        guard case let .pickServers(_, servers) = coordinator.state else {
+            return XCTFail("expected pickServers, got \(coordinator.state)")
+        }
         await coordinator.pushSelected(servers)
         channel.deliver(.deviceStarted(serverURL: "https://a.example", userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("confirm step") {
@@ -235,7 +241,9 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
             if case .pickServers = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else { return }
+        guard case let .pickServers(_, servers) = coordinator.state else {
+            return XCTFail("expected pickServers, got \(coordinator.state)")
+        }
         await coordinator.pushSelected(servers)
         channel.dropConnection()
         await expectEventually("connection lost") {
@@ -256,7 +264,9 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
             if case .pickServers = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else { return }
+        guard case let .pickServers(_, servers) = coordinator.state else {
+            return XCTFail("expected pickServers, got \(coordinator.state)")
+        }
         await coordinator.pushSelected(servers)
         channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("zero-success summary") {
@@ -362,6 +372,39 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         guard case .failed = coordinator.state else {
             return XCTFail("failure screen was clobbered; state is \(coordinator.state)")
         }
+    }
+
+    /// Regression: the TV's "verifying automatically" copy must key off a
+    /// COMMITTED sign-in, not attempt order — after a pre-confirm failure on
+    /// the first server, the phone still asks the user to compare codes for
+    /// the second, so the TV must not claim the phone is auto-approving.
+    func testSecondAttemptAfterFailureIsNotAutomatic() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.startError = PairingDeviceAPI.APIError.http(500)
+        let coordinator = makeCoordinator(api: api, recorder: PersistRecorder())
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        channel.deliver(.pushServer(serverURL: "https://one.example", serverName: "One"))
+        await expectEventually("consent prompt") {
+            if case .consentRequested = coordinator.state { return true }
+            return false
+        }
+        coordinator.allowPendingServer()
+        await expectEventually("first attempt failed") {
+            if case .failed = coordinator.state { return true }
+            return false
+        }
+
+        api.startError = nil
+        api.pollResponse = pendingPoll // hold the attempt at awaitingApproval
+        channel.deliver(.pushServer(serverURL: "https://two.example", serverName: "Two"))
+        await expectEventually("manual-confirmation copy") {
+            if case let .awaitingApproval(_, _, automatic) = coordinator.state { return !automatic }
+            return false
+        }
+        channel.dropConnection()
+        await runTask.value
     }
 
     /// Regression: tokens are committed before the confirmation frame, so a

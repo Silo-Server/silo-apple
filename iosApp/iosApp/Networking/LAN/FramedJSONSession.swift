@@ -88,11 +88,19 @@ actor FramedJSONSession<Message: Codable & Sendable> {
         return AsyncThrowingStream { continuation in
             self.continuation = continuation
             self.isOpen = true
+            // Start the outbound drain immediately, not on `.ready`: callers
+            // may await `send()` straight after `open()` (e.g. the receiver's
+            // `hello`), and a connection that fails during TLS setup must
+            // fail those buffered continuations — `teardown` finishes the
+            // FIFO, but only a running drain resumes its buffered items.
+            // Writes queued before `.ready` simply park in `NWConnection`
+            // until the transport comes up or is cancelled.
+            self.drainTask = Task { [weak self] in await self?.startDrainLoop() }
             self.connection.stateUpdateHandler = { [weak self] state in
                 guard let self else { return }
                 switch state {
                 case .ready:
-                    Task { await self.beginLoops() }
+                    Task { await self.receiveLoop() }
                 case .failed(let error):
                     Task { await self.teardown(error) }
                 case .waiting:
@@ -112,11 +120,6 @@ actor FramedJSONSession<Message: Codable & Sendable> {
             }
             self.connection.start(queue: .main)
         }
-    }
-
-    private func beginLoops() {
-        receiveLoop()
-        drainTask = Task { [weak self] in await self?.startDrainLoop() }
     }
 
     /// Fire-and-forget, ordered. Safe to call from any context; FIFO is

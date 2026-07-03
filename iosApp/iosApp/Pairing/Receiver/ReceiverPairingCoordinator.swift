@@ -54,7 +54,6 @@ final class ReceiverPairingCoordinator {
     private let api: any PairingDeviceAuthorizing
     private let persist: @MainActor (_ url: String, _ fetchedName: String?, _ access: String, _ refresh: String) async -> Void
     private var signedInNames: [String] = []
-    private var attemptCount = 0
     private var consented = false
     private var pendingPush: (serverURL: String, serverName: String?)?
     /// The session currently being driven, so `cancel()`/consent can reach it.
@@ -79,7 +78,6 @@ final class ReceiverPairingCoordinator {
     /// than after the poll loop finishes (design spec §7).
     func run(session: any PairingChannel, stream: AsyncThrowingStream<PairingMessage, Error>) async {
         signedInNames = []
-        attemptCount = 0
         consented = false
         pendingPush = nil
         activeSession = session
@@ -221,8 +219,13 @@ final class ReceiverPairingCoordinator {
     // MARK: - Per-server attempt
 
     private func beginAttempt(serverURL: String, serverName: String?, session: any PairingChannel) {
-        attemptCount += 1
-        let automatic = attemptCount > 1
+        // "Automatic" only once a sign-in has been COMMITTED: the phone
+        // auto-approves only after its user confirmed a match code, and the
+        // first confirmed approval is what produces the first success. A
+        // pre-confirm failure on server 1 must not flip server 2's copy to
+        // "verifying automatically" while the phone is still asking the user
+        // to compare codes.
+        let automatic = !signedInNames.isEmpty
         idleTask?.cancel()
         pollTask = Task { [weak self] in
             await self?.handlePushServer(serverURL: serverURL, serverName: serverName, session: session, automatic: automatic)

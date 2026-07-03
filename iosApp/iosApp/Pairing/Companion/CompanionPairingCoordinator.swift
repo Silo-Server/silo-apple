@@ -235,20 +235,25 @@ final class CompanionPairingCoordinator {
             await conclude(.finished(signedIn: signedIn, failed: failed), goodbye: .done)
             return
         }
-        if isFirstPush {
+        let firstPush = isFirstPush
+        isFirstPush = false
+        if firstPush {
             state = .working(progress: "Continue on \(tvName) — allow this \(deviceModel) to set it up.")
         } else {
             state = .working(progress: "Setting up \(server.displayName)…")
         }
+        // Arm BEFORE the suspending send: the stream reader keeps running
+        // while `send` is suspended, so a fast TV's `deviceStarted` could
+        // otherwise land (and disarm nothing) before this task resumed and
+        // armed a stale watchdog over the confirm screen.
+        armWatchdog(
+            firstPush ? Timeouts.firstDeviceStarted : Timeouts.deviceStarted,
+            firstPush
+                ? "\(tvName) didn’t respond. Make sure you allowed the request on the TV, then try again."
+                : "\(tvName) stopped responding."
+        )
         do {
             try await channel.send(.pushServer(serverURL: server.url, serverName: server.displayName))
-            armWatchdog(
-                isFirstPush ? Timeouts.firstDeviceStarted : Timeouts.deviceStarted,
-                isFirstPush
-                    ? "\(tvName) didn’t respond. Make sure you allowed the request on the TV, then try again."
-                    : "\(tvName) stopped responding."
-            )
-            isFirstPush = false
         } catch {
             await conclude(.error("Connection to \(tvName) was lost."), goodbye: nil)
         }
@@ -257,10 +262,12 @@ final class CompanionPairingCoordinator {
     private func approveCurrent(_ server: ServerEntry) async {
         state = .working(progress: "Approving \(server.displayName)…")
         let token = await accessToken(server.id) ?? ""
+        // Armed before the suspending approve call (same reasoning as
+        // `pushNext`): the TV reports back once its poll mints tokens, and
+        // the window covers the HTTP round-trip plus that report.
+        armWatchdog(Timeouts.serverResult, "\(tvName) stopped responding while finishing sign-in.")
         do {
             try await api.approve(serverURL: server.url, bearer: token, userCode: pendingUserCode ?? "")
-            // The TV reports back once its poll mints tokens.
-            armWatchdog(Timeouts.serverResult, "\(tvName) stopped responding while finishing sign-in.")
         } catch {
             // The TV is still polling this server; without the approval it can
             // only wait out its device code. Ending the session keeps both
