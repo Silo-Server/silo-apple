@@ -211,6 +211,10 @@ final class AVPlayerBackend {
     private var loopbackStartupLastRequestCount: UInt64 = 0
     private enum LoopbackStartupRecoveryStage { case initial, nudged, reloaded }
     private var loopbackStartupRecoveryStage: LoopbackStartupRecoveryStage = .initial
+    /// In-flight HDMI mode-switch settle wait (gated non-DV HDR only). The
+    /// AVPlayerItem attach is deferred behind it; teardown cancels it so a
+    /// reanchor or dispose can't race a late attach.
+    private var displayModeSettleTask: Task<Void, Never>?
 
     private var segmentWriter: LoopbackSegmentWriter?
     private var segmentServer: LoopbackSegmentServer?
@@ -1158,7 +1162,41 @@ final class AVPlayerBackend {
         cmpLog("[CMP-AVP] local playlist ready \(url.absoluteString)")
         if ttffFirstSegmentMs == nil { ttffFirstSegmentMs = ttffElapsedMs() }
         logTVDisplayManagerState(context: "before_prepare_\(playlistName)")
-        applyTVDisplayCriteriaForLoopbackIfNeeded(context: "before_prepare_\(playlistName)")
+        // The criteria write always happens synchronously before the item is
+        // created; only the gated non-DV HDR path additionally holds the item
+        // back until the HDMI negotiation settles, so the item's startup
+        // probes don't race the mode switch.
+        let needsModeSettleWait = applyTVDisplayCriteriaForLoopbackIfNeeded(
+            context: "before_prepare_\(playlistName)"
+        )
+        guard needsModeSettleWait else {
+            attachLoopbackItem(url: url)
+            return
+        }
+        #if os(tvOS)
+        displayModeSettleTask?.cancel()
+        displayModeSettleTask = Task { @MainActor [weak self] in
+            let hosted = await TVDisplayCriteria.waitForModeSwitchSettle()
+            guard let self, !self.isDisposed, !Task.isCancelled,
+                  self.activeLoopbackSessionID == sessionID,
+                  self.currentItem == nil else { return }
+            // Panel-readiness snapshot. No manifest gating is needed today:
+            // the loopback route always serves AVPlayer the media playlist
+            // (never the VIDEO-RANGE-claiming master artifact), which is the
+            // safe hosting for an SDR panel — AVPlayer tonemaps. Logged as
+            // the gate signal for any future master-playlist serving.
+            cmpLog("[CMP-AVP] tv display settle hdrHosted=\(hosted ? 1 : 0)")
+            self.attachLoopbackItem(url: url)
+        }
+        #else
+        attachLoopbackItem(url: url)
+        #endif
+    }
+
+    /// Hands AVPlayer its loopback item plus the VOD resume pre-seek. Split
+    /// from `handleFirstSegmentReady` so the gated HDR path can defer it
+    /// behind the display-mode settle wait.
+    private func attachLoopbackItem(url: URL) {
         // The local loopback server is an in-app HTTP surface. Remote auth
         // headers are only for libavformat's source fetch and should not be
         // propagated into AVPlayer's localhost HLS requests.
@@ -1575,15 +1613,28 @@ final class AVPlayerBackend {
     ) -> Bool {
         #if os(tvOS)
         guard case .siloLoopback(let currentSpec) = current,
-              case .siloLoopback(let nextSpec) = next,
-              currentSpec.videoMode.isDolbyVision,
-              nextSpec.videoMode.isDolbyVision else {
+              case .siloLoopback(let nextSpec) = next else {
             return false
         }
-
-        let currentRate = currentSpec.sourceVideoFrameRate ?? 24.0
-        let nextRate = nextSpec.sourceVideoFrameRate ?? 24.0
-        return abs(currentRate - nextRate) < 0.01
+        // With the HDR gate off this reduces to the shipped DV→DV rule
+        // (non-DV modes select `.none`); with it on, same-range HDR10/HLG
+        // reloads also keep their criteria so an audio-track change doesn't
+        // renegotiate the HDMI mode.
+        let hdrGateEnabled = HDRDisplayCriteriaPolicy.isEnabled()
+        return HDRDisplayCriteriaPolicy.shouldPreserveCriteriaAcrossReload(
+            current: HDRDisplayCriteriaPolicy.selection(
+                videoMode: currentSpec.videoMode,
+                manifestVideoRange: currentSpec.manifestMetadata.videoRange,
+                hdrGateEnabled: hdrGateEnabled
+            ),
+            next: HDRDisplayCriteriaPolicy.selection(
+                videoMode: nextSpec.videoMode,
+                manifestVideoRange: nextSpec.manifestMetadata.videoRange,
+                hdrGateEnabled: hdrGateEnabled
+            ),
+            currentRate: currentSpec.sourceVideoFrameRate ?? 24.0,
+            nextRate: nextSpec.sourceVideoFrameRate ?? 24.0
+        )
         #else
         return false
         #endif
@@ -2347,15 +2398,8 @@ final class AVPlayerBackend {
 
     private func isTVDisplayModeSwitchInProgress() -> Bool {
         #if os(tvOS)
-        for scene in UIApplication.shared.connectedScenes {
-            guard let windowScene = scene as? UIWindowScene else { continue }
-            let window = windowScene.windows.first(where: \.isKeyWindow)
-                ?? windowScene.windows.first
-            if let displayManager = window?.avDisplayManager {
-                return displayManager.isDisplayModeSwitchInProgress
-            }
-        }
-        return false
+        return TVDisplayCriteria.activeTVWindow()?.avDisplayManager
+            .isDisplayModeSwitchInProgress ?? false
         #else
         return false
         #endif
@@ -2726,6 +2770,8 @@ final class AVPlayerBackend {
         initialVideoDisplayFallback?.cancel()
         initialVideoDisplayFallback = nil
         cancelLoopbackStartupWatchdog()
+        displayModeSettleTask?.cancel()
+        displayModeSettleTask = nil
         if didTemporarilyMuteForInitialVideoDisplay {
             avPlayer.isMuted = false
             didTemporarilyMuteForInitialVideoDisplay = false
@@ -2789,19 +2835,7 @@ final class AVPlayerBackend {
 
     private func logTVDisplayManagerState(context: String) {
         #if os(tvOS)
-        let window: UIWindow? = {
-            for scene in UIApplication.shared.connectedScenes {
-                guard let windowScene = scene as? UIWindowScene else { continue }
-                if let keyWindow = windowScene.windows.first(where: \.isKeyWindow) {
-                    return keyWindow
-                }
-                if let firstWindow = windowScene.windows.first {
-                    return firstWindow
-                }
-            }
-            return nil
-        }()
-        guard let displayManager = window?.avDisplayManager else {
+        guard let displayManager = TVDisplayCriteria.activeTVWindow()?.avDisplayManager else {
             print("[CMP-AVP] tv display context=\(context) manager=nil")
             return
         }
@@ -2811,64 +2845,65 @@ final class AVPlayerBackend {
         #endif
     }
 
-    private func applyTVDisplayCriteriaForLoopbackIfNeeded(context: String) {
+    /// Writes the HDMI display criteria for the upcoming loopback item.
+    /// Returns true when a dynamic-range switch was requested and the caller
+    /// should wait for it to settle before creating the AVPlayerItem (gated
+    /// non-DV HDR only; the shipped DV path never waits).
+    @discardableResult
+    private func applyTVDisplayCriteriaForLoopbackIfNeeded(context: String) -> Bool {
         #if os(tvOS)
-        guard case .siloLoopback(let spec) = currentSourceStrategy else { return }
-        switch spec.videoMode {
-        case .passthroughProfile5, .convertProfile7To81, .passthroughProfile8:
-            let preservedForReload = isPreservingTVDisplayCriteriaForReload
-            isPreservingTVDisplayCriteriaForReload = false
-            let window: UIWindow? = {
-                for scene in UIApplication.shared.connectedScenes {
-                    guard let windowScene = scene as? UIWindowScene else { continue }
-                    if let keyWindow = windowScene.windows.first(where: \.isKeyWindow) {
-                        return keyWindow
-                    }
-                    if let firstWindow = windowScene.windows.first {
-                        return firstWindow
-                    }
-                }
-                return nil
-            }()
-            guard let displayManager = window?.avDisplayManager else {
+        guard case .siloLoopback(let spec) = currentSourceStrategy else { return false }
+        let selection = HDRDisplayCriteriaPolicy.selection(
+            videoMode: spec.videoMode,
+            manifestVideoRange: spec.manifestMetadata.videoRange,
+            hdrGateEnabled: HDRDisplayCriteriaPolicy.isEnabled()
+        )
+        let preservedForReload = isPreservingTVDisplayCriteriaForReload
+        isPreservingTVDisplayCriteriaForReload = false
+        let refreshRate = spec.sourceVideoFrameRate ?? 24.0
+        switch selection {
+        case .dolbyVision:
+            // `handleFirstSegmentReady` (the only caller) is dispatched onto
+            // the main queue by the writer callback.
+            let outcome = MainActor.assumeIsolated {
+                TVDisplayCriteria.setRangeCriteria(.dolbyVision, refreshRate: refreshRate)
+            }
+            switch outcome {
+            case .noDisplayManager:
                 print("[CMP-AVP] tv display apply context=\(context) manager=nil")
-                return
-            }
-            guard displayManager.isDisplayCriteriaMatchingEnabled else {
+            case .matchingDisabled:
                 print("[CMP-AVP] tv display apply context=\(context) matching=0 skipped=matching_disabled")
-                return
+            case .applied:
+                print(String(format: "[CMP-AVP] tv display apply context=%@ fps=%.3f dr=%d matching=1 preservedReload=%d", context, Double(refreshRate), Int(SpikeDynamicRange.dolbyVision.rawValue), preservedForReload ? 1 : 0))
+            case .formatUnavailable:
+                break
             }
-
-            let refreshRate = spec.sourceVideoFrameRate ?? 24.0
-            let criteria = AVDisplayCriteria(
-                refreshRate: refreshRate,
-                videoDynamicRange: SpikeDynamicRange.dolbyVision.rawValue
-            )
-            displayManager.preferredDisplayCriteria = criteria
-            print(String(format: "[CMP-AVP] tv display apply context=%@ fps=%.3f dr=%d matching=1 preservedReload=%d", context, Double(refreshRate), Int(SpikeDynamicRange.dolbyVision.rawValue), preservedForReload ? 1 : 0))
-        case .passthroughHEVC, .passthroughH264:
-            isPreservingTVDisplayCriteriaForReload = false
-            return
+            return false
+        case .hdr10, .hlg:
+            let range = selection == .hlg ? "HLG" : "PQ"
+            let outcome = MainActor.assumeIsolated {
+                TVDisplayCriteria.setHDRFormatCriteria(
+                    hlg: selection == .hlg,
+                    refreshRate: refreshRate
+                )
+            }
+            print(String(format: "[CMP-AVP] tv display apply hdr context=%@ range=%@ fps=%.3f outcome=%@ preservedReload=%d", context, range, Double(refreshRate), String(describing: outcome), preservedForReload ? 1 : 0))
+            // A reload that preserved criteria left the panel in the right
+            // mode already; rewriting identical criteria triggers no new
+            // negotiation, so only a fresh apply needs the settle wait.
+            return outcome == .applied && !preservedForReload
+        case .none:
+            return false
         }
+        #else
+        return false
         #endif
     }
 
     private func clearTVDisplayCriteria(context: String) {
         #if os(tvOS)
         DispatchQueue.main.async {
-            let window: UIWindow? = {
-                for scene in UIApplication.shared.connectedScenes {
-                    guard let windowScene = scene as? UIWindowScene else { continue }
-                    if let keyWindow = windowScene.windows.first(where: \.isKeyWindow) {
-                        return keyWindow
-                    }
-                    if let firstWindow = windowScene.windows.first {
-                        return firstWindow
-                    }
-                }
-                return nil
-            }()
-            guard let displayManager = window?.avDisplayManager else {
+            guard let displayManager = TVDisplayCriteria.activeTVWindow()?.avDisplayManager else {
                 print("[CMP-AVP] tv display clear context=\(context) manager=nil")
                 return
             }
