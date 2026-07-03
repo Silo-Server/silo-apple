@@ -1033,7 +1033,7 @@ final class LoopbackSegmentWriter {
                 } else {
                     wr = av_interleaved_write_frame(outputCtx, pkt)
                 }
-                try evaluateMuxWriteResult(wr, packet: pkt)
+                try evaluateMuxWriteResult(wr)
             }
 
             if !isCancelled {
@@ -1093,7 +1093,7 @@ final class LoopbackSegmentWriter {
     /// failed), rethrow immediately. Otherwise track consecutive failures and
     /// throw `LoopbackWriterError.muxWriteFailures` when the threshold is reached
     /// (or immediately for unambiguously-fatal codes).
-    private func evaluateMuxWriteResult(_ rc: Int32, packet: UnsafeMutablePointer<AVPacket>? = nil) throws {
+    private func evaluateMuxWriteResult(_ rc: Int32) throws {
         try throwIfFatalIOError()
         if rc < 0 {
             consecutiveMuxWriteFailures += 1
@@ -1114,9 +1114,9 @@ final class LoopbackSegmentWriter {
             return
         }
         consecutiveMuxWriteFailures = 0
-        if let packet {
-            recordMuxedPacketTimestamps(packet)
-        }
+        // Last-muxed timestamps are recorded pre-write in
+        // normalizeMuxerTimestampsIfNeeded; the packet is blank here
+        // (av_interleaved_write_frame takes ownership on success).
     }
 
     private func emitSourceDownloadStatsIfNeeded(force: Bool = false) {
@@ -1639,7 +1639,7 @@ final class LoopbackSegmentWriter {
                                    inputStreamIndex: inIdx)
             let wr = av_interleaved_write_frame(outCtx, pending)
             do {
-                try evaluateMuxWriteResult(wr, packet: pending)
+                try evaluateMuxWriteResult(wr)
             } catch {
                 Self.logger.error("pending \(label, privacy: .public) write failed")
                 throw error
@@ -1681,6 +1681,8 @@ final class LoopbackSegmentWriter {
         var retainedPreVideoAudioBytes = 0
         var droppedPreVideoAudioPackets = 0
         var firstKeyframeNALSummary = "none"
+        var firstVideoPacketNALSummary = "none"
+        var repairedKeyframeFlags = 0
         let maxPackets = 8_000
         let maxVideoPackets = 128
         // Keep the newest selected pre-video audio packets. TrueHD major_sync
@@ -1706,7 +1708,12 @@ final class LoopbackSegmentWriter {
             totalPacketsRead += 1
             let inIdx = Int(pkt.pointee.stream_index)
 
-            if pkt.pointee.dts == avNoPTS || pkt.pointee.pts == avNoPTS {
+            // Packets without a PTS are unusable. A video packet with PTS
+            // but no DTS still reaches keyframe detection below — MKV/HEVC
+            // sources expose the head keyframe that way, and the stash path
+            // repairs its DTS exactly like the main loop does.
+            if pkt.pointee.pts == avNoPTS
+                || (pkt.pointee.dts == avNoPTS && inIdx != videoInputStreamIndex) {
                 var free = readPkt
                 av_packet_free(&free)
                 droppedPreVideoPackets += 1
@@ -1741,8 +1748,50 @@ final class LoopbackSegmentWriter {
             }
 
             videoPacketsRead += 1
-            let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
+            if videoPacketsRead == 1, let dataPtr = pkt.pointee.data {
+                firstVideoPacketNALSummary = ISOBoxSurgery.nalSummary(
+                    packetBytes: UnsafeBufferPointer(start: dataPtr,
+                                                     count: Int(pkt.pointee.size)),
+                    nalLengthSize: nalLengthSize
+                )
+            }
+            var isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
+            if !isKeyframe, let dataPtr = pkt.pointee.data {
+                // The matroska demuxer delivers the head-of-stream IRAP
+                // without AV_PKT_FLAG_KEY, so a flag-gated scan skips all of
+                // GOP 0 (a silent one-GOP video hole) — and when the GOP
+                // outruns the packet caps it gives up entirely, muxing a
+                // mid-GOP timeline whose tfdt no longer matches the playlist.
+                // AVPlayer then freezes its fetches and the startup watchdog
+                // burns ~15s before the Compatibility fallback (living-room
+                // Ali Wong stall). The bitstream is authoritative: any VCL
+                // IRAP NAL is a valid fragment opener, so repair the flag.
+                let packetBytes = UnsafeBufferPointer(start: dataPtr,
+                                                      count: Int(pkt.pointee.size))
+                if let irapType = ISOBoxSurgery.firstIRAPNALType(
+                    packetBytes: packetBytes,
+                    nalLengthSize: nalLengthSize
+                ) {
+                    pkt.pointee.flags |= AV_PKT_FLAG_KEY
+                    isKeyframe = true
+                    repairedKeyframeFlags += 1
+                    if repairedKeyframeFlags <= 3 {
+                        print("[CMP-AVP] bootstrap keyframe flag repaired via NAL scan type=\(irapType) pts=\(pkt.pointee.pts)")
+                    }
+                }
+            }
             guard isKeyframe else {
+                var free = readPkt
+                av_packet_free(&free)
+                droppedPreVideoPackets += 1
+                continue
+            }
+            if pkt.pointee.dts == avNoPTS,
+               !repairMissingMuxerTimestampsIfNeeded(
+                   pkt: pkt,
+                   inputStreamIndex: inIdx,
+                   noPTS: avNoPTS
+               ) {
                 var free = readPkt
                 av_packet_free(&free)
                 droppedPreVideoPackets += 1
@@ -1773,8 +1822,14 @@ final class LoopbackSegmentWriter {
             let syncFound = isSelectedAudioTrueHD()
                 ? firstMLPMajorSyncIndex(in: pendingAudioPackets) != nil
                 : false
-            print("[CMP-AVP] bootstrap gave up: vps=\(vps.count) sps=\(sps.count) pps=\(pps.count) videoPackets=\(videoPacketsRead) totalPackets=\(totalPacketsRead) droppedPreVideo=\(droppedPreVideoPackets) retainedAudio=\(pendingAudioPackets.count) retainedAudioBytes=\(retainedPreVideoAudioBytes) droppedPreVideoAudio=\(droppedPreVideoAudioPackets) trueHDSyncFound=\(syncFound ? 1 : 0)")
-            return
+            print("[CMP-AVP] bootstrap gave up: vps=\(vps.count) sps=\(sps.count) pps=\(pps.count) videoPackets=\(videoPacketsRead) totalPackets=\(totalPacketsRead) droppedPreVideo=\(droppedPreVideoPackets) retainedAudio=\(pendingAudioPackets.count) retainedAudioBytes=\(retainedPreVideoAudioBytes) droppedPreVideoAudio=\(droppedPreVideoAudioPackets) trueHDSyncFound=\(syncFound ? 1 : 0) firstVideoNALs=\(firstVideoPacketNALSummary)")
+            // Muxing from here would start mid-GOP with a tfdt the playlist
+            // doesn't expect: AVPlayer freezes its fetches and the startup
+            // watchdog spends ~15s before falling back. Fail the session now
+            // so the route falls back immediately instead.
+            throw LoopbackWriterError.bootstrapFailed(
+                "no IRAP keyframe in \(videoPacketsRead) video packets (firstVideoNALs=\(firstVideoPacketNALSummary))"
+            )
         }
 
         if !vps.isEmpty, !sps.isEmpty, !pps.isEmpty {
@@ -1782,7 +1837,12 @@ final class LoopbackSegmentWriter {
             setExtradata(codecpar: outStream.pointee.codecpar, data: hvcc)
             inputHvccHeader = hvcc
         } else if !headerHasParameterSets {
+            // Without parameter sets in hvcC or in-band, the sample entry is
+            // undecodable — same fetch-freeze endgame as the mid-GOP start.
             print("[CMP-AVP] bootstrap keyframe found but no VPS/SPS/PPS available in packet or hvcC")
+            throw LoopbackWriterError.bootstrapFailed(
+                "keyframe found but no VPS/SPS/PPS in packet or hvcC"
+            )
         }
         if let inStream = inCtx.pointee.streams?[videoInputStreamIndex] {
             doviConfig = outputDoviConfig(from: readDoviConfig(codecpar: inStream.pointee.codecpar))
@@ -1792,7 +1852,7 @@ final class LoopbackSegmentWriter {
         let syncFound = isSelectedAudioTrueHD()
             ? firstMLPMajorSyncIndex(in: pendingAudioPackets) != nil
             : false
-        print("[CMP-AVP] bootstrap OK: hvcCParams=\(headerHasParameterSets ? 1 : 0) vps=\(vps.count) sps=\(sps.count) pps=\(pps.count) videoPackets=\(videoPacketsRead) totalPackets=\(totalPacketsRead) droppedPreVideo=\(droppedPreVideoPackets) pendingVideo=\(pendingVideoPackets.count) retainedAudio=\(pendingAudioPackets.count) retainedAudioBytes=\(retainedPreVideoAudioBytes) droppedPreVideoAudio=\(droppedPreVideoAudioPackets) trueHDSyncFound=\(syncFound ? 1 : 0) firstVideoNALs=\(firstKeyframeNALSummary) dovi=\(doviLog)")
+        print("[CMP-AVP] bootstrap OK: hvcCParams=\(headerHasParameterSets ? 1 : 0) vps=\(vps.count) sps=\(sps.count) pps=\(pps.count) videoPackets=\(videoPacketsRead) totalPackets=\(totalPacketsRead) droppedPreVideo=\(droppedPreVideoPackets) pendingVideo=\(pendingVideoPackets.count) retainedAudio=\(pendingAudioPackets.count) retainedAudioBytes=\(retainedPreVideoAudioBytes) droppedPreVideoAudio=\(droppedPreVideoAudioPackets) trueHDSyncFound=\(syncFound ? 1 : 0) repairedKeyFlags=\(repairedKeyframeFlags) firstVideoNALs=\(firstKeyframeNALSummary) dovi=\(doviLog)")
     }
 
     private func retainPreVideoAudioPacket(
@@ -2766,7 +2826,7 @@ final class LoopbackSegmentWriter {
             normalizeMuxerTimestampsIfNeeded(pkt: encodedPacket, outStream: outStream)
             let wr = av_interleaved_write_frame(outCtx, encodedPacket)
             do {
-                try evaluateMuxWriteResult(wr, packet: encodedPacket)
+                try evaluateMuxWriteResult(wr)
             } catch {
                 av_packet_free(&packet)
                 throw error
@@ -3124,28 +3184,15 @@ final class LoopbackSegmentWriter {
         let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
         guard isVideo, isKeyframe else { return false }
 
+        // For an IRAP, pts == dts in decode order, so pts is the exact
+        // repair — never subtract a reorder guess. A `video_delay` backoff
+        // under-shoots deep-reorder streams (250ms real vs 84ms guessed,
+        // living-room resume seam) and goes NEGATIVE at the stream head,
+        // where tfdt is unsigned and `avoid_negative_ts=disabled` writes it
+        // wrapped (2^64-1344, the living-room mid-play timeline jump).
+        // Followers whose real DTS sits below pts are bumped forward by
+        // normalizeVideoMuxerTimestampsIfNeeded instead of being dropped.
         pkt.pointee.dts = pkt.pointee.pts
-        if vodActive,
-           let inCtx = inputCtx,
-           let stream = inCtx.pointee.streams?[inputStreamIndex],
-           let codecpar = stream.pointee.codecpar {
-            // dts := pts over-states the decode time by the B-frame reorder
-            // delay: the packets that follow carry LOWER synthesized DTS, the
-            // muxer rejects them as non-monotonic (-22) and drops them, and
-            // the segment head ends up with sample-timeline gaps AVPlayer
-            // refuses to play through (living-room bug 3). Back the anchor
-            // keyframe's DTS off by the codec's reorder depth instead.
-            let delayFrames = Int64(codecpar.pointee.video_delay)
-            let frameRate = stream.pointee.avg_frame_rate
-            if delayFrames > 0, frameRate.num > 0, frameRate.den > 0 {
-                let frameTicks = av_rescale_q(
-                    1,
-                    AVRational(num: frameRate.den, den: frameRate.num),
-                    stream.pointee.time_base
-                )
-                pkt.pointee.dts = pkt.pointee.pts - delayFrames * max(1, frameTicks)
-            }
-        }
         repairedMissingVideoDTSCount += 1
         if repairedMissingVideoDTSCount <= 3 {
             print("[CMP-AVP] repaired missing video DTS on keyframe pts=\(pkt.pointee.pts) dts=\(pkt.pointee.dts) videoMode=\(videoMode.logToken)")
@@ -3166,6 +3213,12 @@ final class LoopbackSegmentWriter {
         default:
             return
         }
+        // Record the final pre-write timestamps here — the write-side hook
+        // never worked: `av_interleaved_write_frame` takes ownership and
+        // blanks the packet, so reading it back after the write recorded
+        // AV_NOPTS for stream 0 and the monotonicity bumps above never
+        // fired (rc=-22 dropped frames at every restart/repair seam).
+        recordMuxedPacketTimestamps(pkt)
     }
 
     private func normalizeAudioMuxerTimestampsIfNeeded(
@@ -4273,6 +4326,12 @@ enum LoopbackWriterError: Error {
     case writeHeader(Int32)
     case unsupportedSelectedAudioCodec(String)
     case audioTranscodeSetup(String)
+    /// The pre-mux bootstrap could not produce a decodable stream head — no
+    /// IRAP keyframe within the scan caps, or no parameter sets anywhere.
+    /// Muxing anyway yields a presentation AVPlayer freezes on; failing the
+    /// session lets the route fall back immediately instead of waiting out
+    /// the startup watchdog.
+    case bootstrapFailed(String)
     case profile81ConversionFailed(String)
     /// `av_interleaved_write_frame` returned a negative code on three or more
     /// consecutive packets. The mux is no longer producing valid output; abort

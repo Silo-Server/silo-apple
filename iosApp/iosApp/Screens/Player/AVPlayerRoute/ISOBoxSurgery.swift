@@ -320,6 +320,33 @@ enum ISOBoxSurgery {
         }
     }
 
+    /// First VCL IRAP NAL type (BLA 16-18, IDR 19-20, CRA 21, reserved IRAP
+    /// 22-23) in a length-prefixed HEVC packet, or nil when the packet holds
+    /// no IRAP. The matroska demuxer can deliver the head-of-stream IRAP
+    /// without `AV_PKT_FLAG_KEY`; the bitstream is authoritative, so callers
+    /// use this to repair the keyframe flag before gating on it.
+    static func firstIRAPNALType(packetBytes: UnsafeBufferPointer<UInt8>,
+                                 nalLengthSize: Int) -> Int? {
+        guard nalLengthSize > 0 else { return nil }
+        var offset = 0
+        while offset + nalLengthSize <= packetBytes.count {
+            var nalSize = 0
+            for i in 0..<nalLengthSize {
+                nalSize = (nalSize << 8) | Int(packetBytes[offset + i])
+            }
+            offset += nalLengthSize
+            if nalSize <= 0 || offset + nalSize > packetBytes.count { break }
+            let nalStart = packetBytes.baseAddress!.advanced(by: offset)
+            offset += nalSize
+            guard nalSize >= 2 else { continue }
+            let nalType = (Int(nalStart.pointee) >> 1) & 0x3F
+            if (16...23).contains(nalType) {
+                return nalType
+            }
+        }
+        return nil
+    }
+
     static func nalSummary(packetBytes: UnsafeBufferPointer<UInt8>,
                            nalLengthSize: Int,
                            limit: Int = 32) -> String {
