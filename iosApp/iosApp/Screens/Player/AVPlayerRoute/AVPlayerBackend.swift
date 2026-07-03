@@ -792,6 +792,20 @@ final class AVPlayerBackend {
         }
     }
 
+    // MARK: - VOD serving-mode plan continuity (loopback-primary plan, 1c)
+
+    /// The segment plan resolved by the first producer session for the
+    /// current source. Restarted producers receive it so every session
+    /// reproduces the same segment grid the static playlist advertises.
+    private var loopbackVODPlan: LoopbackSegmentPlan?
+    private var loopbackVODPlanSourceURL: URL?
+
+    private func vodPlanForCurrentSource(spec: LoopbackSessionSpec) -> LoopbackSegmentPlan? {
+        guard spec.servingMode == .vodPlan,
+              loopbackVODPlanSourceURL == spec.sourceURL else { return nil }
+        return loopbackVODPlan
+    }
+
     private func startLocalDVLoopback(
         sessionSpec: LoopbackSessionSpec
     ) {
@@ -873,8 +887,17 @@ final class AVPlayerBackend {
             sessionSpec: sessionSpec,
             outputDirectory: sessionDir,
             segmentStore: segmentStore,
-            debugOutputDirectory: debugDirectory
+            debugOutputDirectory: debugDirectory,
+            vodPlan: vodPlanForCurrentSource(spec: sessionSpec)
         )
+        writer.onSegmentPlanResolved = { [weak self] plan in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isDisposed else { return }
+                guard self.activeLoopbackSessionID == sessionID else { return }
+                self.loopbackVODPlan = plan
+                self.loopbackVODPlanSourceURL = sessionSpec.sourceURL
+            }
+        }
         writer.onFirstSegmentReady = { [weak self] playlistName in
             DispatchQueue.main.async {
                 self?.handleFirstSegmentReady(playlistName: playlistName, sessionID: sessionID)

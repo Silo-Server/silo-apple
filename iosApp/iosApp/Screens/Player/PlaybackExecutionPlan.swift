@@ -107,6 +107,7 @@ struct LoopbackSessionSpec {
     let selectedAudio: SelectedAudio
     let availableAudioTracks: [PlayerTrack]
     let manifestMetadata: ManifestMetadata
+    let servingMode: LoopbackServingMode
 
     init(
         sourceURL: URL,
@@ -117,7 +118,8 @@ struct LoopbackSessionSpec {
         sourceVideoFrameRate: Float?,
         selectedAudio: SelectedAudio,
         availableAudioTracks: [PlayerTrack],
-        manifestMetadata: ManifestMetadata
+        manifestMetadata: ManifestMetadata,
+        servingMode: LoopbackServingMode = .event
     ) {
         self.sourceURL = sourceURL
         self.headers = headers
@@ -130,6 +132,7 @@ struct LoopbackSessionSpec {
         self.selectedAudio = selectedAudio
         self.availableAudioTracks = availableAudioTracks
         self.manifestMetadata = manifestMetadata
+        self.servingMode = servingMode
     }
 
     func reanchored(at mediaSeconds: Double) -> LoopbackSessionSpec {
@@ -142,9 +145,23 @@ struct LoopbackSessionSpec {
             sourceVideoFrameRate: sourceVideoFrameRate,
             selectedAudio: selectedAudio,
             availableAudioTracks: availableAudioTracks,
-            manifestMetadata: manifestMetadata
+            manifestMetadata: manifestMetadata,
+            servingMode: servingMode
         )
     }
+}
+
+/// How the local loopback serves HLS to AVPlayer.
+enum LoopbackServingMode: Equatable {
+    /// Growing EVENT playlist cut at source keyframes; a seek outside the
+    /// generated window tears the session down and reanchors on a fresh,
+    /// zero-based timeline (legacy behavior).
+    case event
+    /// Static VOD playlist derived from a load-time segment plan: the full
+    /// title is advertised up front, fragments are cut explicitly at plan
+    /// boundaries, and producer restarts continue the session timeline
+    /// (docs/tvos-player/2026-07-03-siloplayer-loopback-primary-plan.md).
+    case vodPlan
 }
 
 /// Minimal HTTP stream descriptor consumed by the load path. Produced at
