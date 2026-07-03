@@ -253,7 +253,9 @@ final class DVSegmentStore {
     /// restart fills the requested segment.
     func waitForSegment(named name: String, deadline: Date) -> ResourceResult {
         let normalized = name.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let started = CFAbsoluteTimeGetCurrent()
         lock.lock()
+        print("[CMP-HLS-STORE] waitForSegment enter name=\(normalized) evicted=\(evictedResources.contains(normalized) ? 1 : 0) present=\(segments[normalized] != nil ? 1 : 0)")
         while segments[normalized] == nil,
               spillingSegments[normalized] == nil,
               spilledSegments[normalized] == nil,
@@ -261,7 +263,11 @@ final class DVSegmentStore {
             _ = lock.wait(until: min(deadline, Date().addingTimeInterval(0.25)))
         }
         lock.unlock()
-        return resource(path: normalized, waitForNearFuture: false)
+        let result = resource(path: normalized, waitForNearFuture: false)
+        let found: Bool
+        if case .found = result { found = true } else { found = false }
+        print("[CMP-HLS-STORE] waitForSegment exit name=\(normalized) found=\(found ? 1 : 0) waitedMs=\(Int((CFAbsoluteTimeGetCurrent() - started) * 1000))")
+        return result
     }
 
     /// Pure VOD eviction decision: the hard window

@@ -445,6 +445,7 @@ final class DVSegmentWriter {
         self.manifestMetadata = sessionSpec.manifestMetadata
         self.targetSegmentDuration = targetSegmentDuration
         self.vodPlan = vodPlan
+        self.vodPlanProvidedAtInit = vodPlan != nil
         self.vodBaseIndex = max(0, vodBaseIndex)
         self.minimumStartupMediaDuration = max(
             0,
@@ -461,6 +462,7 @@ final class DVSegmentWriter {
     /// restarted producer receives the already-resolved plan via init and
     /// must reproduce the same segment grid.
     private var vodPlan: LoopbackSegmentPlan?
+    private let vodPlanProvidedAtInit: Bool
     private let vodBaseIndex: Int
     private var vodCutter: LoopbackSegmentCutter?
     private var vodOpenSegmentIndex = 0
@@ -494,6 +496,14 @@ final class DVSegmentWriter {
             if let plan = vodPlan {
                 onSegmentPlanResolved?(plan)
             }
+        } else {
+            // Restarted (plan-provided) session: this demuxer's cue index is
+            // cold, and a matroska start seek without cues lands by linear
+            // estimate — up to a GOP away from the anchor, which misanchors
+            // production past the requested segment (living-room bug 2).
+            // Warm the cues exactly like the harvest path, then redo the
+            // start seek so it lands on the anchor keyframe.
+            prewarmVODCueIndexAndReseek()
         }
         guard let plan = vodPlan, plan.segmentCount > 0 else {
             print("[CMP-AVP] vod plan unavailable; degrading to EVENT serving")
@@ -621,6 +631,23 @@ final class DVSegmentWriter {
             return pkt.pointee.dts + duration <= threshold
         }
         return pkt.pointee.dts < threshold
+    }
+
+    private func prewarmVODCueIndexAndReseek() {
+        guard let inCtx = inputCtx else { return }
+        let rawDuration = inCtx.pointee.duration
+        if rawDuration > 0 {
+            let durationSeconds = Double(rawDuration) / Double(AV_TIME_BASE)
+            if durationSeconds > 1 {
+                let mid = Int64(durationSeconds * 0.5 * Double(AV_TIME_BASE))
+                _ = avformat_seek_file(inCtx, -1, Int64.min, mid, Int64.max, AVSEEK_FLAG_BACKWARD)
+            }
+        }
+        if sourceStartTimeSeconds > 0 {
+            try? seekInputToStartTimeIfNeeded(inCtx)
+        } else {
+            _ = avformat_seek_file(inCtx, -1, Int64.min, 0, Int64.max, AVSEEK_FLAG_BACKWARD)
+        }
     }
 
     private func harvestVODPlan() -> LoopbackSegmentPlan? {
@@ -790,7 +817,16 @@ final class DVSegmentWriter {
             // Prefetch + filter until we have a complete hvcC in extradata.
             // Filtered packets are stashed in pendingVideoPackets and replayed
             // below.
-            try bootstrapVideoExtradata()
+            if vodActive, vodPlanProvidedAtInit {
+                // Restarted VOD session: output extradata comes from codecpar
+                // (the same source the first session already validated). The
+                // bootstrap scan otherwise swallows up to a GOP of packets it
+                // never replays, misanchoring production past the restart
+                // target (living-room bug 2).
+                print("[CMP-AVP] vod restart: extradata bootstrap skipped")
+            } else {
+                try bootstrapVideoExtradata()
+            }
             try writeHeader()
             // writeHeader's `av_write_header` synchronously calls our AVIO
             // sink, which writes init.mp4 to disk via writeInitSegment. If
@@ -3256,6 +3292,11 @@ final class DVSegmentWriter {
             print("[CMP-AVP] seg \(idx) written (\(segSize) bytes, video=\(segmentHasVideo ? 1 : 0), dur=\(String(format: "%.3f", duration))s), total dur=\(String(format: "%.1f", totalMediaDuration))s)")
         }
         onSegmentAppended?(idx, totalMediaDuration)
+        if segmentEntries.count == 1 {
+            // Ground truth for fetch-vs-production races: the exact wall
+            // moment the session's first segment became servable.
+            print("[CMP-AVP] first segment stored name=\(name) bytes=\(segSize)")
+        }
         if segmentHasVideo {
             hasWrittenVideoSegment = true
         }
