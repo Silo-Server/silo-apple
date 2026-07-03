@@ -667,6 +667,23 @@ final class DVSegmentWriter {
         guard target != vodOpenSegmentIndex else { return }
         try performVODFragmentCut(closingSegment: vodOpenSegmentIndex)
         vodOpenSegmentIndex = target
+        waitForVODWindowIfNeeded(nextSegmentIndex: target)
+    }
+
+    /// Producer pacing for the VOD mode: block before filling a segment past
+    /// the consumer's window (`target + forwardWindow`). Replaces the EVENT
+    /// generated-ahead throttle — and inherently parks when the playhead
+    /// wedges, since a frozen consumer stops advancing the target.
+    private func waitForVODWindowIfNeeded(nextSegmentIndex: Int) {
+        guard vodActive, let store = segmentStore else { return }
+        var logged = false
+        while !isCancelled, !store.vodProducerMayAppend(segmentIndex: nextSegmentIndex) {
+            if !logged {
+                logged = true
+                print("[CMP-AVP] vod window backpressure parked segment=\(nextSegmentIndex)")
+            }
+            usleep(200_000)
+        }
     }
 
     private func performVODFragmentCut(closingSegment: Int) throws {
@@ -3193,7 +3210,12 @@ final class DVSegmentWriter {
             pendingSegmentHasMoof = false
             return
         }
-        segmentEntries.append(SegmentEntry(index: currentSegmentIndex, start: totalMediaDuration, duration: duration))
+        // In VOD mode stats live on the plan axis (== the item timeline), so
+        // the playhead watchdog compares like with like after a restart.
+        let entryStart = vodActive
+            ? (vodPlan.map { $0.startSeconds[min(currentSegmentIndex, $0.segmentCount - 1)] } ?? totalMediaDuration)
+            : totalMediaDuration
+        segmentEntries.append(SegmentEntry(index: currentSegmentIndex, start: entryStart, duration: duration))
         totalMediaDuration += duration
         recordGeneratedSegment(bytes: segSize, duration: duration)
         let idx = currentSegmentIndex
@@ -3234,6 +3256,9 @@ final class DVSegmentWriter {
     }
 
     private func waitForGeneratedAheadIfNeeded() {
+        // VOD mode paces via the store's consumer window instead
+        // (`waitForVODWindowIfNeeded`), on the plan axis.
+        guard !vodActive else { return }
         guard firstSegmentReadyFired else { return }
         let cap = generatedAheadThrottleSeconds
         let waitStarted = CFAbsoluteTimeGetCurrent()
@@ -3336,6 +3361,9 @@ final class DVSegmentWriter {
     }
 
     private func retireSegmentsBehindPlaybackIfNeeded() {
+        // VOD retention is byte-budgeted and target-anchored in the store;
+        // playback-position retirement is EVENT policy.
+        guard !vodActive else { return }
         guard let segmentStore,
               let playbackPosition = playbackPositionProvider?(),
               playbackPosition.isFinite,
@@ -3365,6 +3393,7 @@ final class DVSegmentWriter {
     /// fewer than 2 segments remain (we always keep the head segment so
     /// AVPlayer has at least one playable position).
     private func evictExpiredSegmentsIfNeeded() {
+        guard !vodActive else { return }
         let window = Self.segmentRetentionWindowSeconds
         guard window > 0, segmentEntries.count > 1 else { return }
         var removable = 0

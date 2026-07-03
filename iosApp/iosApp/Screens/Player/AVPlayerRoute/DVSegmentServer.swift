@@ -310,6 +310,12 @@ final class DVSegmentServer {
         )
     }
 
+    /// VOD serving mode (loopback-primary plan, 1e): resolves a segment the
+    /// store doesn't hold — the backend requests a coalesced producer restart
+    /// and waits, bounded, for the bytes. Runs off the server's queue so a
+    /// slow resolution never stalls playlist/init requests.
+    var vodSegmentMissResolver: ((Int) -> DVSegmentStore.ResourceResult)?
+
     private func respondWithStoreResource(
         path: String,
         method: HTTPMethod,
@@ -318,13 +324,34 @@ final class DVSegmentServer {
         on connection: NWConnection,
         store: DVSegmentStore
     ) {
+        if let index = DVSegmentStore.segmentIndex(fromName: path) {
+            store.declareVODTarget(index)
+        }
         switch store.resource(path: path) {
-        case .missing:
+        case .missing, .gone:
+            if let resolver = vodSegmentMissResolver,
+               let index = DVSegmentStore.segmentIndex(fromName: path) {
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    guard let self else { return }
+                    switch resolver(index) {
+                    case .found(let resource):
+                        self.respondWithResource(
+                            resource,
+                            requestPath: path,
+                            method: method,
+                            range: rangeHeader,
+                            started: started,
+                            on: connection
+                        )
+                    case .missing, .gone:
+                        self.logRequest(method: method, path: path, status: 404, bytes: 0, range: rangeHeader, started: started)
+                        self.respondError(404, "Not Found", on: connection)
+                    }
+                }
+                return
+            }
             logRequest(method: method, path: path, status: 404, bytes: 0, range: rangeHeader, started: started)
             respondError(404, "Not Found", on: connection)
-        case .gone:
-            logRequest(method: method, path: path, status: 410, bytes: 0, range: rangeHeader, started: started)
-            respondError(410, "Gone", on: connection)
         case .found(let resource):
             respondWithResource(
                 resource,

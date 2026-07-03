@@ -806,6 +806,64 @@ final class AVPlayerBackend {
         return loopbackVODPlan
     }
 
+    // MARK: - VOD demand-driven producer restarts (loopback-primary plan, 1e)
+
+    private static let vodSegmentMissWaitSeconds: Double = 8.0
+    /// How far past a running producer's base a fetch counts as "covered" —
+    /// the producer's forward march will deliver it without a restart.
+    private static let vodProducerCoverageWindow = 8
+
+    private var vodRestartCoalescer = LoopbackRestartCoalescer()
+    private var activeVODWriterBaseIndex: Int?
+
+    static func vodRetentionBudgetBytes() -> Int64 {
+        let cap: Int64 = 2 << 30
+        let tmp = FileManager.default.temporaryDirectory
+        guard let values = try? tmp.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
+              let available = values.volumeAvailableCapacity else {
+            return cap
+        }
+        return min(cap, max(0, Int64(available) / 4))
+    }
+
+    /// Swaps the producer (writer only — the store, server, and player item
+    /// all survive) to anchor at the requested plan segment. Coalesced: one
+    /// in-flight swap, newest pending target wins, self-target guarded.
+    @MainActor
+    private func requestVODProducerRestart(at index: Int) {
+        guard !isDisposed,
+              case .some(.localDVLoopback(let spec)) = currentSourceStrategy,
+              spec.servingMode == .vodPlan,
+              let plan = vodPlanForCurrentSource(spec: spec),
+              plan.segmentCount > 0,
+              let store = segmentStore,
+              let sessionID = activeLoopbackSessionID,
+              let sessionDir = sessionDirectory else { return }
+        let target = max(0, min(index, plan.segmentCount - 1))
+        if let base = activeVODWriterBaseIndex,
+           segmentWriter != nil,
+           target >= base,
+           target <= base + Self.vodProducerCoverageWindow {
+            // The running producer covers it; its forward march delivers.
+            return
+        }
+        var next: Int? = target
+        while let current = next {
+            guard vodRestartCoalescer.begin(current) else { return }
+            cmpLog("[CMP-AVP] vod producer restart segment=\(current)")
+            segmentWriter?.stop()
+            startLocalDVLoopbackWriter(
+                sessionID: sessionID,
+                sessionSpec: spec.reanchored(at: plan.sourceStartSeconds(ofSegment: current)),
+                sessionDir: sessionDir,
+                segmentStore: store,
+                debugDirectory: nil,
+                vodBaseIndex: current
+            )
+            next = vodRestartCoalescer.next(justRan: current)
+        }
+    }
+
     private func startLocalDVLoopback(
         sessionSpec: LoopbackSessionSpec
     ) {
@@ -827,12 +885,31 @@ final class AVPlayerBackend {
             spillPolicy: Self.generatedHLSSpillPolicy(for: sessionSpec),
             debugDirectory: debugDirectory
         )
+        if sessionSpec.servingMode == .vodPlan {
+            store.configureVODRetention(budgetBytes: Self.vodRetentionBudgetBytes())
+        }
         segmentStore = store
         if preserveSessionDirectory {
             print("[CMP-AVP] preserving local DV artifacts due to SILO_KEEP_DV_HLS=1 dir=\(sessionDir.path)")
         }
 
         let server = DVSegmentServer(segmentStore: store)
+        if sessionSpec.servingMode == .vodPlan {
+            // A miss under the static VOD playlist means "not produced (yet)
+            // or pruned": request a coalesced producer restart on main, then
+            // wait — bounded — for the bytes. Runs on the server's resolver
+            // queue; the store is thread-safe.
+            server.vodSegmentMissResolver = { [weak self, weak store] index in
+                guard let store else { return .missing }
+                DispatchQueue.main.async { [weak self] in
+                    self?.requestVODProducerRestart(at: index)
+                }
+                return store.waitForSegment(
+                    named: String(format: "seg_%06d.m4s", index),
+                    deadline: Date().addingTimeInterval(Self.vodSegmentMissWaitSeconds)
+                )
+            }
+        }
         // Stash the server immediately so a synchronous teardown (e.g. fast
         // user dismiss) can find and cancel the still-binding listener.
         segmentServer = server
@@ -881,15 +958,24 @@ final class AVPlayerBackend {
         sessionSpec: LoopbackSessionSpec,
         sessionDir: URL,
         segmentStore: DVSegmentStore,
-        debugDirectory: URL?
+        debugDirectory: URL?,
+        vodBaseIndex: Int = 0
     ) {
         let writer = DVSegmentWriter(
             sessionSpec: sessionSpec,
             outputDirectory: sessionDir,
             segmentStore: segmentStore,
             debugOutputDirectory: debugDirectory,
-            vodPlan: vodPlanForCurrentSource(spec: sessionSpec)
+            vodPlan: vodPlanForCurrentSource(spec: sessionSpec),
+            vodBaseIndex: vodBaseIndex
         )
+        if sessionSpec.servingMode == .vodPlan {
+            activeVODWriterBaseIndex = vodBaseIndex
+            // Seed the consumer window at the producer's base so a resumed
+            // or restarted session isn't parked by backpressure before the
+            // player's first fetch declares a real target.
+            segmentStore.declareVODTarget(vodBaseIndex)
+        }
         writer.onSegmentPlanResolved = { [weak self] plan in
             DispatchQueue.main.async { [weak self] in
                 guard let self, !self.isDisposed else { return }

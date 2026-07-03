@@ -177,11 +177,171 @@ final class DVSegmentStore {
         memoryBytes += data.count
         generatedMediaSeconds += duration
         evictedResources.remove(name)
+        var vodDoomedURLs: [URL] = []
+        if vodRetentionBudgetBytes > 0 {
+            if let index = Self.segmentIndex(fromName: name) {
+                vodHighWaterIndex = max(vodHighWaterIndex, index)
+            }
+            vodDoomedURLs = vodPruneLocked()
+        }
         let evicted = evictIfNeededLocked()
         lock.broadcast()
         lock.unlock()
+        for url in vodDoomedURLs {
+            try? FileManager.default.removeItem(at: url)
+        }
         mirror(data, name: name)
         return SegmentAppendResult(evictedSegmentNames: evicted)
+    }
+
+    // MARK: - VOD retention (loopback-primary plan, 1e)
+
+    private var vodRetentionBudgetBytes: Int64 = 0
+    private var vodForwardWindow = 10
+    private var vodBackwardWindow = 20
+    private var vodTargetIndex = 0
+    private var vodHighWaterIndex = -1
+
+    static func segmentIndex(fromName name: String) -> Int? {
+        guard name.hasPrefix("seg_"), name.hasSuffix(".m4s") else { return nil }
+        return Int(name.dropFirst(4).dropLast(4))
+    }
+
+    func configureVODRetention(
+        budgetBytes: Int64,
+        forwardWindow: Int = 10,
+        backwardWindow: Int = 20
+    ) {
+        lock.lock()
+        vodRetentionBudgetBytes = max(0, budgetBytes)
+        vodForwardWindow = max(1, forwardWindow)
+        vodBackwardWindow = max(0, backwardWindow)
+        lock.unlock()
+    }
+
+    /// Consumer fetch high-water: every segment GET declares its index. The
+    /// hard retention window follows the newest target (a backward scrub is
+    /// a valid non-monotonic move) and pruning re-runs around it.
+    func declareVODTarget(_ index: Int) {
+        lock.lock()
+        guard vodRetentionBudgetBytes > 0 else {
+            lock.unlock()
+            return
+        }
+        vodTargetIndex = index
+        let doomed = vodPruneLocked()
+        lock.broadcast()
+        lock.unlock()
+        for url in doomed {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// Producer window backpressure: appends past `target + forwardWindow`
+    /// wait, so the producer paces on consumption instead of racing to EOF.
+    /// The byte budget bounds backward history; this bounds the forward span
+    /// (and by construction it also parks the producer when the playhead
+    /// wedges, replacing the EVENT generated-ahead throttle).
+    func vodProducerMayAppend(segmentIndex: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard vodRetentionBudgetBytes > 0 else { return true }
+        return segmentIndex <= vodTargetIndex + vodForwardWindow
+    }
+
+    /// Bounded wait used by the server's miss resolver while a producer
+    /// restart fills the requested segment.
+    func waitForSegment(named name: String, deadline: Date) -> ResourceResult {
+        let normalized = name.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        lock.lock()
+        while segments[normalized] == nil,
+              spillingSegments[normalized] == nil,
+              spilledSegments[normalized] == nil,
+              Date() < deadline {
+            _ = lock.wait(until: min(deadline, Date().addingTimeInterval(0.25)))
+        }
+        lock.unlock()
+        return resource(path: normalized, waitForNearFuture: false)
+    }
+
+    /// Pure VOD eviction decision: the hard window
+    /// `[target - backward, max(target + forward, highWater)]` is never
+    /// evicted (correctness beats budget — it covers the playhead and the
+    /// producer's bounded forward span); extras are retained
+    /// nearest-to-target-first under the byte budget so each side of the
+    /// resident span stays contiguous, and evicted farthest-first beyond it.
+    static func vodEvictionVictims(
+        indicesWithBytes: [(index: Int, bytes: Int)],
+        targetIndex: Int,
+        highWaterIndex: Int,
+        forwardWindow: Int,
+        backwardWindow: Int,
+        budgetBytes: Int64
+    ) -> [Int] {
+        guard budgetBytes > 0 else { return [] }
+        let lo = targetIndex - backwardWindow
+        let hi = max(targetIndex + forwardWindow, highWaterIndex)
+        var keptBytes: Int64 = 0
+        var extras: [(index: Int, bytes: Int)] = []
+        for entry in indicesWithBytes {
+            if entry.index >= lo, entry.index <= hi {
+                keptBytes += Int64(entry.bytes)
+            } else {
+                extras.append(entry)
+            }
+        }
+        extras.sort { abs($0.index - targetIndex) < abs($1.index - targetIndex) }
+        var victims: [Int] = []
+        for entry in extras {
+            if keptBytes + Int64(entry.bytes) <= budgetBytes {
+                keptBytes += Int64(entry.bytes)
+            } else {
+                victims.append(entry.index)
+            }
+        }
+        return victims
+    }
+
+    /// Must run under `lock`. Returns spill URLs to delete outside the lock.
+    private func vodPruneLocked() -> [URL] {
+        let inventory: [(index: Int, bytes: Int)] = segmentOrder.compactMap { name in
+            guard let index = Self.segmentIndex(fromName: name) else { return nil }
+            let bytes = segments[name]?.data.count
+                ?? spillingSegments[name]?.data.count
+                ?? spilledSegmentSizes[name]
+                ?? 0
+            return (index, bytes)
+        }
+        let victims = Self.vodEvictionVictims(
+            indicesWithBytes: inventory,
+            targetIndex: vodTargetIndex,
+            highWaterIndex: vodHighWaterIndex,
+            forwardWindow: vodForwardWindow,
+            backwardWindow: vodBackwardWindow,
+            budgetBytes: vodRetentionBudgetBytes
+        )
+        guard !victims.isEmpty else { return [] }
+        var doomed: [URL] = []
+        for index in victims {
+            let name = String(format: "seg_%06d.m4s", index)
+            if let segment = segments[name], segment.pinned > 0 { continue }
+            if let segment = segments.removeValue(forKey: name) {
+                memoryBytes -= segment.data.count
+            }
+            if let segment = spillingSegments.removeValue(forKey: name) {
+                tempSpillBytes -= Int64(segment.data.count)
+            }
+            if let url = spilledSegments.removeValue(forKey: name) {
+                tempSpillBytes -= Int64(spilledSegmentSizes.removeValue(forKey: name) ?? 0)
+                doomed.append(url)
+            }
+            segmentOrder.removeAll { $0 == name }
+            // Deliberately NOT `evictedResources`: a pruned VOD segment is
+            // regenerable via a producer restart; `.gone` would 404 it for
+            // the rest of the session.
+        }
+        tempSpillBytes = max(0, tempSpillBytes)
+        return doomed
     }
 
     func retireSegments(names: [String]) -> [String] {
