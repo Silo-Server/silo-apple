@@ -525,6 +525,14 @@ class PlayerViewModel {
         }
         return currentRouteCapabilities.routeLabel
     }
+    /// One-line, user-facing route description for the player HUD:
+    /// engine family plus delivery, e.g. "SiloPlayer · Direct Stream".
+    var playbackRouteDisplay: String {
+        guard let activeExecutionPlan else {
+            return currentRouteCapabilities.routeLabel
+        }
+        return "\(activeExecutionPlan.routeFamily.displayLabel) · \(activeExecutionPlan.appPlaybackLabel)"
+    }
     var routeStatusRows: [PlayerRouteStatusRow] {
         let capabilities = currentRouteCapabilities
         var rows = [

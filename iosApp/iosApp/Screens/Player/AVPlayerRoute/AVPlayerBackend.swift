@@ -1463,7 +1463,10 @@ final class AVPlayerBackend {
             detail: videoFormat.stream.detail ?? videoDetail(for: item),
             bitrateBps: indicatedBitrate ?? observedBitrate ?? videoFormat.stream.bitrateBps
         )
-        stats.dynamicRange = dynamicRangeLabel(for: currentSourceStrategy) ?? videoFormat.dynamicRange
+        // Prefer the format description of what AVPlayer is actually
+        // playing (e.g. "Dolby Vision Profile 8 Level 6 (HDR10
+        // compatible)") over the spec-derived expectation.
+        stats.dynamicRange = videoFormat.dynamicRange ?? dynamicRangeLabel(for: currentSourceStrategy)
         stats.audio = audio
         stats.subtitles = selectedSubtitleLabel()
         stats.screenFrameRate = PlatformScreen.maximumFramesPerSecond
@@ -1541,8 +1544,10 @@ final class AVPlayerBackend {
         switch strategy {
         case .remoteHLS(let url, _), .remoteDirect(let url, _):
             return url.host ?? url.scheme
-        case .siloLoopback:
-            return "SiloPlayer local stream"
+        case .siloLoopback(let spec):
+            // The loopback is an implementation detail; the user-meaningful
+            // source is the origin the media is actually fetched from.
+            return spec.sourceURL.host ?? "local"
         case .none:
             return nil
         }
@@ -1631,13 +1636,13 @@ final class AVPlayerBackend {
         guard case .siloLoopback(let spec) = strategy else { return nil }
         switch spec.videoMode {
         case .passthroughProfile5:
-            return "HDR output validation required (Profile \(spec.manifestMetadata.advertisedDolbyVisionProfile ?? 5) source)"
+            return "Dolby Vision (Profile \(spec.manifestMetadata.advertisedDolbyVisionProfile ?? 5))"
         case .convertProfile7To81:
-            return "HDR output validation required (Profile 7 base layer signaled as Profile 8.1)"
+            return "Dolby Vision (Profile 7 → 8.1)"
         case .passthroughProfile8(.hdr10):
-            return "HDR output validation required (Profile 8.1 source)"
+            return "Dolby Vision (Profile 8.1)"
         case .passthroughProfile8(.hlg):
-            return "HDR output validation required (Profile 8.4 source)"
+            return "Dolby Vision (Profile 8.4)"
         case .passthroughHEVC:
             switch spec.manifestMetadata.videoRange {
             case "HLG": return "HLG"
@@ -3098,11 +3103,11 @@ final class AVPlayerBackend {
         case .siloLoopback(let spec):
             switch spec.videoMode {
             case .passthroughH264:
-                return "SiloPlayer H.264 Loopback"
+                return "SiloPlayer (H.264)"
             case .passthroughHEVC:
-                return "SiloPlayer HEVC Loopback"
+                return "SiloPlayer (HEVC)"
             case .passthroughProfile5, .convertProfile7To81, .passthroughProfile8:
-                return "SiloPlayer Dolby Vision Loopback"
+                return "SiloPlayer (Dolby Vision)"
             }
         }
     }

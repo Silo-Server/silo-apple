@@ -575,10 +575,10 @@ private struct InfoPane: View {
     }
 
     private var streamRows: [(String, String)] {
-        var rows: [(String, String)] = [("Route", viewModel.activeRouteLabel)]
-        if let decision = viewModel.routeDecisionSummary {
-            rows.append(("Decision", decision))
-        }
+        // One concise route line (engine · delivery). The decision trace
+        // and full route diagnostics stay in the Stats pane / settings —
+        // this pane is the casual "what am I watching" surface.
+        var rows: [(String, String)] = [("Route", viewModel.playbackRouteDisplay)]
         if let audio = viewModel.audioTracks.first(where: { $0.trackId == viewModel.selectedAudioId }) {
             var bits: [String] = []
             if let codec = audio.codec, !codec.isEmpty { bits.append(codec.uppercased()) }

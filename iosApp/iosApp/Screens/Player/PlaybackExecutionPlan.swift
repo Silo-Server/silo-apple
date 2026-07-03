@@ -192,6 +192,16 @@ enum PlaybackRouteFamily: String, Equatable {
     case compatibilityPlayer = "CompatibilityPlayer"
 
     var diagnosticsLabel: String { rawValue }
+
+    /// User-facing family name for the player HUD (the raw value is a
+    /// diagnostics token that reads as jargon on screen).
+    var displayLabel: String {
+        switch self {
+        case .nativePlayer: return "Native Player"
+        case .siloPlayer: return "SiloPlayer"
+        case .compatibilityPlayer: return "Compatibility Player"
+        }
+    }
 }
 
 /// Identifies which playback engine will execute the plan. Produced at the
