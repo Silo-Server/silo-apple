@@ -82,29 +82,49 @@ struct RecommendationsView: View {
         #endif
     }
 
+    /// The Watchlist/Favorites shortcut row renders in every state — the
+    /// user's saved lists are reachable from here even when there are no
+    /// recommendations (or they failed to load).
     @ViewBuilder
     private var pageContent: some View {
         if !viewModel.sections.isEmpty {
             content
-        } else if let error = viewModel.error {
-            ErrorView(state: error, onRetry: { Task { await viewModel.loadRecommendations() } })
-        } else if viewModel.isLoading {
-            loadingState
         } else {
-            emptyState
+            VStack(spacing: 0) {
+                shortcutsRow
+                    .padding(.horizontal, contentHorizontalPadding)
+                    #if os(tvOS)
+                    .padding(.top, TVTopMenuLayout.contentTopInset)
+                    #endif
+
+                Group {
+                    if let error = viewModel.error {
+                        ErrorView(state: error, onRetry: { Task { await viewModel.loadRecommendations() } })
+                    } else if viewModel.isLoading {
+                        Color.clear
+                    } else {
+                        emptyState
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
+    }
+
+    private var shortcutsRow: some View {
+        SavedShortcutsRow(
+            focusRequest: focusRequest,
+            isTopMenuFocused: isTopMenuFocused,
+            onSelect: { router.navigate(to: $0.route) },
+            onMoveUp: onTopMenuFocusRequest
+        )
     }
 
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: sectionSpacing) {
-                SavedShortcutsRow(
-                    focusRequest: focusRequest,
-                    isTopMenuFocused: isTopMenuFocused,
-                    onSelect: { router.navigate(to: $0.route) },
-                    onMoveUp: onTopMenuFocusRequest
-                )
-                .padding(.horizontal, contentHorizontalPadding)
+                shortcutsRow
+                    .padding(.horizontal, contentHorizontalPadding)
 
                 ForEach(Array(viewModel.sections.enumerated()), id: \.element.id) { index, section in
                     SectionRow(
@@ -120,21 +140,6 @@ struct RecommendationsView: View {
             #endif
             .padding(.bottom, ContinuumTheme.largePadding)
         }
-    }
-
-    /// On tvOS the loading state must contain at least one focusable
-    /// element. Without it, focus stays parked on the sidebar tab item
-    /// and `TVMainTabView`'s `.onExitCommand` (which routes Menu/Back to
-    /// Home) never fires — leaving the user with no way out of the tab.
-    @ViewBuilder
-    private var loadingState: some View {
-        #if os(tvOS)
-        Color.clear
-            .padding(.top, TVTopMenuLayout.contentTopInset)
-            .focusable()
-        #else
-        Color.clear
-        #endif
     }
 
     @ViewBuilder
@@ -164,9 +169,6 @@ struct RecommendationsView: View {
             #endif
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        #if os(tvOS)
-        .padding(.top, TVTopMenuLayout.contentTopInset)
-        #endif
     }
 
     /// Load the currently-selected profile so we can render its avatar in
