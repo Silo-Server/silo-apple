@@ -548,6 +548,12 @@ final class LoopbackSegmentWriter {
     /// True when this session runs on a recycled demuxer — its cue index is
     /// already warm, so the restart re-seek skips the mid-file prewarm.
     private var recycledInputActive = false
+    /// The interrupt-callback target for the input context (cancelLock-
+    /// protected). Fresh per writer; REPLACED by the adopted token when a
+    /// recycled demuxer is claimed, because FFmpeg's nested I/O contexts
+    /// hold copies of the callback pointing at the token from the original
+    /// open.
+    private var interruptToken = LoopbackInterruptToken()
     /// Teardown-completed marker (cancelLock-protected): a stop() that
     /// arrives after teardown must cancel its handoff immediately or the
     /// successor burns its whole claim timeout on a dead publisher.
@@ -944,6 +950,7 @@ final class LoopbackSegmentWriter {
         // for the muxQueue to drain.
         cancelLock.lock()
         _cancelled = true
+        let token = interruptToken
         var deadHandoff: LoopbackInputHandoff?
         if let handoff {
             if didTeardown {
@@ -953,6 +960,7 @@ final class LoopbackSegmentWriter {
             }
         }
         cancelLock.unlock()
+        token.cancel()
         // Teardown already ran — nothing will ever be published; release the
         // successor to open fresh instead of waiting out its claim timeout.
         deadHandoff?.cancelPublication()
@@ -1219,20 +1227,26 @@ final class LoopbackSegmentWriter {
         )
     }
 
-    /// Installs this writer's cancellation poll on a context. FFmpeg polls
-    /// it between / during I/O ops; returning 1 bails `av_read_frame` (or
-    /// open/probe) with AVERROR_EXIT.
+    /// Installs the cancellation poll on a context. FFmpeg polls it
+    /// between / during I/O ops; returning 1 bails `av_read_frame` (or
+    /// open/probe) with AVERROR_EXIT. The opaque target is the writer's
+    /// `interruptToken`, NEVER the writer itself: FFmpeg copies the
+    /// AVIOInterruptCB struct into the nested http/tcp URLContext and
+    /// AVIOContext at open time, and those copies must stay valid across
+    /// demuxer handoffs after this writer deallocates (living-room SIGSEGV
+    /// on the first recycled-demuxer seek).
     private func installInterruptCallback(
-        on ctx: UnsafeMutablePointer<AVFormatContext>
+        on ctx: UnsafeMutablePointer<AVFormatContext>,
+        token: LoopbackInterruptToken
     ) {
-        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        let tokenPtr = Unmanaged.passUnretained(token).toOpaque()
         ctx.pointee.interrupt_callback = AVIOInterruptCB(
             callback: { opaque in
                 guard let opaque else { return 0 }
-                let writer = Unmanaged<LoopbackSegmentWriter>.fromOpaque(opaque).takeUnretainedValue()
-                return writer.isCancelled ? 1 : 0
+                let token = Unmanaged<LoopbackInterruptToken>.fromOpaque(opaque).takeUnretainedValue()
+                return token.isCancelled ? 1 : 0
             },
-            opaque: selfPtr
+            opaque: tokenPtr
         )
     }
 
@@ -1244,24 +1258,35 @@ final class LoopbackSegmentWriter {
         // to a fresh open.
         if let handoff = recycledInputHandoff,
            let recycled = handoff.claim(timeout: 1.5) {
-            installInterruptCallback(on: recycled)
+            // Adopt the token baked into the recycled context's nested I/O
+            // contexts; the retiring writer's stop() left it cancelled.
+            cancelLock.lock()
+            interruptToken = recycled.token
+            cancelLock.unlock()
+            recycled.token.reset()
+            if isCancelled {
+                // This writer was stopped between init and claim; re-cancel
+                // so the context's reads abort instead of riding rw_timeout.
+                recycled.token.cancel()
+            }
+            installInterruptCallback(on: recycled.context, token: recycled.token)
             do {
                 videoInputStreamIndex = try Self.resolveSelectedVideoStreamIndex(
-                    in: recycled,
+                    in: recycled.context,
                     videoMode: videoMode
                 )
                 Self.discardUnusedStreamsForMux(
-                    in: recycled,
+                    in: recycled.context,
                     keepVideoIndex: videoInputStreamIndex,
                     keepAudioOrdinal: shouldIncludeAudio ? selectedAudioTrackIndex : -1,
                     keepAudioFfIndex: sessionSpec.selectedAudio.ffIndex
                 )
-                inputCtx = recycled
+                inputCtx = recycled.context
                 recycledInputActive = true
                 print("[CMP-AVP] vod restart: recycled source demuxer")
                 return
             } catch {
-                var doomed: UnsafeMutablePointer<AVFormatContext>? = recycled
+                var doomed: UnsafeMutablePointer<AVFormatContext>? = recycled.context
                 avformat_close_input(&doomed)
                 print("[CMP-AVP] vod restart: recycled demuxer rejected (\(error)); reopening source")
             }
@@ -1272,7 +1297,10 @@ final class LoopbackSegmentWriter {
             throw LoopbackWriterError.allocInput
         }
 
-        installInterruptCallback(on: ctx!)
+        cancelLock.lock()
+        let token = interruptToken
+        cancelLock.unlock()
+        installInterruptCallback(on: ctx!, token: token)
 
         var options: OpaquePointer?
         if !sourceHeaders.isEmpty {
@@ -4442,19 +4470,16 @@ final class LoopbackSegmentWriter {
         cancelLock.lock()
         didTeardown = true
         let handoff = outgoingInputHandoff
+        let token = interruptToken
         outgoingInputHandoff = nil
         cancelLock.unlock()
         if let handoff {
             if let ctx = inputCtx {
-                // Detach our interrupt callback before transfer: this writer
-                // may deallocate while the successor still owns the context,
-                // and a poll through the stale opaque pointer would crash.
-                // The successor installs its own callback on claim.
-                ctx.pointee.interrupt_callback = AVIOInterruptCB(
-                    callback: nil,
-                    opaque: nil
-                )
-                handoff.publish(ctx)
+                // The interrupt callback (top-level and the copies FFmpeg
+                // baked into nested I/O contexts) targets the token, which
+                // travels with the context; the successor adopts and resets
+                // it on claim.
+                handoff.publish(ctx, token: token)
                 inputCtx = nil
             } else {
                 handoff.cancelPublication()

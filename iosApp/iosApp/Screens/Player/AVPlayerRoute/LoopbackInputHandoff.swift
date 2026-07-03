@@ -1,6 +1,40 @@
 import Foundation
 import Libavformat
 
+/// Cancellation flag for FFmpeg's interrupt callback. FFmpeg COPIES the
+/// `AVIOInterruptCB` struct into nested contexts at open time (the http/tcp
+/// URLContext and AVIOContext each hold their own copy), so the callback's
+/// opaque pointer must outlive every owner of the AVFormatContext — pointing
+/// it at the writer crashes on the first read after a demuxer handoff (the
+/// retired writer deallocates; living-room SIGSEGV on seek). The token is
+/// created once per fresh `avformat_open_input` and travels with the context
+/// through every recycle; the adopting writer resets it and cancels it from
+/// then on.
+final class LoopbackInterruptToken {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    /// Called by the adopting writer after a claim: the retiring writer's
+    /// stop() cancelled the token; reads under the new owner must proceed.
+    func reset() {
+        lock.lock()
+        cancelled = false
+        lock.unlock()
+    }
+}
+
 /// Hands the open source `AVFormatContext` from a stopping VOD producer to
 /// its restart replacement, so a seek-triggered producer swap skips
 /// `avformat_open_input` + `find_stream_info` + the matroska cue warm
@@ -13,6 +47,7 @@ import Libavformat
 final class LoopbackInputHandoff {
     private let lock = NSCondition()
     private var context: UnsafeMutablePointer<AVFormatContext>?
+    private var token: LoopbackInterruptToken?
     private var published = false
     private var abandoned = false
 
@@ -22,9 +57,13 @@ final class LoopbackInputHandoff {
         }
     }
 
-    /// Retiring writer: transfer ownership of the open input. Closes it
+    /// Retiring writer: transfer ownership of the open input plus the
+    /// interrupt token its nested I/O contexts point at. Closes the input
     /// immediately if the successor already gave up waiting.
-    func publish(_ ctx: UnsafeMutablePointer<AVFormatContext>) {
+    func publish(
+        _ ctx: UnsafeMutablePointer<AVFormatContext>,
+        token interruptToken: LoopbackInterruptToken
+    ) {
         lock.lock()
         if abandoned {
             lock.unlock()
@@ -33,6 +72,7 @@ final class LoopbackInputHandoff {
             return
         }
         context = ctx
+        token = interruptToken
         published = true
         lock.broadcast()
         lock.unlock()
@@ -51,18 +91,23 @@ final class LoopbackInputHandoff {
     /// Successor: wait up to `timeout` for the retiring producer's input.
     /// Returns nil (and releases the publisher to close the context itself)
     /// when the handoff is cancelled or the wait times out.
-    func claim(timeout: TimeInterval) -> UnsafeMutablePointer<AVFormatContext>? {
+    func claim(
+        timeout: TimeInterval
+    ) -> (context: UnsafeMutablePointer<AVFormatContext>, token: LoopbackInterruptToken)? {
         let deadline = Date().addingTimeInterval(timeout)
         lock.lock()
         while !published, !abandoned, Date() < deadline {
             lock.wait(until: deadline)
         }
-        let claimed = context
+        let claimedContext = context
+        let claimedToken = token
         context = nil
-        if claimed == nil {
+        token = nil
+        if claimedContext == nil {
             abandoned = true
         }
         lock.unlock()
-        return claimed
+        guard let claimedContext, let claimedToken else { return nil }
+        return (claimedContext, claimedToken)
     }
 }
