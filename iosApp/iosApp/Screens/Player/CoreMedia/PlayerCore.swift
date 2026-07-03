@@ -200,6 +200,9 @@ final class PlayerCore: NSObject {
     /// Set on first successful VT decode so we can fire `onFileLoaded` once.
     private var hasFiredFileLoaded = false
     private var hasFiredFirstFrameSignpost = false
+    /// Wall-clock anchor for the one-shot `[CMP-TTFF]` first-frame log
+    /// (SiloPlayer plan Stage 0). Set on every `load(url:...)`.
+    private var ttffLoadAnchor: CFAbsoluteTime = 0
     private var hasLoggedFirstDecodedVideoBuffer = false
     /// PTS floor for frames/samples that should reach the renderers. Set after
     /// any backward-seek (resume mid-stream, user scrub): FFmpeg lands on the
@@ -1341,6 +1344,7 @@ final class PlayerCore: NSObject {
         lastLoadHeaders = headers
         lastLoadStartTime = startTime
         pendingRejection = nil
+        ttffLoadAnchor = CFAbsoluteTimeGetCurrent()
 
         // Park any audio-track switch that arrives before the open
         // completes — see `deferredTrackLock`.
@@ -4842,6 +4846,9 @@ final class PlayerCore: NSObject {
                 os_signpost(.event, log: Self.signpostLog, name: "FirstFrame",
                             "pts=%.3f", pts.seconds)
             }
+            let ttffMs = Int((CFAbsoluteTimeGetCurrent() - ttffLoadAnchor) * 1000)
+            Self.logger.info("[CMP-TTFF] route=playerCoreDirect first_frame_ms=\(ttffMs)")
+            print("[CMP-TTFF] route=playerCoreDirect first_frame_ms=\(ttffMs)")
         }
     }
 

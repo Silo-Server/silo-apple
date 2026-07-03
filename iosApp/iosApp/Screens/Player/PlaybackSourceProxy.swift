@@ -21,6 +21,41 @@ struct PlaybackSourceProxyStats: Equatable {
 enum PlaybackSourceInterruptionReason: Equatable {
     case serverUnavailable(statusCode: Int)
     case networkUnavailable
+    /// The origin stopped producing bytes before the resolved end of the
+    /// response (2026-06-28 stall report §4). `offset` is the first byte the
+    /// proxy could not serve; `expectedEnd` is the last byte the response
+    /// promised.
+    case prematureEOF(offset: Int64, expectedEnd: Int64)
+}
+
+/// How a proxied GET response loop ended. Pure decision so tests can pin the
+/// premature-EOF classification without a network stack: a short origin read
+/// must be distinguishable from normal completion, consumer disconnect (a
+/// send failure returns before classification), fetch errors (notified via
+/// their own path), and teardown cancellation.
+enum PlaybackSourceResponseEnd: Equatable {
+    case complete
+    case cancelled
+    case fetchFailed
+    case prematureEOF(offset: Int64, expectedEnd: Int64)
+
+    static func classify(
+        cursor: Int64,
+        responseEnd: Int64?,
+        totalLength: Int64?,
+        wasCancelled: Bool,
+        sawEmptyFetch: Bool,
+        sawFetchError: Bool
+    ) -> PlaybackSourceResponseEnd {
+        if wasCancelled { return .cancelled }
+        if sawFetchError { return .fetchFailed }
+        guard sawEmptyFetch,
+              let expectedEnd = responseEnd ?? totalLength.map({ max(0, $0 - 1) }),
+              cursor <= expectedEnd else {
+            return .complete
+        }
+        return .prematureEOF(offset: cursor, expectedEnd: expectedEnd)
+    }
 }
 
 final class PlaybackSourceCache {
@@ -625,6 +660,8 @@ private final class PlaybackSourceResource {
         }
 
         var cursor = resolved.start
+        var sawEmptyFetch = false
+        var sawFetchError = false
         while !Task.isCancelled {
             if let responseEnd, cursor > responseEnd { break }
             if let total, cursor >= total { break }
@@ -642,19 +679,38 @@ private final class PlaybackSourceResource {
             cache.recordCacheMiss(byteCount: Int64(fetchLength))
             do {
                 let fetched = try await fetchRange(start: cursor, length: fetchLength)
-                guard !fetched.data.isEmpty else { break }
+                guard !fetched.data.isEmpty else {
+                    sawEmptyFetch = true
+                    break
+                }
                 cache.store(start: fetched.start, data: fetched.data, totalLength: fetched.totalLength)
                 if let totalLength = fetched.totalLength {
                     discoveredTotalLength = totalLength
                     cache.setTotalLength(totalLength)
                 }
             } catch {
+                sawFetchError = true
                 if !Self.isCancellationError(error) {
                     Self.logger.info("[CMP-SOURCE-CACHE] foreground range fetch failed start=\(cursor, privacy: .public) error=\(String(describing: error), privacy: .public)")
                     notifyForegroundInterruptionIfNeeded(error: error, offset: cursor)
                 }
                 break
             }
+        }
+        let endCause = PlaybackSourceResponseEnd.classify(
+            cursor: cursor,
+            responseEnd: responseEnd,
+            totalLength: discoveredTotalLength ?? total,
+            wasCancelled: Task.isCancelled,
+            sawEmptyFetch: sawEmptyFetch,
+            sawFetchError: sawFetchError
+        )
+        if case let .prematureEOF(offset, expectedEnd) = endCause {
+            let totalLabel = (discoveredTotalLength ?? total).map(String.init) ?? "unknown"
+            Self.logger.warning(
+                "[CMP-SOURCE-CACHE] premature eof offset=\(offset, privacy: .public) expectedEnd=\(expectedEnd, privacy: .public) total=\(totalLabel, privacy: .public)"
+            )
+            onPlaybackSourceInterrupted?(.prematureEOF(offset: offset, expectedEnd: expectedEnd))
         }
         schedulePrefetch(after: cursor)
         _ = await send(nil, on: connection, close: true)

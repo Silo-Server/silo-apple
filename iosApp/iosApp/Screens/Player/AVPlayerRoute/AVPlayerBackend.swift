@@ -707,9 +707,48 @@ final class AVPlayerBackend {
         }
     }
 
+    // MARK: - Startup (TTFF) telemetry — SiloPlayer plan Stage 0
+
+    private var ttffLoadAnchor: CFAbsoluteTime = 0
+    private var ttffFirstSegmentMs: Int?
+    private var ttffReadyMs: Int?
+    private var ttffEmitted = true
+    private var ttffLastObservedTime: Double = .nan
+
+    private func ttffElapsedMs() -> Int {
+        Int((CFAbsoluteTimeGetCurrent() - ttffLoadAnchor) * 1000)
+    }
+
+    private func ttffMarkLoad() {
+        ttffLoadAnchor = CFAbsoluteTimeGetCurrent()
+        ttffFirstSegmentMs = nil
+        ttffReadyMs = nil
+        ttffEmitted = false
+        ttffLastObservedTime = .nan
+    }
+
+    /// Emits one `[CMP-TTFF]` line per load at the first observed playhead
+    /// advance while playing — the closest observable proxy for "first frame
+    /// rendered" that works on both the loopback and the remote AVPlayer
+    /// routes, and is axis-agnostic (the loopback item timeline is
+    /// session-relative, not media-relative).
+    private func ttffEmitIfNeeded(currentTime: Double) {
+        guard !ttffEmitted else { return }
+        defer { ttffLastObservedTime = currentTime }
+        guard !ttffLastObservedTime.isNaN,
+              avPlayer.rate > 0,
+              currentTime > ttffLastObservedTime + 0.02 else { return }
+        ttffEmitted = true
+        let route = currentSourceStrategy.map(Self.describe) ?? "unknown"
+        let firstSegment = ttffFirstSegmentMs.map(String.init) ?? "-"
+        let ready = ttffReadyMs.map(String.init) ?? "-"
+        cmpLog("[CMP-TTFF] route=\(route) first_segment_ms=\(firstSegment) ready_ms=\(ready) first_frame_ms=\(ttffElapsedMs())")
+    }
+
     private func load(strategy: SourceStrategy, startTime: Double) {
         guard !isDisposed else { return }
         cmpLog("[CMP-AVP] load strategy=\(Self.describe(strategy)) startTime=\(startTime)")
+        ttffMarkLoad()
 
         let preserveDisplayCriteria = shouldPreserveTVDisplayCriteriaDuringReload(
             from: currentSourceStrategy,
@@ -909,6 +948,7 @@ final class AVPlayerBackend {
         guard !isDisposed, currentItem == nil, let server = segmentServer else { return }
         let url = URL(string: "http://127.0.0.1:\(server.port)/\(playlistName)")!
         cmpLog("[CMP-AVP] local playlist ready \(url.absoluteString)")
+        if ttffFirstSegmentMs == nil { ttffFirstSegmentMs = ttffElapsedMs() }
         logTVDisplayManagerState(context: "before_prepare_\(playlistName)")
         applyTVDisplayCriteriaForLoopbackIfNeeded(context: "before_prepare_\(playlistName)")
         // The local loopback server is an in-app HTTP surface. Remote auth
@@ -1029,6 +1069,7 @@ final class AVPlayerBackend {
                 self.setLoopbackPlaybackClock(time.seconds)
             }
             self.releaseInitialVideoDisplayGateIfPlaybackAdvanced(currentTime: time.seconds)
+            self.ttffEmitIfNeeded(currentTime: time.seconds)
             self.onTimeChange?(time.seconds)
             self.emitBufferedAhead(referenceTime: time.seconds)
             self.emitPlaybackStats(referenceTime: time.seconds)
@@ -1588,6 +1629,7 @@ final class AVPlayerBackend {
                 guard let self, !self.isDisposed else { return }
                 switch item.status {
                 case .readyToPlay:
+                    if self.ttffReadyMs == nil { self.ttffReadyMs = self.ttffElapsedMs() }
                     self.cancelLoopbackStartupTimeout()
                     self.attemptInitialPlaybackStart(for: item, trigger: "status.readyToPlay")
                 case .failed:
