@@ -130,6 +130,53 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         XCTAssertEqual(resource.byteCount, payload.count)
     }
 
+    func testWaitForSegmentExitsEarlyWhenSupersededByFarTarget() {
+        // Miss path: the fetch for seg 10 declares its own index first (the
+        // server's order), then AVPlayer abandons it and scrubs far away —
+        // the new fetch declares 50, outside the ±forwardWindow(3) band, so
+        // the waiter must wake and exit instead of riding the deadline.
+        let store = makeVODStore(budget: 10_000)
+        store.declareVODTarget(10)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) {
+            store.declareVODTarget(50)
+        }
+        let started = Date()
+        let result = store.waitForSegment(
+            named: segName(10),
+            deadline: Date().addingTimeInterval(5.0)
+        )
+        guard case .missing = result else {
+            return XCTFail("superseded wait must resolve .missing")
+        }
+        XCTAssertLessThan(
+            Date().timeIntervalSince(started), 2.0,
+            "supersede must not ride the full deadline"
+        )
+    }
+
+    func testWaitForSegmentSurvivesCoveringTargetAndLatePut() {
+        // A nearby declare (covering producer / pipelined adjacent fetch)
+        // stays inside the ±forwardWindow band and must NOT kill a
+        // legitimate wait: the late put still serves.
+        let store = makeVODStore(budget: 10_000)
+        let payload = Data(repeating: 0xEF, count: 8)
+        store.declareVODTarget(10)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+            store.declareVODTarget(12)
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
+            _ = store.putSegment(name: self.segName(10), data: payload, duration: 4)
+        }
+        let result = store.waitForSegment(
+            named: segName(10),
+            deadline: Date().addingTimeInterval(3.0)
+        )
+        guard case .found(let resource) = result else {
+            return XCTFail("in-band declare must not supersede the wait")
+        }
+        XCTAssertEqual(resource.byteCount, payload.count)
+    }
+
     func testWaitForSegmentTimesOutMissing() {
         let store = makeVODStore(budget: 10_000)
         let started = Date()

@@ -536,6 +536,8 @@ final class LoopbackSegmentWriter {
             vodVideoTimeBase = stream.pointee.time_base
         }
         vodAwaitingRestartKeyframe = effectiveBase > 0
+        vodPrerollDroppedVideo = 0
+        vodPrerollDroppedAudio = 0
         vodActive = true
         if selectedAudioOutputMode != .copy {
             // Bridged audio re-encodes on a synthesized clock; its restart
@@ -557,6 +559,11 @@ final class LoopbackSegmentWriter {
     /// its continuous twin.
     private var vodAwaitingRestartKeyframe = false
     private var vodFirstRoutedVideoDts: Int64?
+    /// Seam telemetry only (no behavior): packets the restart pre-roll gate
+    /// discards, reported once when the video gate opens so hardware passes
+    /// can size the decode-ramp seam. Mux thread only.
+    private var vodPrerollDroppedVideo = 0
+    private var vodPrerollDroppedAudio = 0
 
     private func applyVODAnchorShift(
         pkt: UnsafeMutablePointer<AVPacket>,
@@ -585,8 +592,10 @@ final class LoopbackSegmentWriter {
                 if isKeyframe, pkt.pointee.pts != Int64.min, pkt.pointee.pts >= boundary {
                     vodAwaitingRestartKeyframe = false
                     vodFirstRoutedVideoDts = pkt.pointee.dts
+                    print("[CMP-AVP] vod restart preroll dropped video=\(vodPrerollDroppedVideo) audio=\(vodPrerollDroppedAudio) segment=\(vodEffectiveBaseIndex)")
                     return false
                 }
+                vodPrerollDroppedVideo += 1
                 return true
             }
             if vodFirstRoutedVideoDts == nil {
@@ -612,7 +621,10 @@ final class LoopbackSegmentWriter {
             // Restart: audio waits for the video gate, then everything
             // before the gate's DTS is dropped so the restarted interleave
             // reproduces the continuous run's.
-            guard let gate = vodFirstRoutedVideoDts else { return true }
+            guard let gate = vodFirstRoutedVideoDts else {
+                vodPrerollDroppedAudio += 1
+                return true
+            }
             thresholdVideoTB = gate
         }
         let threshold = av_rescale_q(
@@ -627,10 +639,14 @@ final class LoopbackSegmentWriter {
         // forward. Dropping it would lose exactly one frame per restart
         // (and break restart byte-identity with the continuous run).
         let duration = max(0, pkt.pointee.duration)
+        let drops: Bool
         if duration > 0 {
-            return pkt.pointee.dts + duration <= threshold
+            drops = pkt.pointee.dts + duration <= threshold
+        } else {
+            drops = pkt.pointee.dts < threshold
         }
-        return pkt.pointee.dts < threshold
+        if drops { vodPrerollDroppedAudio += 1 }
+        return drops
     }
 
     private func prewarmVODCueIndexAndReseek() {

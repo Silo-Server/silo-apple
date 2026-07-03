@@ -201,6 +201,9 @@ final class LoopbackSegmentStore {
     private var vodBackwardWindow = 20
     private var vodTargetIndex = 0
     private var vodHighWaterIndex = -1
+    /// Counts `declareVODTarget` calls so waiters can tell "a real consumer
+    /// target exists" apart from the fresh-store default of index 0.
+    private var vodTargetDeclarationCount: UInt64 = 0
 
     static func segmentIndex(fromName name: String) -> Int? {
         guard name.hasPrefix("seg_"), name.hasSuffix(".m4s") else { return nil }
@@ -229,6 +232,7 @@ final class LoopbackSegmentStore {
             return
         }
         vodTargetIndex = index
+        vodTargetDeclarationCount += 1
         let doomed = vodPruneLocked()
         lock.broadcast()
         lock.unlock()
@@ -251,22 +255,46 @@ final class LoopbackSegmentStore {
 
     /// Bounded wait used by the server's miss resolver while a producer
     /// restart fills the requested segment.
+    ///
+    /// Supersede early-exit: the wait survives only while the newest declared
+    /// consumer target T keeps the waited segment N inside the producer band
+    /// `[T - forwardWindow, T + forwardWindow]`. Outside that band the wait
+    /// is provably moot — above it every producer parks at
+    /// `T + forwardWindow` (`vodProducerMayAppend`) and can never fill N;
+    /// below it producers only march forward, and anything that could
+    /// regenerate N would first re-declare a target near N. Inside the band
+    /// the wait stays alive: the miss's own restart seeds `declareVODTarget`
+    /// at (or near) N, and a covering producer's march delivers it.
+    /// `declareVODTarget` already broadcasts on the condition, so a
+    /// superseding scrub wakes the waiter immediately instead of letting an
+    /// abandoned fetch ride the full deadline.
     func waitForSegment(named name: String, deadline: Date) -> ResourceResult {
         let normalized = name.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let waitedIndex = Self.segmentIndex(fromName: normalized)
         let started = CFAbsoluteTimeGetCurrent()
+        var superseded = false
         lock.lock()
         print("[CMP-HLS-STORE] waitForSegment enter name=\(normalized) evicted=\(evictedResources.contains(normalized) ? 1 : 0) present=\(segments[normalized] != nil ? 1 : 0)")
         while segments[normalized] == nil,
               spillingSegments[normalized] == nil,
               spilledSegments[normalized] == nil,
               Date() < deadline {
+            // Checked before every wait (including the first) so a target
+            // that was already stale at entry exits immediately.
+            if let index = waitedIndex,
+               vodRetentionBudgetBytes > 0,
+               vodTargetDeclarationCount > 0,
+               abs(index - vodTargetIndex) > vodForwardWindow {
+                superseded = true
+                break
+            }
             _ = lock.wait(until: min(deadline, Date().addingTimeInterval(0.25)))
         }
         lock.unlock()
         let result = resource(path: normalized, waitForNearFuture: false)
         let found: Bool
         if case .found = result { found = true } else { found = false }
-        print("[CMP-HLS-STORE] waitForSegment exit name=\(normalized) found=\(found ? 1 : 0) waitedMs=\(Int((CFAbsoluteTimeGetCurrent() - started) * 1000))")
+        print("[CMP-HLS-STORE] waitForSegment exit name=\(normalized) found=\(found ? 1 : 0) superseded=\(superseded ? 1 : 0) waitedMs=\(Int((CFAbsoluteTimeGetCurrent() - started) * 1000))")
         return result
     }
 
