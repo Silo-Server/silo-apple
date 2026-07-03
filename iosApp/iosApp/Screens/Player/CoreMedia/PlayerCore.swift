@@ -3453,9 +3453,12 @@ final class PlayerCore: NSObject {
             // instead of being rejected — VP9/VP8, AV1 (dav1d), MPEG-4
             // Part 2, VC-1, and friends. The decoders were always compiled
             // in; this switch was the only thing between them and playback.
-            // Known limits (documented follow-ups): the SW output path is
-            // 8-bit BGRA (10-bit SW HDR renders SDR) and decode is
-            // single-threaded (4K AV1/VP9 may stutter on Apple TV).
+            // The SW path decodes with bounded frame+slice threading and
+            // outputs bit-depth-aware buffers (>8-bit sources convert to
+            // P010 so HDR survives end-to-end; 8-bit stays on the planar
+            // fast path). Known limit: 4K AV1/VP9 conversion is CPU-bound
+            // even threaded and may stutter on Apple TV — the loopback
+            // route remains primary for H.264/HEVC.
             guard avcodec_find_decoder(codecpar.codec_id) != nil else {
                 Self.logger.error("Unsupported video codec_id=\(codecpar.codec_id.rawValue) (no FFmpeg decoder)")
                 return false
@@ -3704,12 +3707,26 @@ final class PlayerCore: NSObject {
             avcodec_free_context(&ctx)
             return false
         }
+        // Bounded frame+slice threading. FFmpeg intersects the request with
+        // the codec's actual capabilities, so this is a safe no-op for
+        // decoders that can't split work. Capped at 8 so a software decode
+        // never claims every core: real-time audio decode, demux, and the
+        // display tick still need headroom. Configured here (not at the
+        // call sites) so the mid-stream VT->software fallback inherits it.
+        let threadBudget = Int32(min(max(ProcessInfo.processInfo.activeProcessorCount, 1), 8))
+        ctx?.pointee.thread_count = threadBudget
+        ctx?.pointee.thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE
         let openR = avcodec_open2(ctx, codec, nil)
         if openR < 0 {
             Self.logger.error("video: avcodec_open2 failed: \(Self.ffmpegError(openR))")
             avcodec_free_context(&ctx)
             return false
         }
+        print(String(format:
+            "[CMP] software video decoder open codec=%@ threads=%d %dx%d",
+            Self.codecName(for: codecpar.codec_id) ?? "unknown",
+            Int(ctx?.pointee.thread_count ?? 0),
+            Int(codecpar.width), Int(codecpar.height)))
         videoCodecCtx = ctx
         return true
     }
@@ -4100,8 +4117,14 @@ final class PlayerCore: NSObject {
                 ) else { return }
                 let maybePkt = self.videoPacketQueue.dequeue()
                 guard let pkt = maybePkt else {
-                    // EOF sentinel — exit loop; display link keeps ticking so
-                    // any already-decoded frames still drain.
+                    // EOF sentinel — flush any frames still parked inside
+                    // FFmpeg's frame-threading pipeline (up to ~thread_count
+                    // of them; without this the file's tail never displays),
+                    // then exit. The display link keeps ticking so decoded
+                    // frames still drain.
+                    if self.videoDecodeMode == .software {
+                        self.drainSoftwareVideoDecoder()
+                    }
                     return
                 }
                 self.decodeVideoPacket(pkt)
@@ -4231,6 +4254,13 @@ final class PlayerCore: NSObject {
             return
         }
 
+        receiveSoftwareVideoFrames(from: ctx)
+    }
+
+    /// Pop every frame FFmpeg has ready and hand each to the enqueue path.
+    /// Shared by the per-packet decode and the end-of-file drain; loops until
+    /// `avcodec_receive_frame` reports empty (EAGAIN or EOF).
+    private func receiveSoftwareVideoFrames(from ctx: UnsafeMutablePointer<AVCodecContext>) {
         while true {
             guard let frame = av_frame_alloc() else { return }
             let recvR = avcodec_receive_frame(ctx, frame)
@@ -4245,6 +4275,21 @@ final class PlayerCore: NSObject {
             var f: UnsafeMutablePointer<AVFrame>? = frame
             av_frame_free(&f)
         }
+    }
+
+    /// End-of-file flush for the software decoder. With frame threading on,
+    /// the decoder keeps up to ~thread_count decoded-but-unreturned frames
+    /// in flight; sending the flush packet (nil) releases them. Runs on
+    /// `videoFeedQueue` like all software decode. A seek afterwards still
+    /// works: `performSeek` calls `avcodec_flush_buffers`, which resets
+    /// FFmpeg's draining state.
+    private func drainSoftwareVideoDecoder() {
+        guard let ctx = videoCodecCtx else { return }
+        // A repeated drain (e.g. feed restarted and hit the sentinel again)
+        // returns AVERROR_EOF from send; the receive loop below then just
+        // reports empty. No need to special-case it.
+        _ = avcodec_send_packet(ctx, nil)
+        receiveSoftwareVideoFrames(from: ctx)
     }
 
     private func enqueueSoftwareVideoFrame(_ frame: UnsafeMutablePointer<AVFrame>) {
@@ -4268,6 +4313,18 @@ final class PlayerCore: NSObject {
             return
         }
         let pts = CMTime(seconds: ptsSeconds, preferredTimescale: 600)
+
+        // >8-bit sources (10-bit VP9/AV1, 12-bit profiles) convert to P010
+        // so the extra depth — and any PQ/HLG transfer attachment — survives
+        // to the display layer instead of being truncated to 8-bit BGRA. On
+        // any failure this returns nil and we fall through to the 8-bit
+        // paths below: a degraded picture beats a black screen.
+        if VideoColorMetadata.sourceBitDepth(AVPixelFormat(rawValue: frame.pointee.format)) > 8,
+           let pixelBuffer = makeHighBitDepthBiPlanarPixelBuffer(from: frame, width: width, height: height) {
+            attachSoftwareVideoColorMetadata(to: pixelBuffer, frame: frame)
+            handleDecodedVideoFrame(pixelBuffer, pts: pts)
+            return
+        }
 
         if let pixelBuffer = makePlanarYUVPixelBuffer(from: frame, width: width, height: height) {
             attachSoftwareVideoColorMetadata(to: pixelBuffer, frame: frame)
@@ -4355,6 +4412,105 @@ final class PlayerCore: NSObject {
 
         attachSoftwareVideoColorMetadata(to: pixelBuffer, frame: frame)
         handleDecodedVideoFrame(pixelBuffer, pts: pts)
+    }
+
+    /// Convert a >8-bit decoded frame (e.g. dav1d/libvpx emit 10-bit as
+    /// YUV420P10LE) into a P010-layout biplanar CVPixelBuffer: plane 0 is
+    /// 16-bit luma (10 significant MSBs), plane 1 is interleaved CbCr.
+    /// FFmpeg's `AV_PIX_FMT_P010LE` memory layout matches
+    /// `kCVPixelFormatType_420YpCbCr10BiPlanar(Video|Full)Range` exactly, so
+    /// sws_scale writes straight into the locked planes. Returns nil on any
+    /// failure so the caller falls through to the 8-bit paths.
+    private func makeHighBitDepthBiPlanarPixelBuffer(
+        from frame: UnsafeMutablePointer<AVFrame>,
+        width: Int,
+        height: Int
+    ) -> CVPixelBuffer? {
+        let outputFormat = VideoColorMetadata.highBitDepthOutputPixelFormat(
+            fullRange: frame.pointee.color_range == AVCOL_RANGE_JPEG)
+        let attrs: CFDictionary = [
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+            kCVPixelBufferMetalCompatibilityKey: true,
+        ] as CFDictionary
+        var pixelBuffer: CVPixelBuffer?
+        let createStatus = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            outputFormat,
+            attrs,
+            &pixelBuffer
+        )
+        guard createStatus == kCVReturnSuccess, let pixelBuffer else {
+            Self.logger.error("software 10-bit pixel buffer create failed: \(createStatus)")
+            return nil
+        }
+
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+        guard let lumaBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
+              let chromaBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1) else {
+            return nil
+        }
+
+        let srcFormat = AVPixelFormat(rawValue: frame.pointee.format)
+        videoSwsCtx = sws_getCachedContext(
+            videoSwsCtx,
+            Int32(width),
+            Int32(height),
+            srcFormat,
+            Int32(width),
+            Int32(height),
+            AV_PIX_FMT_P010LE,
+            SWS_BILINEAR,
+            nil,
+            nil,
+            nil
+        )
+        guard let sws = videoSwsCtx else { return nil }
+
+        var srcData = withUnsafeBytes(of: frame.pointee.data) { raw -> [UnsafePointer<UInt8>?] in
+            raw.bindMemory(to: UnsafeMutablePointer<UInt8>?.self).map { ptr in
+                ptr.map { UnsafePointer($0) }
+            }
+        }
+        var srcLinesize = withUnsafeBytes(of: frame.pointee.linesize) { raw -> [Int32] in
+            raw.bindMemory(to: Int32.self).map { $0 }
+        }
+        var dstData: [UnsafeMutablePointer<UInt8>?] = [
+            lumaBase.assumingMemoryBound(to: UInt8.self),
+            chromaBase.assumingMemoryBound(to: UInt8.self),
+            nil, nil,
+            nil, nil, nil, nil,
+        ]
+        var dstLinesize: [Int32] = [
+            Int32(CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)),
+            Int32(CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)),
+            0, 0,
+            0, 0, 0, 0,
+        ]
+        let scaled = srcData.withUnsafeMutableBufferPointer { srcDataBP in
+            srcLinesize.withUnsafeMutableBufferPointer { srcLineBP in
+                dstData.withUnsafeMutableBufferPointer { dstDataBP in
+                    dstLinesize.withUnsafeMutableBufferPointer { dstLineBP in
+                        sws_scale(
+                            sws,
+                            srcDataBP.baseAddress,
+                            srcLineBP.baseAddress,
+                            0,
+                            Int32(height),
+                            dstDataBP.baseAddress,
+                            dstLineBP.baseAddress
+                        )
+                    }
+                }
+            }
+        }
+        guard scaled == Int32(height) else {
+            Self.logger.warning("software 10-bit scale produced \(scaled) rows, expected \(height)")
+            return nil
+        }
+        return pixelBuffer
     }
 
     private func makePlanarYUVPixelBuffer(

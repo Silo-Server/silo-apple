@@ -28,6 +28,27 @@ enum VideoColorMetadata {
         }
     }
 
+    /// Bit depth of an FFmpeg pixel format's first component (8 when the
+    /// descriptor is unavailable). Drives the software decode path's choice
+    /// between 8-bit planar/BGRA output and 10-bit biplanar output. Reading
+    /// the depth off the actual decoded frame's format is more reliable than
+    /// `bits_per_raw_sample`, which some codecs leave at 0 until well after
+    /// open.
+    static func sourceBitDepth(_ format: AVPixelFormat) -> Int32 {
+        guard let desc = av_pix_fmt_desc_get(format) else { return 8 }
+        return desc.pointee.comp.0.depth
+    }
+
+    /// CoreVideo pixel format for >8-bit software decode output: P010-layout
+    /// biplanar 4:2:0 (16-bit samples, 10 significant MSBs), range-matched
+    /// to the source the same way the 8-bit planar fast path picks its
+    /// full/video-range variant.
+    static func highBitDepthOutputPixelFormat(fullRange: Bool) -> OSType {
+        fullRange
+            ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+            : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+    }
+
     static func dynamicRange(forTransfer trc: AVColorTransferCharacteristic) -> SpikeDynamicRange {
         switch trc {
         case AVCOL_TRC_SMPTE2084:    return .hdr10
