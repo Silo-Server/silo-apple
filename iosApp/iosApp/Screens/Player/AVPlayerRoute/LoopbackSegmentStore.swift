@@ -210,13 +210,24 @@ final class LoopbackSegmentStore {
         return Int(name.dropFirst(4).dropLast(4))
     }
 
+    /// Fallback for a degenerate (non-positive) retention budget: 0 would
+    /// leave `vodRetentionBudgetBytes == 0`, which every prune path treats
+    /// as "retention not configured" — pruning silently never runs and the
+    /// spill gate eventually deadlocks the producer (living-room
+    /// spill-exhaustion freeze). Configuring retention must always retain
+    /// *some* positive budget; small explicit budgets stay honored as-is
+    /// (aggressive eviction is a valid mode — tests use it).
+    static let vodRetentionBudgetFloorBytes: Int64 = 256 << 20
+
     func configureVODRetention(
         budgetBytes: Int64,
         forwardWindow: Int = 10,
         backwardWindow: Int = 20
     ) {
         lock.lock()
-        vodRetentionBudgetBytes = max(0, budgetBytes)
+        vodRetentionBudgetBytes = budgetBytes > 0
+            ? budgetBytes
+            : Self.vodRetentionBudgetFloorBytes
         vodForwardWindow = max(1, forwardWindow)
         vodBackwardWindow = max(0, backwardWindow)
         lock.unlock()
@@ -337,8 +348,18 @@ final class LoopbackSegmentStore {
     }
 
     /// Must run under `lock`. Returns spill URLs to delete outside the lock.
+    ///
+    /// The inventory unions all three residency states rather than reading
+    /// `segmentOrder`: the memory-eviction loop removes a name from
+    /// `segmentOrder` when it spills it to disk, so an order-based
+    /// inventory is blind to every spilled segment — retention then never
+    /// evicts a spilled byte and the spill gate eventually deadlocks the
+    /// producer (living-room spill-exhaustion freeze).
     private func vodPruneLocked() -> [URL] {
-        let inventory: [(index: Int, bytes: Int)] = segmentOrder.compactMap { name in
+        var names = Set(segments.keys)
+        names.formUnion(spillingSegments.keys)
+        names.formUnion(spilledSegments.keys)
+        let inventory: [(index: Int, bytes: Int)] = names.compactMap { name in
             guard let index = Self.segmentIndex(fromName: name) else { return nil }
             let bytes = segments[name]?.data.count
                 ?? spillingSegments[name]?.data.count
@@ -376,6 +397,67 @@ final class LoopbackSegmentStore {
         }
         tempSpillBytes = max(0, tempSpillBytes)
         return doomed
+    }
+
+    /// Emergency relief for the writer's append gate: runs the normal
+    /// target-anchored prune, then — if the projected append still exceeds
+    /// the spill budget — force-evicts segments farthest from the current
+    /// VOD target until the append fits, sparing only the immediate
+    /// `[target − backward, target + forward]` neighborhood (unlike the
+    /// prune's hard window this ignores the produced high-water: anything
+    /// outside the playhead's neighborhood is regenerable via a producer
+    /// restart, and a wedged producer is strictly worse). Returns whether
+    /// the append now fits the spill budget.
+    func makeRoomForAppend(byteCount: Int) -> Bool {
+        guard byteCount > 0 else { return true }
+        lock.lock()
+        guard spillPolicy.isEnabled, vodRetentionBudgetBytes > 0 else {
+            lock.unlock()
+            return true
+        }
+        var doomed = vodPruneLocked()
+        var forceEvicted = 0
+        if tempSpillBytes + Int64(byteCount) > spillPolicy.maxBytes {
+            let lo = vodTargetIndex - vodBackwardWindow
+            let hi = vodTargetIndex + vodForwardWindow
+            // Only segments that actually occupy spill budget qualify —
+            // evicting memory-resident segments frees no spill bytes and
+            // would just destroy good cache. (Not `segmentOrder`: spilled
+            // names have already left it — see vodPruneLocked.)
+            var spillNames = Set(spilledSegments.keys)
+            spillNames.formUnion(spillingSegments.keys)
+            var candidates: [(index: Int, name: String)] = spillNames.compactMap { name in
+                guard let index = Self.segmentIndex(fromName: name),
+                      index < lo || index > hi else { return nil }
+                return (index, name)
+            }
+            candidates.sort { abs($0.index - vodTargetIndex) > abs($1.index - vodTargetIndex) }
+            for candidate in candidates {
+                if tempSpillBytes + Int64(byteCount) <= spillPolicy.maxBytes { break }
+                let name = candidate.name
+                if let segment = spillingSegments.removeValue(forKey: name) {
+                    tempSpillBytes -= Int64(segment.data.count)
+                }
+                if let url = spilledSegments.removeValue(forKey: name) {
+                    tempSpillBytes -= Int64(spilledSegmentSizes.removeValue(forKey: name) ?? 0)
+                    doomed.append(url)
+                }
+                segmentOrder.removeAll { $0 == name }
+                forceEvicted += 1
+                // Same as vodPruneLocked: regenerable, so not `.gone`.
+            }
+            tempSpillBytes = max(0, tempSpillBytes)
+        }
+        let fits = tempSpillBytes + Int64(byteCount) <= spillPolicy.maxBytes
+        lock.broadcast()
+        lock.unlock()
+        for url in doomed {
+            try? FileManager.default.removeItem(at: url)
+        }
+        if forceEvicted > 0 {
+            Self.logger.info("[CMP-HLS-STORE] generation=\(self.generation, privacy: .public) force-evicted=\(forceEvicted, privacy: .public) for append tempSpillBytes=\(self.stats().tempSpillBytes, privacy: .public)")
+        }
+        return fits
     }
 
     func retireSegments(names: [String]) -> [String] {

@@ -3502,6 +3502,14 @@ final class LoopbackSegmentWriter {
         let waitDeadline = CFAbsoluteTimeGetCurrent() + Self.maxSegmentStoreCapacityWaitSeconds
         while !isCancelled {
             retireSegmentsBehindPlaybackIfNeeded()
+            if vodActive {
+                // VOD reclamation lives in the store. Prune around the
+                // consumer's target, force-evicting far-from-target
+                // segments if the budget alone can't absorb the append —
+                // a spill-blocked producer starves AVPlayer into a
+                // permanent freeze (living-room spill-exhaustion deadlock).
+                _ = segmentStore.makeRoomForAppend(byteCount: nextSegmentBytes)
+            }
             guard !segmentStore.canAppendSegment(byteCount: nextSegmentBytes) else { return }
             // Defensive escape: capacity only frees as the playhead advances
             // past retired segments. If the position provider is wedged the
@@ -3519,12 +3527,13 @@ final class LoopbackSegmentWriter {
             if now - lastSpillCapacityBackpressureLogWall >= 5 {
                 lastSpillCapacityBackpressureLogWall = now
                 let playbackPosition = playbackPositionProvider?() ?? 0
-                let ahead = playbackPosition.isFinite
-                    ? totalMediaDuration - max(0, playbackPosition)
-                    : 0
                 let stats = segmentStore.stats()
+                // playhead is on the session axis; runGenerated is this
+                // producer run's cumulative output — they are different
+                // axes, so log them separately (the old "generatedAhead"
+                // subtraction printed nonsense like -3196s).
                 cmpLog(
-                    "[CMP-HLS-STORE] spill-capacity backpressure nextBytes=\(nextSegmentBytes) generatedAhead=\(String(format: "%.1f", ahead))s tempSpillBytes=\(stats.tempSpillBytes)"
+                    "[CMP-HLS-STORE] spill-capacity backpressure nextBytes=\(nextSegmentBytes) playhead=\(String(format: "%.1f", playbackPosition))s runGenerated=\(String(format: "%.1f", totalMediaDuration))s tempSpillBytes=\(stats.tempSpillBytes)"
                 )
             }
             Thread.sleep(forTimeInterval: 0.1)

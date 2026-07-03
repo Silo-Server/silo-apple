@@ -66,6 +66,15 @@ final class AVPlayerBackend {
     private static let playheadWatchdogMinGeneratedAhead: Double = 12.0
     private static let playheadWatchdogMaxReanchors = 3
     private static let playheadWatchdogReanchorWindowSeconds: Double = 90.0
+    /// Starvation escalation: the reanchor path requires generated media
+    /// ahead of the playhead, so a *producer-dead* stall (e.g. the spill
+    /// gate deadlock) never qualified and the session froze forever. If
+    /// AVPlayer has been waiting on an empty buffer this long while the
+    /// store served nothing, the loopback session is unrecoverable — fall
+    /// back to the Compatibility route instead. The serve-quiet guard keeps
+    /// ordinary slow-WAN rebuffers (segments still flowing) from tripping it.
+    private static let playheadWatchdogStarvationEscalateSeconds: Double = 30.0
+    private static let playheadWatchdogStarvationServeQuietSeconds: Double = 15.0
     private static let generatedHLSSpillBudgetBytes: Int64 = 4 * 1024 * 1024 * 1024
     private static var isConstrainedMemoryDevice: Bool {
         #if os(tvOS)
@@ -182,6 +191,15 @@ final class AVPlayerBackend {
     private var initialSeekRetryCount = 0
     private var subtitleSession: SubtitleSession?
     private var embeddedSubtitleExtractor: AVPlayerEmbeddedSubtitleExtractor?
+    /// Change-detection key for the overlay's bitmap cue layers: overlay
+    /// size plus the identity of each active cue image. The display link
+    /// pumps at vsync rate but bitmap cues change on the order of seconds,
+    /// so all layer work is skipped while the key is unchanged.
+    private struct BitmapCueRenderKey: Equatable {
+        let size: CGSize
+        let images: [ObjectIdentifier]
+    }
+    private var lastBitmapCueRenderKey: BitmapCueRenderKey?
     private var selectedControlledSubtitleTrackId: Int64?
     private var selectedSecondaryControlledSubtitleTrackId: Int64?
     private var sidecarDescriptorsByTrackId: [Int64: SidecarSubtitleDescriptor] = [:]
@@ -863,13 +881,27 @@ final class AVPlayerBackend {
     private var vodPendingSeekMediaTarget: Double?
 
     static func vodRetentionBudgetBytes() -> Int64 {
+        // `volumeAvailableCapacityForImportantUsage` is unavailable on
+        // tvOS, and the plain capacity key can report 0 for the sandboxed
+        // temp volume there — a 0 the old code passed straight through as
+        // the budget, silently disabling retention (living-room 4GB spill
+        // deadlock). Use the filesystem-attributes helper (valid on every
+        // platform) and clamp through the pure budget function, which
+        // treats any non-positive reading as "query broken", never as 0.
+        return Self.vodRetentionBudget(availableBytes: freeDiskSpaceBytes())
+    }
+
+    /// Pure clamp for the VOD retention budget: quarter of the available
+    /// temp-volume capacity, capped at 2 GiB, floored at 512 MiB. An
+    /// unknown or non-positive capacity reading means the query is broken,
+    /// not that the disk is full — use the cap, never 0: a zero budget
+    /// disables pruning outright and deadlocks the producer once the spill
+    /// gate fills.
+    static func vodRetentionBudget(availableBytes: Int64?) -> Int64 {
         let cap: Int64 = 2 << 30
-        let tmp = FileManager.default.temporaryDirectory
-        guard let values = try? tmp.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
-              let available = values.volumeAvailableCapacity else {
-            return cap
-        }
-        return min(cap, max(0, Int64(available) / 4))
+        let floor: Int64 = 512 << 20
+        guard let availableBytes, availableBytes > 0 else { return cap }
+        return min(cap, max(floor, availableBytes / 4))
     }
 
     /// Swaps the producer (writer only — the store, server, and player item
@@ -973,7 +1005,9 @@ final class AVPlayerBackend {
             debugDirectory: debugDirectory
         )
         if sessionSpec.servingMode == .vodPlan {
-            store.configureVODRetention(budgetBytes: Self.vodRetentionBudgetBytes())
+            let retentionBudget = Self.vodRetentionBudgetBytes()
+            cmpLog("[CMP-HLS-STORE] vod retention budgetBytes=\(retentionBudget)")
+            store.configureVODRetention(budgetBytes: retentionBudget)
         }
         segmentStore = store
         if preserveSessionDirectory {
@@ -1774,6 +1808,25 @@ final class AVPlayerBackend {
                 // advancing audio clock) are diagnosable from the capture.
                 print("[CMP-AVP] vod state pos=\(String(format: "%.2f", position)) tc=\(statusLabel) rate=\(avPlayer.rate) bufAhead=\(String(format: "%.1f", bufferedAhead)) stationaryFor=\(String(format: "%.1f", stationaryFor))")
             }
+        }
+
+        // Producer-dead starvation: waiting on an empty buffer with no
+        // successful segment serves for a sustained stretch. The reanchor
+        // path below can't help (it needs generated media ahead), so
+        // escalate straight to the route fallback rather than freezing.
+        if !isUserPaused,
+           timeControlStatus == .waitingToPlayAtSpecifiedRate,
+           bufferedAhead < 2.0,
+           stationaryFor >= Self.playheadWatchdogStarvationEscalateSeconds,
+           (segmentStore?.secondsSinceLastSegmentServe() ?? .infinity)
+               >= Self.playheadWatchdogStarvationServeQuietSeconds,
+           !didEscalateLoopbackStall {
+            didEscalateLoopbackStall = true
+            cmpLog(
+                "[CMP-AVP] loopback starvation: playhead frozen \(Int(stationaryFor))s with empty buffer and no segment serves; escalating to route fallback"
+            )
+            onLoopbackStallUnrecoverable?("loopback_starvation")
+            return
         }
 
         // Only a wedge qualifies: AVPlayer should be playing (not user-paused,
@@ -2705,36 +2758,94 @@ final class AVPlayerBackend {
 
     private func pumpSubtitleOverlay(referenceTime: Double) {
         guard let session = subtitleSession else { return }
-        let nowMs = Int64(referenceTime * 1000.0)
         guard let overlay = subtitleOverlay else { return }
         let renderer = session.underlyingRenderer
-        guard renderer.hasAnyActiveTrack else {
+        let hasTextTrack = renderer.hasAnyActiveTrack
+        let hasBitmapTrack = session.hasActiveBitmapTrack
+        guard hasTextTrack || hasBitmapTrack else {
+            lastBitmapCueRenderKey = nil
             DispatchQueue.main.async {
                 overlay.clear()
             }
             return
         }
 
+        // One sync-adjusted clock for both render paths.
+        let nowMs = Int64(referenceTime * 1000.0)
         let syncOffsetMs = Int64(session.currentParams.syncOffsetMs)
-        let assNowMs = nowMs - syncOffsetMs
+        let adjustedNowMs = nowMs - syncOffsetMs
         let bounds = overlay.bounds
-        #if os(macOS)
-        let scale = overlay.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
-        #else
-        let scale = overlay.window?.screen.scale ?? overlay.traitCollection.displayScale
-        #endif
 
-        renderer.sessionQueue.async { [weak overlay] in
-            let out = renderer.renderOnSessionQueue(
-                atMilliseconds: assNowMs,
-                frameSize: bounds.size,
-                scale: scale
-            )
-            guard out.isDirty else { return }
-            let image = out.image
-            DispatchQueue.main.async {
-                overlay?.updateContents(image)
+        if hasTextTrack {
+            #if os(macOS)
+            let scale = overlay.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+            #else
+            let scale = overlay.window?.screen.scale ?? overlay.traitCollection.displayScale
+            #endif
+            renderer.sessionQueue.async { [weak overlay] in
+                let out = renderer.renderOnSessionQueue(
+                    atMilliseconds: adjustedNowMs,
+                    frameSize: bounds.size,
+                    scale: scale
+                )
+                guard out.isDirty else { return }
+                let image = out.image
+                DispatchQueue.main.async {
+                    overlay?.updateContents(image)
+                }
             }
+        } else {
+            // A slot just switched away from libass (e.g. text → bitmap
+            // track): don't let the last composited text frame linger.
+            DispatchQueue.main.async {
+                overlay.updateContents(nil)
+            }
+        }
+
+        if hasBitmapTrack {
+            pumpBitmapCues(
+                session: session,
+                overlay: overlay,
+                atSeconds: Double(adjustedNowMs) / 1000.0,
+                bounds: bounds
+            )
+        } else if lastBitmapCueRenderKey != nil {
+            lastBitmapCueRenderKey = nil
+            DispatchQueue.main.async {
+                overlay.clearBitmapCues()
+            }
+        }
+    }
+
+    private func pumpBitmapCues(
+        session: SubtitleSession,
+        overlay: SubtitleOverlayView,
+        atSeconds seconds: Double,
+        bounds: CGRect
+    ) {
+        let cues = session.activeBitmapCues(at: seconds)
+        let key = BitmapCueRenderKey(
+            size: bounds.size,
+            images: cues.map { ObjectIdentifier($0.image) }
+        )
+        guard key != lastBitmapCueRenderKey else { return }
+        lastBitmapCueRenderKey = key
+        // Overlay bounds == AVPlayerLayer.videoRect (the surface frames
+        // the overlay to the video), so normalized cue rects scale
+        // directly into overlay points.
+        let placements = cues.map { cue in
+            (
+                image: cue.image,
+                frame: CGRect(
+                    x: cue.normalizedFrame.origin.x * bounds.width,
+                    y: cue.normalizedFrame.origin.y * bounds.height,
+                    width: cue.normalizedFrame.width * bounds.width,
+                    height: cue.normalizedFrame.height * bounds.height
+                )
+            )
+        }
+        DispatchQueue.main.async {
+            overlay.updateBitmapCues(placements)
         }
     }
 
@@ -2780,6 +2891,7 @@ final class AVPlayerBackend {
         deactivateAudioSession()
         currentItem = nil
         subtitleSession?.teardown()
+        lastBitmapCueRenderKey = nil
         DispatchQueue.main.async { [weak self] in
             self?.subtitleOverlay?.clear()
         }

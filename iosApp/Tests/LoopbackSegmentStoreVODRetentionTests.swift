@@ -189,4 +189,109 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.35)
     }
+
+    // MARK: - Spill-exhaustion relief (living-room deadlock)
+
+    /// 12 puts against a 1-byte memory budget: the memory evictor keeps the
+    /// newest `minimumSegmentsToKeep` (8) in memory and spills segments
+    /// 0...3 to disk, exactly filling a 64-byte spill budget.
+    private func makeSpillFullStore(retentionBudget: Int64) -> LoopbackSegmentStore {
+        let store = LoopbackSegmentStore(
+            generation: 1,
+            memoryBudgetBytes: 1,
+            spillPolicy: .enabled(reason: "test", maxBytes: 64)
+        )
+        store.configureVODRetention(
+            budgetBytes: retentionBudget, forwardWindow: 3, backwardWindow: 2
+        )
+        let payload = Data(repeating: 0xEF, count: 16)
+        for index in 0...11 {
+            _ = store.putSegment(name: segName(index), data: payload, duration: 4)
+        }
+        return store
+    }
+
+    func testMakeRoomForAppendForceEvictsSpilledFarFromTarget() {
+        // Retention budget far above the payload: the normal prune
+        // volunteers nothing — the append only fits if force-evict
+        // reclaims the spilled segment farthest from the consumer's target.
+        let store = makeSpillFullStore(retentionBudget: 1_000_000)
+        store.declareVODTarget(11)
+        XCTAssertEqual(store.stats().tempSpillBytes, 64, "spill budget should be exactly full")
+
+        XCTAssertTrue(store.makeRoomForAppend(byteCount: 16))
+
+        if case .found = store.resource(path: segName(0), waitForNearFuture: false) {
+            XCTFail("farthest-from-target spilled segment should have been force-evicted")
+        }
+        // Force-evicted segments are regenerable: .missing, never .gone.
+        if case .gone = store.resource(path: segName(0), waitForNearFuture: false) {
+            XCTFail("force-evicted VOD segment must not be terminal")
+        }
+        // Only the farthest spilled segment goes; nearer spill and the
+        // in-memory tail survive.
+        guard case .found = store.resource(path: segName(3), waitForNearFuture: false) else {
+            return XCTFail("nearer spilled segment must survive")
+        }
+        guard case .found = store.resource(path: segName(11), waitForNearFuture: false) else {
+            return XCTFail("target segment must survive force-evict")
+        }
+        XCTAssertLessThanOrEqual(store.stats().tempSpillBytes + 16, 64)
+    }
+
+    func testMakeRoomForAppendSparesTargetNeighborhood() {
+        // Target near the spilled tail: segments 0...3 sit inside
+        // [target − backward, target + forward] — force-evict must refuse
+        // to free room rather than evict under the playhead.
+        let store = makeSpillFullStore(retentionBudget: 1_000_000)
+        store.declareVODTarget(1)
+        XCTAssertFalse(store.makeRoomForAppend(byteCount: 16))
+        for index in 0...3 {
+            guard case .found = store.resource(path: segName(index), waitForNearFuture: false) else {
+                return XCTFail("in-window spilled segment \(index) must survive")
+            }
+        }
+    }
+
+    func testZeroBudgetConfigurationClampsToFloorInsteadOfDisabling() {
+        // A non-positive configured budget must not leave retention off
+        // (a 0 budget reads as "not configured" and disables every prune
+        // path). Behavior proxy: makeRoomForAppend gates on a configured
+        // retention, so it must still force-evict after a 0-budget
+        // configure.
+        let store = makeSpillFullStore(retentionBudget: 0)
+        store.declareVODTarget(11)
+        XCTAssertTrue(store.makeRoomForAppend(byteCount: 16))
+        if case .found = store.resource(path: segName(0), waitForNearFuture: false) {
+            XCTFail("retention must stay active on a degenerate budget")
+        }
+    }
+
+    func testRetentionPruneSeesSpilledSegments() {
+        // The living-room deadlock: spilled names leave `segmentOrder`, so
+        // an order-based prune inventory never saw them and retention never
+        // evicted a spilled byte. With a budget below the spilled payload,
+        // declaring a far target must now evict spilled history.
+        let store = makeSpillFullStore(retentionBudget: 100)
+        store.declareVODTarget(11)
+        // Hard window [9, 14] holds 3×16 = 48 bytes; extras fit only ~52
+        // more — the farthest spilled segments must go.
+        if case .found = store.resource(path: segName(0), waitForNearFuture: false) {
+            XCTFail("spilled history beyond the retention budget must be pruned")
+        }
+        XCTAssertLessThan(store.stats().tempSpillBytes, 64)
+    }
+
+    // MARK: - Retention budget resolution (AVPlayerBackend)
+
+    func testRetentionBudgetClampNeverZero() {
+        let cap: Int64 = 2 << 30
+        let floor: Int64 = 512 << 20
+        XCTAssertEqual(AVPlayerBackend.vodRetentionBudget(availableBytes: nil), cap)
+        XCTAssertEqual(AVPlayerBackend.vodRetentionBudget(availableBytes: 0), cap)
+        XCTAssertEqual(AVPlayerBackend.vodRetentionBudget(availableBytes: -1), cap)
+        XCTAssertEqual(AVPlayerBackend.vodRetentionBudget(availableBytes: 100 << 20), floor)
+        XCTAssertEqual(AVPlayerBackend.vodRetentionBudget(availableBytes: 4 << 30), 1 << 30)
+        XCTAssertEqual(AVPlayerBackend.vodRetentionBudget(availableBytes: 40 << 30), cap)
+    }
 }
