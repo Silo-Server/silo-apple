@@ -54,14 +54,15 @@ enum HDRDisplayCriteriaPolicy {
         }
     }
 
-    // Two-stage settle poll for the HDMI negotiation a criteria write kicks
-    // off. The handshake starts asynchronously after the property write, so
-    // a single immediate isDisplayModeSwitchInProgress check races it:
-    // stage 1 waits up to 100×10 ms for the switch to begin (early-exiting
-    // when the panel already reports HDR headroom), stage 2 waits up to
-    // 50×100 ms for it to clear. Post-settle EDR headroom is the only
-    // public signal that distinguishes an actual dynamic-range switch from
-    // rate-only matching, so "settled into HDR" is judged solely by it.
+    // Poll budgets for `TVDisplayCriteria.waitForModeSwitchSettle`. The
+    // renegotiation a criteria write requests only surfaces on
+    // `isDisplayModeSwitchInProgress` after a short delay, so a lone
+    // immediate check would race it: the wait first gives the switch up to
+    // 100×10 ms to surface (bailing early when the panel already reports
+    // HDR headroom), then up to 50×100 ms to finish. Whether the settled
+    // mode is actually HDR is judged by post-settle EDR headroom, the only
+    // public signal that separates a dynamic-range change from rate-only
+    // matching.
     static let switchStartPollAttempts = 100
     static let switchStartPollIntervalMs = 10
     static let switchSettlePollAttempts = 50

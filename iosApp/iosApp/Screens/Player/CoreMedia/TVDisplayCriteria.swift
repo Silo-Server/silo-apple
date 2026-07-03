@@ -101,28 +101,33 @@ enum TVDisplayCriteria {
         return .applied
     }
 
-    /// Waits for the HDMI mode negotiation a criteria write kicks off. The
-    /// handshake starts asynchronously after the property write, so stage 1
-    /// polls for it to begin (early-exiting when the panel already reports
-    /// HDR headroom); stage 2 polls for it to clear. If it never starts
-    /// within budget the panel can't satisfy the criteria (or the write was
-    /// a no-op) and playback should proceed — AVPlayer tonemaps. Returns
-    /// whether the panel is hosting HDR (EDR headroom above the floor) at
-    /// exit: post-settle headroom is the only public signal separating a
-    /// dynamic-range switch from rate-only matching.
+    /// Blocks until the HDMI renegotiation requested by a criteria write has
+    /// settled, within a bounded budget. A criteria write is a plain
+    /// property assignment; the renegotiation it requests only surfaces on
+    /// `isDisplayModeSwitchInProgress` after a short delay, so a lone
+    /// immediate check would race it. Phase one polls until the manager
+    /// reports a switch underway, bailing out early when the panel's EDR
+    /// headroom already clears the HDR floor (nothing left to negotiate).
+    /// Phase two polls until the manager reports the switch finished. A
+    /// switch that never surfaces within budget means the criteria were
+    /// unsatisfiable or a no-op — playback proceeds and AVPlayer tonemaps.
+    /// The returned Bool is "panel is hosting HDR at exit", judged purely by
+    /// EDR headroom: the only public signal that separates a dynamic-range
+    /// change from rate-only matching.
     @MainActor
     static func waitForModeSwitchSettle() async -> Bool {
         guard let window = activeTVWindow() else {
             print("[CMP] displayModeSettle: no window")
             return false
         }
-        let dm = window.avDisplayManager
+        let manager = window.avDisplayManager
         let screen = window.screen
-        var sawSwitchStart = false
-        for _ in 0..<HDRDisplayCriteriaPolicy.switchStartPollAttempts {
-            if Task.isCancelled { return panelIsHostingHDR() }
-            if dm.isDisplayModeSwitchInProgress {
-                sawSwitchStart = true
+
+        var negotiationBegan = false
+        var startBudget = HDRDisplayCriteriaPolicy.switchStartPollAttempts
+        while startBudget > 0, !Task.isCancelled {
+            if manager.isDisplayModeSwitchInProgress {
+                negotiationBegan = true
                 break
             }
             if screen.currentEDRHeadroom > HDRDisplayCriteriaPolicy.hdrHeadroomFloor {
@@ -130,27 +135,34 @@ enum TVDisplayCriteria {
                 print(String(format: "[CMP] displayModeSettle already-hdr headroom=%.3f", screen.currentEDRHeadroom))
                 return true
             }
+            startBudget -= 1
             try? await Task.sleep(
                 nanoseconds: UInt64(HDRDisplayCriteriaPolicy.switchStartPollIntervalMs) * 1_000_000
             )
         }
-        guard sawSwitchStart else {
+        if Task.isCancelled { return panelIsHostingHDR() }
+        guard negotiationBegan else {
             logger.info("settle: switch never started")
             print(String(format: "[CMP] displayModeSettle no-switch-start headroom=%.3f", screen.currentEDRHeadroom))
             return screen.currentEDRHeadroom > HDRDisplayCriteriaPolicy.hdrHeadroomFloor
         }
-        for tick in 0..<HDRDisplayCriteriaPolicy.switchSettlePollAttempts {
-            if Task.isCancelled { return panelIsHostingHDR() }
+
+        var settleBudget = HDRDisplayCriteriaPolicy.switchSettlePollAttempts
+        var settledAfterMs = 0
+        while settleBudget > 0, !Task.isCancelled {
             try? await Task.sleep(
                 nanoseconds: UInt64(HDRDisplayCriteriaPolicy.switchSettlePollIntervalMs) * 1_000_000
             )
-            if !dm.isDisplayModeSwitchInProgress {
+            settleBudget -= 1
+            settledAfterMs += HDRDisplayCriteriaPolicy.switchSettlePollIntervalMs
+            if !manager.isDisplayModeSwitchInProgress {
                 let headroom = screen.currentEDRHeadroom
-                logger.info("settle: switch settled tick=\(tick)")
-                print(String(format: "[CMP] displayModeSettle settled tick=%d headroom=%.3f", tick, headroom))
+                logger.info("settle: switch settled afterMs=\(settledAfterMs)")
+                print(String(format: "[CMP] displayModeSettle settled afterMs=%d headroom=%.3f", settledAfterMs, headroom))
                 return headroom > HDRDisplayCriteriaPolicy.hdrHeadroomFloor
             }
         }
+        if Task.isCancelled { return panelIsHostingHDR() }
         logger.warning("settle: switch did not settle in budget")
         print(String(format: "[CMP] displayModeSettle timeout headroom=%.3f", screen.currentEDRHeadroom))
         return screen.currentEDRHeadroom > HDRDisplayCriteriaPolicy.hdrHeadroomFloor

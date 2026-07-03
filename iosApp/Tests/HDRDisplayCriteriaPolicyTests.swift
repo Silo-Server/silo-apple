@@ -120,6 +120,84 @@ final class HDRDisplayCriteriaPolicyTests: XCTestCase {
         }
     }
 
+    // MARK: - Token producer + policy composition
+
+    private func hevcVersion(colorTransfer: String?, videoRange: String?) -> FileVersion {
+        FileVersion(
+            fileId: 1,
+            fileName: "movie.mkv",
+            resolution: "2160p",
+            codecVideo: "hevc",
+            codecAudio: nil,
+            hdr: nil,
+            container: "mkv",
+            fileSize: nil,
+            duration: nil,
+            bitrate: nil,
+            videoTracks: [
+                VideoTrack(
+                    index: 0, codec: "hevc", width: 3840, height: 2160,
+                    frameRate: "23.976", bitrate: nil, profile: nil,
+                    level: nil, bitDepth: nil, colorSpace: nil,
+                    colorPrimaries: nil, colorTransfer: colorTransfer,
+                    videoRange: videoRange, dolbyVision: nil, title: nil,
+                    language: nil
+                )
+            ],
+            audioTracks: nil,
+            subtitleTracks: nil,
+            chapters: nil
+        )
+    }
+
+    func testMetadataPoorHEVCComposesToNoCriteriaEvenWhenGateOn() {
+        // Drive the REAL token producer into the policy: HEVC whose track
+        // carries no recognizable transfer signaling must resolve to a token
+        // the policy maps to .none — never a default that would force an
+        // HDR10 HDMI mode switch for possibly-SDR content.
+        let metadataPoor = [
+            hevcVersion(colorTransfer: nil, videoRange: nil),
+            hevcVersion(colorTransfer: "unknown", videoRange: "mystery"),
+        ]
+        for version in metadataPoor {
+            let token = ApplePlaybackRoutePlanner.hevcLoopbackVideoRange(for: version)
+            XCTAssertEqual(
+                HDRDisplayCriteriaPolicy.selection(
+                    videoMode: .passthroughHEVC,
+                    manifestVideoRange: token,
+                    hdrGateEnabled: true
+                ),
+                .none,
+                "token=\(token)"
+            )
+        }
+    }
+
+    func testTaggedHEVCComposesToHDRSelectionWhenGateOn() {
+        let pqToken = ApplePlaybackRoutePlanner.hevcLoopbackVideoRange(
+            for: hevcVersion(colorTransfer: "smpte2084", videoRange: nil)
+        )
+        XCTAssertEqual(
+            HDRDisplayCriteriaPolicy.selection(
+                videoMode: .passthroughHEVC,
+                manifestVideoRange: pqToken,
+                hdrGateEnabled: true
+            ),
+            .hdr10
+        )
+        let hlgToken = ApplePlaybackRoutePlanner.hevcLoopbackVideoRange(
+            for: hevcVersion(colorTransfer: "arib-std-b67", videoRange: nil)
+        )
+        XCTAssertEqual(
+            HDRDisplayCriteriaPolicy.selection(
+                videoMode: .passthroughHEVC,
+                manifestVideoRange: hlgToken,
+                hdrGateEnabled: true
+            ),
+            .hlg
+        )
+    }
+
     // MARK: - Settle-poll constants
 
     func testSettlePollConstantsArePinned() {

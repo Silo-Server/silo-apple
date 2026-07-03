@@ -267,37 +267,46 @@ final class LoopbackSegmentStore {
     /// Bounded wait used by the server's miss resolver while a producer
     /// restart fills the requested segment.
     ///
-    /// Supersede early-exit: the wait survives only while the newest declared
-    /// consumer target T keeps the waited segment N inside the producer band
-    /// `[T - forwardWindow, T + forwardWindow]`. Outside that band the wait
-    /// is provably moot — above it every producer parks at
-    /// `T + forwardWindow` (`vodProducerMayAppend`) and can never fill N;
-    /// below it producers only march forward, and anything that could
-    /// regenerate N would first re-declare a target near N. Inside the band
-    /// the wait stays alive: the miss's own restart seeds `declareVODTarget`
-    /// at (or near) N, and a covering producer's march delivers it.
-    /// `declareVODTarget` already broadcasts on the condition, so a
-    /// superseding scrub wakes the waiter immediately instead of letting an
-    /// abandoned fetch ride the full deadline.
+    /// Supersede early-exit: the wait is kept alive only while the newest
+    /// declared consumer target T keeps the waited segment N inside the
+    /// producer band `[T - forwardWindow, T + forwardWindow]`. An
+    /// out-of-band wait is almost always an abandoned fetch (the consumer
+    /// scrubbed away), but one observation is not proof: the restart this
+    /// very miss triggered re-declares its target at N, and a producer may
+    /// still append below a newer far-above target, so a transient far GET
+    /// (e.g. a fresh AVPlayerItem probing position 0 during in-place
+    /// recovery) must not permanently kill a live wait. The waiter therefore
+    /// tolerates a single out-of-band check and exits only when the band is
+    /// still violated on the next bounded wakeup — abandoned fetches still
+    /// leave within ~250 ms instead of riding the full deadline, while the
+    /// miss's own restart gets a window to swing the target back to N.
+    /// `declareVODTarget` broadcasts on the condition, so target moves wake
+    /// the waiter immediately.
     func waitForSegment(named name: String, deadline: Date) -> ResourceResult {
         let normalized = name.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let waitedIndex = Self.segmentIndex(fromName: normalized)
         let started = CFAbsoluteTimeGetCurrent()
         var superseded = false
+        var outOfBandChecks = 0
         lock.lock()
         print("[CMP-HLS-STORE] waitForSegment enter name=\(normalized) evicted=\(evictedResources.contains(normalized) ? 1 : 0) present=\(segments[normalized] != nil ? 1 : 0)")
         while segments[normalized] == nil,
               spillingSegments[normalized] == nil,
               spilledSegments[normalized] == nil,
               Date() < deadline {
-            // Checked before every wait (including the first) so a target
-            // that was already stale at entry exits immediately.
+            // Checked before every wait (including the first); a second
+            // consecutive out-of-band observation exits the wait.
             if let index = waitedIndex,
                vodRetentionBudgetBytes > 0,
                vodTargetDeclarationCount > 0,
                abs(index - vodTargetIndex) > vodForwardWindow {
-                superseded = true
-                break
+                outOfBandChecks += 1
+                if outOfBandChecks >= 2 {
+                    superseded = true
+                    break
+                }
+            } else {
+                outOfBandChecks = 0
             }
             _ = lock.wait(until: min(deadline, Date().addingTimeInterval(0.25)))
         }
@@ -406,8 +415,10 @@ final class LoopbackSegmentStore {
     /// `[target − backward, target + forward]` neighborhood (unlike the
     /// prune's hard window this ignores the produced high-water: anything
     /// outside the playhead's neighborhood is regenerable via a producer
-    /// restart, and a wedged producer is strictly worse). Returns whether
-    /// the append now fits the spill budget.
+    /// restart, and a wedged producer is strictly worse). Fit is judged by
+    /// the writer's own append criterion (`appendWouldFitLocked`) — spill
+    /// bytes plus the projected spill demand of the append — and the return
+    /// value reports whether that gate would now pass.
     func makeRoomForAppend(byteCount: Int) -> Bool {
         guard byteCount > 0 else { return true }
         lock.lock()
@@ -417,7 +428,7 @@ final class LoopbackSegmentStore {
         }
         var doomed = vodPruneLocked()
         var forceEvicted = 0
-        if tempSpillBytes + Int64(byteCount) > spillPolicy.maxBytes {
+        if !appendWouldFitLocked(byteCount: byteCount) {
             let lo = vodTargetIndex - vodBackwardWindow
             let hi = vodTargetIndex + vodForwardWindow
             // Only segments that actually occupy spill budget qualify —
@@ -433,7 +444,7 @@ final class LoopbackSegmentStore {
             }
             candidates.sort { abs($0.index - vodTargetIndex) > abs($1.index - vodTargetIndex) }
             for candidate in candidates {
-                if tempSpillBytes + Int64(byteCount) <= spillPolicy.maxBytes { break }
+                if appendWouldFitLocked(byteCount: byteCount) { break }
                 let name = candidate.name
                 if let segment = spillingSegments.removeValue(forKey: name) {
                     tempSpillBytes -= Int64(segment.data.count)
@@ -448,7 +459,7 @@ final class LoopbackSegmentStore {
             }
             tempSpillBytes = max(0, tempSpillBytes)
         }
-        let fits = tempSpillBytes + Int64(byteCount) <= spillPolicy.maxBytes
+        let fits = appendWouldFitLocked(byteCount: byteCount)
         lock.broadcast()
         lock.unlock()
         for url in doomed {
@@ -507,6 +518,17 @@ final class LoopbackSegmentStore {
         guard byteCount > 0 else { return true }
         lock.lock()
         defer { lock.unlock() }
+        return appendWouldFitLocked(byteCount: byteCount)
+    }
+
+    /// Must run under `lock`. The writer's append criterion: the append is
+    /// acceptable when it fits in memory outright, or when the spill budget
+    /// can absorb every memory-resident segment the evictor would spill to
+    /// bring the append back under the memory budget (honoring pins and the
+    /// minimum-resident floor). Shared by the gate (`canAppendSegment`) and
+    /// the relief path (`makeRoomForAppend`) so relief can never satisfy a
+    /// looser criterion than the gate it exists to unblock.
+    private func appendWouldFitLocked(byteCount: Int) -> Bool {
         guard spillPolicy.isEnabled else { return true }
         guard memoryBytes + byteCount > memoryBudgetBytes else { return true }
 
@@ -528,8 +550,7 @@ final class LoopbackSegmentStore {
             projectedSegmentCount -= 1
         }
 
-        guard projectedSpillBytes <= spillPolicy.maxBytes else { return false }
-        return true
+        return projectedSpillBytes <= spillPolicy.maxBytes
     }
 
     func resource(path: String, waitForNearFuture: Bool = true) -> ResourceResult {
@@ -575,6 +596,12 @@ final class LoopbackSegmentStore {
         lock.unlock()
         return result
     }
+
+    /// Test seam: runs between a spill's disk write and the store re-locking
+    /// to finalize it — the window where a concurrent prune (running on a
+    /// server request thread via `declareVODTarget`) can claim the in-flight
+    /// segment. Nil outside tests.
+    var spillWriteInterludeForTesting: (() -> Void)?
 
     private var lastSegmentServeWall: CFAbsoluteTime = 0
 
@@ -671,6 +698,7 @@ final class LoopbackSegmentStore {
 
             lock.unlock()
             let spilled = spillSegmentToDisk(segment, to: spillURL)
+            spillWriteInterludeForTesting?()
             lock.lock()
             finishSpillLocked(segment, url: spillURL, spilled: spilled, evicted: &evicted)
             lock.broadcast()
@@ -708,11 +736,22 @@ final class LoopbackSegmentStore {
         evicted: inout [String]
     ) {
         let wasSpilling = spillingSegments.removeValue(forKey: segment.name) != nil
-        if evictedResources.contains(segment.name) {
-            if wasSpilling {
-                tempSpillBytes -= Int64(segment.data.count)
-                tempSpillBytes = max(0, tempSpillBytes)
+        guard wasSpilling else {
+            // Someone claimed the in-flight spill while the lock was down
+            // for the disk write: retirement, the VOD prune, or the
+            // force-evict relief. All of them already released the reserved
+            // spill bytes, so registering the segment now would resurrect
+            // an eviction victim whose size no longer counts against the
+            // budget (and whose later removal would deduct it a second
+            // time). Drop the orphaned file instead.
+            if spilled {
+                try? FileManager.default.removeItem(at: url)
             }
+            return
+        }
+        if evictedResources.contains(segment.name) {
+            tempSpillBytes -= Int64(segment.data.count)
+            tempSpillBytes = max(0, tempSpillBytes)
             if spilled {
                 try? FileManager.default.removeItem(at: url)
             }
@@ -724,6 +763,7 @@ final class LoopbackSegmentStore {
             return
         }
         tempSpillBytes -= Int64(segment.data.count)
+        tempSpillBytes = max(0, tempSpillBytes)
         evictedResources.insert(segment.name)
         evicted.append(segment.name)
     }

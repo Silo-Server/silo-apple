@@ -763,7 +763,13 @@ private extension ApplePlaybackRoutePlanner {
         case .passthroughProfile8(.hlg):
             return "HLG"
         case .passthroughHEVC:
-            return source.flatMap(transferKind(for:)) ?? "PQ"
+            // Unknown transfer resolves to SDR, not PQ: the master playlist
+            // carrying this token is never served to AVPlayer (playback
+            // starts from the media playlist), so its only behavioral
+            // consumer is the HDR display-criteria policy — and forcing an
+            // HDR10 HDMI mode switch for content we can't verify as HDR is
+            // strictly worse than skipping the criteria write.
+            return source.flatMap(transferKind(for:)) ?? "SDR"
         case .passthroughH264:
             return "SDR"
         }

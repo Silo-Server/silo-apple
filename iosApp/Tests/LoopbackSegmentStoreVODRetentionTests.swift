@@ -177,6 +177,34 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         XCTAssertEqual(resource.byteCount, payload.count)
     }
 
+    func testWaitForSegmentSurvivesTransientFarTargetSwing() {
+        // A transient far GET (e.g. a fresh AVPlayerItem probing position 0
+        // during in-place recovery) declares an out-of-band target once; the
+        // restart triggered by the waited miss re-declares at the waited
+        // index right after. A single out-of-band observation must not
+        // permanently kill the wait — the late put still serves.
+        let store = makeVODStore(budget: 10_000)
+        let payload = Data(repeating: 0xAB, count: 8)
+        store.declareVODTarget(10)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+            store.declareVODTarget(50)
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) {
+            store.declareVODTarget(10)
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) {
+            _ = store.putSegment(name: self.segName(10), data: payload, duration: 4)
+        }
+        let result = store.waitForSegment(
+            named: segName(10),
+            deadline: Date().addingTimeInterval(3.0)
+        )
+        guard case .found(let resource) = result else {
+            return XCTFail("one transient far declare must not supersede a live wait")
+        }
+        XCTAssertEqual(resource.byteCount, payload.count)
+    }
+
     func testWaitForSegmentTimesOutMissing() {
         let store = makeVODStore(budget: 10_000)
         let started = Date()
@@ -265,6 +293,73 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         if case .found = store.resource(path: segName(0), waitForNearFuture: false) {
             XCTFail("retention must stay active on a degenerate budget")
         }
+    }
+
+    func testMakeRoomForAppendSatisfiesTheWriterAppendGate() {
+        // Relief must be judged by the writer's actual append criterion
+        // (spill bytes plus the memory segments the append would displace),
+        // not by byteCount alone: with memory-resident segments larger than
+        // the spilled ones, a byteCount-only stop condition reports fits
+        // while canAppendSegment keeps refusing, and the writer spins its
+        // full capacity-wait deadline.
+        let store = LoopbackSegmentStore(
+            generation: 1,
+            memoryBudgetBytes: 1,
+            spillPolicy: .enabled(reason: "test", maxBytes: 64)
+        )
+        store.configureVODRetention(
+            budgetBytes: 1_000_000, forwardWindow: 3, backwardWindow: 2
+        )
+        for index in 0...3 {
+            _ = store.putSegment(
+                name: segName(index), data: Data(repeating: 0xAA, count: 16), duration: 4
+            )
+        }
+        for index in 4...11 {
+            _ = store.putSegment(
+                name: segName(index), data: Data(repeating: 0xBB, count: 32), duration: 4
+            )
+        }
+        store.declareVODTarget(11)
+        XCTAssertTrue(store.makeRoomForAppend(byteCount: 4))
+        XCTAssertTrue(
+            store.canAppendSegment(byteCount: 4),
+            "relief reporting fits=true must actually unblock the append gate"
+        )
+    }
+
+    func testPruneDuringInFlightSpillDoesNotResurrectSegment() {
+        // Reproduces the evict-while-spilling race deterministically via the
+        // spill-write interlude seam: while the memory evictor's disk write
+        // for seg 0 is in flight (the store lock is released), a consumer
+        // GET's declareVODTarget prunes the spilling name. Finishing the
+        // spill must NOT re-register the segment — that would resurrect a
+        // prune victim whose bytes no longer count against the spill budget
+        // and double-deduct them on its next eviction.
+        let store = LoopbackSegmentStore(
+            generation: 1,
+            memoryBudgetBytes: 1,
+            spillPolicy: .enabled(reason: "test", maxBytes: 1_024)
+        )
+        store.configureVODRetention(budgetBytes: 64, forwardWindow: 3, backwardWindow: 2)
+        store.spillWriteInterludeForTesting = { [weak store] in
+            store?.spillWriteInterludeForTesting = nil
+            store?.declareVODTarget(20)
+        }
+        let payload = Data(repeating: 0xEF, count: 16)
+        for index in 0...8 {
+            _ = store.putSegment(name: segName(index), data: payload, duration: 4)
+        }
+        if case .found = store.resource(path: segName(0), waitForNearFuture: false) {
+            XCTFail("segment pruned mid-spill must not be resurrected")
+        }
+        // Pruned-while-spilling stays regenerable: .missing, never .gone.
+        if case .gone = store.resource(path: segName(0), waitForNearFuture: false) {
+            XCTFail("segment pruned mid-spill must not be terminal")
+        }
+        let stats = store.stats()
+        XCTAssertEqual(stats.spilledSegmentCount, 0, "aborted spill must not register")
+        XCTAssertEqual(stats.tempSpillBytes, 0, "spill accounting must match registered spills")
     }
 
     func testRetentionPruneSeesSpilledSegments() {
