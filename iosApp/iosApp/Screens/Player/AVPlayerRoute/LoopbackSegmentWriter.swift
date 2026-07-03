@@ -83,6 +83,49 @@ enum DVTrueHDMajorSyncScanner {
     }
 }
 
+/// Latch-once detector for HDR10+ dynamic tone-mapping metadata in a
+/// compressed HEVC bitstream. SMPTE ST 2094-40 metadata travels in an
+/// ITU-T T.35 user-data-registered SEI whose payload opens with a fixed
+/// six-byte header: country code 0xB5 (USA), provider code 0x003C
+/// (Samsung), provider-oriented code 0x0001, application identifier 4.
+/// The header contains no adjacent 0x00 0x00 pair, so HEVC
+/// emulation-prevention bytes (inserted only after two zero bytes) can
+/// never split a match — scanning the raw escaped bitstream is safe.
+/// A chance collision inside entropy-coded slice data is ~2^-48 per byte
+/// offset, negligible; the badge impact would be cosmetic anyway.
+struct HDR10PlusSEIDetector {
+    private static let metadataHeader: [UInt8] = [0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04]
+
+    /// True once any scanned packet has contained the header. Latched for
+    /// the detector's lifetime; later scans short-circuit without reading.
+    private(set) var detected = false
+
+    /// Scans one compressed packet. Returns true only for the FIRST packet
+    /// that carries the header; every later call returns false.
+    mutating func scan(bytes: UnsafePointer<UInt8>, count: Int) -> Bool {
+        guard !detected, count >= Self.metadataHeader.count else { return false }
+        for offset in 0...(count - Self.metadataHeader.count) {
+            if bytes[offset] == Self.metadataHeader[0],
+               bytes[offset + 1] == Self.metadataHeader[1],
+               bytes[offset + 2] == Self.metadataHeader[2],
+               bytes[offset + 3] == Self.metadataHeader[3],
+               bytes[offset + 4] == Self.metadataHeader[4],
+               bytes[offset + 5] == Self.metadataHeader[5] {
+                detected = true
+                return true
+            }
+        }
+        return false
+    }
+
+    mutating func scan(_ data: Data) -> Bool {
+        data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return false }
+            return scan(bytes: base, count: data.count)
+        }
+    }
+}
+
 final class LoopbackSegmentWriter {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
@@ -169,6 +212,11 @@ final class LoopbackSegmentWriter {
     /// Fires with a rolling estimate of how quickly FFmpeg is reading the
     /// remote source, not how quickly AVPlayer is reading localhost HLS.
     var onSourceDownloadStats: ((_ bitsPerSecond: Double?, _ totalBytesRead: Int64?) -> Void)?
+    /// Fires at most once per writer, when the video bitstream first carries
+    /// HDR10+ dynamic-metadata SEI. The backend installs it only for sessions
+    /// whose stats badge currently reads "HDR10" and has not flipped yet;
+    /// nil disables the per-packet scan entirely.
+    var onHDR10PlusMetadataDetected: (() -> Void)?
     struct GeneratedMediaStats: Equatable {
         let generation: UInt64
         let rollingBitrateBps: Double?
@@ -234,6 +282,9 @@ final class LoopbackSegmentWriter {
     /// (AVPlayerBackend installs observers on that signal) and two fires
     /// would double-add the periodic time observer.
     private var firstSegmentReadyFired = false
+    /// Latch-once HDR10+ SEI scan over outgoing video packets. Only consulted
+    /// while `onHDR10PlusMetadataDetected` is installed.
+    private var hdr10PlusSEIDetector = HDR10PlusSEIDetector()
     /// Tracks whether the playlist contains at least one video-bearing segment.
     /// Audio-only fragments before the first video sample are still discarded,
     /// but startup gating should not discard later segments while waiting for
@@ -1171,6 +1222,28 @@ final class LoopbackSegmentWriter {
 
         if avformat_find_stream_info(openedContext, nil) < 0 {
             throw LoopbackWriterError.findStreamInfo
+        }
+
+        if sessionSpec.servingMode == .vodPlan,
+           vodPlan == nil,
+           sourceStartTimeSeconds > 0 {
+            // First VOD session resuming mid-title: warm the matroska cue
+            // index BEFORE the start seek. With cold cues the BACKWARD seek
+            // lands by linear estimate — potentially PAST the anchor
+            // segment's keyframe — and the producer then never generates
+            // the segment AVPlayer's resume pre-seek fetches (living-room
+            // startup stall: resume 6199.7s mid-segment-1549, first
+            // produced segment was 1550). Warm cues make BACKWARD land on
+            // the true containing keyframe. Restarted sessions already do
+            // this in prewarmVODCueIndexAndReseek.
+            let rawDuration = openedContext.pointee.duration
+            if rawDuration > 0 {
+                let durationSeconds = Double(rawDuration) / Double(AV_TIME_BASE)
+                if durationSeconds > 1 {
+                    let mid = Int64(durationSeconds * 0.5 * Double(AV_TIME_BASE))
+                    _ = avformat_seek_file(openedContext, -1, Int64.min, mid, Int64.max, AVSEEK_FLAG_BACKWARD)
+                }
+            }
         }
 
         try seekInputToStartTimeIfNeeded(openedContext)
@@ -2923,6 +2996,18 @@ final class LoopbackSegmentWriter {
               let inStream = inCtx.pointee.streams?[inputStreamIndex],
               let outStream = outCtx.pointee.streams?[Int(outStreamIndex)]
         else { return }
+
+        // HDR10+ badge scan. This is the single choke point every written
+        // packet passes through — including bootstrap-stashed video packets
+        // replayed outside the main mux-loop video branch — so the SEI on
+        // the very first keyframe is never missed. The nil-callback check
+        // keeps the scan zero-cost for sessions that can never flip.
+        if inputStreamIndex == videoInputStreamIndex,
+           onHDR10PlusMetadataDetected != nil,
+           let packetData = pkt.pointee.data,
+           hdr10PlusSEIDetector.scan(bytes: packetData, count: Int(pkt.pointee.size)) {
+            onHDR10PlusMetadataDetected?()
+        }
 
         let inTB = inStream.pointee.time_base
         let outTB = outStream.pointee.time_base
