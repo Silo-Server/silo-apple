@@ -14,7 +14,7 @@ struct TVPairingReceiverView: View {
     private static let successDwell: Duration = .seconds(1.8)
 
     @FocusState private var focused: Control?
-    private enum Control: Hashable { case primary }
+    private enum Control: Hashable { case primary, secondary }
 
     var body: some View {
         VStack(spacing: 28) {
@@ -24,8 +24,10 @@ struct TVPairingReceiverView: View {
                 EmptyView()
             case .linked:
                 linked
-            case let .awaitingApproval(serverName, matchCode):
-                awaitingApproval(serverName: serverName, matchCode: matchCode)
+            case let .consentRequested(serverName):
+                consent(serverName: serverName)
+            case let .awaitingApproval(serverName, matchCode, automatic):
+                awaitingApproval(serverName: serverName, matchCode: matchCode, automatic: automatic)
             case let .signedIn(count):
                 signedIn(count: count)
             case let .completed(serverNames):
@@ -47,7 +49,7 @@ struct TVPairingReceiverView: View {
                 .font(.continuumTitle)
                 .foregroundStyle(Color.auroraInk)
             WaitingDots()
-            Text("Choose which servers to set up on your iPhone — they’ll appear here in a moment.")
+            Text("On your iPhone, choose which servers this Apple TV should sign in to.")
                 .font(.continuumBody)
                 .foregroundStyle(Color.auroraInkSecondary)
                 .frame(maxWidth: 720)
@@ -56,12 +58,40 @@ struct TVPairingReceiverView: View {
         }
     }
 
+    // MARK: - Consent (the session's one TV-side gate)
+
+    private func consent(serverName: String) -> some View {
+        VStack(spacing: 24) {
+            AuroraEyebrow(text: "Step 01 — Connect", centered: true)
+            Image(systemName: "iphone.gen3")
+                .font(.system(size: 60, weight: .ultraLight))
+                .foregroundStyle(Color.auroraInk)
+            Text("Allow this setup?")
+                .font(.continuumTitle)
+                .foregroundStyle(Color.auroraInk)
+            Text("A nearby iPhone wants to sign this Apple TV in to \(serverName).")
+                .font(.continuumBody)
+                .foregroundStyle(Color.auroraInkSecondary)
+                .frame(maxWidth: 720)
+
+            Button { coordinator.allowPendingServer() } label: { Text("Allow") }
+                .buttonStyle(AuroraPrimaryButtonStyle())
+                .focused($focused, equals: .primary)
+                .frame(width: 360)
+                .padding(.top, 8)
+            Button { Task { await coordinator.denyPendingServer() } } label: { Text("Don’t Allow") }
+                .buttonStyle(AuroraGhostButtonStyle())
+                .focused($focused, equals: .secondary)
+        }
+        .defaultFocus($focused, .primary)
+    }
+
     // MARK: - Awaiting approval (match code)
 
-    private func awaitingApproval(serverName: String, matchCode: String) -> some View {
+    private func awaitingApproval(serverName: String, matchCode: String, automatic: Bool) -> some View {
         VStack(spacing: 24) {
             AuroraEyebrow(text: "Almost there", centered: true)
-            Text("Confirm on your iPhone")
+            Text(automatic ? "Signing in" : "Confirm on your iPhone")
                 .font(.continuumTitle)
                 .foregroundStyle(Color.auroraInk)
 
@@ -81,7 +111,12 @@ struct TVPairingReceiverView: View {
 
             HStack(spacing: 12) {
                 WaitingDots(compact: true)
-                Text("Waiting for approval on your iPhone — make sure it shows this same code.")
+                // Servers after the first are approved programmatically (the
+                // phone verifies this code against the server) — don't ask the
+                // user to compare a code their phone never shows.
+                Text(automatic
+                    ? "Your iPhone is verifying this code and approving the sign-in…"
+                    : "Waiting for approval on your iPhone — make sure it shows this same code.")
                     .font(.continuumCaption)
                     .foregroundStyle(Color.auroraInkSecondary)
             }
@@ -102,6 +137,13 @@ struct TVPairingReceiverView: View {
             .padding(.vertical, 28)
             .auroraGlass(cornerRadius: 24, emphasized: true)
             .fixedSize()
+            .accessibilityLabel(spelledOut(matchCode))
+    }
+
+    /// VoiceOver reads the code character by character so it can be compared
+    /// against the phone's.
+    private func spelledOut(_ code: String) -> String {
+        code.uppercased().map(String.init).joined(separator: ", ")
     }
 
     // MARK: - Signed in (interim, per server during multi-server)
@@ -118,8 +160,8 @@ struct TVPairingReceiverView: View {
                     .font(.continuumCaption)
                     .foregroundStyle(Color.auroraInkSecondary)
             }
-            cancelButton(title: "Cancel")
-                .padding(.top, 4)
+            // No Cancel here: this server's sign-in is already committed, so a
+            // cancel button would promise an undo that doesn't exist.
         }
     }
 
@@ -170,7 +212,7 @@ struct TVPairingReceiverView: View {
             Text("Setup didn’t finish")
                 .font(.continuumTitle)
                 .foregroundStyle(Color.auroraInk)
-            Text("Something went wrong setting up \(name). Try again from your iPhone, or set up your server manually.")
+            Text("Something went wrong signing in to \(name). Try again from your iPhone, or add your server manually.")
                 .font(.continuumBody)
                 .foregroundStyle(Color.auroraInkSecondary)
                 .frame(maxWidth: 720)

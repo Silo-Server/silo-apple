@@ -45,6 +45,13 @@ struct TVServerSetupView: View {
         .ignoresSafeArea()
         .animation(ContinuumTheme.springAnimation, value: isPairing)
         .task { startAdvertising() }
+        .onChange(of: coordinator.state) { _, state in
+            // Only accept a new phone once the panel is back to the idle
+            // chooser. Releasing on terminal states (completed/failed) would
+            // let a second phone connect and clobber the summary the user is
+            // still reading.
+            if case .idle = state { advertiser.release() }
+        }
         .onDisappear {
             advertiser.stop()
             Task { await coordinator.cancel() }
@@ -68,7 +75,10 @@ struct TVServerSetupView: View {
         advertiser.start { session, stream in
             Task {
                 await coordinator.run(session: session, stream: stream)
-                advertiser.release()
+                // If the session ended back at the idle chooser, accept a new
+                // phone immediately. Terminal states release via onChange once
+                // the user leaves them.
+                if case .idle = coordinator.state { advertiser.release() }
             }
         }
     }

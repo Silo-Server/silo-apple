@@ -1,16 +1,21 @@
-#if os(tvOS)
 import Foundation
 import OSLog
 
-/// Drives the TV side of a pairing session over an accepted `PairingSession`.
+/// Drives the TV side of a pairing session over an accepted `PairingChannel`.
 /// Persist-on-success: a pushed server URL is written to ServerRegistry /
 /// TokenStore ONLY after its poll returns tokens (design spec §5/§6).
 ///
 /// State drives the in-place pairing UI inside `TVServerSetupView`:
 /// `idle` (advertising) → `linked` (phone connected, picking servers) →
+/// `consentRequested` (the session's one TV-side gate: the user must allow
+/// the first pushed server before ANY network call is made on its behalf) →
 /// `awaitingApproval` (match code shown) → `signedIn` (per server) →
-/// `completed` (all done; the view dwells then advances). Any drop, decline,
-/// timeout, or cancel returns to `idle` so a fresh attempt just works.
+/// `completed` (all done; the view dwells then advances). A failure that ends
+/// the session STAYS on screen as `failed` so the user gets an explanation;
+/// cancels and drops return to `idle` so a fresh attempt just works.
+///
+/// Compiled on every platform (only tvOS uses it) so the iOS test bundle can
+/// drive the state machine with a scripted channel.
 @MainActor
 @Observable
 final class ReceiverPairingCoordinator {
@@ -18,41 +23,65 @@ final class ReceiverPairingCoordinator {
         case idle
         /// A phone has connected and is choosing servers on its end.
         case linked
-        /// Showing the match code for the named server while the phone approves.
-        case awaitingApproval(serverName: String, matchCode: String)
+        /// A phone asked to sign this TV in to a server; waiting for the user
+        /// to allow it. The channel is unauthenticated (public PSK), so
+        /// without this gate any LAN device could push a server while the TV
+        /// sits on its setup screen.
+        case consentRequested(serverName: String)
+        /// Showing the match code for the named server while the phone
+        /// approves. `automatic` = a later server in a multi-server push; the
+        /// phone verifies the code programmatically instead of asking the
+        /// user to compare again, and the copy must not claim otherwise.
+        case awaitingApproval(serverName: String, matchCode: String, automatic: Bool)
         /// A single server finished signing in (interim, during multi-server).
         case signedIn(serverCount: Int)
-        /// The phone sent `Done`; every signed-in server, named for the summary.
+        /// Terminal success; every signed-in server, named for the summary.
         case completed(serverNames: [String])
+        /// Terminal failure for the last attempted server. Kept on screen
+        /// (never clobbered back to idle by the phone's `done`/EOF) so the
+        /// user sees what happened; "Try again" returns to idle.
         case failed(String)
     }
 
+    /// How long a connected phone may sit completely silent (no message, no
+    /// in-flight attempt) before the TV drops it and goes back to
+    /// advertising. Prevents a wedged or hostile connection from holding
+    /// setup mode hostage — the listener only accepts one peer at a time.
+    static let idleTimeout: Duration = .seconds(180)
+
     private(set) var state: State = .idle
 
-    private let api: PairingDeviceAPI
-    private var signedInCount = 0
+    private let api: any PairingDeviceAuthorizing
+    private let persist: @MainActor (_ url: String, _ fetchedName: String?, _ access: String, _ refresh: String) async -> Void
     private var signedInNames: [String] = []
-    /// The session currently being driven, so `cancel()` can close it from the UI.
-    private var activeSession: PairingSession?
+    private var attemptCount = 0
+    private var consented = false
+    private var pendingPush: (serverURL: String, serverName: String?)?
+    /// The session currently being driven, so `cancel()`/consent can reach it.
+    private var activeSession: (any PairingChannel)?
     /// The in-flight start+poll for the current server. Run as a separate
     /// cancellable task so the stream reader below is NEVER blocked by polling.
     private var pollTask: Task<Void, Never>?
-    /// True while `pollTask` is active. The protocol is one-server-at-a-time;
-    /// an overlapping PushServer is ignored.
-    private var isPolling = false
+    private var idleTask: Task<Void, Never>?
     private static let logger = Logger(subsystem: "com.continuum.app", category: "pairing.receiver")
 
-    init(api: PairingDeviceAPI = PairingDeviceAPI()) {
+    init(
+        api: any PairingDeviceAuthorizing = PairingDeviceAPI(),
+        persist: @escaping @MainActor (String, String?, String, String) async -> Void = ReceiverPairingCoordinator.persistServer
+    ) {
         self.api = api
+        self.persist = persist
     }
 
     /// Consume the session stream. The stream is ALWAYS being read here; each
-    /// server's start+poll runs as a cancellable child task so a Cancel message
-    /// or a dropped connection aborts the attempt immediately rather than after
-    /// the poll loop finishes (design spec §7).
-    func run(session: PairingSession, stream: AsyncThrowingStream<PairingMessage, Error>) async {
-        signedInCount = 0
+    /// server's start+poll runs as a cancellable child task so a Cancel
+    /// message or a dropped connection aborts the attempt immediately rather
+    /// than after the poll loop finishes (design spec §7).
+    func run(session: any PairingChannel, stream: AsyncThrowingStream<PairingMessage, Error>) async {
         signedInNames = []
+        attemptCount = 0
+        consented = false
+        pendingPush = nil
         activeSession = session
         let device = AppleDeviceIdentity.current
         do {
@@ -64,69 +93,156 @@ final class ReceiverPairingCoordinator {
             ))
             // A phone is on the line; it now picks servers on its end.
             state = .linked
+            armIdleTimer(session)
             for try await message in stream {
+                armIdleTimer(session)
                 switch message {
                 case let .pushServer(serverURL, serverName):
-                    guard !isPolling else { break } // one at a time; ignore overlap
-                    isPolling = true
-                    pollTask = Task { [weak self] in
-                        await self?.handlePushServer(serverURL: serverURL, serverName: serverName, session: session)
-                        self?.isPolling = false
+                    // The protocol is one-server-at-a-time: a new push while
+                    // one is in flight means the phone gave up on the
+                    // previous server — supersede it, don't ignore the push.
+                    pollTask?.cancel()
+                    await pollTask?.value
+                    if consented {
+                        beginAttempt(serverURL: serverURL, serverName: serverName, session: session)
+                    } else {
+                        pendingPush = (serverURL, serverName)
+                        state = .consentRequested(serverName: serverName ?? ServerRegistry.normalize(url: serverURL))
                     }
                 case .done:
-                    if isPolling { pollTask?.cancel() } // an in-flight server has no committed result
+                    // An in-flight server has no committed result; abandon it.
+                    pollTask?.cancel()
                     await pollTask?.value
-                    if signedInCount > 0 { state = .completed(serverNames: signedInNames) }
-                    // With zero sign-ins there is no terminal state to dwell on, so
-                    // return to idle (like cancel/drop) instead of stranding the panel.
-                    await teardown(session: session, resetState: signedInCount == 0)
+                    await concludeSession(session)
                     return
                 case let .cancel(reason):
                     Self.logger.notice("peer cancelled: \(reason, privacy: .public)")
+                    pollTask?.cancel()
+                    await pollTask?.value
                     await teardown(session: session, resetState: true)
                     return
-                default:
-                    break // Receiver only consumes phone→TV message kinds.
+                case .hello, .deviceStarted, .serverResult:
+                    break // TV → phone kinds; a conforming phone never sends these
                 }
             }
             // Stream ended without a Done (peer closed the connection).
-            await teardown(session: session, resetState: true)
+            await onStreamClosed(session)
         } catch {
             // Stream threw: the connection dropped mid-session.
             Self.logger.error("session error: \(String(describing: error), privacy: .public)")
+            await onStreamClosed(session)
+        }
+    }
+
+    private func onStreamClosed(_ session: any PairingChannel) async {
+        pollTask?.cancel()
+        await pollTask?.value
+        await concludeSession(session)
+    }
+
+    /// Land on the right terminal (or idle) state for however the session
+    /// ended. Anything already signed in is a real success even if the
+    /// confirmation frames were lost, so show the summary; a lone failure
+    /// keeps its explanation on screen; otherwise return to idle so the
+    /// advertiser can accept a fresh attempt.
+    private func concludeSession(_ session: any PairingChannel) async {
+        if !signedInNames.isEmpty {
+            state = .completed(serverNames: signedInNames)
+            await teardown(session: session, resetState: false)
+        } else if case .failed = state {
+            await teardown(session: session, resetState: false)
+        } else {
             await teardown(session: session, resetState: true)
         }
     }
 
-    /// Abort the active session from the UI (Cancel button / leaving the screen).
-    /// Closing the session ends the stream, which unwinds `run` back to `idle`.
+    // MARK: - Consent
+
+    /// User allowed the pending server on the TV. Consent is per-session: the
+    /// same phone may push more servers without being re-asked.
+    func allowPendingServer() {
+        guard case .consentRequested = state, let push = pendingPush, let session = activeSession else { return }
+        consented = true
+        pendingPush = nil
+        beginAttempt(serverURL: push.serverURL, serverName: push.serverName, session: session)
+    }
+
+    /// User declined the pending server — end the session; the phone is told
+    /// it was cancelled on the TV.
+    func denyPendingServer() async {
+        guard case .consentRequested = state, let session = activeSession else { return }
+        pendingPush = nil
+        // Closing unwinds `run` (no successes yet), which resets to idle.
+        await session.closeGracefully(goodbye: .cancel(reason: "consent_denied"))
+    }
+
+    // MARK: - Cancel / teardown
+
+    /// Abort the active session from the UI (Cancel button, "Try again" on
+    /// the failure screen, or leaving the setup screen). The phone is told
+    /// this was a deliberate TV-side cancel, not a dropped connection.
     func cancel() async {
         pollTask?.cancel()
-        isPolling = false
+        idleTask?.cancel()
         state = .idle
-        await activeSession?.close()
+        if let session = activeSession {
+            await session.closeGracefully(goodbye: .cancel(reason: "receiver_cancelled"))
+        }
         activeSession = nil
     }
 
-    /// Cancel any in-flight poll, close the session, and (optionally) return the
-    /// UI to idle so the advertiser can accept a fresh connection.
-    private func teardown(session: PairingSession, resetState: Bool) async {
+    /// Cancel any in-flight poll, close the session, and (optionally) return
+    /// the UI to idle so the advertiser can accept a fresh connection.
+    private func teardown(session: any PairingChannel, resetState: Bool) async {
         pollTask?.cancel()
         pollTask = nil
-        isPolling = false
+        idleTask?.cancel()
+        idleTask = nil
         await session.close()
         activeSession = nil
         if resetState { state = .idle }
     }
 
-    private func handlePushServer(serverURL: String, serverName: String?, session: PairingSession) async {
+    // MARK: - Idle watchdog
+
+    /// Re-armed on every inbound message; suspended while a poll is in
+    /// flight (a poll is bounded by the server's own device-code expiry).
+    private func armIdleTimer(_ session: any PairingChannel) {
+        idleTask?.cancel()
+        idleTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.idleTimeout)
+            guard !Task.isCancelled else { return }
+            Self.logger.notice("pairing session idle timeout; dropping peer")
+            // Closing finishes the stream; `run` unwinds and resets state.
+            await session.closeGracefully(goodbye: .cancel(reason: "idle_timeout"))
+        }
+    }
+
+    // MARK: - Per-server attempt
+
+    private func beginAttempt(serverURL: String, serverName: String?, session: any PairingChannel) {
+        attemptCount += 1
+        let automatic = attemptCount > 1
+        idleTask?.cancel()
+        pollTask = Task { [weak self] in
+            await self?.handlePushServer(serverURL: serverURL, serverName: serverName, session: session, automatic: automatic)
+            await self?.attemptEnded(session)
+        }
+    }
+
+    private func attemptEnded(_ session: any PairingChannel) {
+        guard activeSession != nil else { return }
+        armIdleTimer(session)
+    }
+
+    private func handlePushServer(serverURL: String, serverName: String?, session: any PairingChannel, automatic: Bool) async {
         let normalized = ServerRegistry.normalize(url: serverURL)
         let displayName = serverName ?? normalized
         let device = AppleDeviceIdentity.current
         do {
             // 1. Start device auth against the PENDING candidate (not persisted).
             let started = try await api.start(serverURL: normalized, deviceName: device.name, devicePlatform: device.platform)
-            state = .awaitingApproval(serverName: displayName, matchCode: started.matchCode)
+            state = .awaitingApproval(serverName: displayName, matchCode: started.matchCode, automatic: automatic)
             try await session.send(.deviceStarted(serverURL: normalized, userCode: started.userCode, matchCode: started.matchCode))
 
             // 2. Poll until approved or the device code expires.
@@ -140,11 +256,14 @@ final class ReceiverPairingCoordinator {
                     guard let access = poll.accessToken, let refresh = poll.refreshToken else {
                         throw PairingDeviceAPI.APIError.decode
                     }
-                    await persistOnSuccess(url: normalized, fetchedName: serverName, access: access, refresh: refresh)
-                    signedInCount += 1
+                    await persist(normalized, serverName, access, refresh)
                     signedInNames.append(displayName)
-                    state = .signedIn(serverCount: signedInCount)
-                    try await session.send(.serverResult(serverURL: normalized, status: .signedIn, error: nil))
+                    state = .signedIn(serverCount: signedInNames.count)
+                    // Best-effort: the tokens are committed, so a lost
+                    // confirmation frame must not repaint a real sign-in as a
+                    // failure. If the send is lost the phone may undercount,
+                    // but EOF-after-success still completes on both ends.
+                    try? await session.send(.serverResult(serverURL: normalized, status: .signedIn, error: nil))
                     return
                 case "denied", "expired", "consumed":
                     throw PairingDeviceAPI.APIError.http(409)
@@ -156,8 +275,8 @@ final class ReceiverPairingCoordinator {
         } catch {
             // Persist-on-success: nothing was written, so nothing to roll back.
             if Task.isCancelled {
-                // Peer cancelled or the connection dropped (teardown already reset
-                // the UI). The peer is gone, so send nothing.
+                // Peer cancelled, superseded this server, or the connection
+                // dropped. The attempt is void; whoever cancelled owns state.
                 Self.logger.notice("attempt for \(normalized, privacy: .public) cancelled")
                 return
             }
@@ -168,7 +287,7 @@ final class ReceiverPairingCoordinator {
     }
 
     /// Commit the now-trusted server + tokens. Runs only after a successful poll.
-    private func persistOnSuccess(url: String, fetchedName: String?, access: String, refresh: String) async {
+    static func persistServer(url: String, fetchedName: String?, access: String, refresh: String) async {
         let id = ServerRegistry.serverId(for: url)
         let entry = ServerEntry(id: id, url: url, fetchedName: fetchedName, userOverrideName: nil, profileId: nil, lastUsedAt: Date())
         ServerRegistry.shared.addOrUpdate(entry)
@@ -178,4 +297,3 @@ final class ReceiverPairingCoordinator {
         await ServerRegistry.shared.switchTo(serverId: id)
     }
 }
-#endif

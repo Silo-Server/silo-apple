@@ -1,11 +1,22 @@
 #if os(iOS)
 import Foundation
+import Network
 import OSLog
+import UIKit
 
 /// Drives the phone side: connect to a discovered TV, let the user pick which
 /// servers to push, confirm the (server-authoritative) match code once, then
-/// approve each chosen server. Confirm-once multi-server is an accepted v1
-/// risk — see the design spec §6 "Accepted risk".
+/// approve each chosen server.
+///
+/// Structure: one `run()` task consumes the inbound stream for the session's
+/// whole life (mirroring the receiver), so the coordinator is never deaf — a
+/// TV-side cancel or a dropped connection is surfaced immediately even while
+/// the flow is paused waiting on the user's match-code decision. User actions
+/// only mutate state and send; every inbound message lands in `handle`.
+///
+/// Every wait on the peer is bounded by a watchdog, so a stale Bonjour
+/// endpoint or a wedged TV becomes an explanatory error instead of a
+/// permanent spinner.
 @MainActor
 @Observable
 final class CompanionPairingCoordinator {
@@ -21,157 +32,303 @@ final class CompanionPairingCoordinator {
         case error(String)
     }
 
+    enum Timeouts {
+        /// Connect + TLS + the TV's `hello`. Generous enough for peer-to-peer
+        /// Wi-Fi bring-up, short enough that a vanished TV isn't a trap.
+        static let hello: Duration = .seconds(15)
+        /// First `deviceStarted` waits on the TV user allowing the setup
+        /// request on their screen — leave time to find the remote.
+        static let firstDeviceStarted: Duration = .seconds(90)
+        static let deviceStarted: Duration = .seconds(30)
+        static let serverResult: Duration = .seconds(30)
+    }
+
     private(set) var state: State = .connecting
 
-    private let api: PairingDeviceAPI
-    private let session: PairingSession
+    private let api: any PairingDeviceAuthorizing
+    private let channel: any PairingChannel
     private let stream: AsyncThrowingStream<PairingMessage, Error>
-    private var iterator: AsyncThrowingStream<PairingMessage, Error>.AsyncIterator
+    /// "iPhone" or "iPad" — pairing copy names the device the user is holding.
+    private let deviceModel: String
+    private let availableServers: @MainActor () async -> [ServerEntry]
+    private let accessToken: @MainActor (String) async -> String?
 
-    private var tvName = "Apple TV"
+    private var tvName: String
     private var queue: [ServerEntry] = []
     private var confirmed = false
-    private var cancelled = false
+    private var isFirstPush = true
     private var pendingUserCode: String?
     private var signedIn: [String] = []
     private var failed: [String] = []
+    private var runTask: Task<Void, Never>?
+    private var watchdog: Task<Void, Never>?
+    /// Set once the flow reaches a deliberate end (summary, error, or a
+    /// user-initiated cancel), so a trailing stream close can't repaint the
+    /// terminal state and late messages are ignored.
+    private var concluded = false
     private static let logger = Logger(subsystem: "com.continuum.app", category: "pairing.companion")
 
-    init(api: PairingDeviceAPI = PairingDeviceAPI(), session: PairingSession, stream: AsyncThrowingStream<PairingMessage, Error>) {
-        self.api = api
-        self.session = session
+    init(
+        channel: any PairingChannel,
+        stream: AsyncThrowingStream<PairingMessage, Error>,
+        tvName: String = "Apple TV",
+        api: any PairingDeviceAuthorizing = PairingDeviceAPI(),
+        deviceModel: String = UIDevice.current.model,
+        availableServers: @escaping @MainActor () async -> [ServerEntry] = CompanionPairingCoordinator.serversWithTokens,
+        accessToken: @escaping @MainActor (String) async -> String? = { await TokenStore.shared.getAccessToken(for: $0) }
+    ) {
+        self.channel = channel
         self.stream = stream
-        self.iterator = stream.makeAsyncIterator()
+        self.tvName = tvName
+        self.api = api
+        self.deviceModel = deviceModel
+        self.availableServers = availableServers
+        self.accessToken = accessToken
     }
 
-    /// Read the TV's `Hello` and present the server picker.
-    func begin() async {
+    /// Open the transport for a discovered TV and start its coordinator.
+    /// The view never touches the session; it renders `state` and forwards
+    /// user intent.
+    static func connect(to tv: DiscoveredTV) async -> CompanionPairingCoordinator {
+        let session = PairingSession(endpoint: tv.endpoint)
+        let stream = await session.open()
+        let coordinator = CompanionPairingCoordinator(channel: session, stream: stream, tvName: tv.name)
+        coordinator.start()
+        return coordinator
+    }
+
+    /// Begin consuming the session. Idempotent; the stream has exactly one
+    /// reader for the coordinator's whole life.
+    func start() {
+        guard runTask == nil else { return }
+        armWatchdog(Timeouts.hello, "Couldn’t reach \(tvName). Make sure it’s still on its setup screen, then try again.")
+        runTask = Task { await run() }
+    }
+
+    private func run() async {
         do {
-            guard case let .hello(name, _, _, supported)? = try await nextMessage() else {
-                state = .error("No response from the Apple TV."); return
+            for try await message in stream {
+                await handle(message)
             }
-            guard supported.contains(PairingProtocol.version) else {
-                state = .error("Update Silo on one of your devices to continue."); return
-            }
-            tvName = name
-            let servers = await serversWithTokens()
-            guard !servers.isEmpty else {
-                state = .error("Sign in to a server on this iPhone first."); return
-            }
-            state = .pickServers(tvName: name, servers: servers)
+            streamEnded(error: nil)
         } catch {
-            state = .error("Connection lost.")
+            streamEnded(error: error)
         }
     }
 
+    private func streamEnded(error: Error?) {
+        disarmWatchdog()
+        guard !concluded else { return }
+        concluded = true
+        if let error {
+            Self.logger.error("session error: \(String(describing: error), privacy: .public)")
+        }
+        state = .error("Connection to \(tvName) was lost.")
+    }
+
+    // MARK: - Inbound messages
+
+    private func handle(_ message: PairingMessage) async {
+        guard !concluded else { return }
+        switch message {
+        case let .hello(name, _, _, supported):
+            disarmWatchdog()
+            tvName = name
+            guard supported.contains(PairingProtocol.version) else {
+                await conclude(.error("Update Silo on both devices to continue."), goodbye: .cancel(reason: "version_unsupported"))
+                return
+            }
+            let servers = await availableServers()
+            guard !servers.isEmpty else {
+                await conclude(.error("Sign in to a server on this \(deviceModel) first."), goodbye: .cancel(reason: "no_servers"))
+                return
+            }
+            state = .pickServers(tvName: name, servers: servers)
+        case let .deviceStarted(_, userCode, matchCode):
+            disarmWatchdog()
+            await handleDeviceStarted(userCode: userCode, channelCode: matchCode)
+        case let .serverResult(_, status, _):
+            disarmWatchdog()
+            recordResult(signedInOK: status == .signedIn)
+            await pushNext()
+        case .cancel:
+            await conclude(.error("Setup was cancelled on \(tvName)."), goodbye: nil)
+        case .pushServer, .done:
+            break // phone → TV kinds; a conforming TV never sends these
+        }
+    }
+
+    private func handleDeviceStarted(userCode: String, channelCode: String) async {
+        guard let server = queue.first else { return }
+        guard let token = await accessToken(server.id), !token.isEmpty else {
+            await failCurrentAndAdvance(server)
+            return
+        }
+        do {
+            // Display the SERVER's authoritative match code, not the channel's.
+            let lookup = try await api.lookup(serverURL: server.url, bearer: token, userCode: userCode)
+            guard let serverCode = lookup.matchCode, !serverCode.isEmpty else {
+                // The match code is the flow's one trust anchor; a missing code
+                // is a hard failure, never an empty prompt.
+                Self.logger.error("server \(server.url, privacy: .public) returned no match code")
+                await failCurrentAndAdvance(server)
+                return
+            }
+            pendingUserCode = userCode
+            if confirmed {
+                // Confirm-once multi-server: the user compared codes for the
+                // first server only. Bind later approvals to the channel — if
+                // the code the TV displayed doesn't match the server's
+                // authoritative one, someone is splicing the session; refuse.
+                guard serverCode == channelCode else {
+                    Self.logger.error("match code mismatch for \(server.url, privacy: .public); refusing auto-approve")
+                    await failCurrentAndAdvance(server)
+                    return
+                }
+                await approveCurrent(server)
+            } else {
+                // No watchdog while the user deliberates: the TV keeps its
+                // device code alive, and the loop keeps reading, so a TV-side
+                // cancel or drop is still surfaced immediately.
+                state = .confirmMatch(tvName: tvName, serverName: server.displayName, matchCode: serverCode)
+            }
+        } catch {
+            await failCurrentAndAdvance(server)
+        }
+    }
+
+    // MARK: - User actions
+
     /// User tapped a set of servers to push (order = approval order).
     func pushSelected(_ servers: [ServerEntry]) async {
-        guard case .pickServers = state, !isPumping else { return }
+        guard case .pickServers = state, !servers.isEmpty else { return }
         queue = servers
-        await pump { await self.pushNext() }
+        await pushNext()
     }
 
     /// User confirmed the displayed match code matches the TV.
     func confirmMatch() async {
-        guard case .confirmMatch = state, !isPumping, let current = queue.first else { return }
+        guard case .confirmMatch = state, let server = queue.first else { return }
         confirmed = true
-        await pump { await self.approveAndAdvance(current) }
+        await approveCurrent(server)
     }
 
-    /// User said the codes don't match — abort.
+    /// User said the codes don't match — abort the whole session.
     func declineMatch() async {
-        try? await session.send(.cancel(reason: "match_declined"))
-        await session.close()
-        state = .error("Codes didn’t match — setup cancelled.")
+        await conclude(.error("The codes didn’t match, so setup was cancelled."), goodbye: .cancel(reason: "match_declined"))
     }
 
+    /// User backed out (Cancel button, or the card left the screen). The card
+    /// dismisses itself, so no terminal state is shown.
     func cancel() async {
-        cancelled = true
-        try? await session.send(.cancel(reason: "user_cancelled"))
-        await session.close()
-        state = .error("Setup cancelled.")
+        guard !concluded else { return }
+        concluded = true
+        disarmWatchdog()
+        await channel.closeGracefully(goodbye: .cancel(reason: "user_cancelled"))
     }
 
-    private var isPumping = false
-    /// Serializes stream-reading bursts so two never overlap (overlapping
-    /// AsyncThrowingStream reads fatally trap). False while paused for the
-    /// user's match-code confirmation.
-    private func pump(_ body: () async -> Void) async {
-        isPumping = true
-        await body()
-        isPumping = false
-    }
-
-    // MARK: - Internals
+    // MARK: - Flow
 
     private func pushNext() async {
-        guard let server = queue.first else { await finish(); return }
-        state = .working(progress: "Setting up \(server.displayName)…")
+        guard !concluded else { return }
+        guard let server = queue.first else {
+            await conclude(.finished(signedIn: signedIn, failed: failed), goodbye: .done)
+            return
+        }
+        if isFirstPush {
+            state = .working(progress: "Continue on \(tvName) — allow this \(deviceModel) to set it up.")
+        } else {
+            state = .working(progress: "Setting up \(server.displayName)…")
+        }
         do {
-            try await session.send(.pushServer(serverURL: server.url, serverName: server.displayName))
-            guard case let .deviceStarted(_, userCode, _)? = try await nextRelevant() else {
-                fail(server); await pushNext(); return
-            }
-            // Display the SERVER's authoritative match code, not the channel's.
-            guard let token = await TokenStore.shared.getAccessToken(for: server.id), !token.isEmpty else {
-                fail(server); await pushNext(); return
-            }
-            let lookup = try await api.lookup(serverURL: server.url, bearer: token, userCode: userCode)
-            let serverMatch = lookup.matchCode ?? ""
-            pendingUserCode = userCode
-            if confirmed {
-                await approveAndAdvance(server)
-            } else {
-                state = .confirmMatch(tvName: tvName, serverName: server.displayName, matchCode: serverMatch)
-            }
+            try await channel.send(.pushServer(serverURL: server.url, serverName: server.displayName))
+            armWatchdog(
+                isFirstPush ? Timeouts.firstDeviceStarted : Timeouts.deviceStarted,
+                isFirstPush
+                    ? "\(tvName) didn’t respond. Make sure you allowed the request on the TV, then try again."
+                    : "\(tvName) stopped responding."
+            )
+            isFirstPush = false
         } catch {
-            fail(server); await pushNext()
+            await conclude(.error("Connection to \(tvName) was lost."), goodbye: nil)
         }
     }
 
-    private func approveAndAdvance(_ server: ServerEntry) async {
+    private func approveCurrent(_ server: ServerEntry) async {
         state = .working(progress: "Approving \(server.displayName)…")
+        let token = await accessToken(server.id) ?? ""
         do {
-            let token = await TokenStore.shared.getAccessToken(for: server.id) ?? ""
             try await api.approve(serverURL: server.url, bearer: token, userCode: pendingUserCode ?? "")
-            // Wait for the TV to report it minted tokens.
-            if case let .serverResult(_, status, _)? = try await nextRelevant(), status == .signedIn {
-                signedIn.append(server.displayName)
-            } else {
-                failed.append(server.displayName)
-            }
+            // The TV reports back once its poll mints tokens.
+            armWatchdog(Timeouts.serverResult, "\(tvName) stopped responding while finishing sign-in.")
         } catch {
+            // The TV is still polling this server; without the approval it can
+            // only wait out its device code. Ending the session keeps both
+            // screens honest instead of leaving the TV stuck on a dead code.
+            await conclude(
+                .error("Couldn’t reach \(server.displayName) to approve the sign-in. Check this \(deviceModel)’s connection and try again."),
+                goodbye: .cancel(reason: "approve_failed")
+            )
+        }
+    }
+
+    private func recordResult(signedInOK: Bool) {
+        guard let server = queue.first else { return }
+        if signedInOK {
+            signedIn.append(server.displayName)
+        } else {
             failed.append(server.displayName)
         }
         queue.removeFirst()
+    }
+
+    /// A server failed before approval (token missing, lookup failed, or the
+    /// codes couldn't be bound). Move on; the TV abandons its in-flight
+    /// attempt as soon as the next `pushServer` arrives.
+    private func failCurrentAndAdvance(_ server: ServerEntry) async {
+        failed.append(server.displayName)
+        if !queue.isEmpty { queue.removeFirst() }
         await pushNext()
     }
 
-    private func finish() async {
-        try? await session.send(.done)
-        await session.close()
-        state = cancelled ? .error("Setup cancelled.") : .finished(signedIn: signedIn, failed: failed)
-    }
-
-    private func fail(_ server: ServerEntry) {
-        failed.append(server.displayName)
-        if !queue.isEmpty { queue.removeFirst() }
-    }
-
-    /// Pull the next deviceStarted/serverResult, ignoring anything else.
-    private func nextRelevant() async throws -> PairingMessage? {
-        while let message = try await nextMessage() {
-            switch message {
-            case .deviceStarted, .serverResult: return message
-            case .cancel: cancelled = true; return nil
-            default: continue
-            }
+    private func conclude(_ terminal: State, goodbye: PairingMessage?) async {
+        guard !concluded else { return }
+        concluded = true
+        disarmWatchdog()
+        state = terminal
+        if let goodbye {
+            await channel.closeGracefully(goodbye: goodbye)
+        } else {
+            await channel.close()
         }
-        return nil
     }
+
+    // MARK: - Watchdog
+
+    private func armWatchdog(_ timeout: Duration, _ message: String) {
+        watchdog?.cancel()
+        watchdog = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            await self?.timedOut(message)
+        }
+    }
+
+    private func disarmWatchdog() {
+        watchdog?.cancel()
+        watchdog = nil
+    }
+
+    private func timedOut(_ message: String) async {
+        guard !concluded else { return }
+        Self.logger.error("pairing wait timed out: \(message, privacy: .public)")
+        await conclude(.error(message), goodbye: .cancel(reason: "timeout"))
+    }
+
+    // MARK: - Servers
 
     /// The phone's servers that currently have a stored access token.
-    private func serversWithTokens() async -> [ServerEntry] {
+    static func serversWithTokens() async -> [ServerEntry] {
         var result: [ServerEntry] = []
         for entry in ServerRegistry.shared.sortedEntries {
             if let token = await TokenStore.shared.getAccessToken(for: entry.id), !token.isEmpty {
@@ -181,16 +338,10 @@ final class CompanionPairingCoordinator {
         return result
     }
 
-    /// Advance the stream by one message. `AsyncIterator.next()` is a
-    /// `mutating async` method and can't be invoked directly on an
-    /// actor-isolated stored property (exclusivity can't be proven across the
-    /// suspension). The coordinator drives the stream strictly sequentially on
-    /// the main actor, so taking the iterator into a local, awaiting, and
-    /// writing it back is safe and single-reader.
-    private func nextMessage() async throws -> PairingMessage? {
-        var local = iterator
-        defer { iterator = local }
-        return try await local.next()
+    /// Whether this device has anything to hand off — gates the discovery
+    /// card so a signed-out phone is never invited into a dead-end flow.
+    static func hasServerWithToken() async -> Bool {
+        await !serversWithTokens().isEmpty
     }
 }
 #endif

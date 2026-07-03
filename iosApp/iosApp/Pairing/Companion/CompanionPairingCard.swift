@@ -4,14 +4,14 @@ import SwiftUI
 /// The native-style companion pairing card: rises from the bottom over a dimmed
 /// app and runs the whole flow for one discovered TV — discovery, server
 /// selection, match-code confirm, progress, result — beneath a consistent
-/// header. Owns the `PairingSession` + `CompanionPairingCoordinator` for that
-/// TV (folds in the former pairing modal).
+/// header. Pure presentation: the coordinator owns the transport
+/// (`CompanionPairingCoordinator.connect(to:)`).
 struct CompanionPairingCard: View {
     let tv: DiscoveredTV
-    /// Discovery-step "Not Now" (and scrim tap): dismiss until the TV re-advertises.
-    var onNotNow: () -> Void
-    /// Terminal close (Done / error / cancel mid-flow): just dismiss.
-    var onClose: () -> Void
+    /// Any exit — Not Now, Cancel mid-flow, Done, Close. The modifier records
+    /// a per-setup-session dismissal so the card doesn't immediately re-latch;
+    /// mid-flow retry lives INSIDE the card ("Try Again" on the error step).
+    var onDismiss: () -> Void
 
     /// System blue matches the native pairing look; the app's global tint is
     /// near-white, which would wash out the primary button.
@@ -28,7 +28,7 @@ struct CompanionPairingCard: View {
             Color.black.opacity(appeared ? 0.45 : 0)
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
-                .onTapGesture { if !started { animateOut(onNotNow) } }
+                .onTapGesture { if !started { dismiss() } }
                 .accessibilityAddTraits(.isButton)
                 .accessibilityLabel("Dismiss")
                 .accessibilityHidden(started)
@@ -44,7 +44,7 @@ struct CompanionPairingCard: View {
         .onDisappear {
             startupTask?.cancel()
             startupTask = nil
-            Task { await coordinator?.cancel() }
+            Task { [coordinator] in await coordinator?.cancel() }
         }
     }
 
@@ -67,6 +67,8 @@ struct CompanionPairingCard: View {
             RoundedRectangle(cornerRadius: 30, style: .continuous)
                 .stroke(Color.white.opacity(0.10), lineWidth: 1)
         )
+        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: coordinator?.state)
+        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: started)
     }
 
     @ViewBuilder private var stepContent: some View {
@@ -98,13 +100,13 @@ struct CompanionPairingCard: View {
             Text("Set Up \(tv.name)")
                 .font(.continuumTitle)
                 .multilineTextAlignment(.center)
-            Text("Sign this Apple TV in using this iPhone.")
+            Text("Sign \(tv.name) in to your servers from this \(UIDevice.current.model).")
                 .font(.continuumCaption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.top, 6)
             primaryButton("Set Up") { setUp() }.padding(.top, 22)
-            tertiaryButton("Not Now") { animateOut(onNotNow) }.padding(.top, 4)
+            tertiaryButton("Not Now") { dismiss() }.padding(.top, 4)
         }
     }
 
@@ -121,6 +123,7 @@ struct CompanionPairingCard: View {
             .disabled(selection.isEmpty)
             .opacity(selection.isEmpty ? 0.5 : 1)
             .padding(.top, 18)
+            cancelButton().padding(.top, 4)
         }
     }
 
@@ -151,6 +154,7 @@ struct CompanionPairingCard: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isOn ? [.isSelected] : [])
     }
 
     private func confirm(serverName: String, matchCode: String) -> some View {
@@ -163,6 +167,7 @@ struct CompanionPairingCard: View {
                 .textCase(.uppercase)
                 .tracking(8)
                 .padding(.top, 8)
+                .accessibilityLabel(Self.spelledOut(matchCode))
             Text("for \(serverName)")
                 .font(.continuumCaption)
                 .foregroundStyle(.secondary)
@@ -176,21 +181,26 @@ struct CompanionPairingCard: View {
 
     private func finished(signedIn: [String], failed: [String]) -> some View {
         VStack(spacing: 0) {
-            Image(systemName: "checkmark.circle.fill")
+            Image(systemName: signedIn.isEmpty ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .font(.system(size: 44))
-                .foregroundStyle(.green)
+                .foregroundStyle(signedIn.isEmpty ? Color.yellow : Color.green)
                 .padding(.bottom, 12)
-            Text(signedIn.isEmpty ? "Nothing set up" : "Set up \(signedIn.joined(separator: ", "))")
+            Text(signedIn.isEmpty ? "Setup didn’t finish" : "Set up \(signedIn.joined(separator: ", "))")
                 .font(.continuumHeadline)
                 .multilineTextAlignment(.center)
             if !failed.isEmpty {
-                Text("Couldn’t set up: \(failed.joined(separator: ", "))")
+                Text("Couldn’t sign in to \(failed.joined(separator: ", ")).")
                     .font(.continuumCaption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.top, 4)
             }
-            primaryButton("Done") { animateOut(onClose) }.padding(.top, 22)
+            if signedIn.isEmpty {
+                primaryButton("Try Again") { retry() }.padding(.top, 22)
+                tertiaryButton("Close") { dismiss() }.padding(.top, 4)
+            } else {
+                primaryButton("Done") { dismiss() }.padding(.top, 22)
+            }
         }
     }
 
@@ -203,7 +213,8 @@ struct CompanionPairingCard: View {
             Text(message)
                 .font(.continuumBody)
                 .multilineTextAlignment(.center)
-            primaryButton("Close") { animateOut(onClose) }.padding(.top, 22)
+            primaryButton("Try Again") { retry() }.padding(.top, 22)
+            tertiaryButton("Close") { dismiss() }.padding(.top, 4)
         }
     }
 
@@ -231,8 +242,15 @@ struct CompanionPairingCard: View {
     private func progressStep(title: String, subtitle: String) -> some View {
         VStack(spacing: 10) {
             Text(title).font(.continuumHeadline)
-            Text(subtitle).font(.continuumCaption).foregroundStyle(.secondary)
+            Text(subtitle)
+                .font(.continuumCaption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
             ProgressView().padding(.top, 4)
+            // Every non-terminal step needs an exit: without one, a wedged TV
+            // leaves the user trapped behind the scrim (which stops dismissing
+            // once the flow starts).
+            cancelButton().padding(.top, 10)
         }
         .padding(.vertical, 8)
     }
@@ -254,30 +272,51 @@ struct CompanionPairingCard: View {
         .foregroundStyle(accent)
     }
 
+    private func cancelButton() -> some View {
+        tertiaryButton("Cancel") {
+            Task { [coordinator] in await coordinator?.cancel() }
+            dismiss()
+        }
+    }
+
     // MARK: - Actions
 
     private func setUp() {
         started = true
         startupTask?.cancel()
         startupTask = Task {
-            let session = PairingSession(endpoint: tv.endpoint)
-            let stream = await session.open()
+            let coordinator = await CompanionPairingCoordinator.connect(to: tv)
             guard !Task.isCancelled else {
-                await session.close()
+                await coordinator.cancel()
                 return
             }
-            let coordinator = CompanionPairingCoordinator(session: session, stream: stream)
             self.coordinator = coordinator
-            await coordinator.begin()
         }
     }
 
-    private func animateOut(_ completion: @escaping () -> Void) {
+    /// Start the flow over with a fresh session against the same TV. Server
+    /// selection is intentionally kept.
+    private func retry() {
+        Task { [coordinator] in await coordinator?.cancel() }
+        coordinator = nil
+        setUp()
+    }
+
+    private func dismiss() {
+        startupTask?.cancel()
+        startupTask = nil
+        Task { [coordinator] in await coordinator?.cancel() }
         withAnimation(.spring(response: 0.4, dampingFraction: 0.9)) {
             appeared = false
         } completion: {
-            completion()
+            onDismiss()
         }
+    }
+
+    /// VoiceOver-friendly match code: read character by character, never as a
+    /// word — a blind user must be able to compare codes across two screens.
+    static func spelledOut(_ code: String) -> String {
+        code.uppercased().map(String.init).joined(separator: ", ")
     }
 }
 #endif

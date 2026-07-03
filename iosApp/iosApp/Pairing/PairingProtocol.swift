@@ -14,6 +14,11 @@ enum PairingReceiverState: String, Codable, Equatable {
     /// Blank TV with no server configured — needs a URL pushed.
     case setup
     /// TV already has a server — only needs a user signed in.
+    ///
+    /// RESERVED, NOT IMPLEMENTED: nothing advertises or handles `login` yet
+    /// (the advertiser hardcodes `setup`, and only the first-run screen
+    /// advertises at all). Kept on the wire so a future "sign in to a
+    /// configured TV" flow doesn't need a protocol bump.
     case login
 }
 

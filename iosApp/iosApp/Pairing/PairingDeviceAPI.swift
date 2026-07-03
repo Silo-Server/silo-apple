@@ -1,10 +1,20 @@
 import Foundation
 
+/// Seam over the device-authorization endpoints so the pairing coordinators
+/// can be unit-tested against a scripted fake. `PairingDeviceAPI` is the
+/// production conformer.
+protocol PairingDeviceAuthorizing: Sendable {
+    func start(serverURL: String, deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse
+    func poll(serverURL: String, deviceCode: String) async throws -> DeviceLoginPollResponse
+    func lookup(serverURL: String, bearer: String, userCode: String) async throws -> DeviceLookupResponse
+    func approve(serverURL: String, bearer: String, userCode: String) async throws
+}
+
 /// Device-authorization calls issued against an EXPLICIT server base URL,
 /// independent of the app's single active server. Used by both pairing sides:
 /// the Receiver calls start/poll against a pushed URL (no auth); the Companion
 /// calls lookup/approve against a chosen server (bearer = that server's token).
-struct PairingDeviceAPI {
+struct PairingDeviceAPI: PairingDeviceAuthorizing {
     enum APIError: Error { case badURL, http(Int), decode }
 
     private let session: URLSession

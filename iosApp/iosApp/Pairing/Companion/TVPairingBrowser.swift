@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import Network
+import OSLog
 
 /// A discovered Apple TV waiting to be set up.
 struct DiscoveredTV: Identifiable, Equatable {
@@ -16,27 +17,68 @@ struct DiscoveredTV: Identifiable, Equatable {
 }
 
 /// Browses `_silopair._tcp` and publishes discovered TVs. Drives the
-/// hands-off banner. Owns the Local Network permission prompt (triggered on
+/// hands-off card. Owns the Local Network permission prompt (triggered on
 /// first browse).
+///
+/// Self-healing: this browser runs for as long as the app is foregrounded, so
+/// a failed `NWBrowser` (post-suspension network-stack reset) restarts itself
+/// instead of silently killing the feature until relaunch.
 @MainActor
 @Observable
 final class TVPairingBrowser {
     private(set) var found: [DiscoveredTV] = []
     private var browser: NWBrowser?
+    private var generation = 0
+    /// True between `start()` and `stop()` — gates self-heal restarts so a
+    /// deliberate stop stays stopped.
+    private var wantsBrowsing = false
+    private nonisolated static let logger = Logger(subsystem: "com.continuum.app", category: "pairing.browser")
 
     func start() {
         guard browser == nil else { return }
+        wantsBrowsing = true
+        startBrowser()
+    }
+
+    private func startBrowser() {
+        generation += 1
+        let gen = generation
         let params = NWParameters()
         params.includePeerToPeer = true
         let browser = NWBrowser(for: .bonjourWithTXTRecord(type: PairingProtocol.serviceType, domain: nil), using: params)
         browser.browseResultsChangedHandler = { [weak self] results, _ in
-            Task { @MainActor in self?.found = results.compactMap(Self.makeTV) }
+            Task { @MainActor in
+                guard let self, self.generation == gen else { return }
+                self.found = results.compactMap(Self.makeTV)
+            }
+        }
+        browser.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor in
+                guard let self, self.generation == gen else { return }
+                if case .failed(let error) = state {
+                    Self.logger.error("browser failed: \(String(describing: error), privacy: .public)")
+                    self.scheduleBrowserRestart()
+                }
+            }
         }
         browser.start(queue: .main)
         self.browser = browser
     }
 
+    private func scheduleBrowserRestart() {
+        browser?.cancel()
+        browser = nil
+        found = []
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, self.wantsBrowsing, self.browser == nil else { return }
+            self.startBrowser()
+        }
+    }
+
     func stop() {
+        wantsBrowsing = false
+        generation += 1
         browser?.cancel()
         browser = nil
         found = []

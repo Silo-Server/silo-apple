@@ -1,9 +1,10 @@
 import Foundation
 
-/// Length-prefixed framing for the pairing channel: each payload is sent as
-/// a 4-byte big-endian unsigned length followed by that many bytes of JSON.
-/// Pure and dependency-free so it is unit-testable in isolation.
-enum PairingFrame {
+/// Length-prefixed framing for Silo's LAN channels (companion pairing,
+/// SiloControl): each payload is sent as a 4-byte big-endian unsigned length
+/// followed by that many bytes of JSON. Pure and dependency-free so it is
+/// unit-testable in isolation.
+enum SiloFrame {
     /// Largest single frame we will encode or accept (1 MiB). Guards against
     /// a peer claiming an absurd length.
     static let maxFrameBytes = 1 << 20
@@ -24,7 +25,7 @@ enum PairingFrame {
 
 /// Accumulates bytes from a stream and yields complete frame payloads as they
 /// arrive. Not thread-safe; confine to one connection's receive loop.
-struct PairingFrameBuffer {
+struct SiloFrameBuffer {
     private var buffer = Data()
 
     /// Append newly-received bytes and return every complete payload now
@@ -35,8 +36,8 @@ struct PairingFrameBuffer {
         while true {
             guard buffer.count >= 4 else { break }
             let length = Int(buffer.prefix(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self).bigEndian })
-            guard length <= PairingFrame.maxFrameBytes else {
-                throw PairingFrame.FrameError.frameTooLarge(length)
+            guard length <= SiloFrame.maxFrameBytes else {
+                throw SiloFrame.FrameError.frameTooLarge(length)
             }
             guard buffer.count >= 4 + length else { break }
             let start = buffer.index(buffer.startIndex, offsetBy: 4)
