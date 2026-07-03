@@ -334,10 +334,15 @@ final class AVPlayerBackend {
         let mediaSeconds = seconds.isFinite ? max(0, seconds) : 0
         let playerSeconds = playerTime(forMediaTime: mediaSeconds)
         if case .some(.localDVLoopback(let spec)) = currentSourceStrategy {
-            if let reason = localLoopbackReanchorReason(
+            // VOD serving mode: every seek is in-item. The static playlist
+            // covers the whole title; a fetch into never-produced content
+            // restarts the producer behind the stable item (1e), so the
+            // teardown-reanchor path must never run.
+            if spec.servingMode != .vodPlan,
+               let reason = localLoopbackReanchorReason(
                 mediaSeconds: mediaSeconds,
                 playerSeconds: playerSeconds
-            ) {
+               ) {
                 reloadLocalLoopbackForSeek(
                     spec: spec,
                     mediaSeconds: mediaSeconds,
@@ -345,6 +350,12 @@ final class AVPlayerBackend {
                     reason: reason
                 )
                 return
+            }
+            if spec.servingMode == .vodPlan {
+                // Recovery anchor (M7): if this seek wedges, the watchdog
+                // must aim at the requested target — the frozen clock still
+                // reports the pre-seek position.
+                vodPendingSeekMediaTarget = mediaSeconds
             }
         }
 
@@ -359,6 +370,7 @@ final class AVPlayerBackend {
             guard let self, !self.isDisposed else { return }
             guard seekItem === self.currentItem else { return }
             self.isSeekPending = false
+            self.vodPendingSeekMediaTarget = nil
             let landed = self.avPlayer.currentTime().seconds
             let mediaTime = self.mediaTime(for: landed)
             Self.logger.info(
@@ -767,6 +779,7 @@ final class AVPlayerBackend {
         latestLoopbackGeneratedStats = nil
         loopbackEdgeWatch = nil
         pendingLocalLoopbackRecoveryMediaTime = nil
+        vodPendingSeekMediaTarget = nil
         lastLocalLoopbackStallRecoveryAt = 0
         // Reset playhead advance-tracking for the new session so a reanchor's
         // pre-reanchor position does not read as instantly stationary. The
@@ -787,7 +800,17 @@ final class AVPlayerBackend {
         case .remoteDirect(let url, let headers):
             prepareAssetPlayback(url: url, headers: headers)
         case .localDVLoopback(let spec):
-            setMediaTimelineOffset(spec.sourceStartTimeSeconds)
+            if spec.servingMode == .vodPlan {
+                // The VOD item timeline is the plan's playlist axis; its
+                // origin is the plan anchor (near 0 for normal titles, the
+                // content start for late-start ones). Refined again when the
+                // first session resolves the plan.
+                setMediaTimelineOffset(
+                    vodPlanForCurrentSource(spec: spec)?.anchorSourceSeconds ?? 0
+                )
+            } else {
+                setMediaTimelineOffset(spec.sourceStartTimeSeconds)
+            }
             startLocalDVLoopback(sessionSpec: spec)
         }
     }
@@ -815,6 +838,10 @@ final class AVPlayerBackend {
 
     private var vodRestartCoalescer = LoopbackRestartCoalescer()
     private var activeVODWriterBaseIndex: Int?
+    /// The unlanded in-item seek target (media seconds). Cleared when the
+    /// seek completion fires; while it survives, stall recovery aims here
+    /// instead of at the frozen clock (M7).
+    private var vodPendingSeekMediaTarget: Double?
 
     static func vodRetentionBudgetBytes() -> Int64 {
         let cap: Int64 = 2 << 30
@@ -830,7 +857,7 @@ final class AVPlayerBackend {
     /// all survive) to anchor at the requested plan segment. Coalesced: one
     /// in-flight swap, newest pending target wins, self-target guarded.
     @MainActor
-    private func requestVODProducerRestart(at index: Int) {
+    private func requestVODProducerRestart(at index: Int, authoritative: Bool = false) {
         guard !isDisposed,
               case .some(.localDVLoopback(let spec)) = currentSourceStrategy,
               spec.servingMode == .vodPlan,
@@ -840,17 +867,20 @@ final class AVPlayerBackend {
               let sessionID = activeLoopbackSessionID,
               let sessionDir = sessionDirectory else { return }
         let target = max(0, min(index, plan.segmentCount - 1))
-        if let base = activeVODWriterBaseIndex,
+        if !authoritative,
+           let base = activeVODWriterBaseIndex,
            segmentWriter != nil,
            target >= base,
            target <= base + Self.vodProducerCoverageWindow {
             // The running producer covers it; its forward march delivers.
+            // An authoritative recovery re-base skips this — the producer
+            // may itself be the wedged component.
             return
         }
         var next: Int? = target
         while let current = next {
-            guard vodRestartCoalescer.begin(current) else { return }
-            cmpLog("[CMP-AVP] vod producer restart segment=\(current)")
+            guard vodRestartCoalescer.begin(current, authoritative: authoritative) else { return }
+            cmpLog("[CMP-AVP] vod producer restart segment=\(current) authoritative=\(authoritative)")
             segmentWriter?.stop()
             startLocalDVLoopbackWriter(
                 sessionID: sessionID,
@@ -861,6 +891,41 @@ final class AVPlayerBackend {
                 vodBaseIndex: current
             )
             next = vodRestartCoalescer.next(justRan: current)
+        }
+    }
+
+    /// VOD stall-recovery ladder (M7) — never tears the session down. The
+    /// anchor is the unlanded seek target when one exists (a wedged
+    /// zero-tolerance seek leaves the frozen clock at the PRE-seek
+    /// position). Attempt 1 nudges AVPlayer — cancel pending seeks, fresh
+    /// zero-tolerance seek, play — which rebuilds its loading pipeline;
+    /// later attempts swap the item in place (same URL, no pre-pause, the
+    /// old item keeps rendering until the swap lands). Both ride alongside
+    /// an authoritative producer restart at the anchor segment. The
+    /// existing watchdog budget still escalates to a route fallback when
+    /// the ladder doesn't take.
+    @MainActor
+    private func performVODStallRecovery(attempt: Int, frozenPosition: Double) {
+        let anchorPlayer = vodPendingSeekMediaTarget.map(playerTime(forMediaTime:))
+            ?? frozenPosition
+        if let plan = loopbackVODPlan {
+            requestVODProducerRestart(
+                at: plan.segmentIndex(forPlaylistSeconds: anchorPlayer),
+                authoritative: true
+            )
+        }
+        let time = CMTime(seconds: max(0, anchorPlayer), preferredTimescale: 600)
+        if attempt <= 1 {
+            cmpLog("[CMP-AVP] vod stall recovery nudge anchorPlayer=\(anchorPlayer)")
+            currentItem?.cancelPendingSeeks()
+            avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+            avPlayer.play()
+        } else {
+            guard let urlAsset = currentItem?.asset as? AVURLAsset else { return }
+            cmpLog("[CMP-AVP] vod stall recovery in-place item reload anchorPlayer=\(anchorPlayer)")
+            prepareAssetPlayback(url: urlAsset.url, headers: [:])
+            avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+            avPlayer.play()
         }
     }
 
@@ -901,7 +966,7 @@ final class AVPlayerBackend {
             // queue; the store is thread-safe.
             server.vodSegmentMissResolver = { [weak self, weak store] index in
                 guard let store else { return .missing }
-                DispatchQueue.main.async { [weak self] in
+                Task { @MainActor [weak self] in
                     self?.requestVODProducerRestart(at: index)
                 }
                 return store.waitForSegment(
@@ -982,6 +1047,10 @@ final class AVPlayerBackend {
                 guard self.activeLoopbackSessionID == sessionID else { return }
                 self.loopbackVODPlan = plan
                 self.loopbackVODPlanSourceURL = sessionSpec.sourceURL
+                // The item timeline's origin is the plan anchor; the initial
+                // media-time seek (pendingStartTime) converts through this
+                // offset, and plan resolution always precedes item creation.
+                self.setMediaTimelineOffset(plan.anchorSourceSeconds)
             }
         }
         writer.onFirstSegmentReady = { [weak self] playlistName in
@@ -1636,6 +1705,14 @@ final class AVPlayerBackend {
         Self.logger.error(
             "[CMP-AVP] local loopback playhead_watchdog trigger attempt=\(self.watchdogReanchorCount, privacy: .public) pos=\(position, privacy: .public) tc=\(statusLabel, privacy: .public) bufAhead=\(bufferedAhead, privacy: .public) generatedAhead=\(generatedAhead, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public)"
         )
+        if case .some(.localDVLoopback(let spec)) = currentSourceStrategy,
+           spec.servingMode == .vodPlan {
+            let attempt = watchdogReanchorCount
+            Task { @MainActor [weak self] in
+                self?.performVODStallRecovery(attempt: attempt, frozenPosition: position)
+            }
+            return
+        }
         recoverLocalLoopbackStallIfNeeded(item: item, requireBufferedEdge: false, reason: "playhead_watchdog")
     }
 
