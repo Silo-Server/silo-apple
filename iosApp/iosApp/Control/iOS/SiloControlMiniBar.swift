@@ -16,10 +16,10 @@ struct SiloControlMiniBar: View {
     /// Whether the bar has anything to show: a live session (that isn't a
     /// still-unconfirmed auto-resume probe) or an in-flight reconnect. Keeping
     /// the bar up through a reconnect (with a spinner) beats having it vanish
-    /// and pop back.
+    /// and pop back. Stays visible under the full remote sheet so dismissing
+    /// the sheet doesn't re-insert the accessory with a second animation.
     private var isVisible: Bool {
-        guard !controller.isShowingRemoteControl else { return false }
-        return (controller.hasActiveSession && !controller.isAutoResuming) || controller.isReconnecting
+        (controller.hasActiveSession && !controller.isAutoResuming) || controller.isReconnecting
     }
 
     private var targetName: String {

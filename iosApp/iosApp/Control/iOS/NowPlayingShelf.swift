@@ -20,10 +20,12 @@ struct NowPlayingShelf: View {
     }
 
     /// Mirrors `SiloControlMiniBar.isVisible`: a live session (excluding a
-    /// still-unconfirmed auto-resume probe) or an in-flight reconnect.
+    /// still-unconfirmed auto-resume probe) or an in-flight reconnect. The bar
+    /// stays mounted while the full remote sheet is up — detaching the
+    /// tabViewBottomAccessory there made it re-insert (with a system slide-in)
+    /// every time the sheet was swiped away.
     static func controlBarVisible(_ control: SiloControlClient) -> Bool {
-        guard !control.isShowingRemoteControl else { return false }
-        return (control.hasActiveSession && !control.isAutoResuming) || control.isReconnecting
+        (control.hasActiveSession && !control.isAutoResuming) || control.isReconnecting
     }
     #else
     static func hasActiveAccessory(audio: AudioPlaybackStore) -> Bool {
@@ -36,7 +38,6 @@ struct NowPlayingShelf: View {
         if Self.controlBarVisible(siloControl) {
             SiloControlMiniBar(controller: siloControl, style: style)
                 .animation(.snappy, value: siloControl.hasActiveSession)
-                .animation(.snappy, value: siloControl.isShowingRemoteControl)
                 .animation(.snappy, value: siloControl.isReconnecting)
         } else if audioStore.player.hasActiveSession {
             AudioMiniPlayerView(style: style)
