@@ -202,6 +202,38 @@ final class DVSegmentWriterVODContinuityTests: XCTestCase {
         XCTAssertTrue(tfdts.contains { $0 > 0 }, "seg 2 must not be zero-based")
     }
 
+    func testResumeFirstSessionAnchorsAtResumeSegment() throws {
+        // The living-room resume bug: a FIRST session (no pre-resolved plan,
+        // base 0) with a mid-title start time must anchor at the resume
+        // segment — producing the identical bytes an explicit restart would
+        // — and must not produce leading segments it was never asked for.
+        let source = try fixtureURL()
+        let continuous = runWriter(spec: makeSpec(sourceURL: source, startSeconds: 0))
+        let plan = try XCTUnwrap(continuous.plan)
+
+        let resumeIndex = 2
+        let resumed = runWriter(
+            spec: makeSpec(
+                sourceURL: source,
+                startSeconds: plan.sourceStartSeconds(ofSegment: resumeIndex)
+            ),
+            vodPlan: nil,
+            vodBaseIndex: 0
+        )
+        XCTAssertNil(resumed.error)
+        XCTAssertEqual(
+            normalizingFragmentSequence(try segmentData(continuous, resumeIndex)),
+            normalizingFragmentSequence(try segmentData(resumed, resumeIndex)),
+            "resume-anchored production must match the continuous timeline"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: resumed.outputDirectory.appendingPathComponent("seg_000000.m4s").path
+            ),
+            "a resume-anchored session must not produce leading segments"
+        )
+    }
+
     func testRestartedProducerReproducesContinuousSegmentByteIdentically() throws {
         let source = try fixtureURL()
         let continuous = runWriter(spec: makeSpec(sourceURL: source, startSeconds: 0))

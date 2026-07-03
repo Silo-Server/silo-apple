@@ -474,6 +474,14 @@ final class DVSegmentWriter {
     /// Fired once, on the session that resolves the plan, so the backend can
     /// hand the same plan to restarted producers.
     var onSegmentPlanResolved: ((LoopbackSegmentPlan) -> Void)?
+    /// Fired (on the mux thread) once the session's effective anchor segment
+    /// is known — for a resume-first session this differs from the passed
+    /// base. The backend must seed the consumer window and its coverage
+    /// bookkeeping from this before production begins.
+    var onVODProducerAnchored: ((Int) -> Void)?
+    /// The session's true anchor: `vodBaseIndex` for explicit restarts,
+    /// resume-derived for a first session starting mid-title.
+    private var vodEffectiveBaseIndex = 0
 
     /// Resolves (or installs) the segment plan and cutter. Runs after
     /// `openInput` — the keyframe index needs `find_stream_info` plus the
@@ -491,19 +499,33 @@ final class DVSegmentWriter {
             print("[CMP-AVP] vod plan unavailable; degrading to EVENT serving")
             return
         }
-        let clampedBase = min(vodBaseIndex, plan.segmentCount - 1)
+        // The effective anchor: an explicit restart passes its base, but a
+        // FIRST session resuming mid-title arrives with base 0 and a
+        // mid-title start time — its true anchor is the resume segment.
+        // Anchoring at 0 would park the producer against the consumer
+        // window seeded at its own segment and strand AVPlayer's resume
+        // fetches (the living-room resume startup timeout).
+        var effectiveBase = min(vodBaseIndex, plan.segmentCount - 1)
+        if sourceStartTimeSeconds > plan.anchorSourceSeconds + 0.05 {
+            effectiveBase = max(effectiveBase, plan.segmentIndex(
+                forPlaylistSeconds: sourceStartTimeSeconds - plan.anchorSourceSeconds
+            ))
+        }
+        vodEffectiveBaseIndex = effectiveBase
         vodCutter = LoopbackSegmentCutter(
-            boundaries: Array(plan.boundaries[clampedBase...]),
-            baseIndex: clampedBase
+            boundaries: Array(plan.boundaries[effectiveBase...]),
+            baseIndex: effectiveBase
         )
-        vodOpenSegmentIndex = clampedBase
+        vodOpenSegmentIndex = effectiveBase
+        onVODProducerAnchored?(effectiveBase)
+        print("[CMP-AVP] vod producer anchored segment=\(effectiveBase) start=\(sourceStartTimeSeconds)")
         vodAnchorPts = plan.boundaries[0]
         if let inCtx = inputCtx,
            videoInputStreamIndex >= 0,
            let stream = inCtx.pointee.streams?[videoInputStreamIndex] {
             vodVideoTimeBase = stream.pointee.time_base
         }
-        vodAwaitingRestartKeyframe = clampedBase > 0
+        vodAwaitingRestartKeyframe = effectiveBase > 0
         vodActive = true
         if selectedAudioOutputMode != .copy {
             // Bridged audio re-encodes on a synthesized clock; its restart
@@ -549,7 +571,7 @@ final class DVSegmentWriter {
         if inputIdx == videoInputStreamIndex {
             if vodAwaitingRestartKeyframe {
                 let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
-                let boundary = plan.boundaries[min(vodBaseIndex, plan.segmentCount - 1)]
+                let boundary = plan.boundaries[min(vodEffectiveBaseIndex, plan.segmentCount - 1)]
                 if isKeyframe, pkt.pointee.pts != Int64.min, pkt.pointee.pts >= boundary {
                     vodAwaitingRestartKeyframe = false
                     vodFirstRoutedVideoDts = pkt.pointee.dts
@@ -570,7 +592,7 @@ final class DVSegmentWriter {
             return false
         }
         let thresholdVideoTB: Int64
-        if vodBaseIndex == 0 {
+        if vodEffectiveBaseIndex == 0 {
             // Head of stream: audio at-or-after the plan anchor rides, even
             // ahead of the first video packet — the source's A/V offset is
             // part of the timeline. Audio before the anchor would map below

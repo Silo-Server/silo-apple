@@ -1040,6 +1040,18 @@ final class AVPlayerBackend {
             // or restarted session isn't parked by backpressure before the
             // player's first fetch declares a real target.
             segmentStore.declareVODTarget(vodBaseIndex)
+            // A resume-first session anchors itself once the plan resolves;
+            // re-seed from the writer's TRUE base or the producer parks
+            // against a window still sitting at 0 while AVPlayer's resume
+            // fetches strand (the living-room resume startup timeout).
+            writer.onVODProducerAnchored = { [weak self, weak segmentStore] base in
+                segmentStore?.declareVODTarget(base)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.isDisposed,
+                          self.activeLoopbackSessionID == sessionID else { return }
+                    self.activeVODWriterBaseIndex = base
+                }
+            }
         }
         writer.onSegmentPlanResolved = { [weak self] plan in
             DispatchQueue.main.async { [weak self] in
@@ -1133,6 +1145,20 @@ final class AVPlayerBackend {
         // headers are only for libavformat's source fetch and should not be
         // propagated into AVPlayer's localhost HLS requests.
         prepareAssetPlayback(url: url, headers: [:])
+        if case .some(.localDVLoopback(let spec)) = currentSourceStrategy,
+           spec.servingMode == .vodPlan,
+           pendingStartTime > 0 {
+            // Resume: aim AVPlayer's very first media fetches at the resume
+            // segment. The producer is anchored there; without this, the
+            // item buffers from position 0 whose segments may never exist.
+            let target = max(0, playerTime(forMediaTime: pendingStartTime))
+            avPlayer.seek(
+                to: CMTime(seconds: target, preferredTimescale: 600),
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            )
+            cmpLog("[CMP-AVP] vod resume pre-seek player=\(target) media=\(pendingStartTime)")
+        }
     }
 
     private func prepareAssetPlayback(url: URL, headers: [String: String]) {
