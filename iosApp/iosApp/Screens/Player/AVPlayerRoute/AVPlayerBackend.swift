@@ -1697,6 +1697,13 @@ final class AVPlayerBackend {
             Self.logger.info(
                 "[CMP-AVP] loopback playhead state pos=\(position, privacy: .public) tc=\(statusLabel, privacy: .public) rate=\(self.avPlayer.rate, privacy: .public) paused=\(self.isUserPaused ? 1 : 0, privacy: .public) bufAhead=\(bufferedAhead, privacy: .public) generatedAhead=\(generatedAhead, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public)"
             )
+            if case .some(.localDVLoopback(let stateSpec)) = currentSourceStrategy,
+               stateSpec.servingMode == .vodPlan {
+                // OSLog is invisible to the devicectl console; mirror the
+                // transport state so on-device render stalls (frozen picture,
+                // advancing audio clock) are diagnosable from the capture.
+                print("[CMP-AVP] vod state pos=\(String(format: "%.2f", position)) tc=\(statusLabel) rate=\(avPlayer.rate) bufAhead=\(String(format: "%.1f", bufferedAhead)) stationaryFor=\(String(format: "%.1f", stationaryFor))")
+            }
         }
 
         // Only a wedge qualifies: AVPlayer should be playing (not user-paused,

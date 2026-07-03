@@ -3292,6 +3292,22 @@ final class DVSegmentWriter {
             pendingSegmentHasMoof = false
             return
         }
+        // Session-head ground truth (first 3 segments per session): the tfdt
+        // each fragment carries, for diagnosing render stalls at the seam
+        // where playback crosses producer sessions. Computed while
+        // `pendingSegmentBytes` is still intact.
+        var vodTfdtSummary: String?
+        if vodActive, segmentEntries.count < 3 {
+            var tfdts: [String] = []
+            for moof in childBoxes(in: pendingSegmentBytes, from: 0, to: pendingSegmentBytes.count)
+            where moof.type == "moof" {
+                for timing in trackFragmentTimings(inMoof: pendingSegmentBytes, moof: moof.box) {
+                    tfdts.append("\(timing.trackID):\(timing.baseDecodeTime)")
+                }
+            }
+            vodTfdtSummary = tfdts.joined(separator: ",")
+        }
+
         // In VOD mode stats live on the plan axis (== the item timeline), so
         // the playhead watchdog compares like with like after a restart.
         let entryStart = vodActive
@@ -3316,9 +3332,9 @@ final class DVSegmentWriter {
             print("[CMP-AVP] seg \(idx) written (\(segSize) bytes, video=\(segmentHasVideo ? 1 : 0), dur=\(String(format: "%.3f", duration))s), total dur=\(String(format: "%.1f", totalMediaDuration))s)")
         }
         onSegmentAppended?(idx, totalMediaDuration)
-        if segmentEntries.count == 1 {
-            // Ground truth for fetch-vs-production races: the exact wall
-            // moment the session's first segment became servable.
+        if let vodTfdtSummary {
+            print("[CMP-AVP] vod segment stored name=\(name) bytes=\(segSize) dur=\(String(format: "%.3f", duration)) tfdt=[\(vodTfdtSummary)]")
+        } else if segmentEntries.count == 1 {
             print("[CMP-AVP] first segment stored name=\(name) bytes=\(segSize)")
         }
         if segmentHasVideo {
