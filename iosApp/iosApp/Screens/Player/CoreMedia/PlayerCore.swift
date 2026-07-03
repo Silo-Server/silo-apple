@@ -3448,8 +3448,31 @@ final class PlayerCore: NSObject {
                 Int(codecpar.color_trc.rawValue), Int(codecpar.color_range.rawValue)))
             return setupSoftwareVideoDecoder(codecpar: codecpar, codecparPtr: codecparPtr)
         default:
-            Self.logger.error("Unsupported video codec_id=\(codecpar.codec_id.rawValue)")
-            return false
+            // Codec-tail fallback (SiloPlayer plan, Stage 4): anything FFmpeg
+            // ships a decoder for routes through the generic software path
+            // instead of being rejected — VP9/VP8, AV1 (dav1d), MPEG-4
+            // Part 2, VC-1, and friends. The decoders were always compiled
+            // in; this switch was the only thing between them and playback.
+            // Known limits (documented follow-ups): the SW output path is
+            // 8-bit BGRA (10-bit SW HDR renders SDR) and decode is
+            // single-threaded (4K AV1/VP9 may stutter on Apple TV).
+            guard avcodec_find_decoder(codecpar.codec_id) != nil else {
+                Self.logger.error("Unsupported video codec_id=\(codecpar.codec_id.rawValue) (no FFmpeg decoder)")
+                return false
+            }
+            videoDecodeMode = .software
+            dynamicRange = VideoColorMetadata.dynamicRange(forTransfer: codecpar.color_trc)
+            videoPixelFormat = kCVPixelFormatType_32BGRA
+            let codecName = Self.codecName(for: codecpar.codec_id) ?? "unknown"
+            Self.logger.info(
+                "video: codec=\(codecpar.codec_id.rawValue) \(codecpar.width)x\(codecpar.height) fps=\(self.refreshRate) dr=\(self.dynamicRange.rawValue) mode=software (codec-tail)"
+            )
+            print(String(format:
+                "[CMP] video codecId=%d codec=%@ %dx%d fps=%.3f dr=%d color_trc=%d color_range=%d software=1 tail=1",
+                Int(codecpar.codec_id.rawValue), codecName, Int(codecpar.width), Int(codecpar.height),
+                Double(self.refreshRate), Int(dynamicRange.rawValue),
+                Int(codecpar.color_trc.rawValue), Int(codecpar.color_range.rawValue)))
+            return setupSoftwareVideoDecoder(codecpar: codecpar, codecparPtr: codecparPtr)
         }
         videoDecodeMode = .videoToolbox
 
