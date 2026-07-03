@@ -214,6 +214,7 @@ final class AVPlayerBackend {
     private var bufferLoadCount = 0
     private var lastStatsEmitWall: CFTimeInterval = 0
     private var loopbackSourceDownloadBitrateBps: Double?
+    private var loopbackHDR10PlusDetected = false
     private var loopbackSourceBytesRead: Int64?
     private var latestLoopbackGeneratedStats: LoopbackSegmentWriter.GeneratedMediaStats?
     private struct LoopbackEdgeWatch {
@@ -817,6 +818,7 @@ final class AVPlayerBackend {
         bufferLoadCount = 0
         lastStatsEmitWall = 0
         loopbackSourceDownloadBitrateBps = nil
+        loopbackHDR10PlusDetected = false
         loopbackSourceBytesRead = nil
         latestLoopbackGeneratedStats = nil
         loopbackEdgeWatch = nil
@@ -1187,6 +1189,23 @@ final class AVPlayerBackend {
                    self.canRampLoopbackBufferToSteadyState {
                     self.rampLoopbackBufferToSteadyStateIfNeeded(for: item)
                     self.sampleLocalLoopbackEdge(item: item, referenceTime: self.currentTime(), trigger: "generated_stats")
+                }
+            }
+        }
+        // HDR10+ badge: install the one-shot SEI scan only for plain HEVC PQ
+        // sessions whose label currently reads "HDR10" and has not flipped.
+        // DV Profile 8 sources keep their validated labels (scan not installed).
+        if sessionSpec.videoMode == .passthroughHEVC,
+           sessionSpec.manifestMetadata.videoRange != "HLG",
+           sessionSpec.manifestMetadata.videoRange != "SDR",
+           !loopbackHDR10PlusDetected {
+            writer.onHDR10PlusMetadataDetected = { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self, !self.isDisposed else { return }
+                    guard self.activeLoopbackSessionID == sessionID else { return }
+                    self.loopbackHDR10PlusDetected = true
+                    cmpLog("[CMP-AVP] hdr10+ dynamic metadata detected — badge flips HDR10 → HDR10+")
+                    self.emitPlaybackStats(referenceTime: self.currentTime(), force: true)
                 }
             }
         }
@@ -1644,7 +1663,7 @@ final class AVPlayerBackend {
             switch spec.manifestMetadata.videoRange {
             case "HLG": return "HLG"
             case "SDR": return "SDR"
-            default: return "HDR10"
+            default: return loopbackHDR10PlusDetected ? "HDR10+" : "HDR10"
             }
         case .passthroughH264:
             return "SDR"
@@ -2922,6 +2941,7 @@ final class AVPlayerBackend {
         writer?.onTimelineAnchorResolved = nil
         writer?.onSourceDownloadStats = nil
         writer?.onGeneratedMediaStats = nil
+        writer?.onHDR10PlusMetadataDetected = nil
         writer?.onFinished = nil
         segmentServer?.stop()
         segmentServer = nil
