@@ -935,6 +935,11 @@ final class AVPlayerBackend {
         while let current = next {
             guard vodRestartCoalescer.begin(current, authoritative: authoritative) else { return }
             cmpLog("[CMP-AVP] vod producer restart segment=\(current) authoritative=\(authoritative)")
+            // Seam stitching: hand the outgoing run's bridged-audio end to
+            // the new writer so a contiguous restart continues the audio
+            // timeline sample-exact (gap silence-filled / overlap trimmed);
+            // far re-anchors exceed the stitch window and seed from source.
+            let bridgedAudioResume = segmentWriter?.vodBridgedAudioSessionEndSampleTime
             segmentWriter?.stop()
             startSiloLoopbackWriter(
                 sessionID: sessionID,
@@ -942,7 +947,8 @@ final class AVPlayerBackend {
                 sessionDir: sessionDir,
                 segmentStore: store,
                 debugDirectory: nil,
-                vodBaseIndex: current
+                vodBaseIndex: current,
+                bridgedAudioResumeSampleTime: bridgedAudioResume
             )
             next = vodRestartCoalescer.next(justRan: current)
         }
@@ -1080,7 +1086,8 @@ final class AVPlayerBackend {
         sessionDir: URL,
         segmentStore: LoopbackSegmentStore,
         debugDirectory: URL?,
-        vodBaseIndex: Int = 0
+        vodBaseIndex: Int = 0,
+        bridgedAudioResumeSampleTime: Int64? = nil
     ) {
         let writer = LoopbackSegmentWriter(
             sessionSpec: sessionSpec,
@@ -1090,6 +1097,7 @@ final class AVPlayerBackend {
             vodPlan: vodPlanForCurrentSource(spec: sessionSpec),
             vodBaseIndex: vodBaseIndex
         )
+        writer.vodBridgedAudioResumeSampleTime = bridgedAudioResumeSampleTime
         if sessionSpec.servingMode == .vodPlan {
             activeVODWriterBaseIndex = vodBaseIndex
             // Seed the consumer window at the producer's base so a resumed

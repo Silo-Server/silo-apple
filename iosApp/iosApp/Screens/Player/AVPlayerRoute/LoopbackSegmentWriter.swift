@@ -357,8 +357,38 @@ final class LoopbackSegmentWriter {
     /// the seek target and buffers forward forever without becoming ready
     /// (living-room DV P7 + TrueHD→FLAC resume failure).
     private var vodSeededBridgedAudioPTS = false
+    /// Producer-swap seam stitching: the previous writer's bridged audio
+    /// ended at this sample (session axis, encoder ticks). A restarted
+    /// TrueHD/MLP decoder silently eats ~40ms of packets before its first
+    /// major_sync, so a source-accurate seed leaves that span as a hole in
+    /// the audio track at every ~33s producer seam — audible as an
+    /// intermittent glitch. When the new run's seed lands within
+    /// `vodSeamStitchMaxSamples` of this value, the run is anchored at it
+    /// instead: a gap is filled with encoded silence, an overlap is
+    /// trimmed. Larger deltas are real seeks — no stitch.
+    var vodBridgedAudioResumeSampleTime: Int64?
+    private var vodPendingSeamSilenceFillSamples: Int64 = 0
+    private var vodPendingSeamTrimSamples: Int64 = 0
+    private static let vodSeamStitchMaxSamples: Int64 = 12_000 // 250 ms @ 48 kHz
+    private let bridgedAudioEndLock = NSLock()
+    private var bridgedAudioSessionEndSample: Int64?
     private var audioDecodedFrameCount = 0
     private var audioDecodeErrorCount = 0
+
+    /// Exclusive end (session axis, encoder ticks) of the bridged audio
+    /// this run has handed to the encoder; nil until session-anchored.
+    /// Read by the backend on a producer swap to stitch the next run.
+    var vodBridgedAudioSessionEndSampleTime: Int64? {
+        bridgedAudioEndLock.lock()
+        defer { bridgedAudioEndLock.unlock() }
+        return bridgedAudioSessionEndSample
+    }
+
+    private func noteBridgedAudioEnd(_ value: Int64) {
+        bridgedAudioEndLock.lock()
+        bridgedAudioSessionEndSample = value
+        bridgedAudioEndLock.unlock()
+    }
     private var videoOutputTrackID: UInt32?
 
     /// Captures any fatal IO error seen by `writeInitSegment`,
@@ -2394,11 +2424,30 @@ final class LoopbackSegmentWriter {
         let seed = max(0, av_rescale_q(framePts - anchor, inTB, encoderTB))
         vodSeededBridgedAudioPTS = true
         guard seed > 0 else { return }
-        nextEncodedAudioPTS = seed
-        let seconds = Double(seed) * Double(encoderTB.num) / Double(max(1, encoderTB.den))
+        var anchored = seed
+        if let resume = vodBridgedAudioResumeSampleTime, resume > 0 {
+            let delta = seed - resume
+            if delta != 0, abs(delta) <= Self.vodSeamStitchMaxSamples {
+                anchored = resume
+                if delta > 0 {
+                    vodPendingSeamSilenceFillSamples = delta
+                } else {
+                    vodPendingSeamTrimSamples = -delta
+                }
+                print(
+                    "[CMP-AVP] vod bridged audio seam stitch resume=\(resume) seed=\(seed) "
+                    + (delta > 0 ? "fillSilence=\(delta)" : "trimOverlap=\(-delta)")
+                )
+            } else if delta != 0 {
+                print("[CMP-AVP] vod bridged audio seam stitch skipped delta=\(delta) (beyond stitch window — treated as seek)")
+            }
+        }
+        nextEncodedAudioPTS = anchored
+        noteBridgedAudioEnd(anchored)
+        let seconds = Double(anchored) * Double(encoderTB.num) / Double(max(1, encoderTB.den))
         print(String(
             format: "[CMP-AVP] vod bridged audio timeline anchored seed=%lld (%.3fs on session axis)",
-            seed, seconds
+            anchored, seconds
         ))
     }
 
@@ -2454,14 +2503,22 @@ final class LoopbackSegmentWriter {
         outFrame.pointee.nb_samples = converted
         let requiredFrameSize = encoderCtx.pointee.frame_size
         if requiredFrameSize > 0 {
+            try applyPendingSeamSilenceFillIfNeeded(encoderCtx: encoderCtx)
             try writeConvertedAudioToFifo(outFrame, sampleCount: converted)
+            drainPendingSeamTrimFromFifoIfNeeded()
             av_frame_free(&convertedFrame)
             try drainAudioSampleFifo(final: false)
             return
         }
 
+        // Seam stitching is FIFO-only; every bridged codec we configure
+        // (FLAC/AAC/AC3/EAC3) has a fixed frame_size and takes the FIFO
+        // path above. Drop any pending stitch rather than misapply it.
+        vodPendingSeamSilenceFillSamples = 0
+        vodPendingSeamTrimSamples = 0
         outFrame.pointee.pts = nextEncodedAudioPTS
         nextEncodedAudioPTS += Int64(converted)
+        if vodSeededBridgedAudioPTS { noteBridgedAudioEnd(nextEncodedAudioPTS) }
         let sendR = avcodec_send_frame(encoderCtx, outFrame)
         av_frame_free(&convertedFrame)
         if sendR < 0 && sendR != avErrorAgain {
@@ -2532,8 +2589,64 @@ final class LoopbackSegmentWriter {
 
             outFrame.pointee.pts = nextEncodedAudioPTS
             nextEncodedAudioPTS += Int64(samplesToSend)
+            if vodSeededBridgedAudioPTS { noteBridgedAudioEnd(nextEncodedAudioPTS) }
             try sendPreparedAudioFrameToEncoder(outFrame)
             av_frame_free(&frame)
+        }
+    }
+
+    /// Producer-seam gap fill: writes `vodPendingSeamSilenceFillSamples` of
+    /// silence into the sample FIFO before the run's first content samples,
+    /// covering [previous run's audio end, this run's first decoded frame)
+    /// so the track timeline stays contiguous and lipsync stays exact.
+    private func applyPendingSeamSilenceFillIfNeeded(
+        encoderCtx: UnsafeMutablePointer<AVCodecContext>
+    ) throws {
+        guard vodPendingSeamSilenceFillSamples > 0 else { return }
+        var remaining = vodPendingSeamSilenceFillSamples
+        vodPendingSeamSilenceFillSamples = 0
+        cmpLog("[CMP-AVP] vod seam silence fill samples=\(remaining)")
+        while remaining > 0 {
+            let n = Int32(min(remaining, 4096))
+            var frame = av_frame_alloc()
+            guard let silence = frame else {
+                throw LoopbackWriterError.allocOutput
+            }
+            silence.pointee.nb_samples = n
+            silence.pointee.format = encoderCtx.pointee.sample_fmt.rawValue
+            silence.pointee.sample_rate = encoderCtx.pointee.sample_rate
+            silence.pointee.ch_layout = encoderCtx.pointee.ch_layout
+            if av_frame_get_buffer(silence, 0) < 0 {
+                av_frame_free(&frame)
+                throw LoopbackWriterError.audioTranscodeSetup("seam silence buffer alloc failed")
+            }
+            _ = av_samples_set_silence(
+                silence.pointee.extended_data,
+                0,
+                n,
+                encoderCtx.pointee.ch_layout.nb_channels,
+                encoderCtx.pointee.sample_fmt
+            )
+            try writeConvertedAudioToFifo(silence, sampleCount: n)
+            av_frame_free(&frame)
+            remaining -= Int64(n)
+        }
+    }
+
+    /// Producer-seam overlap trim: drains duplicated leading samples out of
+    /// the FIFO before they are assigned timestamps, so a run whose first
+    /// decoded frame lands before the previous run's audio end doesn't
+    /// double-play that span (audible as phasing/"channels out of sync").
+    private func drainPendingSeamTrimFromFifoIfNeeded() {
+        guard vodPendingSeamTrimSamples > 0, let fifo = audioSampleFifo else { return }
+        let available = Int64(av_audio_fifo_size(fifo))
+        let n = min(vodPendingSeamTrimSamples, available)
+        guard n > 0 else { return }
+        if av_audio_fifo_drain(fifo, Int32(n)) >= 0 {
+            vodPendingSeamTrimSamples -= n
+            if vodPendingSeamTrimSamples == 0 {
+                cmpLog("[CMP-AVP] vod seam overlap trim complete samples=\(n)")
+            }
         }
     }
 
