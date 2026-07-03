@@ -1,9 +1,9 @@
 import XCTest
 @testable import Silo
 
-final class DVSegmentStoreResourceTests: XCTestCase {
+final class LoopbackSegmentStoreResourceTests: XCTestCase {
     func testDiskSpilledSegmentIsExposedAsDiskResource() {
-        let store = DVSegmentStore(
+        let store = LoopbackSegmentStore(
             generation: 101,
             memoryBudgetBytes: 1,
             spillPolicy: .enabled(reason: "test", maxBytes: 1024 * 1024)

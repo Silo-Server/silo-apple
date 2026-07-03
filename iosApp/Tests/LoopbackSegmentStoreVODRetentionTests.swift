@@ -1,7 +1,7 @@
 import XCTest
 @testable import Silo
 
-final class DVSegmentStoreVODRetentionTests: XCTestCase {
+final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
     // MARK: - Pure eviction decision
 
     private func inventory(_ indices: [Int], bytes: Int = 10) -> [(index: Int, bytes: Int)] {
@@ -10,7 +10,7 @@ final class DVSegmentStoreVODRetentionTests: XCTestCase {
 
     func testHardWindowNeverEvictedEvenOverBudget() {
         // Window alone exceeds the budget: correctness beats budget.
-        let victims = DVSegmentStore.vodEvictionVictims(
+        let victims = LoopbackSegmentStore.vodEvictionVictims(
             indicesWithBytes: inventory(Array(0...30)),
             targetIndex: 15,
             highWaterIndex: 30,
@@ -25,7 +25,7 @@ final class DVSegmentStoreVODRetentionTests: XCTestCase {
         // Target 100, window [80, 110]; backward history 0...79 outside.
         // Budget of 400 bytes keeps the window (310) plus the nearest 9
         // extras (79...71); everything farther evicts.
-        let victims = DVSegmentStore.vodEvictionVictims(
+        let victims = LoopbackSegmentStore.vodEvictionVictims(
             indicesWithBytes: inventory(Array(0...110)),
             targetIndex: 100,
             highWaterIndex: 110,
@@ -41,7 +41,7 @@ final class DVSegmentStoreVODRetentionTests: XCTestCase {
         // Producer reached 50; a transient backward fetch declares target 5.
         // The high-water anchor keeps the produced forward span in-window so
         // the jump can't evict forward progress.
-        let victims = DVSegmentStore.vodEvictionVictims(
+        let victims = LoopbackSegmentStore.vodEvictionVictims(
             indicesWithBytes: inventory(Array(0...50)),
             targetIndex: 5,
             highWaterIndex: 50,
@@ -53,7 +53,7 @@ final class DVSegmentStoreVODRetentionTests: XCTestCase {
     }
 
     func testZeroBudgetDisablesVODEviction() {
-        let victims = DVSegmentStore.vodEvictionVictims(
+        let victims = LoopbackSegmentStore.vodEvictionVictims(
             indicesWithBytes: inventory(Array(0...100)),
             targetIndex: 100,
             highWaterIndex: 100,
@@ -66,8 +66,8 @@ final class DVSegmentStoreVODRetentionTests: XCTestCase {
 
     // MARK: - Store behavior
 
-    private func makeVODStore(budget: Int64) -> DVSegmentStore {
-        let store = DVSegmentStore(
+    private func makeVODStore(budget: Int64) -> LoopbackSegmentStore {
+        let store = LoopbackSegmentStore(
             generation: 1,
             memoryBudgetBytes: 64 * 1024 * 1024,
             spillPolicy: .enabled(reason: "test", maxBytes: 64 * 1024 * 1024)

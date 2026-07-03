@@ -1,6 +1,7 @@
 # Apple Route Capability Matrix
 
-Snapshot date: 2026-04-29 (HEAD `6c2b4af`)
+Snapshot date: 2026-07-03 (SiloPlayer loopback-primary Stages 0–4;
+previous snapshot 2026-04-29 at `6c2b4af`)
 
 This matrix is the implementation-facing truth source for the current Apple
 player routes in `silo-apple`. It separates:
@@ -15,14 +16,14 @@ player routes in `silo-apple`. It separates:
 
 | Implementation route | Route family | Display label | Current role |
 | --- | --- | --- | --- |
-| `playerCoreDirect` | CompatibilityPlayer | CompatibilityPlayer Direct | Compatibility-first direct playback |
+| `playerCoreDirect` | CompatibilityPlayer | CompatibilityPlayer Direct | Codec-tail fallback (AV1/VP9/legacy via the opened codec gate) + runtime fallback when the loopback degrades |
 | `avPlayerHLS` | NativePlayer | NativePlayer HLS | Native adaptive path for explicit quality/bitrate-reduction HLS behind the local rollout gate |
 | `avPlayerNativeDirect` | NativePlayer | NativePlayer Direct | Narrow native-direct path for allowlisted `mp4` / `mov` / `m4v` assets |
-| `avPlayerLocalDVLoopback` | SiloPlayer | SiloPlayer Loopback | Local normalization path for Dolby Vision / rejected HEVC edge cases |
+| `siloPlayerLoopback` | SiloPlayer | SiloPlayer Loopback | **Primary** direct playback for H.264/HEVC (incl. SDR) via the static-VOD serving mode; gate `player.apple.siloplayer_primary_enabled` default ON (explicit `false` = kill switch to the EVENT path). Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
 
 ## Matrix
 
-| Capability | `playerCoreDirect` | `avPlayerHLS` | `avPlayerNativeDirect` | `avPlayerLocalDVLoopback` |
+| Capability | `playerCoreDirect` | `avPlayerHLS` | `avPlayerNativeDirect` | `siloPlayerLoopback` |
 | --- | --- | --- | --- | --- |
 | Primary audio selection | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
 | Primary subtitle selection | Repo-verified | Repo-verified | Repo-verified on allowlisted assets | Repo-verified |

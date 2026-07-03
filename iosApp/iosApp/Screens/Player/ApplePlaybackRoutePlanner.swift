@@ -202,21 +202,21 @@ struct ApplePlaybackRoutePlanner {
                 )
             }
             if directDolbyVisionProfile == 7, directLoopbackSession != nil {
-                engine = .avPlayerLocalDVLoopback
+                engine = .siloPlayerLoopback
                 parityBlockers = []
-                routeCapabilities = .avPlayerLocalDVLoopback
+                routeCapabilities = .siloPlayerLoopback
                 reason = input.preferProfile7HDR10Fallback
                     ? "dolby_vision_profile7_hdr10_fallback_loopback"
                     : "dolby_vision_profile7_to81_base_layer_loopback"
             } else if directDolbyVisionProfile == 5, directLoopbackSession != nil {
-                engine = .avPlayerLocalDVLoopback
+                engine = .siloPlayerLoopback
                 parityBlockers = []
-                routeCapabilities = .avPlayerLocalDVLoopback
+                routeCapabilities = .siloPlayerLoopback
                 reason = "dolby_vision_profile5_loopback"
             } else if directDolbyVisionProfile == 8, directLoopbackSession != nil {
-                engine = .avPlayerLocalDVLoopback
+                engine = .siloPlayerLoopback
                 parityBlockers = []
-                routeCapabilities = .avPlayerLocalDVLoopback
+                routeCapabilities = .siloPlayerLoopback
                 reason = directDvProfile8BaseLayer == .hlg
                     ? "dolby_vision_profile84_passthrough_loopback"
                     : "dolby_vision_profile81_passthrough_loopback"
@@ -226,9 +226,9 @@ struct ApplePlaybackRoutePlanner {
                 routeCapabilities = .avPlayerNativeDirect
                 reason = "native_direct_asset"
             } else if siloAssessment.isEligible, directLoopbackSession != nil {
-                engine = .avPlayerLocalDVLoopback
+                engine = .siloPlayerLoopback
                 parityBlockers = []
-                routeCapabilities = .avPlayerLocalDVLoopback
+                routeCapabilities = .siloPlayerLoopback
                 reason = siloAssessment.reason
             } else {
                 #if os(macOS)
@@ -271,13 +271,13 @@ struct ApplePlaybackRoutePlanner {
                         ? "profile84_passthrough_loopback_selected"
                         : "profile81_passthrough_loopback_selected"
                 )
-            } else if siloAssessment.isEligible, engine == .avPlayerLocalDVLoopback {
+            } else if siloAssessment.isEligible, engine == .siloPlayerLoopback {
                 trace.append("\(siloAssessment.reason)_selected")
             }
             let fallbackOrderToken: String = switch engine {
             case .avPlayerNativeDirect:
                 "fallback_order_native_silo_compatibility"
-            case .avPlayerLocalDVLoopback:
+            case .siloPlayerLoopback:
                 "fallback_order_silo_compatibility"
             case .playerCoreDirect:
                 "fallback_order_compatibility_only"
@@ -318,7 +318,7 @@ struct ApplePlaybackRoutePlanner {
             engine: engine,
             startMode: startMode,
             streamRequest: input.streamRequest,
-            loopbackSession: engine == .avPlayerLocalDVLoopback ? directLoopbackSession : nil,
+            loopbackSession: engine == .siloPlayerLoopback ? directLoopbackSession : nil,
             capabilities: routeCapabilities.backendCapabilities,
             routeCapabilities: routeCapabilities,
             requirements: input.routeRequirements,
@@ -614,9 +614,9 @@ private extension ApplePlaybackRoutePlanner {
             degradations.append("Loopback audio may use an explicit lossy fallback.")
         }
 
-        if !PlaybackEngineKind.avPlayerLocalDVLoopback.routeCapabilities
+        if !PlaybackEngineKind.siloPlayerLoopback.routeCapabilities
             .blockingReasons(for: requirements).isEmpty {
-            blockers.append(contentsOf: PlaybackEngineKind.avPlayerLocalDVLoopback.routeCapabilities
+            blockers.append(contentsOf: PlaybackEngineKind.siloPlayerLoopback.routeCapabilities
                 .blockingReasons(for: requirements))
         }
 
@@ -714,7 +714,7 @@ private extension ApplePlaybackRoutePlanner {
                 audioMode: "server_output",
                 subtitleMode: "server_or_sidecar"
             )
-        case .avPlayerLocalDVLoopback:
+        case .siloPlayerLoopback:
             return PlaybackNormalizationSummary(
                 containerMode: "local_fmp4_hls",
                 videoMode: loopbackSession?.videoMode.logToken ?? "loopback_unresolved",

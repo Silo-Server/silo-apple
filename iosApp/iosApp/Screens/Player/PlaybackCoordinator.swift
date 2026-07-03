@@ -40,7 +40,7 @@ final class PlaybackCoordinator {
         switch kind {
         case .playerCoreDirect:
             engine = CompatibilityPlayerEngine(core: makeCore())
-        case .avPlayerHLS, .avPlayerNativeDirect, .avPlayerLocalDVLoopback:
+        case .avPlayerHLS, .avPlayerNativeDirect, .siloPlayerLoopback:
             engine = AVFoundationPlayerEngine(kind: kind, backend: makeAVPlayer(kind))
         }
         activeEngine = engine

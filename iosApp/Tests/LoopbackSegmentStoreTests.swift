@@ -2,9 +2,9 @@ import XCTest
 import Foundation
 @testable import Silo
 
-final class DVSegmentStoreTests: XCTestCase {
+final class LoopbackSegmentStoreTests: XCTestCase {
     func testRetiringSpilledSegmentReclaimsSpillBudget() {
-        let store = DVSegmentStore(
+        let store = LoopbackSegmentStore(
             generation: UInt64(Date().timeIntervalSince1970 * 1000),
             memoryBudgetBytes: 20,
             spillPolicy: .enabled(reason: "test", maxBytes: 1_000_000)
@@ -37,7 +37,7 @@ final class DVSegmentStoreTests: XCTestCase {
     }
 
     func testAppendCapacityReflectsCurrentSpillBudget() {
-        let store = DVSegmentStore(
+        let store = LoopbackSegmentStore(
             generation: UInt64(Date().timeIntervalSince1970 * 1000) + 1,
             memoryBudgetBytes: 20,
             spillPolicy: .enabled(reason: "test", maxBytes: 20)

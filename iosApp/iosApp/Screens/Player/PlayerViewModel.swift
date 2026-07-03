@@ -1825,7 +1825,7 @@ class PlayerViewModel {
     private func attemptSiloRouteCompatibilityFallback(after message: String) -> Bool {
         guard !isDisposed,
               let activeExecutionPlan,
-              activeExecutionPlan.engine == .avPlayerLocalDVLoopback,
+              activeExecutionPlan.engine == .siloPlayerLoopback,
               !hasAttemptedSiloRouteCompatibilityFallback else {
             return false
         }
@@ -1993,7 +1993,7 @@ class PlayerViewModel {
         installPlayer(for: loadPlan.engine)
         let startTime = loadPlan.startMode.seconds
         let backendTimelineOffset = avPlayerTimelineOffset(for: loadPlan, startTime: startTime)
-        if loadPlan.engine == .avPlayerLocalDVLoopback {
+        if loadPlan.engine == .siloPlayerLoopback {
             playbackTimelineOffset = backendTimelineOffset
         }
         activePlayer.avBackend?.setMediaTimelineOffset(backendTimelineOffset)
@@ -2035,7 +2035,7 @@ class PlayerViewModel {
               plan.engine != .avPlayerHLS,
               plan.engine != .playerCoreDirect,
               ["http", "https"].contains(plan.sourceStreamRequest.url.scheme?.lowercased()) else {
-            if plan.engine == .avPlayerLocalDVLoopback {
+            if plan.engine == .siloPlayerLoopback {
                 throw SourceProxyPreparationError.unsupportedSourceURL
             }
             return SourceProxyPreparation(plan: plan, proxy: nil)
@@ -2068,13 +2068,13 @@ class PlayerViewModel {
             try await proxy.start()
             guard let localURL = proxy.localURL else {
                 proxy.stop()
-                if plan.engine == .avPlayerLocalDVLoopback {
+                if plan.engine == .siloPlayerLoopback {
                     throw SourceProxyPreparationError.missingLocalURL
                 }
                 return SourceProxyPreparation(plan: plan, proxy: nil)
             }
             proxy.setSourceBitrate(sourceBitrateBps(for: plan))
-            if plan.engine != .avPlayerLocalDVLoopback {
+            if plan.engine != .siloPlayerLoopback {
                 proxy.startPrefetch(at: initialSourcePrefetchOffset(for: plan))
             }
             Self.logger.info("[CMP-SOURCE-CACHE] enabled route=\(plan.engine.label, privacy: .public) budgetBytes=\(cacheBudget, privacy: .public)")
@@ -2117,14 +2117,14 @@ class PlayerViewModel {
                 normalizationSummary: plan.normalizationSummary,
                 validationClaims: plan.validationClaims
             )
-            if plan.engine == .avPlayerLocalDVLoopback, loopbackSession == nil {
+            if plan.engine == .siloPlayerLoopback, loopbackSession == nil {
                 proxy.stop()
                 throw SourceProxyPreparationError.missingLoopbackSession
             }
             return SourceProxyPreparation(plan: proxiedPlan, proxy: proxy)
         } catch {
             proxy.stop()
-            if plan.engine == .avPlayerLocalDVLoopback {
+            if plan.engine == .siloPlayerLoopback {
                 Self.logger.info("[CMP-SOURCE-CACHE] required proxy failed route=\(plan.engine.label, privacy: .public) error=\(String(describing: error), privacy: .public)")
                 throw error
             }
@@ -2135,7 +2135,7 @@ class PlayerViewModel {
 
     private func sourceCacheBudget(for plan: PlaybackExecutionPlan) -> Int {
         switch plan.engine {
-        case .avPlayerLocalDVLoopback:
+        case .siloPlayerLoopback:
             return PlaybackSourceCache.siloLoopbackMemoryBudgetBytes
         case .playerCoreDirect, .avPlayerNativeDirect, .avPlayerHLS:
             if let bps = sourceBitrateBps(for: plan), bps >= 200_000_000 {
@@ -2176,7 +2176,7 @@ class PlayerViewModel {
         session: PlaybackSessionResponse,
         requestedStart: Double?
     ) -> Double {
-        if plan.engine == .avPlayerLocalDVLoopback {
+        if plan.engine == .siloPlayerLoopback {
             let start = plan.startMode.seconds
             return start.isFinite ? max(0, start) : 0
         }
@@ -2199,7 +2199,7 @@ class PlayerViewModel {
         startTime: Double
     ) -> Double {
         switch plan.engine {
-        case .avPlayerLocalDVLoopback:
+        case .siloPlayerLoopback:
             return startTime.isFinite ? max(0, startTime) : 0
         case .avPlayerHLS:
             return playbackTimelineOffset
@@ -3833,7 +3833,7 @@ class PlayerViewModel {
 
     private func reloadLocalLoopbackForSeekBeforeAnchor(to target: Double) -> Bool {
         guard let plan = activeExecutionPlan,
-              plan.engine == .avPlayerLocalDVLoopback,
+              plan.engine == .siloPlayerLoopback,
               let loopbackSession = plan.loopbackSession else {
             return false
         }
@@ -5838,7 +5838,7 @@ class PlayerViewModel {
 
     private var activeRouteUsesEmbeddedAVPlayerSubtitleExtraction: Bool {
         switch activeRouteKind {
-        case .avPlayerNativeDirect, .avPlayerLocalDVLoopback:
+        case .avPlayerNativeDirect, .siloPlayerLoopback:
             return true
         case .playerCoreDirect, .avPlayerHLS:
             return false

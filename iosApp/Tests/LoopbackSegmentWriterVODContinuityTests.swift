@@ -4,7 +4,7 @@ import XCTest
 /// Pins the VOD serving mode's restart timeline continuity (plan 1d): a
 /// segment produced by a restarted producer must be byte-identical to the
 /// same segment produced by the continuous run, modulo the per-muxer mfhd
-/// sequence number. Runs the real DVSegmentWriter over a committed 20 s
+/// sequence number. Runs the real LoopbackSegmentWriter over a committed 20 s
 /// H.264+EAC3 MP4 fixture (keyframe every 2 s, so the 4 s plan cuts on
 /// keyframes and the plan is keyframe-trusted).
 ///
@@ -14,7 +14,7 @@ import XCTest
 /// scatters the DTS decomposition (and hence segment byte layout) by a
 /// frame or two while presentation timestamps stay epoch-invariant, so
 /// byte-identity is not the right contract there.
-final class DVSegmentWriterVODContinuityTests: XCTestCase {
+final class LoopbackSegmentWriterVODContinuityTests: XCTestCase {
     // MARK: - Harness
 
     private func fixtureURL() throws -> URL {
@@ -66,7 +66,7 @@ final class DVSegmentWriterVODContinuityTests: XCTestCase {
     ) -> WriterRun {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("vod-continuity-\(UUID().uuidString)", isDirectory: true)
-        let writer = DVSegmentWriter(
+        let writer = LoopbackSegmentWriter(
             sessionSpec: spec,
             outputDirectory: dir,
             vodPlan: vodPlan,

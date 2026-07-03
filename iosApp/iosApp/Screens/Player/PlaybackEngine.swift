@@ -133,7 +133,7 @@ final class AVFoundationPlayerEngine: PlaybackEngine {
             backend.loadRemoteHLS(url: request.url, headers: request.headers, startTime: startTime)
         case .avPlayerNativeDirect:
             backend.loadDirectFile(url: request.url, headers: request.headers, startTime: startTime)
-        case .avPlayerLocalDVLoopback:
+        case .siloPlayerLoopback:
             guard let loopbackSession = plan.loopbackSession else {
                 throw PlaybackEngineLoadError.missingLoopbackSession
             }

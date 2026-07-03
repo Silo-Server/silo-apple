@@ -1,7 +1,7 @@
 import Foundation
 import OSLog
 
-struct DVSegmentStoreStats: Equatable {
+struct LoopbackSegmentStoreStats: Equatable {
     let generation: UInt64
     let memoryBytes: Int64
     let memoryBudgetBytes: Int64
@@ -17,7 +17,7 @@ struct DVSegmentStoreStats: Equatable {
     let waitCount: Int64
 }
 
-final class DVSegmentStore {
+final class LoopbackSegmentStore {
     enum SpillPolicy: Equatable {
         case disabled(reason: String)
         case enabled(reason: String, maxBytes: Int64)
@@ -83,7 +83,7 @@ final class DVSegmentStore {
 
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
-        category: "DVSegmentStore"
+        category: "LoopbackSegmentStore"
     )
     private static let minimumSegmentsToKeep = 8
 
@@ -478,9 +478,9 @@ final class DVSegmentStore {
         return CFAbsoluteTimeGetCurrent() - lastSegmentServeWall
     }
 
-    func stats() -> DVSegmentStoreStats {
+    func stats() -> LoopbackSegmentStoreStats {
         lock.lock()
-        let snapshot = DVSegmentStoreStats(
+        let snapshot = LoopbackSegmentStoreStats(
             generation: generation,
             memoryBytes: Int64(memoryBytes),
             memoryBudgetBytes: Int64(memoryBudgetBytes),

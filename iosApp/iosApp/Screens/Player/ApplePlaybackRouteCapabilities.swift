@@ -404,7 +404,7 @@ extension ApplePlaybackRouteCapabilities {
         )
     )
 
-    static let avPlayerLocalDVLoopback = ApplePlaybackRouteCapabilities(
+    static let siloPlayerLoopback = ApplePlaybackRouteCapabilities(
         routeLabel: "Direct Stream",
         backendCapabilities: .avFoundation,
         primaryAudioSelection: .init(

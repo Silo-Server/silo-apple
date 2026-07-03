@@ -4,7 +4,7 @@ import XCTest
 final class GeneratedAheadThrottlePolicyTests: XCTestCase {
     func testThrottleWaitBudgetStaysBelowLivePlaylistReloadFailureWindow() {
         let targetDuration = 4.0
-        let budget = DVSegmentWriter.generatedAheadThrottleWaitBudgetSeconds(
+        let budget = LoopbackSegmentWriter.generatedAheadThrottleWaitBudgetSeconds(
             targetDuration: targetDuration
         )
 
@@ -13,7 +13,7 @@ final class GeneratedAheadThrottlePolicyTests: XCTestCase {
 
     func testThrottleWaitBudgetHasSmallFloorForShortSegments() {
         XCTAssertEqual(
-            DVSegmentWriter.generatedAheadThrottleWaitBudgetSeconds(targetDuration: 0.5),
+            LoopbackSegmentWriter.generatedAheadThrottleWaitBudgetSeconds(targetDuration: 0.5),
             0.5
         )
     }

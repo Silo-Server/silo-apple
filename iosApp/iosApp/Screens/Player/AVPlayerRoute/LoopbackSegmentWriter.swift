@@ -1,5 +1,5 @@
 //
-//  DVSegmentWriter.swift
+//  LoopbackSegmentWriter.swift
 //  Continuum (iOS + tvOS) — Dolby Vision AVPlayer loopback route
 //
 //  Re-demuxes a remote source with libavformat, re-muxes it into fragmented
@@ -83,10 +83,10 @@ enum DVTrueHDMajorSyncScanner {
     }
 }
 
-final class DVSegmentWriter {
+final class LoopbackSegmentWriter {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
-        category: "DVSegmentWriter"
+        category: "LoopbackSegmentWriter"
     )
     private static let traceTopLevelBoxes = false
     private static let verboseSegmentLogging =
@@ -102,7 +102,7 @@ final class DVSegmentWriter {
     let sourceHeaders: [String: String]
     let sourceStartTimeSeconds: Double
     let outputDirectory: URL
-    let segmentStore: DVSegmentStore?
+    let segmentStore: LoopbackSegmentStore?
     let debugOutputDirectory: URL?
     let selectedAudioTrackIndex: Int
     let videoMode: LoopbackSessionSpec.VideoMode
@@ -359,10 +359,10 @@ final class DVSegmentWriter {
     /// AVIO write callback (synchronously inside `av_interleaved_write_frame`),
     /// so they cannot throw directly. The mux loop checks this after every
     /// `av_interleaved_write_frame`/`av_write_trailer` and rethrows.
-    private var fatalIOError: DVWriterError?
+    private var fatalIOError: LoopbackWriterError?
     /// Consecutive `av_interleaved_write_frame` failures. Reset on success.
     /// When this hits `maxConsecutiveMuxWriteFailures`, the mux loop aborts via
-    /// `DVWriterError.muxWriteFailures` so callers see a real error instead of
+    /// `LoopbackWriterError.muxWriteFailures` so callers see a real error instead of
     /// a silent no-op. Some negative codes are treated as fatal on first hit
     /// regardless of count — see `evaluateMuxWriteResult`.
     private var consecutiveMuxWriteFailures = 0
@@ -425,7 +425,7 @@ final class DVSegmentWriter {
     init(
         sessionSpec: LoopbackSessionSpec,
         outputDirectory: URL,
-        segmentStore: DVSegmentStore? = nil,
+        segmentStore: LoopbackSegmentStore? = nil,
         debugOutputDirectory: URL? = nil,
         targetSegmentDuration: Double = 4.0,
         minimumStartupMediaDuration: Double? = nil,
@@ -743,11 +743,11 @@ final class DVSegmentWriter {
         // fragment, not spill into the next one.
         let drainRC = av_interleaved_write_frame(outCtx, nil)
         if drainRC < 0 {
-            throw DVWriterError.muxWriteFailures(lastRC: drainRC, consecutive: 1)
+            throw LoopbackWriterError.muxWriteFailures(lastRC: drainRC, consecutive: 1)
         }
         let flushRC = av_write_frame(outCtx, nil)
         if flushRC < 0 {
-            throw DVWriterError.muxWriteFailures(lastRC: flushRC, consecutive: 1)
+            throw LoopbackWriterError.muxWriteFailures(lastRC: flushRC, consecutive: 1)
         }
         if !vodDidFlushFirstFragment {
             vodDidFlushFirstFragment = true
@@ -756,7 +756,7 @@ final class DVSegmentWriter {
             // segment is fully emitted before the next packet is written.
             let secondRC = av_write_frame(outCtx, nil)
             if secondRC < 0 {
-                throw DVWriterError.muxWriteFailures(lastRC: secondRC, consecutive: 1)
+                throw LoopbackWriterError.muxWriteFailures(lastRC: secondRC, consecutive: 1)
             }
         }
         try throwIfFatalIOError()
@@ -848,7 +848,7 @@ final class DVSegmentWriter {
             let avNoPTS = Int64.min  // AV_NOPTS_VALUE
             while !isCancelled {
                 let rc: Int32
-                if DVSegmentWriter.traceThroughput {
+                if LoopbackSegmentWriter.traceThroughput {
                     let started = CFAbsoluteTimeGetCurrent()
                     rc = av_read_frame(inputCtx, packet)
                     throughputTiming.readMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
@@ -922,7 +922,7 @@ final class DVSegmentWriter {
                 rewritePacketForOutput(pkt: pkt, outStreamIndex: Int32(outIdx),
                                        inputStreamIndex: inputIdx)
                 let wr: Int32
-                if DVSegmentWriter.traceThroughput {
+                if LoopbackSegmentWriter.traceThroughput {
                     let started = CFAbsoluteTimeGetCurrent()
                     wr = av_interleaved_write_frame(outputCtx, pkt)
                     throughputTiming.muxMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
@@ -946,7 +946,7 @@ final class DVSegmentWriter {
                     Self.logger.error(
                         "av_write_trailer failed: rc=\(trailerRC) (\(detail, privacy: .public))"
                     )
-                    throw DVWriterError.muxWriteFailures(
+                    throw LoopbackWriterError.muxWriteFailures(
                         lastRC: trailerRC,
                         consecutive: 1
                     )
@@ -959,7 +959,7 @@ final class DVSegmentWriter {
                 onFinished?(nil)
             }
         } catch {
-            Self.logger.error("DVSegmentWriter failed: \(String(describing: error), privacy: .public)")
+            Self.logger.error("LoopbackSegmentWriter failed: \(String(describing: error), privacy: .public)")
             teardown()
             onFinished?(error)
         }
@@ -988,7 +988,7 @@ final class DVSegmentWriter {
     /// Centralizes the post-`av_interleaved_write_frame` bookkeeping. If the
     /// write callback set `fatalIOError` (init/segment/playlist write to disk
     /// failed), rethrow immediately. Otherwise track consecutive failures and
-    /// throw `DVWriterError.muxWriteFailures` when the threshold is reached
+    /// throw `LoopbackWriterError.muxWriteFailures` when the threshold is reached
     /// (or immediately for unambiguously-fatal codes).
     private func evaluateMuxWriteResult(_ rc: Int32, packet: UnsafeMutablePointer<AVPacket>? = nil) throws {
         try throwIfFatalIOError()
@@ -1003,7 +1003,7 @@ final class DVSegmentWriter {
             print("[CMP-AVP] mux write failed rc=\(rc) (\(detail)) consecutive=\(consecutiveMuxWriteFailures)")
             if rc == avErrorInvalidData
                 || consecutiveMuxWriteFailures >= Self.maxConsecutiveMuxWriteFailures {
-                throw DVWriterError.muxWriteFailures(
+                throw LoopbackWriterError.muxWriteFailures(
                     lastRC: rc,
                     consecutive: consecutiveMuxWriteFailures
                 )
@@ -1062,7 +1062,7 @@ final class DVSegmentWriter {
     private func openInput() throws {
         var ctx: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
         guard ctx != nil else {
-            throw DVWriterError.allocInput
+            throw LoopbackWriterError.allocInput
         }
 
         // Install an interrupt callback so `stop()` can unblock an in-flight
@@ -1072,7 +1072,7 @@ final class DVSegmentWriter {
         ctx!.pointee.interrupt_callback = AVIOInterruptCB(
             callback: { opaque in
                 guard let opaque else { return 0 }
-                let writer = Unmanaged<DVSegmentWriter>.fromOpaque(opaque).takeUnretainedValue()
+                let writer = Unmanaged<LoopbackSegmentWriter>.fromOpaque(opaque).takeUnretainedValue()
                 return writer.isCancelled ? 1 : 0
             },
             opaque: selfPtr
@@ -1103,10 +1103,10 @@ final class DVSegmentWriter {
         let rc = avformat_open_input(&ctx, inputLocation, nil, &options)
         av_dict_free(&options)
         if rc < 0 {
-            throw DVWriterError.openInput(rc)
+            throw LoopbackWriterError.openInput(rc)
         }
         guard let openedContext = ctx else {
-            throw DVWriterError.allocInput
+            throw LoopbackWriterError.allocInput
         }
         inputCtx = openedContext
 
@@ -1132,7 +1132,7 @@ final class DVSegmentWriter {
         )
 
         if avformat_find_stream_info(openedContext, nil) < 0 {
-            throw DVWriterError.findStreamInfo
+            throw LoopbackWriterError.findStreamInfo
         }
 
         try seekInputToStartTimeIfNeeded(openedContext)
@@ -1241,7 +1241,7 @@ final class DVSegmentWriter {
             return fallbackIndex
         }
 
-        throw DVWriterError.noStreams
+        throw LoopbackWriterError.noStreams
     }
 
     private static func videoStreamLog(
@@ -1274,7 +1274,7 @@ final class DVSegmentWriter {
             Self.logger.error(
                 "[CMP-AVP] loopback source seek failed requested=\(self.sourceStartTimeSeconds, privacy: .public) rc=\(result, privacy: .public)"
             )
-            throw DVWriterError.seekInput(result)
+            throw LoopbackWriterError.seekInput(result)
         }
 
         avformat_flush(ctx)
@@ -1285,7 +1285,7 @@ final class DVSegmentWriter {
     /// where we can parse and split them into segment files.
     private func openOutput() throws {
         guard let inCtx = inputCtx else {
-            throw DVWriterError.allocOutput
+            throw LoopbackWriterError.allocOutput
         }
         selectedAudioStreamIndex = shouldIncludeAudio
             ? try resolveSelectedAudioStreamIndex(in: inCtx)
@@ -1293,7 +1293,7 @@ final class DVSegmentWriter {
 
         let bufSize = 64 * 1024
         guard let buf = av_malloc(bufSize)?.assumingMemoryBound(to: UInt8.self) else {
-            throw DVWriterError.allocOutput
+            throw LoopbackWriterError.allocOutput
         }
         ioBuffer = buf
 
@@ -1305,9 +1305,9 @@ final class DVSegmentWriter {
             /* read_packet */ nil,
             /* write_packet */ { opaque, bufPtr, bufSize in
                 guard let opaque, let bufPtr else { return 0 }
-                let writer = Unmanaged<DVSegmentWriter>.fromOpaque(opaque).takeUnretainedValue()
+                let writer = Unmanaged<LoopbackSegmentWriter>.fromOpaque(opaque).takeUnretainedValue()
                 let slice = UnsafeBufferPointer(start: bufPtr, count: Int(bufSize))
-                if DVSegmentWriter.traceThroughput {
+                if LoopbackSegmentWriter.traceThroughput {
                     let started = CFAbsoluteTimeGetCurrent()
                     writer.ingestMuxerBytes(slice)
                     writer.throughputTiming.muxIOMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
@@ -1322,14 +1322,14 @@ final class DVSegmentWriter {
         guard let avio else {
             av_free(ioBuffer)
             ioBuffer = nil
-            throw DVWriterError.allocOutput
+            throw LoopbackWriterError.allocOutput
         }
         ioContext = avio
 
         var out: UnsafeMutablePointer<AVFormatContext>?
         let rc = avformat_alloc_output_context2(&out, nil, "mp4", nil)
         if rc < 0 || out == nil {
-            throw DVWriterError.allocOutput
+            throw LoopbackWriterError.allocOutput
         }
         out!.pointee.pb = avio
         outputCtx = out
@@ -1339,7 +1339,7 @@ final class DVSegmentWriter {
         // `dvh1` for Dolby Vision, `hvc1` for plain HEVC HDR/SDR, or `avc1`
         // for H.264 passthrough.
         guard let outCtx = outputCtx else {
-            throw DVWriterError.allocOutput
+            throw LoopbackWriterError.allocOutput
         }
         let nbStreams = Int(inCtx.pointee.nb_streams)
         for i in 0..<nbStreams {
@@ -1358,12 +1358,12 @@ final class DVSegmentWriter {
             }
 
             guard let outStream = avformat_new_stream(outCtx, nil) else {
-                throw DVWriterError.allocOutput
+                throw LoopbackWriterError.allocOutput
             }
 
             if mediaType == AVMEDIA_TYPE_VIDEO {
                 if avcodec_parameters_copy(outStream.pointee.codecpar, codecpar) < 0 {
-                    throw DVWriterError.allocOutput
+                    throw LoopbackWriterError.allocOutput
                 }
                 outStream.pointee.time_base = inStream.pointee.time_base
                 outStream.pointee.codecpar.pointee.codec_tag = 0
@@ -1396,10 +1396,10 @@ final class DVSegmentWriter {
             } else if selectedAudioOutputMode == .copy {
                 if !audioCodecSupportsMp4Mux(codecpar.pointee.codec_id) {
                     let codecName = String(cString: avcodec_get_name(codecpar.pointee.codec_id))
-                    throw DVWriterError.unsupportedSelectedAudioCodec(codecName)
+                    throw LoopbackWriterError.unsupportedSelectedAudioCodec(codecName)
                 }
                 if avcodec_parameters_copy(outStream.pointee.codecpar, codecpar) < 0 {
-                    throw DVWriterError.allocOutput
+                    throw LoopbackWriterError.allocOutput
                 }
                 if codecpar.pointee.sample_rate > 0 {
                     outStream.pointee.time_base = AVRational(num: 1, den: codecpar.pointee.sample_rate)
@@ -1431,7 +1431,7 @@ final class DVSegmentWriter {
             }
 
         if streamMap.isEmpty {
-            throw DVWriterError.noStreams
+            throw LoopbackWriterError.noStreams
         }
 
         if shouldIncludeAudio {
@@ -1464,7 +1464,7 @@ final class DVSegmentWriter {
             audioOrdinal += 1
         }
 
-        throw DVWriterError.audioTranscodeSetup(
+        throw LoopbackWriterError.audioTranscodeSetup(
             "selected audio track \(selectedAudioTrackIndex) was not found in source stream map"
         )
     }
@@ -1965,16 +1965,16 @@ final class DVSegmentWriter {
     ) throws {
         guard let codecpar = inputStream.pointee.codecpar,
               let decoder = avcodec_find_decoder(codecpar.pointee.codec_id) else {
-            throw DVWriterError.audioTranscodeSetup("audio decoder unavailable")
+            throw LoopbackWriterError.audioTranscodeSetup("audio decoder unavailable")
         }
 
         var decoderCtx = avcodec_alloc_context3(decoder)
         guard decoderCtx != nil else {
-            throw DVWriterError.audioTranscodeSetup("audio decoder alloc failed")
+            throw LoopbackWriterError.audioTranscodeSetup("audio decoder alloc failed")
         }
         if avcodec_parameters_to_context(decoderCtx, codecpar) < 0 || avcodec_open2(decoderCtx, decoder, nil) < 0 {
             avcodec_free_context(&decoderCtx)
-            throw DVWriterError.audioTranscodeSetup("audio decoder open failed")
+            throw LoopbackWriterError.audioTranscodeSetup("audio decoder open failed")
         }
 
         let sourceChannels = max(
@@ -2097,7 +2097,7 @@ final class DVSegmentWriter {
 
         if !opened {
             avcodec_free_context(&decoderCtx)
-            throw DVWriterError.audioTranscodeSetup(lastError)
+            throw LoopbackWriterError.audioTranscodeSetup(lastError)
         }
     }
 
@@ -2314,7 +2314,7 @@ final class DVSegmentWriter {
         while true {
             var frame = av_frame_alloc()
             guard let decodedFrame = frame else {
-                throw DVWriterError.allocOutput
+                throw LoopbackWriterError.allocOutput
             }
             let recvR = avcodec_receive_frame(decoderCtx, decodedFrame)
             if recvR == avErrorAgain || recvR == avErrorEOF {
@@ -2355,7 +2355,7 @@ final class DVSegmentWriter {
 
         var convertedFrame = av_frame_alloc()
         guard let outFrame = convertedFrame else {
-            throw DVWriterError.allocOutput
+            throw LoopbackWriterError.allocOutput
         }
         outFrame.pointee.nb_samples = outCapacity
         outFrame.pointee.format = encoderCtx.pointee.sample_fmt.rawValue
@@ -2363,7 +2363,7 @@ final class DVSegmentWriter {
         outFrame.pointee.ch_layout = encoderCtx.pointee.ch_layout
         if av_frame_get_buffer(outFrame, 0) < 0 {
             av_frame_free(&convertedFrame)
-            throw DVWriterError.audioTranscodeSetup("audio frame buffer alloc failed")
+            throw LoopbackWriterError.audioTranscodeSetup("audio frame buffer alloc failed")
         }
 
         var inPtrs = withUnsafeBytes(of: decodedFrame.pointee.data) { raw -> [UnsafePointer<UInt8>?] in
@@ -2397,7 +2397,7 @@ final class DVSegmentWriter {
         let sendR = avcodec_send_frame(encoderCtx, outFrame)
         av_frame_free(&convertedFrame)
         if sendR < 0 && sendR != avErrorAgain {
-            throw DVWriterError.audioTranscodeSetup("audio encoder send failed rc=\(sendR)")
+            throw LoopbackWriterError.audioTranscodeSetup("audio encoder send failed rc=\(sendR)")
         }
         try drainEncodedPackets()
     }
@@ -2407,7 +2407,7 @@ final class DVSegmentWriter {
         sampleCount: Int32
     ) throws {
         guard let fifo = audioSampleFifo else {
-            throw DVWriterError.audioTranscodeSetup("audio fifo unavailable")
+            throw LoopbackWriterError.audioTranscodeSetup("audio fifo unavailable")
         }
         let planePointers = unsafeBitCast(
             convertedFrame.pointee.extended_data,
@@ -2415,7 +2415,7 @@ final class DVSegmentWriter {
         )
         let writeR = av_audio_fifo_write(fifo, planePointers, sampleCount)
         if writeR < 0 || writeR != sampleCount {
-            throw DVWriterError.audioTranscodeSetup("audio fifo write failed rc=\(writeR)")
+            throw LoopbackWriterError.audioTranscodeSetup("audio fifo write failed rc=\(writeR)")
         }
     }
 
@@ -2441,7 +2441,7 @@ final class DVSegmentWriter {
 
             var frame = av_frame_alloc()
             guard let outFrame = frame else {
-                throw DVWriterError.allocOutput
+                throw LoopbackWriterError.allocOutput
             }
             outFrame.pointee.nb_samples = samplesToSend
             outFrame.pointee.format = encoderCtx.pointee.sample_fmt.rawValue
@@ -2449,7 +2449,7 @@ final class DVSegmentWriter {
             outFrame.pointee.ch_layout = encoderCtx.pointee.ch_layout
             if av_frame_get_buffer(outFrame, 0) < 0 {
                 av_frame_free(&frame)
-                throw DVWriterError.audioTranscodeSetup("audio fifo frame buffer alloc failed")
+                throw LoopbackWriterError.audioTranscodeSetup("audio fifo frame buffer alloc failed")
             }
 
             let planePointers = unsafeBitCast(
@@ -2459,7 +2459,7 @@ final class DVSegmentWriter {
             let readR = av_audio_fifo_read(fifo, planePointers, samplesToSend)
             if readR < 0 || readR != samplesToSend {
                 av_frame_free(&frame)
-                throw DVWriterError.audioTranscodeSetup("audio fifo read failed rc=\(readR)")
+                throw LoopbackWriterError.audioTranscodeSetup("audio fifo read failed rc=\(readR)")
             }
 
             outFrame.pointee.pts = nextEncodedAudioPTS
@@ -2473,7 +2473,7 @@ final class DVSegmentWriter {
         guard let encoderCtx = audioEncoderCtx else { return }
         let sendR = avcodec_send_frame(encoderCtx, frame)
         if sendR < 0 && sendR != avErrorAgain {
-            throw DVWriterError.audioTranscodeSetup("audio encoder send failed rc=\(sendR)")
+            throw LoopbackWriterError.audioTranscodeSetup("audio encoder send failed rc=\(sendR)")
         }
         try drainEncodedPackets()
     }
@@ -2488,7 +2488,7 @@ final class DVSegmentWriter {
             if isCancelled { return }
             var packet = av_packet_alloc()
             guard let encodedPacket = packet else {
-                throw DVWriterError.allocOutput
+                throw LoopbackWriterError.allocOutput
             }
             let recvR = avcodec_receive_packet(encoderCtx, encodedPacket)
             if recvR == avErrorAgain || recvR == avErrorEOF {
@@ -2497,7 +2497,7 @@ final class DVSegmentWriter {
             }
             if recvR < 0 {
                 av_packet_free(&packet)
-                throw DVWriterError.audioTranscodeSetup("audio encoder receive failed rc=\(recvR)")
+                throw LoopbackWriterError.audioTranscodeSetup("audio encoder receive failed rc=\(recvR)")
             }
 
             encodedPacket.pointee.stream_index = Int32(audioOutputStreamIndex)
@@ -2524,7 +2524,7 @@ final class DVSegmentWriter {
         while true {
             var frame = av_frame_alloc()
             guard let decodedFrame = frame else {
-                throw DVWriterError.allocOutput
+                throw LoopbackWriterError.allocOutput
             }
             let recvR = avcodec_receive_frame(decoderCtx, decodedFrame)
             if recvR == avErrorAgain || recvR == avErrorEOF {
@@ -2533,7 +2533,7 @@ final class DVSegmentWriter {
             }
             if recvR < 0 {
                 av_frame_free(&frame)
-                throw DVWriterError.audioTranscodeSetup("audio decoder flush failed rc=\(recvR)")
+                throw LoopbackWriterError.audioTranscodeSetup("audio decoder flush failed rc=\(recvR)")
             }
             try sendConvertedFrameToEncoder(decodedFrame)
             av_frame_free(&frame)
@@ -2543,7 +2543,7 @@ final class DVSegmentWriter {
         _ = avcodec_send_frame(encoderCtx, nil)
         try drainEncodedPackets()
         if audioDecodedFrameCount == 0 {
-            throw DVWriterError.audioTranscodeSetup("audio decoder produced no frames")
+            throw LoopbackWriterError.audioTranscodeSetup("audio decoder produced no frames")
         }
     }
 
@@ -2556,12 +2556,12 @@ final class DVSegmentWriter {
 
         var replacement = av_packet_alloc()
         guard let newPacket = replacement else {
-            throw DVWriterError.allocOutput
+            throw LoopbackWriterError.allocOutput
         }
         let allocR = av_new_packet(newPacket, Int32(transformed.count))
         guard allocR >= 0, let newData = newPacket.pointee.data else {
             av_packet_free(&replacement)
-            throw DVWriterError.allocOutput
+            throw LoopbackWriterError.allocOutput
         }
         transformed.withUnsafeBytes { src in
             guard let base = src.baseAddress else { return }
@@ -2638,19 +2638,19 @@ final class DVSegmentWriter {
     private func convertRpuNALToProfile81(_ nal: Data) throws -> Data {
         return try nal.withUnsafeBytes { raw -> Data in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else {
-                throw DVWriterError.profile81ConversionFailed("empty_rpu_nal")
+                throw LoopbackWriterError.profile81ConversionFailed("empty_rpu_nal")
             }
             guard let parsed = dovi_parse_unspec62_nalu(base, raw.count) else {
-                throw DVWriterError.profile81ConversionFailed("dovi_parse_unspec62_nalu")
+                throw LoopbackWriterError.profile81ConversionFailed("dovi_parse_unspec62_nalu")
             }
             defer { dovi_rpu_free(parsed) }
             let convertR = dovi_convert_rpu_with_mode(parsed, 2)
             if convertR != 0 {
                 let error = dovi_rpu_get_error(parsed).map(String.init(cString:)) ?? "unknown"
-                throw DVWriterError.profile81ConversionFailed("dovi_convert_rpu_with_mode \(error)")
+                throw LoopbackWriterError.profile81ConversionFailed("dovi_convert_rpu_with_mode \(error)")
             }
             guard let written = dovi_write_unspec62_nalu(parsed) else {
-                throw DVWriterError.profile81ConversionFailed("dovi_write_unspec62_nalu")
+                throw LoopbackWriterError.profile81ConversionFailed("dovi_write_unspec62_nalu")
             }
             defer { dovi_data_free(written) }
             return Data(bytes: written.pointee.data, count: written.pointee.len)
@@ -2688,7 +2688,7 @@ final class DVSegmentWriter {
     }
 
     private func writeHeader() throws {
-        guard let outCtx = outputCtx else { throw DVWriterError.allocOutput }
+        guard let outCtx = outputCtx else { throw LoopbackWriterError.allocOutput }
 
         // Fragmented MP4 flags. `delay_moov` (instead of `empty_moov`) defers
         // writing the moov atom until the first fragment is cut, so FFmpeg's
@@ -2727,7 +2727,7 @@ final class DVSegmentWriter {
         let rc = avformat_write_header(outCtx, &opts)
         av_dict_free(&opts)
         if rc < 0 {
-            throw DVWriterError.writeHeader(rc)
+            throw LoopbackWriterError.writeHeader(rc)
         }
         refreshOutputTrackTimeBases()
     }
@@ -3981,7 +3981,7 @@ private func ensureAudioFrameSize(codecpar: UnsafeMutablePointer<AVCodecParamete
     }
 }
 
-enum DVWriterError: Error {
+enum LoopbackWriterError: Error {
     case allocInput
     case allocOutput
     case openInput(Int32)

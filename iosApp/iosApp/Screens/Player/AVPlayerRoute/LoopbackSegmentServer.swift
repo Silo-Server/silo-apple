@@ -1,9 +1,9 @@
 //
-//  DVSegmentServer.swift
+//  LoopbackSegmentServer.swift
 //  Continuum (iOS + tvOS) — Dolby Vision Profile 5 AVPlayer route
 //
 //  Tiny HTTP server bound to 127.0.0.1:<random port>. Serves the HLS playlist
-//  and fMP4 segments that `DVSegmentWriter` writes to a session-scoped temp
+//  and fMP4 segments that `LoopbackSegmentWriter` writes to a session-scoped temp
 //  directory, so AVPlayer can consume them via a URL it accepts natively.
 //
 //  Uses `Network.framework`'s `NWListener` so we pull in zero dependencies.
@@ -26,16 +26,16 @@ import Foundation
 import Network
 import OSLog
 
-final class DVSegmentServer {
+final class LoopbackSegmentServer {
     private static let startupRequestLogLimit = 80
     private static let responseChunkBytes = 256 * 1024
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
-        category: "DVSegmentServer"
+        category: "LoopbackSegmentServer"
     )
 
     let rootDirectory: URL?
-    private let segmentStore: DVSegmentStore?
+    private let segmentStore: LoopbackSegmentStore?
 
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "com.continuum.dv.hlsserver", qos: .userInitiated)
@@ -56,7 +56,7 @@ final class DVSegmentServer {
         self.segmentStore = nil
     }
 
-    init(segmentStore: DVSegmentStore) {
+    init(segmentStore: LoopbackSegmentStore) {
         self.rootDirectory = nil
         self.segmentStore = segmentStore
     }
@@ -77,7 +77,7 @@ final class DVSegmentServer {
             )
             listener = try NWListener(using: params)
         } catch {
-            throw DVSegmentServerError.listenerInitFailed(error)
+            throw LoopbackSegmentServerError.listenerInitFailed(error)
         }
         self.listener = listener
 
@@ -103,7 +103,7 @@ final class DVSegmentServer {
                             resumeOnce(.success(p.rawValue))
                         }
                     case .failed(let err):
-                        resumeOnce(.failure(DVSegmentServerError.listenerFailed(err)))
+                        resumeOnce(.failure(LoopbackSegmentServerError.listenerFailed(err)))
                     case .cancelled:
                         break
                     default:
@@ -120,11 +120,11 @@ final class DVSegmentServer {
                 // timeout as distinct from a genuine bind failure so the
                 // caller sees a specific error.
                 queue.asyncAfter(deadline: .now() + 2) {
-                    resumeOnce(.failure(DVSegmentServerError.bindTimeout))
+                    resumeOnce(.failure(LoopbackSegmentServerError.bindTimeout))
                 }
             }
             let serving = self.rootDirectory?.path ?? "memory-store-\(self.segmentStore?.generation ?? 0)"
-            Self.logger.info("DVSegmentServer listening on 127.0.0.1:\(port) serving \(serving, privacy: .public)")
+            Self.logger.info("LoopbackSegmentServer listening on 127.0.0.1:\(port) serving \(serving, privacy: .public)")
         } catch {
             listener.cancel()
             self.listener = nil
@@ -314,7 +314,7 @@ final class DVSegmentServer {
     /// store doesn't hold — the backend requests a coalesced producer restart
     /// and waits, bounded, for the bytes. Runs off the server's queue so a
     /// slow resolution never stalls playlist/init requests.
-    var vodSegmentMissResolver: ((Int) -> DVSegmentStore.ResourceResult)?
+    var vodSegmentMissResolver: ((Int) -> LoopbackSegmentStore.ResourceResult)?
 
     private func respondWithStoreResource(
         path: String,
@@ -322,15 +322,15 @@ final class DVSegmentServer {
         range rangeHeader: String?,
         started: CFAbsoluteTime,
         on connection: NWConnection,
-        store: DVSegmentStore
+        store: LoopbackSegmentStore
     ) {
-        if let index = DVSegmentStore.segmentIndex(fromName: path) {
+        if let index = LoopbackSegmentStore.segmentIndex(fromName: path) {
             store.declareVODTarget(index)
         }
         switch store.resource(path: path) {
         case .missing, .gone:
             if let resolver = vodSegmentMissResolver,
-               let index = DVSegmentStore.segmentIndex(fromName: path) {
+               let index = LoopbackSegmentStore.segmentIndex(fromName: path) {
                 DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                     guard let self else { return }
                     switch resolver(index) {
@@ -365,7 +365,7 @@ final class DVSegmentServer {
     }
 
     private func respondWithResource(
-        _ resource: DVSegmentStore.Resource,
+        _ resource: LoopbackSegmentStore.Resource,
         requestPath: String,
         method: HTTPMethod,
         range rangeHeader: String?,
@@ -681,7 +681,7 @@ final class DVSegmentServer {
 
 }
 
-enum DVSegmentServerError: Error {
+enum LoopbackSegmentServerError: Error {
     case listenerInitFailed(Error?)
     case listenerFailed(NWError)
     case bindTimeout

@@ -86,9 +86,9 @@ private enum DVLoopbackFixtureRunner {
             case .inputMissing(let path):
                 return "input file does not exist: \(path)"
             case .writerFailed(let error):
-                return "DVSegmentWriter failed: \(error)"
+                return "LoopbackSegmentWriter failed: \(error)"
             case .timedOut(let seconds):
-                return "timed out after \(Int(seconds))s waiting for DVSegmentWriter"
+                return "timed out after \(Int(seconds))s waiting for LoopbackSegmentWriter"
             }
         }
     }
@@ -214,7 +214,7 @@ private enum DVLoopbackFixtureRunner {
             print("[DVFixture] audio=none")
         }
 
-        let writer = DVSegmentWriter(
+        let writer = LoopbackSegmentWriter(
             sessionSpec: session,
             outputDirectory: options.outputDirectory
         )

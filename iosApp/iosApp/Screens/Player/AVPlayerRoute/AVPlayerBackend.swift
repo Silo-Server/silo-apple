@@ -12,7 +12,7 @@ final class AVPlayerBackend {
     enum SourceStrategy {
         case remoteHLS(url: URL, headers: [String: String])
         case remoteDirect(url: URL, headers: [String: String])
-        case localDVLoopback(spec: LoopbackSessionSpec)
+        case siloLoopback(spec: LoopbackSessionSpec)
     }
 
     private struct MediaSelectionState {
@@ -115,7 +115,7 @@ final class AVPlayerBackend {
         return 3 * targetDuration + longestSegmentDuration
     }
 
-    private static func generatedHLSSpillPolicy(for spec: LoopbackSessionSpec) -> DVSegmentStore.SpillPolicy {
+    private static func generatedHLSSpillPolicy(for spec: LoopbackSessionSpec) -> LoopbackSegmentStore.SpillPolicy {
         if ProcessInfo.processInfo.environment["SILO_ENABLE_HLS_DISK_SPILL"] == "1" {
             return .enabled(reason: "env", maxBytes: generatedHLSSpillBudgetBytes)
         }
@@ -183,7 +183,7 @@ final class AVPlayerBackend {
     private var lastStatsEmitWall: CFTimeInterval = 0
     private var loopbackSourceDownloadBitrateBps: Double?
     private var loopbackSourceBytesRead: Int64?
-    private var latestLoopbackGeneratedStats: DVSegmentWriter.GeneratedMediaStats?
+    private var latestLoopbackGeneratedStats: LoopbackSegmentWriter.GeneratedMediaStats?
     private struct LoopbackEdgeWatch {
         var lastLoadedEnd: Double
         var lastLoadedEndAdvancedAt: CFTimeInterval
@@ -198,9 +198,9 @@ final class AVPlayerBackend {
     private var initialVideoDisplayFallback: DispatchWorkItem?
     private var loopbackStartupTimeout: DispatchWorkItem?
 
-    private var segmentWriter: DVSegmentWriter?
-    private var segmentServer: DVSegmentServer?
-    private var segmentStore: DVSegmentStore?
+    private var segmentWriter: LoopbackSegmentWriter?
+    private var segmentServer: LoopbackSegmentServer?
+    private var segmentStore: LoopbackSegmentStore?
     private var sessionDirectory: URL?
     private var activeLoopbackSessionID: String?
     private var loopbackGeneration: UInt64 = 0
@@ -268,7 +268,7 @@ final class AVPlayerBackend {
     ) {
         isUserPaused = false
         load(
-            strategy: .localDVLoopback(spec: sessionSpec),
+            strategy: .siloLoopback(spec: sessionSpec),
             startTime: startTime
         )
     }
@@ -292,7 +292,7 @@ final class AVPlayerBackend {
     func play() {
         isUserPaused = false
         onPauseChange?(false)
-        if case .some(.localDVLoopback(let spec)) = currentSourceStrategy,
+        if case .some(.siloLoopback(let spec)) = currentSourceStrategy,
            let mediaSeconds = pendingLocalLoopbackRecoveryMediaTime {
             pendingLocalLoopbackRecoveryMediaTime = nil
             Self.logger.info(
@@ -300,7 +300,7 @@ final class AVPlayerBackend {
             )
             subtitleSession?.flushOnSeek()
             embeddedSubtitleExtractor?.seek(to: mediaSeconds)
-            load(strategy: .localDVLoopback(spec: spec.reanchored(at: mediaSeconds)), startTime: mediaSeconds)
+            load(strategy: .siloLoopback(spec: spec.reanchored(at: mediaSeconds)), startTime: mediaSeconds)
             return
         }
         avPlayer.play()
@@ -333,7 +333,7 @@ final class AVPlayerBackend {
     func seek(to seconds: Double) {
         let mediaSeconds = seconds.isFinite ? max(0, seconds) : 0
         let playerSeconds = playerTime(forMediaTime: mediaSeconds)
-        if case .some(.localDVLoopback(let spec)) = currentSourceStrategy {
+        if case .some(.siloLoopback(let spec)) = currentSourceStrategy {
             // VOD serving mode: every seek is in-item. The static playlist
             // covers the whole title; a fetch into never-produced content
             // restarts the producer behind the stable item (1e), so the
@@ -416,7 +416,7 @@ final class AVPlayerBackend {
         )
         subtitleSession?.flushOnSeek()
         embeddedSubtitleExtractor?.seek(to: mediaSeconds)
-        load(strategy: .localDVLoopback(spec: spec.reanchored(at: mediaSeconds)), startTime: mediaSeconds)
+        load(strategy: .siloLoopback(spec: spec.reanchored(at: mediaSeconds)), startTime: mediaSeconds)
     }
 
     func currentTime() -> Double {
@@ -506,7 +506,7 @@ final class AVPlayerBackend {
     }
 
     func selectAudioTrack(_ trackId: Int64) {
-        if case .some(.localDVLoopback(let spec)) = currentSourceStrategy {
+        if case .some(.siloLoopback(let spec)) = currentSourceStrategy {
             guard let selectedTrack = spec.availableAudioTracks.first(where: { $0.trackId == trackId }),
                   let selectedTrackIndex = selectedTrack.srcId else {
                 return
@@ -563,7 +563,7 @@ final class AVPlayerBackend {
                 "[CMP-AVP] rebuilding loopback for audio trackId=\(trackId, privacy: .public) trackIndex=\(selectedTrackIndex, privacy: .public) ffIndex=\(selectedTrack.ffIndex ?? -1, privacy: .public)"
             )
             load(
-                strategy: .localDVLoopback(spec: updatedSpec),
+                strategy: .siloLoopback(spec: updatedSpec),
                 startTime: startTime
             )
             return
@@ -799,7 +799,7 @@ final class AVPlayerBackend {
             prepareAssetPlayback(url: url, headers: headers)
         case .remoteDirect(let url, let headers):
             prepareAssetPlayback(url: url, headers: headers)
-        case .localDVLoopback(let spec):
+        case .siloLoopback(let spec):
             if spec.servingMode == .vodPlan {
                 // The VOD item timeline is the plan's playlist axis; its
                 // origin is the plan anchor (near 0 for normal titles, the
@@ -811,7 +811,7 @@ final class AVPlayerBackend {
             } else {
                 setMediaTimelineOffset(spec.sourceStartTimeSeconds)
             }
-            startLocalDVLoopback(sessionSpec: spec)
+            startSiloLoopback(sessionSpec: spec)
         }
     }
 
@@ -859,7 +859,7 @@ final class AVPlayerBackend {
     @MainActor
     private func requestVODProducerRestart(at index: Int, authoritative: Bool = false) {
         guard !isDisposed,
-              case .some(.localDVLoopback(let spec)) = currentSourceStrategy,
+              case .some(.siloLoopback(let spec)) = currentSourceStrategy,
               spec.servingMode == .vodPlan,
               let plan = vodPlanForCurrentSource(spec: spec),
               plan.segmentCount > 0,
@@ -885,7 +885,7 @@ final class AVPlayerBackend {
             guard vodRestartCoalescer.begin(current, authoritative: authoritative) else { return }
             cmpLog("[CMP-AVP] vod producer restart segment=\(current) authoritative=\(authoritative)")
             segmentWriter?.stop()
-            startLocalDVLoopbackWriter(
+            startSiloLoopbackWriter(
                 sessionID: sessionID,
                 sessionSpec: spec.reanchored(at: plan.sourceStartSeconds(ofSegment: current)),
                 sessionDir: sessionDir,
@@ -932,7 +932,7 @@ final class AVPlayerBackend {
         }
     }
 
-    private func startLocalDVLoopback(
+    private func startSiloLoopback(
         sessionSpec: LoopbackSessionSpec
     ) {
         let sessionID = UUID().uuidString
@@ -947,7 +947,7 @@ final class AVPlayerBackend {
         preserveSessionDirectory = Self.keepLoopbackArtifacts
 
         let debugDirectory = preserveSessionDirectory ? sessionDir : nil
-        let store = DVSegmentStore(
+        let store = LoopbackSegmentStore(
             generation: generation,
             memoryBudgetBytes: Self.loopbackSegmentStoreMemoryBudgetBytes,
             spillPolicy: Self.generatedHLSSpillPolicy(for: sessionSpec),
@@ -961,7 +961,7 @@ final class AVPlayerBackend {
             print("[CMP-AVP] preserving local DV artifacts due to SILO_KEEP_DV_HLS=1 dir=\(sessionDir.path)")
         }
 
-        let server = DVSegmentServer(segmentStore: store)
+        let server = LoopbackSegmentServer(segmentStore: store)
         if sessionSpec.servingMode == .vodPlan {
             // A miss under the static VOD playlist means "not produced (yet)
             // or pruned": request a coalesced producer restart on main, then
@@ -1012,7 +1012,7 @@ final class AVPlayerBackend {
                 server.stop()
                 return
             }
-            self.startLocalDVLoopbackWriter(sessionID: sessionID,
+            self.startSiloLoopbackWriter(sessionID: sessionID,
                                              sessionSpec: sessionSpec,
                                              sessionDir: sessionDir,
                                              segmentStore: store,
@@ -1021,15 +1021,15 @@ final class AVPlayerBackend {
     }
 
     @MainActor
-    private func startLocalDVLoopbackWriter(
+    private func startSiloLoopbackWriter(
         sessionID: String,
         sessionSpec: LoopbackSessionSpec,
         sessionDir: URL,
-        segmentStore: DVSegmentStore,
+        segmentStore: LoopbackSegmentStore,
         debugDirectory: URL?,
         vodBaseIndex: Int = 0
     ) {
-        let writer = DVSegmentWriter(
+        let writer = LoopbackSegmentWriter(
             sessionSpec: sessionSpec,
             outputDirectory: sessionDir,
             segmentStore: segmentStore,
@@ -1086,7 +1086,7 @@ final class AVPlayerBackend {
             DispatchQueue.main.async { [weak self] in
                 guard let self, !self.isDisposed else { return }
                 guard self.activeLoopbackSessionID == sessionID else { return }
-                guard case .localDVLoopback = self.currentSourceStrategy else { return }
+                guard case .siloLoopback = self.currentSourceStrategy else { return }
                 self.setMediaTimelineOffset(sourceStartSeconds)
             }
         }
@@ -1148,7 +1148,7 @@ final class AVPlayerBackend {
         // headers are only for libavformat's source fetch and should not be
         // propagated into AVPlayer's localhost HLS requests.
         prepareAssetPlayback(url: url, headers: [:])
-        if case .some(.localDVLoopback(let spec)) = currentSourceStrategy,
+        if case .some(.siloLoopback(let spec)) = currentSourceStrategy,
            spec.servingMode == .vodPlan,
            pendingStartTime > 0 {
             // Resume: aim AVPlayer's very first media fetches at the resume
@@ -1189,7 +1189,7 @@ final class AVPlayerBackend {
         //
         // Remote routes keep AVPlayer's defaults since automatic buffering
         // is genuinely useful over the WAN.
-        if case .localDVLoopback = currentSourceStrategy {
+        if case .siloLoopback = currentSourceStrategy {
             avPlayer.automaticallyWaitsToMinimizeStalling = false
             item.preferredForwardBufferDuration = Self.loopbackStartupForwardBuffer
             // Do not let AVPlayer poll the local EVENT playlist while paused.
@@ -1246,11 +1246,11 @@ final class AVPlayerBackend {
                 routeLabel: "remoteDirect",
                 seekable: true
             )
-        case .localDVLoopback(let spec):
+        case .siloLoopback(let spec):
             source = AVPlayerSubtitleExtractionSource(
                 mediaURL: spec.sourceURL,
                 requestHeaders: spec.headers,
-                routeLabel: "localDVLoopback",
+                routeLabel: "siloLoopback",
                 seekable: true
             )
         case .remoteHLS:
@@ -1272,7 +1272,7 @@ final class AVPlayerBackend {
         ) { [weak self] time in
             guard let self, !self.isDisposed else { return }
             if self.isSeekPending { return }
-            if case .localDVLoopback = self.currentSourceStrategy {
+            if case .siloLoopback = self.currentSourceStrategy {
                 self.setLoopbackPlaybackClock(time.seconds)
             }
             self.releaseInitialVideoDisplayGateIfPlaybackAdvanced(currentTime: time.seconds)
@@ -1429,7 +1429,7 @@ final class AVPlayerBackend {
 
     private var publishesRemoteAccessLogNetworkStats: Bool {
         switch currentSourceStrategy {
-        case .localDVLoopback:
+        case .siloLoopback:
             return false
         case .remoteHLS, .remoteDirect:
             return true
@@ -1442,7 +1442,7 @@ final class AVPlayerBackend {
         switch strategy {
         case .remoteHLS(let url, _), .remoteDirect(let url, _):
             return url.host ?? url.scheme
-        case .localDVLoopback:
+        case .siloLoopback:
             return "SiloPlayer local stream"
         case .none:
             return nil
@@ -1451,7 +1451,7 @@ final class AVPlayerBackend {
 
     private func videoCodecLabel(for strategy: SourceStrategy?) -> String? {
         switch strategy {
-        case .localDVLoopback(let spec):
+        case .siloLoopback(let spec):
             return spec.videoMode.sampleEntryCodec
         case .remoteHLS:
             return "hls"
@@ -1470,7 +1470,7 @@ final class AVPlayerBackend {
 
     @MainActor
     private func audioStats(for item: AVPlayerItem) async -> PlaybackStats.MediaStream {
-        if case .localDVLoopback(let spec) = currentSourceStrategy {
+        if case .siloLoopback(let spec) = currentSourceStrategy {
             let outputMode = Self.audioOutputModeLabel(spec.selectedAudio.outputMode)
             let liveStream = await AVFoundationPlaybackIntrospection.audioStream(for: item)
             return PlaybackStats.MediaStream(
@@ -1529,7 +1529,7 @@ final class AVPlayerBackend {
     }
 
     private func dynamicRangeLabel(for strategy: SourceStrategy?) -> String? {
-        guard case .localDVLoopback(let spec) = strategy else { return nil }
+        guard case .siloLoopback(let spec) = strategy else { return nil }
         switch spec.videoMode {
         case .passthroughProfile5:
             return "HDR output validation required (Profile \(spec.manifestMetadata.advertisedDolbyVisionProfile ?? 5) source)"
@@ -1555,8 +1555,8 @@ final class AVPlayerBackend {
         to next: SourceStrategy
     ) -> Bool {
         #if os(tvOS)
-        guard case .localDVLoopback(let currentSpec) = current,
-              case .localDVLoopback(let nextSpec) = next,
+        guard case .siloLoopback(let currentSpec) = current,
+              case .siloLoopback(let nextSpec) = next,
               currentSpec.videoMode.isDolbyVision,
               nextSpec.videoMode.isDolbyVision else {
             return false
@@ -1660,7 +1660,7 @@ final class AVPlayerBackend {
     /// a user pause, so a paused player is never reanchored.
     private func loopbackPlayheadWatchdogTick() {
         guard !isDisposed,
-              case .localDVLoopback = currentSourceStrategy,
+              case .siloLoopback = currentSourceStrategy,
               let item = currentItem,
               didFireFileLoaded,
               !isSeekPending else { return }
@@ -1697,7 +1697,7 @@ final class AVPlayerBackend {
             Self.logger.info(
                 "[CMP-AVP] loopback playhead state pos=\(position, privacy: .public) tc=\(statusLabel, privacy: .public) rate=\(self.avPlayer.rate, privacy: .public) paused=\(self.isUserPaused ? 1 : 0, privacy: .public) bufAhead=\(bufferedAhead, privacy: .public) generatedAhead=\(generatedAhead, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public)"
             )
-            if case .some(.localDVLoopback(let stateSpec)) = currentSourceStrategy,
+            if case .some(.siloLoopback(let stateSpec)) = currentSourceStrategy,
                stateSpec.servingMode == .vodPlan {
                 // OSLog is invisible to the devicectl console; mirror the
                 // transport state so on-device render stalls (frozen picture,
@@ -1737,7 +1737,7 @@ final class AVPlayerBackend {
             return
         }
 
-        if case .some(.localDVLoopback(let servingSpec)) = currentSourceStrategy,
+        if case .some(.siloLoopback(let servingSpec)) = currentSourceStrategy,
            servingSpec.servingMode == .vodPlan,
            let sinceServe = segmentStore?.secondsSinceLastSegmentServe(),
            sinceServe < 4.0 {
@@ -1752,7 +1752,7 @@ final class AVPlayerBackend {
         Self.logger.error(
             "[CMP-AVP] local loopback playhead_watchdog trigger attempt=\(self.watchdogReanchorCount, privacy: .public) pos=\(position, privacy: .public) tc=\(statusLabel, privacy: .public) bufAhead=\(bufferedAhead, privacy: .public) generatedAhead=\(generatedAhead, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public)"
         )
-        if case .some(.localDVLoopback(let spec)) = currentSourceStrategy,
+        if case .some(.siloLoopback(let spec)) = currentSourceStrategy,
            spec.servingMode == .vodPlan {
             let attempt = watchdogReanchorCount
             Task { @MainActor [weak self] in
@@ -1764,7 +1764,7 @@ final class AVPlayerBackend {
     }
 
     private func sampleLocalLoopbackEdge(item: AVPlayerItem, referenceTime: Double, trigger: String) {
-        guard case .localDVLoopback = currentSourceStrategy,
+        guard case .siloLoopback = currentSourceStrategy,
               item === currentItem,
               didFireFileLoaded,
               !isUserPaused,
@@ -1884,7 +1884,7 @@ final class AVPlayerBackend {
         timeControlObs = avPlayer.observe(\.timeControlStatus, options: [.new, .initial]) { [weak self] player, _ in
             DispatchQueue.main.async { [weak self] in
                 guard let self, !self.isDisposed else { return }
-                guard case .localDVLoopback = self.currentSourceStrategy else { return }
+                guard case .siloLoopback = self.currentSourceStrategy else { return }
                 let status: String
                 switch player.timeControlStatus {
                 case .paused:
@@ -1908,7 +1908,7 @@ final class AVPlayerBackend {
                 guard let self, !self.isDisposed else { return }
                 if item.isPlaybackBufferEmpty {
                     self.bufferLoadCount += 1
-                    if case .localDVLoopback = self.currentSourceStrategy {
+                    if case .siloLoopback = self.currentSourceStrategy {
                         Self.logger.info(
                             "[CMP-AVP] item buffer empty current=\(self.currentTime(), privacy: .public) loadedRanges=\(self.describeLoadedRanges(item), privacy: .public)"
                         )
@@ -2013,7 +2013,7 @@ final class AVPlayerBackend {
         requireBufferedEdge: Bool = true,
         reason: String = "stall"
     ) {
-        guard case .some(.localDVLoopback(let spec)) = currentSourceStrategy,
+        guard case .some(.siloLoopback(let spec)) = currentSourceStrategy,
               item === currentItem,
               didFireFileLoaded,
               !isUserPaused else { return }
@@ -2036,11 +2036,11 @@ final class AVPlayerBackend {
         )
         subtitleSession?.flushOnSeek()
         embeddedSubtitleExtractor?.seek(to: mediaSeconds)
-        load(strategy: .localDVLoopback(spec: spec.reanchored(at: mediaSeconds)), startTime: mediaSeconds)
+        load(strategy: .siloLoopback(spec: spec.reanchored(at: mediaSeconds)), startTime: mediaSeconds)
     }
 
     private func resumeLocalLoopbackPlaybackIfNeeded(for item: AVPlayerItem, trigger: String) {
-        guard case .localDVLoopback = currentSourceStrategy,
+        guard case .siloLoopback = currentSourceStrategy,
               item === currentItem,
               didFireFileLoaded,
               !isUserPaused,
@@ -2136,7 +2136,7 @@ final class AVPlayerBackend {
     }
 
     private func scheduleLoopbackStartupTimeoutIfNeeded(for item: AVPlayerItem) {
-        guard case .localDVLoopback = currentSourceStrategy else { return }
+        guard case .siloLoopback = currentSourceStrategy else { return }
         cancelLoopbackStartupTimeout()
         let work = DispatchWorkItem { [weak self, weak item] in
             guard let self,
@@ -2144,7 +2144,7 @@ final class AVPlayerBackend {
                   !self.isDisposed,
                   item === self.currentItem,
                   !self.didFireFileLoaded,
-                  case .localDVLoopback = self.currentSourceStrategy else {
+                  case .siloLoopback = self.currentSourceStrategy else {
                 return
             }
             guard item.status != .readyToPlay else { return }
@@ -2232,7 +2232,7 @@ final class AVPlayerBackend {
     /// `automaticallyWaitsToMinimizeStalling` so AVPlayer pauses cleanly
     /// to rebuffer on actual underrun instead of presenting a stutter.
     private func rampLoopbackBufferToSteadyStateIfNeeded(for item: AVPlayerItem) {
-        guard case .localDVLoopback(let spec) = currentSourceStrategy else { return }
+        guard case .siloLoopback(let spec) = currentSourceStrategy else { return }
         guard canRampLoopbackBufferToSteadyState else { return }
         let generatedStats = latestLoopbackGeneratedStats
         let mediaBitrate = generatedStats?.rollingBitrateBps ?? spec.sourceBitrateBps
@@ -2632,7 +2632,7 @@ final class AVPlayerBackend {
 
     private func applyTVDisplayCriteriaForLoopbackIfNeeded(context: String) {
         #if os(tvOS)
-        guard case .localDVLoopback(let spec) = currentSourceStrategy else { return }
+        guard case .siloLoopback(let spec) = currentSourceStrategy else { return }
         switch spec.videoMode {
         case .passthroughProfile5, .convertProfile7To81, .passthroughProfile8:
             let preservedForReload = isPreservingTVDisplayCriteriaForReload
@@ -2748,8 +2748,8 @@ final class AVPlayerBackend {
             return "remoteHLS(\(url.absoluteString))"
         case .remoteDirect(let url, _):
             return "remoteDirect(\(url.absoluteString))"
-        case .localDVLoopback(let spec):
-            return "localDVLoopback(\(spec.sourceURL.absoluteString), videoMode=\(spec.videoMode.logToken), start=\(spec.sourceStartTimeSeconds), audioTrackIndex=\(spec.selectedAudio.trackIndex), audioFfIndex=\(spec.selectedAudio.ffIndex ?? -1))"
+        case .siloLoopback(let spec):
+            return "siloLoopback(\(spec.sourceURL.absoluteString), videoMode=\(spec.videoMode.logToken), start=\(spec.sourceStartTimeSeconds), audioTrackIndex=\(spec.selectedAudio.trackIndex), audioFfIndex=\(spec.selectedAudio.ffIndex ?? -1))"
         }
     }
 
@@ -2759,7 +2759,7 @@ final class AVPlayerBackend {
             return "Native Player HLS"
         case .remoteDirect:
             return "Native Player Direct"
-        case .localDVLoopback(let spec):
+        case .siloLoopback(let spec):
             switch spec.videoMode {
             case .passthroughH264:
                 return "SiloPlayer H.264 Loopback"
@@ -2773,7 +2773,7 @@ final class AVPlayerBackend {
 
     private static func normalizedLoopbackAudioTracks(for strategy: SourceStrategy) -> [PlayerTrack] {
         switch strategy {
-        case .localDVLoopback(let spec):
+        case .siloLoopback(let spec):
             let audioTracks = spec.availableAudioTracks
             guard !audioTracks.isEmpty else { return [] }
             if audioTracks.contains(where: { $0.isSelected }) {

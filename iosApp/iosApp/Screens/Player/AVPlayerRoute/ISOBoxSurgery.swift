@@ -3,7 +3,7 @@
 //  Continuum (iOS + tvOS) — Dolby Vision Profile 5 AVPlayer route
 //
 //  Pure functions over ISO/IEC 14496-12 (ISO Base Media File Format) byte
-//  buffers. `DVSegmentWriter` uses these to post-process an fMP4 init segment
+//  buffers. `LoopbackSegmentWriter` uses these to post-process an fMP4 init segment
 //  the FFmpeg mp4 muxer produces — the muxer in our build doesn't emit the
 //  `dvvC` box required for Dolby Vision signalling, so we patch one in by
 //  walking the box tree to find the video `hvcC` and inserting the `dvvC`
