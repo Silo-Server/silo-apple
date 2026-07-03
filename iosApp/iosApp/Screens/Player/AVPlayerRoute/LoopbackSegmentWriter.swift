@@ -350,6 +350,13 @@ final class LoopbackSegmentWriter {
     private var audioSwrCtx: OpaquePointer?
     private var audioSampleFifo: OpaquePointer?
     private var nextEncodedAudioPTS: Int64 = 0
+    /// VOD: whether `nextEncodedAudioPTS` has been anchored to the session
+    /// timeline. The bridged (re-encoded) audio track otherwise zero-bases
+    /// per producer run while remuxed video rides the plan axis; on a
+    /// mid-title resume AVPlayer then sees an audio track that never covers
+    /// the seek target and buffers forward forever without becoming ready
+    /// (living-room DV P7 + TrueHD→FLAC resume failure).
+    private var vodSeededBridgedAudioPTS = false
     private var audioDecodedFrameCount = 0
     private var audioDecodeErrorCount = 0
     private var videoOutputTrackID: UInt32?
@@ -540,10 +547,11 @@ final class LoopbackSegmentWriter {
         vodPrerollDroppedAudio = 0
         vodActive = true
         if selectedAudioOutputMode != .copy {
-            // Bridged audio re-encodes on a synthesized clock; its restart
-            // continuity is not validated yet (plan risk table). Copy-mode
+            // Bridged audio re-encodes on a synthesized clock; the encoder
+            // counter is seeded from the first emitted frame's session-axis
+            // timestamp (see seedVODBridgedAudioPTSIfNeeded). Copy-mode
             // sources are exact.
-            print("[CMP-AVP] vod: bridged audio (\(selectedAudioOutputMode)) — restart timeline continuity unvalidated")
+            print("[CMP-AVP] vod: bridged audio (\(selectedAudioOutputMode)) — session-anchored at first emitted frame")
         }
     }
 
@@ -2101,6 +2109,7 @@ final class LoopbackSegmentWriter {
             outputAudioCodecToken = candidate.codecToken
             audioOutputStreamIndex = Int(outputCtx?.pointee.nb_streams ?? 0) - 1
             nextEncodedAudioPTS = 0
+            vodSeededBridgedAudioPTS = false
             audioDecodedFrameCount = 0
             audioDecodeErrorCount = 0
             let sourceCodecName = String(cString: avcodec_get_name(codecpar.pointee.codec_id))
@@ -2351,6 +2360,48 @@ final class LoopbackSegmentWriter {
         }
     }
 
+    /// VOD: anchor the bridged-audio encoder clock to the session timeline
+    /// before the first emitted frame's samples are stamped. Remuxed video
+    /// packets get `applyVODAnchorShift` (source pts − plan.boundaries[0]);
+    /// the re-encoded audio track must start from the same axis or AVPlayer
+    /// sees disjoint track timelines on a mid-title resume and never reaches
+    /// readyToPlay. Priming frames never reach the encoder
+    /// (`emitDecodedFrames: false`), so the first frame seen here is the
+    /// first muxed-bound one — its source timestamp IS the audio anchor.
+    /// Frames without a usable timestamp defer seeding to the next frame.
+    private func seedVODBridgedAudioPTSIfNeeded(
+        from decodedFrame: UnsafeMutablePointer<AVFrame>,
+        encoderCtx: UnsafeMutablePointer<AVCodecContext>
+    ) {
+        guard vodActive, !vodSeededBridgedAudioPTS else { return }
+        guard let inCtx = inputCtx,
+              selectedAudioStreamIndex >= 0,
+              selectedAudioStreamIndex < Int(inCtx.pointee.nb_streams),
+              let stream = inCtx.pointee.streams?[selectedAudioStreamIndex] else { return }
+        var framePts = decodedFrame.pointee.best_effort_timestamp
+        if framePts == Int64.min { framePts = decodedFrame.pointee.pts }
+        guard framePts != Int64.min else { return }
+        let inTB = stream.pointee.time_base
+        let anchor = vodAnchorPts != 0
+            ? av_rescale_q(vodAnchorPts, vodVideoTimeBase, inTB)
+            : 0
+        // Same encoder-tick axis the per-sample counter advances on
+        // (`nextEncodedAudioPTS += nb_samples`, i.e. 1/sample_rate).
+        var encoderTB = encoderCtx.pointee.time_base
+        if encoderTB.num != 1 || encoderTB.den <= 0 {
+            encoderTB = AVRational(num: 1, den: encoderCtx.pointee.sample_rate)
+        }
+        let seed = max(0, av_rescale_q(framePts - anchor, inTB, encoderTB))
+        vodSeededBridgedAudioPTS = true
+        guard seed > 0 else { return }
+        nextEncodedAudioPTS = seed
+        let seconds = Double(seed) * Double(encoderTB.num) / Double(max(1, encoderTB.den))
+        print(String(
+            format: "[CMP-AVP] vod bridged audio timeline anchored seed=%lld (%.3fs on session axis)",
+            seed, seconds
+        ))
+    }
+
     private func noteAudioDecodeError(stage: String, rc: Int32) {
         audioDecodeErrorCount += 1
         let shouldLog = audioDecodeErrorCount <= 8 || audioDecodeErrorCount % 64 == 0
@@ -2364,6 +2415,7 @@ final class LoopbackSegmentWriter {
     private func sendConvertedFrameToEncoder(_ decodedFrame: UnsafeMutablePointer<AVFrame>) throws {
         guard let encoderCtx = audioEncoderCtx,
               let swr = audioSwrCtx else { return }
+        seedVODBridgedAudioPTSIfNeeded(from: decodedFrame, encoderCtx: encoderCtx)
 
         let inSamples = decodedFrame.pointee.nb_samples
         let outCapacity = swr_get_out_samples(swr, inSamples) + 32
