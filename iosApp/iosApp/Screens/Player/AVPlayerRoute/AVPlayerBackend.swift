@@ -867,14 +867,17 @@ final class AVPlayerBackend {
               let sessionID = activeLoopbackSessionID,
               let sessionDir = sessionDirectory else { return }
         let target = max(0, min(index, plan.segmentCount - 1))
-        if !authoritative,
-           let base = activeVODWriterBaseIndex,
+        if let base = activeVODWriterBaseIndex,
            segmentWriter != nil,
            target >= base,
            target <= base + Self.vodProducerCoverageWindow {
             // The running producer covers it; its forward march delivers.
-            // An authoritative recovery re-base skips this — the producer
-            // may itself be the wedged component.
+            // This applies to recovery re-bases too: restarting a covering
+            // producer discards its march and re-produces the same span —
+            // the recovery ladder's player-side nudge/reload is the tool
+            // for a consumer wedge, not producer churn. A genuinely wedged
+            // producer surfaces separately (source stall → premature EOF /
+            // mux failures) and escalates through the watchdog budget.
             return
         }
         var next: Int? = target
@@ -1724,6 +1727,17 @@ final class AVPlayerBackend {
                 "[CMP-AVP] local loopback playhead_watchdog exhausted reanchors=\(self.watchdogReanchorCount, privacy: .public) pos=\(position, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public); escalating to route fallback"
             )
             onLoopbackStallUnrecoverable?("playhead_watchdog")
+            return
+        }
+
+        if case .some(.localDVLoopback(let servingSpec)) = currentSourceStrategy,
+           servingSpec.servingMode == .vodPlan,
+           let sinceServe = segmentStore?.secondsSinceLastSegmentServe(),
+           sinceServe < 4.0 {
+            // The consumer is actively pulling segments — a post-seek buffer
+            // fill, not a wedge (the fetch-high-water signal). Recovery here
+            // would kill the producer mid-march and reset AVPlayer's buffer,
+            // looping the fill forever (living-room bug 3).
             return
         }
 

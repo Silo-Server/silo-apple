@@ -998,6 +998,9 @@ final class DVSegmentWriter {
             Self.logger.error(
                 "av_interleaved_write_frame failed: rc=\(rc) (\(detail, privacy: .public)) consecutive=\(self.consecutiveMuxWriteFailures)"
             )
+            // OSLog does not reach the devicectl console capture; mirror to
+            // stdout so on-device runs surface dropped packets.
+            print("[CMP-AVP] mux write failed rc=\(rc) (\(detail)) consecutive=\(consecutiveMuxWriteFailures)")
             if rc == avErrorInvalidData
                 || consecutiveMuxWriteFailures >= Self.maxConsecutiveMuxWriteFailures {
                 throw DVWriterError.muxWriteFailures(
@@ -2849,9 +2852,30 @@ final class DVSegmentWriter {
         guard isVideo, isKeyframe else { return false }
 
         pkt.pointee.dts = pkt.pointee.pts
+        if vodActive,
+           let inCtx = inputCtx,
+           let stream = inCtx.pointee.streams?[inputStreamIndex],
+           let codecpar = stream.pointee.codecpar {
+            // dts := pts over-states the decode time by the B-frame reorder
+            // delay: the packets that follow carry LOWER synthesized DTS, the
+            // muxer rejects them as non-monotonic (-22) and drops them, and
+            // the segment head ends up with sample-timeline gaps AVPlayer
+            // refuses to play through (living-room bug 3). Back the anchor
+            // keyframe's DTS off by the codec's reorder depth instead.
+            let delayFrames = Int64(codecpar.pointee.video_delay)
+            let frameRate = stream.pointee.avg_frame_rate
+            if delayFrames > 0, frameRate.num > 0, frameRate.den > 0 {
+                let frameTicks = av_rescale_q(
+                    1,
+                    AVRational(num: frameRate.den, den: frameRate.num),
+                    stream.pointee.time_base
+                )
+                pkt.pointee.dts = pkt.pointee.pts - delayFrames * max(1, frameTicks)
+            }
+        }
         repairedMissingVideoDTSCount += 1
         if repairedMissingVideoDTSCount <= 3 {
-            print("[CMP-AVP] repaired missing video DTS on keyframe pts=\(pkt.pointee.pts) videoMode=\(videoMode.logToken)")
+            print("[CMP-AVP] repaired missing video DTS on keyframe pts=\(pkt.pointee.pts) dts=\(pkt.pointee.dts) videoMode=\(videoMode.logToken)")
         }
         return true
     }

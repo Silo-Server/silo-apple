@@ -455,12 +455,27 @@ final class DVSegmentStore {
         switch result {
         case .found(let resource):
             bytesServed += Int64(resource.byteCount)
+            if normalized.hasPrefix("seg_") {
+                lastSegmentServeWall = CFAbsoluteTimeGetCurrent()
+            }
         case .missing, .gone:
             break
         }
         lastRequestLatencyMs = (CFAbsoluteTimeGetCurrent() - started) * 1000
         lock.unlock()
         return result
+    }
+
+    private var lastSegmentServeWall: CFAbsoluteTime = 0
+
+    /// Wall seconds since the last successful segment serve, or nil before
+    /// any. A consumer actively pulling segments is filling its buffer, not
+    /// wedged — the playhead watchdog holds recovery while this is fresh.
+    func secondsSinceLastSegmentServe() -> Double? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard lastSegmentServeWall > 0 else { return nil }
+        return CFAbsoluteTimeGetCurrent() - lastSegmentServeWall
     }
 
     func stats() -> DVSegmentStoreStats {
