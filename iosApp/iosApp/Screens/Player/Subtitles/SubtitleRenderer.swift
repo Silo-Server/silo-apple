@@ -121,6 +121,12 @@ final class SubtitleRenderer {
     // but native-ASS tracks need a different treatment).
     private var currentParams: SubtitleStylingOverride.Parameters = .default
 
+    /// libass keys font scaling to the video area (frame minus letterbox
+    /// margins), which makes Silo-styled text shrink on wide-aspect content.
+    /// This multiplier re-keys the scale to the full frame height so text
+    /// size stays constant on screen. 1.0 whenever margins are zero.
+    private var fontScaleCompensation: Double = 1.0
+
     // Output canvas. Allocated lazily at the requested pixel size and
     // reused across frames. A single mutable buffer feeds a single
     // `CGContext`; the `CGImage` handed to the overlay is a copy so
@@ -243,7 +249,8 @@ final class SubtitleRenderer {
                 renderer: self.renderer(for: slot),
                 params: self.currentParams,
                 isNativeASS: isNativeASS,
-                slot: slot
+                slot: slot,
+                fontScaleCompensation: self.fontScaleCompensation
             )
         }
     }
@@ -293,7 +300,8 @@ final class SubtitleRenderer {
                 renderer: self.renderer(for: slot),
                 params: self.currentParams,
                 isNativeASS: isNativeASS,
-                slot: slot
+                slot: slot,
+                fontScaleCompensation: self.fontScaleCompensation
             )
         }
     }
@@ -426,24 +434,33 @@ final class SubtitleRenderer {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.currentParams = params
-            self.handleLock.lock()
-            let primaryHandle = self.primary
-            let secondaryHandle = self.secondary
-            self.handleLock.unlock()
-            SubtitleStylingOverride.apply(
-                renderer: self.primaryRenderer,
-                params: params,
-                isNativeASS: primaryHandle?.isNativeASS ?? false,
-                slot: .primary
-            )
-            SubtitleStylingOverride.apply(
-                renderer: self.secondaryRenderer,
-                params: params,
-                isNativeASS: secondaryHandle?.isNativeASS ?? false,
-                slot: .secondary
-            )
+            self.reapplyStylingOnSessionQueue()
             self.frameSizeDirty = true  // force repaint on next tick
         }
+    }
+
+    /// Re-apply the current styling params (with the current font-scale
+    /// compensation) to both slot renderers. Callable only from
+    /// `sessionQueue`.
+    private func reapplyStylingOnSessionQueue() {
+        handleLock.lock()
+        let primaryHandle = primary
+        let secondaryHandle = secondary
+        handleLock.unlock()
+        SubtitleStylingOverride.apply(
+            renderer: primaryRenderer,
+            params: currentParams,
+            isNativeASS: primaryHandle?.isNativeASS ?? false,
+            slot: .primary,
+            fontScaleCompensation: fontScaleCompensation
+        )
+        SubtitleStylingOverride.apply(
+            renderer: secondaryRenderer,
+            params: currentParams,
+            isNativeASS: secondaryHandle?.isNativeASS ?? false,
+            slot: .secondary,
+            fontScaleCompensation: fontScaleCompensation
+        )
     }
 
     // MARK: - Render + composite
@@ -555,6 +572,19 @@ final class SubtitleRenderer {
         frameSizeDirty = true
         // Canvas will be reallocated on the next dirty render.
         canvas = nil
+
+        // libass keys font scale to the video area (frame height minus
+        // vertical margins), so letterboxed content would render smaller
+        // text than full-frame content. Compensate so Silo-styled text is
+        // keyed to the full frame height instead; a no-op (1.0) when
+        // margins are zero. Reapply overrides only when the factor moves so
+        // steady-state layout passes stay cheap.
+        let videoAreaHeight = h - margins.top - margins.bottom
+        let compensation = videoAreaHeight > 0 ? Double(h) / Double(videoAreaHeight) : 1.0
+        if abs(compensation - fontScaleCompensation) > 0.001 {
+            fontScaleCompensation = compensation
+            reapplyStylingOnSessionQueue()
+        }
     }
 
     private func configureRenderer(_ renderer: OpaquePointer) {

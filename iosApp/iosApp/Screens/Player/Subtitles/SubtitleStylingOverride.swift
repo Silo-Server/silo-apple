@@ -230,11 +230,18 @@ enum SubtitleStylingOverride {
     ///   pump, outside libass style overrides.
     /// - Parameter slot: which subtitle slot this renderer draws. Only the
     ///   primary slot participates in `use_margins` placement below.
+    /// - Parameter fontScaleCompensation: multiplier that re-keys libass's
+    ///   font scaling from the video area (frame minus letterbox margins)
+    ///   back to the full frame, so Silo-styled text renders at the same
+    ///   physical size regardless of the content's aspect ratio. 1.0 when
+    ///   the overlay is video-rect sized (no margins). Native ASS is never
+    ///   compensated — authored typesetting must keep tracking the picture.
     static func apply(
         renderer: OpaquePointer?,
         params: Parameters,
         isNativeASS: Bool,
-        slot: SubtitleSlot
+        slot: SubtitleSlot,
+        fontScaleCompensation: Double = 1.0
     ) {
         guard let renderer else { return }
 
@@ -261,7 +268,10 @@ enum SubtitleStylingOverride {
         // source. Use renderer font scale for live size changes, but do not
         // use FONT_SIZE_FIELDS below: that path also overrides ScaleX/Y and
         // scales FontSize against each source track's PlayRes.
-        let scale = params.fontSize / Parameters.referenceFontSize
+        let compensation = fontScaleCompensation.isFinite && fontScaleCompensation > 0
+            ? fontScaleCompensation
+            : 1.0
+        let scale = (params.fontSize / Parameters.referenceFontSize) * compensation
         ass_set_font_scale(renderer, scale.isFinite && scale > 0 ? scale : 1.0)
 
         // Swift's `ASS_Style()` already zero-initialises the struct.
