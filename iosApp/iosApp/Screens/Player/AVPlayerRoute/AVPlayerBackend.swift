@@ -882,6 +882,17 @@ final class AVPlayerBackend {
 
     private var vodRestartCoalescer = LoopbackRestartCoalescer()
     private var activeVODWriterBaseIndex: Int?
+    /// Highest segment index the running producer has actually finalized.
+    /// Coverage decisions ride the march only when the target is within
+    /// `vodProducerMarchAllowance` of THIS, not of the static base — with
+    /// 30–70 MB long-GOP segments the march moves at 3–6 s per segment, and
+    /// "within 8 of base" left a seek's fetch waiting out the full miss
+    /// deadline into a 404 (living-room frozen-video seeks).
+    private var activeVODWriterHeadIndex: Int?
+    /// How far past the produced head a fetch may ride the running
+    /// producer's march. One segment for the natural next-in-line fetch,
+    /// plus one for AVPlayer's concurrent lookahead.
+    private static let vodProducerMarchAllowance = 2
     /// The unlanded in-item seek target (media seconds). Cleared when the
     /// seek completion fires; while it survives, stall recovery aims here
     /// instead of at the frozen clock (M7).
@@ -928,12 +939,18 @@ final class AVPlayerBackend {
         if let base = activeVODWriterBaseIndex,
            segmentWriter != nil,
            target >= base,
-           target <= base + Self.vodProducerCoverageWindow {
-            // The running producer covers it; its forward march delivers.
-            // This applies to recovery re-bases too: restarting a covering
-            // producer discards its march and re-produces the same span —
-            // the recovery ladder's player-side nudge/reload is the tool
-            // for a consumer wedge, not producer churn. A genuinely wedged
+           target <= base + Self.vodProducerCoverageWindow,
+           target <= max(activeVODWriterHeadIndex ?? (base - 1), base - 1)
+                        + Self.vodProducerMarchAllowance {
+            // The running producer covers it AND is close enough that its
+            // forward march delivers before the fetch's miss deadline. The
+            // head-proximity bound matters on long-GOP sources: a seek
+            // landing 3+ heavy segments past the produced head used to ride
+            // "covered by base+8" into an 8 s wait and a 404. This applies
+            // to recovery re-bases too: restarting a covering producer
+            // discards its march and re-produces the same span — the
+            // recovery ladder's player-side nudge/reload is the tool for a
+            // consumer wedge, not producer churn. A genuinely wedged
             // producer surfaces separately (source stall → premature EOF /
             // mux failures) and escalates through the watchdog budget.
             return
@@ -1111,6 +1128,7 @@ final class AVPlayerBackend {
         )
         if sessionSpec.servingMode == .vodPlan {
             activeVODWriterBaseIndex = vodBaseIndex
+            activeVODWriterHeadIndex = vodBaseIndex - 1
             // Seed the consumer window at the producer's base so a resumed
             // or restarted session isn't parked by backpressure before the
             // player's first fetch declares a real target.
@@ -1125,6 +1143,20 @@ final class AVPlayerBackend {
                     guard let self, !self.isDisposed,
                           self.activeLoopbackSessionID == sessionID else { return }
                     self.activeVODWriterBaseIndex = base
+                    self.activeVODWriterHeadIndex = base - 1
+                }
+            }
+            // Produced-head tracking for the restart coverage decision:
+            // a fetch may only ride the running march when it's within
+            // vodProducerMarchAllowance of what has actually been written.
+            writer.onSegmentAppended = { [weak self] segmentIndex, _ in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.isDisposed,
+                          self.activeLoopbackSessionID == sessionID else { return }
+                    self.activeVODWriterHeadIndex = max(
+                        self.activeVODWriterHeadIndex ?? segmentIndex,
+                        segmentIndex
+                    )
                 }
             }
         }
