@@ -262,7 +262,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     @ViewBuilder
     private func castSection(cast: [CastMember]) -> some View {
         VStack(alignment: .leading, spacing: 28) {
-            TVSectionHeader(label: "Cast", title: "& Crew")
+            TVSectionHeader(title: "Cast & Crew")
             TVDetailCastRail(cast: cast, onTap: onPersonTap)
         }
     }
@@ -271,7 +271,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
 
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: 28) {
-            TVSectionHeader(label: "Info", title: "Details")
+            TVSectionHeader(title: "Details")
             TVDetailFactsSection(detail: detail)
         }
     }

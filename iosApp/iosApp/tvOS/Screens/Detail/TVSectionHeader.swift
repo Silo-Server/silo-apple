@@ -1,20 +1,22 @@
 #if os(tvOS)
 import SwiftUI
 
-/// Editorial section header used below the detail hero. A small tracked
-/// all-caps "eyebrow" label sits above a larger display title — a pattern
-/// Infuse / VidHub lean on to separate the hero from the scroll body
-/// without shouting. Single-line, tight stack, no underline or chrome.
+/// Editorial section header used below the detail hero. No underline or
+/// chrome — just a display title, with an optional small tracked all-caps
+/// "eyebrow" above it, used only when the eyebrow carries context the
+/// title doesn't (e.g. "This Season" over "Episodes").
 struct TVSectionHeader: View {
-    let label: String
+    var label: String? = nil
     let title: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(label.uppercased())
-                .font(.system(size: 20, weight: .bold))
-                .tracking(3.0)
-                .foregroundColor(.continuumOnSurface.opacity(0.55))
+            if let label, !label.isEmpty {
+                Text(label.uppercased())
+                    .font(.system(size: 20, weight: .bold))
+                    .tracking(3.0)
+                    .foregroundColor(.continuumOnSurface.opacity(0.55))
+            }
 
             Text(title)
                 .font(.system(size: 42, weight: .semibold))

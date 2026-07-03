@@ -224,7 +224,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
 
     private var similarSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(label: "Recommended", title: "More Like This")
+            PhoneSectionHeader(title: "More Like This")
                 .padding(.horizontal, ContinuumTheme.safePadding)
             PhoneSimilarRail(
                 contentId: detail.contentId,
@@ -290,7 +290,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     @ViewBuilder
     private func castSection(cast: [CastMember]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(label: "Cast", title: "& Crew")
+            PhoneSectionHeader(title: "Cast & Crew")
                 .padding(.horizontal, ContinuumTheme.safePadding)
             PhoneCastRail(cast: cast, onTap: onPersonTap)
         }
@@ -300,7 +300,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
 
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(label: "Info", title: "Details")
+            PhoneSectionHeader(title: "Details")
             PhoneDetailFactsSection(detail: detail)
         }
     }
