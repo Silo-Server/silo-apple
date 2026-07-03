@@ -601,6 +601,20 @@ final class LoopbackSegmentWriter {
         vodOpenSegmentIndex = effectiveBase
         onVODProducerAnchored?(effectiveBase)
         print("[CMP-AVP] vod producer anchored segment=\(effectiveBase) start=\(sourceStartTimeSeconds)")
+        let anchorBoundarySeconds = plan.sourceStartSeconds(ofSegment: effectiveBase)
+        if sourceStartTimeSeconds > anchorBoundarySeconds + 0.05, let inCtx = inputCtx {
+            // Mid-segment resume: the open seek targeted the resume TIME,
+            // which parks the demuxer mid-GOP inside the anchor segment —
+            // the bootstrap then discards frames up to the NEXT keyframe
+            // and the anchor segment AVPlayer's resume pre-seek fetches is
+            // never produced (living-room startup stalls at segments
+            // 1549/1711: endless 404s → ladder → Compatibility fallback).
+            // Re-seek to the anchor BOUNDARY (a plan keyframe; cues are
+            // warm and no packets are consumed yet — the same contract the
+            // restart path relies on in prewarmVODCueIndexAndReseek).
+            try? seekInput(inCtx, toSeconds: anchorBoundarySeconds)
+            cmpLog("[CMP-AVP] vod anchor boundary re-seek boundary=\(anchorBoundarySeconds) resume=\(sourceStartTimeSeconds)")
+        }
         vodAnchorPts = plan.boundaries[0]
         if let inCtx = inputCtx,
            videoInputStreamIndex >= 0,
@@ -1368,8 +1382,14 @@ final class LoopbackSegmentWriter {
         _ ctx: UnsafeMutablePointer<AVFormatContext>
     ) throws {
         guard sourceStartTimeSeconds.isFinite, sourceStartTimeSeconds > 0 else { return }
+        try seekInput(ctx, toSeconds: sourceStartTimeSeconds)
+    }
 
-        let timestamp = Int64(sourceStartTimeSeconds * Double(AV_TIME_BASE))
+    private func seekInput(
+        _ ctx: UnsafeMutablePointer<AVFormatContext>,
+        toSeconds seconds: Double
+    ) throws {
+        let timestamp = Int64(seconds * Double(AV_TIME_BASE))
         var result = avformat_seek_file(
             ctx,
             -1,
@@ -1383,13 +1403,13 @@ final class LoopbackSegmentWriter {
         }
         guard result >= 0 else {
             Self.logger.error(
-                "[CMP-AVP] loopback source seek failed requested=\(self.sourceStartTimeSeconds, privacy: .public) rc=\(result, privacy: .public)"
+                "[CMP-AVP] loopback source seek failed requested=\(seconds, privacy: .public) rc=\(result, privacy: .public)"
             )
             throw LoopbackWriterError.seekInput(result)
         }
 
         avformat_flush(ctx)
-        cmpLog("[CMP-AVP] loopback source seek requested=\(sourceStartTimeSeconds) rc=\(result)")
+        cmpLog("[CMP-AVP] loopback source seek requested=\(seconds) rc=\(result)")
     }
 
     /// Custom AVIOContext so the mp4 muxer's writes flow back into Swift
