@@ -34,6 +34,16 @@ struct BrowseView: View {
             }
         }
         .continuumBackground()
+        .overlay(alignment: .top) {
+            // Grid is painted from cache but the server can't be reached —
+            // flag the staleness instead of letting refresh fail silently.
+            if ConnectionMonitor.shared.isOffline, !viewModel.items.isEmpty {
+                ServerUnreachablePill()
+                    .padding(.top, ContinuumTheme.padding)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
         .sheet(isPresented: $showFilters) {
             FilterView(viewModel: viewModel)
         }
@@ -417,9 +427,15 @@ struct LibraryRecommendedView: View {
                     .padding(.top, refreshStatusTopPadding)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(2)
+            } else if ConnectionMonitor.shared.isOffline, !viewModel.regularSections.isEmpty {
+                ServerUnreachablePill()
+                    .padding(.top, refreshStatusTopPadding)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(2)
             }
         }
         .animation(.easeInOut(duration: 0.18), value: isRefreshing)
+        .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
         .continuumBackground()
         .task(id: libraryId) {
             await viewModel.loadSections(libraryId: libraryId)

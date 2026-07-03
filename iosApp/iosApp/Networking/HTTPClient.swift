@@ -69,6 +69,11 @@ actor HTTPClient {
         let config = URLSessionConfiguration.default
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        // Fail fast when the server is down: the default 60s idle timeout
+        // leaves a dead-but-routable server spinning for a minute before the
+        // user sees anything. 15s is the max quiet gap between bytes, not a
+        // total budget, so slow-but-alive responses are unaffected.
+        config.timeoutIntervalForRequest = 15
         return URLSession(configuration: config)
     }
 
@@ -381,10 +386,23 @@ actor HTTPClient {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
+            // Feed ConnectionMonitor from every transport failure so the app
+            // learns "server down" passively. Cancellation says nothing about
+            // reachability, so it is excluded.
+            if (error as? URLError)?.code != .cancelled {
+                Task { @MainActor in
+                    ConnectionMonitor.shared.noteServerUnreachable()
+                }
+            }
             throw HTTPError.network(underlying: error)
         }
         guard let http = response as? HTTPURLResponse else {
             throw HTTPError.invalidResponse
+        }
+        // Any HTTP response — success or error status — proves the server is
+        // alive.
+        Task { @MainActor in
+            ConnectionMonitor.shared.noteServerResponded()
         }
         return (data, http)
     }

@@ -153,9 +153,17 @@ struct HomeView: View {
                     .padding(.top, 64)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(2)
+            } else if ConnectionMonitor.shared.isOffline, !viewModel.sections.isEmpty {
+                // Cached sections are painted but the server can't be
+                // reached — say so instead of silently showing stale data.
+                ServerUnreachablePill()
+                    .padding(.top, 64)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(2)
             }
         }
         .animation(.easeInOut(duration: 0.18), value: isRefreshing)
+        .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
         #if !os(macOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif

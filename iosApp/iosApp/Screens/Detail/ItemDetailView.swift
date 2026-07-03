@@ -48,6 +48,19 @@ private struct OfflinePlayChoice: Identifiable {
     var id: String { downloadId }
 }
 
+/// A streaming play attempt intercepted because the server is unreachable and
+/// no local copy exists. Held so the confirmation alert's "Try Anyway" can
+/// replay the exact request.
+private struct UnreachablePlayRequest: Identifiable {
+    let contentId: String
+    let fileId: Int?
+    let audioTrackIndex: Int?
+    let subtitleTrackIndex: Int?
+    let startFromBeginning: Bool
+    let resumePosition: Double?
+    var id: String { contentId }
+}
+
 private struct ItemDetailPhoneContent: View {
     let contentId: String
 
@@ -61,6 +74,7 @@ private struct ItemDetailPhoneContent: View {
     @State private var nextUpWatchDetail: WatchDetail?
     @State private var refreshOnPlayerDismiss = false
     @State private var offlinePlayChoice: OfflinePlayChoice?
+    @State private var unreachablePlayRequest: UnreachablePlayRequest?
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
     @State private var controlRequestBox: ControlRequestBox?
@@ -126,6 +140,33 @@ private struct ItemDetailPhoneContent: View {
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("Play the copy saved on this device, or stream from the server.")
+        }
+        .alert(
+            "Can't Reach Server",
+            isPresented: Binding(
+                get: { unreachablePlayRequest != nil },
+                set: { if !$0 { unreachablePlayRequest = nil } }
+            ),
+            presenting: unreachablePlayRequest
+        ) { request in
+            // Reachability state can be stale (e.g. the server just came
+            // back), so always leave an escape hatch to attempt the stream.
+            Button("Try Anyway") {
+                Task { await ConnectionMonitor.shared.probeServer() }
+                presentStreamingPlayer(
+                    contentId: request.contentId,
+                    fileId: request.fileId,
+                    audioTrackIndex: request.audioTrackIndex,
+                    subtitleTrackIndex: request.subtitleTrackIndex,
+                    startFromBeginning: request.startFromBeginning,
+                    resumePosition: request.resumePosition
+                )
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text(ConnectionMonitor.shared.isDeviceOnline
+                ? "Streaming needs a connection to your server, which isn't responding right now. Downloaded titles can still be played."
+                : "You're offline. Connect to a network to stream, or play a downloaded title.")
         }
         #if os(iOS)
         .toolbar {
@@ -654,10 +695,36 @@ private struct ItemDetailPhoneContent: View {
         // offers this — a cast target can't read the local file.
         if let record = DownloadManager.shared.record(forContentId: contentId),
            record.isPlayableOffline {
+            // Server unreachable: streaming can't start, so skip the source
+            // choice and play the local copy directly.
+            guard ConnectionMonitor.shared.isServerReachable else {
+                refreshOnPlayerDismiss = true
+                router.presentOfflinePlayer(
+                    downloadId: record.id,
+                    contentId: record.leafMediaItemId,
+                    startFromBeginning: startFromBeginning,
+                    resumePosition: resumePosition
+                )
+                return
+            }
             offlinePlayChoice = OfflinePlayChoice(
                 downloadId: record.id,
                 leafContentId: record.leafMediaItemId,
                 downloadedLabel: Self.downloadedOptionLabel(for: record),
+                contentId: contentId,
+                fileId: fileId,
+                audioTrackIndex: audioTrackIndex,
+                subtitleTrackIndex: subtitleTrackIndex,
+                startFromBeginning: startFromBeginning,
+                resumePosition: resumePosition
+            )
+            return
+        }
+
+        // No local copy and the server is known unreachable: surface that
+        // here instead of presenting a player that will spin and fail.
+        guard ConnectionMonitor.shared.isServerReachable else {
+            unreachablePlayRequest = UnreachablePlayRequest(
                 contentId: contentId,
                 fileId: fileId,
                 audioTrackIndex: audioTrackIndex,

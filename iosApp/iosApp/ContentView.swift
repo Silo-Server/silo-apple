@@ -590,6 +590,19 @@ struct MainTabView: View {
             }
         }
         .tint(.continuumOnSurface)
+        #if !os(tvOS)
+        // Mirror Android's offline start-destination: launching with no
+        // network but playable local downloads lands on Downloads instead of
+        // a Home screen that can't load anything.
+        .task {
+            await ConnectionMonitor.shared.waitForInitialPath()
+            guard !ConnectionMonitor.shared.isDeviceOnline,
+                  DownloadManager.shared.downloadsEnabled,
+                  DownloadManager.shared.records.contains(where: { $0.isPlayableOffline })
+            else { return }
+            selectedTab = .downloads
+        }
+        #endif
         #if os(iOS)
         // Cold-launch path for silent remote-control resume: scenePhase may
         // already be .active when the authenticated UI first appears, so the
