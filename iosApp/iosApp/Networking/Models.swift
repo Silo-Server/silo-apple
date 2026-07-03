@@ -774,6 +774,10 @@ struct AudioTrack: Codable, Identifiable, Hashable {
     let sampleRate: Int?
     let language: String?
     let title: String?
+    /// Raw stream title as probed, distinct from the cleaned `title`.
+    /// The server's audio-pref signature match compares both fields
+    /// separately, so persisted track choices must echo each back.
+    let embeddedTitle: String?
     /// Server field is the reserved word `default`.
     let isDefault: Bool?
     var id: Int { index ?? 0 }
@@ -787,6 +791,7 @@ struct AudioTrack: Codable, Identifiable, Hashable {
         case sampleRate
         case language
         case title
+        case embeddedTitle
         case isDefault = "default"
     }
 }
@@ -799,7 +804,11 @@ struct SubtitleTrack: Codable, Identifiable, Hashable {
     let codec: String?
     let language: String?
     let title: String?
+    /// Raw stream title as probed, distinct from the cleaned `title`.
+    let embeddedTitle: String?
     let forced: Bool?
+    /// SDH flag — carried into persisted subtitle-pref signatures.
+    let hearingImpaired: Bool?
     /// Server field is the reserved word `default`.
     let isDefault: Bool?
     let external: Bool?
@@ -811,7 +820,9 @@ struct SubtitleTrack: Codable, Identifiable, Hashable {
         case codec
         case language
         case title
+        case embeddedTitle
         case forced
+        case hearingImpaired
         case isDefault = "default"
         case external
         // The API decoder runs `.convertFromSnakeCase`, which rewrites the wire

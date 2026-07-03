@@ -4225,6 +4225,7 @@ class PlayerViewModel {
         pendingAudioFfIndex = nil
         selectedAudioId = track.trackId
         applyAudioTrackSelection(track.trackId)
+        persistAudioSelection(track)
         scheduleHideControls()
     }
 
@@ -4240,6 +4241,7 @@ class PlayerViewModel {
             "[CMP-SUB] select primary trackId=\(track.trackId, privacy: .public) title=\(track.title ?? "nil", privacy: .public) external=\(track.isExternal, privacy: .public) codec=\(track.codec ?? "nil", privacy: .public)"
         )
         applySubtitleTrackSelection(track.trackId)
+        persistSubtitleSelection(track)
         scheduleHideControls()
     }
 
@@ -4253,7 +4255,66 @@ class PlayerViewModel {
         selectedSubtitleId = nil
         Self.logger.info("[CMP-SUB] disable primary subtitles")
         applySubtitleTrackSelection(nil)
+        persistSubtitleSelection(nil)
         scheduleHideControls()
+    }
+
+    /// Server pref key for remembering explicit track picks: series id
+    /// for episodes (one choice covers the series), the item's own
+    /// content id for movies. Nil during offline playback — there is no
+    /// server to remember anything for.
+    private var trackPrefPersistKey: String? {
+        guard offlinePlaybackContext == nil, let detail = currentWatchDetail else { return nil }
+        return TrackSelectionPersistence.prefKey(
+            seriesId: detail.seriesId,
+            contentId: detail.contentId
+        )
+    }
+
+    /// Best-effort write of an explicit audio pick so it sticks across
+    /// player exits (web-app parity; the server only auto-persists
+    /// audio on its own change endpoint, which Apple's engine-local
+    /// switching never calls). Prefers the server's probed metadata for
+    /// the signature so re-resolution gets an exact match.
+    private func persistAudioSelection(_ track: PlayerTrack) {
+        guard let key = trackPrefPersistKey else { return }
+        let ordinal = audioSelectionIndex(for: track)
+        let request: AudioPrefRequest
+        if let ordinal,
+           let version = currentSelectedVersion,
+           let fromDetail = TrackSelectionPersistence.audioRequest(version: version, ordinal: ordinal) {
+            request = fromDetail
+        } else {
+            request = TrackSelectionPersistence.audioRequest(track: track, ordinal: ordinal)
+        }
+        TrackSelectionPersistence.saveAudio(prefKey: key, request: request)
+    }
+
+    /// Best-effort write of an explicit subtitle pick (or explicit
+    /// "Off" when `track` is nil). Live AI translation tracks are
+    /// session-scoped and never persisted.
+    private func persistSubtitleSelection(_ track: PlayerTrack?) {
+        guard let key = trackPrefPersistKey else { return }
+        if let track, SubtitleTrackIdSpace.isAILive(track.trackId) { return }
+        let showForced = currentWatchDetail?.effectiveShowForcedSubtitles
+        let request: SubtitlePrefRequest
+        if let track {
+            if !track.isExternal,
+               let ffIndex = track.ffIndex,
+               let version = currentSelectedVersion,
+               let fromDetail = TrackSelectionPersistence.subtitleRequest(
+                   version: version,
+                   ffIndex: ffIndex,
+                   showForced: showForced
+               ) {
+                request = fromDetail
+            } else {
+                request = TrackSelectionPersistence.subtitleRequest(track: track, showForced: showForced)
+            }
+        } else {
+            request = TrackSelectionPersistence.subtitleOffRequest(showForced: showForced)
+        }
+        TrackSelectionPersistence.saveSubtitle(prefKey: key, request: request)
     }
 
     func selectSecondarySubtitle(_ track: PlayerTrack) {

@@ -279,12 +279,17 @@ actor PlaybackSessionBridge {
                 hasManualSelection: preferredFileId != nil
             )
         let profileId = await TokenStore.shared.getProfileId()
+        // Without an explicit pick, send the server's own detail-resolved
+        // effective audio index. /playback/start only consults saved audio
+        // prefs for episodes (its series-id lookup is empty for movies), so
+        // a movie's remembered track would otherwise be dropped here even
+        // though the watch detail above already resolved it.
         let request = StartPlaybackRequest(
             fileId: selectedVersion.fileId,
             profileId: profileId,
             playMethod: playbackPlan.playMethod,
             startPosition: effectiveStartPosition,
-            audioTrackIndex: preferredAudioTrackIndex,
+            audioTrackIndex: preferredAudioTrackIndex ?? selectedVersion.effectiveAudioTrackIndex,
             preserveDirectAudioSelection: playbackPlan.playMethod == PlaybackDeliveryStrategy.direct.name,
             codecsVideo: playbackPlan.capabilities.codecsVideo,
             codecsAudio: playbackPlan.capabilities.codecsAudio,
