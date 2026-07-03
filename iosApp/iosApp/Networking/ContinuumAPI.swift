@@ -899,12 +899,16 @@ actor ContinuumAPI {
 
     // --- Playback ---
 
+    // Session planning can be slow on heavy files (stream probing, transcode
+    // spin-up), so both start calls opt out of the fail-fast timeout. A dead
+    // server is still caught early: connection-refused fails instantly, and
+    // the detail screen's own fetches run on the standard timeout.
     func startPlayback(request: StartPlaybackRequest) async throws -> PlaybackSessionResponse {
-        try await http.post("/api/v1/playback/start", body: request)
+        try await http.post("/api/v1/playback/start", body: request, timeout: .extended)
     }
 
     func startTranscode(request: TranscodeStartRequest) async throws -> TranscodeStartResponse {
-        try await http.post("/api/v1/playback/transcode/start", body: request)
+        try await http.post("/api/v1/playback/transcode/start", body: request, timeout: .extended)
     }
 
     func reportPlaybackProgress(sessionId: String, report: ProgressReport) async throws {

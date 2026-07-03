@@ -596,9 +596,18 @@ struct MainTabView: View {
         // a Home screen that can't load anything.
         .task {
             await ConnectionMonitor.shared.waitForInitialPath()
-            guard !ConnectionMonitor.shared.isDeviceOnline,
-                  DownloadManager.shared.downloadsEnabled,
-                  DownloadManager.shared.records.contains(where: { $0.isPlayableOffline })
+            guard !ConnectionMonitor.shared.isDeviceOnline else { return }
+            // The auth-state task hydrates DownloadManager via onAppActive()
+            // only after several awaited network refreshes, which is too late
+            // for this check on an offline cold launch. Loading the scope
+            // here is disk-only and idempotent — onAppActive() will skip the
+            // reload when it eventually runs.
+            _ = await DownloadManager.shared.activateScopeIfNeeded()
+            guard DownloadManager.shared.downloadsEnabled,
+                  DownloadManager.shared.records.contains(where: { $0.isPlayableOffline }),
+                  // Don't clobber a tab the user (or a deep link) already
+                  // selected while this task was waiting.
+                  selectedTab == .home, router.requestedTab == nil
             else { return }
             selectedTab = .downloads
         }

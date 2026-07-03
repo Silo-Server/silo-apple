@@ -27,6 +27,11 @@ actor HTTPClient {
     )
 
     private let session: URLSession
+    /// Session for endpoints that legitimately hold the connection open well
+    /// past the fail-fast window (see ``HTTPTimeout/extended``). A separate
+    /// session (rather than per-request `timeoutInterval`) keeps the
+    /// effective timeout unambiguous.
+    private let longWaitSession: URLSession
     private let tokenStore: TokenStore
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -36,7 +41,10 @@ actor HTTPClient {
     private var inFlightRefresh: Task<Bool, Never>?
 
     init(session: URLSession? = nil, tokenStore: TokenStore = .shared) {
-        self.session = session ?? Self.makeSession()
+        // An injected session (tests) serves both timeout classes so mocks
+        // observe every request regardless of the caller's timeout choice.
+        self.session = session ?? Self.makeSession(requestTimeout: 15)
+        self.longWaitSession = session ?? Self.makeSession(requestTimeout: 90)
         self.tokenStore = tokenStore
 
         let decoder = JSONDecoder()
@@ -65,15 +73,16 @@ actor HTTPClient {
     /// `X-Profile-Id`, and `X-Profile-Token` don't participate in the cache
     /// key, so a cached 401/404 or a response fetched under one profile
     /// can be served to a later request under different auth.
-    private static func makeSession() -> URLSession {
+    private static func makeSession(requestTimeout: TimeInterval) -> URLSession {
         let config = URLSessionConfiguration.default
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         // Fail fast when the server is down: the default 60s idle timeout
         // leaves a dead-but-routable server spinning for a minute before the
-        // user sees anything. 15s is the max quiet gap between bytes, not a
-        // total budget, so slow-but-alive responses are unaffected.
-        config.timeoutIntervalForRequest = 15
+        // user sees anything. The timeout is the max quiet gap between
+        // bytes, not a total budget, so slow-but-alive responses are
+        // unaffected.
+        config.timeoutIntervalForRequest = requestTimeout
         return URLSession(configuration: config)
     }
 
@@ -104,9 +113,10 @@ actor HTTPClient {
     func post<T: Decodable>(
         _ path: String,
         body: (any Encodable)? = nil,
-        query: [String: String] = [:]
+        query: [String: String] = [:],
+        timeout: HTTPTimeout = .standard
     ) async throws -> T {
-        try await send(method: "POST", path: path, query: query, body: body)
+        try await send(method: "POST", path: path, query: query, body: body, timeout: timeout)
     }
 
     func postVoid(
@@ -173,10 +183,12 @@ actor HTTPClient {
     func cancelInFlightRequests() async {
         inFlightRefresh?.cancel()
         inFlightRefresh = nil
-        await withCheckedContinuation { continuation in
-            session.getAllTasks { tasks in
-                for task in tasks { task.cancel() }
-                continuation.resume()
+        for session in [session, longWaitSession] {
+            await withCheckedContinuation { continuation in
+                session.getAllTasks { tasks in
+                    for task in tasks { task.cancel() }
+                    continuation.resume()
+                }
             }
         }
     }
@@ -208,9 +220,10 @@ actor HTTPClient {
         method: String,
         path: String,
         query: [String: String],
-        body: (any Encodable)?
+        body: (any Encodable)?,
+        timeout: HTTPTimeout = .standard
     ) async throws -> T {
-        let data = try await sendRaw(method: method, path: path, query: query, body: body)
+        let data = try await sendRaw(method: method, path: path, query: query, body: body, timeout: timeout)
         if data.isEmpty, let empty = EmptyResponse.empty as? T {
             return empty
         }
@@ -260,7 +273,8 @@ actor HTTPClient {
         path: String,
         query: [String: String],
         body: (any Encodable)?,
-        quietStatuses: Set<Int> = []
+        quietStatuses: Set<Int> = [],
+        timeout: HTTPTimeout = .standard
     ) async throws -> Data {
         let serverUrl = await tokenStore.getServerUrl()
         guard !serverUrl.isEmpty else {
@@ -277,7 +291,7 @@ actor HTTPClient {
         )
         await attachAuthHeaders(&request, accessToken: tokenBeforeRequest)
 
-        let (data, response) = try await perform(request: request)
+        let (data, response) = try await perform(request: request, timeout: timeout)
 
         if response.statusCode == 401, shouldAttemptRefresh(path: path) {
             let refreshed = await refreshTokens(tokenAtRequestTime: tokenBeforeRequest)
@@ -292,7 +306,7 @@ actor HTTPClient {
                     body: body
                 )
                 await attachAuthHeaders(&retry, accessToken: refreshedToken)
-                let (retryData, retryResponse) = try await perform(request: retry)
+                let (retryData, retryResponse) = try await perform(request: retry, timeout: timeout)
                 try ensureSuccess(retryData, retryResponse, method: method, quietStatuses: quietStatuses)
                 return retryData
             }
@@ -380,10 +394,11 @@ actor HTTPClient {
 
     // MARK: - Response handling
 
-    private func perform(request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    private func perform(request: URLRequest, timeout: HTTPTimeout = .standard) async throws -> (Data, HTTPURLResponse) {
         let data: Data
         let response: URLResponse
         do {
+            let session = timeout == .extended ? longWaitSession : session
             (data, response) = try await session.data(for: request)
         } catch {
             // Feed ConnectionMonitor from every transport failure so the app
@@ -522,6 +537,10 @@ actor HTTPClient {
                 Self.logger.error("Refresh: non-HTTP response")
                 return false
             }
+            // Refresh bypasses perform(), so feed reachability from here too.
+            Task { @MainActor in
+                ConnectionMonitor.shared.noteServerResponded()
+            }
             if (200..<300).contains(http.statusCode) {
                 let tokens = try decoder.decode(RefreshResponse.self, from: data)
                 await tokenStore.saveTokens(
@@ -545,10 +564,27 @@ actor HTTPClient {
                 return false
             }
         } catch {
+            if (error as? URLError)?.code != .cancelled {
+                Task { @MainActor in
+                    ConnectionMonitor.shared.noteServerUnreachable()
+                }
+            }
             Self.logger.error("Refresh threw: \(String(describing: error), privacy: .public)")
             return false
         }
     }
+}
+
+// MARK: - Timeout class
+
+/// Per-request timeout class. `.standard` (15s idle) fails fast so a dead
+/// server is detected in seconds. `.extended` (90s idle) is for endpoints
+/// that legitimately hold the connection while the server does slow work —
+/// e.g. subtitle provider fan-out searches (20–30s documented) or playback
+/// session planning.
+enum HTTPTimeout {
+    case standard
+    case extended
 }
 
 // MARK: - Error
