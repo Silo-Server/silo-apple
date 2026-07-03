@@ -1917,6 +1917,7 @@ class PlayerViewModel {
                 selectedPrimarySubtitleTrackId: selectedSubtitleId,
                 selectedSecondarySubtitleTrackId: selectedSecondarySubtitleId,
                 hlsRouteFeatureEnabled: Self.appleHLSRouteFeatureFlagEnabled(),
+                siloPlayerPrimaryEnabled: LoopbackServingMode.gated == .vodPlan,
                 preferProfile7HDR10Fallback: settings.preferProfile7HDR10Fallback,
                 displayCapabilities: ApplePlaybackDisplayCapabilities.probe()
             )
@@ -2092,7 +2093,8 @@ class PlayerViewModel {
                     sourceVideoFrameRate: session.sourceVideoFrameRate,
                     selectedAudio: session.selectedAudio,
                     availableAudioTracks: session.availableAudioTracks,
-                    manifestMetadata: session.manifestMetadata
+                    manifestMetadata: session.manifestMetadata,
+                    servingMode: session.servingMode
                 )
             }
             let proxiedPlan = PlaybackExecutionPlan(
@@ -5628,7 +5630,8 @@ class PlayerViewModel {
                 compatibilityBrand: compatibilityBrand,
                 videoRange: videoRange,
                 mayClaimAtmos: preservesAtmos
-            )
+            ),
+            servingMode: .gated
         )
     }
 

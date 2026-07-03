@@ -164,6 +164,17 @@ enum LoopbackServingMode: Equatable {
     case vodPlan
 }
 
+extension LoopbackServingMode {
+    /// Rollout gate (plan Stage 2): `.vodPlan` only when the user-defaults
+    /// flag is set. Default OFF until the VOD serving mode is validated on
+    /// physical hardware; flipping the default is the Stage 3 change.
+    static let primaryGateKey = "player.apple.siloplayer_primary_enabled"
+
+    static var gated: LoopbackServingMode {
+        UserDefaults.standard.bool(forKey: primaryGateKey) ? .vodPlan : .event
+    }
+}
+
 /// Minimal HTTP stream descriptor consumed by the load path. Produced at
 /// the bridge/VM seam from `PlaybackSessionResponse` so the player layer
 /// doesn't re-parse URLs and header maps on every route.
