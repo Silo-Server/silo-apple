@@ -497,7 +497,108 @@ final class DVSegmentWriter {
             baseIndex: clampedBase
         )
         vodOpenSegmentIndex = clampedBase
+        vodAnchorPts = plan.boundaries[0]
+        if let inCtx = inputCtx,
+           videoInputStreamIndex >= 0,
+           let stream = inCtx.pointee.streams?[videoInputStreamIndex] {
+            vodVideoTimeBase = stream.pointee.time_base
+        }
+        vodAwaitingRestartKeyframe = clampedBase > 0
         vodActive = true
+        if selectedAudioOutputMode != .copy {
+            // Bridged audio re-encodes on a synthesized clock; its restart
+            // continuity is not validated yet (plan risk table). Copy-mode
+            // sources are exact.
+            print("[CMP-AVP] vod: bridged audio (\(selectedAudioOutputMode)) — restart timeline continuity unvalidated")
+        }
+    }
+
+    /// Session timeline anchor: the plan's first boundary, on the source
+    /// video time base. A plan constant, so every producer session — first
+    /// or restarted — applies the identical shift and a restarted segment's
+    /// tfdt continues the session timeline instead of zero-basing (M3).
+    private var vodAnchorPts: Int64 = 0
+    private var vodVideoTimeBase = AVRational(num: 1, den: 90000)
+    /// Restart pre-roll gate: the restarted demuxer seek can land before the
+    /// restart boundary; nothing before the first keyframe at-or-after that
+    /// boundary may reach the muxer, or the restarted segment differs from
+    /// its continuous twin.
+    private var vodAwaitingRestartKeyframe = false
+    private var vodFirstRoutedVideoDts: Int64?
+
+    private func applyVODAnchorShift(
+        pkt: UnsafeMutablePointer<AVPacket>,
+        inputTimeBase: AVRational
+    ) {
+        guard vodAnchorPts != 0 else { return }
+        let anchor = av_rescale_q(vodAnchorPts, vodVideoTimeBase, inputTimeBase)
+        if pkt.pointee.dts != Int64.min { pkt.pointee.dts -= anchor }
+        if pkt.pointee.pts != Int64.min { pkt.pointee.pts -= anchor }
+    }
+
+    /// Drops packets that must not reach the muxer in VOD mode: restart
+    /// pre-roll video before the restart boundary's keyframe, audio ahead
+    /// of the video gate on a restart, and head-of-stream audio that would
+    /// map below the plan anchor (tfdt is unsigned and the muxer no longer
+    /// absorbs negatives with `avoid_negative_ts=disabled`).
+    private func vodShouldDropPacket(
+        pkt: UnsafeMutablePointer<AVPacket>,
+        inputIdx: Int
+    ) -> Bool {
+        guard vodActive, let plan = vodPlan else { return false }
+        if inputIdx == videoInputStreamIndex {
+            if vodAwaitingRestartKeyframe {
+                let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
+                let boundary = plan.boundaries[min(vodBaseIndex, plan.segmentCount - 1)]
+                if isKeyframe, pkt.pointee.pts != Int64.min, pkt.pointee.pts >= boundary {
+                    vodAwaitingRestartKeyframe = false
+                    vodFirstRoutedVideoDts = pkt.pointee.dts
+                    return false
+                }
+                return true
+            }
+            if vodFirstRoutedVideoDts == nil {
+                vodFirstRoutedVideoDts = pkt.pointee.dts
+            }
+            return false
+        }
+        guard pkt.pointee.dts != Int64.min,
+              let inCtx = inputCtx,
+              videoInputStreamIndex >= 0,
+              let videoStream = inCtx.pointee.streams?[videoInputStreamIndex],
+              let thisStream = inCtx.pointee.streams?[inputIdx] else {
+            return false
+        }
+        let thresholdVideoTB: Int64
+        if vodBaseIndex == 0 {
+            // Head of stream: audio at-or-after the plan anchor rides, even
+            // ahead of the first video packet — the source's A/V offset is
+            // part of the timeline. Audio before the anchor would map below
+            // tfdt 0 and is dropped.
+            thresholdVideoTB = vodAnchorPts
+        } else {
+            // Restart: audio waits for the video gate, then everything
+            // before the gate's DTS is dropped so the restarted interleave
+            // reproduces the continuous run's.
+            guard let gate = vodFirstRoutedVideoDts else { return true }
+            thresholdVideoTB = gate
+        }
+        let threshold = av_rescale_q(
+            thresholdVideoTB,
+            videoStream.pointee.time_base,
+            thisStream.pointee.time_base
+        )
+        // A frame belongs to the timeline region its SPAN overlaps, not the
+        // region its start timestamp falls in: the demuxer's per-track seek
+        // lands on the audio sample containing the target instant, and the
+        // continuous run's interleaver assigns that same overlapping frame
+        // forward. Dropping it would lose exactly one frame per restart
+        // (and break restart byte-identity with the continuous run).
+        let duration = max(0, pkt.pointee.duration)
+        if duration > 0 {
+            return pkt.pointee.dts + duration <= threshold
+        }
+        return pkt.pointee.dts < threshold
     }
 
     private func harvestVODPlan() -> LoopbackSegmentPlan? {
@@ -706,6 +807,10 @@ final class DVSegmentWriter {
                     inputStreamIndex: inputIdx,
                     noPTS: avNoPTS
                 ) {
+                    continue
+                }
+
+                if vodActive, vodShouldDropPacket(pkt: pkt, inputIdx: inputIdx) {
                     continue
                 }
 
@@ -1316,6 +1421,7 @@ final class DVSegmentWriter {
                 av_packet_free(&free)
             }
             guard let outIdx = streamMap[inIdx] else { continue }
+            if vodActive, vodShouldDropPacket(pkt: pending, inputIdx: inIdx) { continue }
             if inIdx == videoInputStreamIndex {
                 try vodCutBeforeVideoPacketIfNeeded(pkt: pending)
             }
@@ -2574,17 +2680,27 @@ final class DVSegmentWriter {
 
         let inTB = inStream.pointee.time_base
         let outTB = outStream.pointee.time_base
-        captureOutputTimestampBaseIfNeeded(
-            pkt: pkt,
-            inputStreamIndex: inputStreamIndex,
-            inputTimeBase: inTB
-        )
+        if vodActive {
+            // Plan-anchored shift (M3): the session timeline is the plan's
+            // 0-based playlist axis. The anchor is a plan constant, so a
+            // restarted producer applies the identical shift and its tfdt
+            // continues the session timeline — no per-session zero-basing.
+            applyVODAnchorShift(pkt: pkt, inputTimeBase: inTB)
+        } else {
+            captureOutputTimestampBaseIfNeeded(
+                pkt: pkt,
+                inputStreamIndex: inputStreamIndex,
+                inputTimeBase: inTB
+            )
+        }
         pkt.pointee.stream_index = outStreamIndex
         // `av_packet_rescale_ts` handles AV_NOPTS_VALUE, duration rescaling,
         // and the pos reset in one call — same result as av_rescale_q_rnd
         // triplet but terser and less error-prone.
         av_packet_rescale_ts(pkt, inTB, outTB)
-        normalizeSeekedTimelineIfNeeded(pkt: pkt, outStream: outStream)
+        if !vodActive {
+            normalizeSeekedTimelineIfNeeded(pkt: pkt, outStream: outStream)
+        }
         normalizeMuxerTimestampsIfNeeded(pkt: pkt, outStream: outStream)
         pkt.pointee.pos = -1
     }

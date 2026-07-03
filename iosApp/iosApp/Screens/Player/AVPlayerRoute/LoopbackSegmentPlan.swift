@@ -16,6 +16,10 @@ import Foundation
 struct LoopbackSegmentPlan: Equatable {
     let boundaries: [Int64]
     let startSeconds: [Double]
+    /// The plan anchor (first boundary) on the source clock, in seconds.
+    /// `sourceStartSeconds(ofSegment:)` maps a plan segment back onto the
+    /// source axis for restarted-producer demuxer seeks.
+    let anchorSourceSeconds: Double
     let usedKeyframeIndex: Bool
 
     static let defaultTargetSegmentDurationSeconds = 4.0
@@ -26,6 +30,14 @@ struct LoopbackSegmentPlan: Equatable {
     func duration(ofSegment index: Int) -> Double {
         guard index >= 0, index < segmentCount else { return 0 }
         return startSeconds[index + 1] - startSeconds[index]
+    }
+
+    /// Where a plan segment starts on the source clock (for a restarted
+    /// producer's demuxer seek). Clamped into the plan's real segments.
+    func sourceStartSeconds(ofSegment index: Int) -> Double {
+        guard segmentCount > 0 else { return anchorSourceSeconds }
+        let clamped = max(0, min(index, segmentCount - 1))
+        return anchorSourceSeconds + startSeconds[clamped]
     }
 
     /// Maps a 0-based playlist time onto a segment index. Out-of-range times
@@ -157,6 +169,7 @@ struct LoopbackSegmentPlan: Equatable {
         return LoopbackSegmentPlan(
             boundaries: boundaries,
             startSeconds: startSeconds,
+            anchorSourceSeconds: Double(anchor) * secondsPerTick,
             usedKeyframeIndex: true
         )
     }
@@ -197,6 +210,7 @@ struct LoopbackSegmentPlan: Equatable {
         return LoopbackSegmentPlan(
             boundaries: boundaries,
             startSeconds: startSeconds,
+            anchorSourceSeconds: Double(anchor) * Double(timeBaseNum) / Double(max(1, timeBaseDen)),
             usedKeyframeIndex: false
         )
     }
