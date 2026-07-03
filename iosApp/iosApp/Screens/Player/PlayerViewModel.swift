@@ -1217,6 +1217,7 @@ class PlayerViewModel {
             var enrichedStats = stats
             self.applySourceCacheStats(&enrichedStats)
             self.applyFileBitrateStats(&enrichedStats)
+            self.applySourceOriginLabel(&enrichedStats)
             self.playbackStats = enrichedStats
         }
         cb.onEndOfFile = { [weak self] in
@@ -5440,6 +5441,21 @@ class PlayerViewModel {
            let averageFileBitrateBps = stats.averageFileBitrateBps,
            averageFileBitrateBps > 0 {
             stats.streamSpeed = currentDownloadBitrateBps / averageFileBitrateBps
+        }
+    }
+
+    /// Backends report the source they were handed, which behind the
+    /// source proxy or loopback is the in-app 127.0.0.1 server — an
+    /// implementation detail, not the origin. Rewrite it to the true
+    /// origin host from the active plan for the HUD.
+    private func applySourceOriginLabel(_ stats: inout PlaybackStats) {
+        guard let source = stats.source else { return }
+        let localTokens: Set<String> = ["127.0.0.1", "localhost", "::1", "local"]
+        guard localTokens.contains(source), let plan = activeExecutionPlan else { return }
+        let origin = plan.sourceStreamRequest.url.host
+            ?? URL(string: plan.sourceStreamRequest.serverUrl)?.host
+        if let origin {
+            stats.source = origin
         }
     }
 

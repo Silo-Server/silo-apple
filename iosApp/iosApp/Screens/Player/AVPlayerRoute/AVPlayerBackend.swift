@@ -200,6 +200,11 @@ final class AVPlayerBackend {
         let images: [ObjectIdentifier]
     }
     private var lastBitmapCueRenderKey: BitmapCueRenderKey?
+    /// Whether a libass-composited frame may still be on the text layer.
+    /// Lets the pump clear the layer exactly once on a text → bitmap
+    /// transition instead of dispatching a no-op clear to main every vsync
+    /// for the whole duration of bitmap-only (PGS/DVD) playback.
+    private var textOverlayMayHaveFrame = false
     private var selectedControlledSubtitleTrackId: Int64?
     private var selectedSecondaryControlledSubtitleTrackId: Int64?
     private var sidecarDescriptorsByTrackId: [Int64: SidecarSubtitleDescriptor] = [:]
@@ -935,11 +940,6 @@ final class AVPlayerBackend {
         while let current = next {
             guard vodRestartCoalescer.begin(current, authoritative: authoritative) else { return }
             cmpLog("[CMP-AVP] vod producer restart segment=\(current) authoritative=\(authoritative)")
-            // Seam stitching: hand the outgoing run's bridged-audio end to
-            // the new writer so a contiguous restart continues the audio
-            // timeline sample-exact (gap silence-filled / overlap trimmed);
-            // far re-anchors exceed the stitch window and seed from source.
-            let bridgedAudioResume = segmentWriter?.vodBridgedAudioSessionEndSampleTime
             segmentWriter?.stop()
             startSiloLoopbackWriter(
                 sessionID: sessionID,
@@ -947,8 +947,7 @@ final class AVPlayerBackend {
                 sessionDir: sessionDir,
                 segmentStore: store,
                 debugDirectory: nil,
-                vodBaseIndex: current,
-                bridgedAudioResumeSampleTime: bridgedAudioResume
+                vodBaseIndex: current
             )
             next = vodRestartCoalescer.next(justRan: current)
         }
@@ -1086,8 +1085,7 @@ final class AVPlayerBackend {
         sessionDir: URL,
         segmentStore: LoopbackSegmentStore,
         debugDirectory: URL?,
-        vodBaseIndex: Int = 0,
-        bridgedAudioResumeSampleTime: Int64? = nil
+        vodBaseIndex: Int = 0
     ) {
         let writer = LoopbackSegmentWriter(
             sessionSpec: sessionSpec,
@@ -1097,7 +1095,6 @@ final class AVPlayerBackend {
             vodPlan: vodPlanForCurrentSource(spec: sessionSpec),
             vodBaseIndex: vodBaseIndex
         )
-        writer.vodBridgedAudioResumeSampleTime = bridgedAudioResumeSampleTime
         if sessionSpec.servingMode == .vodPlan {
             activeVODWriterBaseIndex = vodBaseIndex
             // Seed the consumer window at the producer's base so a resumed
@@ -2418,9 +2415,10 @@ final class AVPlayerBackend {
         }
     }
 
-    /// Zero-tolerance seek to the player's own startup target. Rebuilds
-    /// AVFoundation's loading pipeline (the same effect backing out of the
-    /// player and re-entering has) without touching transport intent.
+    /// Forces AVFoundation to tear down and rebuild its item loader via a
+    /// zero-tolerance seek to the startup target — the same recovery a user
+    /// gets by exiting the player and re-entering — without touching
+    /// transport intent.
     private func nudgeLoopbackStartupConsumer() {
         let target: CMTime
         if case .some(.siloLoopback(let spec)) = currentSourceStrategy,
@@ -2777,6 +2775,7 @@ final class AVPlayerBackend {
         let hasBitmapTrack = session.hasActiveBitmapTrack
         guard hasTextTrack || hasBitmapTrack else {
             lastBitmapCueRenderKey = nil
+            textOverlayMayHaveFrame = false
             DispatchQueue.main.async {
                 overlay.clear()
             }
@@ -2790,6 +2789,7 @@ final class AVPlayerBackend {
         let bounds = overlay.bounds
 
         if hasTextTrack {
+            textOverlayMayHaveFrame = true
             #if os(macOS)
             let scale = overlay.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
             #else
@@ -2807,11 +2807,16 @@ final class AVPlayerBackend {
                     overlay?.updateContents(image)
                 }
             }
-        } else {
+        } else if textOverlayMayHaveFrame {
             // A slot just switched away from libass (e.g. text → bitmap
             // track): don't let the last composited text frame linger.
-            DispatchQueue.main.async {
-                overlay.updateContents(nil)
+            // One-shot, and funneled through the render queue so it lands
+            // after any render still in flight from the previous tick.
+            textOverlayMayHaveFrame = false
+            renderer.sessionQueue.async { [weak overlay] in
+                DispatchQueue.main.async {
+                    overlay?.updateContents(nil)
+                }
             }
         }
 
@@ -2905,6 +2910,7 @@ final class AVPlayerBackend {
         currentItem = nil
         subtitleSession?.teardown()
         lastBitmapCueRenderKey = nil
+        textOverlayMayHaveFrame = false
         DispatchQueue.main.async { [weak self] in
             self?.subtitleOverlay?.clear()
         }

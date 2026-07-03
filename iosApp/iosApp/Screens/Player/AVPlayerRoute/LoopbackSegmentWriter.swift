@@ -357,38 +357,22 @@ final class LoopbackSegmentWriter {
     /// the seek target and buffers forward forever without becoming ready
     /// (living-room DV P7 + TrueHD→FLAC resume failure).
     private var vodSeededBridgedAudioPTS = false
-    /// Producer-swap seam stitching: the previous writer's bridged audio
-    /// ended at this sample (session axis, encoder ticks). A restarted
+    /// Seam stitching state: the bridged audio of every anchored run is
+    /// aligned to the run's own plan-boundary (session axis). A restarted
     /// TrueHD/MLP decoder silently eats ~40ms of packets before its first
     /// major_sync, so a source-accurate seed leaves that span as a hole in
-    /// the audio track at every ~33s producer seam — audible as an
-    /// intermittent glitch. When the new run's seed lands within
-    /// `vodSeamStitchMaxSamples` of this value, the run is anchored at it
-    /// instead: a gap is filled with encoded silence, an overlap is
-    /// trimmed. Larger deltas are real seeks — no stitch.
-    var vodBridgedAudioResumeSampleTime: Int64?
+    /// the audio track at every producer seam — audible as an intermittent
+    /// glitch. The previous run's stored audio always ends at this
+    /// boundary (the cutter's span-assignment invariant; its encode
+    /// pipeline runs seconds ahead of the cut, so a counter handoff
+    /// overshoots — measured −2.3s on device). A gap after the boundary is
+    /// filled with encoded silence, an overlap is trimmed pre-timestamp.
     private var vodPendingSeamSilenceFillSamples: Int64 = 0
     private var vodPendingSeamTrimSamples: Int64 = 0
-    private static let vodSeamStitchMaxSamples: Int64 = 12_000 // 250 ms @ 48 kHz
-    private let bridgedAudioEndLock = NSLock()
-    private var bridgedAudioSessionEndSample: Int64?
+    private static let vodSeamFillMaxSamples: Int64 = 48_000 // 1 s @ 48 kHz
+    private static let vodSeamTrimMaxSamples: Int64 = 12_000 // 250 ms @ 48 kHz
     private var audioDecodedFrameCount = 0
     private var audioDecodeErrorCount = 0
-
-    /// Exclusive end (session axis, encoder ticks) of the bridged audio
-    /// this run has handed to the encoder; nil until session-anchored.
-    /// Read by the backend on a producer swap to stitch the next run.
-    var vodBridgedAudioSessionEndSampleTime: Int64? {
-        bridgedAudioEndLock.lock()
-        defer { bridgedAudioEndLock.unlock() }
-        return bridgedAudioSessionEndSample
-    }
-
-    private func noteBridgedAudioEnd(_ value: Int64) {
-        bridgedAudioEndLock.lock()
-        bridgedAudioSessionEndSample = value
-        bridgedAudioEndLock.unlock()
-    }
     private var videoOutputTrackID: UInt32?
 
     /// Captures any fatal IO error seen by `writeInitSegment`,
@@ -2425,25 +2409,30 @@ final class LoopbackSegmentWriter {
         vodSeededBridgedAudioPTS = true
         guard seed > 0 else { return }
         var anchored = seed
-        if let resume = vodBridgedAudioResumeSampleTime, resume > 0 {
-            let delta = seed - resume
-            if delta != 0, abs(delta) <= Self.vodSeamStitchMaxSamples {
-                anchored = resume
-                if delta > 0 {
-                    vodPendingSeamSilenceFillSamples = delta
-                } else {
-                    vodPendingSeamTrimSamples = -delta
-                }
-                print(
-                    "[CMP-AVP] vod bridged audio seam stitch resume=\(resume) seed=\(seed) "
-                    + (delta > 0 ? "fillSilence=\(delta)" : "trimOverlap=\(-delta)")
-                )
+        // Align to the run's own plan boundary: the previous contiguous
+        // run's stored audio ends there, and the video track of this run
+        // starts there. The typical delta is the ~40ms the restarted MLP
+        // decoder ate finding major_sync (fill), or one straddling frame
+        // (trim). Deltas beyond the caps keep the source-accurate seed.
+        if let plan = vodPlan,
+           vodEffectiveBaseIndex >= 0,
+           vodEffectiveBaseIndex < plan.boundaries.count {
+            let boundarySession = plan.boundaries[vodEffectiveBaseIndex] - vodAnchorPts
+            let boundary = max(0, av_rescale_q(boundarySession, vodVideoTimeBase, encoderTB))
+            let delta = seed - boundary
+            if delta > 0, delta <= Self.vodSeamFillMaxSamples {
+                anchored = boundary
+                vodPendingSeamSilenceFillSamples = delta
+                print("[CMP-AVP] vod bridged audio seam stitch boundary=\(boundary) seed=\(seed) fillSilence=\(delta)")
+            } else if delta < 0, -delta <= Self.vodSeamTrimMaxSamples {
+                anchored = boundary
+                vodPendingSeamTrimSamples = -delta
+                print("[CMP-AVP] vod bridged audio seam stitch boundary=\(boundary) seed=\(seed) trimOverlap=\(-delta)")
             } else if delta != 0 {
-                print("[CMP-AVP] vod bridged audio seam stitch skipped delta=\(delta) (beyond stitch window — treated as seek)")
+                print("[CMP-AVP] vod bridged audio seam stitch skipped delta=\(delta) (beyond stitch caps)")
             }
         }
         nextEncodedAudioPTS = anchored
-        noteBridgedAudioEnd(anchored)
         let seconds = Double(anchored) * Double(encoderTB.num) / Double(max(1, encoderTB.den))
         print(String(
             format: "[CMP-AVP] vod bridged audio timeline anchored seed=%lld (%.3fs on session axis)",
@@ -2518,7 +2507,6 @@ final class LoopbackSegmentWriter {
         vodPendingSeamTrimSamples = 0
         outFrame.pointee.pts = nextEncodedAudioPTS
         nextEncodedAudioPTS += Int64(converted)
-        if vodSeededBridgedAudioPTS { noteBridgedAudioEnd(nextEncodedAudioPTS) }
         let sendR = avcodec_send_frame(encoderCtx, outFrame)
         av_frame_free(&convertedFrame)
         if sendR < 0 && sendR != avErrorAgain {
@@ -2589,7 +2577,6 @@ final class LoopbackSegmentWriter {
 
             outFrame.pointee.pts = nextEncodedAudioPTS
             nextEncodedAudioPTS += Int64(samplesToSend)
-            if vodSeededBridgedAudioPTS { noteBridgedAudioEnd(nextEncodedAudioPTS) }
             try sendPreparedAudioFrameToEncoder(outFrame)
             av_frame_free(&frame)
         }
