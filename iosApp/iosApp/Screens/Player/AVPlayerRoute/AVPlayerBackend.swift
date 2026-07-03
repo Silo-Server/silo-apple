@@ -30,11 +30,20 @@ final class AVPlayerBackend {
     /// creation. Sized for fast initial readyToPlay — AVPlayer otherwise
     /// waits for whole GOP-sized fragments before declaring ready.
     private static let loopbackStartupForwardBuffer: Double = 4.0
-    /// Safety net for local loopback startup. The writer now waits until the
-    /// first playlist already contains enough long-GOP fragments for AVPlayer's
-    /// initial read; if AVPlayer still has not become ready well after that
-    /// hand-off, treat the route as stuck and use the Compatibility fallback.
-    private static let loopbackStartupReadyTimeout: TimeInterval = 12.0
+    /// Local loopback startup watchdog (AetherEngine-style, replaces the old
+    /// fixed 12 s readiness timeout that killed healthy-but-slow startups —
+    /// living-room DV P7 + TrueHD→FLAC at a far resume needed >12 s while
+    /// segment GETs were flowing the whole time). Ticks at 1 Hz while the
+    /// item is not yet ready. Escalates the recovery ladder (nudge seek →
+    /// in-place item reload → route fallback) only when the loopback server
+    /// has served no request for `loopbackStartupStallWindowSeconds` — a
+    /// dead loader stops fetching within seconds, so genuine failures now
+    /// fall back *faster* than the old timeout, while slow heavy muxes get
+    /// all the time they need. The absolute backstop bounds the pathological
+    /// "fetches forever, never ready" consumer.
+    private static let loopbackStartupWatchdogTickSeconds: TimeInterval = 1.0
+    private static let loopbackStartupStallWindowSeconds: TimeInterval = 6.0
+    private static let loopbackStartupAbsoluteBackstopSeconds: TimeInterval = 60.0
     private static let loopbackSeekWindowTolerance: Double = 0.25
 
     /// Default forward buffer applied once the initial-video-display gate
@@ -196,7 +205,12 @@ final class AVPlayerBackend {
     private var didTemporarilyMuteForInitialVideoDisplay = false
     private var initialVideoDisplayGateStartTime: Double?
     private var initialVideoDisplayFallback: DispatchWorkItem?
-    private var loopbackStartupTimeout: DispatchWorkItem?
+    private var loopbackStartupWatchdog: Timer?
+    private var loopbackStartupWatchdogStartedAt: Date?
+    private var loopbackStartupLastProgressAt: Date = .distantPast
+    private var loopbackStartupLastRequestCount: UInt64 = 0
+    private enum LoopbackStartupRecoveryStage { case initial, nudged, reloaded }
+    private var loopbackStartupRecoveryStage: LoopbackStartupRecoveryStage = .initial
 
     private var segmentWriter: LoopbackSegmentWriter?
     private var segmentServer: LoopbackSegmentServer?
@@ -227,6 +241,7 @@ final class AVPlayerBackend {
     private var bufferEmptyObs: NSKeyValueObservation?
     private var itemPlaybackStalledObserver: NSObjectProtocol?
     private var itemFailedToEndObserver: NSObjectProtocol?
+    private var itemErrorLogObserver: NSObjectProtocol?
     private var durationObs: NSKeyValueObservation?
     private var loadedRangesObs: NSKeyValueObservation?
     private var seekableRangesObs: NSKeyValueObservation?
@@ -1148,20 +1163,24 @@ final class AVPlayerBackend {
         // headers are only for libavformat's source fetch and should not be
         // propagated into AVPlayer's localhost HLS requests.
         prepareAssetPlayback(url: url, headers: [:])
-        if case .some(.siloLoopback(let spec)) = currentSourceStrategy,
-           spec.servingMode == .vodPlan,
-           pendingStartTime > 0 {
-            // Resume: aim AVPlayer's very first media fetches at the resume
-            // segment. The producer is anchored there; without this, the
-            // item buffers from position 0 whose segments may never exist.
-            let target = max(0, playerTime(forMediaTime: pendingStartTime))
-            avPlayer.seek(
-                to: CMTime(seconds: target, preferredTimescale: 600),
-                toleranceBefore: .zero,
-                toleranceAfter: .zero
-            )
-            cmpLog("[CMP-AVP] vod resume pre-seek player=\(target) media=\(pendingStartTime)")
-        }
+        issueVODResumePreSeekIfNeeded(context: "first_segment")
+    }
+
+    /// Resume: aim AVPlayer's very first media fetches at the resume
+    /// segment. The producer is anchored there; without this, the
+    /// item buffers from position 0 whose segments may never exist.
+    /// Re-issued after a startup-watchdog item reload for the same reason.
+    private func issueVODResumePreSeekIfNeeded(context: String) {
+        guard case .some(.siloLoopback(let spec)) = currentSourceStrategy,
+              spec.servingMode == .vodPlan,
+              pendingStartTime > 0 else { return }
+        let target = max(0, playerTime(forMediaTime: pendingStartTime))
+        avPlayer.seek(
+            to: CMTime(seconds: target, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
+        cmpLog("[CMP-AVP] vod resume pre-seek player=\(target) media=\(pendingStartTime) context=\(context)")
     }
 
     private func prepareAssetPlayback(url: URL, headers: [String: String]) {
@@ -1202,7 +1221,7 @@ final class AVPlayerBackend {
         beginInitialVideoDisplayGate()
         attachItemObservers(item)
         avPlayer.replaceCurrentItem(with: item)
-        scheduleLoopbackStartupTimeoutIfNeeded(for: item)
+        armLoopbackStartupWatchdogIfNeeded()
         installPeriodicTimeObserver()
         installSubtitleDisplayLink()
     }
@@ -1863,10 +1882,10 @@ final class AVPlayerBackend {
                 switch item.status {
                 case .readyToPlay:
                     if self.ttffReadyMs == nil { self.ttffReadyMs = self.ttffElapsedMs() }
-                    self.cancelLoopbackStartupTimeout()
+                    self.cancelLoopbackStartupWatchdog()
                     self.attemptInitialPlaybackStart(for: item, trigger: "status.readyToPlay")
                 case .failed:
-                    self.cancelLoopbackStartupTimeout()
+                    self.cancelLoopbackStartupWatchdog()
                     self.reportItemFailure(item)
                 default:
                     break
@@ -1987,6 +2006,61 @@ final class AVPlayerBackend {
                 "[CMP-AVP] item failed to play to end current=\(self.currentTime(), privacy: .public) error=\(String(describing: error), privacy: .public)"
             )
             self.recoverLocalLoopbackFailureIfNeeded(item: item, error: error)
+        }
+
+        // AVPlayer surfaces HLS-level trouble (404s, playlist parse errors,
+        // format rejections) as errorLog entries without ever flipping the
+        // item to .failed — the "spinner forever" class. Log every entry;
+        // -15628 is CoreMedia's loader-poison signature, after which the
+        // item will never post a stall or become ready, so escalate the
+        // startup recovery ladder immediately instead of waiting for the
+        // fetch-freeze window to notice.
+        itemErrorLogObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.newErrorLogEntryNotification,
+            object: item,
+            queue: .main
+        ) { [weak self, weak item] _ in
+            guard let self, !self.isDisposed,
+                  let item, item === self.currentItem,
+                  let event = item.errorLog()?.events.last else { return }
+            cmpLog(
+                "[CMP-AVP] item errorLog status=\(event.errorStatusCode) domain=\(event.errorDomain) uri=\(event.uri ?? "-") comment=\(event.errorComment ?? "-")"
+            )
+            if event.errorStatusCode == -15628,
+               !self.didFireFileLoaded,
+               case .siloLoopback = self.currentSourceStrategy {
+                self.escalateLoopbackStartupRecovery(trigger: "errorLog_-15628")
+            }
+        }
+    }
+
+    /// Tears down every observer scoped to the current AVPlayerItem (plus
+    /// the player-level KVO that `attachItemObservers` re-creates). Shared
+    /// by full disposal and the startup watchdog's in-place item reload.
+    private func detachPerItemObservers() {
+        statusObs?.invalidate(); statusObs = nil
+        rateObs?.invalidate(); rateObs = nil
+        timeControlObs?.invalidate(); timeControlObs = nil
+        bufferFullObs?.invalidate(); bufferFullObs = nil
+        bufferEmptyObs?.invalidate(); bufferEmptyObs = nil
+        durationObs?.invalidate(); durationObs = nil
+        loadedRangesObs?.invalidate(); loadedRangesObs = nil
+        seekableRangesObs?.invalidate(); seekableRangesObs = nil
+        if let observer = endObserver {
+            NotificationCenter.default.removeObserver(observer)
+            endObserver = nil
+        }
+        if let observer = itemPlaybackStalledObserver {
+            NotificationCenter.default.removeObserver(observer)
+            itemPlaybackStalledObserver = nil
+        }
+        if let observer = itemFailedToEndObserver {
+            NotificationCenter.default.removeObserver(observer)
+            itemFailedToEndObserver = nil
+        }
+        if let observer = itemErrorLogObserver {
+            NotificationCenter.default.removeObserver(observer)
+            itemErrorLogObserver = nil
         }
     }
 
@@ -2135,36 +2209,162 @@ final class AVPlayerBackend {
         }
     }
 
-    private func scheduleLoopbackStartupTimeoutIfNeeded(for item: AVPlayerItem) {
+    private func armLoopbackStartupWatchdogIfNeeded() {
         guard case .siloLoopback = currentSourceStrategy else { return }
-        cancelLoopbackStartupTimeout()
-        let work = DispatchWorkItem { [weak self, weak item] in
-            guard let self,
-                  let item,
-                  !self.isDisposed,
-                  item === self.currentItem,
-                  !self.didFireFileLoaded,
-                  case .siloLoopback = self.currentSourceStrategy else {
-                return
-            }
-            guard item.status != .readyToPlay else { return }
-            self.reportError(
-                String(
-                    format: "Local DV loopback startup timed out after %.1fs before AVPlayer became ready",
-                    Self.loopbackStartupReadyTimeout
-                )
-            )
+        cancelLoopbackStartupWatchdog()
+        let now = Date()
+        loopbackStartupWatchdogStartedAt = now
+        loopbackStartupLastProgressAt = now
+        loopbackStartupLastRequestCount = segmentServer?.servedRequestCount ?? 0
+        loopbackStartupRecoveryStage = .initial
+        let timer = Timer(
+            timeInterval: Self.loopbackStartupWatchdogTickSeconds,
+            repeats: true
+        ) { [weak self] _ in
+            self?.loopbackStartupWatchdogTick()
         }
-        loopbackStartupTimeout = work
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + Self.loopbackStartupReadyTimeout,
-            execute: work
-        )
+        RunLoop.main.add(timer, forMode: .common)
+        loopbackStartupWatchdog = timer
     }
 
-    private func cancelLoopbackStartupTimeout() {
-        loopbackStartupTimeout?.cancel()
-        loopbackStartupTimeout = nil
+    private func loopbackStartupWatchdogTick() {
+        guard !isDisposed,
+              !didFireFileLoaded,
+              case .siloLoopback = currentSourceStrategy,
+              let item = currentItem,
+              let startedAt = loopbackStartupWatchdogStartedAt else {
+            cancelLoopbackStartupWatchdog()
+            return
+        }
+        guard item.status != .readyToPlay else {
+            cancelLoopbackStartupWatchdog()
+            return
+        }
+        let now = Date()
+        let served = segmentServer?.servedRequestCount ?? 0
+        if served != loopbackStartupLastRequestCount {
+            loopbackStartupLastRequestCount = served
+            loopbackStartupLastProgressAt = now
+        }
+        let displaySwitching = isTVDisplayModeSwitchInProgress()
+        if displaySwitching {
+            // Don't let the stall window expire the instant an HDMI mode
+            // switch completes — restart it from the switch's end.
+            loopbackStartupLastProgressAt = now
+        }
+        let verdict = LoopbackStartupRecoveryPolicy.verdict(
+            secondsSinceProgress: now.timeIntervalSince(loopbackStartupLastProgressAt),
+            secondsSinceStart: now.timeIntervalSince(startedAt),
+            displayModeSwitchInProgress: displaySwitching,
+            stallWindow: Self.loopbackStartupStallWindowSeconds,
+            absoluteBackstop: Self.loopbackStartupAbsoluteBackstopSeconds
+        )
+        switch verdict {
+        case .wait:
+            return
+        case .escalate:
+            escalateLoopbackStartupRecovery(trigger: "fetches_frozen")
+        case .failBackstop:
+            cancelLoopbackStartupWatchdog()
+            reportError(
+                "Local loopback startup never became ready within "
+                + "\(Int(Self.loopbackStartupAbsoluteBackstopSeconds))s "
+                + "(requestsServed=\(served) stage=\(loopbackStartupRecoveryStage))"
+            )
+        }
+    }
+
+    /// Startup recovery ladder (AetherEngine consumer re-engage pattern):
+    /// stage 1 nudges AVFoundation's loader with a zero-tolerance seek,
+    /// stage 2 swaps in a fresh AVPlayerItem against the same loopback
+    /// session, stage 3 surfaces the error so the route planner can fall
+    /// back to the Compatibility player. Also driven directly by the item
+    /// errorLog observer on loader-poison signatures.
+    private func escalateLoopbackStartupRecovery(trigger: String) {
+        guard !isDisposed, !didFireFileLoaded, currentItem != nil else { return }
+        switch loopbackStartupRecoveryStage {
+        case .initial:
+            loopbackStartupRecoveryStage = .nudged
+            loopbackStartupLastProgressAt = Date()
+            cmpLog("[CMP-AVP] startup watchdog stage=nudge trigger=\(trigger)")
+            nudgeLoopbackStartupConsumer()
+        case .nudged:
+            loopbackStartupRecoveryStage = .reloaded
+            loopbackStartupLastProgressAt = Date()
+            cmpLog("[CMP-AVP] startup watchdog stage=reload trigger=\(trigger)")
+            reloadLoopbackStartupItem()
+        case .reloaded:
+            cancelLoopbackStartupWatchdog()
+            reportError(
+                "Local loopback startup stalled after nudge and item reload (trigger=\(trigger))"
+            )
+        }
+    }
+
+    /// Zero-tolerance seek to the player's own startup target. Rebuilds
+    /// AVFoundation's loading pipeline (the same effect backing out of the
+    /// player and re-entering has) without touching transport intent.
+    private func nudgeLoopbackStartupConsumer() {
+        let target: CMTime
+        if case .some(.siloLoopback(let spec)) = currentSourceStrategy,
+           spec.servingMode == .vodPlan,
+           pendingStartTime > 0 {
+            target = CMTime(
+                seconds: max(0, playerTime(forMediaTime: pendingStartTime)),
+                preferredTimescale: 600
+            )
+        } else {
+            target = avPlayer.currentTime()
+        }
+        avPlayer.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    /// Swap in a fresh AVPlayerItem for the same loopback URL. The producer,
+    /// segment store, and server all stay up — only AVFoundation's item-side
+    /// loader state is rebuilt. The initial-video-display gate stays armed
+    /// from the original prepare, so the fresh item flows through the same
+    /// ready → initial-seek → gated-start path as the first one.
+    private func reloadLoopbackStartupItem() {
+        guard let oldItem = currentItem,
+              let asset = oldItem.asset as? AVURLAsset else {
+            cancelLoopbackStartupWatchdog()
+            reportError("Local loopback startup stalled with no reloadable item URL")
+            return
+        }
+        let url = asset.url
+        cmpLog("[CMP-AVP] startup watchdog reloading item in place url=\(url.absoluteString)")
+        detachPerItemObservers()
+        let item = AVPlayerItem(asset: AVURLAsset(url: url))
+        if case .siloLoopback = currentSourceStrategy {
+            item.preferredForwardBufferDuration = Self.loopbackStartupForwardBuffer
+            item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        }
+        currentItem = item
+        attachItemObservers(item)
+        avPlayer.replaceCurrentItem(with: item)
+        issueVODResumePreSeekIfNeeded(context: "startup_reload")
+    }
+
+    private func isTVDisplayModeSwitchInProgress() -> Bool {
+        #if os(tvOS)
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            let window = windowScene.windows.first(where: \.isKeyWindow)
+                ?? windowScene.windows.first
+            if let displayManager = window?.avDisplayManager {
+                return displayManager.isDisplayModeSwitchInProgress
+            }
+        }
+        return false
+        #else
+        return false
+        #endif
+    }
+
+    private func cancelLoopbackStartupWatchdog() {
+        loopbackStartupWatchdog?.invalidate()
+        loopbackStartupWatchdog = nil
+        loopbackStartupWatchdogStartedAt = nil
     }
 
     private func beginInitialVideoDisplayGate() {
@@ -2284,7 +2484,7 @@ final class AVPlayerBackend {
 
     private func finishInitialLoadIfNeeded(for item: AVPlayerItem) {
         guard !didFireFileLoaded else { return }
-        cancelLoopbackStartupTimeout()
+        cancelLoopbackStartupWatchdog()
         didFireFileLoaded = true
         onFileLoaded?()
         loadMediaSelections(for: item)
@@ -2509,26 +2709,7 @@ final class AVPlayerBackend {
         subtitleDisplayLink = nil
         loopbackPlayheadWatchdog?.invalidate()
         loopbackPlayheadWatchdog = nil
-        statusObs?.invalidate(); statusObs = nil
-        rateObs?.invalidate(); rateObs = nil
-        timeControlObs?.invalidate(); timeControlObs = nil
-        bufferFullObs?.invalidate(); bufferFullObs = nil
-        bufferEmptyObs?.invalidate(); bufferEmptyObs = nil
-        durationObs?.invalidate(); durationObs = nil
-        loadedRangesObs?.invalidate(); loadedRangesObs = nil
-        seekableRangesObs?.invalidate(); seekableRangesObs = nil
-        if let observer = endObserver {
-            NotificationCenter.default.removeObserver(observer)
-            endObserver = nil
-        }
-        if let observer = itemPlaybackStalledObserver {
-            NotificationCenter.default.removeObserver(observer)
-            itemPlaybackStalledObserver = nil
-        }
-        if let observer = itemFailedToEndObserver {
-            NotificationCenter.default.removeObserver(observer)
-            itemFailedToEndObserver = nil
-        }
+        detachPerItemObservers()
         audioSelectionState = nil
         subtitleSelectionState = nil
         currentLoopbackAudioTracks = []
@@ -2544,7 +2725,7 @@ final class AVPlayerBackend {
         initialVideoDisplayGateStartTime = nil
         initialVideoDisplayFallback?.cancel()
         initialVideoDisplayFallback = nil
-        cancelLoopbackStartupTimeout()
+        cancelLoopbackStartupWatchdog()
         if didTemporarilyMuteForInitialVideoDisplay {
             avPlayer.isMuted = false
             didTemporarilyMuteForInitialVideoDisplay = false

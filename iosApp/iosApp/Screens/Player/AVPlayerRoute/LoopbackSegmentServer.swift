@@ -46,6 +46,18 @@ final class LoopbackSegmentServer {
     /// log. Suppresses AVPlayer's identical retry probes — the first request
     /// for each unique signature is logged, repeats are silent.
     private var loggedRequestSignatures: Set<String> = []
+    /// Total HTTP requests parsed this session (playlist, init, segments —
+    /// including misses: a consumer requesting anything is still alive).
+    /// Monotonic. The `AVPlayerBackend` startup watchdog compares snapshots
+    /// to distinguish a slow-but-fetching AVPlayer from one whose loader
+    /// pipeline died and stopped requesting entirely.
+    private var totalRequestCount: UInt64 = 0
+
+    var servedRequestCount: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return totalRequestCount
+    }
 
     /// Port the OS assigned us. Only valid once `start()` has returned
     /// successfully (the listener is bound and in `.ready` state).
@@ -227,6 +239,9 @@ final class LoopbackSegmentServer {
         let method = String(parts[0])
         let rawPath = String(parts[1])
         let path = rawPath.split(separator: "?").first.map(String.init) ?? rawPath
+        lock.lock()
+        totalRequestCount &+= 1
+        lock.unlock()
 
         var rangeHeader: String?
         for line in lines.dropFirst() {
