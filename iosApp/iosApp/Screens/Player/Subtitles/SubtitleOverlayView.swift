@@ -11,6 +11,12 @@
 //  `SubtitleRenderer` produces on its dedicated queue. We don't compose
 //  on the main thread; we only assign the already-baked image.
 //
+//  Bitmap subtitle tracks (PGS/DVD) render through a second layer group:
+//  one sublayer per active cue image, framed by the caller in overlay
+//  points (the overlay is sized to the video rect, so normalized cue
+//  rects scale directly). Both layers coexist so a text track in one
+//  slot and a bitmap track in the other composite correctly.
+//
 
 import CoreGraphics
 import QuartzCore
@@ -27,6 +33,29 @@ private func withoutImplicitLayerAnimation(_ updates: () -> Void) {
     CATransaction.commit()
 }
 
+/// Grow/shrink the host's sublayer list to exactly `count` cue layers.
+/// Cue images are pre-cropped to their frames, so `.resize` maps the
+/// image 1:1 onto the layer. Callers wrap this in a no-animation
+/// transaction.
+private func syncBitmapCueLayerCount(_ count: Int, host: CALayer) {
+    var current = host.sublayers?.count ?? 0
+    while current > count {
+        host.sublayers?.last?.removeFromSuperlayer()
+        current -= 1
+    }
+    while current < count {
+        let layer = CALayer()
+        layer.contentsGravity = .resize
+        layer.isOpaque = false
+        host.addSublayer(layer)
+        current += 1
+    }
+}
+
+private func removeBitmapCueLayers(host: CALayer) {
+    host.sublayers?.forEach { $0.removeFromSuperlayer() }
+}
+
 #if canImport(UIKit)
 final class SubtitleOverlayView: UIView {
 
@@ -40,6 +69,10 @@ final class SubtitleOverlayView: UIView {
     /// any other decoration the view might grow in the future.
     private let contentsLayer = CALayer()
 
+    /// Container for bitmap subtitle cue layers (PGS/DVD): one sublayer
+    /// per active cue, replaced wholesale by `updateBitmapCues`.
+    private let bitmapCueHost = CALayer()
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
@@ -49,6 +82,8 @@ final class SubtitleOverlayView: UIView {
         contentsLayer.contentsGravity = .resizeAspectFill
         contentsLayer.isOpaque = false
         layer.addSublayer(contentsLayer)
+        bitmapCueHost.isOpaque = false
+        layer.addSublayer(bitmapCueHost)
         // The composited image is a libass-rendered bitmap, not text.
         // Without a textual representation VoiceOver would either announce
         // a misleading static label or read raw image-element noise; hide
@@ -68,6 +103,7 @@ final class SubtitleOverlayView: UIView {
         super.layoutSubviews()
         withoutImplicitLayerAnimation {
             contentsLayer.frame = bounds
+            bitmapCueHost.frame = bounds
         }
         let scale = window?.screen.scale ?? traitCollection.displayScale
         withoutImplicitLayerAnimation {
@@ -99,11 +135,33 @@ final class SubtitleOverlayView: UIView {
         }
     }
 
+    /// Replace the bitmap cue layers with the given placements. Frames
+    /// are in overlay points, top-left origin (the caller has already
+    /// scaled normalized cue rects by the overlay bounds). Call on main.
+    func updateBitmapCues(_ placements: [(image: CGImage, frame: CGRect)]) {
+        withoutImplicitLayerAnimation {
+            syncBitmapCueLayerCount(placements.count, host: bitmapCueHost)
+            guard let sublayers = bitmapCueHost.sublayers else { return }
+            for (index, placement) in placements.enumerated() {
+                sublayers[index].contents = placement.image
+                sublayers[index].frame = placement.frame
+            }
+        }
+    }
+
+    /// Remove every bitmap cue layer. Call on main.
+    func clearBitmapCues() {
+        withoutImplicitLayerAnimation {
+            removeBitmapCueLayers(host: bitmapCueHost)
+        }
+    }
+
     /// Clear the overlay immediately. Used on track disable / playback
     /// teardown.
     func clear() {
         withoutImplicitLayerAnimation {
             contentsLayer.contents = nil
+            removeBitmapCueLayers(host: bitmapCueHost)
         }
     }
 }
@@ -119,6 +177,13 @@ final class SubtitleOverlayView: NSView {
     /// hosting `AVPlayerView`.
     private let contentsLayer = CALayer()
 
+    /// Container for bitmap subtitle cue layers (PGS/DVD): one sublayer
+    /// per active cue, replaced wholesale by `updateBitmapCues`.
+    /// Geometry-flipped so cue frames use the same top-left origin the
+    /// UIKit variant (and the normalized cue rects) use, despite AppKit's
+    /// bottom-left layer space.
+    private let bitmapCueHost = CALayer()
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
@@ -130,6 +195,10 @@ final class SubtitleOverlayView: NSView {
         contentsLayer.isOpaque = false
         contentsLayer.zPosition = 10_000
         layer?.addSublayer(contentsLayer)
+        bitmapCueHost.isOpaque = false
+        bitmapCueHost.zPosition = 10_001
+        bitmapCueHost.isGeometryFlipped = true
+        layer?.addSublayer(bitmapCueHost)
     }
 
     @available(*, unavailable)
@@ -150,6 +219,7 @@ final class SubtitleOverlayView: NSView {
     private func updateLayout() {
         withoutImplicitLayerAnimation {
             contentsLayer.frame = bounds
+            bitmapCueHost.frame = bounds
         }
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         withoutImplicitLayerAnimation {
@@ -165,11 +235,33 @@ final class SubtitleOverlayView: NSView {
         }
     }
 
+    /// Replace the bitmap cue layers with the given placements. Frames
+    /// are in overlay points, top-left origin — `bitmapCueHost` is
+    /// geometry-flipped, so no manual y-flip is needed. Call on main.
+    func updateBitmapCues(_ placements: [(image: CGImage, frame: CGRect)]) {
+        withoutImplicitLayerAnimation {
+            syncBitmapCueLayerCount(placements.count, host: bitmapCueHost)
+            guard let sublayers = bitmapCueHost.sublayers else { return }
+            for (index, placement) in placements.enumerated() {
+                sublayers[index].contents = placement.image
+                sublayers[index].frame = placement.frame
+            }
+        }
+    }
+
+    /// Remove every bitmap cue layer. Call on main.
+    func clearBitmapCues() {
+        withoutImplicitLayerAnimation {
+            removeBitmapCueLayers(host: bitmapCueHost)
+        }
+    }
+
     /// Clear the overlay immediately. Used on track disable / playback
     /// teardown.
     func clear() {
         withoutImplicitLayerAnimation {
             contentsLayer.contents = nil
+            removeBitmapCueLayers(host: bitmapCueHost)
         }
     }
 }

@@ -4,8 +4,10 @@
 //
 //  Subtitle-only FFmpeg extractor used by AVPlayer routes. AVPlayer keeps
 //  owning media transport; this object opens the original media source in a
-//  separate FFmpeg context, exposes embedded text subtitle streams to the
-//  shared picker, and feeds selected streams into SubtitleSession/libass.
+//  separate FFmpeg context, exposes embedded subtitle streams to the shared
+//  picker, and feeds selected streams into SubtitleSession — text codecs go
+//  through libass, bitmap codecs (PGS/DVD) are decoded to premultiplied-RGBA
+//  cue images for the overlay's bitmap layer.
 //
 
 import Foundation
@@ -248,9 +250,8 @@ final class AVPlayerEmbeddedSubtitleExtractor {
             guard isSlotGenerationCurrent(slot: slot, generation: generation) else { return }
             readPackets(
                 formatCtx: ctx,
-                codecCtx: decoder.codecCtx,
+                decoder: decoder,
                 streamIndex: selection.streamIndex,
-                timeBase: decoder.timeBase,
                 slot: slot,
                 generation: generation
             )
@@ -264,11 +265,23 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         }
     }
 
+    /// Everything the decode loop needs about an opened subtitle decoder.
+    private struct OpenedSubtitleDecoder {
+        let codecCtx: UnsafeMutablePointer<AVCodecContext>
+        let timeBase: AVRational
+        let isBitmap: Bool
+        /// Container video dimensions, used as the subtitle-canvas
+        /// fallback when the codec context doesn't report one (0 when the
+        /// container has no usable video track header).
+        let fallbackCanvasWidth: Int32
+        let fallbackCanvasHeight: Int32
+    }
+
     private func openSubtitleDecoder(
         formatCtx: UnsafeMutablePointer<AVFormatContext>,
         streamIndex: Int32,
         slot: SubtitleSlot
-    ) -> (codecCtx: UnsafeMutablePointer<AVCodecContext>, timeBase: AVRational)? {
+    ) -> OpenedSubtitleDecoder? {
         guard streamIndex >= 0,
               streamIndex < Int32(formatCtx.pointee.nb_streams),
               let stream = formatCtx.pointee.streams?[Int(streamIndex)],
@@ -283,46 +296,89 @@ final class AVPlayerEmbeddedSubtitleExtractor {
             avcodec_free_context(&ctx)
             return nil
         }
+
+        let isBitmap = Self.isBitmapSubtitleCodec(codecparPtr.pointee.codec_id)
+        var fallbackCanvas: (width: Int32, height: Int32) = (0, 0)
+        if isBitmap {
+            // Bitmap decoders position rects against a canvas the probe
+            // can't always derive from the track header (dvd_subtitle
+            // especially). Seed the codec context from the container's
+            // video dimensions so normalized geometry has a denominator
+            // before the first in-band composition update arrives.
+            fallbackCanvas = Self.containerVideoDimensions(in: formatCtx)
+            if ctx!.pointee.width == 0 { ctx!.pointee.width = fallbackCanvas.width }
+            if ctx!.pointee.height == 0 { ctx!.pointee.height = fallbackCanvas.height }
+        }
+
         if avcodec_open2(ctx, codec, nil) < 0 {
             avcodec_free_context(&ctx)
             return nil
         }
 
-        let codecpar = codecparPtr.pointee
-        let isNativeASS = codecpar.codec_id == AV_CODEC_ID_ASS
-            || codecpar.codec_id == AV_CODEC_ID_SSA
-        let headerPtr: UnsafePointer<UInt8>?
-        let headerSize: Int
-        if let sh = ctx?.pointee.subtitle_header,
-           ctx!.pointee.subtitle_header_size > 0 {
-            headerPtr = UnsafePointer(sh)
-            headerSize = Int(ctx!.pointee.subtitle_header_size)
+        if isBitmap {
+            subtitleSession.openBitmapTrack(slot: slot)
         } else {
-            headerPtr = codecpar.extradata.map { UnsafePointer($0) }
-            headerSize = Int(codecpar.extradata_size)
+            let codecpar = codecparPtr.pointee
+            let isNativeASS = codecpar.codec_id == AV_CODEC_ID_ASS
+                || codecpar.codec_id == AV_CODEC_ID_SSA
+            let headerPtr: UnsafePointer<UInt8>?
+            let headerSize: Int
+            if let sh = ctx?.pointee.subtitle_header,
+               ctx!.pointee.subtitle_header_size > 0 {
+                headerPtr = UnsafePointer(sh)
+                headerSize = Int(ctx!.pointee.subtitle_header_size)
+            } else {
+                headerPtr = codecpar.extradata.map { UnsafePointer($0) }
+                headerSize = Int(codecpar.extradata_size)
+            }
+            subtitleSession.openEmbedded(
+                slot: slot,
+                isNativeASS: isNativeASS,
+                extradata: headerPtr,
+                extradataSize: headerSize
+            )
         }
-
-        subtitleSession.openEmbedded(
-            slot: slot,
-            isNativeASS: isNativeASS,
-            extradata: headerPtr,
-            extradataSize: headerSize
-        )
         Self.logger.info(
-            "[CMP-SUB] AVPlayer embedded decoder opened slot=\(slot.rawValue, privacy: .public) stream=\(streamIndex, privacy: .public) nativeASS=\(isNativeASS, privacy: .public)"
+            "[CMP-SUB] AVPlayer embedded decoder opened slot=\(slot.rawValue, privacy: .public) stream=\(streamIndex, privacy: .public) bitmap=\(isBitmap, privacy: .public)"
         )
-        return ctx.map { ($0, stream.pointee.time_base) }
+        return ctx.map {
+            OpenedSubtitleDecoder(
+                codecCtx: $0,
+                timeBase: stream.pointee.time_base,
+                isBitmap: isBitmap,
+                fallbackCanvasWidth: fallbackCanvas.width,
+                fallbackCanvasHeight: fallbackCanvas.height
+            )
+        }
+    }
+
+    /// First usable video track dimensions from the container header.
+    /// Video streams are AVDISCARD_ALL during probing, but their codecpar
+    /// width/height come from the container header and remain readable.
+    private static func containerVideoDimensions(
+        in ctx: UnsafeMutablePointer<AVFormatContext>
+    ) -> (width: Int32, height: Int32) {
+        let nb = Int(ctx.pointee.nb_streams)
+        guard let streams = ctx.pointee.streams else { return (0, 0) }
+        for i in 0..<nb {
+            guard let stream = streams[i],
+                  let codecparPtr = stream.pointee.codecpar else { continue }
+            let codecpar = codecparPtr.pointee
+            if codecpar.codec_type == AVMEDIA_TYPE_VIDEO,
+               codecpar.width > 0, codecpar.height > 0 {
+                return (codecpar.width, codecpar.height)
+            }
+        }
+        return (0, 0)
     }
 
     private func readPackets(
         formatCtx: UnsafeMutablePointer<AVFormatContext>,
-        codecCtx: UnsafeMutablePointer<AVCodecContext>,
+        decoder: OpenedSubtitleDecoder,
         streamIndex: Int32,
-        timeBase: AVRational,
         slot: SubtitleSlot,
         generation: UInt64
     ) {
-        var warnedBitmap = false
         guard let pkt = av_packet_alloc() else { return }
         defer {
             var packet: UnsafeMutablePointer<AVPacket>? = pkt
@@ -335,18 +391,16 @@ final class AVPlayerEmbeddedSubtitleExtractor {
             defer { av_packet_unref(pkt) }
             guard pkt.pointee.stream_index == streamIndex else { continue }
             throttleIfNeeded(
-                packetStartSeconds: packetStartSeconds(pkt, timeBase: timeBase),
+                packetStartSeconds: packetStartSeconds(pkt, timeBase: decoder.timeBase),
                 slot: slot,
                 generation: generation
             )
             guard isSlotGenerationCurrent(slot: slot, generation: generation) else { break }
             decodeSubtitlePacket(
                 pkt,
-                codecCtx: codecCtx,
-                timeBase: timeBase,
+                decoder: decoder,
                 slot: slot,
-                generation: generation,
-                warnedBitmap: &warnedBitmap
+                generation: generation
             )
         }
     }
@@ -371,16 +425,31 @@ final class AVPlayerEmbeddedSubtitleExtractor {
 
     private func decodeSubtitlePacket(
         _ pkt: UnsafeMutablePointer<AVPacket>,
-        codecCtx: UnsafeMutablePointer<AVCodecContext>,
-        timeBase: AVRational,
+        decoder: OpenedSubtitleDecoder,
         slot: SubtitleSlot,
-        generation: UInt64,
-        warnedBitmap: inout Bool
+        generation: UInt64
     ) {
+        let codecCtx = decoder.codecCtx
+        let timeBase = decoder.timeBase
         var sub = AVSubtitle()
         defer { avsubtitle_free(&sub) }
         var gotSubtitle: Int32 = 0
         let r = avcodec_decode_subtitle2(codecCtx, &sub, &gotSubtitle, pkt)
+
+        let isPGS = codecCtx.pointee.codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE
+        if r >= 0, gotSubtitle == 0, isPGS, pkt.pointee.size > 30 {
+            // Some Matroska remuxes drop the PGS display-set END segment,
+            // leaving the decoder accumulating forever with nothing
+            // emitted. Push a minimal synthetic END segment at the same
+            // timestamps to flush the pending composition. Only attempted
+            // for substantial packets — tiny ones ARE end/control segments.
+            flushPendingPGSComposition(
+                codecCtx: codecCtx,
+                timedLike: pkt,
+                into: &sub,
+                gotSubtitle: &gotSubtitle
+            )
+        }
         guard r >= 0, gotSubtitle != 0 else { return }
         guard isSlotGenerationCurrent(slot: slot, generation: generation) else { return }
 
@@ -395,17 +464,27 @@ final class AVPlayerEmbeddedSubtitleExtractor {
                 let durSeconds = Double(pkt.pointee.duration) * Double(timeBase.num) / Double(timeBase.den)
                 return startMs + Int64(durSeconds * 1000.0)
             }
+            // No explicit end anywhere. PGS relies on the next composition
+            // trimming this cue (see `feedBitmapCues(trimActiveAt:)`); 5 s
+            // is only the ceiling if the stream goes quiet.
             return startMs + 5000
         }()
         let durationMs = max(Int64(0), endMs - startMs)
+        let startSeconds = Double(startMs) / 1000.0
+        let endSeconds = Double(endMs) / 1000.0
 
+        var bitmapCues: [BitmapSubtitleCue] = []
         for i in 0..<Int(sub.num_rects) {
             guard isSlotGenerationCurrent(slot: slot, generation: generation),
                   let rect = sub.rects[i]?.pointee else { continue }
             if rect.type == SUBTITLE_BITMAP {
-                if !warnedBitmap {
-                    warnedBitmap = true
-                    Self.logger.info("[CMP-SUB] AVPlayer embedded bitmap subtitle packet ignored")
+                if let cue = bitmapCue(
+                    from: rect,
+                    decoder: decoder,
+                    startSeconds: startSeconds,
+                    endSeconds: endSeconds
+                ) {
+                    bitmapCues.append(cue)
                 }
                 continue
             }
@@ -419,6 +498,98 @@ final class AVPlayerEmbeddedSubtitleExtractor {
                 durationMs: durationMs
             )
         }
+
+        if decoder.isBitmap {
+            if isPGS {
+                // Every PGS composition — including an empty clear event —
+                // supersedes whatever is on screen, so the feed always
+                // carries the trim timestamp even when no cue decoded.
+                subtitleSession.feedBitmapCues(
+                    slot: slot,
+                    cues: bitmapCues,
+                    trimActiveAt: startSeconds
+                )
+            } else if !bitmapCues.isEmpty {
+                // DVD subs carry explicit durations; empty events mean
+                // nothing and are dropped.
+                subtitleSession.feedBitmapCues(
+                    slot: slot,
+                    cues: bitmapCues,
+                    trimActiveAt: nil
+                )
+            }
+        }
+    }
+
+    /// Feed a synthetic 3-byte PGS END segment (type 0x80, zero payload
+    /// length; zero-padded for decoder over-read safety) carrying the
+    /// original packet's timestamps, so an accumulated display set whose
+    /// END segment was lost in remuxing still emits.
+    private func flushPendingPGSComposition(
+        codecCtx: UnsafeMutablePointer<AVCodecContext>,
+        timedLike pkt: UnsafeMutablePointer<AVPacket>,
+        into sub: inout AVSubtitle,
+        gotSubtitle: inout Int32
+    ) {
+        var payload = [UInt8](repeating: 0, count: 64)
+        payload[0] = 0x80
+        payload.withUnsafeMutableBufferPointer { buffer in
+            var synthetic = AVPacket()
+            synthetic.data = buffer.baseAddress
+            synthetic.size = 3
+            synthetic.pts = pkt.pointee.pts
+            synthetic.dts = pkt.pointee.dts
+            synthetic.duration = pkt.pointee.duration
+            synthetic.stream_index = pkt.pointee.stream_index
+            _ = avcodec_decode_subtitle2(codecCtx, &sub, &gotSubtitle, &synthetic)
+        }
+    }
+
+    /// Convert one decoded bitmap rect into an overlay cue: paletted plane
+    /// → premultiplied RGBA (cropped to the opaque bounding box) → CGImage
+    /// positioned as a normalized rect against the subtitle canvas.
+    private func bitmapCue(
+        from rect: AVSubtitleRect,
+        decoder: OpenedSubtitleDecoder,
+        startSeconds: Double,
+        endSeconds: Double
+    ) -> BitmapSubtitleCue? {
+        guard rect.w > 0, rect.h > 0,
+              let indexPlane = rect.data.0,
+              let palette = rect.data.1
+        else { return nil }
+        guard let plane = BitmapSubtitlePalette.premultipliedRGBA(
+            indexPlane: indexPlane,
+            width: Int(rect.w),
+            height: Int(rect.h),
+            stride: Int(rect.linesize.0),
+            palette: palette
+        ), let image = BitmapSubtitlePalette.makeImage(from: plane) else { return nil }
+
+        // Canvas: PGS composition updates land in the codec context as
+        // decoding progresses; fall back to the container video dimensions
+        // seeded at open. If both are unknown, park the cue in a generic
+        // centered lower band rather than dropping it.
+        let ctx = decoder.codecCtx.pointee
+        let canvasWidth = ctx.width > 0 ? ctx.width : decoder.fallbackCanvasWidth
+        let canvasHeight = ctx.height > 0 ? ctx.height : decoder.fallbackCanvasHeight
+        let normalizedFrame: CGRect
+        if canvasWidth > 0, canvasHeight > 0 {
+            normalizedFrame = CGRect(
+                x: Double(Int(rect.x) + plane.cropX) / Double(canvasWidth),
+                y: Double(Int(rect.y) + plane.cropY) / Double(canvasHeight),
+                width: Double(plane.cropWidth) / Double(canvasWidth),
+                height: Double(plane.cropHeight) / Double(canvasHeight)
+            )
+        } else {
+            normalizedFrame = CGRect(x: 0.2, y: 0.78, width: 0.6, height: 0.15)
+        }
+        return BitmapSubtitleCue(
+            startSeconds: startSeconds,
+            endSeconds: endSeconds,
+            image: image,
+            normalizedFrame: normalizedFrame
+        )
     }
 
     private func subtitleTracks(in ctx: UnsafeMutablePointer<AVFormatContext>) -> [AVPlayerExtractedSubtitleTrack] {
@@ -469,6 +640,15 @@ final class AVPlayerEmbeddedSubtitleExtractor {
             || codecID == AV_CODEC_ID_SUBRIP
             || codecID == AV_CODEC_ID_WEBVTT
             || codecID == AV_CODEC_ID_MOV_TEXT
+            || isBitmapSubtitleCodec(codecID)
+    }
+
+    /// Bitmap codecs we decode client-side into RGBA overlay cues. DVB is
+    /// deliberately excluded: its region/CLUT model is broadcast-oriented
+    /// and unvalidated here, so DVB tracks keep the burn-in fallback.
+    static func isBitmapSubtitleCodec(_ codecID: AVCodecID) -> Bool {
+        codecID == AV_CODEC_ID_HDMV_PGS_SUBTITLE
+            || codecID == AV_CODEC_ID_DVD_SUBTITLE
     }
 
     private func registerEmbeddedFonts(from ctx: UnsafeMutablePointer<AVFormatContext>) {
@@ -518,14 +698,14 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         av_dict_set(&options, "reconnect_delay_max", "5", 0)
         av_dict_set(&options, "rw_timeout", "10000000", 0)
         av_dict_set(&options, "stimeout", "10000000", 0)
-        // Bound the find_stream_info probe. We only render text subtitles
-        // (see `isRenderableSubtitleCodec` — ASS/SSA/SRT/WebVTT/MovText);
-        // bitmap subs (PGS, dvb_subtitle) and every other stream type are
-        // discarded after open. Without these caps, a multi-track MKV
-        // makes ffmpeg read up to `probesize` (5 MiB default) per
-        // unsolvable stream looking for codec params, which costs seconds
-        // on 4K loopback resume seeks where we open the source twice
-        // (writer + this extractor).
+        // Bound the find_stream_info probe. We only render the codecs in
+        // `isRenderableSubtitleCodec` (text: ASS/SSA/SRT/WebVTT/MovText;
+        // bitmap: PGS/DVD, whose codec params come from container track
+        // headers); everything else is discarded after open. Without
+        // these caps, a multi-track MKV makes ffmpeg read up to
+        // `probesize` (5 MiB default) per unsolvable stream looking for
+        // codec params, which costs seconds on 4K loopback resume seeks
+        // where we open the source twice (writer + this extractor).
         av_dict_set(&options, "analyzeduration", "500000", 0) // 500 ms
         av_dict_set(&options, "probesize", "1000000", 0)      // 1 MiB
 
@@ -548,9 +728,11 @@ final class AVPlayerEmbeddedSubtitleExtractor {
     private func readStreamInfo(_ ctx: UnsafeMutablePointer<AVFormatContext>) throws {
         // Discard non-renderable streams BEFORE find_stream_info so ffmpeg
         // doesn't burn the per-stream `probesize` budget hunting codec
-        // params for streams we'll never decode. We only render text
-        // subtitles, and we don't need video/audio codec params at all in
+        // params for streams we'll never decode. We only render subtitle
+        // codecs, and we don't need video/audio codec params at all in
         // this extractor — its only consumer is the subtitle decoder.
+        // (Bitmap canvas fallbacks read the video dimensions straight from
+        // the container track header, which survives the discard.)
         Self.discardNonRenderableSubtitleStreams(in: ctx)
 
         let result = avformat_find_stream_info(ctx, nil)
@@ -564,8 +746,8 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         in ctx: UnsafeMutablePointer<AVFormatContext>
     ) -> Int {
         let nb = Int(ctx.pointee.nb_streams)
-        var keptText = 0
-        var discardedBitmap = 0
+        var keptRenderable = 0
+        var discardedSubs = 0
         var discardedOther = 0
         if let streams = ctx.pointee.streams {
             for i in 0..<nb {
@@ -575,19 +757,19 @@ final class AVPlayerEmbeddedSubtitleExtractor {
                    isRenderableSubtitleCodec(codecpar.codec_id) {
                     // Leave AVDISCARD_DEFAULT in place so the probe pulls
                     // just enough header data to enumerate the track.
-                    keptText += 1
+                    keptRenderable += 1
                     continue
                 }
                 stream.pointee.discard = AVDISCARD_ALL
                 if codecpar.codec_type == AVMEDIA_TYPE_SUBTITLE {
-                    discardedBitmap += 1
+                    discardedSubs += 1
                 } else {
                     discardedOther += 1
                 }
             }
         }
-        cmpLog("[CMP-SUB] extractor probe filter total=\(nb) keptText=\(keptText) discardedBitmap=\(discardedBitmap) discardedOther=\(discardedOther)")
-        return discardedBitmap
+        cmpLog("[CMP-SUB] extractor probe filter total=\(nb) kept=\(keptRenderable) discardedSubs=\(discardedSubs) discardedOther=\(discardedOther)")
+        return discardedSubs
     }
 
     private func isProbeGenerationCurrent(_ generation: UInt64) -> Bool {

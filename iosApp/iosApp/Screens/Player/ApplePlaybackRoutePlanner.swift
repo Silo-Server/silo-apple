@@ -135,6 +135,13 @@ struct ApplePlaybackRoutePlanner {
     static let siloBitmapSubtitleCodecs: Set<String> = [
         "pgs", "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "vobsub"
     ]
+    /// Bitmap codecs the SiloPlayer route renders client-side: the AVPlayer
+    /// subtitle extractor decodes them into RGBA cue images for the overlay,
+    /// so they no longer force the compatibility (burn-in transcode) route.
+    /// DVB stays out — its broadcast region/CLUT model is unvalidated here.
+    static let siloClientRenderedBitmapSubtitleCodecs: Set<String> = [
+        "pgs", "hdmv_pgs_subtitle", "dvd_subtitle", "vobsub"
+    ]
 
     func makeExecutionPlan(input: ApplePlaybackPlannerInput) -> PlaybackExecutionPlan {
         let session = input.session
@@ -589,9 +596,20 @@ private extension ApplePlaybackRoutePlanner {
             selectedSecondarySubtitleTrackId: selectedSecondarySubtitleTrackId
         )
         let bitmapSubtitleCodecs = mandatoryEmbeddedSubtitleCodecs.filter { siloBitmapSubtitleCodecs.contains($0) }
-        if !bitmapSubtitleCodecs.isEmpty {
+        let blockedBitmapSubtitleCodecs = bitmapSubtitleCodecs.filter {
+            !siloClientRenderedBitmapSubtitleCodecs.contains($0)
+        }
+        if !blockedBitmapSubtitleCodecs.isEmpty {
             blockers.append("bitmap_subtitles_require_compatibility")
-            trace.append("silo_bitmap_subtitles_\(bitmapSubtitleCodecs.joined(separator: "_"))")
+            trace.append("silo_bitmap_subtitles_\(blockedBitmapSubtitleCodecs.joined(separator: "_"))")
+        }
+        let clientRenderedBitmapSubtitleCodecs = bitmapSubtitleCodecs.filter {
+            siloClientRenderedBitmapSubtitleCodecs.contains($0)
+        }
+        if !clientRenderedBitmapSubtitleCodecs.isEmpty {
+            trace.append(
+                "silo_bitmap_subtitles_client_rendered_\(clientRenderedBitmapSubtitleCodecs.joined(separator: "_"))"
+            )
         }
         let nonTextSubtitleCodecs = mandatoryEmbeddedSubtitleCodecs.filter {
             !siloTextSubtitleCodecs.contains($0) && !siloBitmapSubtitleCodecs.contains($0)

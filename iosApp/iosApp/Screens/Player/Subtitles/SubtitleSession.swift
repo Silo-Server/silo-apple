@@ -96,6 +96,15 @@ final class SubtitleSession {
     /// when `applySubtitleStyling` is called. Guarded by `lock`.
     private var stylingParams: SubtitleStylingOverride.Parameters = .default
 
+    /// Per-slot cue stores for bitmap subtitle tracks (PGS/DVD). Bitmap
+    /// tracks bypass libass entirely: the extractor feeds ready CGImage
+    /// cues into the slot's store and the backend's display-link pump
+    /// composites the active set onto the overlay. Presence of a store
+    /// marks the slot as bitmap-driven. Guarded by `lock`; the stores
+    /// themselves carry their own lock, so they are safe to mutate after
+    /// snapshotting the reference.
+    private var bitmapCueStores: [SubtitleSlot: BitmapSubtitleCueStore] = [:]
+
     /// Fires on main when a slot's loading status changes.
     var onStatusChange: ((SubtitleSlot, SubtitleLoadStatus) -> Void)?
 
@@ -164,7 +173,10 @@ final class SubtitleSession {
         extradataSize: Int
     ) {
         cancelFetchTask(for: slot)
-        withLock { _ = liveSlots.remove(slot) }
+        withLock {
+            _ = liveSlots.remove(slot)
+            bitmapCueStores.removeValue(forKey: slot)
+        }
         if isNativeASS {
             renderer.createTrack(
                 slot: slot,
@@ -209,7 +221,10 @@ final class SubtitleSession {
         }
 
         cancelFetchTask(for: slot)
-        withLock { _ = liveSlots.remove(slot) }
+        withLock {
+            _ = liveSlots.remove(slot)
+            bitmapCueStores.removeValue(forKey: slot)
+        }
         publishStatus(slot: slot, .fetching)
 
         // The server/CDN subtitle endpoint can buffer text responses long
@@ -273,7 +288,10 @@ final class SubtitleSession {
     /// in-flight fetch.
     func closeSlot(_ slot: SubtitleSlot) {
         cancelFetchTask(for: slot)
-        withLock { _ = liveSlots.remove(slot) }
+        withLock {
+            _ = liveSlots.remove(slot)
+            bitmapCueStores.removeValue(forKey: slot)
+        }
         renderer.dropTrack(slot: slot)
         publishStatus(slot: slot, .idle)
     }
@@ -285,8 +303,12 @@ final class SubtitleSession {
     func flushOnSeek() {
         // Snapshot live-slot membership under the lock, then call the
         // renderer outside it (never hold `lock` across a renderer call).
-        let (primaryIsLive, secondaryIsLive) = withLock {
-            (liveSlots.contains(.primary), liveSlots.contains(.secondary))
+        let (primaryIsLive, secondaryIsLive, bitmapStores) = withLock {
+            (
+                liveSlots.contains(.primary),
+                liveSlots.contains(.secondary),
+                Array(bitmapCueStores.values)
+            )
         }
         if !primaryIsLive {
             renderer.flushTrack(slot: .primary)
@@ -294,6 +316,66 @@ final class SubtitleSession {
         if !secondaryIsLive {
             renderer.flushTrack(slot: .secondary)
         }
+        // Bitmap stores always flush: the extractor restarts its decode
+        // loop at the seek target and re-feeds whatever should be visible.
+        for store in bitmapStores {
+            store.clear()
+        }
+    }
+
+    // MARK: - Bitmap subtitle tracks
+
+    /// Whether any slot currently carries a bitmap subtitle track.
+    var hasActiveBitmapTrack: Bool {
+        withLock { !bitmapCueStores.isEmpty }
+    }
+
+    /// Open a bitmap subtitle track (PGS/DVD) in the given slot. Replaces
+    /// any libass/live track occupying the slot; cue delivery then happens
+    /// via `feedBitmapCues`.
+    ///
+    /// Called by `AVPlayerEmbeddedSubtitleExtractor` from its decode queue.
+    func openBitmapTrack(slot: SubtitleSlot) {
+        cancelFetchTask(for: slot)
+        withLock {
+            _ = liveSlots.remove(slot)
+            bitmapCueStores[slot] = BitmapSubtitleCueStore()
+        }
+        renderer.dropTrack(slot: slot)
+        Self.logger.info(
+            "[CMP-SUB] opened bitmap track slot=\(slot.rawValue, privacy: .public)"
+        )
+        publishStatus(slot: slot, .ready)
+    }
+
+    /// Deliver decoded cues for the slot's bitmap track. `trimActiveAt`
+    /// carries PGS event semantics — every composition (including an empty
+    /// clear event) supersedes whatever is on screen, so any still-active
+    /// stored cue is trimmed to end at that timestamp. No-op when the slot
+    /// isn't bitmap-driven (a stale decode loop racing a track switch).
+    func feedBitmapCues(
+        slot: SubtitleSlot,
+        cues: [BitmapSubtitleCue],
+        trimActiveAt: Double?
+    ) {
+        guard let store = withLock({ bitmapCueStores[slot] }) else { return }
+        store.apply(cues: cues, trimActiveAt: trimActiveAt)
+    }
+
+    /// Bitmap cues visible at `seconds` across both slots, secondary
+    /// first so a dual-subtitle setup composites the primary on top.
+    func activeBitmapCues(at seconds: Double) -> [BitmapSubtitleCue] {
+        let (secondary, primary) = withLock {
+            (bitmapCueStores[.secondary], bitmapCueStores[.primary])
+        }
+        var active: [BitmapSubtitleCue] = []
+        if let secondary {
+            active.append(contentsOf: secondary.activeCues(at: seconds))
+        }
+        if let primary {
+            active.append(contentsOf: primary.activeCues(at: seconds))
+        }
+        return active
     }
 
     // MARK: - Embedded event feed
@@ -343,6 +425,7 @@ final class SubtitleSession {
     ///   - language: optional ISO language tag (also informational).
     func openLive(slot: SubtitleSlot, label: String? = nil, language: String? = nil) {
         cancelFetchTask(for: slot)
+        withLock { bitmapCueStores.removeValue(forKey: slot) }
         let params = withLock { stylingParams }
         let header = SubtitleStylingOverride.syntheticHeader(
             params: params,
@@ -408,6 +491,7 @@ final class SubtitleSession {
             sidecarCache.removeAll()
             sidecarDescriptors.removeAll()
             liveSlots.removeAll()
+            bitmapCueStores.removeAll()
             return snapshot
         }
         for task in tasks { task.cancel() }
