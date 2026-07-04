@@ -54,9 +54,19 @@ struct CachedAsyncImage: View {
         guard let url = URL(string: url) else { return nil }
         // Scale by the native display scale so we ask the decoder for the
         // exact pixel dimensions we render at.
+        // tvOS reports displayScale 1.0 (logical 1920×1080 canvas) while an
+        // Apple TV 4K composites the UI at 3840×2160 — decoding at point
+        // size hands the panel a 2× upscale, visibly soft on photographic
+        // content (episode stills especially). Decode at 4K pixel density;
+        // `upscale: false` below keeps smaller sources unpadded.
+        #if os(tvOS)
+        let renderScale: CGFloat = 2.0
+        #else
+        let renderScale = displayScale
+        #endif
         let pixelSize = CGSize(
-            width: size.width * displayScale,
-            height: size.height * displayScale
+            width: size.width * renderScale,
+            height: size.height * renderScale
         )
         return ImageRequest(
             url: url,

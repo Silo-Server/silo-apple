@@ -23,9 +23,20 @@ enum DetailPlaybackFormatting {
         guard let version else { return "Auto" }
         let tokens = [
             nonEmpty(version.resolution)?.uppercased(),
-            version.hdr == true ? "HDR" : nil,
+            videoRangeLabel(version),
         ].compactMap { $0 }
         return tokens.isEmpty ? "Auto" : tokens.joined(separator: " · ")
+    }
+
+    /// "Dolby Vision" when any video track carries a DV configuration,
+    /// else "HDR" for plain HDR content, else nil. Matches the hero views'
+    /// chip logic so the version selector and the hero never disagree.
+    static func videoRangeLabel(_ version: FileVersion) -> String? {
+        let videoTracks = version.videoTracks ?? []
+        if videoTracks.contains(where: { ($0.dolbyVision ?? "").isEmpty == false }) {
+            return "Dolby Vision"
+        }
+        return version.hdr == true ? "HDR" : nil
     }
 
     static func versionDetailLabel(_ version: FileVersion) -> String {
@@ -41,7 +52,7 @@ enum DetailPlaybackFormatting {
         let tokens = [
             nonEmpty(version.resolution),
             nonEmpty(normalizedVideoCodec(version.codecVideo)),
-            version.hdr == true ? "HDR" : nil,
+            videoRangeLabel(version),
             nonEmpty(normalizedAudioCodec(version.codecAudio)),
         ].compactMap { $0 }
         if !tokens.isEmpty {
@@ -400,22 +411,42 @@ enum DetailPlaybackFormatting {
         return formatter.string(fromByteCount: bytes)
     }
 
-    private static func compactAudioLayout(_ track: AudioTrack) -> String? {
-        if let layout = nonEmpty(track.channelLayout) {
-            let lowered = layout.lowercased()
-            if lowered.contains("atmos") { return "Atmos" }
-            if lowered.contains("7.1") { return "7.1" }
-            if lowered.contains("5.1") { return "5.1" }
-            if lowered.contains("stereo") { return "Stereo" }
-            return layout
+    static func compactAudioLayout(_ track: AudioTrack) -> String? {
+        let bed: String? = {
+            if let layout = nonEmpty(track.channelLayout) {
+                let lowered = layout.lowercased()
+                if lowered.contains("7.1") { return "7.1" }
+                if lowered.contains("5.1") { return "5.1" }
+                if lowered.contains("stereo") { return "Stereo" }
+                // Unrecognized layout notation falls through to the
+                // channel-count mapping instead of echoing the server
+                // string verbatim.
+            }
+            switch track.channels {
+            case 1: return "Mono"
+            case 2: return "Stereo"
+            case 6: return "5.1"
+            case 7: return "6.1"
+            case 8: return "7.1"
+            case let channels?: return "\(channels)ch"
+            case nil: return nonEmpty(track.channelLayout)
+            }
+        }()
+        if audioTrackIsAtmos(track) {
+            return [bed, "Atmos"].compactMap { $0 }.joined(separator: " ")
         }
-        switch track.channels {
-        case 1: return "Mono"
-        case 2: return "Stereo"
-        case 6: return "5.1"
-        case 8: return "7.1"
-        case let channels?: return "\(channels)ch"
-        case nil: return nil
+        return bed
+    }
+
+    /// The server model carries no codec-profile field, so Atmos detection
+    /// mirrors the route planner's heuristic: layout or stream title
+    /// mentioning Atmos/JOC. The durable fix is server-side — ffprobe
+    /// reports the EAC3 JOC profile as "Dolby Digital Plus + Dolby Atmos"
+    /// — after which this becomes a real field check.
+    static func audioTrackIsAtmos(_ track: AudioTrack) -> Bool {
+        [track.channelLayout, track.title, track.embeddedTitle].contains { value in
+            guard let lowered = value?.lowercased() else { return false }
+            return lowered.contains("atmos") || lowered.contains("joc")
         }
     }
 
