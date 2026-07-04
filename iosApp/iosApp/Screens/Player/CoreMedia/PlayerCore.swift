@@ -1202,7 +1202,7 @@ final class PlayerCore: NSObject {
                 self.lastOnTimeChange = now
                 self.lastReportedSeconds = reported
                 self.onTimeChange?(reported)
-                self.completePlaybackIfInputEOFAndClockReachedEnd(observedSeconds: reported)
+                self.completePlaybackIfFinished(observedSeconds: reported)
             }
         }
     }
@@ -1210,24 +1210,36 @@ final class PlayerCore: NSObject {
     private func noteInputEndOfFile(generation: UInt64) {
         guard !isDisposed else { return }
         guard endOfFileCoordinator.markInputEndOfFile(generation: generation) else { return }
-        completePlaybackIfInputEOFAndClockReachedEnd(
+        completePlaybackIfFinished(
             observedSeconds: currentPlaybackTimeSeconds()
         )
     }
 
-    private func completePlaybackIfInputEOFAndClockReachedEnd(observedSeconds: Double) {
+    /// Fires `onEndOfFile` once the pipeline has genuinely finished: input
+    /// EOF plus every stage drained, with clock-past-duration as the
+    /// fallback for a wedged drain signal (`PlaybackEndPolicy`). Driven by
+    /// the throttled time observer, the input-EOF notification, and the
+    /// 100 ms buffering monitor — the final audio render produces no
+    /// further time callbacks, so the timer must run the last check.
+    private func completePlaybackIfFinished(observedSeconds: Double) {
         guard !isDisposed else { return }
-        guard endOfFileCoordinator.hasReachedInputEndOfFile() else { return }
-        guard observedSeconds.isFinite else { return }
-        guard durationSeconds.isFinite, durationSeconds > 0 else {
-            if endOfFileCoordinator.claimEndOfFile() {
-                onEndOfFile?()
-            }
-            return
-        }
-
-        let remaining = durationSeconds - observedSeconds
-        guard remaining <= 0.5 else { return }
+        // A session with no active audio track (audioStreamIndex < 0) still
+        // gets an audio EOF sentinel enqueued by the demux loop, but
+        // startAudioFeed never consumes it — so the audio queue never reports
+        // empty. Treat an inactive audio queue as already drained, else the
+        // drain predicate stays false forever and, with unknown duration (no
+        // clock fallback), onEndOfFile never fires.
+        let hasAudio = audioStreamIndex >= 0
+        let inputs = PlaybackEndPolicy.Inputs(
+            reachedInputEOF: endOfFileCoordinator.hasReachedInputEndOfFile(),
+            observedSeconds: observedSeconds,
+            durationSeconds: durationSeconds,
+            audioPacketsQueued: hasAudio ? audioPacketQueue.count : 0,
+            videoPacketsQueued: videoPacketQueue.count,
+            decodedVideoFramesQueued: videoFrameScheduler.count,
+            audioChunksQueued: hasAudio ? audioOutput.queuedChunkCount : 0
+        )
+        guard PlaybackEndPolicy.shouldComplete(inputs) else { return }
         if endOfFileCoordinator.claimEndOfFile() {
             onEndOfFile?()
         }
@@ -3017,6 +3029,13 @@ final class PlayerCore: NSObject {
     /// toward the leave threshold via `onBufferingProgress`.
     private func sampleBufferingState() {
         guard !isDisposed else { return }
+
+        // Post-EOF drain check. The final audio render produces no further
+        // time callbacks, so without this tick the drain-based completion
+        // in `completePlaybackIfFinished` would never run its last check.
+        if endOfFileCoordinator.hasReachedInputEndOfFile() {
+            completePlaybackIfFinished(observedSeconds: currentPlaybackTimeSeconds())
+        }
 
         // Seek-stall watchdog. A worker iteration wedged inside FFmpeg I/O
         // (observed: TLS read that ignores both the interrupt callback and
