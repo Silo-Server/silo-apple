@@ -1631,7 +1631,12 @@ final class AVPlayerBackend {
         guard let session = subtitleSession else { return }
         let streamIndex = Int(SubtitleTrackIdSpace.avPlayerEmbeddedStreamIndex(from: trackId))
         selectedBitmapTapStreamIndex = streamIndex
-        session.openBitmapTrack(slot: .primary)
+        // Wide window: the tap feeds from the producer's read head, which
+        // the produce-ahead byte gate bounds ~48-100 s ahead of the
+        // playhead. 300 s of retention keeps those early-decoded cues alive
+        // until playback reaches them; 512 cues bounds worst-case memory
+        // (~25 MB) while covering dense dialogue across the whole window.
+        session.openBitmapTrack(slot: .primary, retentionSeconds: 300, maxCueCount: 512)
         segmentWriter?.setBitmapSubtitleTapStream(streamIndex)
         print("[CMP-TAP] bitmap activated stream=\(streamIndex)")
     }

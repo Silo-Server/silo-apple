@@ -335,15 +335,29 @@ final class SubtitleSession {
     /// via `feedBitmapCues`.
     ///
     /// Called by `AVPlayerEmbeddedSubtitleExtractor` from its decode queue.
-    func openBitmapTrack(slot: SubtitleSlot) {
+    /// `retentionSeconds`/`maxCueCount` size the cue store. The default
+    /// (30 s / 128) suits the extractor, which decodes at the playhead so
+    /// its newest cue is always near "now". The loopback demuxer tap feeds
+    /// from the producer's read head — bounded ahead of the playhead by
+    /// the produce-ahead byte gate but still tens of seconds — so it opens
+    /// a wider window; otherwise the store prunes every cue between the
+    /// playhead and the frontier before playback reaches it.
+    func openBitmapTrack(
+        slot: SubtitleSlot,
+        retentionSeconds: Double = 30,
+        maxCueCount: Int = 128
+    ) {
         cancelFetchTask(for: slot)
         withLock {
             _ = liveSlots.remove(slot)
-            bitmapCueStores[slot] = BitmapSubtitleCueStore()
+            bitmapCueStores[slot] = BitmapSubtitleCueStore(
+                retentionSeconds: retentionSeconds,
+                maxCueCount: maxCueCount
+            )
         }
         renderer.dropTrack(slot: slot)
         Self.logger.info(
-            "[CMP-SUB] opened bitmap track slot=\(slot.rawValue, privacy: .public)"
+            "[CMP-SUB] opened bitmap track slot=\(slot.rawValue, privacy: .public) retention=\(retentionSeconds, privacy: .public) maxCues=\(maxCueCount, privacy: .public)"
         )
         publishStatus(slot: slot, .ready)
     }
