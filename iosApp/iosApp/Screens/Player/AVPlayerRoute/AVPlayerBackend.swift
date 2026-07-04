@@ -226,14 +226,51 @@ final class AVPlayerBackend {
     private var subtitleSession: SubtitleSession?
     private var embeddedSubtitleExtractor: AVPlayerEmbeddedSubtitleExtractor?
     /// Change-detection key for the overlay's bitmap cue layers: overlay
-    /// size plus the identity of each active cue image. The display link
-    /// pumps at vsync rate but bitmap cues change on the order of seconds,
-    /// so all layer work is skipped while the key is unchanged.
+    /// size, the identity of each active cue image, and the
+    /// appearance-derived style. The display link pumps at vsync rate but
+    /// bitmap cues change on the order of seconds, so all layer work is
+    /// skipped while the key is unchanged.
     private struct BitmapCueRenderKey: Equatable {
         let videoRect: CGRect
         let images: [ObjectIdentifier]
+        let style: BitmapCueStyle
     }
     private var lastBitmapCueRenderKey: BitmapCueRenderKey?
+    /// The subset of the user's subtitle appearance that applies to
+    /// pre-rendered bitmap cues (PGS/DVD). Font, text color, and outline
+    /// are baked into the source pixels and cannot be restyled without
+    /// OCR; size, vertical placement, and a backing box can be honored —
+    /// matching what the styled-text path gives the same preferences.
+    private struct BitmapCueStyle: Equatable {
+        /// Scale relative to authored size, from the font-size ladder
+        /// (user preset / default preset).
+        let scale: CGFloat
+        /// Vertical placement preset (bottom keeps authored positions).
+        let position: SubtitlePositionPreset
+        /// Backing-box color hex + opacity when the background style is
+        /// `.box`; nil leaves the authored transparent background.
+        let boxColorHex: String?
+        let boxOpacity: Int
+
+        static func from(_ appearance: SubtitleAppearance?) -> BitmapCueStyle {
+            guard let sanitized = appearance?.sanitized() else {
+                return BitmapCueStyle(scale: 1, position: .bottom, boxColorHex: nil, boxOpacity: 0)
+            }
+            let defaultPoints = SubtitleAppearance.default.fontSize.pointSize
+            let scale = defaultPoints > 0
+                ? CGFloat(sanitized.fontSize.pointSize / defaultPoints)
+                : 1
+            let box = sanitized.backgroundStyle == .box
+            return BitmapCueStyle(
+                scale: scale,
+                position: sanitized.position,
+                boxColorHex: box ? sanitized.backgroundColor : nil,
+                boxOpacity: box ? sanitized.backgroundOpacity : 0
+            )
+        }
+    }
+    /// Last appearance pushed by the view model; feeds `BitmapCueStyle`.
+    private var bitmapCueAppearance: SubtitleAppearance?
     /// Whether a libass-composited frame may still be on the text layer.
     /// Lets the pump clear the layer exactly once on a text → bitmap
     /// transition instead of dispatching a no-op clear to main every vsync
@@ -596,6 +633,9 @@ final class AVPlayerBackend {
 
     func applySubtitleAppearance(_ appearance: SubtitleAppearance) {
         print("[CMP-SUB] applySubtitleAppearance size=\(appearance.fontSize.rawValue) session=\(subtitleSession == nil ? "nil" : "live")")
+        // Bitmap cues re-lay-out on the next pump tick: the appearance is
+        // part of the render key, so the change invalidates it naturally.
+        bitmapCueAppearance = appearance
         let syncOffset = subtitleSession?.currentParams.syncOffsetMs ?? 0
         let params = SubtitleStylingOverride.Parameters.from(
             appearance: appearance,
@@ -3171,26 +3211,110 @@ final class AVPlayerBackend {
             width: max(0, bounds.width - videoInsets.left - videoInsets.right),
             height: max(0, bounds.height - videoInsets.top - videoInsets.bottom)
         )
+        let style = BitmapCueStyle.from(bitmapCueAppearance)
         let key = BitmapCueRenderKey(
             videoRect: videoRect,
-            images: cues.map { ObjectIdentifier($0.image) }
+            images: cues.map { ObjectIdentifier($0.image) },
+            style: style
         )
         guard key != lastBitmapCueRenderKey else { return }
         lastBitmapCueRenderKey = key
         let placements = cues.map { cue in
-            (
-                image: cue.image,
-                frame: CGRect(
-                    x: videoRect.minX + cue.normalizedFrame.origin.x * videoRect.width,
-                    y: videoRect.minY + cue.normalizedFrame.origin.y * videoRect.height,
-                    width: cue.normalizedFrame.width * videoRect.width,
-                    height: cue.normalizedFrame.height * videoRect.height
-                )
-            )
+            Self.bitmapCuePlacement(for: cue, in: videoRect, style: style)
         }
         DispatchQueue.main.async {
             overlay.updateBitmapCues(placements)
         }
+    }
+
+    /// Lay out one bitmap cue honoring the applicable appearance
+    /// preferences (size scale, vertical placement, backing box). Only
+    /// bottom-region cues follow the position preference — top/mid cues
+    /// are typically authored "signs & typesetting" overlays whose
+    /// placement is part of the content.
+    private static func bitmapCuePlacement(
+        for cue: BitmapSubtitleCue,
+        in videoRect: CGRect,
+        style: BitmapCueStyle
+    ) -> BitmapCuePlacement {
+        var frame = CGRect(
+            x: videoRect.minX + cue.normalizedFrame.origin.x * videoRect.width,
+            y: videoRect.minY + cue.normalizedFrame.origin.y * videoRect.height,
+            width: cue.normalizedFrame.width * videoRect.width,
+            height: cue.normalizedFrame.height * videoRect.height
+        )
+        let bottomRegion = cue.normalizedFrame.midY >= 0.5
+
+        // Size: scale about the edge the cue is visually anchored to, so
+        // dialogue grows upward from its baseline and signs grow downward
+        // from their authored top.
+        if style.scale != 1, frame.width > 0, frame.height > 0 {
+            let scaled = CGSize(
+                width: frame.width * style.scale,
+                height: frame.height * style.scale
+            )
+            frame = CGRect(
+                x: frame.midX - scaled.width / 2,
+                y: bottomRegion ? frame.maxY - scaled.height : frame.minY,
+                width: scaled.width,
+                height: scaled.height
+            )
+        }
+
+        // Vertical placement (bottom-region cues only; bottom keeps the
+        // authored position — PGS dialogue is already baseline-authored).
+        if bottomRegion {
+            switch style.position {
+            case .bottom:
+                break
+            case .lowerThird:
+                frame.origin.y = videoRect.minY + videoRect.height * 0.70 - frame.height
+            case .top:
+                frame.origin.y = videoRect.minY + videoRect.height * 0.05
+            }
+        }
+
+        // Clamp into the video rect after scaling/moving.
+        frame.origin.x = min(max(frame.origin.x, videoRect.minX), max(videoRect.minX, videoRect.maxX - frame.width))
+        frame.origin.y = min(max(frame.origin.y, videoRect.minY), max(videoRect.minY, videoRect.maxY - frame.height))
+
+        // Backing box, mirroring the text path's box style. Padding tracks
+        // the cue size so it reads like the text box at any scale.
+        var backgroundFrame = frame
+        var backgroundColor: CGColor?
+        var cornerRadius: CGFloat = 0
+        if let hex = style.boxColorHex,
+           let color = Self.cgColor(hex: hex, opacityPercent: style.boxOpacity) {
+            let padV = min(22, max(6, frame.height * 0.16))
+            let padH = min(30, max(8, frame.height * 0.24))
+            backgroundFrame = frame.insetBy(dx: -padH, dy: -padV)
+                .intersection(videoRect.insetBy(dx: -2, dy: -2))
+            backgroundColor = color
+            cornerRadius = min(8, padV * 0.5)
+        }
+
+        return BitmapCuePlacement(
+            image: cue.image,
+            frame: frame,
+            backgroundFrame: backgroundFrame,
+            backgroundColor: backgroundColor,
+            cornerRadius: cornerRadius
+        )
+    }
+
+    /// Parse "#RRGGBB" into a CGColor with the given opacity percent.
+    private static func cgColor(hex: String, opacityPercent: Int) -> CGColor? {
+        var raw = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.hasPrefix("#") { raw.removeFirst() }
+        guard raw.count == 6, let value = UInt32(raw, radix: 16) else { return nil }
+        let alpha = CGFloat(max(0, min(100, opacityPercent))) / 100
+        guard alpha > 0 else { return nil }
+        return CGColor(
+            srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
+            green: CGFloat((value >> 8) & 0xFF) / 255,
+            blue: CGFloat(value & 0xFF) / 255,
+            alpha: alpha
+        )
     }
 
     private func teardownMediaPipeline(clearDisplayCriteria: Bool = true) {

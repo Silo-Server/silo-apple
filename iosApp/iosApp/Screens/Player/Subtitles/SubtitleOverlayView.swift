@@ -33,10 +33,24 @@ private func withoutImplicitLayerAnimation(_ updates: () -> Void) {
     CATransaction.commit()
 }
 
-/// Grow/shrink the host's sublayer list to exactly `count` cue layers.
-/// Cue images are pre-cropped to their frames, so `.resize` maps the
-/// image 1:1 onto the layer. Callers wrap this in a no-animation
-/// transaction.
+/// One positioned bitmap subtitle cue. `frame` is the image rect in
+/// overlay points (top-left origin). `backgroundFrame` is the
+/// preference-driven backing box around it — equal to `frame` when no
+/// box is drawn. All layout math lives with the caller; the overlay
+/// only assigns layer geometry.
+struct BitmapCuePlacement {
+    let image: CGImage
+    let frame: CGRect
+    let backgroundFrame: CGRect
+    let backgroundColor: CGColor?
+    let cornerRadius: CGFloat
+}
+
+/// Grow/shrink the host's sublayer list to exactly `count` cue layer
+/// pairs: a container (the preference-driven backing box) holding one
+/// image sublayer. Cue images are pre-cropped to their frames, so
+/// `.resize` maps the image 1:1 onto its layer. Callers wrap this in a
+/// no-animation transaction.
 private func syncBitmapCueLayerCount(_ count: Int, host: CALayer) {
     var current = host.sublayers?.count ?? 0
     while current > count {
@@ -44,12 +58,32 @@ private func syncBitmapCueLayerCount(_ count: Int, host: CALayer) {
         current -= 1
     }
     while current < count {
-        let layer = CALayer()
-        layer.contentsGravity = .resize
-        layer.isOpaque = false
-        host.addSublayer(layer)
+        let container = CALayer()
+        container.isOpaque = false
+        container.masksToBounds = false
+        let image = CALayer()
+        image.contentsGravity = .resize
+        image.isOpaque = false
+        container.addSublayer(image)
+        host.addSublayer(container)
         current += 1
     }
+}
+
+/// Assign one placement to its container/image layer pair. The image
+/// frame is expressed in the container's coordinate space.
+private func applyBitmapCuePlacement(_ placement: BitmapCuePlacement, to container: CALayer) {
+    container.frame = placement.backgroundFrame
+    container.backgroundColor = placement.backgroundColor
+    container.cornerRadius = placement.cornerRadius
+    guard let imageLayer = container.sublayers?.first else { return }
+    imageLayer.contents = placement.image
+    imageLayer.frame = CGRect(
+        x: placement.frame.minX - placement.backgroundFrame.minX,
+        y: placement.frame.minY - placement.backgroundFrame.minY,
+        width: placement.frame.width,
+        height: placement.frame.height
+    )
 }
 
 private func removeBitmapCueLayers(host: CALayer) {
@@ -149,13 +183,12 @@ final class SubtitleOverlayView: UIView {
     /// Replace the bitmap cue layers with the given placements. Frames
     /// are in overlay points, top-left origin (the caller has already
     /// scaled normalized cue rects by the overlay bounds). Call on main.
-    func updateBitmapCues(_ placements: [(image: CGImage, frame: CGRect)]) {
+    func updateBitmapCues(_ placements: [BitmapCuePlacement]) {
         withoutImplicitLayerAnimation {
             syncBitmapCueLayerCount(placements.count, host: bitmapCueHost)
             guard let sublayers = bitmapCueHost.sublayers else { return }
             for (index, placement) in placements.enumerated() {
-                sublayers[index].contents = placement.image
-                sublayers[index].frame = placement.frame
+                applyBitmapCuePlacement(placement, to: sublayers[index])
             }
         }
     }
@@ -258,14 +291,14 @@ final class SubtitleOverlayView: NSView {
 
     /// Replace the bitmap cue layers with the given placements. Frames
     /// are in overlay points, top-left origin — `bitmapCueHost` is
-    /// geometry-flipped, so no manual y-flip is needed. Call on main.
-    func updateBitmapCues(_ placements: [(image: CGImage, frame: CGRect)]) {
+    /// geometry-flipped (the flip is inherited by the container's own
+    /// sublayers), so no manual y-flip is needed. Call on main.
+    func updateBitmapCues(_ placements: [BitmapCuePlacement]) {
         withoutImplicitLayerAnimation {
             syncBitmapCueLayerCount(placements.count, host: bitmapCueHost)
             guard let sublayers = bitmapCueHost.sublayers else { return }
             for (index, placement) in placements.enumerated() {
-                sublayers[index].contents = placement.image
-                sublayers[index].frame = placement.frame
+                applyBitmapCuePlacement(placement, to: sublayers[index])
             }
         }
     }

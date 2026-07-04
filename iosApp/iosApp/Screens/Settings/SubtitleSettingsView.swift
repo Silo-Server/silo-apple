@@ -176,7 +176,7 @@ struct SubtitleSettingsView: View {
                 } else {
                     Text("Using the server fallback for this profile on this device. Turn on Custom Appearance to save your own here.")
                 }
-                Text("Subtitles with their own built-in styling and image-based subtitles keep their original appearance.")
+                Text("Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings.")
             }
             .foregroundStyle(Color.continuumSecondaryText)
         }

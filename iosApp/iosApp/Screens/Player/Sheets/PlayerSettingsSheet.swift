@@ -339,7 +339,7 @@ struct PlayerSettingsSheet: View {
             } footer: {
                 Text(matchesSystem
                      ? "Following this device's caption style from Accessibility settings. Editing any option below switches back to Silo styling."
-                     : "Subtitles with their own built-in styling and image-based subtitles keep their original appearance.")
+                     : "Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings.")
             }
 
             Section("Text") {
@@ -805,7 +805,7 @@ struct PlayerSettingsSheet: View {
                 } footer: {
                     Text(matchesSystem
                          ? "Following this device's caption style from Accessibility settings. Editing any option switches back to Silo styling."
-                         : "Subtitles with their own built-in styling and image-based subtitles keep their original appearance.")
+                         : "Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings.")
                 }
             }
         }

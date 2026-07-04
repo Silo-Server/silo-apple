@@ -152,7 +152,7 @@ struct TVSubtitleSettingsPane: View {
         } else {
             source = "Appearance is using the server fallback for this profile on this Apple TV."
         }
-        return source + " Subtitles with their own built-in styling and image-based subtitles keep their original appearance."
+        return source + " Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings."
     }
 
     @ViewBuilder
