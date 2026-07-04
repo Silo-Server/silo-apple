@@ -117,6 +117,9 @@ struct PlayerSettingsSheet: View {
 
     #if os(iOS)
     @Environment(\.dismiss) private var dismiss
+    /// Slider position while the user is dragging the background-opacity
+    /// slider; committed (and saved) once the drag ends.
+    @State private var draftOpacity: Double?
     #endif
 
     var body: some View {
@@ -291,24 +294,40 @@ struct PlayerSettingsSheet: View {
         }
     }
 
-    /// "Large · Outline · Bottom"-style value label for the Appearance row.
+    /// "Large · Box · Bottom"-style value label for the Appearance row.
     private var appearanceSummary: String {
+        if viewModel.settings.subtitleMatchesSystemAppearance {
+            return "Matching Device"
+        }
         let appearance = viewModel.settings.subtitleAppearance
         return [
             appearance.fontSize.label,
-            appearance.backgroundStyle.label,
+            appearance.styleDescription,
             appearance.position.label,
         ].joined(separator: " · ")
     }
 
     private var subtitleAppearancePage: some View {
-        List {
+        let matchesSystem = viewModel.settings.subtitleMatchesSystemAppearance
+        return List {
             Section {
-                subtitleAppearancePreview
+                SubtitleAppearancePreview(appearance: viewModel.settings.effectiveSubtitleAppearance)
                     .listRowInsets(EdgeInsets())
+            } footer: {
+                if !matchesSystem && viewModel.settings.subtitleAppearance.isLowLegibilityRisk {
+                    Text("Low contrast — dark text without a box or outline can be hard to read.")
+                }
             }
 
             Section {
+                Toggle("Match device settings", isOn: Binding(
+                    get: { viewModel.settings.subtitleMatchesSystemAppearance },
+                    set: { enabled in
+                        viewModel.setSubtitleMatchesSystemAppearance(enabled)
+                    }
+                ))
+                .tint(.continuumAccent)
+
                 Toggle("Save for this device and profile", isOn: Binding(
                     get: { viewModel.settings.subtitleUsesDeviceAppearanceOverride },
                     set: { enabled in
@@ -316,6 +335,11 @@ struct PlayerSettingsSheet: View {
                     }
                 ))
                 .tint(.continuumAccent)
+                .disabled(matchesSystem)
+            } footer: {
+                Text(matchesSystem
+                     ? "Following this device's caption style from Accessibility settings. Editing any option below switches back to Silo styling."
+                     : "Subtitles with their own built-in styling and image-based subtitles keep their original appearance.")
             }
 
             Section("Text") {
@@ -345,22 +369,19 @@ struct PlayerSettingsSheet: View {
                         Text(color.label).tag(color.hex)
                     }
                 }
-                .disabled(!viewModel.settings.subtitleAppearance.textOutline && viewModel.settings.subtitleAppearance.backgroundStyle != .outline)
+                .disabled(!viewModel.settings.subtitleAppearance.textOutline)
             }
+            .disabled(matchesSystem)
 
             Section("Background") {
-                Picker("Style", selection: appearanceEnumBinding(\.backgroundStyle, SubtitleBackgroundStylePreset.self)) {
-                    ForEach(SubtitleBackgroundStylePreset.allCases) { option in
+                Picker("Style", selection: appearanceBackgroundStyleBinding) {
+                    ForEach(SubtitleBackgroundStylePreset.selectableCases) { option in
                         Text(option.label).tag(option.rawValue)
                     }
                 }
 
-                Picker("Opacity", selection: appearanceIntBinding(\.backgroundOpacity)) {
-                    ForEach(Array(stride(from: 0, through: 100, by: 5)), id: \.self) { value in
-                        Text("\(value)%").tag(String(value))
-                    }
-                }
-                .disabled(viewModel.settings.subtitleAppearance.backgroundStyle != .box)
+                appearanceOpacityRow
+                    .disabled(viewModel.settings.subtitleAppearance.backgroundStyle != .box)
 
                 Picker("Color", selection: appearanceStringBinding(\.backgroundColor)) {
                     ForEach(SubtitleAppearance.backgroundColors, id: \.hex) { color in
@@ -369,6 +390,7 @@ struct PlayerSettingsSheet: View {
                 }
                 .disabled(viewModel.settings.subtitleAppearance.backgroundStyle != .box)
             }
+            .disabled(matchesSystem)
 
             Section("Layout") {
                 Picker("Position", selection: appearanceEnumBinding(\.position, SubtitlePositionPreset.self)) {
@@ -377,72 +399,41 @@ struct PlayerSettingsSheet: View {
                     }
                 }
             }
+            .disabled(matchesSystem)
         }
         .navigationTitle("Subtitle Appearance")
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    /// Live approximation of the configured subtitle style over a dark
-    /// film-frame stand-in. The real pipeline renders through libass; this
-    /// mirrors the font/color/outline/background/position choices closely
-    /// enough to preview a change without leaving the sheet.
-    private var subtitleAppearancePreview: some View {
-        let appearance = viewModel.settings.subtitleAppearance
-
-        return ZStack(alignment: previewAlignment(for: appearance.position)) {
-            LinearGradient(
-                colors: [Color(white: 0.32), Color(white: 0.06)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-
-            previewSampleText(appearance)
-                .padding(.vertical, appearance.position == .lowerThird ? 26 : 12)
-                .padding(.horizontal, 16)
-        }
-        .frame(height: 118)
-        .clipped()
-    }
-
-    private func previewAlignment(for position: SubtitlePositionPreset) -> Alignment {
-        switch position {
-        case .top: return .top
-        case .lowerThird, .bottom: return .bottom
-        }
-    }
-
-    @ViewBuilder
-    private func previewSampleText(_ appearance: SubtitleAppearance) -> some View {
-        let size = appearance.fontSize.pointSize * 0.45
-        let font: Font = {
-            switch appearance.fontFamily {
-            case .serif: return .system(size: size, weight: .semibold, design: .serif)
-            case .monospace: return .system(size: size, weight: .semibold, design: .monospaced)
-            case .sansSerif: return .system(size: size, weight: .semibold)
-            default: return .custom(appearance.fontFamily.assFontName, size: size)
+    private var appearanceOpacityRow: some View {
+        let committed = Double(viewModel.settings.subtitleAppearance.backgroundOpacity)
+        return HStack(spacing: 12) {
+            Text("Opacity")
+            Slider(
+                value: Binding(
+                    get: { draftOpacity ?? committed },
+                    set: { draftOpacity = $0 }
+                ),
+                in: 0...100,
+                step: 5
+            ) { editing in
+                guard !editing, let value = draftOpacity else { return }
+                draftOpacity = nil
+                var next = viewModel.settings.subtitleAppearance
+                let percent = Int(value)
+                if next.backgroundOpacity == percent { return }
+                next.backgroundOpacity = percent
+                Task { await viewModel.setSubtitleAppearance(next) }
             }
-        }()
-        let hasOutline = appearance.textOutline || appearance.backgroundStyle == .outline
-        let outlineColor = Color(hex: appearance.textOutlineColor)
-
-        Text("Subtitles will look like this")
-            .font(font)
-            .foregroundStyle(Color(hex: appearance.fontColor))
-            .shadow(color: hasOutline ? outlineColor : .clear, radius: hasOutline ? 1.2 : 0)
-            .shadow(color: hasOutline ? outlineColor : .clear, radius: hasOutline ? 1.2 : 0)
-            .shadow(
-                color: appearance.backgroundStyle == .shadow ? .black.opacity(0.85) : .clear,
-                radius: 3, y: 2
-            )
-            .padding(.horizontal, appearance.backgroundStyle == .box ? 10 : 0)
-            .padding(.vertical, appearance.backgroundStyle == .box ? 4 : 0)
-            .background {
-                if appearance.backgroundStyle == .box {
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(Color(hex: appearance.backgroundColor)
-                            .opacity(Double(appearance.backgroundOpacity) / 100))
-                }
-            }
+            .tint(.continuumAccent)
+            Text("\(Int(draftOpacity ?? committed))%")
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 44, alignment: .trailing)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Background Opacity")
+        .accessibilityValue("\(Int(draftOpacity ?? committed)) percent")
     }
 
     /// Speed ladder for the sheet's picker. Mirrors the ladder the old
@@ -729,9 +720,21 @@ struct PlayerSettingsSheet: View {
     }
 
     private var subtitleStylingSection: some View {
-        Group {
+        let matchesSystem = viewModel.settings.subtitleMatchesSystemAppearance
+        return Group {
             if viewModel.backendCapabilities.supportsSubtitleStyling {
-                Section("Subtitle appearance") {
+                Section {
+                    SubtitleAppearancePreview(appearance: viewModel.settings.effectiveSubtitleAppearance)
+                        .listRowInsets(EdgeInsets())
+
+                    Toggle("Match device settings", isOn: Binding(
+                        get: { viewModel.settings.subtitleMatchesSystemAppearance },
+                        set: { enabled in
+                            viewModel.setSubtitleMatchesSystemAppearance(enabled)
+                        }
+                    ))
+                    .tint(.continuumAccent)
+
                     Toggle("Save for this device and profile", isOn: Binding(
                         get: { viewModel.settings.subtitleUsesDeviceAppearanceOverride },
                         set: { enabled in
@@ -739,60 +742,70 @@ struct PlayerSettingsSheet: View {
                         }
                     ))
                     .tint(.continuumAccent)
+                    .disabled(matchesSystem)
 
-                    Picker("Font size", selection: appearanceEnumBinding(\.fontSize, SubtitleFontSizePreset.self)) {
-                        ForEach(SubtitleFontSizePreset.allCases) { option in
-                            Text(option.label).tag(option.rawValue)
+                    Group {
+                        Picker("Font size", selection: appearanceEnumBinding(\.fontSize, SubtitleFontSizePreset.self)) {
+                            ForEach(SubtitleFontSizePreset.allCases) { option in
+                                Text(option.label).tag(option.rawValue)
+                            }
+                        }
+
+                        Picker("Font family", selection: appearanceEnumBinding(\.fontFamily, SubtitleFontFamilyPreset.self)) {
+                            ForEach(SubtitleFontFamilyPreset.allCases) { option in
+                                Text(option.label).tag(option.rawValue)
+                            }
+                        }
+
+                        Picker("Font color", selection: appearanceStringBinding(\.fontColor)) {
+                            ForEach(SubtitleAppearance.fontColors, id: \.hex) { color in
+                                Text(color.label).tag(color.hex)
+                            }
+                        }
+
+                        Toggle("Text outline", isOn: appearanceBoolBinding(\.textOutline))
+                            .tint(.continuumAccent)
+
+                        Picker("Outline color", selection: appearanceStringBinding(\.textOutlineColor)) {
+                            ForEach(SubtitleAppearance.outlineColors, id: \.hex) { color in
+                                Text(color.label).tag(color.hex)
+                            }
+                        }
+                        .disabled(!viewModel.settings.subtitleAppearance.textOutline)
+
+                        Picker("Background style", selection: appearanceBackgroundStyleBinding) {
+                            ForEach(SubtitleBackgroundStylePreset.selectableCases) { option in
+                                Text(option.label).tag(option.rawValue)
+                            }
+                        }
+
+                        Picker("Background opacity", selection: appearanceIntBinding(\.backgroundOpacity)) {
+                            ForEach(Array(stride(from: 0, through: 100, by: 5)), id: \.self) { value in
+                                Text("\(value)%").tag(String(value))
+                            }
+                        }
+                        .disabled(viewModel.settings.subtitleAppearance.backgroundStyle != .box)
+
+                        Picker("Background color", selection: appearanceStringBinding(\.backgroundColor)) {
+                            ForEach(SubtitleAppearance.backgroundColors, id: \.hex) { color in
+                                Text(color.label).tag(color.hex)
+                            }
+                        }
+                        .disabled(viewModel.settings.subtitleAppearance.backgroundStyle != .box)
+
+                        Picker("Position", selection: appearanceEnumBinding(\.position, SubtitlePositionPreset.self)) {
+                            ForEach(SubtitlePositionPreset.allCases) { option in
+                                Text(option.label).tag(option.rawValue)
+                            }
                         }
                     }
-
-                    Picker("Font family", selection: appearanceEnumBinding(\.fontFamily, SubtitleFontFamilyPreset.self)) {
-                        ForEach(SubtitleFontFamilyPreset.allCases) { option in
-                            Text(option.label).tag(option.rawValue)
-                        }
-                    }
-
-                    Picker("Font color", selection: appearanceStringBinding(\.fontColor)) {
-                        ForEach(SubtitleAppearance.fontColors, id: \.hex) { color in
-                            Text(color.label).tag(color.hex)
-                        }
-                    }
-
-                    Toggle("Text outline", isOn: appearanceBoolBinding(\.textOutline))
-                        .tint(.continuumAccent)
-
-                    Picker("Outline color", selection: appearanceStringBinding(\.textOutlineColor)) {
-                        ForEach(SubtitleAppearance.outlineColors, id: \.hex) { color in
-                            Text(color.label).tag(color.hex)
-                        }
-                    }
-                    .disabled(!viewModel.settings.subtitleAppearance.textOutline && viewModel.settings.subtitleAppearance.backgroundStyle != .outline)
-
-                    Picker("Background style", selection: appearanceEnumBinding(\.backgroundStyle, SubtitleBackgroundStylePreset.self)) {
-                        ForEach(SubtitleBackgroundStylePreset.allCases) { option in
-                            Text(option.label).tag(option.rawValue)
-                        }
-                    }
-
-                    Picker("Background opacity", selection: appearanceIntBinding(\.backgroundOpacity)) {
-                        ForEach(Array(stride(from: 0, through: 100, by: 5)), id: \.self) { value in
-                            Text("\(value)%").tag(String(value))
-                        }
-                    }
-                    .disabled(viewModel.settings.subtitleAppearance.backgroundStyle != .box)
-
-                    Picker("Background color", selection: appearanceStringBinding(\.backgroundColor)) {
-                        ForEach(SubtitleAppearance.backgroundColors, id: \.hex) { color in
-                            Text(color.label).tag(color.hex)
-                        }
-                    }
-                    .disabled(viewModel.settings.subtitleAppearance.backgroundStyle != .box)
-
-                    Picker("Position", selection: appearanceEnumBinding(\.position, SubtitlePositionPreset.self)) {
-                        ForEach(SubtitlePositionPreset.allCases) { option in
-                            Text(option.label).tag(option.rawValue)
-                        }
-                    }
+                    .disabled(matchesSystem)
+                } header: {
+                    Text("Subtitle appearance")
+                } footer: {
+                    Text(matchesSystem
+                         ? "Following this device's caption style from Accessibility settings. Editing any option switches back to Silo styling."
+                         : "Subtitles with their own built-in styling and image-based subtitles keep their original appearance.")
                 }
             }
         }
@@ -832,6 +845,24 @@ struct PlayerSettingsSheet: View {
     }
 
     // MARK: - Appearance bindings
+
+    /// Choosing Box with a fully transparent background would render
+    /// nothing; give it the default opacity so the choice takes effect.
+    private var appearanceBackgroundStyleBinding: Binding<String> {
+        Binding(
+            get: { viewModel.settings.subtitleAppearance.backgroundStyle.rawValue },
+            set: { rawValue in
+                guard let style = SubtitleBackgroundStylePreset(rawValue: rawValue) else { return }
+                var next = viewModel.settings.subtitleAppearance
+                if next.backgroundStyle == style { return }
+                next.backgroundStyle = style
+                if style == .box && next.backgroundOpacity == 0 {
+                    next.backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
+                }
+                Task { await viewModel.setSubtitleAppearance(next) }
+            }
+        )
+    }
 
     private func appearanceStringBinding(_ keyPath: WritableKeyPath<SubtitleAppearance, String>) -> Binding<String> {
         Binding(

@@ -109,4 +109,86 @@ final class SubtitleStylingOverrideTests: XCTestCase {
             SubtitleAppearance.default.fontSize.pointSize
         )
     }
+
+    // MARK: - Outline color source
+
+    func testOutlineColorAlwaysComesFromUserOutlineColor() {
+        // Regression: legacy "outline" background style borrowed the
+        // background color for the glyph outline, contradicting the web
+        // player, Android, and every preview (which all use the user's
+        // outline color).
+        var params = SubtitleStylingOverride.Parameters.default
+        params.borderSize = 2
+        params.borderColorHex = "#7f1d1d"
+        params.backgroundColorHex = "#14532d"
+        params.backgroundStyle = .outline
+        XCTAssertEqual(params.effectiveOutlineColorHex, "#7f1d1d")
+
+        params.backgroundStyle = .box
+        params.textOutline = true
+        XCTAssertEqual(params.effectiveOutlineColorHex, "#7f1d1d")
+    }
+
+    func testLegacyOutlineAppearanceProducesOutlineParameters() {
+        var appearance = SubtitleAppearance.default
+        appearance.backgroundStyle = .outline
+        appearance.textOutline = false
+        appearance.textOutlineColor = "#1e3a5f"
+
+        let params = SubtitleStylingOverride.Parameters.from(appearance: appearance, syncOffsetMs: 0)
+        // sanitized() folds legacy outline into the text-outline axis.
+        XCTAssertEqual(params.backgroundStyle, SubtitleBackgroundStylePreset.none)
+        XCTAssertTrue(params.textOutline)
+        XCTAssertEqual(params.borderSize, 2)
+        XCTAssertEqual(params.effectiveOutlineColorHex, "#1e3a5f")
+        XCTAssertEqual(params.backgroundOpacityPercent, 0)
+    }
+
+    // MARK: - Appearance sanitization
+
+    func testSanitizedMigratesLegacyOutlineBackgroundStyle() {
+        var appearance = SubtitleAppearance.default
+        appearance.backgroundStyle = .outline
+        appearance.textOutline = false
+
+        let sanitized = appearance.sanitized()
+        XCTAssertEqual(sanitized.backgroundStyle, SubtitleBackgroundStylePreset.none)
+        XCTAssertTrue(sanitized.textOutline)
+    }
+
+    func testDecodeAppliesLegacyOutlineMigration() {
+        let json = #"{"backgroundStyle":"outline","textOutline":false}"#
+        let decoded = SubtitleAppearance.decode(from: json)
+        XCTAssertEqual(decoded.backgroundStyle, SubtitleBackgroundStylePreset.none)
+        XCTAssertTrue(decoded.textOutline)
+    }
+
+    func testSelectableBackgroundStylesExcludeLegacyOutline() {
+        XCTAssertEqual(
+            SubtitleBackgroundStylePreset.selectableCases,
+            [.box, .shadow, SubtitleBackgroundStylePreset.none]
+        )
+    }
+
+    // MARK: - Legibility hint
+
+    func testLowLegibilityRiskFlagsDarkPlainText() {
+        var appearance = SubtitleAppearance.default
+        appearance.fontColor = "#000000"
+        appearance.backgroundStyle = SubtitleBackgroundStylePreset.none
+        appearance.textOutline = false
+        XCTAssertTrue(appearance.isLowLegibilityRisk)
+
+        appearance.textOutline = true
+        XCTAssertFalse(appearance.isLowLegibilityRisk)
+
+        appearance.textOutline = false
+        appearance.backgroundStyle = .box
+        appearance.backgroundOpacity = 75
+        XCTAssertFalse(appearance.isLowLegibilityRisk)
+
+        appearance.fontColor = "#ffffff"
+        appearance.backgroundStyle = SubtitleBackgroundStylePreset.none
+        XCTAssertFalse(appearance.isLowLegibilityRisk)
+    }
 }

@@ -66,6 +66,23 @@ struct TVSubtitleSettingsPane: View {
     private var appearanceSection: some View {
         TVSettingsSectionHeader("APPEARANCE")
 
+        TVSettingsSubtitlePreview(appearance: viewModel.effectiveSubtitleAppearance)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 8)
+
+        if !viewModel.subtitleMatchesSystemAppearance
+            && viewModel.subtitleAppearance.isLowLegibilityRisk {
+            TVSettingsFooter("Low contrast — dark text without a box or outline can be hard to read.")
+        }
+
+        TVSettingsToggleRow(
+            title: "Match Device Settings",
+            isOn: viewModel.subtitleMatchesSystemAppearance
+        ) {
+            let enabled = !viewModel.subtitleMatchesSystemAppearance
+            Task { await viewModel.setSubtitleMatchesSystemAppearance(enabled) }
+        }
+
         TVSettingsToggleRow(
             title: "Custom Appearance",
             isOn: viewModel.subtitleUsesDeviceAppearanceOverride
@@ -90,20 +107,52 @@ struct TVSubtitleSettingsPane: View {
             Task { await viewModel.setSubtitleAppearance(next) }
         }
 
-        pickerRow("Outline Color", options: TVSettingsOptions.outlineColor,
-                  selection: viewModel.subtitleAppearance.textOutlineColor.lowercased(), kind: .outlineColor)
+        TVSettingsPickerRow(
+            title: "Outline Color",
+            value: viewModel.subtitleAppearance.textOutline
+                ? TVSettingsOptions.label(
+                    for: viewModel.subtitleAppearance.textOutlineColor.lowercased(),
+                    in: TVSettingsOptions.outlineColor
+                )
+                : "—"
+        ) { activePicker = .outlineColor }
+
         pickerRow("Background Style", options: TVSettingsOptions.backgroundStyle,
                   selection: viewModel.subtitleAppearance.backgroundStyle.rawValue, kind: .backgroundStyle)
-        pickerRow("Background Opacity", options: TVSettingsOptions.backgroundOpacity,
-                  selection: String(viewModel.subtitleAppearance.backgroundOpacity), kind: .backgroundOpacity)
-        pickerRow("Background Color", options: TVSettingsOptions.backgroundColor,
-                  selection: viewModel.subtitleAppearance.backgroundColor.lowercased(), kind: .backgroundColor)
+
+        TVSettingsPickerRow(
+            title: "Background Opacity",
+            value: viewModel.subtitleAppearance.backgroundStyle == .box
+                ? "\(viewModel.subtitleAppearance.backgroundOpacity)%"
+                : "—"
+        ) { activePicker = .backgroundOpacity }
+
+        TVSettingsPickerRow(
+            title: "Background Color",
+            value: viewModel.subtitleAppearance.backgroundStyle == .box
+                ? TVSettingsOptions.label(
+                    for: viewModel.subtitleAppearance.backgroundColor.lowercased(),
+                    in: TVSettingsOptions.backgroundColor
+                )
+                : "—"
+        ) { activePicker = .backgroundColor }
+
         pickerRow("Position", options: TVSettingsOptions.position,
                   selection: viewModel.subtitleAppearance.position.rawValue, kind: .position)
 
-        TVSettingsFooter(viewModel.subtitleUsesDeviceAppearanceOverride
-            ? "Appearance is saved on the server for this profile on this Apple TV."
-            : "Appearance is using the server fallback for this profile on this Apple TV.")
+        TVSettingsFooter(appearanceFooterText)
+    }
+
+    private var appearanceFooterText: String {
+        let source: String
+        if viewModel.subtitleMatchesSystemAppearance {
+            source = "Following this Apple TV's caption style from Settings → Accessibility. Editing any option switches back to Silo styling."
+        } else if viewModel.subtitleUsesDeviceAppearanceOverride {
+            source = "Appearance is saved on the server for this profile on this Apple TV."
+        } else {
+            source = "Appearance is using the server fallback for this profile on this Apple TV."
+        }
+        return source + " Subtitles with their own built-in styling and image-based subtitles keep their original appearance."
     }
 
     @ViewBuilder
@@ -184,25 +233,25 @@ struct TVSubtitleSettingsPane: View {
             TVSettingsPickerSheet(
                 title: "Outline Color",
                 options: TVSettingsOptions.outlineColor,
-                selection: appearanceStringBinding(\.textOutlineColor)
+                selection: outlineColorBinding
             )
         case .backgroundStyle:
             TVSettingsPickerSheet(
                 title: "Background Style",
                 options: TVSettingsOptions.backgroundStyle,
-                selection: appearanceEnumBinding(\.backgroundStyle, SubtitleBackgroundStylePreset.self)
+                selection: backgroundStyleBinding
             )
         case .backgroundOpacity:
             TVSettingsPickerSheet(
                 title: "Background Opacity",
                 options: TVSettingsOptions.backgroundOpacity,
-                selection: appearanceIntBinding(\.backgroundOpacity)
+                selection: backgroundOpacityBinding
             )
         case .backgroundColor:
             TVSettingsPickerSheet(
                 title: "Background Color",
                 options: TVSettingsOptions.backgroundColor,
-                selection: appearanceStringBinding(\.backgroundColor)
+                selection: backgroundColorBinding
             )
         case .position:
             TVSettingsPickerSheet(
@@ -231,24 +280,74 @@ struct TVSubtitleSettingsPane: View {
 
     // MARK: - Appearance bindings
 
+    /// Editing a setting that the current style ignores makes it take
+    /// effect ("touch it and it applies"): picking an outline color turns
+    /// the outline on, and picking a background color or opacity switches
+    /// the style to Box. Matches the player HUD's behavior.
+
+    private var outlineColorBinding: Binding<String> {
+        Binding(
+            get: { viewModel.subtitleAppearance.textOutlineColor.lowercased() },
+            set: { value in
+                var next = viewModel.subtitleAppearance
+                next.textOutlineColor = value
+                next.textOutline = true
+                Task { await viewModel.setSubtitleAppearance(next) }
+            }
+        )
+    }
+
+    private var backgroundStyleBinding: Binding<String> {
+        Binding(
+            get: { viewModel.subtitleAppearance.backgroundStyle.rawValue },
+            set: { rawValue in
+                guard let style = SubtitleBackgroundStylePreset(rawValue: rawValue) else { return }
+                var next = viewModel.subtitleAppearance
+                next.backgroundStyle = style
+                if style == .box && next.backgroundOpacity == 0 {
+                    next.backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
+                }
+                Task { await viewModel.setSubtitleAppearance(next) }
+            }
+        )
+    }
+
+    private var backgroundOpacityBinding: Binding<String> {
+        Binding(
+            get: { String(viewModel.subtitleAppearance.backgroundOpacity) },
+            set: { value in
+                guard let opacity = Int(value) else { return }
+                var next = viewModel.subtitleAppearance
+                next.backgroundOpacity = opacity
+                if opacity > 0 {
+                    next.backgroundStyle = .box
+                }
+                Task { await viewModel.setSubtitleAppearance(next) }
+            }
+        )
+    }
+
+    private var backgroundColorBinding: Binding<String> {
+        Binding(
+            get: { viewModel.subtitleAppearance.backgroundColor.lowercased() },
+            set: { value in
+                var next = viewModel.subtitleAppearance
+                next.backgroundColor = value
+                next.backgroundStyle = .box
+                if next.backgroundOpacity == 0 {
+                    next.backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
+                }
+                Task { await viewModel.setSubtitleAppearance(next) }
+            }
+        )
+    }
+
     private func appearanceStringBinding(_ keyPath: WritableKeyPath<SubtitleAppearance, String>) -> Binding<String> {
         Binding(
             get: { viewModel.subtitleAppearance[keyPath: keyPath].lowercased() },
             set: { value in
                 var next = viewModel.subtitleAppearance
                 next[keyPath: keyPath] = value
-                Task { await viewModel.setSubtitleAppearance(next) }
-            }
-        )
-    }
-
-    private func appearanceIntBinding(_ keyPath: WritableKeyPath<SubtitleAppearance, Int>) -> Binding<String> {
-        Binding(
-            get: { String(viewModel.subtitleAppearance[keyPath: keyPath]) },
-            set: { value in
-                guard let intValue = Int(value) else { return }
-                var next = viewModel.subtitleAppearance
-                next[keyPath: keyPath] = intValue
                 Task { await viewModel.setSubtitleAppearance(next) }
             }
         )

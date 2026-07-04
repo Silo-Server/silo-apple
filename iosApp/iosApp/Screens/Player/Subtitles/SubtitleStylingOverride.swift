@@ -54,8 +54,14 @@ enum SubtitleStylingOverride {
             return 0
         }
 
+        /// The user's outline color applies to every outline the user asked
+        /// for — both the Text Outline toggle and the legacy "outline"
+        /// background style. (It previously borrowed `backgroundColorHex`
+        /// for the legacy style, which contradicted the web player, the
+        /// previews, and the settings UI that keeps the Background Color
+        /// control disabled in that mode.)
         var effectiveOutlineColorHex: String {
-            backgroundStyle == .outline ? backgroundColorHex : borderColorHex
+            borderColorHex
         }
 
         /// True when the user wants a background box drawn behind the text.

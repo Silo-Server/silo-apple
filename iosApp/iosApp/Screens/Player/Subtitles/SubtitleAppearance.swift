@@ -127,10 +127,20 @@ struct SubtitleFontFamilyPreset: RawRepresentable, Codable, CaseIterable, Hashab
 enum SubtitleBackgroundStylePreset: String, Codable, CaseIterable, Identifiable {
     case box
     case shadow
+    /// Legacy value. Outline is an independent text-edge axis
+    /// (`textOutline`), not a background; `sanitized()` migrates this to
+    /// `.none` + `textOutline = true`. The case stays so stored JSON from
+    /// older builds and the web client keeps decoding.
     case outline
     case none
 
     var id: String { rawValue }
+
+    /// The choices the pickers offer. Excludes the legacy `.outline`
+    /// value, which the UI now expresses through the Text Outline toggle.
+    static var selectableCases: [SubtitleBackgroundStylePreset] {
+        [.box, .shadow, .none]
+    }
 
     var label: String {
         switch self {
@@ -282,7 +292,36 @@ struct SubtitleAppearance: Codable, Equatable {
         if !Self.isValidHex(copy.backgroundColor) { copy.backgroundColor = Self.default.backgroundColor }
         if !Self.isValidHex(copy.textOutlineColor) { copy.textOutlineColor = Self.default.textOutlineColor }
         copy.backgroundOpacity = max(0, min(100, copy.backgroundOpacity))
+        // Legacy "outline" background style folds into the text-edge axis
+        // so the UI has a single outline concept. Rendering is identical:
+        // both paths draw a 2px border in the outline color.
+        if copy.backgroundStyle == .outline {
+            copy.backgroundStyle = .none
+            copy.textOutline = true
+        }
         return copy
+    }
+
+    /// One-word style descriptor for summary rows ("Large · Box · Bottom").
+    var styleDescription: String {
+        if backgroundStyle == .box { return "Box" }
+        if textOutline || backgroundStyle == .outline { return "Outline" }
+        if backgroundStyle == .shadow { return "Drop Shadow" }
+        return "Plain"
+    }
+
+    /// True when the configuration risks unreadable text: a dark font
+    /// color with no box behind it and no outline around it.
+    var isLowLegibilityRisk: Bool {
+        guard backgroundStyle != .box || backgroundOpacity == 0 else { return false }
+        guard !textOutline && backgroundStyle != .outline else { return false }
+        let trimmed = fontColor.hasPrefix("#") ? String(fontColor.dropFirst()) : fontColor
+        guard trimmed.count == 6, let value = UInt32(trimmed, radix: 16) else { return false }
+        let red = Double((value >> 16) & 0xFF)
+        let green = Double((value >> 8) & 0xFF)
+        let blue = Double(value & 0xFF)
+        let luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+        return luminance / 255.0 < 0.25
     }
 
     private static func isValidHex(_ value: String) -> Bool {

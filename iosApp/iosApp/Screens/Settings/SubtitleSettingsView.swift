@@ -7,6 +7,9 @@ import SwiftUI
 /// fallback.
 struct SubtitleSettingsView: View {
     @Bindable var viewModel: SettingsViewModel
+    /// Slider position while the user is dragging; committed (and saved
+    /// to the server) once the drag ends.
+    @State private var draftOpacity: Double?
 
     var body: some View {
         List {
@@ -119,9 +122,39 @@ struct SubtitleSettingsView: View {
 
     // MARK: - Appearance (per-device override)
 
+    private var manualEditingDisabled: Bool {
+        viewModel.subtitleMatchesSystemAppearance
+    }
+
     @ViewBuilder
     private var appearanceSection: some View {
         Section {
+            SubtitleAppearancePreview(appearance: viewModel.effectiveSubtitleAppearance)
+                .listRowInsets(EdgeInsets())
+        } header: {
+            Text("Appearance")
+                .foregroundStyle(Color.continuumSecondaryText)
+        } footer: {
+            if !manualEditingDisabled && viewModel.subtitleAppearance.isLowLegibilityRisk {
+                Text("Low contrast — dark text without a box or outline can be hard to read.")
+                    .foregroundStyle(Color.continuumError)
+            }
+        }
+        .listRowBackground(Color.continuumSurfaceElevated)
+
+        Section {
+            Toggle(
+                "Match Device Settings",
+                isOn: Binding(
+                    get: { viewModel.subtitleMatchesSystemAppearance },
+                    set: { enabled in
+                        Task { await viewModel.setSubtitleMatchesSystemAppearance(enabled) }
+                    }
+                )
+            )
+            .foregroundStyle(Color.continuumOnSurface)
+            .tint(.continuumAccent)
+
             Toggle(
                 "Custom Appearance",
                 isOn: Binding(
@@ -133,7 +166,23 @@ struct SubtitleSettingsView: View {
             )
             .foregroundStyle(Color.continuumOnSurface)
             .tint(.continuumAccent)
+            .disabled(manualEditingDisabled)
+        } footer: {
+            VStack(alignment: .leading, spacing: 6) {
+                if viewModel.subtitleMatchesSystemAppearance {
+                    Text("Following this device's caption style from Accessibility settings (Subtitles & Captioning). Editing any option below switches back to Silo styling.")
+                } else if viewModel.subtitleUsesDeviceAppearanceOverride {
+                    Text("Saved on the server for this profile on this device. An admin can reset it.")
+                } else {
+                    Text("Using the server fallback for this profile on this device. Turn on Custom Appearance to save your own here.")
+                }
+                Text("Subtitles with their own built-in styling and image-based subtitles keep their original appearance.")
+            }
+            .foregroundStyle(Color.continuumSecondaryText)
+        }
+        .listRowBackground(Color.continuumSurfaceElevated)
 
+        Section {
             Picker("Font Size", selection: appearanceBinding(\.fontSize)) {
                 ForEach(SubtitleFontSizePreset.allCases) { option in
                     Text(option.label).tag(option)
@@ -158,7 +207,7 @@ struct SubtitleSettingsView: View {
             .pickerStyle(.navigationLink)
             #endif
 
-            ColorSwatchPicker(
+            ColorChoicePicker(
                 title: "Font Color",
                 colors: SubtitleAppearance.fontColors,
                 selection: appearanceBinding(\.fontColor)
@@ -168,16 +217,24 @@ struct SubtitleSettingsView: View {
                 .foregroundStyle(Color.continuumOnSurface)
                 .tint(.continuumAccent)
 
-            ColorSwatchPicker(
+            ColorChoicePicker(
                 title: "Outline Color",
                 colors: SubtitleAppearance.outlineColors,
                 selection: appearanceBinding(\.textOutlineColor)
             )
-            .disabled(!viewModel.subtitleAppearance.textOutline && viewModel.subtitleAppearance.backgroundStyle != .outline)
-            .opacity(viewModel.subtitleAppearance.textOutline || viewModel.subtitleAppearance.backgroundStyle == .outline ? 1 : 0.45)
+            .disabled(!viewModel.subtitleAppearance.textOutline)
+            .opacity(viewModel.subtitleAppearance.textOutline ? 1 : 0.45)
+        } header: {
+            Text("Text")
+                .foregroundStyle(Color.continuumSecondaryText)
+        }
+        .listRowBackground(Color.continuumSurfaceElevated)
+        .disabled(manualEditingDisabled)
+        .opacity(manualEditingDisabled ? 0.45 : 1)
 
-            Picker("Background Style", selection: appearanceBinding(\.backgroundStyle)) {
-                ForEach(SubtitleBackgroundStylePreset.allCases) { option in
+        Section {
+            Picker("Style", selection: backgroundStyleBinding) {
+                ForEach(SubtitleBackgroundStylePreset.selectableCases) { option in
                     Text(option.label).tag(option)
                 }
             }
@@ -188,27 +245,26 @@ struct SubtitleSettingsView: View {
             .pickerStyle(.navigationLink)
             #endif
 
-            Picker("Background Opacity", selection: appearanceBinding(\.backgroundOpacity)) {
-                ForEach(Array(stride(from: 0, through: 100, by: 5)), id: \.self) { value in
-                    Text("\(value)%").tag(value)
-                }
-            }
-            .disabled(viewModel.subtitleAppearance.backgroundStyle != .box)
-            .foregroundStyle(Color.continuumOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            opacityRow
+                .disabled(viewModel.subtitleAppearance.backgroundStyle != .box)
+                .opacity(viewModel.subtitleAppearance.backgroundStyle == .box ? 1 : 0.45)
 
-            ColorSwatchPicker(
-                title: "Background Color",
+            ColorChoicePicker(
+                title: "Color",
                 colors: SubtitleAppearance.backgroundColors,
                 selection: appearanceBinding(\.backgroundColor)
             )
             .disabled(viewModel.subtitleAppearance.backgroundStyle != .box)
             .opacity(viewModel.subtitleAppearance.backgroundStyle == .box ? 1 : 0.45)
+        } header: {
+            Text("Background")
+                .foregroundStyle(Color.continuumSecondaryText)
+        }
+        .listRowBackground(Color.continuumSurfaceElevated)
+        .disabled(manualEditingDisabled)
+        .opacity(manualEditingDisabled ? 0.45 : 1)
 
+        Section {
             Picker("Position", selection: appearanceBinding(\.position)) {
                 ForEach(SubtitlePositionPreset.allCases) { option in
                     Text(option.label).tag(option)
@@ -221,15 +277,61 @@ struct SubtitleSettingsView: View {
             .pickerStyle(.navigationLink)
             #endif
         } header: {
-            Text("Appearance")
-                .foregroundStyle(Color.continuumSecondaryText)
-        } footer: {
-            Text(viewModel.subtitleUsesDeviceAppearanceOverride
-                 ? "Saved on the server for this profile on this device. An admin can reset it."
-                 : "Using the server fallback for this profile on this device. Turn on Custom Appearance to save your own here.")
+            Text("Layout")
                 .foregroundStyle(Color.continuumSecondaryText)
         }
         .listRowBackground(Color.continuumSurfaceElevated)
+        .disabled(manualEditingDisabled)
+        .opacity(manualEditingDisabled ? 0.45 : 1)
+    }
+
+    /// Choosing Box with a fully transparent background would render
+    /// nothing; give it the default opacity so the choice takes effect.
+    private var backgroundStyleBinding: Binding<SubtitleBackgroundStylePreset> {
+        Binding(
+            get: { viewModel.subtitleAppearance.backgroundStyle },
+            set: { newValue in
+                var next = viewModel.subtitleAppearance
+                if next.backgroundStyle == newValue { return }
+                next.backgroundStyle = newValue
+                if newValue == .box && next.backgroundOpacity == 0 {
+                    next.backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
+                }
+                Task { await viewModel.setSubtitleAppearance(next) }
+            }
+        )
+    }
+
+    private var opacityRow: some View {
+        let committed = Double(viewModel.subtitleAppearance.backgroundOpacity)
+        return HStack(spacing: 12) {
+            Text("Opacity")
+                .foregroundStyle(Color.continuumOnSurface)
+            Slider(
+                value: Binding(
+                    get: { draftOpacity ?? committed },
+                    set: { draftOpacity = $0 }
+                ),
+                in: 0...100,
+                step: 5
+            ) { editing in
+                guard !editing, let value = draftOpacity else { return }
+                draftOpacity = nil
+                var next = viewModel.subtitleAppearance
+                let percent = Int(value)
+                if next.backgroundOpacity == percent { return }
+                next.backgroundOpacity = percent
+                Task { await viewModel.setSubtitleAppearance(next) }
+            }
+            .tint(.continuumAccent)
+            Text("\(Int(draftOpacity ?? committed))%")
+                .monospacedDigit()
+                .foregroundStyle(Color.continuumSecondaryText)
+                .frame(minWidth: 44, alignment: .trailing)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Background Opacity")
+        .accessibilityValue("\(Int(draftOpacity ?? committed)) percent")
     }
 
     private func appearanceBinding<Value: Equatable>(
@@ -260,46 +362,51 @@ struct SubtitleSettingsView: View {
     }
 }
 
-// MARK: - Color swatch row
+// MARK: - Color choice row
 
-private struct ColorSwatchPicker: View {
+/// A named-color picker rendered as a standard row (navigation link on
+/// iOS, menu on macOS) so every option gets a full-size tap target,
+/// unlike the previous row of 24pt swatches.
+private struct ColorChoicePicker: View {
     let title: String
     let colors: [(hex: String, label: String)]
     @Binding var selection: String
 
     var body: some View {
-        HStack {
+        Picker(selection: normalizedSelection) {
+            ForEach(colors, id: \.hex) { color in
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(Color(hex: color.hex))
+                        .frame(width: 22, height: 22)
+                        .overlay(
+                            Circle()
+                                .stroke(Color.continuumSecondaryText.opacity(0.35), lineWidth: 1)
+                        )
+                    Text(color.label)
+                }
+                .tag(color.hex)
+            }
+        } label: {
             Text(title)
                 .foregroundStyle(Color.continuumOnSurface)
-            Spacer()
-            HStack(spacing: 10) {
-                ForEach(colors, id: \.hex) { color in
-                    Button {
-                        selection = color.hex
-                    } label: {
-                        Circle()
-                            .fill(Color(hex: color.hex))
-                            .frame(width: 24, height: 24)
-                            .overlay(
-                                Circle()
-                                    .stroke(
-                                        isSelected(color.hex)
-                                            ? Color.continuumOnSurface
-                                            : Color.continuumSecondaryText.opacity(0.35),
-                                        lineWidth: isSelected(color.hex) ? 3 : 1
-                                    )
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(color.label)
-                    .accessibilityAddTraits(isSelected(color.hex) ? .isSelected : [])
-                }
-            }
         }
+        #if os(macOS)
+        .pickerStyle(.menu)
+        #else
+        .pickerStyle(.navigationLink)
+        #endif
     }
 
-    private func isSelected(_ hex: String) -> Bool {
-        selection.caseInsensitiveCompare(hex) == .orderedSame
+    /// Stored hex values may differ in case from the option list.
+    private var normalizedSelection: Binding<String> {
+        Binding(
+            get: {
+                colors.first(where: { $0.hex.caseInsensitiveCompare(selection) == .orderedSame })?.hex
+                    ?? selection.lowercased()
+            },
+            set: { selection = $0 }
+        )
     }
 }
 #endif

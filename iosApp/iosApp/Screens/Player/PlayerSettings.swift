@@ -104,6 +104,28 @@ final class PlayerSettings {
         }
     }
 
+    /// Device-local: when true, subtitle styling mirrors the system's
+    /// Subtitles & Captioning accessibility preferences instead of the
+    /// Silo appearance. Never synced to the server — it is inherently
+    /// about *this* device's accessibility configuration.
+    var subtitleMatchesSystemAppearance: Bool {
+        didSet {
+            defaults.set(
+                subtitleMatchesSystemAppearance,
+                forKey: Self.cacheKey(Keys.subtitleMatchesSystemAppearance)
+            )
+        }
+    }
+
+    /// Latest mapping of the system caption preferences. Refreshed when
+    /// MediaAccessibility posts its settings-changed notification.
+    var subtitleSystemAppearance: SubtitleAppearance = SystemCaptionAppearance.current()
+
+    /// The appearance the player should actually render with.
+    var effectiveSubtitleAppearance: SubtitleAppearance {
+        subtitleMatchesSystemAppearance ? subtitleSystemAppearance : subtitleAppearance
+    }
+
     var subtitleFontSize: Double {
         didSet { defaults.set(subtitleFontSize, forKey: Keys.subtitleFontSize) }
     }
@@ -176,6 +198,7 @@ final class PlayerSettings {
             Keys.dvProfile7HDR10Fallback: false,
             Keys.subtitleAppearance: SubtitleAppearance.default.jsonString,
             Keys.subtitleUsesDeviceAppearanceOverride: false,
+            Keys.subtitleMatchesSystemAppearance: false,
             Keys.subtitleFontSize: 44.0,
             Keys.subtitleTextColor: "#FFFFFF",
             Keys.subtitleBorderSize: 0.0,
@@ -210,6 +233,11 @@ final class PlayerSettings {
             key: Keys.subtitleUsesDeviceAppearanceOverride,
             defaultValue: false
         )
+        subtitleMatchesSystemAppearance = Self.cachedBool(
+            defaults,
+            key: Keys.subtitleMatchesSystemAppearance,
+            defaultValue: false
+        )
         subtitleFontSize = defaults.double(forKey: Keys.subtitleFontSize)
         subtitleTextColor = defaults.string(forKey: Keys.subtitleTextColor) ?? "#FFFFFF"
         subtitleBorderSize = defaults.double(forKey: Keys.subtitleBorderSize)
@@ -234,6 +262,21 @@ final class PlayerSettings {
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
         )
         syncLegacySubtitleFields(from: subtitleAppearance)
+
+        NotificationCenter.default.addObserver(
+            forName: SystemCaptionAppearance.settingsChangedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshSubtitleSystemAppearance()
+        }
+    }
+
+    /// Re-read the system caption preferences. Idempotent; also called by
+    /// the player when the system posts a settings-changed notification so
+    /// re-application never races this class's own observer.
+    func refreshSubtitleSystemAppearance() {
+        subtitleSystemAppearance = SystemCaptionAppearance.current()
     }
 
     var subtitleBackgroundColorHex: String {
@@ -359,8 +402,21 @@ final class PlayerSettings {
         let sanitized = appearance.sanitized()
         subtitleAppearance = sanitized
         subtitleUsesDeviceAppearanceOverride = true
+        // A manual edit takes over from the system-matching source.
+        subtitleMatchesSystemAppearance = false
         enqueueDeviceSetting(.subtitleAppearance, operation: .set(sanitized.jsonString))
         await flushPendingDeviceSettings()
+    }
+
+    /// Toggle mirroring the device's Subtitles & Captioning accessibility
+    /// preferences. Purely local; the saved Silo appearance is untouched
+    /// so switching back restores it.
+    func setSubtitleMatchesSystemAppearance(_ enabled: Bool) {
+        guard enabled != subtitleMatchesSystemAppearance else { return }
+        if enabled {
+            subtitleSystemAppearance = SystemCaptionAppearance.current()
+        }
+        subtitleMatchesSystemAppearance = enabled
     }
 
     @MainActor
@@ -552,6 +608,11 @@ final class PlayerSettings {
             key: Keys.subtitleUsesDeviceAppearanceOverride,
             defaultValue: false
         )
+        subtitleMatchesSystemAppearance = Self.cachedBool(
+            defaults,
+            key: Keys.subtitleMatchesSystemAppearance,
+            defaultValue: false
+        )
         subtitleAppearance = SubtitleAppearance.decode(from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance)))
     }
 
@@ -732,6 +793,7 @@ final class PlayerSettings {
         static let dvProfile7HDR10Fallback = "player.dvProfile7HDR10Fallback"
         static let subtitleAppearance = "player.subtitleAppearance"
         static let subtitleUsesDeviceAppearanceOverride = "player.subtitleUsesDeviceAppearanceOverride"
+        static let subtitleMatchesSystemAppearance = "player.subtitleMatchesSystemAppearance"
         static let subtitleFontSize = "player.subtitleFontSize"
         static let subtitleTextColor = "player.subtitleTextColor"
         static let subtitleBorderSize = "player.subtitleBorderSize"

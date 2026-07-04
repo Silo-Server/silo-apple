@@ -68,7 +68,7 @@ enum TVSettingsOptions {
         SubtitleAppearance.outlineColors.map { .init(id: $0.hex, label: $0.label) }
 
     static let backgroundStyle: [TVSettingsOption] =
-        SubtitleBackgroundStylePreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+        SubtitleBackgroundStylePreset.selectableCases.map { .init(id: $0.rawValue, label: $0.label) }
 
     static let backgroundOpacity: [TVSettingsOption] =
         stride(from: 0, through: 100, by: 5).map { .init(id: String($0), label: "\($0)%") }
@@ -330,8 +330,7 @@ struct TVSettingsPickerSheet: View {
             VStack(spacing: 18) {
                 if let subtitlePreviewAppearance {
                     TVSettingsSubtitlePreview(
-                        appearance: previewAppearance(from: subtitlePreviewAppearance),
-                        text: "This is how subtitles will look."
+                        appearance: previewAppearance(from: subtitlePreviewAppearance)
                     )
                 }
 
@@ -461,50 +460,16 @@ private struct TVSettingsPickerOptionRow: View {
 
 // MARK: - Subtitle preview
 
+/// Thin wrapper over the shared cross-platform preview so tvOS settings
+/// screens keep the Skyline rounded-card look. (The old bespoke preview
+/// drew "outline" as a stroked rectangle around the caption block, which
+/// is not what the setting does to glyphs.)
 struct TVSettingsSubtitlePreview: View {
     let appearance: SubtitleAppearance
-    let text: String
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 18)
-                .fill(Color.black.opacity(0.72))
-            Text(text)
-                .font(.custom(appearance.fontFamily.assFontName, size: 34))
-                .foregroundStyle(Color(hex: appearance.fontColor))
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 26)
-                .padding(.vertical, 18)
-                .background(background)
-                .overlay(outline)
-                .shadow(
-                    color: appearance.backgroundStyle == .shadow ? .black.opacity(0.72) : .clear,
-                    radius: 2,
-                    x: 0,
-                    y: 2
-                )
-        }
-        .frame(height: 150)
-        .accessibilityLabel("Subtitle preview")
-        .accessibilityValue(text)
-    }
-
-    @ViewBuilder
-    private var background: some View {
-        if appearance.backgroundStyle == .box {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(hex: appearance.backgroundColor)
-                    .opacity(Double(appearance.backgroundOpacity) / 100.0))
-        }
-    }
-
-    @ViewBuilder
-    private var outline: some View {
-        if appearance.textOutline || appearance.backgroundStyle == .outline {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(hex: appearance.textOutlineColor), lineWidth: 2)
-        }
+        SubtitleAppearancePreview(appearance: appearance)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 #endif

@@ -976,6 +976,10 @@ class PlayerViewModel {
         return activeExecutionPlan?.routeCapabilities ?? activeRouteKind.routeCapabilities
     }
 
+    /// Re-applies subtitle styling when the user edits the system's
+    /// Subtitles & Captioning preferences mid-playback.
+    private var systemCaptionObserverToken: NSObjectProtocol?
+
     init() {
         activePlayer = .none
         activeRouteKind = .playerCoreDirect
@@ -1042,6 +1046,16 @@ class PlayerViewModel {
 
         sleepTimer.configure { [weak self] in
             self?.activePlayer.pause()
+        }
+
+        systemCaptionObserverToken = NotificationCenter.default.addObserver(
+            forName: SystemCaptionAppearance.settingsChangedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, self.settings.subtitleMatchesSystemAppearance else { return }
+            self.settings.refreshSubtitleSystemAppearance()
+            self.applySubtitleAppearanceToPlayer()
         }
         settingsRefreshTask = Task { @MainActor [weak self] in
             await self?.refreshSettingsFromServer()
@@ -2318,11 +2332,11 @@ class PlayerViewModel {
             c.setAudioDelay(Double(settings.audioSyncMs) / 1000.0)
             c.setSubtitleDelay(Double(settings.subtitleSyncMs) / 1000.0)
             c.setVideoGravity(settings.videoGravity.avGravity)
-            c.applySubtitleAppearance(settings.subtitleAppearance)
+            c.applySubtitleAppearance(settings.effectiveSubtitleAppearance)
         case .avPlayer(let a):
             a.setSpeed(settings.playbackSpeed)
             a.setSubtitleDelay(Double(settings.subtitleSyncMs) / 1000.0)
-            a.applySubtitleAppearance(settings.subtitleAppearance)
+            a.applySubtitleAppearance(settings.effectiveSubtitleAppearance)
         }
     }
 
@@ -2331,9 +2345,9 @@ class PlayerViewModel {
         case .none:
             return
         case .coreMedia(let c):
-            c.applySubtitleAppearance(settings.subtitleAppearance)
+            c.applySubtitleAppearance(settings.effectiveSubtitleAppearance)
         case .avPlayer(let a):
-            a.applySubtitleAppearance(settings.subtitleAppearance)
+            a.applySubtitleAppearance(settings.effectiveSubtitleAppearance)
         }
     }
 
@@ -2365,6 +2379,12 @@ class PlayerViewModel {
     @MainActor
     func setSubtitleDeviceOverrideEnabled(_ enabled: Bool) async {
         await settings.setSubtitleDeviceOverrideEnabled(enabled)
+        applySubtitleAppearanceToPlayer()
+    }
+
+    @MainActor
+    func setSubtitleMatchesSystemAppearance(_ enabled: Bool) {
+        settings.setSubtitleMatchesSystemAppearance(enabled)
         applySubtitleAppearanceToPlayer()
     }
 
@@ -4985,6 +5005,9 @@ class PlayerViewModel {
     deinit {
         Self.logger.info("PlayerViewModel.deinit")
         isDisposed = true
+        if let systemCaptionObserverToken {
+            NotificationCenter.default.removeObserver(systemCaptionObserverToken)
+        }
         freshLoadTask?.cancel()
         staleSessionRecoveryTask?.cancel()
         serverOutageRecoveryTask?.cancel()
@@ -6590,7 +6613,7 @@ extension PlayerViewModel {
             supportsVideoGravity: backendCapabilities.supportsVideoGravity,
             supportsHDRToggle: backendCapabilities.supportsHDRToggle,
             subtitleSyncMs: settings.subtitleSyncMs,
-            subtitlePosition: settings.subtitleAppearance.position.rawValue,
+            subtitlePosition: settings.effectiveSubtitleAppearance.position.rawValue,
             supportsSubtitleDelay: backendCapabilities.supportsSubtitleDelay,
             supportsSubtitlePosition: backendCapabilities.supportsSubtitleStyling,
             volume: Double(userVolume),

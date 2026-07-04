@@ -39,6 +39,16 @@ class SettingsViewModel {
     var subtitleSize: String = "medium"
     var subtitleAppearance: SubtitleAppearance = PlayerSettings.shared.subtitleAppearance
     var subtitleUsesDeviceAppearanceOverride: Bool = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
+    var subtitleMatchesSystemAppearance: Bool = PlayerSettings.shared.subtitleMatchesSystemAppearance
+
+    /// What the player will actually render with — the system caption
+    /// style while Match Device Settings is on, otherwise the edited
+    /// appearance. Drives the preview.
+    var effectiveSubtitleAppearance: SubtitleAppearance {
+        subtitleMatchesSystemAppearance
+            ? PlayerSettings.shared.subtitleSystemAppearance
+            : subtitleAppearance
+    }
 
     // Server-backed profile prefs editor. Each editor field is either
     // a sentinel ("__none__") or a concrete value. We persist directly
@@ -78,6 +88,7 @@ class SettingsViewModel {
         subtitleSize = UserDefaults.standard.string(forKey: "subtitleSize") ?? "medium"
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
+        subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
 
         async let user: UserInfo? = try? ContinuumAPI.shared.get("/api/v1/user/me")
         async let profiles: [UserProfile] = (try? AuthService.shared.getProfiles()) ?? []
@@ -159,6 +170,7 @@ class SettingsViewModel {
         await PlayerSettings.shared.setSubtitleAppearance(appearance)
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
+        subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
     }
 
     @MainActor
@@ -166,6 +178,12 @@ class SettingsViewModel {
         await PlayerSettings.shared.setSubtitleDeviceOverrideEnabled(enabled)
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
+    }
+
+    @MainActor
+    func setSubtitleMatchesSystemAppearance(_ enabled: Bool) async {
+        PlayerSettings.shared.setSubtitleMatchesSystemAppearance(enabled)
+        subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
     }
 
     /// Push the current editor state to the server as a profile patch.
