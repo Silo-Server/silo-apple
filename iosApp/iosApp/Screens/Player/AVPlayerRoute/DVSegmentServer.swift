@@ -15,8 +15,10 @@
 //  parsing on GET. AVPlayer's HLS engine usually fetches segments whole, but
 //  HEAD and Range are the right defaults for any client that probes the
 //  loopback (and removes a class of "AVPlayer hung trying to range-fetch
-//  init.mp4" bug reports). 404 on miss, 416 on un-satisfiable range,
-//  405 on other methods.
+//  init.mp4" bug reports). 503 + Retry-After on a not-yet-produced
+//  segment (AVPlayer treats a VOD 404 as terminal), 410 on an evicted
+//  one, 404 on a genuine miss, 416 on an un-satisfiable range, 405 on
+//  other methods.
 //
 //  ATS (App Transport Security) requires `NSAllowsLocalNetworking=true` in
 //  Info.plist. Without it, AVPlayer fails loading the playlist with
@@ -319,6 +321,13 @@ final class DVSegmentServer {
         store: DVSegmentStore
     ) {
         switch store.resource(path: path) {
+        case .pending:
+            // Not yet produced but plausibly upcoming. AVPlayer treats a
+            // 404 on a VOD asset as terminal loadFailed; 503 + Retry-After
+            // is retried, so a segment that lands a moment after its
+            // playlist entry doesn't kill the session.
+            logRequest(method: method, path: path, status: 503, bytes: 0, range: rangeHeader, started: started)
+            respondError(503, "Service Unavailable", extraHeaders: ["Retry-After: 1"], on: connection)
         case .missing:
             logRequest(method: method, path: path, status: 404, bytes: 0, range: rangeHeader, started: started)
             respondError(404, "Not Found", on: connection)
@@ -595,11 +604,14 @@ final class DVSegmentServer {
         return .satisfiable(lower: lowerBound, upper: upperBound)
     }
 
-    private func respondError(_ code: Int, _ phrase: String, on connection: NWConnection) {
+    private func respondError(_ code: Int, _ phrase: String, extraHeaders: [String] = [], on connection: NWConnection) {
         let body = "\(code) \(phrase)\n"
         var header = "HTTP/1.1 \(code) \(phrase)\r\n"
         header += "Content-Type: text/plain; charset=utf-8\r\n"
         header += "Content-Length: \(body.utf8.count)\r\n"
+        for extra in extraHeaders {
+            header += "\(extra)\r\n"
+        }
         header += "Connection: close\r\n\r\n"
         var data = Data(header.utf8)
         data.append(body.data(using: .utf8) ?? Data())
