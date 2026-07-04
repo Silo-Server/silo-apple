@@ -365,6 +365,207 @@ enum ISOBoxSurgery {
         return parts.joined(separator: ",")
     }
 
+    // MARK: - dec3 JOC extension (Atmos signalling)
+
+    /// Walk all `trak` children of `moov` and return the first one whose
+    /// `mdia > hdlr` handler_type is `soun`.
+    static func findAudioTrak(in data: Data, moov: Box) -> Box? {
+        var cursor = moov.start + 8
+        let end = moov.start + moov.size
+        while cursor + 8 <= end {
+            let size = Int(readU32BE(data, at: cursor))
+            if size < 8 || cursor + size > end { return nil }
+            let t = readFourCC(data, at: cursor + 4)
+            if t == "trak" {
+                let trak = Box(start: cursor, size: size)
+                if isAudioTrak(in: data, trak: trak) {
+                    return trak
+                }
+            }
+            cursor += size
+        }
+        return nil
+    }
+
+    static func isAudioTrak(in data: Data, trak: Box) -> Bool {
+        guard let mdia = findChildBox(in: data, parent: trak, childType: "mdia") else { return false }
+        guard let hdlr = findChildBox(in: data, parent: mdia, childType: "hdlr") else { return false }
+        let typeOffset = hdlr.start + 16  // 8 box header + 4 FullBox + 4 pre_defined
+        guard typeOffset + 4 <= hdlr.start + hdlr.size else { return false }
+        return readFourCC(data, at: typeOffset) == "soun"
+    }
+
+    /// Rewrite the audio sample entry's `dec3` box into the ETSI layout with
+    /// the E-AC-3 JOC extension (ETSI TS 103 420:
+    /// `flag_ec3_extension_type_a` + `complexity_index_type_a`) and adjust
+    /// every ancestor size. Two FFmpeg 7.1 muxer defects are corrected at
+    /// once:
+    ///
+    ///  1. It never writes the JOC extension — the field AVFoundation keys
+    ///     on to classify a track as Dolby Atmos.
+    ///  2. Its substream entry writes FIVE reserved bits between `lfeon`
+    ///     and `num_dep_sub` where ETSI TS 102 366 F.6 specifies THREE, so
+    ///     everything after `lfeon` is bit-shifted versus what Apple
+    ///     parses. (Simply appending the extension to the 7.1 payload put
+    ///     the flag two bits past where Apple reads it — flag parsed as 0,
+    ///     no Atmos. Device-verified.)
+    ///
+    /// The whole payload is therefore re-emitted bit-by-bit in the ETSI
+    /// layout. Ground truth: FFmpeg 8.1 remuxing the identical device
+    /// stream emits `1800200f000110`, pinned in ISOBoxSurgeryDec3Tests.
+    ///
+    /// Returns nil (caller ships the unmodified data) when the tree shape is
+    /// missing, the sample entry isn't `ec-3`, or a valid ETSI-layout
+    /// extension is already present (a future FFmpeg bump writes it
+    /// natively). Whether the stream is actually JOC is the caller's call
+    /// (`codecpar.profile == 30`) — the dec3 substream fields cannot tell:
+    /// streaming DDP-Atmos carries JOC in the independent frame's EMDF with
+    /// num_dep_sub = 0.
+    static func appendDec3JOCExtension(into data: Data, complexityIndex: UInt8) -> Data? {
+        guard let moov = findTopLevelBox(in: data, type: "moov") else { return nil }
+        guard let trak = findAudioTrak(in: data, moov: moov) else { return nil }
+        guard let mdia = findChildBox(in: data, parent: trak, childType: "mdia") else { return nil }
+        guard let minf = findChildBox(in: data, parent: mdia, childType: "minf") else { return nil }
+        guard let stbl = findChildBox(in: data, parent: minf, childType: "stbl") else { return nil }
+        guard let stsd = findChildBox(in: data, parent: stbl, childType: "stsd") else { return nil }
+        guard let entry = findAnyFirstChildBox(in: data, parent: stsd, contentSkip: 8) else { return nil }
+        guard readFourCC(data, at: entry.start + 4) == "ec-3" else { return nil }
+        // AudioSampleEntry: 8 SampleEntry bytes (6 reserved + 2
+        // data_reference_index) + 20 AudioSampleEntry bytes (8 reserved +
+        // 2 channelcount + 2 samplesize + 2 pre_defined + 2 reserved +
+        // 4 samplerate) = 28 bytes before child boxes.
+        guard let dec3 = findChildBox(in: data, parent: entry, childType: "dec3", contentSkip: 28) else { return nil }
+
+        let payloadStart = dec3.start + 8
+        let payloadCount = dec3.size - 8
+        guard payloadCount >= 2 else { return nil }
+
+        // Already in the ETSI layout with a valid extension (an FFmpeg ≥ 8
+        // muxer writes both natively): leave untouched.
+        if dec3PayloadHasETSIExtension(data: data, payloadStart: payloadStart, payloadCount: payloadCount) {
+            return nil
+        }
+
+        // Parse FFmpeg 7.1's layout (5 reserved bits before num_dep_sub),
+        // re-emit the ETSI layout (3 reserved bits) plus the JOC extension.
+        // NOTE: no dependent-substream requirement — streaming DDP-Atmos
+        // (the streaming 5.1-bed variant) carries JOC inside the
+        // independent frame's EMDF metadata; num_dep_sub is 0 there.
+        var reader = Dec3BitReader(data: data, byteOffset: payloadStart, byteCount: payloadCount)
+        var writer = Dec3BitWriter()
+        guard let dataRate = reader.read(13), let numIndSub = reader.read(3) else { return nil }
+        writer.write(dataRate, bits: 13)
+        writer.write(numIndSub, bits: 3)
+
+        for _ in 0...Int(numIndSub) {
+            guard let fscod = reader.read(2), let bsid = reader.read(5),
+                  let reserved1 = reader.read(1), let asvc = reader.read(1),
+                  let bsmod = reader.read(3), let acmod = reader.read(3),
+                  let lfeon = reader.read(1), reader.read(5) != nil,
+                  let numDepSub = reader.read(4) else { return nil }
+            writer.write(fscod, bits: 2)
+            writer.write(bsid, bits: 5)
+            writer.write(reserved1, bits: 1)
+            writer.write(asvc, bits: 1)
+            writer.write(bsmod, bits: 3)
+            writer.write(acmod, bits: 3)
+            writer.write(lfeon, bits: 1)
+            writer.write(0, bits: 3)  // ETSI reserved (7.1 wrongly wrote 5 bits)
+            writer.write(numDepSub, bits: 4)
+            if numDepSub > 0 {
+                guard let chanLoc = reader.read(9) else { return nil }
+                writer.write(chanLoc, bits: 9)
+            } else {
+                guard let reserved = reader.read(1) else { return nil }
+                writer.write(reserved, bits: 1)
+            }
+        }
+
+        writer.write(0, bits: 7)                       // reserved
+        writer.write(1, bits: 1)                       // flag_ec3_extension_type_a
+        writer.write(UInt32(complexityIndex), bits: 8) // complexity_index_type_a
+        let newPayload = writer.flushed()
+
+        var out = data
+        out.replaceSubrange(payloadStart ..< payloadStart + payloadCount, with: newPayload)
+        let delta = newPayload.count - payloadCount
+        addToBoxSize(in: &out, boxOffset: dec3.start, delta: delta)
+        for box in [moov, trak, mdia, minf, stbl, stsd, entry] {
+            addToBoxSize(in: &out, boxOffset: box.start, delta: delta)
+        }
+        return out
+    }
+
+    /// True when the payload parses under the ETSI TS 102 366 layout
+    /// (3 reserved bits before num_dep_sub) with a valid JOC extension
+    /// (zero reserved bits, flag set) immediately after the substream loop.
+    private static func dec3PayloadHasETSIExtension(
+        data: Data, payloadStart: Int, payloadCount: Int
+    ) -> Bool {
+        var reader = Dec3BitReader(data: data, byteOffset: payloadStart, byteCount: payloadCount)
+        guard reader.read(13) != nil, let numIndSub = reader.read(3) else { return false }
+        for _ in 0...Int(numIndSub) {
+            guard reader.read(2) != nil, reader.read(5) != nil,
+                  reader.read(1) != nil, reader.read(1) != nil,
+                  reader.read(3) != nil, reader.read(3) != nil,
+                  reader.read(1) != nil, reader.read(3) != nil,
+                  let numDepSub = reader.read(4) else { return false }
+            if numDepSub > 0 {
+                guard reader.read(9) != nil else { return false }
+            } else {
+                guard reader.read(1) != nil else { return false }
+            }
+        }
+        guard reader.remainingBits >= 16,
+              let reserved7 = reader.read(7), reserved7 == 0,
+              let flag = reader.read(1), flag == 1 else { return false }
+        return true
+    }
+
+    /// Minimal MSB-first bit reader over a byte range of `data`.
+    struct Dec3BitReader {
+        private let data: Data
+        private var bit: Int
+        private let endBit: Int
+
+        init(data: Data, byteOffset: Int, byteCount: Int) {
+            self.data = data
+            self.bit = byteOffset * 8
+            self.endBit = (byteOffset + byteCount) * 8
+        }
+
+        var remainingBits: Int { endBit - bit }
+
+        mutating func read(_ count: Int) -> UInt32? {
+            guard count > 0, count <= 32, count <= remainingBits else { return nil }
+            var value: UInt32 = 0
+            for _ in 0..<count {
+                let byte = data[bit >> 3]
+                let shift = 7 - (bit & 7)
+                value = (value << 1) | UInt32((byte >> shift) & 1)
+                bit += 1
+            }
+            return value
+        }
+    }
+
+    /// Minimal MSB-first bit writer; `flushed()` zero-pads to a byte boundary.
+    struct Dec3BitWriter {
+        private var bytes: [UInt8] = []
+        private var bitCount = 0
+
+        mutating func write(_ value: UInt32, bits: Int) {
+            for i in stride(from: bits - 1, through: 0, by: -1) {
+                if bitCount & 7 == 0 { bytes.append(0) }
+                let bitValue = UInt8((value >> UInt32(i)) & 1)
+                bytes[bytes.count - 1] |= bitValue << (7 - UInt8(bitCount & 7))
+                bitCount += 1
+            }
+        }
+
+        func flushed() -> Data { Data(bytes) }
+    }
+
     // MARK: - Byte helpers
 
     static func readU32BE(_ data: Data, at offset: Int) -> UInt32 {

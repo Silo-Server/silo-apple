@@ -400,10 +400,23 @@ final class DVSegmentWriter {
         }
     }
     private var throughputTiming = ThroughputTiming()
+    /// True when the selected copy-mode audio stream is E-AC-3 with a JOC
+    /// (Atmos) extension — `codecpar.profile == 30`
+    /// (`AV_PROFILE_EAC3_DDP_ATMOS`, libavcodec defs.h). Drives the dec3
+    /// JOC surgery in `writeInitSegment`.
+    private var selectedAudioIsAtmosJOC = false
     /// Threshold tuned to tolerate the brief reorder bursts the fmp4 muxer
     /// occasionally emits during keyframe boundary realignment without
     /// missing a genuinely broken stream.
     private static let maxConsecutiveMuxWriteFailures = 5
+    /// Output video dimensions, captured at stream setup for the master
+    /// playlist's RESOLUTION/FRAME-RATE attributes. FRAME-RATE is
+    /// load-bearing: AVFoundation's variant filter silently drops a
+    /// VIDEO-RANGE=PQ variant that carries no FRAME-RATE (verified against
+    /// macOS AVAsset.variants with the on-device artifacts), which surfaced
+    /// as NSURLError -1002 and a silent PlayerCore fallback.
+    private var masterVideoWidth: Int32 = 0
+    private var masterVideoHeight: Int32 = 0
 
     private struct DoviRecord {
         let versionMajor: UInt8
@@ -1030,6 +1043,8 @@ final class DVSegmentWriter {
                 if avcodec_parameters_copy(outStream.pointee.codecpar, codecpar) < 0 {
                     throw DVWriterError.allocOutput
                 }
+                masterVideoWidth = codecpar.pointee.width
+                masterVideoHeight = codecpar.pointee.height
                 outStream.pointee.time_base = inStream.pointee.time_base
                 outStream.pointee.codecpar.pointee.codec_tag = 0
                 let dovi = outputDoviConfig(from: readDoviConfig(codecpar: codecpar))
@@ -1075,8 +1090,16 @@ final class DVSegmentWriter {
                 ensureAudioFrameSize(codecpar: outStream.pointee.codecpar)
                 outputAudioCodecID = codecpar.pointee.codec_id
                 outputAudioCodecToken = codecToken(for: codecpar.pointee.codec_id)
+                // AV_PROFILE_EAC3_DDP_ATMOS (= 30): the demuxer sets it when
+                // the E-AC-3 dependent substream carries a JOC (Atmos)
+                // extension. The vendored FFmpeg 7.1 muxer writes no dec3 JOC
+                // extension of its own, so writeInitSegment patches one in —
+                // without it AVFoundation classifies the track as plain
+                // E-AC-3 and Atmos passthrough never engages.
+                selectedAudioIsAtmosJOC = codecpar.pointee.codec_id == AV_CODEC_ID_EAC3
+                    && codecpar.pointee.profile == 30
                 let codecName = outputAudioCodecToken ?? String(cString: avcodec_get_name(codecpar.pointee.codec_id))
-                print("[CMP-AVP] selected audio copy sourceStream=\(i) codec=\(codecName) channels=\(codecpar.pointee.ch_layout.nb_channels)")
+                print("[CMP-AVP] selected audio copy sourceStream=\(i) codec=\(codecName) channels=\(codecpar.pointee.ch_layout.nb_channels) atmosJOC=\(selectedAudioIsAtmosJOC ? 1 : 0)")
             } else {
                 try openAudioTranscodePipeline(
                     inputStream: inStream,
@@ -1488,11 +1511,17 @@ final class DVSegmentWriter {
                 .joined()
         }
 
-        var codec = "\(sampleEntry).\(profileSpacePrefix)\(profileIDC).\(compatibilityString).\(tierFlag ? "H" : "L")\(levelIDC)"
-        if let constraintString, !constraintString.isEmpty {
-            codec += ".\(constraintString)"
-        }
-        return codec
+        // Always declare Main tier ('L') and omit the constraint suffix,
+        // whatever the stream's actual tier flag says. AVPlayer's
+        // master-level codec filter silently drops variants whose CODECS it
+        // won't claim — a faithful "hvc1.2.4.H150.B0" (High tier, device
+        // stream) was rejected with NSURLErrorDomain -1002 before the
+        // variant playlist was ever fetched, while the lenient Main-tier
+        // declaration is accepted everywhere. The declaration only feeds
+        // variant selection; the bitstream is untouched.
+        _ = tierFlag
+        _ = constraintString
+        return "\(sampleEntry).\(profileSpacePrefix)\(profileIDC).\(compatibilityString).L\(levelIDC)"
     }
 
     private func reversedBits32(_ value: UInt32) -> UInt32 {
@@ -2808,6 +2837,22 @@ final class DVSegmentWriter {
                 print("[CMP-AVP] dvvC injection failed — hvcC not found in init tree")
             }
         }
+        if selectedAudioIsAtmosJOC {
+            // complexity_index_type_a = 16 is the standard object count for
+            // streaming DDP-Atmos; FFmpeg 7.1's parser does not expose the
+            // stream's true value, and the field is a decoder complexity
+            // hint. A vendored FFmpeg ≥ 8 bump writes the parsed value
+            // natively (the surgery then no-ops via its already-extended
+            // guard).
+            if let patched = ISOBoxSurgery.appendDec3JOCExtension(into: bytes, complexityIndex: 16) {
+                bytes = patched
+                print("[CMP-AVP] dec3 JOC extension appended (Atmos signalling, complexity=16)")
+            } else {
+                // print too: OSLog is invisible to devicectl console capture.
+                print("[CMP-AVP] dec3 JOC extension append FAILED — Atmos will present as plain E-AC-3 5.1")
+                Self.logger.error("dec3 JOC extension append failed — Atmos will present as plain E-AC-3 5.1")
+            }
+        }
         do {
             if Self.traceThroughput {
                 let started = CFAbsoluteTimeGetCurrent()
@@ -3256,14 +3301,16 @@ final class DVSegmentWriter {
         let mediaRate = elapsed > 0
             ? String(format: "%.2fx", totalMediaDuration / elapsed)
             : "unknown"
-        // Start AVPlayer from the media playlist. The multivariant manifest is
-        // still emitted for artifact inspection and DV/HDR validation metadata,
-        // but iOS rejected the current local master surface before fetching the
-        // child playlist. The media playlist path is the proven playback path.
+        // EXPERIMENT (local/device-testing only): start AVPlayer from the
+        // master playlist. Apple grants premium format claims (Dolby Atmos
+        // MAT output for EAC3-JOC) at master-variant level; media-direct
+        // start dodged a historical master rejection at the cost of any
+        // master-level grants. Master playback confirmed working on-device
+        // 2026-07-03; Atmos grant validation in progress.
         print(
-            "[CMP-AVP] startup runway ready startPlaylist=playlist.m3u8 generated=\(String(format: "%.1f", totalMediaDuration))s threshold=\(String(format: "%.1f", minimumPlayableWindow))s segments=\(segmentEntries.count) targetDuration=\(String(format: "%.1f", playlistTargetDuration))s elapsed=\(String(format: "%.2f", elapsed))s mediaRate=\(mediaRate) reason=\(startupReason) note=media_playlist_start_hint"
+            "[CMP-AVP] startup runway ready startPlaylist=master.m3u8 generated=\(String(format: "%.1f", totalMediaDuration))s threshold=\(String(format: "%.1f", minimumPlayableWindow))s segments=\(segmentEntries.count) targetDuration=\(String(format: "%.1f", playlistTargetDuration))s elapsed=\(String(format: "%.2f", elapsed))s mediaRate=\(mediaRate) reason=\(startupReason) note=master_playlist_experiment"
         )
-        onFirstSegmentReady?("playlist.m3u8")
+        onFirstSegmentReady?("master.m3u8")
     }
 
     // MARK: - Playlist
@@ -3378,6 +3425,17 @@ final class DVSegmentWriter {
         if let supplemental = supplementalCodecString() {
             inf += ",SUPPLEMENTAL-CODECS=\"\(supplemental)\""
         }
+        if masterVideoWidth > 0, masterVideoHeight > 0 {
+            inf += ",RESOLUTION=\(masterVideoWidth)x\(masterVideoHeight)"
+        }
+        // FRAME-RATE is load-bearing for VIDEO-RANGE=PQ variants: AVFoundation
+        // filters out a PQ variant that carries no FRAME-RATE before the media
+        // playlist is fetched. Always emit it, defaulting to the 23.976 film
+        // cadence (the same default the display-criteria path uses) when the
+        // server provides no parsable frame rate — otherwise DV/PQ files with
+        // missing fps metadata would be dropped by the variant filter.
+        let masterFrameRate = (sessionSpec.sourceVideoFrameRate).flatMap { $0 > 0 ? $0 : nil } ?? 23.976
+        inf += ",FRAME-RATE=\(String(format: "%.3f", masterFrameRate))"
         inf += ",VIDEO-RANGE=\(manifestMetadata.videoRange)"
         if !loggedMasterManifest {
             loggedMasterManifest = true

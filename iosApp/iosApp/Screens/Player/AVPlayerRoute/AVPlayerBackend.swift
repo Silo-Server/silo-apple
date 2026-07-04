@@ -910,11 +910,55 @@ final class AVPlayerBackend {
         let url = URL(string: "http://127.0.0.1:\(server.port)/\(playlistName)")!
         cmpLog("[CMP-AVP] local playlist ready \(url.absoluteString)")
         logTVDisplayManagerState(context: "before_prepare_\(playlistName)")
-        applyTVDisplayCriteriaForLoopbackIfNeeded(context: "before_prepare_\(playlistName)")
+        let appliedCriteria = applyTVDisplayCriteriaForLoopbackIfNeeded(context: "before_prepare_\(playlistName)")
         // The local loopback server is an in-app HTTP surface. Remote auth
         // headers are only for libavformat's source fetch and should not be
         // propagated into AVPlayer's localhost HLS requests.
+        if appliedCriteria {
+            // tvOS 26.5 validates a variant's VIDEO-RANGE against the
+            // panel's CURRENT mode, synchronously, before fetching the init
+            // segment. Creating the item while the panel is mid-switch
+            // fails it with -11868 (observed underlying -17223) and drops
+            // the session to the PlayerCore fallback. Wait for the switch
+            // to settle first — two stages, because the handshake itself
+            // starts asynchronously after preferredDisplayCriteria is set.
+            Task { @MainActor [weak self] in
+                await Self.waitForDisplayModeSwitchToSettle()
+                guard let self, !self.isDisposed, self.currentItem == nil,
+                      self.activeLoopbackSessionID == sessionID else { return }
+                self.logTVDisplayManagerState(context: "after_switch_wait_\(playlistName)")
+                self.prepareAssetPlayback(url: url, headers: [:])
+            }
+            return
+        }
         prepareAssetPlayback(url: url, headers: [:])
+    }
+
+    /// Two-stage wait for the tvOS display-mode switch to settle after
+    /// `preferredDisplayCriteria` is written: up to 1 s for
+    /// `isDisplayModeSwitchInProgress` to become true (the handshake begins
+    /// asynchronously; it may also never begin if the panel is already in
+    /// the target mode), then up to 5 s for it to clear.
+    @MainActor
+    private static func waitForDisplayModeSwitchToSettle() async {
+        #if os(tvOS)
+        guard let dm = TVDisplayCriteria.activeTVWindow()?.avDisplayManager else { return }
+        let stage1Start = Date()
+        var began = false
+        while Date().timeIntervalSince(stage1Start) < 1.0 {
+            if dm.isDisplayModeSwitchInProgress { began = true; break }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let stage2Start = Date()
+        while dm.isDisplayModeSwitchInProgress,
+              Date().timeIntervalSince(stage2Start) < 5.0 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        print(String(format: "[CMP-AVP] display switch settle began=%d stillInProgress=%d waited=%.2fs",
+                     began ? 1 : 0,
+                     dm.isDisplayModeSwitchInProgress ? 1 : 0,
+                     Date().timeIntervalSince(stage1Start)))
+        #endif
     }
 
     private func prepareAssetPlayback(url: URL, headers: [String: String]) {
@@ -2357,9 +2401,13 @@ final class AVPlayerBackend {
         #endif
     }
 
-    private func applyTVDisplayCriteriaForLoopbackIfNeeded(context: String) {
+    /// Returns true when Dolby Vision display criteria were written (the
+    /// caller must then wait for the panel switch to settle before creating
+    /// the AVPlayerItem — see `waitForDisplayModeSwitchToSettle`).
+    @discardableResult
+    private func applyTVDisplayCriteriaForLoopbackIfNeeded(context: String) -> Bool {
         #if os(tvOS)
-        guard case .localDVLoopback(let spec) = currentSourceStrategy else { return }
+        guard case .localDVLoopback(let spec) = currentSourceStrategy else { return false }
         switch spec.videoMode {
         case .passthroughProfile5, .convertProfile7To81, .passthroughProfile8:
             let preservedForReload = isPreservingTVDisplayCriteriaForReload
@@ -2378,11 +2426,11 @@ final class AVPlayerBackend {
             }()
             guard let displayManager = window?.avDisplayManager else {
                 print("[CMP-AVP] tv display apply context=\(context) manager=nil")
-                return
+                return false
             }
             guard displayManager.isDisplayCriteriaMatchingEnabled else {
                 print("[CMP-AVP] tv display apply context=\(context) matching=0 skipped=matching_disabled")
-                return
+                return false
             }
 
             let refreshRate = spec.sourceVideoFrameRate ?? 24.0
@@ -2392,10 +2440,13 @@ final class AVPlayerBackend {
             )
             displayManager.preferredDisplayCriteria = criteria
             print(String(format: "[CMP-AVP] tv display apply context=%@ fps=%.3f dr=%d matching=1 preservedReload=%d", context, Double(refreshRate), Int(SpikeDynamicRange.dolbyVision.rawValue), preservedForReload ? 1 : 0))
+            return true
         case .passthroughHEVC, .passthroughH264:
             isPreservingTVDisplayCriteriaForReload = false
-            return
+            return false
         }
+        #else
+        return false
         #endif
     }
 
