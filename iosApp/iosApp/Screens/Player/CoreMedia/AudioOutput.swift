@@ -155,6 +155,18 @@ final class AudioEngineAudioOutput {
         return Double(frames) / rate
     }
 
+    /// Chunks not yet fully rendered: the queued backlog plus the chunk the
+    /// render block is currently draining. 0 means the audio pipeline has
+    /// played out everything it was given (at most one render slice,
+    /// ~10 ms, may still be in flight in the hardware). Used by the
+    /// end-of-playback drain check.
+    var queuedChunkCount: Int {
+        stateLock.lock()
+        let count = queuedChunks.count + (currentChunk != nil ? 1 : 0)
+        stateLock.unlock()
+        return count
+    }
+
     var statusCode: Int {
         stateLock.lock()
         let failed = lastErrorDescription != nil
