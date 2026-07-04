@@ -2385,7 +2385,9 @@ final class AVPlayerBackend {
                 return
             }
 
-            let refreshRate = spec.sourceVideoFrameRate ?? 24.0
+            let refreshRate = DisplayRefreshRateSnap.snapOrFilmDefault(
+                spec.sourceVideoFrameRate ?? 23.976
+            )
             let criteria = AVDisplayCriteria(
                 refreshRate: refreshRate,
                 videoDynamicRange: SpikeDynamicRange.dolbyVision.rawValue
