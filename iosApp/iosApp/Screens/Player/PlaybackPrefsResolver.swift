@@ -87,10 +87,16 @@ struct SubtitleAutoResolver {
             return .disable
         }
 
-        // Auto mode skips subs when the audio is already in the
-        // preferred subtitle language.
+        // Auto mode skips full subtitles when the audio is already in the
+        // preferred subtitle language — but forced tracks exist precisely
+        // for that case (foreign-language inserts, signs), so honour
+        // `showForced` before disabling.
         if mode == .auto, let audio = inputs.currentAudioLanguage,
            languagesMatch(audio, rawLang) {
+            if inputs.showForced,
+               let forced = forcedTrackForMatchingAudio(rawLang, in: inputs.availableSubtitles) {
+                return .select(forced)
+            }
             return .disable
         }
 
@@ -108,6 +114,31 @@ struct SubtitleAutoResolver {
     }
 
     // MARK: - Matching helpers
+
+    /// The forced track to keep when full subs are skipped because the
+    /// audio already matches the user's language: prefer a forced track
+    /// tagged with that language, else an untagged forced track (forced
+    /// flags commonly ship without a language tag). A forced track tagged
+    /// with a *different* language is not selected — it would caption
+    /// inserts the user can't read. SDH/hearing-impaired tracks are
+    /// excluded even when flagged forced, matching the existing forced
+    /// policy: SDH is an accessibility choice the user makes explicitly,
+    /// not something to auto-engage for a non-SDH viewer.
+    private static func forcedTrackForMatchingAudio(
+        _ language: String,
+        in tracks: [PlayerTrack]
+    ) -> PlayerTrack? {
+        if let tagged = tracks.first(where: { track in
+            guard track.isForced, !track.isHearingImpaired,
+                  let lang = track.normalizedLanguageCode else { return false }
+            return languagesMatch(lang, language)
+        }) {
+            return tagged
+        }
+        return tracks.first {
+            $0.isForced && !$0.isHearingImpaired && $0.normalizedLanguageCode == nil
+        }
+    }
 
     /// Score-based signature match. Higher score = better. Returns the
     /// top scorer, or nil when no track matched a strong signal
