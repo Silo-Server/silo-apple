@@ -400,6 +400,11 @@ final class DVSegmentWriter {
         }
     }
     private var throughputTiming = ThroughputTiming()
+    /// True when the selected copy-mode audio stream is E-AC-3 with a JOC
+    /// (Atmos) extension — `codecpar.profile == 30`
+    /// (`AV_PROFILE_EAC3_DDP_ATMOS`, libavcodec defs.h). Drives the dec3
+    /// JOC surgery in `writeInitSegment`.
+    private var selectedAudioIsAtmosJOC = false
     /// Threshold tuned to tolerate the brief reorder bursts the fmp4 muxer
     /// occasionally emits during keyframe boundary realignment without
     /// missing a genuinely broken stream.
@@ -1075,8 +1080,16 @@ final class DVSegmentWriter {
                 ensureAudioFrameSize(codecpar: outStream.pointee.codecpar)
                 outputAudioCodecID = codecpar.pointee.codec_id
                 outputAudioCodecToken = codecToken(for: codecpar.pointee.codec_id)
+                // AV_PROFILE_EAC3_DDP_ATMOS (= 30): the demuxer sets it when
+                // the E-AC-3 dependent substream carries a JOC (Atmos)
+                // extension. The vendored FFmpeg 7.1 muxer writes no dec3 JOC
+                // extension of its own, so writeInitSegment patches one in —
+                // without it AVFoundation classifies the track as plain
+                // E-AC-3 and Atmos passthrough never engages.
+                selectedAudioIsAtmosJOC = codecpar.pointee.codec_id == AV_CODEC_ID_EAC3
+                    && codecpar.pointee.profile == 30
                 let codecName = outputAudioCodecToken ?? String(cString: avcodec_get_name(codecpar.pointee.codec_id))
-                print("[CMP-AVP] selected audio copy sourceStream=\(i) codec=\(codecName) channels=\(codecpar.pointee.ch_layout.nb_channels)")
+                print("[CMP-AVP] selected audio copy sourceStream=\(i) codec=\(codecName) channels=\(codecpar.pointee.ch_layout.nb_channels) atmosJOC=\(selectedAudioIsAtmosJOC ? 1 : 0)")
             } else {
                 try openAudioTranscodePipeline(
                     inputStream: inStream,
@@ -2806,6 +2819,22 @@ final class DVSegmentWriter {
                 print("[CMP-AVP] dvvC injected (init.mp4 grew by 32 bytes) \(doviLog)")
             } else {
                 print("[CMP-AVP] dvvC injection failed — hvcC not found in init tree")
+            }
+        }
+        if selectedAudioIsAtmosJOC {
+            // complexity_index_type_a = 16 is the standard object count for
+            // streaming DDP-Atmos; FFmpeg 7.1's parser does not expose the
+            // stream's true value, and the field is a decoder complexity
+            // hint. A vendored FFmpeg ≥ 8 bump writes the parsed value
+            // natively (the surgery then no-ops via its already-extended
+            // guard).
+            if let patched = ISOBoxSurgery.appendDec3JOCExtension(into: bytes, complexityIndex: 16) {
+                bytes = patched
+                print("[CMP-AVP] dec3 JOC extension appended (Atmos signalling, complexity=16)")
+            } else {
+                // print too: OSLog is invisible to devicectl console capture.
+                print("[CMP-AVP] dec3 JOC extension append FAILED — Atmos will present as plain E-AC-3 5.1")
+                Self.logger.error("dec3 JOC extension append failed — Atmos will present as plain E-AC-3 5.1")
             }
         }
         do {
