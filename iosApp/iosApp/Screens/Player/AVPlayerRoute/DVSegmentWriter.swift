@@ -409,6 +409,14 @@ final class DVSegmentWriter {
     /// occasionally emits during keyframe boundary realignment without
     /// missing a genuinely broken stream.
     private static let maxConsecutiveMuxWriteFailures = 5
+    /// Output video dimensions, captured at stream setup for the master
+    /// playlist's RESOLUTION/FRAME-RATE attributes. FRAME-RATE is
+    /// load-bearing: AVFoundation's variant filter silently drops a
+    /// VIDEO-RANGE=PQ variant that carries no FRAME-RATE (verified against
+    /// macOS AVAsset.variants with the on-device artifacts), which surfaced
+    /// as NSURLError -1002 and a silent PlayerCore fallback.
+    private var masterVideoWidth: Int32 = 0
+    private var masterVideoHeight: Int32 = 0
 
     private struct DoviRecord {
         let versionMajor: UInt8
@@ -1035,6 +1043,8 @@ final class DVSegmentWriter {
                 if avcodec_parameters_copy(outStream.pointee.codecpar, codecpar) < 0 {
                     throw DVWriterError.allocOutput
                 }
+                masterVideoWidth = codecpar.pointee.width
+                masterVideoHeight = codecpar.pointee.height
                 outStream.pointee.time_base = inStream.pointee.time_base
                 outStream.pointee.codecpar.pointee.codec_tag = 0
                 let dovi = outputDoviConfig(from: readDoviConfig(codecpar: codecpar))
@@ -1501,11 +1511,17 @@ final class DVSegmentWriter {
                 .joined()
         }
 
-        var codec = "\(sampleEntry).\(profileSpacePrefix)\(profileIDC).\(compatibilityString).\(tierFlag ? "H" : "L")\(levelIDC)"
-        if let constraintString, !constraintString.isEmpty {
-            codec += ".\(constraintString)"
-        }
-        return codec
+        // Always declare Main tier ('L') and omit the constraint suffix,
+        // whatever the stream's actual tier flag says. AVPlayer's
+        // master-level codec filter silently drops variants whose CODECS it
+        // won't claim — a faithful "hvc1.2.4.H150.B0" (High tier, device
+        // stream) was rejected with NSURLErrorDomain -1002 before the
+        // variant playlist was ever fetched, while the lenient Main-tier
+        // declaration is accepted everywhere. The declaration only feeds
+        // variant selection; the bitstream is untouched.
+        _ = tierFlag
+        _ = constraintString
+        return "\(sampleEntry).\(profileSpacePrefix)\(profileIDC).\(compatibilityString).L\(levelIDC)"
     }
 
     private func reversedBits32(_ value: UInt32) -> UInt32 {
@@ -3285,14 +3301,16 @@ final class DVSegmentWriter {
         let mediaRate = elapsed > 0
             ? String(format: "%.2fx", totalMediaDuration / elapsed)
             : "unknown"
-        // Start AVPlayer from the media playlist. The multivariant manifest is
-        // still emitted for artifact inspection and DV/HDR validation metadata,
-        // but iOS rejected the current local master surface before fetching the
-        // child playlist. The media playlist path is the proven playback path.
+        // EXPERIMENT (local/device-testing only): start AVPlayer from the
+        // master playlist. Apple grants premium format claims (Dolby Atmos
+        // MAT output for EAC3-JOC) at master-variant level; media-direct
+        // start dodged a historical master rejection at the cost of any
+        // master-level grants. Master playback confirmed working on-device
+        // 2026-07-03; Atmos grant validation in progress.
         print(
-            "[CMP-AVP] startup runway ready startPlaylist=playlist.m3u8 generated=\(String(format: "%.1f", totalMediaDuration))s threshold=\(String(format: "%.1f", minimumPlayableWindow))s segments=\(segmentEntries.count) targetDuration=\(String(format: "%.1f", playlistTargetDuration))s elapsed=\(String(format: "%.2f", elapsed))s mediaRate=\(mediaRate) reason=\(startupReason) note=media_playlist_start_hint"
+            "[CMP-AVP] startup runway ready startPlaylist=master.m3u8 generated=\(String(format: "%.1f", totalMediaDuration))s threshold=\(String(format: "%.1f", minimumPlayableWindow))s segments=\(segmentEntries.count) targetDuration=\(String(format: "%.1f", playlistTargetDuration))s elapsed=\(String(format: "%.2f", elapsed))s mediaRate=\(mediaRate) reason=\(startupReason) note=master_playlist_experiment"
         )
-        onFirstSegmentReady?("playlist.m3u8")
+        onFirstSegmentReady?("master.m3u8")
     }
 
     // MARK: - Playlist
@@ -3407,6 +3425,17 @@ final class DVSegmentWriter {
         if let supplemental = supplementalCodecString() {
             inf += ",SUPPLEMENTAL-CODECS=\"\(supplemental)\""
         }
+        if masterVideoWidth > 0, masterVideoHeight > 0 {
+            inf += ",RESOLUTION=\(masterVideoWidth)x\(masterVideoHeight)"
+        }
+        // FRAME-RATE is load-bearing for VIDEO-RANGE=PQ variants: AVFoundation
+        // filters out a PQ variant that carries no FRAME-RATE before the media
+        // playlist is fetched. Always emit it, defaulting to the 23.976 film
+        // cadence (the same default the display-criteria path uses) when the
+        // server provides no parsable frame rate — otherwise DV/PQ files with
+        // missing fps metadata would be dropped by the variant filter.
+        let masterFrameRate = (sessionSpec.sourceVideoFrameRate).flatMap { $0 > 0 ? $0 : nil } ?? 23.976
+        inf += ",FRAME-RATE=\(String(format: "%.3f", masterFrameRate))"
         inf += ",VIDEO-RANGE=\(manifestMetadata.videoRange)"
         if !loggedMasterManifest {
             loggedMasterManifest = true
