@@ -2020,6 +2020,11 @@ class PlayerViewModel {
             playbackTimelineOffset = backendTimelineOffset
         }
         activePlayer.avBackend?.setMediaTimelineOffset(backendTimelineOffset)
+        // Temporary [CMP-MEM]: feed proxy cache stats into the backend's
+        // periodic footprint log line.
+        activePlayer.avBackend?.proxyStatsProvider = { [weak self] in
+            self?.sourceProxy?.stats()
+        }
         do {
             try playbackCoordinator.load(plan: loadPlan)
             activePlayer = ActivePlayer(renderTarget: playbackCoordinator.renderTarget)

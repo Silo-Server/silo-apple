@@ -87,6 +87,36 @@ final class AVPlayerBackend {
         isConstrainedMemoryDevice ? 96 * 1024 * 1024 : 128 * 1024 * 1024
     }
 
+    /// Temporary [CMP-MEM] instrumentation: resident footprint as jetsam
+    /// accounts it. `phys_footprint` is the number the per-process limit
+    /// is enforced against (not `resident_size`), and
+    /// `os_proc_available_memory` is the headroom left before the kill —
+    /// together they attribute working-set growth directly from a capture
+    /// of a memory termination.
+    private static func memoryFootprintMiB() -> (footprint: Double, available: Double)? {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size
+        )
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return nil }
+        // os_proc_available_memory is iOS/tvOS-only; macOS has no
+        // per-process jetsam limit to report headroom against.
+        #if os(iOS) || os(tvOS)
+        let available = Double(os_proc_available_memory()) / 1_048_576
+        #else
+        let available = -1.0
+        #endif
+        return (
+            footprint: Double(info.phys_footprint) / 1_048_576,
+            available: available
+        )
+    }
+
     /// Adaptive forward-buffer target for the local DV loopback. Aims for
     /// a fixed resident-memory target while clamping the duration into a
     /// sensible window so very high-bitrate sources don't blow tvOS RAM and
@@ -162,6 +192,10 @@ final class AVPlayerBackend {
     /// Compatibility route) rather than left frozen. The argument is a short
     /// reason token for logging/telemetry.
     var onLoopbackStallUnrecoverable: ((String) -> Void)?
+    /// Temporary [CMP-MEM]: source-proxy cache stats for the periodic
+    /// footprint log line. The proxy is owned by PlayerViewModel, so it is
+    /// injected as a closure rather than held here.
+    var proxyStatsProvider: (() -> PlaybackSourceProxyStats?)?
 
     let avPlayer = AVPlayer()
     weak var subtitleOverlay: SubtitleOverlayView?
@@ -2007,15 +2041,34 @@ final class AVPlayerBackend {
         // classified (pause vs. wedge) directly from the log.
         if now - watchdogLastStateLogWall >= 3 {
             watchdogLastStateLogWall = now
+            // Temporary [CMP-MEM]: attribute footprint growth per tick —
+            // jetsam-accounted footprint + remaining headroom, alongside the
+            // app-managed pools (segment store RAM, source proxy cache) so a
+            // memory termination capture shows which pool was growing.
+            let mem = Self.memoryFootprintMiB()
+            let storeMiB = Double(segmentStore?.stats().memoryBytes ?? 0) / 1_048_576
+            let proxyMiB = Double(proxyStatsProvider?()?.cachedBytes ?? 0) / 1_048_576
+            let memSuffix: String
+            if let mem {
+                memSuffix = String(
+                    format: " footprint=%.1fMiB avail=%.1fMiB store=%.1fMiB proxy=%.1fMiB",
+                    mem.footprint, mem.available, storeMiB, proxyMiB
+                )
+            } else {
+                memSuffix = String(
+                    format: " footprint=? avail=? store=%.1fMiB proxy=%.1fMiB",
+                    storeMiB, proxyMiB
+                )
+            }
             Self.logger.info(
-                "[CMP-AVP] loopback playhead state pos=\(position, privacy: .public) tc=\(statusLabel, privacy: .public) rate=\(self.avPlayer.rate, privacy: .public) paused=\(self.isUserPaused ? 1 : 0, privacy: .public) bufAhead=\(bufferedAhead, privacy: .public) generatedAhead=\(generatedAhead, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public)"
+                "[CMP-AVP] loopback playhead state pos=\(position, privacy: .public) tc=\(statusLabel, privacy: .public) rate=\(self.avPlayer.rate, privacy: .public) paused=\(self.isUserPaused ? 1 : 0, privacy: .public) bufAhead=\(bufferedAhead, privacy: .public) generatedAhead=\(generatedAhead, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public)\(memSuffix, privacy: .public)"
             )
             if case .some(.siloLoopback(let stateSpec)) = currentSourceStrategy,
                stateSpec.servingMode == .vodPlan {
                 // OSLog is invisible to the devicectl console; mirror the
                 // transport state so on-device render stalls (frozen picture,
                 // advancing audio clock) are diagnosable from the capture.
-                print("[CMP-AVP] vod state pos=\(String(format: "%.2f", position)) tc=\(statusLabel) rate=\(avPlayer.rate) bufAhead=\(String(format: "%.1f", bufferedAhead)) stationaryFor=\(String(format: "%.1f", stationaryFor))")
+                print("[CMP-AVP] vod state pos=\(String(format: "%.2f", position)) tc=\(statusLabel) rate=\(avPlayer.rate) bufAhead=\(String(format: "%.1f", bufferedAhead)) stationaryFor=\(String(format: "%.1f", stationaryFor))\(memSuffix)")
             }
         }
 
