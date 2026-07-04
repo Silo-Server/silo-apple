@@ -40,11 +40,13 @@ enum SubtitleFontSizePreset: String, Codable, CaseIterable, Identifiable {
         // Ladder shifted down one notch from the prior tvOS values (large =
         // old medium) after the defaults read one size too big in the living
         // room. Each preset now takes the prior rung's value; small is a new
-        // ~1.2x step below medium.
+        // ~1.2x step below medium. Large (the default) was then eased from 63
+        // to 58 — 63 read a touch too big and medium's 51 a touch too small,
+        // so the default now lands between the two.
         switch self {
         case .small: return 43
         case .medium: return 51
-        case .large: return 63
+        case .large: return 58
         case .xlarge: return 74
         case .xxlarge: return 88
         }

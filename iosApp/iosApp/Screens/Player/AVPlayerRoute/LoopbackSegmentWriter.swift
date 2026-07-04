@@ -379,22 +379,54 @@ final class LoopbackSegmentWriter {
     private var bitmapTapCodecpars: [Int: UnsafeMutablePointer<AVCodecParameters>] = [:]
     private var bitmapTapDecoders: [Int: UnsafeMutablePointer<AVCodecContext>] = [:]
     private var bitmapTapFallbackCanvas: (width: Int32, height: Int32) = (0, 0)
+    /// Rolling backlog of COMPRESSED bitmap-subtitle packets, per stream,
+    /// kept for every bitmap stream whether or not one is selected. The
+    /// producer's read head runs well ahead of both the playhead and the
+    /// (main-thread) selection call, so without a backlog every packet
+    /// read before selection lands is lost — PGS then shows nothing until
+    /// playback reaches the frontier. Compressed PGS is tiny relative to
+    /// its decoded RGBA (~kilobytes per cue), so buffering all streams is
+    /// cheap. Mux thread only.
+    private var bitmapTapBacklog: [Int: [(packet: UnsafeMutablePointer<AVPacket>, seconds: Double)]] = [:]
+    private var bitmapTapBacklogBytes: [Int: Int] = [:]
+    /// Per-stream caps: media window slightly wider than the cue store's
+    /// 300 s retention, plus a byte ceiling for pathological streams.
+    private static let bitmapTapBacklogWindowSeconds = 360.0
+    private static let bitmapTapBacklogByteCap = 16 << 20
     /// Selected bitmap stream: written from the main thread, read per
-    /// packet on the mux thread.
+    /// packet on the mux thread. `drainPending` asks the mux thread to
+    /// replay the selected stream's backlog before further live decode.
     private let bitmapTapSelectionLock = NSLock()
     private var bitmapTapSelectedStreamLocked: Int?
+    private var bitmapTapDrainPendingLocked = false
 
     /// Select (or clear) the bitmap subtitle stream the tap decodes.
-    /// Thread-safe; takes effect on the next packet of that stream.
+    /// Thread-safe; takes effect on the next packet of that stream. Every
+    /// non-nil selection schedules a backlog replay — the backend opens a
+    /// fresh cue store per activation, so the replay repopulates it from
+    /// the oldest buffered packet through the producer's read head.
     func setBitmapSubtitleTapStream(_ streamIndex: Int?) {
         bitmapTapSelectionLock.lock()
         bitmapTapSelectedStreamLocked = streamIndex
+        if streamIndex != nil {
+            bitmapTapDrainPendingLocked = true
+        }
         bitmapTapSelectionLock.unlock()
     }
 
     private func bitmapTapSelectedStream() -> Int? {
         bitmapTapSelectionLock.lock()
         defer { bitmapTapSelectionLock.unlock() }
+        return bitmapTapSelectedStreamLocked
+    }
+
+    /// Consume the drain request, returning the stream to replay (nil when
+    /// no drain is pending).
+    private func takeBitmapTapDrainRequest() -> Int? {
+        bitmapTapSelectionLock.lock()
+        defer { bitmapTapSelectionLock.unlock() }
+        guard bitmapTapDrainPendingLocked else { return nil }
+        bitmapTapDrainPendingLocked = false
         return bitmapTapSelectedStreamLocked
     }
     private var selectedAudioStreamIndex: Int = -1
@@ -927,6 +959,10 @@ final class LoopbackSegmentWriter {
                 logged = true
                 print("[CMP-AVP] vod window backpressure parked segment=\(nextSegmentIndex)")
             }
+            // A parked producer reads no packets, so a bitmap subtitle
+            // enabled while parked would otherwise wait for the next
+            // append slot before its backlog replays.
+            drainBitmapTapBacklogIfNeeded()
             usleep(200_000)
         }
     }
@@ -1092,7 +1128,7 @@ final class LoopbackSegmentWriter {
                     continue
                 }
                 if bitmapTapTimeBases[inputIdx] != nil {
-                    tapDecodeBitmapSubtitlePacket(pkt: pkt, inputIdx: inputIdx)
+                    tapHandleBitmapSubtitlePacket(pkt: pkt, inputIdx: inputIdx)
                     continue
                 }
                 guard let outIdx = streamMap[inputIdx] else { continue }
@@ -1622,6 +1658,7 @@ final class LoopbackSegmentWriter {
         bitmapTapDecoders.removeAll()
         bitmapTapTimeBases.removeAll()
         bitmapTapCodecpars.removeAll()
+        freeBitmapTapBacklog()
     }
 
     /// Decode one tapped text-subtitle packet and emit its events. Text
@@ -1671,6 +1708,76 @@ final class LoopbackSegmentWriter {
                 durationMs: durationMs
             ))
         }
+    }
+
+    /// Route one tapped bitmap-subtitle packet: replay any pending backlog
+    /// first (so a just-landed selection sees packets read before it),
+    /// live-decode when the packet's stream is selected, and buffer it
+    /// either way — the rolling backlog is what future (re)selections
+    /// replay from.
+    private func tapHandleBitmapSubtitlePacket(
+        pkt: UnsafeMutablePointer<AVPacket>,
+        inputIdx: Int
+    ) {
+        drainBitmapTapBacklogIfNeeded()
+        if bitmapTapSelectedStream() == inputIdx {
+            tapDecodeBitmapSubtitlePacket(pkt: pkt, inputIdx: inputIdx)
+        }
+        bufferBitmapTapPacket(pkt: pkt, inputIdx: inputIdx)
+    }
+
+    /// Clone `pkt` into the stream's rolling backlog, pruning oldest-first
+    /// past the media window / byte cap. Mux thread only.
+    private func bufferBitmapTapPacket(
+        pkt: UnsafeMutablePointer<AVPacket>,
+        inputIdx: Int
+    ) {
+        guard let timeBase = bitmapTapTimeBases[inputIdx],
+              let clone = av_packet_clone(pkt) else { return }
+        let noPts = Int64.min
+        let ptsRaw: Int64 = pkt.pointee.pts != noPts ? pkt.pointee.pts
+            : (pkt.pointee.dts != noPts ? pkt.pointee.dts : 0)
+        let seconds = Double(ptsRaw) * Double(timeBase.num) / Double(timeBase.den)
+        var entries = bitmapTapBacklog[inputIdx] ?? []
+        var bytes = bitmapTapBacklogBytes[inputIdx] ?? 0
+        entries.append((packet: clone, seconds: seconds))
+        bytes += Int(clone.pointee.size)
+        while let oldest = entries.first,
+              bytes > Self.bitmapTapBacklogByteCap
+                || oldest.seconds < seconds - Self.bitmapTapBacklogWindowSeconds {
+            bytes -= Int(oldest.packet.pointee.size)
+            var doomed: UnsafeMutablePointer<AVPacket>? = oldest.packet
+            av_packet_free(&doomed)
+            entries.removeFirst()
+        }
+        bitmapTapBacklog[inputIdx] = entries
+        bitmapTapBacklogBytes[inputIdx] = bytes
+    }
+
+    /// Replay the selected stream's backlog through the decoder when a
+    /// selection is pending. Called from the read loops and from the VOD
+    /// backpressure park loop (a parked producer reads no packets, but a
+    /// mid-playback enable still needs its drain promptly). Packets stay
+    /// buffered afterwards — each activation opens a fresh cue store, so
+    /// a later re-selection replays the full window again. Mux thread only.
+    private func drainBitmapTapBacklogIfNeeded() {
+        guard let selected = takeBitmapTapDrainRequest(),
+              let entries = bitmapTapBacklog[selected], !entries.isEmpty else { return }
+        cmpLog("[CMP-TAP] bitmap backlog drain stream=\(selected) packets=\(entries.count)")
+        for entry in entries {
+            tapDecodeBitmapSubtitlePacket(pkt: entry.packet, inputIdx: selected)
+        }
+    }
+
+    private func freeBitmapTapBacklog() {
+        for (_, entries) in bitmapTapBacklog {
+            for entry in entries {
+                var doomed: UnsafeMutablePointer<AVPacket>? = entry.packet
+                av_packet_free(&doomed)
+            }
+        }
+        bitmapTapBacklog.removeAll()
+        bitmapTapBacklogBytes.removeAll()
     }
 
     /// Decode one tapped bitmap-subtitle packet (only while its stream is
@@ -2260,7 +2367,7 @@ final class LoopbackSegmentWriter {
                 continue
             }
             if bitmapTapTimeBases[inIdx] != nil {
-                tapDecodeBitmapSubtitlePacket(pkt: pkt, inputIdx: inIdx)
+                tapHandleBitmapSubtitlePacket(pkt: pkt, inputIdx: inIdx)
                 var free = readPkt
                 av_packet_free(&free)
                 continue

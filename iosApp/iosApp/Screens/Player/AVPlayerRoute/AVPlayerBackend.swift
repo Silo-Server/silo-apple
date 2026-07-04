@@ -1286,6 +1286,16 @@ final class AVPlayerBackend {
                 guard let self, !self.isDisposed,
                       self.activeLoopbackSessionID == sessionID else { return }
                 self.bitmapTapAvailableStreams = Set(indices)
+                // A selection that landed before availability fell through
+                // to the extractor (which can't keep up at Blu-ray
+                // bitrates); re-route it to the tap now that the writer
+                // has declared its bitmap streams.
+                if let trackId = self.selectedControlledSubtitleTrackId,
+                   self.selectedBitmapTapStreamIndex == nil,
+                   self.bitmapTapServesEmbeddedTrack(trackId) {
+                    self.embeddedSubtitleExtractor?.stopFeeding(slot: .primary)
+                    self.activateBitmapTapSubtitleTrack(trackId: trackId)
+                }
             }
         }
         // Mux thread; the writer only decodes (and therefore only emits)
@@ -1623,10 +1633,11 @@ final class AVPlayerBackend {
     }
 
     /// Point the writer's bitmap tap at the selected stream and open the
-    /// bitmap track in the renderer. Cues start flowing from the
-    /// producer's current read position: at playback start that is the
-    /// anchor (immediate); on a mid-playback enable the first cue arrives
-    /// once playback reaches media the producer read after selection.
+    /// bitmap track in the renderer. Selection schedules a backlog replay
+    /// in the writer: packets the producer read before this call landed
+    /// (it races ahead of both the playhead and this main-thread hop) are
+    /// decoded into the fresh store, so cues cover from the anchor — not
+    /// just from wherever the read head happened to be.
     private func activateBitmapTapSubtitleTrack(trackId: Int64) {
         guard let session = subtitleSession else { return }
         let streamIndex = Int(SubtitleTrackIdSpace.avPlayerEmbeddedStreamIndex(from: trackId))
