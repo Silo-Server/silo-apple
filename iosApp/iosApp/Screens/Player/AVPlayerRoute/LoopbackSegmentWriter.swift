@@ -349,6 +349,20 @@ final class LoopbackSegmentWriter {
     /// Which input stream index supplies the video track. -1 until openOutput
     /// sets it.
     private var videoInputStreamIndex: Int = -1
+    // Temporary [CMP-SEAM] diagnostics (see rewritePacketForOutput).
+    private var vodSeamDidLogFirstAudio = false
+    private var vodSeamLastAudioEnd: Int64 = -1
+
+    // MARK: - Subtitle tap
+    // Text-subtitle streams stay in the demuxer keep-set; their packets are
+    // decoded inline on the mux thread (a text decode is a microsecond-scale
+    // parse) and emitted as cues. Set both callbacks before start().
+    var onSubtitleTapTracks: (([LoopbackSubtitleTapTrackInfo]) -> Void)?
+    var onSubtitleTapCue: ((LoopbackSubtitleTapCue) -> Void)?
+    /// Per-input-stream decoder contexts for tapped text subtitle streams.
+    /// Mux-queue only; freed in teardown.
+    private var subtitleTapDecoders: [Int: UnsafeMutablePointer<AVCodecContext>] = [:]
+    private var subtitleTapTimeBases: [Int: AVRational] = [:]
     private var selectedAudioStreamIndex: Int = -1
     private var audioOutputStreamIndex: Int = -1
     private var trackTimeBasesByID: [UInt32: AVRational] = [:]
@@ -1036,6 +1050,13 @@ final class LoopbackSegmentWriter {
                 if isCancelled {
                     continue
                 }
+                // Subtitle-tap streams are kept readable but never muxed:
+                // decode inline, emit cues, and move on before the stream
+                // map (they have no output stream).
+                if subtitleTapDecoders[inputIdx] != nil {
+                    tapDecodeSubtitlePacket(pkt: pkt, inputIdx: inputIdx)
+                    continue
+                }
                 guard let outIdx = streamMap[inputIdx] else { continue }
                 // Skip packets with no usable presentation timestamp. Some
                 // MKV/H.264 files expose the first keyframe with PTS but no
@@ -1279,8 +1300,10 @@ final class LoopbackSegmentWriter {
                     in: recycled.context,
                     keepVideoIndex: videoInputStreamIndex,
                     keepAudioOrdinal: shouldIncludeAudio ? selectedAudioTrackIndex : -1,
-                    keepAudioFfIndex: sessionSpec.selectedAudio.ffIndex
+                    keepAudioFfIndex: sessionSpec.selectedAudio.ffIndex,
+                    keepSubtitleIndices: subtitleTapKeepSet(in: recycled.context)
                 )
+                configureSubtitleTap(in: recycled.context)
                 inputCtx = recycled.context
                 recycledInputActive = true
                 print("[CMP-AVP] vod restart: recycled source demuxer")
@@ -1352,12 +1375,14 @@ final class LoopbackSegmentWriter {
             in: openedContext,
             keepVideoIndex: videoInputStreamIndex,
             keepAudioOrdinal: shouldIncludeAudio ? selectedAudioTrackIndex : -1,
-            keepAudioFfIndex: sessionSpec.selectedAudio.ffIndex
+            keepAudioFfIndex: sessionSpec.selectedAudio.ffIndex,
+            keepSubtitleIndices: subtitleTapKeepSet(in: openedContext)
         )
 
         if avformat_find_stream_info(openedContext, nil) < 0 {
             throw LoopbackWriterError.findStreamInfo
         }
+        configureSubtitleTap(in: openedContext)
 
         if sessionSpec.servingMode != .vodPlan {
             try seekInputToStartTimeIfNeeded(openedContext)
@@ -1383,7 +1408,8 @@ final class LoopbackSegmentWriter {
         in ctx: UnsafeMutablePointer<AVFormatContext>,
         keepVideoIndex: Int,
         keepAudioOrdinal: Int,
-        keepAudioFfIndex: Int?
+        keepAudioFfIndex: Int?,
+        keepSubtitleIndices: Set<Int>
     ) {
         let nb = Int(ctx.pointee.nb_streams)
         var discardedSubtitles = 0
@@ -1392,6 +1418,7 @@ final class LoopbackSegmentWriter {
         var discardedExtraAudio = 0
         var keptVideo = 0
         var keptAudio = 0
+        var keptSubtitles = 0
         var audioOrdinal = 0
         if let streams = ctx.pointee.streams {
             for i in 0..<nb {
@@ -1424,6 +1451,16 @@ final class LoopbackSegmentWriter {
                     }
                     continue
                 }
+                if mediaType == AVMEDIA_TYPE_SUBTITLE, keepSubtitleIndices.contains(i) {
+                    // Subtitle-tap streams stay readable so their packets
+                    // arrive through the same av_read_frame loop that feeds
+                    // the muxer. Set explicitly (not just "don't discard")
+                    // because a RECYCLED demuxer carries the prior writer's
+                    // discard flags.
+                    stream.pointee.discard = AVDISCARD_DEFAULT
+                    keptSubtitles += 1
+                    continue
+                }
                 stream.pointee.discard = AVDISCARD_ALL
                 if mediaType == AVMEDIA_TYPE_SUBTITLE {
                     discardedSubtitles += 1
@@ -1435,7 +1472,144 @@ final class LoopbackSegmentWriter {
         // Log unconditionally — we want to confirm this ran even when the
         // walk finds nothing yet (e.g. some demuxers populate streams
         // lazily inside avformat_find_stream_info).
-        cmpLog("[CMP-AVP] mux probe filter total=\(nb) keptVideo=\(keptVideo) keptAudio=\(keptAudio) discardedExtraVideo=\(discardedExtraVideo) discardedExtraAudio=\(discardedExtraAudio) discardedSubtitles=\(discardedSubtitles) discardedOther=\(discardedOther)")
+        cmpLog("[CMP-AVP] mux probe filter total=\(nb) keptVideo=\(keptVideo) keptAudio=\(keptAudio) keptSubtitles=\(keptSubtitles) discardedExtraVideo=\(discardedExtraVideo) discardedExtraAudio=\(discardedExtraAudio) discardedSubtitles=\(discardedSubtitles) discardedOther=\(discardedOther)")
+    }
+
+    /// Streams to keep readable for the subtitle tap. Empty when no tap
+    /// consumer is wired, preserving the discard-everything behaviour.
+    private func subtitleTapKeepSet(
+        in ctx: UnsafeMutablePointer<AVFormatContext>
+    ) -> Set<Int> {
+        guard onSubtitleTapCue != nil else { return [] }
+        return Self.textSubtitleStreamIndices(in: ctx)
+    }
+
+    /// Opens one text-subtitle decoder per tapped stream and reports the
+    /// track set (header + codec kind) to the tap consumer. Mux queue only;
+    /// runs on every writer start — restarts rebuild identical decoders.
+    private func configureSubtitleTap(in ctx: UnsafeMutablePointer<AVFormatContext>) {
+        guard onSubtitleTapCue != nil else { return }
+        freeSubtitleTapDecoders()
+        var infos: [LoopbackSubtitleTapTrackInfo] = []
+        guard let streams = ctx.pointee.streams else { return }
+        for i in Self.textSubtitleStreamIndices(in: ctx).sorted() {
+            guard let stream = streams[i],
+                  let codecparPtr = stream.pointee.codecpar,
+                  let codec = avcodec_find_decoder(codecparPtr.pointee.codec_id) else { continue }
+            var codecCtx = avcodec_alloc_context3(codec)
+            guard codecCtx != nil else { continue }
+            if avcodec_parameters_to_context(codecCtx, codecparPtr) < 0
+                || avcodec_open2(codecCtx, codec, nil) < 0 {
+                avcodec_free_context(&codecCtx)
+                continue
+            }
+            guard let openedCtx = codecCtx else { continue }
+            subtitleTapDecoders[i] = openedCtx
+            subtitleTapTimeBases[i] = stream.pointee.time_base
+
+            let codecID = codecparPtr.pointee.codec_id
+            let isNativeASS = codecID == AV_CODEC_ID_ASS || codecID == AV_CODEC_ID_SSA
+            let header: Data
+            if let sh = openedCtx.pointee.subtitle_header,
+               openedCtx.pointee.subtitle_header_size > 0 {
+                header = Data(bytes: sh, count: Int(openedCtx.pointee.subtitle_header_size))
+            } else if let ed = codecparPtr.pointee.extradata,
+                      codecparPtr.pointee.extradata_size > 0 {
+                header = Data(bytes: ed, count: Int(codecparPtr.pointee.extradata_size))
+            } else {
+                header = Data()
+            }
+            infos.append(LoopbackSubtitleTapTrackInfo(
+                streamIndex: i,
+                isNativeASS: isNativeASS,
+                header: header
+            ))
+        }
+        if !infos.isEmpty {
+            onSubtitleTapTracks?(infos)
+        }
+    }
+
+    private func freeSubtitleTapDecoders() {
+        for (_, ctx) in subtitleTapDecoders {
+            var doomed: UnsafeMutablePointer<AVCodecContext>? = ctx
+            avcodec_free_context(&doomed)
+        }
+        subtitleTapDecoders.removeAll()
+        subtitleTapTimeBases.removeAll()
+    }
+
+    /// Decode one tapped text-subtitle packet and emit its events. Text
+    /// decodes are parses — microseconds — so this runs inline on the mux
+    /// thread between av_read_frame calls.
+    private func tapDecodeSubtitlePacket(
+        pkt: UnsafeMutablePointer<AVPacket>,
+        inputIdx: Int
+    ) {
+        guard let codecCtx = subtitleTapDecoders[inputIdx],
+              let timeBase = subtitleTapTimeBases[inputIdx],
+              pkt.pointee.pts != Int64.min else { return }
+
+        var sub = AVSubtitle()
+        defer { avsubtitle_free(&sub) }
+        var gotSubtitle: Int32 = 0
+        let rc = avcodec_decode_subtitle2(codecCtx, &sub, &gotSubtitle, pkt)
+        guard rc >= 0, gotSubtitle != 0 else { return }
+
+        let basePtsSeconds = Double(pkt.pointee.pts)
+            * Double(timeBase.num) / Double(timeBase.den)
+        let startMs = Int64((basePtsSeconds + Double(sub.start_display_time) / 1000.0) * 1000.0)
+        let endMs: Int64 = {
+            if sub.end_display_time != UInt32.max,
+               sub.end_display_time > sub.start_display_time {
+                return Int64((basePtsSeconds + Double(sub.end_display_time) / 1000.0) * 1000.0)
+            }
+            if pkt.pointee.duration > 0 {
+                let durSeconds = Double(pkt.pointee.duration)
+                    * Double(timeBase.num) / Double(timeBase.den)
+                return startMs + Int64(durSeconds * 1000.0)
+            }
+            return startMs + 5000
+        }()
+        let durationMs = max(Int64(0), endMs - startMs)
+
+        for i in 0..<Int(sub.num_rects) {
+            guard let rect = sub.rects[i]?.pointee,
+                  rect.type == SUBTITLE_ASS,
+                  let assPtr = rect.ass else { continue }
+            let ass = String(cString: assPtr)
+            guard !ass.isEmpty else { continue }
+            onSubtitleTapCue?(LoopbackSubtitleTapCue(
+                streamIndex: inputIdx,
+                eventText: ass,
+                startMs: startMs,
+                durationMs: durationMs
+            ))
+        }
+    }
+
+    /// Input stream indices of text subtitle codecs the tap can decode.
+    /// Bitmap codecs (PGS/DVD) stay on the extractor path — their cues are
+    /// RGBA images with real memory weight, not store-friendly text.
+    private static func textSubtitleStreamIndices(
+        in ctx: UnsafeMutablePointer<AVFormatContext>
+    ) -> Set<Int> {
+        var indices: Set<Int> = []
+        guard let streams = ctx.pointee.streams else { return indices }
+        for i in 0..<Int(ctx.pointee.nb_streams) {
+            guard let stream = streams[i],
+                  let codecpar = stream.pointee.codecpar,
+                  codecpar.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE else { continue }
+            let codecID = codecpar.pointee.codec_id
+            if codecID == AV_CODEC_ID_ASS
+                || codecID == AV_CODEC_ID_SSA
+                || codecID == AV_CODEC_ID_SUBRIP
+                || codecID == AV_CODEC_ID_WEBVTT
+                || codecID == AV_CODEC_ID_MOV_TEXT {
+                indices.insert(i)
+            }
+        }
+        return indices
     }
 
     private static func resolveSelectedVideoStreamIndex(
@@ -1817,6 +1991,16 @@ final class LoopbackSegmentWriter {
             guard let pkt = readPkt else { break }
             totalPacketsRead += 1
             let inIdx = Int(pkt.pointee.stream_index)
+
+            // Tap subtitle packets seen during bootstrap too (cues near the
+            // anchor). Checked before the DTS guard — subtitle packets
+            // legitimately carry PTS with no DTS.
+            if subtitleTapDecoders[inIdx] != nil {
+                tapDecodeSubtitlePacket(pkt: pkt, inputIdx: inIdx)
+                var free = readPkt
+                av_packet_free(&free)
+                continue
+            }
 
             // Packets without a PTS are unusable. A video packet with PTS
             // but no DTS still reaches keyframe detection below — MKV/HEVC
@@ -3223,6 +3407,20 @@ final class LoopbackSegmentWriter {
             normalizeSeekedTimelineIfNeeded(pkt: pkt, outStream: outStream)
         }
         normalizeMuxerTimestampsIfNeeded(pkt: pkt, outStream: outStream)
+        // Temporary [CMP-SEAM]: audio timeline continuity across producer
+        // restarts. Stored anchor tfdts showed run-to-run audio offsets of
+        // 18-19 ms (sub-EAC3-frame) — a passthrough discontinuity at every
+        // seam and the prime suspect for multi-second eARC dropouts while
+        // the receiver re-locks the bitstream. Log each run's first routed
+        // audio timestamp and keep the running end so consecutive runs can
+        // be diffed from the capture.
+        if vodActive, inputStreamIndex != videoInputStreamIndex, pkt.pointee.pts != Int64.min {
+            if !vodSeamDidLogFirstAudio {
+                vodSeamDidLogFirstAudio = true
+                print("[CMP-SEAM] run first audio outPts=\(pkt.pointee.pts) dur=\(pkt.pointee.duration) tb=\(outTB.num)/\(outTB.den)")
+            }
+            vodSeamLastAudioEnd = pkt.pointee.pts + max(0, pkt.pointee.duration)
+        }
         pkt.pointee.pos = -1
     }
 
@@ -4455,6 +4653,10 @@ final class LoopbackSegmentWriter {
             av_packet_free(&free)
         }
         pendingAudioPackets.removeAll()
+        freeSubtitleTapDecoders()
+        if vodSeamLastAudioEnd >= 0 {
+            print("[CMP-SEAM] run last audio end=\(vodSeamLastAudioEnd)")
+        }
         if let ctx = outputCtx {
             // pb is our custom AVIOContext — we free it separately below so
             // avformat_free_context doesn't try to close it.

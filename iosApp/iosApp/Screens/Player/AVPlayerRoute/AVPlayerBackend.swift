@@ -205,9 +205,29 @@ final class AVPlayerBackend {
     /// transition instead of dispatching a no-op clear to main every vsync
     /// for the whole duration of bitmap-only (PGS/DVD) playback.
     private var textOverlayMayHaveFrame = false
+    // Temporary [CMP-SUBDIAG] instrumentation: rolling 1 Hz window of
+    // session-queue latency and render cost for the subtitle pump.
+    private var subDiagLastEmit: CFTimeInterval = 0
+    private var subDiagMaxQueueLatencyMs: Double = 0
+    private var subDiagMaxRenderMs: Double = 0
+    private var subDiagTicks = 0
+    private var subDiagDirtyCount = 0
+    private var subDiagSkippedTicks = 0
+    /// Text renders currently queued or executing on the renderer's session
+    /// queue. The display link enqueues at vsync rate but a render can take
+    /// >100 ms (full 4K re-rasterization), so without a cap the queue grows
+    /// unboundedly and every downstream mutation (cue feeds, styling,
+    /// track drops) lands seconds late. Capped at 2: one executing, one
+    /// queued behind it. Main thread only.
+    private var subPumpRendersInFlight = 0
     private var selectedControlledSubtitleTrackId: Int64?
     private var selectedSecondaryControlledSubtitleTrackId: Int64?
     private var sidecarDescriptorsByTrackId: [Int64: SidecarSubtitleDescriptor] = [:]
+    /// Text-subtitle cues harvested from the loopback writer's own demuxer
+    /// (see LoopbackSubtitleTap). Keyed to the source URL: producer
+    /// restarts and reanchors reuse the store; a new source resets it.
+    private var loopbackSubtitleTap: LoopbackSubtitleTap?
+    private var loopbackSubtitleTapSourceURL: URL?
     private var mediaTimelineOffsetSeconds: Double = 0
     private var serverChapters: [PlayerChapterInfo] = []
     private var currentLoopbackAudioTracks: [PlayerTrack] = []
@@ -420,7 +440,7 @@ final class AVPlayerBackend {
                 "[CMP-SEEK] AVPlayer seek complete finished=\(finished, privacy: .public) landedPlayer=\(landed, privacy: .public) landedMedia=\(mediaTime, privacy: .public) requestedMedia=\(mediaSeconds, privacy: .public) offset=\(self.mediaTimelineOffsetSeconds, privacy: .public)"
             )
             guard finished, landed.isFinite, mediaTime.isFinite else { return }
-            self.embeddedSubtitleExtractor?.seek(to: mediaTime)
+            self.resyncControlledSubtitlesAfterSeek(mediaSeconds: mediaTime)
             self.onTimeChange?(landed)
             self.pumpSubtitleOverlay(referenceTime: mediaTime)
         }
@@ -534,12 +554,14 @@ final class AVPlayerBackend {
     }
 
     func setSubtitleDelay(_ seconds: Double) {
+        print("[CMP-SUB] setSubtitleDelay seconds=\(seconds) session=\(subtitleSession == nil ? "nil" : "live")")
         var params = subtitleSession?.currentParams ?? .default
         params.syncOffsetMs = Int((seconds * 1000.0).rounded())
         subtitleSession?.applyStyling(params)
     }
 
     func applySubtitleAppearance(_ appearance: SubtitleAppearance) {
+        print("[CMP-SUB] applySubtitleAppearance size=\(appearance.fontSize.rawValue) session=\(subtitleSession == nil ? "nil" : "live")")
         let syncOffset = subtitleSession?.currentParams.syncOffsetMs ?? 0
         let params = SubtitleStylingOverride.Parameters.from(
             appearance: appearance,
@@ -623,6 +645,7 @@ final class AVPlayerBackend {
     }
 
     func selectSubtitleTrack(_ trackId: Int64?) {
+        print("[CMP-SUB] selectSubtitleTrack id=\(trackId.map(String.init) ?? "nil") item=\(currentItem == nil ? "nil" : "live")")
         guard let item = currentItem else {
             return
         }
@@ -636,6 +659,7 @@ final class AVPlayerBackend {
             if let state = subtitleSelectionState {
                 item.select(nil, in: state.group)
             }
+            loopbackSubtitleTap?.deactivate()
             embeddedSubtitleExtractor?.clear(slot: .primary)
             selectedControlledSubtitleTrackId = trackId
             emitTrackList()
@@ -646,6 +670,7 @@ final class AVPlayerBackend {
             if let state = subtitleSelectionState {
                 item.select(nil, in: state.group)
             }
+            loopbackSubtitleTap?.deactivate()
             embeddedSubtitleExtractor?.clear(slot: .primary)
             selectedControlledSubtitleTrackId = trackId
             subtitleSession?.openSidecar(
@@ -656,10 +681,25 @@ final class AVPlayerBackend {
             return
         }
 
+        // Tap-served embedded text tracks: instant enable from the store,
+        // no side demuxer. Checked before the extractor so text tracks
+        // never pay the second-connection open/seek.
+        if let trackId, tapServesEmbeddedTrack(trackId) {
+            if let state = subtitleSelectionState {
+                item.select(nil, in: state.group)
+            }
+            embeddedSubtitleExtractor?.stopFeeding(slot: .primary)
+            selectedControlledSubtitleTrackId = trackId
+            activateTapSubtitleTrack(trackId: trackId, slot: .primary)
+            emitTrackList()
+            return
+        }
+
         if let trackId, embeddedSubtitleExtractor?.canSelect(trackId: trackId) == true {
             if let state = subtitleSelectionState {
                 item.select(nil, in: state.group)
             }
+            loopbackSubtitleTap?.deactivate()
             selectedControlledSubtitleTrackId = trackId
             embeddedSubtitleExtractor?.select(
                 trackId: trackId,
@@ -670,6 +710,7 @@ final class AVPlayerBackend {
             return
         }
 
+        loopbackSubtitleTap?.deactivate()
         embeddedSubtitleExtractor?.clear(slot: .primary)
         selectedControlledSubtitleTrackId = nil
         if let state = subtitleSelectionState {
@@ -1126,6 +1167,13 @@ final class AVPlayerBackend {
             vodBaseIndex: vodBaseIndex,
             recycledInputHandoff: recycledInput
         )
+        let tap = ensureLoopbackSubtitleTap(for: sessionSpec.sourceURL)
+        writer.onSubtitleTapTracks = { [weak tap] infos in
+            tap?.registerTracks(infos)
+        }
+        writer.onSubtitleTapCue = { [weak tap] cue in
+            tap?.ingest(cue)
+        }
         if sessionSpec.servingMode == .vodPlan {
             activeVODWriterBaseIndex = vodBaseIndex
             activeVODWriterHeadIndex = vodBaseIndex - 1
@@ -1416,6 +1464,87 @@ final class AVPlayerBackend {
             source = nil
         }
         embeddedSubtitleExtractor?.configure(source: source)
+    }
+
+    /// The tap store survives producer restarts and reanchors (same source,
+    /// same timeline); switching to a different source resets it.
+    private func ensureLoopbackSubtitleTap(for sourceURL: URL) -> LoopbackSubtitleTap {
+        if let tap = loopbackSubtitleTap, loopbackSubtitleTapSourceURL == sourceURL {
+            return tap
+        }
+        let tap = LoopbackSubtitleTap()
+        loopbackSubtitleTap = tap
+        loopbackSubtitleTapSourceURL = sourceURL
+        return tap
+    }
+
+    /// True when `trackId` is an embedded text track the tap can serve.
+    /// Loopback-route only: other routes have no writer harvesting cues,
+    /// so a leftover store must not shadow the extractor.
+    private func tapServesEmbeddedTrack(_ trackId: Int64) -> Bool {
+        guard case .some(.siloLoopback) = currentSourceStrategy,
+              SubtitleTrackIdSpace.isAVPlayerEmbedded(trackId),
+              let tap = loopbackSubtitleTap else { return false }
+        let streamIndex = Int(SubtitleTrackIdSpace.avPlayerEmbeddedStreamIndex(from: trackId))
+        return tap.hasTrack(forStream: streamIndex)
+    }
+
+    /// (Re)install the libass track for a tap-served stream and feed it:
+    /// a fresh track, the full backfill snapshot, then live forwarding —
+    /// exactly once per cue (libass ReadOrder dedup is disabled). Also the
+    /// post-seek resync: re-running replaces the track wholesale, so
+    /// flushed state can't double-feed.
+    private func activateTapSubtitleTrack(trackId: Int64, slot: SubtitleSlot) {
+        guard let tap = loopbackSubtitleTap,
+              let session = subtitleSession else { return }
+        let streamIndex = Int(SubtitleTrackIdSpace.avPlayerEmbeddedStreamIndex(from: trackId))
+        guard let info = tap.trackInfo(forStream: streamIndex) else { return }
+
+        if info.header.isEmpty {
+            session.openEmbedded(
+                slot: slot, isNativeASS: info.isNativeASS,
+                extradata: nil, extradataSize: 0
+            )
+        } else {
+            info.header.withUnsafeBytes { raw in
+                session.openEmbedded(
+                    slot: slot,
+                    isNativeASS: info.isNativeASS,
+                    extradata: raw.bindMemory(to: UInt8.self).baseAddress,
+                    extradataSize: info.header.count
+                )
+            }
+        }
+        let backfill = tap.activate(streamIndex: streamIndex) { [weak session] cue in
+            session?.feedEmbedded(
+                slot: slot,
+                eventText: cue.eventText,
+                startMs: cue.startMs,
+                durationMs: cue.durationMs
+            )
+        }
+        for cue in backfill {
+            session.feedEmbedded(
+                slot: slot,
+                eventText: cue.eventText,
+                startMs: cue.startMs,
+                durationMs: cue.durationMs
+            )
+        }
+        print("[CMP-TAP] activated stream=\(streamIndex) backfill=\(backfill.count)")
+    }
+
+    /// After a completed in-item seek: extractor-owned slots re-seek their
+    /// side demuxer (the extractor only iterates its own selections, so
+    /// this is a no-op for tap-served slots), and a tap-served primary
+    /// re-installs + re-feeds (the session's flushOnSeek dropped its
+    /// libass events).
+    private func resyncControlledSubtitlesAfterSeek(mediaSeconds: Double) {
+        embeddedSubtitleExtractor?.seek(to: mediaSeconds)
+        if let trackId = selectedControlledSubtitleTrackId,
+           tapServesEmbeddedTrack(trackId) {
+            activateTapSubtitleTrack(trackId: trackId, slot: .primary)
+        }
     }
 
     private func installPeriodicTimeObserver() {
@@ -1846,7 +1975,14 @@ final class AVPlayerBackend {
         let position = currentTime()
         guard position.isFinite else { return }
 
-        if watchdogLastPlayheadSeconds < 0 || position > watchdogLastPlayheadSeconds + 0.05 {
+        // Movement in EITHER direction counts as alive. Comparing with `>`
+        // alone left the high-water mark stale across backward in-item
+        // seeks: after a back-scrub the playhead sits below the pre-scrub
+        // mark for tens of seconds of healthy playback, `stationaryFor`
+        // climbs the whole time, and the watchdog "recovers" a route that
+        // was never wedged (nudge → item reloads that reset a full buffer →
+        // reanchor budget exhausted → spurious PlayerCore fallback).
+        if watchdogLastPlayheadSeconds < 0 || abs(position - watchdogLastPlayheadSeconds) > 0.05 {
             watchdogLastPlayheadSeconds = position
             watchdogLastAdvanceWall = now
         }
@@ -2315,7 +2451,7 @@ final class AVPlayerBackend {
         guard mediaTarget > 0, playerTarget > 0.05 else {
             startPlaybackIfNeeded(for: item)
             hasSeekedToStart = true
-            embeddedSubtitleExtractor?.seek(to: mediaTarget)
+            resyncControlledSubtitlesAfterSeek(mediaSeconds: mediaTarget)
             onTimeChange?(avPlayer.currentTime().seconds)
             return
         }
@@ -2348,7 +2484,7 @@ final class AVPlayerBackend {
             if landedCorrectly {
                 self.hasSeekedToStart = true
                 self.initialSeekRetryCount = 0
-                self.embeddedSubtitleExtractor?.seek(to: landedMedia)
+                self.resyncControlledSubtitlesAfterSeek(mediaSeconds: landedMedia)
                 self.startPlaybackIfNeeded(for: item)
                 self.onTimeChange?(landed)
                 return
@@ -2859,17 +2995,36 @@ final class AVPlayerBackend {
             #else
             let scale = overlay.window?.screen.scale ?? overlay.traitCollection.displayScale
             #endif
-            renderer.sessionQueue.async { [weak overlay] in
+            guard subPumpRendersInFlight < 2 else {
+                subDiagSkippedTicks += 1
+                return
+            }
+            subPumpRendersInFlight += 1
+            let enqueuedAt = CACurrentMediaTime()
+            renderer.sessionQueue.async { [weak overlay, weak self] in
+                let startedAt = CACurrentMediaTime()
                 let out = renderer.renderOnSessionQueue(
                     atMilliseconds: adjustedNowMs,
                     frameSize: bounds.size,
                     scale: scale,
                     videoInsets: videoInsets
                 )
-                guard out.isDirty else { return }
-                let image = out.image
+                let endedAt = CACurrentMediaTime()
                 DispatchQueue.main.async {
-                    overlay?.updateContents(image)
+                    if let self {
+                        self.subPumpRendersInFlight = max(0, self.subPumpRendersInFlight - 1)
+                        self.recordSubtitlePumpDiag(
+                            queueLatencyMs: (startedAt - enqueuedAt) * 1000,
+                            renderMs: (endedAt - startedAt) * 1000,
+                            out: out,
+                            referenceTime: referenceTime,
+                            syncOffsetMs: syncOffsetMs,
+                            bounds: bounds,
+                            insets: videoInsets
+                        )
+                    }
+                    guard out.isDirty else { return }
+                    overlay?.updateContents(out.image)
                 }
             }
         } else if textOverlayMayHaveFrame {
@@ -2899,6 +3054,43 @@ final class AVPlayerBackend {
                 overlay.clearBitmapCues()
             }
         }
+    }
+
+    /// Temporary [CMP-SUBDIAG] emit — 1 Hz summary of the pump's
+    /// session-queue latency, render cost, and the clocks feeding it.
+    /// Main thread only.
+    private func recordSubtitlePumpDiag(
+        queueLatencyMs: Double,
+        renderMs: Double,
+        out: SubtitleRenderOutput,
+        referenceTime: Double,
+        syncOffsetMs: Int64,
+        bounds: CGRect,
+        insets: SubtitleVideoInsets
+    ) {
+        subDiagTicks += 1
+        if out.isDirty { subDiagDirtyCount += 1 }
+        subDiagMaxQueueLatencyMs = max(subDiagMaxQueueLatencyMs, queueLatencyMs)
+        subDiagMaxRenderMs = max(subDiagMaxRenderMs, renderMs)
+        let now = CACurrentMediaTime()
+        guard now - subDiagLastEmit >= 1.0 else { return }
+        let playerSeconds = avPlayer.currentTime().seconds
+        print(String(
+            format: "[CMP-SUBDIAG] qLatMaxMs=%.1f renderMaxMs=%.1f ticks=%d dirty=%d skip=%d chg=%d/%d fsd=%d geom=%d evts=%d imgs=%d imgKB=%d ref=%.2f player=%.2f syncMs=%d bounds=%.0fx%.0f insets=%.0f/%.0f/%.0f/%.0f",
+            subDiagMaxQueueLatencyMs, subDiagMaxRenderMs, subDiagTicks, subDiagDirtyCount, subDiagSkippedTicks,
+            out.diagChangePrimary, out.diagChangeSecondary,
+            out.diagWasFrameSizeDirty ? 1 : 0, out.diagGeometryApplies,
+            out.diagTrackEvents, out.diagImageCount, out.diagImageBytes / 1024,
+            referenceTime, playerSeconds, syncOffsetMs,
+            bounds.width, bounds.height,
+            insets.top, insets.bottom, insets.left, insets.right
+        ))
+        subDiagLastEmit = now
+        subDiagMaxQueueLatencyMs = 0
+        subDiagMaxRenderMs = 0
+        subDiagTicks = 0
+        subDiagDirtyCount = 0
+        subDiagSkippedTicks = 0
     }
 
     private func pumpBitmapCues(
@@ -2955,6 +3147,7 @@ final class AVPlayerBackend {
         }
         subtitleDisplayLink?.invalidate()
         subtitleDisplayLink = nil
+        subPumpRendersInFlight = 0
         loopbackPlayheadWatchdog?.invalidate()
         loopbackPlayheadWatchdog = nil
         detachPerItemObservers()
@@ -2964,6 +3157,10 @@ final class AVPlayerBackend {
         selectedControlledSubtitleTrackId = nil
         selectedSecondaryControlledSubtitleTrackId = nil
         sidecarDescriptorsByTrackId.removeAll()
+        // Stop live forwarding; the cue STORE survives so a reanchor of the
+        // same source re-enables instantly (ensureLoopbackSubtitleTap
+        // resets it when the source changes).
+        loopbackSubtitleTap?.deactivate()
         embeddedSubtitleExtractor?.teardown()
         activeLoopbackSessionID = nil
         isInitialSeekInFlight = false
