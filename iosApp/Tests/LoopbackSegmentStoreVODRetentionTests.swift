@@ -249,8 +249,10 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
     // MARK: - Spill-exhaustion relief (living-room deadlock)
 
     /// 12 puts against a 1-byte memory budget: the memory evictor keeps the
-    /// newest `minimumSegmentsToKeep` (8) in memory and spills segments
-    /// 0...3 to disk, exactly filling a 64-byte spill budget.
+    /// newest 2 (the byte-capped eviction floor's hard minimum — the 1-byte
+    /// memory budget makes every resident byte over-cap) in memory, spills
+    /// segments 0...3 to disk exactly filling the 64-byte spill budget, and
+    /// drops the middle segments once spill is exhausted.
     private func makeSpillFullStore(retentionBudget: Int64) -> LoopbackSegmentStore {
         let store = LoopbackSegmentStore(
             generation: 1,
@@ -386,8 +388,15 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
             XCTFail("segment pruned mid-spill must not be terminal")
         }
         let stats = store.stats()
-        XCTAssertEqual(stats.spilledSegmentCount, 0, "aborted spill must not register")
-        XCTAssertEqual(stats.tempSpillBytes, 0, "spill accounting must match registered spills")
+        // Later evictions may legitimately spill other segments (the
+        // byte-capped floor evicts below 8 residents); the invariant under
+        // test is accounting consistency — an aborted spill that
+        // re-registered would double-deduct and break the equality.
+        XCTAssertEqual(
+            stats.tempSpillBytes,
+            Int64(stats.spilledSegmentCount * 16),
+            "spill accounting must match registered spills exactly"
+        )
     }
 
     func testRetentionPruneSeesSpilledSegments() {
@@ -395,10 +404,10 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         // an order-based prune inventory never saw them and retention never
         // evicted a spilled byte. With a budget below the spilled payload,
         // declaring a far target must now evict spilled history.
-        let store = makeSpillFullStore(retentionBudget: 100)
+        let store = makeSpillFullStore(retentionBudget: 80)
         store.declareVODTarget(11)
-        // Hard window [9, 14] holds 3×16 = 48 bytes; extras fit only ~52
-        // more — the farthest spilled segments must go.
+        // Retained bytes: 2 resident (32) + 4 spilled (64) = 96 > 80 —
+        // the farthest spilled segment must go.
         if case .found = store.resource(path: segName(0), waitForNearFuture: false) {
             XCTFail("spilled history beyond the retention budget must be pruned")
         }

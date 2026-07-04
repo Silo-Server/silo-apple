@@ -91,7 +91,35 @@ final class LoopbackSegmentStore {
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "LoopbackSegmentStore"
     )
+    /// Warm-tail floor: the evictor keeps up to this many recent segments
+    /// resident even when over the memory budget, so AVPlayer re-fetches of
+    /// just-served media come from RAM instead of spill. Count-only it is
+    /// blind to segment size — at ~30 MB Blu-ray-remux segments, 8 resident
+    /// segments are ~240 MiB against a 96 MiB constrained budget (measured
+    /// on a 3 GB Apple TV: store steady at 210–239 MiB). The floor is
+    /// therefore byte-capped by `evictionFloorReachedLocked`.
     private static let minimumSegmentsToKeep = 8
+    /// Segments the evictor must never go below regardless of bytes: the
+    /// currently-serving segment plus its successor.
+    private static let minimumSegmentsToKeepHard = 2
+
+    /// Shared floor predicate for the evictor and the append-admission
+    /// simulation (`appendWouldFitLocked`) — the two must agree or relief
+    /// can satisfy a looser criterion than the gate it unblocks. The warm
+    /// count floor only holds while the resident bytes stay within 1.5× the
+    /// memory budget; past that, eviction continues down to the hard
+    /// minimum. Small segments never feel the byte clause (the budget
+    /// check terminates eviction first); large segments stop overriding
+    /// the budget by 2.5×.
+    private static func evictionFloorReached(
+        segmentCount: Int,
+        residentBytes: Int,
+        memoryBudgetBytes: Int
+    ) -> Bool {
+        if segmentCount <= minimumSegmentsToKeepHard { return true }
+        guard segmentCount <= minimumSegmentsToKeep else { return false }
+        return residentBytes <= memoryBudgetBytes + memoryBudgetBytes / 2
+    }
 
     let generation: UInt64
     private let memoryBudgetBytes: Int
@@ -676,7 +704,11 @@ final class LoopbackSegmentStore {
 
         for name in segmentOrder {
             guard projectedMemoryBytes > memoryBudgetBytes,
-                  projectedSegmentCount > Self.minimumSegmentsToKeep else {
+                  !Self.evictionFloorReached(
+                      segmentCount: projectedSegmentCount,
+                      residentBytes: projectedMemoryBytes,
+                      memoryBudgetBytes: memoryBudgetBytes
+                  ) else {
                 break
             }
             guard let segment = segments[name],
@@ -825,7 +857,12 @@ final class LoopbackSegmentStore {
 
     private func evictIfNeededLocked() -> [String] {
         var evicted: [String] = []
-        while memoryBytes > memoryBudgetBytes, segmentOrder.count > Self.minimumSegmentsToKeep {
+        while memoryBytes > memoryBudgetBytes,
+              !Self.evictionFloorReached(
+                  segmentCount: segmentOrder.count,
+                  residentBytes: memoryBytes,
+                  memoryBudgetBytes: memoryBudgetBytes
+              ) {
             guard let candidate = segmentOrder.first,
                   let segment = segments[candidate],
                   segment.pinned == 0 else {
