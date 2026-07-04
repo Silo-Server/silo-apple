@@ -252,14 +252,26 @@ final class AVPlayerBackend {
         let boxColorHex: String?
         let boxOpacity: Int
 
+        /// Authored-size calibration: Blu-ray PGS is typically rendered a
+        /// notch larger than the text ladder's default rung, so authored
+        /// size (ladder ratio 1.0) read bigger than SRT at the same
+        /// preset. Shrink the whole bitmap ladder so the default preset
+        /// visually matches the text render.
+        private static let authoredSizeCompensation: CGFloat = 0.85
+
         static func from(_ appearance: SubtitleAppearance?) -> BitmapCueStyle {
             guard let sanitized = appearance?.sanitized() else {
-                return BitmapCueStyle(scale: 1, position: .bottom, boxColorHex: nil, boxOpacity: 0)
+                return BitmapCueStyle(
+                    scale: authoredSizeCompensation,
+                    position: .bottom,
+                    boxColorHex: nil,
+                    boxOpacity: 0
+                )
             }
             let defaultPoints = SubtitleAppearance.default.fontSize.pointSize
-            let scale = defaultPoints > 0
+            let scale = authoredSizeCompensation * (defaultPoints > 0
                 ? CGFloat(sanitized.fontSize.pointSize / defaultPoints)
-                : 1
+                : 1)
             let box = sanitized.backgroundStyle == .box
             return BitmapCueStyle(
                 scale: scale,
@@ -3309,12 +3321,47 @@ final class AVPlayerBackend {
         )
         guard key != lastBitmapCueRenderKey else { return }
         lastBitmapCueRenderKey = key
+        let bottomShift = Self.bitmapBottomAnchorShift(for: cues, in: videoRect, style: style)
         let placements = cues.map { cue in
-            Self.bitmapCuePlacement(for: cue, in: videoRect, style: style)
+            Self.bitmapCuePlacement(for: cue, in: videoRect, style: style, bottomShift: bottomShift)
         }
         DispatchQueue.main.async {
             overlay.updateBitmapCues(placements)
         }
+    }
+
+    /// Cues whose authored bottom edge falls in this band are treated as
+    /// bottom-anchored dialogue for margin normalization; anything higher
+    /// is a floating sign that keeps its authored placement.
+    private static let bitmapBottomAnchorBand: CGFloat = 0.75
+    /// The text path's "Bottom" MarginV expressed as a fraction of the
+    /// 1080-line ASS playfield (see `SubtitleStylingOverride`). PGS is
+    /// re-margined to the same distance so both subtitle kinds sit at the
+    /// same height at the default position.
+    #if os(tvOS)
+    private static let bitmapBottomMarginFraction: CGFloat = 60.0 / 1080.0
+    #else
+    private static let bitmapBottomMarginFraction: CGFloat = 30.0 / 1080.0
+    #endif
+
+    /// Vertical delta that moves the bottom-anchored cue group's authored
+    /// bottom edge onto the text path's bottom margin. Computed over the
+    /// whole group (not per cue) so multi-rect compositions keep their
+    /// authored line spacing; applied only for the default `.bottom`
+    /// preset — the other presets reposition absolutely.
+    private static func bitmapBottomAnchorShift(
+        for cues: [BitmapSubtitleCue],
+        in videoRect: CGRect,
+        style: BitmapCueStyle
+    ) -> CGFloat {
+        guard style.position == .bottom else { return 0 }
+        let anchoredMaxY = cues.map(\.normalizedFrame.maxY)
+            .filter { $0 >= bitmapBottomAnchorBand }
+            .max()
+        guard let groupMaxY = anchoredMaxY else { return 0 }
+        let authoredBottom = videoRect.minY + groupMaxY * videoRect.height
+        let targetBottom = videoRect.maxY - videoRect.height * bitmapBottomMarginFraction
+        return targetBottom - authoredBottom
     }
 
     /// Lay out one bitmap cue honoring the applicable appearance
@@ -3325,7 +3372,8 @@ final class AVPlayerBackend {
     private static func bitmapCuePlacement(
         for cue: BitmapSubtitleCue,
         in videoRect: CGRect,
-        style: BitmapCueStyle
+        style: BitmapCueStyle,
+        bottomShift: CGFloat = 0
     ) -> BitmapCuePlacement {
         var frame = CGRect(
             x: videoRect.minX + cue.normalizedFrame.origin.x * videoRect.width,
@@ -3351,12 +3399,17 @@ final class AVPlayerBackend {
             )
         }
 
-        // Vertical placement (bottom-region cues only; bottom keeps the
-        // authored position — PGS dialogue is already baseline-authored).
+        // Vertical placement (bottom-region cues only). The default
+        // "Bottom" re-margins bottom-anchored dialogue onto the text
+        // path's bottom margin (authored PGS usually sits a broadcast-safe
+        // notch higher than our SRT render); floating signs outside the
+        // anchor band keep their authored placement.
         if bottomRegion {
             switch style.position {
             case .bottom:
-                break
+                if cue.normalizedFrame.maxY >= Self.bitmapBottomAnchorBand {
+                    frame.origin.y += bottomShift
+                }
             case .lowerThird:
                 frame.origin.y = videoRect.minY + videoRect.height * 0.70 - frame.height
             case .top:
