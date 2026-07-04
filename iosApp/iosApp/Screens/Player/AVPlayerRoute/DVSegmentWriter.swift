@@ -360,12 +360,13 @@ final class DVSegmentWriter {
     /// so they cannot throw directly. The mux loop checks this after every
     /// `av_interleaved_write_frame`/`av_write_trailer` and rethrows.
     private var fatalIOError: DVWriterError?
-    /// Consecutive `av_interleaved_write_frame` failures. Reset on success.
-    /// When this hits `maxConsecutiveMuxWriteFailures`, the mux loop aborts via
-    /// `DVWriterError.muxWriteFailures` so callers see a real error instead of
-    /// a silent no-op. Some negative codes are treated as fatal on first hit
-    /// regardless of count — see `evaluateMuxWriteResult`.
-    private var consecutiveMuxWriteFailures = 0
+    /// Accounting for `av_interleaved_write_frame` failures. Aborts via
+    /// `DVWriterError.muxWriteFailures` on a consecutive burst or on
+    /// persistent flapping — see `MuxWriteFailurePolicy` for the two
+    /// conditions and their tuning. Some negative codes are treated as
+    /// fatal on first hit regardless of count — see
+    /// `evaluateMuxWriteResult`.
+    private var muxWriteFailurePolicy = MuxWriteFailurePolicy()
     private struct ThroughputTiming {
         var readMs: Double = 0
         var videoMs: Double = 0
@@ -400,10 +401,6 @@ final class DVSegmentWriter {
         }
     }
     private var throughputTiming = ThroughputTiming()
-    /// Threshold tuned to tolerate the brief reorder bursts the fmp4 muxer
-    /// occasionally emits during keyframe boundary realignment without
-    /// missing a genuinely broken stream.
-    private static let maxConsecutiveMuxWriteFailures = 5
 
     private struct DoviRecord {
         let versionMajor: UInt8
@@ -661,21 +658,20 @@ final class DVSegmentWriter {
     private func evaluateMuxWriteResult(_ rc: Int32, packet: UnsafeMutablePointer<AVPacket>? = nil) throws {
         try throwIfFatalIOError()
         if rc < 0 {
-            consecutiveMuxWriteFailures += 1
+            let shouldAbort = muxWriteFailurePolicy.recordFailure()
             let detail = Self.ffmpegError(rc)
             Self.logger.error(
-                "av_interleaved_write_frame failed: rc=\(rc) (\(detail, privacy: .public)) consecutive=\(self.consecutiveMuxWriteFailures)"
+                "av_interleaved_write_frame failed: rc=\(rc) (\(detail, privacy: .public)) consecutive=\(self.muxWriteFailurePolicy.consecutiveFailures) outstanding=\(self.muxWriteFailurePolicy.outstandingFailures)"
             )
-            if rc == avErrorInvalidData
-                || consecutiveMuxWriteFailures >= Self.maxConsecutiveMuxWriteFailures {
+            if rc == avErrorInvalidData || shouldAbort {
                 throw DVWriterError.muxWriteFailures(
                     lastRC: rc,
-                    consecutive: consecutiveMuxWriteFailures
+                    consecutive: muxWriteFailurePolicy.consecutiveFailures
                 )
             }
             return
         }
-        consecutiveMuxWriteFailures = 0
+        muxWriteFailurePolicy.recordSuccess()
         if let packet {
             recordMuxedPacketTimestamps(packet)
         }
@@ -2805,7 +2801,28 @@ final class DVSegmentWriter {
                 let doviLog = doviRecord?.logLine ?? "unknown"
                 print("[CMP-AVP] dvvC injected (init.mp4 grew by 32 bytes) \(doviLog)")
             } else {
-                print("[CMP-AVP] dvvC injection failed — hvcC not found in init tree")
+                switch videoMode {
+                case .passthroughProfile5:
+                    // `dvh1` without a dvvC carries no DV signalling:
+                    // AVPlayer decodes the IPT-PQ-c2 stream as plain YCbCr
+                    // and renders a green/purple cast. Unwatchable — abort
+                    // the session so the route fallback runs instead of
+                    // shipping the broken init segment.
+                    Self.logger.error("dvvC injection failed on Profile 5 (hvcC not found in init tree) — aborting session")
+                    fatalIOError = .dvSignalingFailed(
+                        "dvvC injection failed on Profile 5 — hvcC not found in init tree"
+                    )
+                case .convertProfile7To81, .passthroughProfile8:
+                    // The hvc1 base layer is HDR10-compatible and renders
+                    // correctly without the dvvC; the stream just plays as
+                    // plain HDR10 instead of engaging Dolby Vision. Degrade
+                    // loudly rather than fail.
+                    Self.logger.error("dvvC injection failed (hvcC not found in init tree) — DV signalling lost, playing the HDR10 base")
+                case .passthroughHEVC, .passthroughH264:
+                    // These modes make no DV claim; doviConfig should not
+                    // have been set. Log and continue.
+                    Self.logger.error("dvvC injection failed on a non-DV mode (hvcC not found in init tree) — ignoring")
+                }
             }
         }
         do {
@@ -3512,12 +3529,17 @@ enum DVWriterError: Error {
     case unsupportedSelectedAudioCodec(String)
     case audioTranscodeSetup(String)
     case profile81ConversionFailed(String)
-    /// `av_interleaved_write_frame` returned a negative code on three or more
-    /// consecutive packets. The mux is no longer producing valid output; abort
-    /// rather than continue writing a half-broken HLS presentation.
+    /// `av_interleaved_write_frame` failed persistently — either a
+    /// consecutive burst or sustained flapping (see `MuxWriteFailurePolicy`).
+    /// The mux is no longer producing valid output; abort rather than
+    /// continue writing a half-broken HLS presentation.
     case muxWriteFailures(lastRC: Int32, consecutive: Int)
     /// On-disk write of an init segment, media segment, or playlist failed.
     /// These are catastrophic for HLS playback and are propagated rather than
     /// silently logged.
     case fileWriteFailed(String, Error)
+    /// The init segment could not carry the Dolby Vision signalling the
+    /// session's video mode requires (dvvC box surgery failed). Fatal for
+    /// Profile 5, where the un-signalled IPT-PQ stream renders green/purple.
+    case dvSignalingFailed(String)
 }
