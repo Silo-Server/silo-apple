@@ -4913,18 +4913,17 @@ final class PlayerCore: NSObject {
     private var avSyncLadder = AVSyncLadder()
 
     /// Kill switch for the ladder's escalation rungs (the per-frame rung-0
-    /// drop is unaffected). Defaults ON in debug builds and OFF in release
-    /// until the on-device validation pass; override either way via the
-    /// "PlayerAVSyncLadderEnabled" UserDefaults key.
+    /// drop is unaffected). Ships enabled in all configurations: the rungs
+    /// only fire on sustained multi-second desync outside the
+    /// post-discontinuity window while playing (see the call site), the
+    /// trip conditions are unit-tested (AVSyncLadderTests), and a build
+    /// without them has no recovery for sustained drift beyond dropping
+    /// one frame per tick. Opt out via "PlayerAVSyncLadderEnabled" = false.
     private let avSyncLadderEnabled: Bool = {
         if let value = UserDefaults.standard.object(forKey: "PlayerAVSyncLadderEnabled") as? Bool {
             return value
         }
-        #if DEBUG
         return true
-        #else
-        return false
-        #endif
     }()
 
     /// Runs the escalation ladder for a late head frame. Returns true when
