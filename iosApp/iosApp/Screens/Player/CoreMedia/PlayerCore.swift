@@ -1859,7 +1859,7 @@ final class PlayerCore: NSObject {
         // the next `load()` will pick up the stashed preference.
         guard formatCtx != nil else { return }
         #if os(tvOS)
-        let rate = refreshRate
+        let rate = DisplayRefreshRateSnap.snapOrFilmDefault(refreshRate)
         let range = enabled ? dynamicRange : .sdr
         DispatchQueue.main.async {
             TVDisplayCriteria.apply(refreshRate: rate, dynamicRange: range)
@@ -3321,7 +3321,7 @@ final class PlayerCore: NSObject {
         // tvOS negotiates HDMI mode via AVDisplayManager; iOS toggles EDR on
         // the display layer via a sig-peak event.
         #if os(tvOS)
-        let fps = refreshRate
+        let fps = DisplayRefreshRateSnap.snapOrFilmDefault(refreshRate)
         let range = hdrEnabled ? dynamicRange : .sdr
         let needsDvGate = requiresDolbyVisionDisplay && hdrEnabled
         DispatchQueue.main.async { [weak self] in
