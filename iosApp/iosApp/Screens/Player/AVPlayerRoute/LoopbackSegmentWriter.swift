@@ -359,10 +359,44 @@ final class LoopbackSegmentWriter {
     // parse) and emitted as cues. Set both callbacks before start().
     var onSubtitleTapTracks: (([LoopbackSubtitleTapTrackInfo]) -> Void)?
     var onSubtitleTapCue: ((LoopbackSubtitleTapCue) -> Void)?
+    /// Bitmap (PGS/DVD) subtitle tap. Unlike the text tap there is no
+    /// persistent cue store — decoded RGBA cues have real memory weight —
+    /// so bitmap streams stay readable but are only DECODED while one is
+    /// selected via `setBitmapSubtitleTapStream`. Cues carry source-axis
+    /// seconds; `trimActiveAt` mirrors the extractor's PGS semantics
+    /// (every composition, including an empty clear, supersedes what is
+    /// on screen). Fired on the mux thread.
+    var onBitmapSubtitleTapCue: ((_ streamIndex: Int, _ cues: [BitmapSubtitleCue], _ trimActiveAt: Double?) -> Void)?
+    /// Bitmap-subtitle input stream indices the tap can serve this run.
+    /// Fired on the mux thread from every writer (re)configure.
+    var onBitmapSubtitleTapTracks: (([Int]) -> Void)?
     /// Per-input-stream decoder contexts for tapped text subtitle streams.
     /// Mux-queue only; freed in teardown.
     private var subtitleTapDecoders: [Int: UnsafeMutablePointer<AVCodecContext>] = [:]
     private var subtitleTapTimeBases: [Int: AVRational] = [:]
+    // Bitmap tap state. Mux queue only, except the selection box below.
+    private var bitmapTapTimeBases: [Int: AVRational] = [:]
+    private var bitmapTapCodecpars: [Int: UnsafeMutablePointer<AVCodecParameters>] = [:]
+    private var bitmapTapDecoders: [Int: UnsafeMutablePointer<AVCodecContext>] = [:]
+    private var bitmapTapFallbackCanvas: (width: Int32, height: Int32) = (0, 0)
+    /// Selected bitmap stream: written from the main thread, read per
+    /// packet on the mux thread.
+    private let bitmapTapSelectionLock = NSLock()
+    private var bitmapTapSelectedStreamLocked: Int?
+
+    /// Select (or clear) the bitmap subtitle stream the tap decodes.
+    /// Thread-safe; takes effect on the next packet of that stream.
+    func setBitmapSubtitleTapStream(_ streamIndex: Int?) {
+        bitmapTapSelectionLock.lock()
+        bitmapTapSelectedStreamLocked = streamIndex
+        bitmapTapSelectionLock.unlock()
+    }
+
+    private func bitmapTapSelectedStream() -> Int? {
+        bitmapTapSelectionLock.lock()
+        defer { bitmapTapSelectionLock.unlock() }
+        return bitmapTapSelectedStreamLocked
+    }
     private var selectedAudioStreamIndex: Int = -1
     private var audioOutputStreamIndex: Int = -1
     private var trackTimeBasesByID: [UInt32: AVRational] = [:]
@@ -1057,6 +1091,10 @@ final class LoopbackSegmentWriter {
                     tapDecodeSubtitlePacket(pkt: pkt, inputIdx: inputIdx)
                     continue
                 }
+                if bitmapTapTimeBases[inputIdx] != nil {
+                    tapDecodeBitmapSubtitlePacket(pkt: pkt, inputIdx: inputIdx)
+                    continue
+                }
                 guard let outIdx = streamMap[inputIdx] else { continue }
                 // Skip packets with no usable presentation timestamp. Some
                 // MKV/H.264 files expose the first keyframe with PTS but no
@@ -1480,8 +1518,17 @@ final class LoopbackSegmentWriter {
     private func subtitleTapKeepSet(
         in ctx: UnsafeMutablePointer<AVFormatContext>
     ) -> Set<Int> {
-        guard onSubtitleTapCue != nil else { return [] }
-        return Self.textSubtitleStreamIndices(in: ctx)
+        var keep: Set<Int> = []
+        if onSubtitleTapCue != nil {
+            keep.formUnion(Self.textSubtitleStreamIndices(in: ctx))
+        }
+        if onBitmapSubtitleTapCue != nil {
+            // Bitmap streams stay readable (their packets are a rounding
+            // error against the video interleave already being read) but
+            // are only decoded while selected.
+            keep.formUnion(Self.bitmapSubtitleStreamIndices(in: ctx))
+        }
+        return keep
     }
 
     /// Opens one text-subtitle decoder per tapped stream and reports the
@@ -1528,6 +1575,37 @@ final class LoopbackSegmentWriter {
         if !infos.isEmpty {
             onSubtitleTapTracks?(infos)
         }
+        configureBitmapSubtitleTap(in: ctx)
+    }
+
+    /// Records the bitmap-subtitle streams the tap can serve (time bases,
+    /// codec parameters, canvas fallback) without opening decoders —
+    /// decoding starts lazily on the first packet of a selected stream.
+    private func configureBitmapSubtitleTap(in ctx: UnsafeMutablePointer<AVFormatContext>) {
+        guard onBitmapSubtitleTapCue != nil else { return }
+        guard let streams = ctx.pointee.streams else { return }
+        // Bitmap decoders position rects against a canvas the track header
+        // can't always provide; seed from the container video dimensions.
+        for i in 0..<Int(ctx.pointee.nb_streams) {
+            guard let stream = streams[i],
+                  let codecparPtr = stream.pointee.codecpar else { continue }
+            if codecparPtr.pointee.codec_type == AVMEDIA_TYPE_VIDEO,
+               codecparPtr.pointee.width > 0, codecparPtr.pointee.height > 0 {
+                bitmapTapFallbackCanvas = (codecparPtr.pointee.width, codecparPtr.pointee.height)
+                break
+            }
+        }
+        var available: [Int] = []
+        for i in Self.bitmapSubtitleStreamIndices(in: ctx).sorted() {
+            guard let stream = streams[i],
+                  let codecparPtr = stream.pointee.codecpar else { continue }
+            bitmapTapTimeBases[i] = stream.pointee.time_base
+            bitmapTapCodecpars[i] = codecparPtr
+            available.append(i)
+        }
+        if !available.isEmpty {
+            onBitmapSubtitleTapTracks?(available)
+        }
     }
 
     private func freeSubtitleTapDecoders() {
@@ -1537,6 +1615,13 @@ final class LoopbackSegmentWriter {
         }
         subtitleTapDecoders.removeAll()
         subtitleTapTimeBases.removeAll()
+        for (_, ctx) in bitmapTapDecoders {
+            var doomed: UnsafeMutablePointer<AVCodecContext>? = ctx
+            avcodec_free_context(&doomed)
+        }
+        bitmapTapDecoders.removeAll()
+        bitmapTapTimeBases.removeAll()
+        bitmapTapCodecpars.removeAll()
     }
 
     /// Decode one tapped text-subtitle packet and emit its events. Text
@@ -1588,9 +1673,182 @@ final class LoopbackSegmentWriter {
         }
     }
 
+    /// Decode one tapped bitmap-subtitle packet (only while its stream is
+    /// selected) and emit converted cues. A PGS decode is palette+RLE work
+    /// on cue-sized regions — milliseconds, and cues are seconds apart —
+    /// so, like the text tap, it runs inline on the mux thread.
+    private func tapDecodeBitmapSubtitlePacket(
+        pkt: UnsafeMutablePointer<AVPacket>,
+        inputIdx: Int
+    ) {
+        guard bitmapTapSelectedStream() == inputIdx,
+              let timeBase = bitmapTapTimeBases[inputIdx],
+              let codecCtx = ensureBitmapTapDecoder(inputIdx: inputIdx) else { return }
+
+        var sub = AVSubtitle()
+        defer { avsubtitle_free(&sub) }
+        var gotSubtitle: Int32 = 0
+        let rc = avcodec_decode_subtitle2(codecCtx, &sub, &gotSubtitle, pkt)
+        let isPGS = codecCtx.pointee.codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE
+        if rc >= 0, gotSubtitle == 0, isPGS, pkt.pointee.size > 30 {
+            // Some Matroska remuxes drop the PGS display-set END segment,
+            // leaving the decoder accumulating with nothing emitted. Push a
+            // minimal synthetic END segment at the same timestamps to flush
+            // the pending composition (mirrors the extractor's repair; only
+            // for substantial packets — tiny ones ARE end/control segments).
+            var payload = [UInt8](repeating: 0, count: 64)
+            payload[0] = 0x80
+            payload.withUnsafeMutableBufferPointer { buffer in
+                var synthetic = AVPacket()
+                synthetic.data = buffer.baseAddress
+                synthetic.size = 3
+                synthetic.pts = pkt.pointee.pts
+                synthetic.dts = pkt.pointee.dts
+                synthetic.duration = pkt.pointee.duration
+                synthetic.stream_index = pkt.pointee.stream_index
+                _ = avcodec_decode_subtitle2(codecCtx, &sub, &gotSubtitle, &synthetic)
+            }
+        }
+        guard rc >= 0, gotSubtitle != 0 else { return }
+
+        let noPts = Int64.min
+        let ptsRaw: Int64 = pkt.pointee.pts != noPts ? pkt.pointee.pts
+            : (pkt.pointee.dts != noPts ? pkt.pointee.dts : 0)
+        let basePtsSeconds = Double(ptsRaw) * Double(timeBase.num) / Double(timeBase.den)
+        let startMs = Int64((basePtsSeconds + Double(sub.start_display_time) / 1000.0) * 1000.0)
+        let endMs: Int64 = {
+            if sub.end_display_time != UInt32.max,
+               sub.end_display_time > sub.start_display_time {
+                return Int64((basePtsSeconds + Double(sub.end_display_time) / 1000.0) * 1000.0)
+            }
+            if pkt.pointee.duration > 0 {
+                let durSeconds = Double(pkt.pointee.duration)
+                    * Double(timeBase.num) / Double(timeBase.den)
+                return startMs + Int64(durSeconds * 1000.0)
+            }
+            // No explicit end anywhere. PGS relies on the next composition
+            // trimming this cue; 5 s is only the ceiling if the stream goes
+            // quiet.
+            return startMs + 5000
+        }()
+        let startSeconds = Double(startMs) / 1000.0
+        let endSeconds = Double(max(startMs, endMs)) / 1000.0
+
+        var cues: [BitmapSubtitleCue] = []
+        for i in 0..<Int(sub.num_rects) {
+            guard let rect = sub.rects[i]?.pointee,
+                  rect.type == SUBTITLE_BITMAP,
+                  let cue = Self.bitmapTapCue(
+                      from: rect,
+                      codecCtx: codecCtx,
+                      fallbackCanvas: bitmapTapFallbackCanvas,
+                      startSeconds: startSeconds,
+                      endSeconds: endSeconds
+                  ) else { continue }
+            cues.append(cue)
+        }
+        if isPGS {
+            // Every PGS composition — including an empty clear event —
+            // supersedes whatever is on screen.
+            onBitmapSubtitleTapCue?(inputIdx, cues, startSeconds)
+        } else if !cues.isEmpty {
+            // DVD subs carry explicit durations; empty events mean nothing.
+            onBitmapSubtitleTapCue?(inputIdx, cues, nil)
+        }
+    }
+
+    /// Lazily open the decoder for a selected bitmap stream.
+    private func ensureBitmapTapDecoder(inputIdx: Int) -> UnsafeMutablePointer<AVCodecContext>? {
+        if let existing = bitmapTapDecoders[inputIdx] { return existing }
+        guard let codecparPtr = bitmapTapCodecpars[inputIdx],
+              let codec = avcodec_find_decoder(codecparPtr.pointee.codec_id) else { return nil }
+        var codecCtx = avcodec_alloc_context3(codec)
+        guard codecCtx != nil else { return nil }
+        if avcodec_parameters_to_context(codecCtx, codecparPtr) < 0 {
+            avcodec_free_context(&codecCtx)
+            return nil
+        }
+        if codecCtx!.pointee.width == 0 { codecCtx!.pointee.width = bitmapTapFallbackCanvas.width }
+        if codecCtx!.pointee.height == 0 { codecCtx!.pointee.height = bitmapTapFallbackCanvas.height }
+        if avcodec_open2(codecCtx, codec, nil) < 0 {
+            avcodec_free_context(&codecCtx)
+            return nil
+        }
+        bitmapTapDecoders[inputIdx] = codecCtx
+        cmpLog("[CMP-TAP] bitmap decoder opened stream=\(inputIdx)")
+        return codecCtx
+    }
+
+    /// Convert one decoded bitmap rect into an overlay cue: paletted plane
+    /// → premultiplied RGBA (cropped to the opaque bounding box) → CGImage
+    /// positioned as a normalized rect against the subtitle canvas.
+    /// (Mirrors the extractor's conversion; the tap has no
+    /// OpenedSubtitleDecoder so canvas fallback is passed explicitly.)
+    private static func bitmapTapCue(
+        from rect: AVSubtitleRect,
+        codecCtx: UnsafeMutablePointer<AVCodecContext>,
+        fallbackCanvas: (width: Int32, height: Int32),
+        startSeconds: Double,
+        endSeconds: Double
+    ) -> BitmapSubtitleCue? {
+        guard rect.w > 0, rect.h > 0,
+              let indexPlane = rect.data.0,
+              let palette = rect.data.1
+        else { return nil }
+        guard let plane = BitmapSubtitlePalette.premultipliedRGBA(
+            indexPlane: indexPlane,
+            width: Int(rect.w),
+            height: Int(rect.h),
+            stride: Int(rect.linesize.0),
+            palette: palette
+        ), let image = BitmapSubtitlePalette.makeImage(from: plane) else { return nil }
+
+        let ctx = codecCtx.pointee
+        let canvasWidth = ctx.width > 0 ? ctx.width : fallbackCanvas.width
+        let canvasHeight = ctx.height > 0 ? ctx.height : fallbackCanvas.height
+        let normalizedFrame: CGRect
+        if canvasWidth > 0, canvasHeight > 0 {
+            normalizedFrame = CGRect(
+                x: Double(Int(rect.x) + plane.cropX) / Double(canvasWidth),
+                y: Double(Int(rect.y) + plane.cropY) / Double(canvasHeight),
+                width: Double(plane.cropWidth) / Double(canvasWidth),
+                height: Double(plane.cropHeight) / Double(canvasHeight)
+            )
+        } else {
+            normalizedFrame = CGRect(x: 0.2, y: 0.78, width: 0.6, height: 0.15)
+        }
+        return BitmapSubtitleCue(
+            startSeconds: startSeconds,
+            endSeconds: endSeconds,
+            image: image,
+            normalizedFrame: normalizedFrame
+        )
+    }
+
+    /// Input stream indices of bitmap subtitle codecs (PGS/DVD) the tap
+    /// can decode on demand. DVB is excluded, matching the extractor.
+    private static func bitmapSubtitleStreamIndices(
+        in ctx: UnsafeMutablePointer<AVFormatContext>
+    ) -> Set<Int> {
+        var indices: Set<Int> = []
+        guard let streams = ctx.pointee.streams else { return indices }
+        for i in 0..<Int(ctx.pointee.nb_streams) {
+            guard let stream = streams[i],
+                  let codecpar = stream.pointee.codecpar,
+                  codecpar.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE else { continue }
+            let codecID = codecpar.pointee.codec_id
+            if codecID == AV_CODEC_ID_HDMV_PGS_SUBTITLE
+                || codecID == AV_CODEC_ID_DVD_SUBTITLE {
+                indices.insert(i)
+            }
+        }
+        return indices
+    }
+
     /// Input stream indices of text subtitle codecs the tap can decode.
-    /// Bitmap codecs (PGS/DVD) stay on the extractor path — their cues are
-    /// RGBA images with real memory weight, not store-friendly text.
+    /// Bitmap codecs (PGS/DVD) go through the on-demand bitmap tap above —
+    /// their RGBA cues have real memory weight, so they are decoded only
+    /// while selected instead of harvested into a persistent store.
     private static func textSubtitleStreamIndices(
         in ctx: UnsafeMutablePointer<AVFormatContext>
     ) -> Set<Int> {
@@ -1997,6 +2255,12 @@ final class LoopbackSegmentWriter {
             // legitimately carry PTS with no DTS.
             if subtitleTapDecoders[inIdx] != nil {
                 tapDecodeSubtitlePacket(pkt: pkt, inputIdx: inIdx)
+                var free = readPkt
+                av_packet_free(&free)
+                continue
+            }
+            if bitmapTapTimeBases[inIdx] != nil {
+                tapDecodeBitmapSubtitlePacket(pkt: pkt, inputIdx: inIdx)
                 var free = readPkt
                 av_packet_free(&free)
                 continue

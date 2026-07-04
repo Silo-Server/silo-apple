@@ -299,6 +299,11 @@ final class AVPlayerBackend {
     /// restarts and reanchors reuse the store; a new source resets it.
     private var loopbackSubtitleTap: LoopbackSubtitleTap?
     private var loopbackSubtitleTapSourceURL: URL?
+    /// Bitmap (PGS/DVD) streams the loopback writer's tap can serve, and
+    /// the currently selected one. The selection is re-applied to every
+    /// new writer so it survives producer restarts.
+    private var bitmapTapAvailableStreams: Set<Int> = []
+    private var selectedBitmapTapStreamIndex: Int?
     private var mediaTimelineOffsetSeconds: Double = 0
     private var serverChapters: [PlayerChapterInfo] = []
     private var currentLoopbackAudioTracks: [PlayerTrack] = []
@@ -734,6 +739,7 @@ final class AVPlayerBackend {
                 item.select(nil, in: state.group)
             }
             loopbackSubtitleTap?.deactivate()
+            clearBitmapTapSelection()
             embeddedSubtitleExtractor?.clear(slot: .primary)
             selectedControlledSubtitleTrackId = trackId
             emitTrackList()
@@ -745,6 +751,7 @@ final class AVPlayerBackend {
                 item.select(nil, in: state.group)
             }
             loopbackSubtitleTap?.deactivate()
+            clearBitmapTapSelection()
             embeddedSubtitleExtractor?.clear(slot: .primary)
             selectedControlledSubtitleTrackId = trackId
             subtitleSession?.openSidecar(
@@ -763,8 +770,26 @@ final class AVPlayerBackend {
                 item.select(nil, in: state.group)
             }
             embeddedSubtitleExtractor?.stopFeeding(slot: .primary)
+            clearBitmapTapSelection()
             selectedControlledSubtitleTrackId = trackId
             activateTapSubtitleTrack(trackId: trackId, slot: .primary)
+            emitTrackList()
+            return
+        }
+
+        // Tap-served embedded bitmap tracks (PGS/DVD) on the loopback
+        // route: decoded by the writer's own demux loop. The extractor's
+        // side connection has to re-download the full interleave and falls
+        // behind realtime at Blu-ray bitrates — cues stop shortly after
+        // the shared-cache head start runs out.
+        if let trackId, bitmapTapServesEmbeddedTrack(trackId) {
+            if let state = subtitleSelectionState {
+                item.select(nil, in: state.group)
+            }
+            loopbackSubtitleTap?.deactivate()
+            embeddedSubtitleExtractor?.stopFeeding(slot: .primary)
+            selectedControlledSubtitleTrackId = trackId
+            activateBitmapTapSubtitleTrack(trackId: trackId)
             emitTrackList()
             return
         }
@@ -774,6 +799,7 @@ final class AVPlayerBackend {
                 item.select(nil, in: state.group)
             }
             loopbackSubtitleTap?.deactivate()
+            clearBitmapTapSelection()
             selectedControlledSubtitleTrackId = trackId
             embeddedSubtitleExtractor?.select(
                 trackId: trackId,
@@ -785,6 +811,7 @@ final class AVPlayerBackend {
         }
 
         loopbackSubtitleTap?.deactivate()
+        clearBitmapTapSelection()
         embeddedSubtitleExtractor?.clear(slot: .primary)
         selectedControlledSubtitleTrackId = nil
         if let state = subtitleSelectionState {
@@ -1254,6 +1281,25 @@ final class AVPlayerBackend {
         writer.onSubtitleTapCue = { [weak tap] cue in
             tap?.ingest(cue)
         }
+        writer.onBitmapSubtitleTapTracks = { [weak self] indices in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isDisposed,
+                      self.activeLoopbackSessionID == sessionID else { return }
+                self.bitmapTapAvailableStreams = Set(indices)
+            }
+        }
+        // Mux thread; the writer only decodes (and therefore only emits)
+        // while a stream is selected, and SubtitleSession serialises feeds
+        // on its own queue — same pattern as the extractor's decode thread.
+        writer.onBitmapSubtitleTapCue = { [weak self] _, cues, trimActiveAt in
+            self?.subtitleSession?.feedBitmapCues(
+                slot: .primary,
+                cues: cues,
+                trimActiveAt: trimActiveAt
+            )
+        }
+        // Selection survives producer restarts: every new writer inherits it.
+        writer.setBitmapSubtitleTapStream(selectedBitmapTapStreamIndex)
         if sessionSpec.servingMode == .vodPlan {
             activeVODWriterBaseIndex = vodBaseIndex
             activeVODWriterHeadIndex = vodBaseIndex - 1
@@ -1567,6 +1613,34 @@ final class AVPlayerBackend {
               let tap = loopbackSubtitleTap else { return false }
         let streamIndex = Int(SubtitleTrackIdSpace.avPlayerEmbeddedStreamIndex(from: trackId))
         return tap.hasTrack(forStream: streamIndex)
+    }
+
+    private func bitmapTapServesEmbeddedTrack(_ trackId: Int64) -> Bool {
+        guard case .some(.siloLoopback) = currentSourceStrategy,
+              SubtitleTrackIdSpace.isAVPlayerEmbedded(trackId) else { return false }
+        let streamIndex = Int(SubtitleTrackIdSpace.avPlayerEmbeddedStreamIndex(from: trackId))
+        return bitmapTapAvailableStreams.contains(streamIndex)
+    }
+
+    /// Point the writer's bitmap tap at the selected stream and open the
+    /// bitmap track in the renderer. Cues start flowing from the
+    /// producer's current read position: at playback start that is the
+    /// anchor (immediate); on a mid-playback enable the first cue arrives
+    /// once playback reaches media the producer read after selection.
+    private func activateBitmapTapSubtitleTrack(trackId: Int64) {
+        guard let session = subtitleSession else { return }
+        let streamIndex = Int(SubtitleTrackIdSpace.avPlayerEmbeddedStreamIndex(from: trackId))
+        selectedBitmapTapStreamIndex = streamIndex
+        session.openBitmapTrack(slot: .primary)
+        segmentWriter?.setBitmapSubtitleTapStream(streamIndex)
+        print("[CMP-TAP] bitmap activated stream=\(streamIndex)")
+    }
+
+    private func clearBitmapTapSelection() {
+        guard selectedBitmapTapStreamIndex != nil else { return }
+        selectedBitmapTapStreamIndex = nil
+        segmentWriter?.setBitmapSubtitleTapStream(nil)
+        print("[CMP-TAP] bitmap deactivated")
     }
 
     /// (Re)install the libass track for a tap-served stream and feed it:
@@ -3339,6 +3413,8 @@ final class AVPlayerBackend {
         currentLoopbackAudioTracks = []
         selectedControlledSubtitleTrackId = nil
         selectedSecondaryControlledSubtitleTrackId = nil
+        selectedBitmapTapStreamIndex = nil
+        bitmapTapAvailableStreams = []
         sidecarDescriptorsByTrackId.removeAll()
         // Stop live forwarding; the cue STORE survives so a reanchor of the
         // same source re-enables instantly (ensureLoopbackSubtitleTap
