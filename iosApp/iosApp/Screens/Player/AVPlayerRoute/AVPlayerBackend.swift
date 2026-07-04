@@ -1116,7 +1116,13 @@ final class AVPlayerBackend {
         if sessionSpec.servingMode == .vodPlan {
             let retentionBudget = Self.vodRetentionBudgetBytes()
             cmpLog("[CMP-HLS-STORE] vod retention budgetBytes=\(retentionBudget)")
-            store.configureVODRetention(budgetBytes: retentionBudget)
+            // Forward byte budget: bounds the producer's produce-ahead race
+            // on high-bitrate sources (the segment-count window alone
+            // authorizes hundreds of MB at Blu-ray-remux segment sizes).
+            store.configureVODRetention(
+                budgetBytes: retentionBudget,
+                forwardByteBudget: Self.isConstrainedMemoryDevice ? 96 << 20 : 192 << 20
+            )
         }
         segmentStore = store
         if preserveSessionDirectory {

@@ -219,6 +219,20 @@ final class LoopbackSegmentStore {
     private var vodRetentionBudgetBytes: Int64 = 0
     private var vodForwardWindow = 10
     private var vodBackwardWindow = 20
+    /// Byte cap on produce-ahead past the consumer target. The segment-count
+    /// window alone is blind to segment size: at ~30 MB Blu-ray-remux
+    /// segments, `target + 10` authorizes ~300 MB of produced-ahead media,
+    /// which the producer races through at wire speed (measured ~300 Mbps /
+    /// 460 MiB in 14 s on a 3 GB Apple TV — jetsam). The byte gate parks the
+    /// producer once forward bytes (memory + spill) reach the budget, so
+    /// produce-ahead scales down as bitrate scales up. Low-bitrate sources
+    /// never hit it; the count window stays their binding constraint.
+    private var vodForwardByteBudget: Int64 = 192 << 20
+    /// Forward segments always allowed past the target regardless of bytes,
+    /// so a pathological byte state (e.g. stale forward segments retained
+    /// across a backward seek exhausting the budget) can never starve the
+    /// consumer of its next segments.
+    private static let vodForwardMinSegments = 3
     private var vodTargetIndex = 0
     private var vodHighWaterIndex = -1
     /// Counts `declareVODTarget` calls so waiters can tell "a real consumer
@@ -242,7 +256,8 @@ final class LoopbackSegmentStore {
     func configureVODRetention(
         budgetBytes: Int64,
         forwardWindow: Int = 10,
-        backwardWindow: Int = 20
+        backwardWindow: Int = 20,
+        forwardByteBudget: Int64 = 192 << 20
     ) {
         lock.lock()
         vodRetentionBudgetBytes = budgetBytes > 0
@@ -250,6 +265,7 @@ final class LoopbackSegmentStore {
             : Self.vodRetentionBudgetFloorBytes
         vodForwardWindow = max(1, forwardWindow)
         vodBackwardWindow = max(0, backwardWindow)
+        vodForwardByteBudget = max(1 << 20, forwardByteBudget)
         lock.unlock()
     }
 
@@ -281,7 +297,38 @@ final class LoopbackSegmentStore {
         lock.lock()
         defer { lock.unlock() }
         guard vodRetentionBudgetBytes > 0 else { return true }
-        return segmentIndex <= vodTargetIndex + vodForwardWindow
+        guard segmentIndex <= vodTargetIndex + vodForwardWindow else { return false }
+        // Byte-aware clamp on top of the count window (see
+        // `vodForwardByteBudget`). The min-segments floor guarantees the
+        // consumer's next segments are always producible.
+        if segmentIndex <= vodTargetIndex + Self.vodForwardMinSegments { return true }
+        return vodForwardBytesLocked() < vodForwardByteBudget
+    }
+
+    /// Bytes of produced segments ahead of the consumer target, across
+    /// memory-resident, in-flight-spill, and spilled storage. Counting the
+    /// spilled bytes too is deliberate: the gate exists to bound the
+    /// producer's read race (network + transient mux/spill allocations),
+    /// not just resident store bytes — a spill-exempt gate would let the
+    /// count window keep authorizing wire-speed reads straight to disk.
+    private func vodForwardBytesLocked() -> Int64 {
+        var total: Int64 = 0
+        for (name, segment) in segments {
+            if let index = Self.segmentIndex(fromName: name), index > vodTargetIndex {
+                total += Int64(segment.data.count)
+            }
+        }
+        for (name, segment) in spillingSegments {
+            if let index = Self.segmentIndex(fromName: name), index > vodTargetIndex {
+                total += Int64(segment.data.count)
+            }
+        }
+        for (name, size) in spilledSegmentSizes {
+            if let index = Self.segmentIndex(fromName: name), index > vodTargetIndex {
+                total += Int64(size)
+            }
+        }
+        return total
     }
 
     // MARK: - Progressive anchor segments

@@ -114,6 +114,34 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         XCTAssertTrue(store.vodProducerMayAppend(segmentIndex: 9), "window follows the consumer")
     }
 
+    func testProducerByteBudgetBackpressure() {
+        let store = LoopbackSegmentStore(
+            generation: 1,
+            memoryBudgetBytes: 64 * 1024 * 1024,
+            spillPolicy: .enabled(reason: "test", maxBytes: 64 * 1024 * 1024)
+        )
+        store.configureVODRetention(
+            budgetBytes: 10_000_000,
+            forwardWindow: 10,
+            backwardWindow: 2,
+            forwardByteBudget: 1 << 20
+        )
+        store.declareVODTarget(0)
+        // Fill the forward byte budget with segments inside the count window.
+        let bigPayload = Data(repeating: 0xEF, count: 600 * 1024)
+        _ = store.putSegment(name: segName(1), data: bigPayload, duration: 4)
+        _ = store.putSegment(name: segName(2), data: bigPayload, duration: 4)
+        // Floor: the next few segments stay producible regardless of bytes.
+        XCTAssertTrue(store.vodProducerMayAppend(segmentIndex: 3), "min-segments floor")
+        // Beyond the floor the byte gate parks the producer even though the
+        // count window (target+10) would allow it.
+        XCTAssertFalse(store.vodProducerMayAppend(segmentIndex: 4), "byte budget exhausted")
+        // Consumption moves the target; the fetched segments are no longer
+        // forward bytes and the gate reopens.
+        store.declareVODTarget(2)
+        XCTAssertTrue(store.vodProducerMayAppend(segmentIndex: 4), "gate follows the consumer")
+    }
+
     func testWaitForSegmentReturnsWhenProducerFills() {
         let store = makeVODStore(budget: 10_000)
         let payload = Data(repeating: 0xCD, count: 8)
