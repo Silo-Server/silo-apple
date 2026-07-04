@@ -53,10 +53,16 @@ final class PlayerSurfaceHostView: UIView {
 
     private weak var attachedPlayer: PlayerCore?
 
-    /// libass-backed subtitle overlay. Covers the full frame — libass
-    /// handles positioning via its own margin model + line-position
-    /// percentage, so there's no need to pin this to a specific edge.
+    /// libass-backed subtitle overlay. Sized to the displayed video rect in
+    /// `layoutSubviews()` (not the full view) so libass — which scales the
+    /// ASS 1080-line coordinate space to the overlay's pixel height — keeps
+    /// the font size proportional to the video across orientations, and so
+    /// subtitles render inside the video frame in portrait.
     private let subtitleOverlay = SubtitleOverlayView()
+
+    /// Latest presentation size from the attached player; `.zero` until the
+    /// video format is known (overlay falls back to full bounds).
+    private var videoPresentationSize: CGSize = .zero
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -71,14 +77,8 @@ final class PlayerSurfaceHostView: UIView {
     }
 
     private func setupSubtitleOverlay() {
-        subtitleOverlay.translatesAutoresizingMaskIntoConstraints = false
+        subtitleOverlay.autoresizingMask = []
         addSubview(subtitleOverlay)
-        NSLayoutConstraint.activate([
-            subtitleOverlay.leadingAnchor.constraint(equalTo: leadingAnchor),
-            subtitleOverlay.trailingAnchor.constraint(equalTo: trailingAnchor),
-            subtitleOverlay.topAnchor.constraint(equalTo: topAnchor),
-            subtitleOverlay.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
     }
 
     func attach(player: PlayerCore) {
@@ -91,6 +91,14 @@ final class PlayerSurfaceHostView: UIView {
         // doesn't extend the session's lifetime beyond playback.
         subtitleOverlay.renderer = player.subtitleRendererForOverlay
         player.subtitleOverlay = subtitleOverlay
+
+        // Track the video's presentation size so layoutSubviews() can pin
+        // the subtitle overlay to the displayed video rect.
+        videoPresentationSize = player.videoPresentationSize
+        player.onVideoPresentationSizeChange = { [weak self] size in
+            self?.videoPresentationSize = size
+            self?.setNeedsLayout()
+        }
 
         // iOS EDR: sig-peak > 0 means the stream is HDR and the user has
         // HDR enabled. Combine with the screen's available EDR headroom
@@ -105,11 +113,26 @@ final class PlayerSurfaceHostView: UIView {
         guard displayLayer.videoGravity != gravity else { return }
         displayLayer.videoGravity = gravity
         attachedPlayer?.setVideoGravity(gravity)
+        setNeedsLayout()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         displayLayer.frame = bounds
+        let videoRect = VideoDisplayRect.compute(
+            videoSize: videoPresentationSize,
+            bounds: bounds,
+            gravity: displayLayer.videoGravity
+        )
+        #if os(tvOS)
+        // Full-frame overlay with libass margins marking the video area:
+        // fonts keep scaling with the video rect, and the "Bottom" position
+        // preset can render below the picture into the letterbox bar.
+        subtitleOverlay.frame = bounds
+        subtitleOverlay.videoInsets = SubtitleVideoInsets(videoRect: videoRect, bounds: bounds)
+        #else
+        subtitleOverlay.frame = videoRect
+        #endif
     }
 
     override func didMoveToWindow() {

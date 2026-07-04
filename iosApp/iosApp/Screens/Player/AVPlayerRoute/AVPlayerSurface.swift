@@ -83,8 +83,15 @@ final class AVPlayerLayerView: UIView {
         super.layoutSubviews()
         playerLayer.frame = bounds
         let videoRect = playerLayer.videoRect
-        let overlayFrame = videoRect.isEmpty ? bounds : videoRect
-        subtitleOverlay.frame = overlayFrame
+        #if os(tvOS)
+        // Full-frame overlay with libass margins marking the video area:
+        // fonts keep scaling with the video rect, and the "Bottom" position
+        // preset can render below the picture into the letterbox bar.
+        subtitleOverlay.frame = bounds
+        subtitleOverlay.videoInsets = SubtitleVideoInsets(videoRect: videoRect, bounds: bounds)
+        #else
+        subtitleOverlay.frame = videoRect.isEmpty ? bounds : videoRect
+        #endif
     }
 
     private func setupSubtitleOverlay() {
@@ -97,6 +104,9 @@ final class AVPlayerLayerView: UIView {
         readyForDisplayObservation = playerLayer.observe(\.isReadyForDisplay, options: [.new, .initial]) { [weak self] layer, _ in
             guard layer.isReadyForDisplay else { return }
             DispatchQueue.main.async {
+                // `videoRect` becomes meaningful once the layer is ready;
+                // re-run layout so the subtitle overlay picks it up.
+                self?.setNeedsLayout()
                 self?.backend?.videoSurfaceBecameReadyForDisplay()
             }
         }

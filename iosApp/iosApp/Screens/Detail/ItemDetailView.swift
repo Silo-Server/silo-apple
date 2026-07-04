@@ -104,11 +104,19 @@ private struct ItemDetailPhoneContent: View {
             nextUpWatchDetail = nil
             refreshOnPlayerDismiss = false
             await viewModel.loadDetail(contentId: contentId)
+            seedSubtitleOverrideIfNeeded()
         }
         .onChange(of: router.presentedPlayer?.id) { oldValue, newValue in
             guard oldValue != nil, newValue == nil, refreshOnPlayerDismiss else { return }
             refreshOnPlayerDismiss = false
-            Task { await viewModel.loadDetail(contentId: contentId) }
+            Task {
+                await viewModel.loadDetail(contentId: contentId)
+                // A track picked inside the player persisted server-side;
+                // drop the pre-play selector state so the reloaded pref
+                // re-seeds and the selector reflects the latest pick.
+                preferredSubtitleTrackIndex = nil
+                seedSubtitleOverrideIfNeeded()
+            }
         }
         .alert(
             "Downloaded on This Device",
@@ -671,6 +679,20 @@ private struct ItemDetailPhoneContent: View {
     // by their own content id. "Auto" (nil) clears the override so the
     // library/profile cascade applies again.
 
+    /// Reflect a server-remembered subtitle override in the selector on
+    /// entry. `preferredSubtitleTrackIndex` is per-visit state, so
+    /// without this the selector always reopens on "Auto" even though
+    /// the pick was persisted; audio doesn't need an equivalent because
+    /// `resolvedAudioOrdinal` falls back to `effectiveAudioTrackIndex`.
+    private func seedSubtitleOverrideIfNeeded() {
+        guard preferredSubtitleTrackIndex == nil, let detail = viewModel.detail else { return }
+        preferredSubtitleTrackIndex = DetailPlaybackFormatting.serverPreferredSubtitleIndex(
+            version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
+            signature: detail.effectiveSubtitleTrackSignature,
+            mode: detail.effectiveSubtitleMode
+        )
+    }
+
     private func prefKey(for detail: ItemDetail) -> String? {
         TrackSelectionPersistence.prefKey(seriesId: detail.seriesId, contentId: detail.contentId)
     }
@@ -752,6 +774,11 @@ private struct ItemDetailPhoneContent: View {
             let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             nextUpWatchDetail = watchDetail
+            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.serverPreferredSubtitleIndex(
+                version: effectiveVersion(for: watchDetail, versionFileId: nil),
+                signature: watchDetail.effectiveSubtitleTrackSignature,
+                mode: watchDetail.effectiveSubtitleMode
+            )
         } catch {
             guard !Task.isCancelled else { return }
             nextUpWatchDetail = nil

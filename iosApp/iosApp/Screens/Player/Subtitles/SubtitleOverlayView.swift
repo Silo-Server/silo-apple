@@ -64,6 +64,17 @@ final class SubtitleOverlayView: UIView {
     /// renderer of frame-size changes directly.
     weak var renderer: SubtitleRenderer?
 
+    /// Distance from this overlay's edges to the displayed video rect.
+    /// Zero when the host sizes the overlay to the video rect (iOS);
+    /// set by the tvOS hosts, which size the overlay to the full frame so
+    /// libass can place the "Bottom" preset in the letterbox bar.
+    var videoInsets: SubtitleVideoInsets = .zero {
+        didSet {
+            guard videoInsets != oldValue else { return }
+            pushFrameGeometry()
+        }
+    }
+
     /// Layer that holds the composited subtitle image. Separate from
     /// `self.layer` so we can swap its `contents` without disturbing
     /// any other decoration the view might grow in the future.
@@ -105,11 +116,7 @@ final class SubtitleOverlayView: UIView {
             contentsLayer.frame = bounds
             bitmapCueHost.frame = bounds
         }
-        let scale = window?.screen.scale ?? traitCollection.displayScale
-        withoutImplicitLayerAnimation {
-            contentsLayer.contentsScale = scale
-        }
-        renderer?.updateFrameSize(bounds.size, scale: scale)
+        pushFrameGeometry()
     }
 
     override func didMoveToWindow() {
@@ -118,12 +125,16 @@ final class SubtitleOverlayView: UIView {
         // airplay). Re-push frame size so libass re-paints at the right
         // pixel density.
         if window != nil {
-            let scale = window?.screen.scale ?? traitCollection.displayScale
-            withoutImplicitLayerAnimation {
-                contentsLayer.contentsScale = scale
-            }
-            renderer?.updateFrameSize(bounds.size, scale: scale)
+            pushFrameGeometry()
         }
+    }
+
+    private func pushFrameGeometry() {
+        let scale = window?.screen.scale ?? traitCollection.displayScale
+        withoutImplicitLayerAnimation {
+            contentsLayer.contentsScale = scale
+        }
+        renderer?.updateFrameSize(bounds.size, scale: scale, videoInsets: videoInsets)
     }
 
     /// Assign the newest composited image. Call on main thread.
@@ -171,6 +182,16 @@ final class SubtitleOverlayView: NSView {
     /// session) because layout notifies the renderer of frame-size changes
     /// directly.
     weak var renderer: SubtitleRenderer?
+
+    /// Distance from this overlay's edges to the displayed video rect.
+    /// Always zero on macOS (the hosts size the overlay to the video rect);
+    /// present so shared pump code can read it uniformly.
+    var videoInsets: SubtitleVideoInsets = .zero {
+        didSet {
+            guard videoInsets != oldValue else { return }
+            updateLayout()
+        }
+    }
 
     /// Layer that holds the composited subtitle image. Separate from
     /// `self.layer` so we can swap its `contents` without disturbing the
@@ -225,7 +246,7 @@ final class SubtitleOverlayView: NSView {
         withoutImplicitLayerAnimation {
             contentsLayer.contentsScale = scale
         }
-        renderer?.updateFrameSize(bounds.size, scale: scale)
+        renderer?.updateFrameSize(bounds.size, scale: scale, videoInsets: videoInsets)
     }
 
     /// Assign the newest composited image. Call on main thread.

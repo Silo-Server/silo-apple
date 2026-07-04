@@ -196,7 +196,7 @@ final class AVPlayerBackend {
     /// pumps at vsync rate but bitmap cues change on the order of seconds,
     /// so all layer work is skipped while the key is unchanged.
     private struct BitmapCueRenderKey: Equatable {
-        let size: CGSize
+        let videoRect: CGRect
         let images: [ObjectIdentifier]
     }
     private var lastBitmapCueRenderKey: BitmapCueRenderKey?
@@ -2850,6 +2850,7 @@ final class AVPlayerBackend {
         let syncOffsetMs = Int64(session.currentParams.syncOffsetMs)
         let adjustedNowMs = nowMs - syncOffsetMs
         let bounds = overlay.bounds
+        let videoInsets = overlay.videoInsets
 
         if hasTextTrack {
             textOverlayMayHaveFrame = true
@@ -2862,7 +2863,8 @@ final class AVPlayerBackend {
                 let out = renderer.renderOnSessionQueue(
                     atMilliseconds: adjustedNowMs,
                     frameSize: bounds.size,
-                    scale: scale
+                    scale: scale,
+                    videoInsets: videoInsets
                 )
                 guard out.isDirty else { return }
                 let image = out.image
@@ -2888,7 +2890,8 @@ final class AVPlayerBackend {
                 session: session,
                 overlay: overlay,
                 atSeconds: Double(adjustedNowMs) / 1000.0,
-                bounds: bounds
+                bounds: bounds,
+                videoInsets: videoInsets
             )
         } else if lastBitmapCueRenderKey != nil {
             lastBitmapCueRenderKey = nil
@@ -2902,26 +2905,35 @@ final class AVPlayerBackend {
         session: SubtitleSession,
         overlay: SubtitleOverlayView,
         atSeconds seconds: Double,
-        bounds: CGRect
+        bounds: CGRect,
+        videoInsets: SubtitleVideoInsets
     ) {
         let cues = session.activeBitmapCues(at: seconds)
+        // Normalized cue rects are relative to the displayed video, not the
+        // overlay: on tvOS the overlay covers the full frame (so libass can
+        // place text in the letterbox bars) and `videoInsets` marks the
+        // video rect inside it; on iOS/macOS the overlay is framed to the
+        // video and the insets are zero, so this reduces to `bounds`.
+        let videoRect = CGRect(
+            x: bounds.minX + videoInsets.left,
+            y: bounds.minY + videoInsets.top,
+            width: max(0, bounds.width - videoInsets.left - videoInsets.right),
+            height: max(0, bounds.height - videoInsets.top - videoInsets.bottom)
+        )
         let key = BitmapCueRenderKey(
-            size: bounds.size,
+            videoRect: videoRect,
             images: cues.map { ObjectIdentifier($0.image) }
         )
         guard key != lastBitmapCueRenderKey else { return }
         lastBitmapCueRenderKey = key
-        // Overlay bounds == AVPlayerLayer.videoRect (the surface frames
-        // the overlay to the video), so normalized cue rects scale
-        // directly into overlay points.
         let placements = cues.map { cue in
             (
                 image: cue.image,
                 frame: CGRect(
-                    x: cue.normalizedFrame.origin.x * bounds.width,
-                    y: cue.normalizedFrame.origin.y * bounds.height,
-                    width: cue.normalizedFrame.width * bounds.width,
-                    height: cue.normalizedFrame.height * bounds.height
+                    x: videoRect.minX + cue.normalizedFrame.origin.x * videoRect.width,
+                    y: videoRect.minY + cue.normalizedFrame.origin.y * videoRect.height,
+                    width: cue.normalizedFrame.width * videoRect.width,
+                    height: cue.normalizedFrame.height * videoRect.height
                 )
             )
         }

@@ -70,6 +70,7 @@ struct TVItemDetailView: View {
             isLoadingNextUpPlaybackDetail = false
             didLoadNextUpPlaybackDetail = false
             await viewModel.loadDetail(contentId: contentId)
+            seedSubtitleOverrideIfNeeded()
         }
     }
 
@@ -509,6 +510,20 @@ struct TVItemDetailView: View {
     // by their own content id. "Auto" (nil) clears the override so the
     // library/profile cascade applies again.
 
+    /// Reflect a server-remembered subtitle override in the selector on
+    /// entry. `preferredSubtitleTrackIndex` is per-visit state, so
+    /// without this the selector always reopens on "Auto" even though
+    /// the pick was persisted; audio doesn't need an equivalent because
+    /// `resolvedAudioOrdinal` falls back to `effectiveAudioTrackIndex`.
+    private func seedSubtitleOverrideIfNeeded() {
+        guard preferredSubtitleTrackIndex == nil, let detail = viewModel.detail else { return }
+        preferredSubtitleTrackIndex = DetailPlaybackFormatting.serverPreferredSubtitleIndex(
+            version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
+            signature: detail.effectiveSubtitleTrackSignature,
+            mode: detail.effectiveSubtitleMode
+        )
+    }
+
     private func prefKey(for detail: ItemDetail?) -> String? {
         TrackSelectionPersistence.prefKey(seriesId: detail?.seriesId, contentId: detail?.contentId)
     }
@@ -592,6 +607,11 @@ struct TVItemDetailView: View {
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             nextUpPlaybackDetail = enriched
+            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.serverPreferredSubtitleIndex(
+                version: effectiveVersion(for: enriched, versionFileId: nil),
+                signature: enriched.effectiveSubtitleTrackSignature,
+                mode: enriched.effectiveSubtitleMode
+            )
             didLoadNextUpPlaybackDetail = true
         } catch {
             guard !Task.isCancelled else { return }
@@ -640,6 +660,11 @@ struct TVItemDetailView: View {
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             nextUpPlaybackDetail = enriched
+            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.serverPreferredSubtitleIndex(
+                version: effectiveVersion(for: enriched, versionFileId: nil),
+                signature: enriched.effectiveSubtitleTrackSignature,
+                mode: enriched.effectiveSubtitleMode
+            )
             didLoadNextUpPlaybackDetail = true
         } catch {
             guard !Task.isCancelled else { return }
@@ -702,6 +727,8 @@ struct TVItemDetailView: View {
                 subtitles: watchDetail.subtitles,
                 intro: watchDetail.intro,
                 credits: watchDetail.credits,
+                effectiveSubtitleMode: watchDetail.effectiveSubtitleMode,
+                effectiveSubtitleTrackSignature: watchDetail.effectiveSubtitleTrackSignature,
                 overlaySummary: item.overlaySummary,
                 audiobook: item.audiobook,
                 pendingTranslationLanguage: item.pendingTranslationLanguage

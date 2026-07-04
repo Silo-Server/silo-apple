@@ -110,7 +110,10 @@ struct SubtitleAutoResolver {
     // MARK: - Matching helpers
 
     /// Score-based signature match. Higher score = better. Returns the
-    /// top scorer if anything above zero matched, else nil.
+    /// top scorer, or nil when no track matched a strong signal
+    /// (language or label) — forced/HI/codec equality alone is
+    /// meaningless since `false == false` holds for nearly every track,
+    /// and a weak "match" would hijack the Auto path.
     private static func bestSignatureMatch(
         _ sig: SubtitleTrackSignature,
         in tracks: [PlayerTrack]
@@ -118,9 +121,11 @@ struct SubtitleAutoResolver {
         var best: (PlayerTrack, Int)?
         for track in tracks {
             var score = 0
+            var strongSignal = false
             if let sigLang = sig.language, !sigLang.isEmpty,
                let trackLang = track.lang, languagesMatch(trackLang, sigLang) {
                 score += 5
+                strongSignal = true
             }
             if sig.forced == track.isForced {
                 score += 1
@@ -136,8 +141,9 @@ struct SubtitleAutoResolver {
                let title = track.title,
                title.localizedCaseInsensitiveContains(sigLabel) {
                 score += 2
+                strongSignal = true
             }
-            if score > (best?.1 ?? 0) {
+            if strongSignal, score > (best?.1 ?? 0) {
                 best = (track, score)
             }
         }

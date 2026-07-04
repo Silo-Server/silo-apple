@@ -85,7 +85,10 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         self.subtitleSession = subtitleSession
     }
 
-    func configure(source newSource: AVPlayerSubtitleExtractionSource?) {
+    /// - Parameter probe: when false, skips the async track-enumeration
+    ///   pass. The CoreMedia route already knows the container's tracks
+    ///   from its own format context and only needs `select`/`seek`.
+    func configure(source newSource: AVPlayerSubtitleExtractionSource?, probe: Bool = true) {
         stateLock.lock()
         source = newSource
         extractedTracks = []
@@ -101,7 +104,7 @@ final class AVPlayerEmbeddedSubtitleExtractor {
             self?.onTracksChanged?([])
         }
 
-        guard let sourceSnapshot else { return }
+        guard probe, let sourceSnapshot else { return }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             self?.probe(source: sourceSnapshot, generation: generation)
@@ -159,11 +162,25 @@ final class AVPlayerEmbeddedSubtitleExtractor {
     }
 
     func clear(slot: SubtitleSlot) {
+        stopFeeding(slot: slot)
+        subtitleSession.closeSlot(slot)
+    }
+
+    /// Stop feeding `slot` without closing its libass track. For callers
+    /// handing the slot to another source (sidecar, live AI) that will
+    /// replace or close the session slot themselves.
+    func stopFeeding(slot: SubtitleSlot) {
         stateLock.lock()
         activeSelections.removeValue(forKey: slot)
         slotGenerations[slot, default: 0] &+= 1
         stateLock.unlock()
-        subtitleSession.closeSlot(slot)
+    }
+
+    /// Stream index currently being fed into `slot`, or nil when idle.
+    func selectedStreamIndex(for slot: SubtitleSlot) -> Int32? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return activeSelections[slot]?.streamIndex
     }
 
     func seek(to mediaSeconds: Double) {

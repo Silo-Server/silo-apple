@@ -107,12 +107,25 @@ final class SubtitleRenderer {
     // so we don't churn libass's internal caches.
     private var lastWidth: Int32 = 0
     private var lastHeight: Int32 = 0
+    /// libass margins in pixels: distance from the overlay frame's edges to
+    /// the displayed video rect. Non-zero only when the host sizes the
+    /// overlay beyond the video (tvOS full-frame overlay).
+    private var lastMarginTop: Int32 = 0
+    private var lastMarginBottom: Int32 = 0
+    private var lastMarginLeft: Int32 = 0
+    private var lastMarginRight: Int32 = 0
     private var frameSizeDirty = false
 
     // Most recent user styling params per slot. Re-applied after any
     // track swap (since overrides live on the renderer, not the track,
     // but native-ASS tracks need a different treatment).
     private var currentParams: SubtitleStylingOverride.Parameters = .default
+
+    /// libass keys font scaling to the video area (frame minus letterbox
+    /// margins), which makes Silo-styled text shrink on wide-aspect content.
+    /// This multiplier re-keys the scale to the full frame height so text
+    /// size stays constant on screen. 1.0 whenever margins are zero.
+    private var fontScaleCompensation: Double = 1.0
 
     // Output canvas. Allocated lazily at the requested pixel size and
     // reused across frames. A single mutable buffer feeds a single
@@ -235,7 +248,9 @@ final class SubtitleRenderer {
             SubtitleStylingOverride.apply(
                 renderer: self.renderer(for: slot),
                 params: self.currentParams,
-                isNativeASS: isNativeASS
+                isNativeASS: isNativeASS,
+                slot: slot,
+                fontScaleCompensation: self.fontScaleCompensation
             )
         }
     }
@@ -284,7 +299,9 @@ final class SubtitleRenderer {
             SubtitleStylingOverride.apply(
                 renderer: self.renderer(for: slot),
                 params: self.currentParams,
-                isNativeASS: isNativeASS
+                isNativeASS: isNativeASS,
+                slot: slot,
+                fontScaleCompensation: self.fontScaleCompensation
             )
         }
     }
@@ -391,24 +408,20 @@ final class SubtitleRenderer {
 
     // MARK: - Frame size
 
-    /// Update the libass frame/storage size. Called by the overlay view's
-    /// `layoutSubviews`. Safe from main thread — hops internally.
-    func updateFrameSize(_ size: CGSize, scale: CGFloat) {
+    /// Update the libass frame/storage size and video-area margins. Called
+    /// by the overlay view's `layoutSubviews`. Safe from main thread — hops
+    /// internally.
+    func updateFrameSize(
+        _ size: CGSize,
+        scale: CGFloat,
+        videoInsets: SubtitleVideoInsets = .zero
+    ) {
         let w = Int32(max(1, size.width * scale))
         let h = Int32(max(1, size.height * scale))
+        let margins = Self.pixelMargins(for: videoInsets, scale: scale)
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            if w == self.lastWidth && h == self.lastHeight { return }
-            self.forEachRenderer {
-                ass_set_frame_size($0, w, h)
-                ass_set_storage_size($0, w, h)
-                ass_set_pixel_aspect($0, 1.0)
-            }
-            self.lastWidth = w
-            self.lastHeight = h
-            self.frameSizeDirty = true
-            // Canvas will be reallocated on the next dirty render.
-            self.canvas = nil
+            self.applyFrameGeometryOnSessionQueue(width: w, height: h, margins: margins)
         }
     }
 
@@ -421,22 +434,33 @@ final class SubtitleRenderer {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.currentParams = params
-            self.handleLock.lock()
-            let primaryHandle = self.primary
-            let secondaryHandle = self.secondary
-            self.handleLock.unlock()
-            SubtitleStylingOverride.apply(
-                renderer: self.primaryRenderer,
-                params: params,
-                isNativeASS: primaryHandle?.isNativeASS ?? false
-            )
-            SubtitleStylingOverride.apply(
-                renderer: self.secondaryRenderer,
-                params: params,
-                isNativeASS: secondaryHandle?.isNativeASS ?? false
-            )
+            self.reapplyStylingOnSessionQueue()
             self.frameSizeDirty = true  // force repaint on next tick
         }
+    }
+
+    /// Re-apply the current styling params (with the current font-scale
+    /// compensation) to both slot renderers. Callable only from
+    /// `sessionQueue`.
+    private func reapplyStylingOnSessionQueue() {
+        handleLock.lock()
+        let primaryHandle = primary
+        let secondaryHandle = secondary
+        handleLock.unlock()
+        SubtitleStylingOverride.apply(
+            renderer: primaryRenderer,
+            params: currentParams,
+            isNativeASS: primaryHandle?.isNativeASS ?? false,
+            slot: .primary,
+            fontScaleCompensation: fontScaleCompensation
+        )
+        SubtitleStylingOverride.apply(
+            renderer: secondaryRenderer,
+            params: currentParams,
+            isNativeASS: secondaryHandle?.isNativeASS ?? false,
+            slot: .secondary,
+            fontScaleCompensation: fontScaleCompensation
+        )
     }
 
     // MARK: - Render + composite
@@ -447,12 +471,13 @@ final class SubtitleRenderer {
     func renderOnSessionQueue(
         atMilliseconds now: Int64,
         frameSize: CGSize,
-        scale: CGFloat
+        scale: CGFloat,
+        videoInsets: SubtitleVideoInsets = .zero
     ) -> SubtitleRenderOutput {
         guard primaryRenderer != nil || secondaryRenderer != nil else {
             return SubtitleRenderOutput(image: nil, isDirty: false)
         }
-        ensureFrameSizeOnSessionQueue(frameSize, scale: scale)
+        ensureFrameSizeOnSessionQueue(frameSize, scale: scale, videoInsets: videoInsets)
 
         handleLock.lock()
         let primaryHandle = primary
@@ -496,21 +521,70 @@ final class SubtitleRenderer {
 
     private func ensureFrameSizeOnSessionQueue(
         _ size: CGSize,
-        scale: CGFloat
+        scale: CGFloat,
+        videoInsets: SubtitleVideoInsets = .zero
     ) {
         let safeScale = scale.isFinite && scale > 0 ? scale : 1
         let w = Int32(max(1, size.width * safeScale))
         let h = Int32(max(1, size.height * safeScale))
-        if w == lastWidth && h == lastHeight { return }
+        let margins = Self.pixelMargins(for: videoInsets, scale: safeScale)
+        applyFrameGeometryOnSessionQueue(width: w, height: h, margins: margins)
+    }
+
+    private static func pixelMargins(
+        for insets: SubtitleVideoInsets,
+        scale: CGFloat
+    ) -> (top: Int32, bottom: Int32, left: Int32, right: Int32) {
+        let safeScale = scale.isFinite && scale > 0 ? scale : 1
+        func px(_ points: CGFloat) -> Int32 {
+            Int32(max(0, (points * safeScale).rounded()))
+        }
+        return (px(insets.top), px(insets.bottom), px(insets.left), px(insets.right))
+    }
+
+    private func applyFrameGeometryOnSessionQueue(
+        width w: Int32,
+        height h: Int32,
+        margins: (top: Int32, bottom: Int32, left: Int32, right: Int32)
+    ) {
+        let sizeChanged = w != lastWidth || h != lastHeight
+        let marginsChanged = margins.top != lastMarginTop
+            || margins.bottom != lastMarginBottom
+            || margins.left != lastMarginLeft
+            || margins.right != lastMarginRight
+        guard sizeChanged || marginsChanged else { return }
         forEachRenderer {
             ass_set_frame_size($0, w, h)
             ass_set_storage_size($0, w, h)
+            // Margins mark the video area inside the frame; libass keys
+            // font scaling to that area, and `use_margins` placement (set
+            // per-slot in SubtitleStylingOverride.apply) may render regular
+            // cues into the margin bars.
+            ass_set_margins($0, margins.top, margins.bottom, margins.left, margins.right)
             ass_set_pixel_aspect($0, 1.0)
         }
         lastWidth = w
         lastHeight = h
+        lastMarginTop = margins.top
+        lastMarginBottom = margins.bottom
+        lastMarginLeft = margins.left
+        lastMarginRight = margins.right
         frameSizeDirty = true
+        // Canvas will be reallocated on the next dirty render.
         canvas = nil
+
+        // libass keys font scale to the video area (frame height minus
+        // vertical margins), so letterboxed content would render smaller
+        // text than full-frame content. Compensate so Silo-styled text is
+        // keyed to the full frame height instead; a no-op (1.0) when
+        // margins are zero. Reapply overrides only when the factor moves so
+        // steady-state layout passes stay cheap.
+        let videoAreaHeight = h - margins.top - margins.bottom
+        let compensation = videoAreaHeight > 0 ? Double(h) / Double(videoAreaHeight) : 1.0
+        if abs(compensation - fontScaleCompensation) > 0.001 {
+            fontScaleCompensation = compensation
+            reapplyStylingOnSessionQueue()
+        }
     }
 
     private func configureRenderer(_ renderer: OpaquePointer) {
@@ -640,15 +714,14 @@ private final class CompositorCanvas {
                 continue
             }
 
-            // libass documents render output as RRGGBBTT, where TT is
-            // inverted transparency. The Apple xcframework we are using
-            // can expose the ASS-native AABBGGRR packing through Swift.
-            // Prefer documented order, but fall back when it would make
-            // an otherwise opaque ASS-style color fully transparent.
-            let color = img.color
-            let documented = unpackDocumentedRenderColor(color)
-            let assNative = unpackASSNativeColor(color)
-            let rgba = documented.alpha == 0 && assNative.alpha > 0 ? assNative : documented
+            // libass render output color is RRGGBBTT, where TT is inverted
+            // transparency. (An earlier fallback here re-read the color as
+            // AABBGGRR when the documented read looked fully transparent —
+            // that was masking incorrectly packed override-style colors
+            // from SubtitleStylingOverride, and it resurrected genuinely
+            // faded-out glyphs as opaque. Both are fixed; trust the
+            // documented order.)
+            let rgba = unpackDocumentedRenderColor(img.color)
             if rgba.alpha == 0 {
                 current = img.next
                 continue
@@ -725,13 +798,4 @@ private final class CompositorCanvas {
         )
     }
 
-    private func unpackASSNativeColor(_ color: UInt32) -> (r: UInt8, g: UInt8, b: UInt8, alpha: UInt8) {
-        let transparency = UInt8((color >> 24) & 0xFF)
-        return (
-            UInt8(color & 0xFF),
-            UInt8((color >> 8) & 0xFF),
-            UInt8((color >> 16) & 0xFF),
-            UInt8(255 - UInt16(transparency))
-        )
-    }
 }

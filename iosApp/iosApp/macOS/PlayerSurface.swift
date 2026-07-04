@@ -22,6 +22,10 @@ final class PlayerSurfaceHostView: NSView {
     private weak var attachedPlayer: PlayerCore?
     private let subtitleOverlay = SubtitleOverlayView()
 
+    /// Latest presentation size from the attached player; `.zero` until the
+    /// video format is known (overlay falls back to full bounds).
+    private var videoPresentationSize: CGSize = .zero
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -45,12 +49,25 @@ final class PlayerSurfaceHostView: NSView {
         player.attach(to: displayLayer)
         subtitleOverlay.renderer = player.subtitleRendererForOverlay
         player.subtitleOverlay = subtitleOverlay
+
+        // Track the video's presentation size so layout() can pin the
+        // subtitle overlay to the displayed video rect — keeps libass font
+        // scale proportional to the video as the window is resized.
+        videoPresentationSize = player.videoPresentationSize
+        player.onVideoPresentationSizeChange = { [weak self] size in
+            self?.videoPresentationSize = size
+            self?.needsLayout = true
+        }
     }
 
     override func layout() {
         super.layout()
         displayLayer.frame = bounds
-        subtitleOverlay.frame = bounds
+        subtitleOverlay.frame = VideoDisplayRect.compute(
+            videoSize: videoPresentationSize,
+            bounds: bounds,
+            gravity: displayLayer.videoGravity
+        )
     }
 
     override func viewDidChangeBackingProperties() {

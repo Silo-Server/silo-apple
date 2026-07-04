@@ -48,9 +48,6 @@ enum SubtitleStylingOverride {
         var syncOffsetMs: Int
 
         var effectiveBorderSize: Double {
-            if backgroundStyle == .box && backgroundOpacityPercent > 0 {
-                return max(1.5, min(4, fontSize * 0.07))
-            }
             if borderSize > 0 {
                 return max(2, min(4, fontSize * 0.08))
             }
@@ -59,6 +56,53 @@ enum SubtitleStylingOverride {
 
         var effectiveOutlineColorHex: String {
             backgroundStyle == .outline ? backgroundColorHex : borderColorHex
+        }
+
+        /// True when the user wants a background box drawn behind the text.
+        var boxEnabled: Bool {
+            backgroundStyle == .box && backgroundOpacityPercent > 0
+        }
+
+        /// Padding of the background box around the text, in the 1080-line
+        /// playfield. Passed through the ASS `Shadow` field: libass's
+        /// BorderStyle 4 uses the shadow size as box padding (and skips the
+        /// drop shadow itself).
+        var boxPadding: Double {
+            guard boxEnabled else { return 0 }
+            #if os(iOS) || os(tvOS)
+            // Tighter box: roughly half the original padding.
+            return max(2, min(7, fontSize * 0.08))
+            #else
+            return max(3, min(12, fontSize * 0.15))
+            #endif
+        }
+
+        /// ASS border style: 4 draws a per-event background rectangle
+        /// filled with `BackColour` (honoring its alpha), unlike 3 whose
+        /// box is per glyph run and filled with the *outline* colour at
+        /// full opacity — which is why 3 can't do translucent boxes.
+        var assBorderStyle: Int {
+            boxEnabled ? 4 : 1
+        }
+
+        /// Value for the ASS `Shadow` field: drop-shadow depth for the
+        /// shadow style, box padding for the box style (see `boxPadding`).
+        var assShadow: Double {
+            backgroundStyle == .shadow ? 1.5 : boxPadding
+        }
+
+        /// Inverted ASS alpha byte for `BackColour` (0x00 opaque … 0xFF
+        /// transparent). Box: user opacity. Shadow: 50% black so the drop
+        /// shadow is actually visible. Otherwise fully transparent.
+        var backgroundAlphaByte: UInt8 {
+            switch backgroundStyle {
+            case .box:
+                return UInt8(max(0, min(255, (100 - backgroundOpacityPercent) * 255 / 100)))
+            case .shadow:
+                return 0x80
+            case .outline, .none:
+                return 0xFF
+            }
         }
 
         static let referenceFontSize: Double = SubtitleAppearance.default.fontSize.pointSize
@@ -112,15 +156,15 @@ enum SubtitleStylingOverride {
     ) -> String {
         let primary = assColor(hexRGB: params.textColorHex, alphaByte: 0x00)
         let outline = assColor(hexRGB: params.effectiveOutlineColorHex, alphaByte: 0x00)
-        let effectiveOpacity = params.backgroundStyle == .box ? params.backgroundOpacityPercent : 0
-        let bgAlpha = UInt8(max(0, min(255, (100 - effectiveOpacity) * 255 / 100)))
-        let back = assColor(hexRGB: params.backgroundColorHex, alphaByte: bgAlpha)
+        let back = assColor(hexRGB: params.backgroundColorHex, alphaByte: params.backgroundAlphaByte)
         let alignment = (slot == .secondary) ? 8 : primaryHeaderAlignment(for: params)
 
-        // BorderStyle 1 = outline + shadow; BorderStyle 3 = opaque box.
-        // Use box iff the user enabled a non-transparent background.
-        let borderStyle = effectiveOpacity > 0 ? 3 : 1
-        let shadow = params.backgroundStyle == .shadow ? 1.5 : 0
+        // BorderStyle 1 = outline + shadow; BorderStyle 4 = per-event
+        // background box filled with BackColour (so its alpha carries the
+        // user's opacity). The Shadow field doubles as box padding under
+        // BorderStyle 4 — see `Parameters.assShadow`.
+        let borderStyle = params.assBorderStyle
+        let shadow = params.assShadow
         let borderSize = params.effectiveBorderSize
 
         // Playfield resolution. 1920x1080 is the cross-industry default —
@@ -184,16 +228,35 @@ enum SubtitleStylingOverride {
     ///   skip color/font/border overrides so the creative work renders
     ///   as the author intended. Sync offset still applies in the overlay
     ///   pump, outside libass style overrides.
+    /// - Parameter slot: which subtitle slot this renderer draws. Only the
+    ///   primary slot participates in `use_margins` placement below.
+    /// - Parameter fontScaleCompensation: multiplier that re-keys libass's
+    ///   font scaling from the video area (frame minus letterbox margins)
+    ///   back to the full frame, so Silo-styled text renders at the same
+    ///   physical size regardless of the content's aspect ratio. 1.0 when
+    ///   the overlay is video-rect sized (no margins). Native ASS is never
+    ///   compensated — authored typesetting must keep tracking the picture.
     static func apply(
         renderer: OpaquePointer?,
         params: Parameters,
-        isNativeASS: Bool
+        isNativeASS: Bool,
+        slot: SubtitleSlot,
+        fontScaleCompensation: Double = 1.0
     ) {
         guard let renderer else { return }
 
         // libass line_position collapses multi-line cues onto the override
         // position. Use margins/alignment from the style override instead.
         ass_set_line_position(renderer, 0)
+
+        // `use_margins` lets regular (non-\pos) events render across the
+        // full overlay frame instead of only the video area, so the
+        // "Bottom" preset can sit in the letterbox bar below the picture
+        // when the overlay extends past the video rect (tvOS). Margins are
+        // zero when the overlay is video-rect sized, making this a no-op
+        // elsewhere. Native ASS keeps authored layout inside the video.
+        let useMargins = !isNativeASS && slot == .primary && params.verticalPosition >= 100
+        ass_set_use_margins(renderer, useMargins ? 1 : 0)
 
         if isNativeASS {
             ass_set_font_scale(renderer, 1.0)
@@ -205,7 +268,10 @@ enum SubtitleStylingOverride {
         // source. Use renderer font scale for live size changes, but do not
         // use FONT_SIZE_FIELDS below: that path also overrides ScaleX/Y and
         // scales FontSize against each source track's PlayRes.
-        let scale = params.fontSize / Parameters.referenceFontSize
+        let compensation = fontScaleCompensation.isFinite && fontScaleCompensation > 0
+            ? fontScaleCompensation
+            : 1.0
+        let scale = (params.fontSize / Parameters.referenceFontSize) * compensation
         ass_set_font_scale(renderer, scale.isFinite && scale > 0 ? scale : 1.0)
 
         // Swift's `ASS_Style()` already zero-initialises the struct.
@@ -226,11 +292,12 @@ enum SubtitleStylingOverride {
         style.FontName = fontCString
         style.FontSize = params.fontSize
         style.PrimaryColour = assColor(hexRGBUInt: params.textColorHex, alphaByte: 0x00)
-        style.SecondaryColour = 0x00FFFFFF
+        style.SecondaryColour = 0xFFFFFF00 // opaque white, internal RRGGBBAA
         style.OutlineColour = assColor(hexRGBUInt: params.effectiveOutlineColorHex, alphaByte: 0x00)
-        let effectiveOpacity = params.backgroundStyle == .box ? params.backgroundOpacityPercent : 0
-        let bgAlpha = UInt8(max(0, min(255, (100 - effectiveOpacity) * 255 / 100)))
-        style.BackColour = assColor(hexRGBUInt: params.backgroundColorHex, alphaByte: bgAlpha)
+        style.BackColour = assColor(
+            hexRGBUInt: params.backgroundColorHex,
+            alphaByte: params.backgroundAlphaByte
+        )
         // ScaleX/Y are doubles where 1.0 = 100%. The integer 100 here
         // would scale text to 100x authored size (10,000%).
         style.ScaleX = 1.0
@@ -242,8 +309,8 @@ enum SubtitleStylingOverride {
         // authored FontSize=16 grid. Default 0.5 outline + 1.5 shadow
         // matches the web player's "shadow" default (no heavy outline).
         style.Outline = params.effectiveBorderSize
-        style.Shadow = params.backgroundStyle == .shadow ? 1.5 : 0
-        style.BorderStyle = effectiveOpacity > 0 ? 3 : 1
+        style.Shadow = params.assShadow
+        style.BorderStyle = Int32(params.assBorderStyle)
         style.Alignment = Int32(primaryStyleAlignment(for: params))
         style.MarginL = 60
         style.MarginR = 60
@@ -277,7 +344,23 @@ enum SubtitleStylingOverride {
         }
 
         // Bottom-aligned ASS margins are distance from the bottom edge:
-        // smaller values render lower. Anchor the bottom-aligned presets:
+        // smaller values render lower.
+        #if os(tvOS)
+        // tvOS: "Lower Third" hugs the video's bottom edge (Bottom's old
+        // anchor), while "Bottom" is measured against the full TV frame —
+        // `use_margins` in `apply(...)` drops it into the letterbox bar
+        // below the picture when one exists — with a slightly larger
+        // margin so it doesn't sit flush against the frame edge.
+        switch p {
+        case 0...70:
+            return 30
+        case 71...100:
+            return 60
+        default:
+            return interpolateMargin(position: p, from: 100, to: 150, marginFrom: 60, marginTo: 10)
+        }
+        #else
+        // Anchor the bottom-aligned presets:
         //   lower-third (70) -> 220px
         //   bottom (100)     -> 30px
         //   extreme (150)    -> 10px
@@ -287,6 +370,7 @@ enum SubtitleStylingOverride {
         default:
             return interpolateMargin(position: p, from: 100, to: 150, marginFrom: 30, marginTo: 10)
         }
+        #endif
     }
 
     private static func primaryHeaderAlignment(for params: Parameters) -> Int {
@@ -320,13 +404,15 @@ enum SubtitleStylingOverride {
         return String(format: "&H%02X%02X%02X%02X", alphaByte, b, g, r)
     }
 
-    /// ASS color format (numeric form, used in struct fields):
-    /// `(alpha<<24) | (blue<<16) | (green<<8) | red` per libass convention.
-    /// Note: libass stores this as UInt32 little-endian but the struct
-    /// field type in C is `uint32_t`.
-    private static func assColor(hexRGBUInt: String, alphaByte: UInt8) -> UInt32 {
+    /// libass internal color format (numeric form, used in `ASS_Style`
+    /// struct fields): `0xRRGGBBAA` with inverted alpha in the low byte
+    /// (00 = opaque, FF = transparent). This is what libass's own parser
+    /// produces (`parse_color_tag` byte-swaps the file-format `&HAABBGGRR`
+    /// value) and what `ass_set_selective_style_override` copies verbatim —
+    /// it is NOT the ASS file format. Internal for tests.
+    static func assColor(hexRGBUInt: String, alphaByte: UInt8) -> UInt32 {
         let (r, g, b) = rgbBytes(fromHex: hexRGBUInt)
-        return (UInt32(alphaByte) << 24) | (UInt32(b) << 16) | (UInt32(g) << 8) | UInt32(r)
+        return (UInt32(r) << 24) | (UInt32(g) << 16) | (UInt32(b) << 8) | UInt32(alphaByte)
     }
 
     /// Parse `#RRGGBB` (or `RRGGBB`) into raw bytes. Falls back to

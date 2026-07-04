@@ -194,6 +194,72 @@ enum DetailPlaybackFormatting {
         return tokens.joined(separator: " · ")
     }
 
+    /// Resolve the server-remembered subtitle override for display /
+    /// launch seeding. Audio gets this for free via the per-version
+    /// `effectiveAudioTrackIndex`; subtitles have no index field on the
+    /// wire, so the stored signature is re-matched against this
+    /// version's track list. Returns the ffmpeg stream index to
+    /// pre-select, `-1` for "Off", or nil when nothing points at a
+    /// track in this file ("Auto" — the player's resolver decides).
+    static func serverPreferredSubtitleIndex(
+        version: FileVersion?,
+        signature: SubtitleTrackSignature?,
+        mode: String?
+    ) -> Int? {
+        if let signature,
+           let tracks = version?.subtitleTracks,
+           let match = bestSignatureMatch(signature, in: tracks) {
+            return match.index
+        }
+        if SubtitleMode(rawValue: mode ?? "") == .off {
+            return -1
+        }
+        return nil
+    }
+
+    /// Mirrors `SubtitleAutoResolver.bestSignatureMatch` scoring, applied
+    /// to the detail payload's `SubtitleTrack` metadata, so the selector
+    /// shows the same track the player would restore on its own.
+    private static func bestSignatureMatch(
+        _ sig: SubtitleTrackSignature,
+        in tracks: [SubtitleTrack]
+    ) -> SubtitleTrack? {
+        var best: (SubtitleTrack, Int)?
+        for track in tracks where track.index != nil {
+            var score = 0
+            var strongSignal = false
+            if let sigLang = sig.language, !sigLang.isEmpty,
+               let lang = track.language,
+               SubtitleAutoResolver.languagesMatch(lang, sigLang) {
+                score += 5
+                strongSignal = true
+            }
+            if sig.forced == (track.forced ?? false) {
+                score += 1
+            }
+            if sig.hearingImpaired == (track.hearingImpaired ?? false) {
+                score += 1
+            }
+            if let sigCodec = sig.codec, let codec = track.codec,
+               sigCodec.caseInsensitiveCompare(codec) == .orderedSame {
+                score += 1
+            }
+            if let sigLabel = sig.label, !sigLabel.isEmpty,
+               let title = track.title ?? track.embeddedTitle,
+               title.localizedCaseInsensitiveContains(sigLabel) {
+                score += 2
+                strongSignal = true
+            }
+            // Forced/HI/codec equality alone is meaningless (`false ==
+            // false` holds for nearly every track); require a language or
+            // label hit so a weak "match" can't override Auto.
+            if strongSignal, score > (best?.1 ?? 0) {
+                best = (track, score)
+            }
+        }
+        return best?.0
+    }
+
     static func subtitleOptions(
         version: FileVersion?,
         selectedSubtitleTrackIndex: Int?,

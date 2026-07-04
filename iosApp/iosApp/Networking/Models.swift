@@ -389,6 +389,13 @@ struct ItemDetail: Codable {
     let subtitles: [SubtitleInfoBasic]?
     let intro: TimeRange?
     let credits: TimeRange?
+    /// Server-resolved subtitle policy, folded in from the watch detail
+    /// during playback enrichment (absent on the raw catalog payload).
+    /// The signature is only present when an explicit per-series /
+    /// per-movie subtitle override is stored, so it doubles as the
+    /// "user picked a track" marker for selector seeding.
+    let effectiveSubtitleMode: String?
+    let effectiveSubtitleTrackSignature: SubtitleTrackSignature?
     let overlaySummary: OverlaySummary?
     let audiobook: AudiobookDetail?
     /// Set by the server (omitted when empty) when a description exists

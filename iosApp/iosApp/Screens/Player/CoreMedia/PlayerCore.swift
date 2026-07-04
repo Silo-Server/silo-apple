@@ -104,6 +104,14 @@ final class PlayerCore: NSObject {
     /// view when re-attaching (e.g. on window/screen change) so EDR can be
     /// re-evaluated without replaying the whole stream. Always 0 on tvOS.
     private(set) var lastSigPeak: Double = 0
+    /// Pixel-aspect-corrected presentation size of the active video stream,
+    /// derived from `videoFormatDescription`. `.zero` until the format is
+    /// known. The hosting view sizes the subtitle overlay to the displayed
+    /// video rect with it, so libass font scale tracks the video frame
+    /// rather than the full view.
+    private(set) var videoPresentationSize: CGSize = .zero
+    /// Fires on main whenever `videoPresentationSize` changes.
+    var onVideoPresentationSizeChange: ((CGSize) -> Void)?
 
     // MARK: - Master clock
 
@@ -767,6 +775,16 @@ final class PlayerCore: NSObject {
 
     private let embeddedSubtitlePipeline = EmbeddedSubtitlePipeline()
 
+    /// Dedicated subtitle-only FFmpeg context for runtime embedded-track
+    /// switches (shared implementation with the AVPlayer route). The main
+    /// demuxer runs tens of seconds ahead of the playhead and discards
+    /// packets of unselected subtitle streams, so enabling a track through
+    /// the in-band pipeline mid-playback would show no cues until the
+    /// playhead crosses the toggle-time demux head. This context re-opens
+    /// the source, seeks to the playhead, and feeds libass immediately.
+    /// Created lazily on the first runtime switch; reset per load.
+    private var runtimeSubtitleExtractor: AVPlayerEmbeddedSubtitleExtractor?
+
     /// libass-backed subtitle session. Created eagerly in `init()` so the
     /// overlay view can receive a non-nil renderer reference before the
     /// first `load()` is issued — otherwise `layoutSubviews` never pushes
@@ -1403,6 +1421,10 @@ final class PlayerCore: NSObject {
         // but keep the renderer/library alive — the overlay view already
         // holds a weak reference to it and we don't want to break that.
         subtitleSession?.teardown()
+        // The runtime extractor is bound to the previous load's URL;
+        // rebuild lazily against the new source on the next switch.
+        runtimeSubtitleExtractor?.teardown()
+        runtimeSubtitleExtractor = nil
         applyCurrentSubtitleStyling()
 
         // Re-open. This zeroes the cancel flag inside `resetCancellation`.
@@ -1800,6 +1822,11 @@ final class PlayerCore: NSObject {
             self.onTimeChange?(target)
         }
 
+        // Extractor-fed subtitle slots re-seek their own context to the
+        // new target (re-select is a fresh open + seek). Runs only on the
+        // final seek of a scrub burst — superseded seeks returned above.
+        runtimeSubtitleExtractor?.seek(to: target)
+
         // Restart demux + feeds from the seek point. Re-check disposal —
         // dispose() may have landed while we were blocked in
         // `avformat_seek_file` or the main.sync above, and restarting the
@@ -1855,6 +1882,31 @@ final class PlayerCore: NSObject {
     /// per load (after dynamicRange is known) and whenever `setHDREnabled`
     /// changes the preference. No-op on tvOS — HDR is handled via
     /// AVDisplayManager there, not EDR.
+    /// Recomputes `videoPresentationSize` from the current
+    /// `videoFormatDescription` and notifies the hosting view on main when
+    /// it changes. Called wherever `videoFormatDescription` is assigned or
+    /// cleared.
+    private func publishVideoPresentationSize() {
+        let size: CGSize
+        if let fd = videoFormatDescription {
+            size = CMVideoFormatDescriptionGetPresentationDimensions(
+                fd,
+                usePixelAspectRatio: true,
+                useCleanAperture: true
+            )
+        } else {
+            size = .zero
+        }
+        // Compare-and-assign on main: `PlayerSurfaceHostView.attach` reads
+        // the property from the UI thread, so keep it main-confined rather
+        // than writing from the demux/control path.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, size != self.videoPresentationSize else { return }
+            self.videoPresentationSize = size
+            self.onVideoPresentationSizeChange?(size)
+        }
+    }
+
     private func publishSigPeakIfNeeded() {
         #if os(iOS)
         // 1.1 is a sentinel "HDR content present" value; the actual peak
@@ -2332,7 +2384,7 @@ final class PlayerCore: NSObject {
                     isExternal: false,
                     // Phase 3: subtitle rendering is live. The selected stream
                     // is whichever decoder we've opened.
-                    isSelected: streamIndex == embeddedSubtitlePipeline.streamIndex(for: .primary),
+                    isSelected: streamIndex == selectedEmbeddedSubtitleStreamIndex(slot: .primary),
                     ffIndex: Int(streamIndex),
                     srcId: nil
                 ))
@@ -2893,8 +2945,17 @@ final class PlayerCore: NSObject {
         return Self.containsAtmosHint(track.title) || Self.containsAtmosHint(track.codec)
     }
 
+    /// Embedded subtitle stream selected in `slot`, regardless of which
+    /// mechanism feeds it: the in-band pipeline (selections made during
+    /// open) or the runtime extractor (mid-playback switches). -1 = none.
+    private func selectedEmbeddedSubtitleStreamIndex(slot: SubtitleSlot) -> Int32 {
+        let pipelineIndex = embeddedSubtitlePipeline.streamIndex(for: slot)
+        if pipelineIndex >= 0 { return pipelineIndex }
+        return runtimeSubtitleExtractor?.selectedStreamIndex(for: slot) ?? -1
+    }
+
     private func currentSubtitleStats() -> String? {
-        let subtitleStreamIndex = embeddedSubtitlePipeline.streamIndex(for: .primary)
+        let subtitleStreamIndex = selectedEmbeddedSubtitleStreamIndex(slot: .primary)
         guard subtitleStreamIndex >= 0 else { return "Off" }
         if let track = currentTracks.first(where: { $0.kind == .sub && $0.trackId == Int64(subtitleStreamIndex) }) {
             return track.title ?? track.lang ?? track.codec ?? "On"
@@ -3668,6 +3729,7 @@ final class PlayerCore: NSObject {
             return false
         }
         videoFormatDescription = fd
+        publishVideoPresentationSize()
         return true
     }
 
@@ -3851,6 +3913,7 @@ final class PlayerCore: NSObject {
         )
         if simplified.session != nil {
             videoFormatDescription = simplifiedFormatDescription
+            publishVideoPresentationSize()
         }
         return simplified
         #else
@@ -5346,6 +5409,7 @@ final class PlayerCore: NSObject {
         // selection).
         if let newId, SubtitleTrackIdSpace.isAILive(newId) {
             embeddedSubtitlePipeline.tearDownEmbeddedSlot(slot: slot)
+            runtimeSubtitleExtractor?.stopFeeding(slot: slot)
             return
         }
 
@@ -5355,12 +5419,14 @@ final class PlayerCore: NSObject {
         // this slot.
         if let newId, SubtitleTrackIdSpace.isSidecar(newId) {
             embeddedSubtitlePipeline.tearDownEmbeddedSlot(slot: slot)
+            runtimeSubtitleExtractor?.stopFeeding(slot: slot)
             let idx = SubtitleTrackIdSpace.sidecarIndex(from: newId)
             subtitleSession?.openSidecar(urlIndex: idx, slot: slot)
             return
         }
 
         embeddedSubtitlePipeline.tearDownEmbeddedSlot(slot: slot)
+        runtimeSubtitleExtractor?.stopFeeding(slot: slot)
 
         guard let formatCtx, let newId else {
             // No new track — user disabled subtitles in this slot.
@@ -5373,6 +5439,32 @@ final class PlayerCore: NSObject {
             subtitleSession?.closeSlot(slot)
             return
         }
+
+        // Runtime enable goes through the dedicated extractor, not the
+        // in-band pipeline: the main demuxer has already read (and, with
+        // the stream unselected, discarded) the subtitle packets for the
+        // whole buffered region ahead of the playhead, so an in-band feed
+        // would render nothing until that buffer plays through. The
+        // extractor seeks its own context to the playhead and feeds cues
+        // immediately. The in-band pipeline still serves selections made
+        // during `openAndDemux`, where the demux head is at the playhead.
+        if let extractor = ensureRuntimeSubtitleExtractor() {
+            // Same race as `performAudioTrackSwitch`: a selection applied
+            // while `openAndDemux` is still priming reads a ~0 playback
+            // clock. `pendingSkipBelowPTS` holds the requested anchor
+            // (load startTime or seek target) — without it, a resumed
+            // playback's initial subtitle selection feeds cues from the
+            // start of the file instead of the resume point.
+            extractor.select(
+                trackId: SubtitleTrackIdSpace.makeAVPlayerEmbeddedTrackId(streamIndex: candidate),
+                slot: slot,
+                startSeconds: max(0, currentPlaybackTimeSeconds(), pendingSkipBelowPTS)
+            )
+            return
+        }
+
+        // No source URL to re-open (should not happen after a successful
+        // load) — fall back to the in-band feed.
         if !setupSubtitleDecoder(streamIndex: candidate, slot: slot) {
             Self.logger.warning(
                 "setSubtitleTrack: decoder setup failed for id=\(candidate) slot=\(slot.rawValue)"
@@ -5385,6 +5477,32 @@ final class PlayerCore: NSObject {
             session: subtitleSession,
             isCancelled: { [weak self] in self?.isCancelled ?? true }
         )
+    }
+
+    /// Lazily creates the runtime subtitle extractor for the current
+    /// load. Runs on `controlQueue`.
+    private func ensureRuntimeSubtitleExtractor() -> AVPlayerEmbeddedSubtitleExtractor? {
+        if let runtimeSubtitleExtractor { return runtimeSubtitleExtractor }
+        guard let session = subtitleSession, let url = lastLoadURL else { return nil }
+        let extractor = AVPlayerEmbeddedSubtitleExtractor(subtitleSession: session)
+        extractor.currentMediaTimeProvider = { [weak self] in
+            guard let self else { return 0 }
+            // Pre-anchor the clock reads ~0; use the pending anchor so the
+            // read-ahead throttle doesn't stall a resume-point feed against
+            // a not-yet-started timeline.
+            return max(0, self.currentPlaybackTimeSeconds(), self.pendingSkipBelowPTS)
+        }
+        extractor.configure(
+            source: AVPlayerSubtitleExtractionSource(
+                mediaURL: url,
+                requestHeaders: lastLoadHeaders,
+                routeLabel: "coremedia-runtime",
+                seekable: true
+            ),
+            probe: false
+        )
+        runtimeSubtitleExtractor = extractor
+        return extractor
     }
 
     // MARK: - Font attachments
@@ -5450,11 +5568,22 @@ final class PlayerCore: NSObject {
 
         guard let overlay = subtitleOverlay else { return }
         let renderer = session.underlyingRenderer
-        guard renderer.hasAnyActiveTrack else { return }
+        guard renderer.hasAnyActiveTrack else {
+            // Disabling a track drops it without a final render pass —
+            // bailing here would leave the last composited cue on the
+            // layer indefinitely. Clearing every tick while inactive also
+            // covers an in-flight session-queue render re-pushing a stale
+            // image right after the drop. Mirrors the AVPlayer route.
+            DispatchQueue.main.async {
+                overlay.clear()
+            }
+            return
+        }
 
         let syncOffsetMs = Int64(session.currentParams.syncOffsetMs)
         let assNowMs = nowMs - syncOffsetMs
         let bounds = overlay.bounds
+        let videoInsets = overlay.videoInsets
         #if os(macOS)
         let scale = overlay.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         #else
@@ -5479,7 +5608,8 @@ final class PlayerCore: NSObject {
             let out = renderer.renderOnSessionQueue(
                 atMilliseconds: assNowMs,
                 frameSize: bounds.size,
-                scale: scale
+                scale: scale,
+                videoInsets: videoInsets
             )
             if liveDiag {
                 Self.logger.info(
@@ -5551,6 +5681,7 @@ final class PlayerCore: NSObject {
 
         videoDecodeMode = .videoToolbox
         videoFormatDescription = nil
+        publishVideoPresentationSize()
         videoDecodeOutputDimensions = nil
         useUntimedCompressedVideoSamples = false
         isRebuildingDecoder = false
@@ -5558,6 +5689,8 @@ final class PlayerCore: NSObject {
         audioOutputConfig = nil
 
         embeddedSubtitlePipeline.teardown()
+        runtimeSubtitleExtractor?.teardown()
+        runtimeSubtitleExtractor = nil
 
         videoStreamIndex = -1
         audioStreamIndex = -1
