@@ -3,13 +3,16 @@
 //  Continuum
 //
 //  Installs an `av_log_set_callback` that drops a small allowlist of known-
-//  cosmetic warnings before they reach stderr. The default FFmpeg callback
-//  emits warnings for every probe-time codec parameter we *deliberately*
+//  cosmetic warnings, collapses consecutive duplicate lines, and forwards
+//  the rest to two sinks: stderr (tvOS `devicectl --console`, Xcode) and,
+//  for warnings and errors, the unified log (subsystem = bundle id,
+//  category "ffmpeg") so libav* diagnostics survive into Console.app and
+//  sysdiagnose on shipped builds. The default FFmpeg callback emits
+//  warnings for every probe-time codec parameter we *deliberately*
 //  skipped (subtitle streams marked AVDISCARD_ALL pre-`find_stream_info`)
 //  and for every TrueHD bitstream gripe during pre-prime, both of which
 //  recover automatically. Suppressing them keeps the player log readable
-//  without losing genuine errors — anything not in the allowlist still
-//  reaches the original sink.
+//  without losing genuine errors.
 //
 
 #ifndef FFmpegLogFilter_h
