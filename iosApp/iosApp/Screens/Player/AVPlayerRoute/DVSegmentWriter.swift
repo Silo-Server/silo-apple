@@ -360,12 +360,13 @@ final class DVSegmentWriter {
     /// so they cannot throw directly. The mux loop checks this after every
     /// `av_interleaved_write_frame`/`av_write_trailer` and rethrows.
     private var fatalIOError: DVWriterError?
-    /// Consecutive `av_interleaved_write_frame` failures. Reset on success.
-    /// When this hits `maxConsecutiveMuxWriteFailures`, the mux loop aborts via
-    /// `DVWriterError.muxWriteFailures` so callers see a real error instead of
-    /// a silent no-op. Some negative codes are treated as fatal on first hit
-    /// regardless of count — see `evaluateMuxWriteResult`.
-    private var consecutiveMuxWriteFailures = 0
+    /// Accounting for `av_interleaved_write_frame` failures. Aborts via
+    /// `DVWriterError.muxWriteFailures` on a consecutive burst or on
+    /// persistent flapping — see `MuxWriteFailurePolicy` for the two
+    /// conditions and their tuning. Some negative codes are treated as
+    /// fatal on first hit regardless of count — see
+    /// `evaluateMuxWriteResult`.
+    private var muxWriteFailurePolicy = MuxWriteFailurePolicy()
     private struct ThroughputTiming {
         var readMs: Double = 0
         var videoMs: Double = 0
@@ -400,10 +401,6 @@ final class DVSegmentWriter {
         }
     }
     private var throughputTiming = ThroughputTiming()
-    /// Threshold tuned to tolerate the brief reorder bursts the fmp4 muxer
-    /// occasionally emits during keyframe boundary realignment without
-    /// missing a genuinely broken stream.
-    private static let maxConsecutiveMuxWriteFailures = 5
 
     private struct DoviRecord {
         let versionMajor: UInt8
@@ -523,7 +520,7 @@ final class DVSegmentWriter {
             defer { av_packet_free(&packet) }
 
             let avNoPTS = Int64.min  // AV_NOPTS_VALUE
-            while !isCancelled {
+            readLoop: while !isCancelled {
                 let rc: Int32
                 if DVSegmentWriter.traceThroughput {
                     let started = CFAbsoluteTimeGetCurrent()
@@ -537,10 +534,25 @@ final class DVSegmentWriter {
                     break
                 }
                 if rc < 0 {
-                    // AVERROR_EOF or any other negative code — treat as
-                    // end-of-input. Fine-grained error handling isn't
-                    // worth the noise for a v1 spike.
-                    break
+                    // Only genuine EOF may finalize. The old
+                    // any-negative-is-EOF rule wrote the trailer and
+                    // finalized the playlist as a complete VOD after a
+                    // mid-movie read failure, so the film "ended" early
+                    // with no error (silent truncation). Transient drops
+                    // are absorbed by the http reconnect options set in
+                    // openInput(); whatever reaches here is real.
+                    switch SourceReadOutcome.classify(rc) {
+                    case .endOfInput, .cancelled:
+                        break readLoop
+                    case .retry:
+                        continue readLoop
+                    case .failure:
+                        let detail = Self.ffmpegError(rc)
+                        Self.logger.error(
+                            "av_read_frame failed mid-stream: rc=\(rc) (\(detail, privacy: .public)) — failing session instead of truncating"
+                        )
+                        throw DVWriterError.sourceReadFailed(rc: rc, detail: detail)
+                    }
                 }
                 emitSourceDownloadStatsIfNeeded()
                 guard let pkt = packet else { break }
@@ -661,21 +673,20 @@ final class DVSegmentWriter {
     private func evaluateMuxWriteResult(_ rc: Int32, packet: UnsafeMutablePointer<AVPacket>? = nil) throws {
         try throwIfFatalIOError()
         if rc < 0 {
-            consecutiveMuxWriteFailures += 1
+            let shouldAbort = muxWriteFailurePolicy.recordFailure()
             let detail = Self.ffmpegError(rc)
             Self.logger.error(
-                "av_interleaved_write_frame failed: rc=\(rc) (\(detail, privacy: .public)) consecutive=\(self.consecutiveMuxWriteFailures)"
+                "av_interleaved_write_frame failed: rc=\(rc) (\(detail, privacy: .public)) consecutive=\(self.muxWriteFailurePolicy.consecutiveFailures) outstanding=\(self.muxWriteFailurePolicy.outstandingFailures)"
             )
-            if rc == avErrorInvalidData
-                || consecutiveMuxWriteFailures >= Self.maxConsecutiveMuxWriteFailures {
+            if rc == avErrorInvalidData || shouldAbort {
                 throw DVWriterError.muxWriteFailures(
                     lastRC: rc,
-                    consecutive: consecutiveMuxWriteFailures
+                    consecutive: muxWriteFailurePolicy.consecutiveFailures
                 )
             }
             return
         }
-        consecutiveMuxWriteFailures = 0
+        muxWriteFailurePolicy.recordSuccess()
         if let packet {
             recordMuxedPacketTimestamps(packet)
         }
@@ -753,6 +764,18 @@ final class DVSegmentWriter {
         // Reasonable network timeout — 10 s — so a broken source doesn't
         // hang the mux loop forever.
         av_dict_set(&options, "rw_timeout", "10000000", 0)
+        // Transparent mid-read reconnects for network drops: libavformat
+        // re-issues a ranged GET at the current offset and the mux
+        // continues seamlessly, so a CDN blip or Wi-Fi handoff never
+        // surfaces mid-movie. Failures that outlive the reconnect window
+        // (origin gone, auth expiry) reach the read loop, which fails the
+        // session instead of finalizing the playlist as a complete VOD.
+        if !sourceURL.isFileURL {
+            av_dict_set(&options, "reconnect", "1", 0)
+            av_dict_set(&options, "reconnect_streamed", "1", 0)
+            av_dict_set(&options, "reconnect_on_network_error", "1", 0)
+            av_dict_set(&options, "reconnect_delay_max", "8", 0)
+        }
         // Cap probe cost. We only mux video + the selected audio stream
         // (subtitles, fonts, attachments, extra audio are dropped at mux
         // time — see filtering below and at packet copy in the main loop).
@@ -2805,7 +2828,28 @@ final class DVSegmentWriter {
                 let doviLog = doviRecord?.logLine ?? "unknown"
                 print("[CMP-AVP] dvvC injected (init.mp4 grew by 32 bytes) \(doviLog)")
             } else {
-                print("[CMP-AVP] dvvC injection failed — hvcC not found in init tree")
+                switch videoMode {
+                case .passthroughProfile5:
+                    // `dvh1` without a dvvC carries no DV signalling:
+                    // AVPlayer decodes the IPT-PQ-c2 stream as plain YCbCr
+                    // and renders a green/purple cast. Unwatchable — abort
+                    // the session so the route fallback runs instead of
+                    // shipping the broken init segment.
+                    Self.logger.error("dvvC injection failed on Profile 5 (hvcC not found in init tree) — aborting session")
+                    fatalIOError = .dvSignalingFailed(
+                        "dvvC injection failed on Profile 5 — hvcC not found in init tree"
+                    )
+                case .convertProfile7To81, .passthroughProfile8:
+                    // The hvc1 base layer is HDR10-compatible and renders
+                    // correctly without the dvvC; the stream just plays as
+                    // plain HDR10 instead of engaging Dolby Vision. Degrade
+                    // loudly rather than fail.
+                    Self.logger.error("dvvC injection failed (hvcC not found in init tree) — DV signalling lost, playing the HDR10 base")
+                case .passthroughHEVC, .passthroughH264:
+                    // These modes make no DV claim; doviConfig should not
+                    // have been set. Log and continue.
+                    Self.logger.error("dvvC injection failed on a non-DV mode (hvcC not found in init tree) — ignoring")
+                }
             }
         }
         do {
@@ -3512,12 +3556,55 @@ enum DVWriterError: Error {
     case unsupportedSelectedAudioCodec(String)
     case audioTranscodeSetup(String)
     case profile81ConversionFailed(String)
-    /// `av_interleaved_write_frame` returned a negative code on three or more
-    /// consecutive packets. The mux is no longer producing valid output; abort
-    /// rather than continue writing a half-broken HLS presentation.
+    /// `av_interleaved_write_frame` failed persistently — either a
+    /// consecutive burst or sustained flapping (see `MuxWriteFailurePolicy`).
+    /// The mux is no longer producing valid output; abort rather than
+    /// continue writing a half-broken HLS presentation.
     case muxWriteFailures(lastRC: Int32, consecutive: Int)
     /// On-disk write of an init segment, media segment, or playlist failed.
     /// These are catastrophic for HLS playback and are propagated rather than
     /// silently logged.
     case fileWriteFailed(String, Error)
+    /// The init segment could not carry the Dolby Vision signalling the
+    /// session's video mode requires (dvvC box surgery failed). Fatal for
+    /// Profile 5, where the un-signalled IPT-PQ stream renders green/purple.
+    case dvSignalingFailed(String)
+    /// `av_read_frame` failed mid-stream with something other than EOF
+    /// after the http-level reconnects were exhausted. The session fails
+    /// so the recovery ladder runs — finalizing would truncate the movie
+    /// silently.
+    case sourceReadFailed(rc: Int32, detail: String)
+}
+
+/// How the mux read loop reacts to a negative `av_read_frame` return.
+/// Pure and pinned by SourceReadOutcomeTests: the EOF-vs-failure
+/// distinction is the difference between a finished movie and a silently
+/// truncated one.
+enum SourceReadOutcome: Equatable {
+    /// Genuine end of input — drain, write the trailer, finalize as VOD.
+    case endOfInput
+    /// Transient (EAGAIN) — read again.
+    case retry
+    /// The interrupt callback aborted the read (`stop()` mid-read); the
+    /// loop's cancellation path owns teardown.
+    case cancelled
+    /// A real read failure — fail the session, never finalize.
+    case failure
+
+    static let avErrorEOF = -Int32(bitPattern: 0x20464F45)   // FFERRTAG('E','O','F',' ')
+    static let avErrorExit = -Int32(bitPattern: 0x54495845)  // FFERRTAG('E','X','I','T')
+    static let avErrorAgain = -Int32(EAGAIN)
+
+    static func classify(_ rc: Int32) -> SourceReadOutcome {
+        switch rc {
+        case avErrorEOF:
+            return .endOfInput
+        case avErrorAgain:
+            return .retry
+        case avErrorExit:
+            return .cancelled
+        default:
+            return .failure
+        }
+    }
 }

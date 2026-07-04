@@ -43,6 +43,11 @@ final class DVSegmentStore {
     }
 
     enum ResourceResult {
+        /// A `seg_*` resource that has not been produced yet and has not
+        /// been evicted — it will plausibly exist shortly. The server
+        /// answers 503 + Retry-After so AVPlayer retries; a 404 on a VOD
+        /// asset is treated as terminal `loadFailed`.
+        case pending
         case found(Resource)
         case missing
         case gone
@@ -266,8 +271,12 @@ final class DVSegmentStore {
            spillingSegments[normalized] == nil,
            spilledSegments[normalized] == nil,
            !evictedResources.contains(normalized) {
+            // Short grace so a segment that is mid-write when requested is
+            // served without a retry round trip. Kept short because this
+            // wait holds up the server's serial connection queue; anything
+            // slower falls through to `.pending` and the client retries.
             waitCount += 1
-            _ = lock.wait(until: Date().addingTimeInterval(1.0))
+            _ = lock.wait(until: Date().addingTimeInterval(0.25))
         }
         let location = resourceLocationLocked(path: normalized)
         lock.unlock()
@@ -279,7 +288,9 @@ final class DVSegmentStore {
         case .disk(let url, let byteCount, let mimeType):
             result = .found(.disk(url: url, byteCount: byteCount, mimeType: mimeType))
         case .missing:
-            result = .missing
+            // An un-produced (not evicted) segment name is upcoming, not
+            // absent — distinguish it so the server can answer retriable.
+            result = normalized.hasPrefix("seg_") ? .pending : .missing
         case .gone:
             result = .gone
         }
@@ -289,7 +300,7 @@ final class DVSegmentStore {
         switch result {
         case .found(let resource):
             bytesServed += Int64(resource.byteCount)
-        case .missing, .gone:
+        case .pending, .missing, .gone:
             break
         }
         lastRequestLatencyMs = (CFAbsoluteTimeGetCurrent() - started) * 1000
