@@ -119,6 +119,9 @@ targets:
     settings:
       base:
         PRODUCT_NAME: SiloTV
+        # Swift module name stays `Silo` so the shared unit tests
+        # (`@testable import Silo`) can host on either the iOS or tvOS app.
+        PRODUCT_MODULE_NAME: Silo
         INFOPLIST_FILE: iosApp/tvOS-Info.plist
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: 1
@@ -301,6 +304,38 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Silo.app/Silo"
         SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
 
+  # tvOS twin of SiloTests: hosts the same Tests/ sources on SiloTV.app so
+  # the suite is executable on a tvOS simulator (this repo's primary
+  # platform; there is no CI test workflow and dev machines may lack the
+  # iOS platform). Requires SiloTV's PRODUCT_MODULE_NAME to stay `Silo`.
+  SiloTVTests:
+    type: bundle.unit-test
+    platform: tvOS
+    sources:
+      - path: Tests
+        excludes:
+          # iOS-only companion-pairing coordinator; tvOS builds the
+          # receiver side only.
+          - PairingCoordinatorTests.swift
+          # iOS-only remote-control clock (Control/iOS) and APNs
+          # registration wires (compiled out on tvOS).
+          - SiloControlTests.swift
+          - ApplePushRegistrationTests.swift
+    dependencies:
+      - target: SiloTV
+      # Same rationale as SiloTests: module maps only, symbols come from
+      # the test host via BUNDLE_LOADER.
+      - package: FFmpeg
+        product: FFmpeg
+        link: false
+    settings:
+      base:
+        PRODUCT_NAME: SiloTVTests
+        GENERATE_INFOPLIST_FILE: "YES"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/SiloTV.app/SiloTV"
+        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
+
 schemes:
   Silo:
     build:
@@ -338,10 +373,13 @@ schemes:
     build:
       targets:
         SiloTV: all
+        SiloTVTests: [test]
     run:
       config: Debug
     test:
       config: Debug
+      targets:
+        - SiloTVTests
     archive:
       config: Release
     analyze:
