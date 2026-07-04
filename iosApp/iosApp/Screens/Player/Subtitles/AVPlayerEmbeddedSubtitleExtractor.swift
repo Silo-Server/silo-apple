@@ -11,6 +11,7 @@
 //
 
 import Foundation
+import QuartzCore
 import Libavcodec
 import Libavformat
 import Libavutil
@@ -56,6 +57,29 @@ struct AVPlayerExtractedSubtitleTrack: Hashable {
     }
 }
 
+/// Interrupt opaque for the extractor's FFmpeg contexts: a stable heap
+/// token that travels with one format context for its whole life. FFmpeg
+/// copies AVIOInterruptCB into nested http/tcp contexts at open, so the
+/// opaque must never be an object that can be repurposed mid-read (the
+/// loopback writer learned this as a SIGSEGV). Cancelling the token is the
+/// only way to break a read loop stuck inside av_read_frame's HTTP
+/// reconnect ladder — the generation check alone can't run until
+/// av_read_frame returns, which orphaned dead-session readers for minutes.
+private final class ExtractorInterruptToken {
+    private let lock = NSLock()
+    private var cancelled = false
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
 final class AVPlayerEmbeddedSubtitleExtractor {
     private static let maxReadAheadSeconds: Double = 45
 
@@ -77,6 +101,18 @@ final class AVPlayerEmbeddedSubtitleExtractor {
     private var activeSelections: [SubtitleSlot: SlotSelection] = [:]
     private var slotGenerations: [SubtitleSlot: UInt64] = [.primary: 0, .secondary: 0]
     private var probeGeneration: UInt64 = 0
+    // One live token per in-flight reader; cancelled whenever its
+    // generation is superseded. Guarded by stateLock.
+    private var slotInterruptTokens: [SubtitleSlot: ExtractorInterruptToken] = [:]
+    private var probeInterruptToken: ExtractorInterruptToken?
+
+    /// Cancel + replace the token for `slot`. Caller must hold stateLock.
+    private func rotateSlotTokenLocked(_ slot: SubtitleSlot) -> ExtractorInterruptToken {
+        slotInterruptTokens[slot]?.cancel()
+        let token = ExtractorInterruptToken()
+        slotInterruptTokens[slot] = token
+        return token
+    }
 
     var currentMediaTimeProvider: (() -> Double)?
     var onTracksChanged: (([AVPlayerExtractedSubtitleTrack]) -> Void)?
@@ -96,6 +132,12 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         probeGeneration &+= 1
         slotGenerations[.primary, default: 0] &+= 1
         slotGenerations[.secondary, default: 0] &+= 1
+        slotInterruptTokens[.primary]?.cancel()
+        slotInterruptTokens[.secondary]?.cancel()
+        slotInterruptTokens.removeAll()
+        probeInterruptToken?.cancel()
+        let probeToken = ExtractorInterruptToken()
+        probeInterruptToken = probeToken
         let generation = probeGeneration
         let sourceSnapshot = source
         stateLock.unlock()
@@ -107,7 +149,7 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         guard probe, let sourceSnapshot else { return }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.probe(source: sourceSnapshot, generation: generation)
+            self?.probe(source: sourceSnapshot, generation: generation, token: probeToken)
         }
     }
 
@@ -139,6 +181,7 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         }
         slotGenerations[slot, default: 0] &+= 1
         let generation = slotGenerations[slot, default: 0]
+        let token = rotateSlotTokenLocked(slot)
         let selection = SlotSelection(
             trackId: trackId,
             streamIndex: streamIndex,
@@ -156,7 +199,8 @@ final class AVPlayerEmbeddedSubtitleExtractor {
                 source: source,
                 selection: selection,
                 slot: slot,
-                generation: generation
+                generation: generation,
+                token: token
             )
         }
     }
@@ -173,6 +217,8 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         stateLock.lock()
         activeSelections.removeValue(forKey: slot)
         slotGenerations[slot, default: 0] &+= 1
+        slotInterruptTokens[slot]?.cancel()
+        slotInterruptTokens.removeValue(forKey: slot)
         stateLock.unlock()
     }
 
@@ -200,12 +246,21 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         probeGeneration &+= 1
         slotGenerations[.primary, default: 0] &+= 1
         slotGenerations[.secondary, default: 0] &+= 1
+        slotInterruptTokens[.primary]?.cancel()
+        slotInterruptTokens[.secondary]?.cancel()
+        slotInterruptTokens.removeAll()
+        probeInterruptToken?.cancel()
+        probeInterruptToken = nil
         stateLock.unlock()
     }
 
-    private func probe(source: AVPlayerSubtitleExtractionSource, generation: UInt64) {
+    private func probe(
+        source: AVPlayerSubtitleExtractionSource,
+        generation: UInt64,
+        token: ExtractorInterruptToken
+    ) {
         do {
-            let ctx = try openFormatContext(source: source)
+            let ctx = try openFormatContext(source: source, token: token)
             defer { closeFormatContext(ctx) }
             try readStreamInfo(ctx)
             registerEmbeddedFonts(from: ctx)
@@ -235,12 +290,16 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         source: AVPlayerSubtitleExtractionSource,
         selection: SlotSelection,
         slot: SubtitleSlot,
-        generation: UInt64
+        generation: UInt64,
+        token: ExtractorInterruptToken
     ) {
         do {
-            let ctx = try openFormatContext(source: source)
+            let decodeStartedAt = CACurrentMediaTime()
+            let ctx = try openFormatContext(source: source, token: token)
             defer { closeFormatContext(ctx) }
+            let openedAt = CACurrentMediaTime()
             try readStreamInfo(ctx)
+            let streamInfoAt = CACurrentMediaTime()
             guard isSlotGenerationCurrent(slot: slot, generation: generation) else { return }
 
             registerEmbeddedFonts(from: ctx)
@@ -250,6 +309,14 @@ final class AVPlayerEmbeddedSubtitleExtractor {
                     _ = avformat_seek_file(ctx, -1, Int64.min, ts, Int64.max, 0)
                 }
             }
+            let seekedAt = CACurrentMediaTime()
+            print(String(
+                format: "[CMP-SUBX] extractor pipeline openMs=%.0f streamInfoMs=%.0f seekMs=%.0f start=%.1f stream=%d",
+                (openedAt - decodeStartedAt) * 1000,
+                (streamInfoAt - openedAt) * 1000,
+                (seekedAt - streamInfoAt) * 1000,
+                selection.startSeconds, selection.streamIndex
+            ))
 
             guard let decoder = openSubtitleDecoder(
                 formatCtx: ctx,
@@ -697,10 +764,24 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         }
     }
 
-    private func openFormatContext(source: AVPlayerSubtitleExtractionSource) throws -> UnsafeMutablePointer<AVFormatContext> {
+    private func openFormatContext(
+        source: AVPlayerSubtitleExtractionSource,
+        token: ExtractorInterruptToken
+    ) throws -> UnsafeMutablePointer<AVFormatContext> {
         guard let ctx = avformat_alloc_context() else {
             throw ExtractionError.openFailed("avformat_alloc_context failed")
         }
+        // Installed before open so even the initial connection is
+        // cancellable. The caller keeps `token` alive for the context's
+        // whole life (decode()/probe() scope outlives the deferred close).
+        ctx.pointee.interrupt_callback = AVIOInterruptCB(
+            callback: { opaque in
+                guard let opaque else { return 0 }
+                let token = Unmanaged<ExtractorInterruptToken>.fromOpaque(opaque).takeUnretainedValue()
+                return token.isCancelled ? 1 : 0
+            },
+            opaque: Unmanaged.passUnretained(token).toOpaque()
+        )
         var optCtx: UnsafeMutablePointer<AVFormatContext>? = ctx
         var options: OpaquePointer?
         if !source.requestHeaders.isEmpty {
@@ -751,6 +832,26 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         // (Bitmap canvas fallbacks read the video dimensions straight from
         // the container track header, which survives the discard.)
         Self.discardNonRenderableSubtitleStreams(in: ctx)
+
+        // Header-complete containers (MKV, MP4) give every kept stream a
+        // codec_id at open; find_stream_info would only re-read media to
+        // confirm what the header already says. Over a WAN link contended
+        // by the loopback writer that probe cost ~19 s of subtitle startup
+        // — skip it unless some kept stream is actually missing its codec
+        // identity.
+        var needsProbe = false
+        if let streams = ctx.pointee.streams {
+            for i in 0..<Int(ctx.pointee.nb_streams) {
+                guard let stream = streams[i],
+                      stream.pointee.discard != AVDISCARD_ALL,
+                      let codecpar = stream.pointee.codecpar else { continue }
+                if codecpar.pointee.codec_id == AV_CODEC_ID_NONE {
+                    needsProbe = true
+                    break
+                }
+            }
+        }
+        guard needsProbe else { return }
 
         let result = avformat_find_stream_info(ctx, nil)
         guard result >= 0 else {
