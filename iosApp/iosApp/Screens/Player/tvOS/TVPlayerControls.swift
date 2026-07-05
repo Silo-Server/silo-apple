@@ -26,6 +26,16 @@ struct TVPlayerControls: View {
     /// puck). Held here so the transport cluster can leave the focus graph
     /// while the scrub is modal.
     @State private var isTimelineScrubbing: Bool = false
+    /// True while the scrubber owns focus. The transport row leaves the
+    /// focus graph for that duration so a Down press has no native target:
+    /// the engine otherwise moves focus geometrically — to whichever button
+    /// happens to sit under the playhead — *before* the scrubber's
+    /// `onMoveCommand` fires, and the play/pause seed then reads as a
+    /// visible hop off the wrong button. Released on the Down hand-off (so
+    /// the seed has a focusable target) and whenever the scrubber blurs for
+    /// any other reason (intro skip, HUD) so direction moves into the row
+    /// keep working from elsewhere.
+    @State private var trapsTransportFocus = false
 
     // Focus states. SwiftUI's focus engine only holds focus on one
     // focusable at a time, so selecting one of these implicitly clears the
@@ -108,6 +118,7 @@ struct TVPlayerControls: View {
         // the user's focus) out from under them mid-interaction.
         .onChange(of: isScrubberFocused) { _, focused in
             if focused { rearmAutoHideOnFocusMove() }
+            trapsTransportFocus = focused
         }
         .onChange(of: focusedTransportButton) { _, target in
             if target != nil { rearmAutoHideOnFocusMove() }
@@ -294,8 +305,17 @@ struct TVPlayerControls: View {
                 viewModel: viewModel,
                 isFocused: $isScrubberFocused,
                 onMoveToTransport: {
-                    isScrubberFocused = false
-                    focusedTransportButton = .playPause
+                    // This fires only because the trap kept the transport row
+                    // out of the focus graph (no native Down target). Restore
+                    // the row first, then seed play/pause on the next turn —
+                    // a claim in the same transaction as the structural
+                    // re-enable gets dropped by the engine. Focus stays on
+                    // the scrubber for that frame, so there is no visible
+                    // intermediate stop.
+                    trapsTransportFocus = false
+                    DispatchQueue.main.async {
+                        focusedTransportButton = .playPause
+                    }
                 },
                 onExitWhenIdle: {
                     viewModel.dismissControls()
@@ -308,14 +328,17 @@ struct TVPlayerControls: View {
                 viewModel: viewModel,
                 onOpenHUD: { openHUD() },
                 onMoveToScrubber: {
-                    focusedTransportButton = nil
+                    // Same single-write rule as onMoveToTransport: nulling the
+                    // transport focus first invites a geometric repair hop.
                     isScrubberFocused = true
                 },
                 onDismiss: onDismiss,
-                // Timeline scrub is modal: with the transport buttons out of
-                // the focus graph, a Down press/swipe has no target below the
-                // scrubber, so the focus engine leaves the puck alone.
-                allowsFocus: !isTimelineScrubbing,
+                // Timeline scrub is modal, and a focused scrubber traps Down:
+                // with the transport buttons out of the focus graph, a Down
+                // press/swipe has no native target below the scrubber, so the
+                // hand-off goes through onMoveToTransport instead of the
+                // engine's geometric pick.
+                allowsFocus: !isTimelineScrubbing && !trapsTransportFocus,
                 focusedButton: $focusedTransportButton
             )
         }
