@@ -173,6 +173,7 @@ final class LoopbackSegmentStore {
         self.memoryBudgetBytes = memoryBudgetBytes
         self.debugDirectory = debugDirectory
         self.spillPolicy = spillPolicy
+        _ = PlaybackDiskBudget.sweepOrphanedSpillDirectories
         if spillPolicy.isEnabled {
             let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("continuum-dv-hls", isDirectory: true)

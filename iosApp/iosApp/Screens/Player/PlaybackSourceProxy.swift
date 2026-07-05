@@ -180,6 +180,7 @@ final class PlaybackSourceCache {
         self.diskSpillEnabled = Self.resolveDiskSpillEnabled(diskSpillEnabled)
         self.diskBudgetBytes = diskBudgetBytes
             ?? PlaybackDiskBudget.retentionBudget(availableBytes: PlaybackDiskBudget.freeDiskSpaceBytes())
+        _ = PlaybackDiskBudget.sweepOrphanedSpillDirectories
         if self.diskSpillEnabled {
             let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
                 .appendingPathComponent("continuum-source-cache", isDirectory: true)
