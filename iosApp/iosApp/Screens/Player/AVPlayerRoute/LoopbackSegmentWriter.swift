@@ -329,6 +329,28 @@ final class LoopbackSegmentWriter {
     /// EXT-X-ENDLIST so AVPlayer treats it as VOD.
     private var finished = false
     private var loggedMasterManifest = false
+    /// AVPlayer entry playlist. Apple grants premium-format claims (Dolby
+    /// Atmos MAT output for E-AC-3 JOC) at master-variant level; a
+    /// media-direct start never gets them. The historical iOS rejection of
+    /// our local master surface was the missing RESOLUTION/FRAME-RATE and
+    /// the faithful High-tier CODECS declaration — both fixed in
+    /// `emitMasterPlaylist`/`hevcRFC6381CodecString` (AetherEngine ships the
+    /// same master shape in production). Kill switch back to the old
+    /// media-direct start:
+    /// `defaults write <bundle> player.apple.loopback_master_start_enabled -bool NO`
+    private lazy var masterStartEnabled =
+        UserDefaults.standard.object(
+            forKey: "player.apple.loopback_master_start_enabled"
+        ) as? Bool ?? true
+    private var startupPlaylistName: String {
+        masterStartEnabled ? "master.m3u8" : "playlist.m3u8"
+    }
+    /// Output video dimensions, captured at stream setup for the master
+    /// playlist's RESOLUTION attribute (Apple's HLS authoring spec requires
+    /// RESOLUTION and FRAME-RATE on every variant; FRAME-RATE is
+    /// load-bearing — see `emitMasterPlaylist`).
+    private var masterVideoWidth: Int32 = 0
+    private var masterVideoHeight: Int32 = 0
     private var repairedMissingVideoDTSCount = 0
     private let startupWallTime = CFAbsoluteTimeGetCurrent()
     private var lastSourceStatsWallTime: CFAbsoluteTime?
@@ -482,6 +504,13 @@ final class LoopbackSegmentWriter {
     private var doviRecord: DoviRecord?
     private var outputAudioCodecID: AVCodecID?
     private var outputAudioCodecToken: String?
+    /// True when the selected copy-mode audio stream is E-AC-3 with a JOC
+    /// (Atmos) extension — `codecpar.profile == 30`
+    /// (`AV_PROFILE_EAC3_DDP_ATMOS`, libavcodec defs.h; set by the eac3
+    /// decoder during stream probing when the bitstream carries
+    /// `eac3_extension_type_a`). Drives the dec3 JOC surgery in
+    /// `writeInitSegment`.
+    private var selectedAudioIsAtmosJOC = false
     private var audioDecoderCtx: UnsafeMutablePointer<AVCodecContext>?
     private var audioEncoderCtx: UnsafeMutablePointer<AVCodecContext>?
     /// Reused across every decoded bridge frame (receive_frame unrefs it);
@@ -2336,6 +2365,8 @@ final class LoopbackSegmentWriter {
                 if avcodec_parameters_copy(outStream.pointee.codecpar, codecpar) < 0 {
                     throw LoopbackWriterError.allocOutput
                 }
+                masterVideoWidth = codecpar.pointee.width
+                masterVideoHeight = codecpar.pointee.height
                 outStream.pointee.time_base = inStream.pointee.time_base
                 outStream.pointee.codecpar.pointee.codec_tag = 0
                 let dovi = outputDoviConfig(from: readDoviConfig(codecpar: codecpar))
@@ -2381,8 +2412,16 @@ final class LoopbackSegmentWriter {
                 ensureAudioFrameSize(codecpar: outStream.pointee.codecpar)
                 outputAudioCodecID = codecpar.pointee.codec_id
                 outputAudioCodecToken = codecToken(for: codecpar.pointee.codec_id)
+                // AV_PROFILE_EAC3_DDP_ATMOS (= 30): the eac3 decoder sets it
+                // during probing when the E-AC-3 bitstream carries a JOC
+                // (Atmos) extension. The vendored FFmpeg 7.1 muxer writes no
+                // dec3 JOC extension of its own, so writeInitSegment patches
+                // one in — without it AVFoundation classifies the track as
+                // plain E-AC-3 and Atmos never engages.
+                selectedAudioIsAtmosJOC = codecpar.pointee.codec_id == AV_CODEC_ID_EAC3
+                    && codecpar.pointee.profile == 30
                 let codecName = outputAudioCodecToken ?? String(cString: avcodec_get_name(codecpar.pointee.codec_id))
-                print("[CMP-AVP] selected audio copy sourceStream=\(i) codec=\(codecName) channels=\(codecpar.pointee.ch_layout.nb_channels)")
+                print("[CMP-AVP] selected audio copy sourceStream=\(i) codec=\(codecName) channels=\(codecpar.pointee.ch_layout.nb_channels) atmosJOC=\(selectedAudioIsAtmosJOC ? 1 : 0)")
             } else {
                 try openAudioTranscodePipeline(
                     inputStream: inStream,
@@ -2874,11 +2913,18 @@ final class LoopbackSegmentWriter {
                 .joined()
         }
 
-        var codec = "\(sampleEntry).\(profileSpacePrefix)\(profileIDC).\(compatibilityString).\(tierFlag ? "H" : "L")\(levelIDC)"
-        if let constraintString, !constraintString.isEmpty {
-            codec += ".\(constraintString)"
-        }
-        return codec
+        // Always declare Main tier ('L') and omit the constraint suffix,
+        // whatever the stream's actual tier flag says. AVPlayer's
+        // master-level codec filter silently drops variants whose CODECS it
+        // won't claim — a faithful "hvc1.2.4.H150.B0" (High tier, device
+        // stream) was rejected with NSURLErrorDomain -1002 before the
+        // variant playlist was ever fetched, while the lenient Main-tier
+        // declaration is accepted everywhere (AetherEngine likewise always
+        // declares L and never a constraint suffix). The declaration only
+        // feeds variant selection; the bitstream is untouched.
+        _ = tierFlag
+        _ = constraintString
+        return "\(sampleEntry).\(profileSpacePrefix)\(profileIDC).\(compatibilityString).L\(levelIDC)"
     }
 
     private func reversedBits32(_ value: UInt32) -> UInt32 {
@@ -4491,6 +4537,23 @@ final class LoopbackSegmentWriter {
                 print("[CMP-AVP] dvvC injection failed — hvcC not found in init tree")
             }
         }
+        if selectedAudioIsAtmosJOC {
+            // complexity_index_type_a = 16 is the standard object count for
+            // streaming DDP-Atmos; FFmpeg 7.1's parser does not expose the
+            // stream's true value (no complexity_index_type_a in its
+            // ac3_parser_internal.h), and the field is a decoder complexity
+            // hint. A vendored FFmpeg ≥ 8 bump writes the parsed value
+            // natively (the surgery then no-ops via its already-extended
+            // guard).
+            if let patched = ISOBoxSurgery.appendDec3JOCExtension(into: bytes, complexityIndex: 16) {
+                bytes = patched
+                print("[CMP-AVP] dec3 JOC extension appended (Atmos signalling, complexity=16)")
+            } else {
+                // print too: OSLog is invisible to devicectl console capture.
+                print("[CMP-AVP] dec3 JOC extension append FAILED — Atmos will present as plain E-AC-3 5.1")
+                Self.logger.error("dec3 JOC extension append failed — Atmos will present as plain E-AC-3 5.1")
+            }
+        }
         do {
             if Self.traceThroughput {
                 let started = CFAbsoluteTimeGetCurrent()
@@ -5076,8 +5139,8 @@ final class LoopbackSegmentWriter {
             // heuristics (segment count + live-start window) don't apply.
             // The first produced video segment is enough to attach.
             firstSegmentReadyFired = true
-            print("[CMP-AVP] startup ready (vod plan) startPlaylist=playlist.m3u8 producedSegments=\(segmentEntries.count)")
-            onFirstSegmentReady?("playlist.m3u8")
+            print("[CMP-AVP] startup ready (vod plan) startPlaylist=\(startupPlaylistName) producedSegments=\(segmentEntries.count)")
+            onFirstSegmentReady?(startupPlaylistName)
             return
         }
         let startupReason = force ? "forced" : "minimum_runway"
@@ -5096,14 +5159,15 @@ final class LoopbackSegmentWriter {
         let mediaRate = elapsed > 0
             ? String(format: "%.2fx", totalMediaDuration / elapsed)
             : "unknown"
-        // Start AVPlayer from the media playlist. The multivariant manifest is
-        // still emitted for artifact inspection and DV/HDR validation metadata,
-        // but iOS rejected the current local master surface before fetching the
-        // child playlist. The media playlist path is the proven playback path.
+        // Start AVPlayer from the master playlist (see `masterStartEnabled`):
+        // premium-format claims (Atmos MAT output) are granted at
+        // master-variant level only. The historical iOS rejection of this
+        // surface was the missing RESOLUTION/FRAME-RATE attributes and the
+        // High-tier CODECS declaration, both since fixed.
         print(
-            "[CMP-AVP] startup runway ready startPlaylist=playlist.m3u8 generated=\(String(format: "%.1f", totalMediaDuration))s threshold=\(String(format: "%.1f", minimumPlayableWindow))s segments=\(segmentEntries.count) targetDuration=\(String(format: "%.1f", playlistTargetDuration))s elapsed=\(String(format: "%.2f", elapsed))s mediaRate=\(mediaRate) reason=\(startupReason) note=media_playlist_start_hint"
+            "[CMP-AVP] startup runway ready startPlaylist=\(startupPlaylistName) generated=\(String(format: "%.1f", totalMediaDuration))s threshold=\(String(format: "%.1f", minimumPlayableWindow))s segments=\(segmentEntries.count) targetDuration=\(String(format: "%.1f", playlistTargetDuration))s elapsed=\(String(format: "%.2f", elapsed))s mediaRate=\(mediaRate) reason=\(startupReason) masterStart=\(masterStartEnabled ? 1 : 0)"
         )
-        onFirstSegmentReady?("playlist.m3u8")
+        onFirstSegmentReady?(startupPlaylistName)
     }
 
     // MARK: - Playlist
@@ -5260,6 +5324,18 @@ final class LoopbackSegmentWriter {
         if let supplemental = supplementalCodecString() {
             inf += ",SUPPLEMENTAL-CODECS=\"\(supplemental)\""
         }
+        if masterVideoWidth > 0, masterVideoHeight > 0 {
+            inf += ",RESOLUTION=\(masterVideoWidth)x\(masterVideoHeight)"
+        }
+        // FRAME-RATE is load-bearing for VIDEO-RANGE=PQ variants: AVFoundation
+        // filters out a PQ variant that carries no FRAME-RATE before the media
+        // playlist is fetched (NSURLError -1002 with zero errorLog events).
+        // Always emit it, defaulting to the 23.976 film cadence (the same
+        // default the display-criteria path uses) when the server provides no
+        // parsable frame rate — otherwise DV/PQ files with missing fps
+        // metadata would be dropped by the variant filter.
+        let masterFrameRate = sessionSpec.sourceVideoFrameRate.flatMap { $0 > 0 ? $0 : nil } ?? 23.976
+        inf += ",FRAME-RATE=\(String(format: "%.3f", Double(masterFrameRate)))"
         inf += ",VIDEO-RANGE=\(manifestMetadata.videoRange)"
         if !loggedMasterManifest {
             loggedMasterManifest = true

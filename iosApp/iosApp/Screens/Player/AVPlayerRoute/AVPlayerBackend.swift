@@ -343,7 +343,9 @@ final class AVPlayerBackend {
     private var loopbackStartupLastRequestCount: UInt64 = 0
     private enum LoopbackStartupRecoveryStage { case initial, nudged, reloaded }
     private var loopbackStartupRecoveryStage: LoopbackStartupRecoveryStage = .initial
-    /// In-flight HDMI mode-switch settle wait (gated non-DV HDR only). The
+    /// In-flight HDMI mode-switch settle wait (gated non-DV HDR, plus any
+    /// fresh DV criteria apply — the master playlist's VIDEO-RANGE is
+    /// validated against the panel's current mode on tvOS 26.5). The
     /// AVPlayerItem attach is deferred behind it; teardown cancels it so a
     /// reanchor or dispose can't race a late attach.
     private var displayModeSettleTask: Task<Void, Never>?
@@ -1479,11 +1481,13 @@ final class AVPlayerBackend {
             guard let self, !self.isDisposed, !Task.isCancelled,
                   self.activeLoopbackSessionID == sessionID,
                   self.currentItem == nil else { return }
-            // Panel-readiness snapshot. No manifest gating is needed today:
-            // the loopback route always serves AVPlayer the media playlist
-            // (never the VIDEO-RANGE-claiming master artifact), which is the
-            // safe hosting for an SDR panel — AVPlayer tonemaps. Logged as
-            // the gate signal for any future master-playlist serving.
+            // Panel-readiness snapshot. The loopback route now serves the
+            // VIDEO-RANGE-claiming master playlist (Atmos claims are
+            // master-level grants), so this wait is what keeps the item's
+            // synchronous VIDEO-RANGE validation from racing the HDMI mode
+            // switch. hdrHosted=0 after the wait means the panel stayed
+            // SDR; AetherEngine ships the same master shape to such panels
+            // in production, so the attach proceeds either way.
             cmpLog("[CMP-AVP] tv display settle hdrHosted=\(hosted ? 1 : 0)")
             self.attachLoopbackItem(url: url)
         }
@@ -1571,6 +1575,11 @@ final class AVPlayerBackend {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .moviePlayback, options: [])
+            // Routing preference, not a claim: tells the system this app
+            // plays multichannel content so route negotiation (HDMI/AirPlay)
+            // prefers a multichannel-capable path. AetherEngine sets the
+            // same before its Atmos passthrough; PlayerCore already does.
+            try? session.setSupportsMultichannelContent(true)
             try session.setActive(true, options: [])
             audioSessionActive = true
         } catch {
@@ -3586,8 +3595,13 @@ final class AVPlayerBackend {
 
     /// Writes the HDMI display criteria for the upcoming loopback item.
     /// Returns true when a dynamic-range switch was requested and the caller
-    /// should wait for it to settle before creating the AVPlayerItem (gated
-    /// non-DV HDR only; the shipped DV path never waits).
+    /// should wait for it to settle before creating the AVPlayerItem. Both
+    /// the gated non-DV HDR path and a fresh DV apply wait: tvOS 26.5
+    /// validates a master variant's VIDEO-RANGE against the panel's CURRENT
+    /// mode, synchronously, before fetching the init segment — creating the
+    /// item mid-switch fails with -11868 (underlying -17223) and drops the
+    /// session to the PlayerCore fallback. AetherEngine orders the same way
+    /// (criteria apply → settle wait → build player).
     @discardableResult
     private func applyTVDisplayCriteriaForLoopbackIfNeeded(context: String) -> Bool {
         #if os(tvOS)
@@ -3614,6 +3628,12 @@ final class AVPlayerBackend {
                 print("[CMP-AVP] tv display apply context=\(context) matching=0 skipped=matching_disabled")
             case .applied:
                 print(String(format: "[CMP-AVP] tv display apply context=%@ fps=%.3f dr=%d matching=1 preservedReload=%d", context, Double(refreshRate), Int(SpikeDynamicRange.dolbyVision.rawValue), preservedForReload ? 1 : 0))
+                // A reload that preserved criteria left the panel in the
+                // right mode already; only a fresh apply can start an HDMI
+                // negotiation the item creation must not race. The settle
+                // helper early-outs in one poll when the panel is already
+                // hosting HDR, so an in-mode start pays no real latency.
+                return !preservedForReload
             case .formatUnavailable:
                 break
             }
