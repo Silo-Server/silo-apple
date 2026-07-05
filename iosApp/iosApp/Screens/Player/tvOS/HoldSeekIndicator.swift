@@ -43,10 +43,9 @@ struct HoldSeekIndicator: View {
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 16)
-        .background(
-            Capsule(style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(Capsule().fill(Color.black.opacity(0.35)))
+        .siloPlayerGlass(
+            in: Capsule(style: .continuous),
+            tint: Color.black.opacity(0.35)
         )
         .overlay(
             Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1)

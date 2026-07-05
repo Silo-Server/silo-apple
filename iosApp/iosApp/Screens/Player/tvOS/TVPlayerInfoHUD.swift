@@ -125,14 +125,11 @@ struct TVPlayerInfoHUD: View {
         // tallest pane's needs — content-hugging here would resize the panel
         // on every tab swap, which cascades into a SwiftUI relayout pass.
         .frame(maxWidth: 1100, minHeight: 380, maxHeight: 380)
-        .background(
-            // `.regularMaterial` carries enough light that the panel lifts
-            // off the video without any extra dark tint. Over a fully-black
-            // frame it renders near-clear — acceptable because the stroke
-            // + shadow still define the edge.
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(.regularMaterial)
-        )
+        // Glass carries enough light that the panel lifts off the video
+        // without extra dark tint; the stroke + shadow still define the
+        // edge over a fully-black frame. Low-power TVs draw a flat
+        // translucent fill instead (see siloPlayerGlass).
+        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1)
@@ -951,10 +948,7 @@ private struct HUDPickerDialog: View {
         .padding(.horizontal, 34)
         .padding(.vertical, 28)
         .frame(width: 620, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(.regularMaterial)
-        )
+        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .stroke(Color.white.opacity(0.18), lineWidth: 1)
@@ -1281,10 +1275,7 @@ private struct SubtitleAppearanceDialog: View {
             .padding(.horizontal, 34)
             .padding(.vertical, 28)
             .frame(width: 720, alignment: .topLeading)
-            .background(
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(.regularMaterial)
-            )
+            .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 28, style: .continuous)
                     .stroke(Color.white.opacity(0.18), lineWidth: 1)

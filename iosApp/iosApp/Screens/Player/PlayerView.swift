@@ -314,7 +314,7 @@ struct PlayerView: View {
             .scaleEffect(1.3)
             .frame(width: 62, height: 62)
             #endif
-            .siloGlass(in: .rect(cornerRadius: 8))
+            .siloPlayerGlass(in: .rect(cornerRadius: 8))
             .shadow(color: .black.opacity(0.45), radius: 24, y: 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .allowsHitTesting(false)

@@ -47,7 +47,7 @@ struct PlayerNoticeOverlay: View {
         .padding(.horizontal, ContinuumTheme.padding)
         .padding(.vertical, ContinuumTheme.spacing)
         .frame(maxWidth: 720)
-        .siloGlass(
+        .siloPlayerGlass(
             in: RoundedRectangle(
                 cornerRadius: ContinuumTheme.cardCornerRadius,
                 style: .continuous

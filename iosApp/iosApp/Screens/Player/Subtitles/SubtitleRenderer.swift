@@ -448,23 +448,9 @@ final class SubtitleRenderer {
         return min(safe, max(1, 1080 / size.height))
     }
 
-    #if os(tvOS)
     /// AppleTV14,x (A15, 3rd-gen 4K) is the first model with headroom for
-    /// 4K glyph rasterization; earlier models cap at 1080p. The simulator's
-    /// machine string is the host's, so it never caps.
-    private static let capsRenderAt1080p: Bool = {
-        var systemInfo = utsname()
-        uname(&systemInfo)
-        let machine = withUnsafeBytes(of: &systemInfo.machine) { raw in
-            String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
-        }
-        guard machine.hasPrefix("AppleTV") else { return false }
-        let major = Int(machine.dropFirst("AppleTV".count).prefix(while: \.isNumber)) ?? 0
-        return major > 0 && major < 14
-    }()
-    #else
-    private static let capsRenderAt1080p = false
-    #endif
+    /// 4K glyph rasterization; earlier models cap at 1080p.
+    private static let capsRenderAt1080p = DevicePower.isLowPowerAppleTV
 
     /// Update the libass frame/storage size and video-area margins. Called
     /// by the overlay view's `layoutSubviews`. Safe from main thread — hops
