@@ -5510,7 +5510,8 @@ final class LoopbackSegmentWriter {
 
     private func emitMasterPlaylist() {
         let bandwidth = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(
-            sourceBitrateBps: sessionSpec.sourceBitrateBps
+            sourceBitrateBps: sessionSpec.sourceBitrateBps,
+            isAudioBridgedToLossless: selectedAudioOutputMode.bridgesToLosslessFLAC
         )
         var inf = "#EXT-X-STREAM-INF:BANDWIDTH=\(bandwidth.peak)"
         if let average = bandwidth.average {

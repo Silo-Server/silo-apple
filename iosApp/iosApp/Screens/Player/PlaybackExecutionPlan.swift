@@ -65,6 +65,13 @@ struct LoopbackSessionSpec {
         case transcodeAC3
         case transcodeAAC
 
+        /// True when a (typically lossy) source track is re-encoded to
+        /// lossless FLAC, which can raise the served bitrate above the
+        /// source container average.
+        var bridgesToLosslessFLAC: Bool {
+            self == .transcodeFLAC || self == .requireFLAC
+        }
+
         var preferredCodecToken: String {
             switch self {
             case .copy:

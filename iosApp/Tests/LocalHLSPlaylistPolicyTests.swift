@@ -33,7 +33,9 @@ final class LocalHLSPlaylistPolicyTests: XCTestCase {
     }
 
     func testMasterBandwidthDeclaresSourceAverageWithPeakHeadroom() {
-        let bw = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: 63_000_000)
+        let bw = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(
+            sourceBitrateBps: 63_000_000, isAudioBridgedToLossless: false
+        )
         XCTAssertEqual(bw.average, 63_000_000)
         XCTAssertEqual(bw.peak, 126_000_000)
     }
@@ -41,23 +43,45 @@ final class LocalHLSPlaylistPolicyTests: XCTestCase {
     func testMasterBandwidthNeverDeclaresBelowLegacyFloor() {
         // Low-bitrate sources keep at least the legacy declaration so a
         // one-off oversized segment (FLAC audio burst) stays under it.
-        let bw = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: 4_000_000)
+        let bw = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(
+            sourceBitrateBps: 4_000_000, isAudioBridgedToLossless: false
+        )
         XCTAssertEqual(bw.average, 4_000_000)
         XCTAssertEqual(bw.peak, LocalHLSPlaylistPolicy.fallbackMasterBandwidthBps)
     }
 
-    func testMasterBandwidthFallsBackWhenSourceBitrateUnknown() {
-        XCTAssertEqual(
-            LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: nil).peak,
-            LocalHLSPlaylistPolicy.fallbackMasterBandwidthBps
+    func testMasterBandwidthBudgetsBridgedLosslessAudioIntoAverage() {
+        // The served variant carries re-encoded FLAC, not the source's lossy
+        // track; the declared average must not understate it (RFC 8216).
+        let bw = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(
+            sourceBitrateBps: 20_000_000, isAudioBridgedToLossless: true
         )
-        XCTAssertNil(LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: nil).average)
-        XCTAssertNil(LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: 0).average)
-        XCTAssertNil(LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: .nan).average)
+        XCTAssertEqual(bw.average, 24_000_000)
+        XCTAssertEqual(bw.peak, 48_000_000)
+    }
+
+    func testMasterBandwidthFallsBackWhenSourceBitrateUnknown() {
+        let unknown = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(
+            sourceBitrateBps: nil, isAudioBridgedToLossless: false
+        )
+        XCTAssertEqual(unknown.peak, LocalHLSPlaylistPolicy.fallbackMasterBandwidthBps)
+        XCTAssertNil(unknown.average)
+        XCTAssertNil(
+            LocalHLSPlaylistPolicy.masterPlaylistBandwidth(
+                sourceBitrateBps: 0, isAudioBridgedToLossless: false
+            ).average
+        )
+        XCTAssertNil(
+            LocalHLSPlaylistPolicy.masterPlaylistBandwidth(
+                sourceBitrateBps: .nan, isAudioBridgedToLossless: true
+            ).average
+        )
     }
 
     func testMasterBandwidthClampsAbsurdSourceBitrates() {
-        let bw = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: 5e12)
+        let bw = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(
+            sourceBitrateBps: 5e12, isAudioBridgedToLossless: true
+        )
         XCTAssertEqual(bw.average, 1_000_000_000)
         XCTAssertEqual(bw.peak, 2_000_000_000)
     }
