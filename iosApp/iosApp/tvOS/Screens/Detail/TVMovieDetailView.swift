@@ -35,45 +35,67 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
 
     @Namespace private var detailFocusNamespace
     @FocusState private var playFocused: Bool
+    /// True while focus sits anywhere inside the season chip row — drives the
+    /// episode-section re-center in `detailFocusScroll`.
+    @FocusState private var seasonRowFocused: Bool
+    /// True while focus sits anywhere in the hero's primary action row —
+    /// drives the scroll back to the page-entry (hero at top) framing.
+    @FocusState private var actionRowFocused: Bool
+
+    // Plain constants (not `static`) — the generic BelowSynopsis parameter
+    // forbids static stored properties on this type.
+    private let episodeSectionScrollId = "detail-episode-section"
+    private let heroScrollId = "detail-hero"
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 48) {
-                TVDetailHero(
-                    title: detail.title,
-                    seriesTitle: detail.type == "episode" ? detail.seriesTitle : nil,
-                    logoUrl: detail.logoUrl,
-                    backdropUrl: detail.backdropUrl,
-                    eyebrow: detail.type == "episode" ? nil : TVHeroMetadata.eyebrow(from: detail),
-                    sourceTokens: TVHeroMetadata.movieSourceTokens(from: detail),
-                    ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
-                    overview: detail.overview,
-                    tagline: detail.tagline,
-                    factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
-                    starringText: TVHeroMetadata.starringText(from: detail),
-                    actions: { actionColumn },
-                    belowSynopsis: belowSynopsis
-                )
+        ScrollViewReader { scrollProxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 48) {
+                    TVDetailHero(
+                        title: detail.title,
+                        seriesTitle: detail.type == "episode" ? detail.seriesTitle : nil,
+                        logoUrl: detail.logoUrl,
+                        backdropUrl: detail.backdropUrl,
+                        eyebrow: detail.type == "episode" ? nil : TVHeroMetadata.eyebrow(from: detail),
+                        sourceTokens: TVHeroMetadata.movieSourceTokens(from: detail),
+                        ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
+                        overview: detail.overview,
+                        tagline: detail.tagline,
+                        factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
+                        starringText: TVHeroMetadata.starringText(from: detail),
+                        actions: { actionColumn },
+                        belowSynopsis: belowSynopsis
+                    )
+                    .id(heroScrollId)
 
-                VStack(alignment: .leading, spacing: 72) {
-                    if showsEpisodeRail {
-                        episodesSection
+                    VStack(alignment: .leading, spacing: 72) {
+                        if showsEpisodeRail {
+                            episodesSection
+                                .id(episodeSectionScrollId)
+                        }
+                        if let cast = detail.cast, !cast.isEmpty {
+                            castSection(cast: cast)
+                        }
+                        detailsSection
+                        if showsSimilarRail {
+                            similarSection
+                        }
                     }
-                    if let cast = detail.cast, !cast.isEmpty {
-                        castSection(cast: cast)
-                    }
-                    detailsSection
-                    if showsSimilarRail {
-                        similarSection
-                    }
+                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.bottom, 160)
                 }
-                .padding(.horizontal, ContinuumTheme.safePadding)
-                .padding(.bottom, 160)
             }
+            .ignoresSafeArea()
+            .focusScope(detailFocusNamespace)
+            .defaultFocus($playFocused, true, priority: .userInitiated)
+            .detailFocusScroll(
+                proxy: scrollProxy,
+                seasonRowFocused: seasonRowFocused,
+                actionRowFocused: actionRowFocused,
+                episodeSectionId: episodeSectionScrollId,
+                heroId: heroScrollId
+            )
         }
-        .ignoresSafeArea()
-        .focusScope(detailFocusNamespace)
-        .defaultFocus($playFocused, true, priority: .userInitiated)
     }
 
     // MARK: - Hero actions
@@ -142,6 +164,9 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 moreMenu
             }
         }
+        // Container binding — flips true when any button in the row has
+        // focus, driving the scroll-to-top in `detailFocusScroll`.
+        .focused($actionRowFocused)
     }
 
     // MARK: - More menu
@@ -215,6 +240,9 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                     selectedSeasonId: selectedSeason?.id,
                     onSelect: onSelectSeason
                 )
+                // Container binding — true while any chip has focus, driving
+                // the episode-section re-center in `detailFocusScroll`.
+                .focused($seasonRowFocused)
             }
             if isLoadingEpisodes {
                 HStack {

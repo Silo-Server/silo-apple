@@ -40,6 +40,17 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
 
     @Namespace private var detailFocusNamespace
     @FocusState private var playFocused: Bool
+    /// True while focus sits anywhere inside the season chip row — drives the
+    /// episode-section re-center in `detailFocusScroll`.
+    @FocusState private var seasonRowFocused: Bool
+    /// True while focus sits anywhere in the hero's primary action row —
+    /// drives the scroll back to the page-entry (hero at top) framing.
+    @FocusState private var actionRowFocused: Bool
+
+    // Plain constants (not `static`) — the generic BelowSynopsis parameter
+    // forbids static stored properties on this type.
+    private let episodeSectionScrollId = "season-episode-section"
+    private let heroScrollId = "season-hero"
     /// Season whose next-up Play button has already auto-claimed focus. Keyed on
     /// the season (not a bare Bool) so we auto-focus Play once per season: the
     /// first async next-up resolve AND an in-place season switch — same view
@@ -48,44 +59,55 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     @State private var autoFocusedSeasonKey: String?
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 48) {
-                TVDetailHero(
-                    title: detail.title,
-                    seriesTitle: nil,
-                    logoUrl: nil,
-                    backdropUrl: detail.backdropUrl,
-                    eyebrow: detail.seriesTitle,
-                    sourceTokens: sourceTokens,
-                    ratingChip: nil,
-                    overview: detail.overview,
-                    tagline: detail.tagline,
-                    factsLine: [],
-                    starringText: TVHeroMetadata.starringText(from: detail),
-                    actions: { actionColumn },
-                    belowSynopsis: belowSynopsis
-                )
+        ScrollViewReader { scrollProxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 48) {
+                    TVDetailHero(
+                        title: detail.title,
+                        seriesTitle: nil,
+                        logoUrl: nil,
+                        backdropUrl: detail.backdropUrl,
+                        eyebrow: detail.seriesTitle,
+                        sourceTokens: sourceTokens,
+                        ratingChip: nil,
+                        overview: detail.overview,
+                        tagline: detail.tagline,
+                        factsLine: [],
+                        starringText: TVHeroMetadata.starringText(from: detail),
+                        actions: { actionColumn },
+                        belowSynopsis: belowSynopsis
+                    )
+                    .id(heroScrollId)
 
-                VStack(alignment: .leading, spacing: 72) {
-                    episodeSection
-                    if let cast = detail.cast, !cast.isEmpty {
-                        castSection(cast: cast)
+                    VStack(alignment: .leading, spacing: 72) {
+                        episodeSection
+                            .id(episodeSectionScrollId)
+                        if let cast = detail.cast, !cast.isEmpty {
+                            castSection(cast: cast)
+                        }
+                        detailsSection
                     }
-                    detailsSection
+                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.bottom, 160)
                 }
-                .padding(.horizontal, ContinuumTheme.safePadding)
-                .padding(.bottom, 160)
             }
-        }
-        .ignoresSafeArea()
-        .focusScope(detailFocusNamespace)
-        .defaultFocus($playFocused, true, priority: .userInitiated)
-        .onChange(of: nextUpEpisode?.contentId) { _, newValue in
-            guard newValue != nil else { return }
-            let seasonKey = selectedSeason?.contentId ?? ""
-            guard autoFocusedSeasonKey != seasonKey else { return }
-            autoFocusedSeasonKey = seasonKey
-            playFocused = true
+            .ignoresSafeArea()
+            .focusScope(detailFocusNamespace)
+            .defaultFocus($playFocused, true, priority: .userInitiated)
+            .onChange(of: nextUpEpisode?.contentId) { _, newValue in
+                guard newValue != nil else { return }
+                let seasonKey = selectedSeason?.contentId ?? ""
+                guard autoFocusedSeasonKey != seasonKey else { return }
+                autoFocusedSeasonKey = seasonKey
+                playFocused = true
+            }
+            .detailFocusScroll(
+                proxy: scrollProxy,
+                seasonRowFocused: seasonRowFocused,
+                actionRowFocused: actionRowFocused,
+                episodeSectionId: episodeSectionScrollId,
+                heroId: heroScrollId
+            )
         }
     }
 
@@ -162,6 +184,9 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                 moreMenu
             }
         }
+        // Container binding — flips true when any button in the row has
+        // focus, driving the scroll-to-top in `detailFocusScroll`.
+        .focused($actionRowFocused)
     }
 
     private var hasMoreMenu: Bool {
@@ -238,6 +263,9 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                     selectedSeasonId: selectedSeason?.id,
                     onSelect: onSelectSeason
                 )
+                // Container binding — true while any chip has focus, driving
+                // the episode-section re-center in `detailFocusScroll`.
+                .focused($seasonRowFocused)
             }
             if isLoadingEpisodes {
                 HStack {

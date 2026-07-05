@@ -35,6 +35,16 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     @Namespace private var detailFocusNamespace
     @FocusState private var playFocused: Bool
+    /// True while focus sits anywhere inside the season chip row. Used to
+    /// scroll the episode section to the same centered framing the focus
+    /// engine produces when the (taller) episode rail itself is focused —
+    /// otherwise landing on the short chip row only reveals the chips and
+    /// leaves the episodes below the fold.
+    @FocusState private var seasonRowFocused: Bool
+    /// True while focus sits anywhere in the hero's primary action row
+    /// (Play / Start Over / circle buttons). Backing up into it restores the
+    /// page-entry framing by scrolling the hero back to the top.
+    @FocusState private var actionRowFocused: Bool
     /// Season whose next-up Play button has already auto-claimed focus. Keyed on
     /// the season (not a bare Bool) so we auto-focus Play once per season: the
     /// first async next-up resolve AND an in-place season switch — same view
@@ -43,46 +53,66 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @State private var autoFocusedSeasonKey: String?
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 48) {
-                TVDetailHero(
-                    title: detail.title,
-                    seriesTitle: nil,
-                    logoUrl: detail.logoUrl,
-                    backdropUrl: detail.backdropUrl,
-                    eyebrow: TVHeroMetadata.eyebrow(from: detail),
-                    sourceTokens: TVHeroMetadata.seriesSourceTokens(from: detail),
-                    ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
-                    overview: detail.overview,
-                    tagline: detail.tagline,
-                    factsLine: TVHeroMetadata.seriesFactsLine(from: detail),
-                    starringText: TVHeroMetadata.starringText(from: detail),
-                    actions: { actionColumn },
-                    belowSynopsis: belowSynopsis
-                )
+        ScrollViewReader { scrollProxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 48) {
+                    heroView
+                        .id(heroScrollId)
 
-                VStack(alignment: .leading, spacing: 72) {
-                    episodeSection
-                    if let cast = detail.cast, !cast.isEmpty {
-                        castSection(cast: cast)
+                    VStack(alignment: .leading, spacing: 72) {
+                        episodeSection
+                            .id(episodeSectionScrollId)
+                        if let cast = detail.cast, !cast.isEmpty {
+                            castSection(cast: cast)
+                        }
+                        detailsSection
+                        similarSection
                     }
-                    detailsSection
-                    similarSection
+                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.bottom, 160)
                 }
-                .padding(.horizontal, ContinuumTheme.safePadding)
-                .padding(.bottom, 160)
             }
+            .ignoresSafeArea()
+            .focusScope(detailFocusNamespace)
+            .defaultFocus($playFocused, true, priority: .userInitiated)
+            .onChange(of: nextUpEpisode?.contentId) { _, newValue in
+                guard newValue != nil else { return }
+                let seasonKey = selectedSeason?.contentId ?? ""
+                guard autoFocusedSeasonKey != seasonKey else { return }
+                autoFocusedSeasonKey = seasonKey
+                playFocused = true
+            }
+            .detailFocusScroll(
+                proxy: scrollProxy,
+                seasonRowFocused: seasonRowFocused,
+                actionRowFocused: actionRowFocused,
+                episodeSectionId: episodeSectionScrollId,
+                heroId: heroScrollId
+            )
         }
-        .ignoresSafeArea()
-        .focusScope(detailFocusNamespace)
-        .defaultFocus($playFocused, true, priority: .userInitiated)
-        .onChange(of: nextUpEpisode?.contentId) { _, newValue in
-            guard newValue != nil else { return }
-            let seasonKey = selectedSeason?.contentId ?? ""
-            guard autoFocusedSeasonKey != seasonKey else { return }
-            autoFocusedSeasonKey = seasonKey
-            playFocused = true
-        }
+    }
+
+    // Plain constants (not `static`) — the generic BelowSynopsis parameter
+    // forbids static stored properties on this type.
+    private let episodeSectionScrollId = "series-episode-section"
+    private let heroScrollId = "series-hero"
+
+    private var heroView: some View {
+        TVDetailHero(
+            title: detail.title,
+            seriesTitle: nil,
+            logoUrl: detail.logoUrl,
+            backdropUrl: detail.backdropUrl,
+            eyebrow: TVHeroMetadata.eyebrow(from: detail),
+            sourceTokens: TVHeroMetadata.seriesSourceTokens(from: detail),
+            ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
+            overview: detail.overview,
+            tagline: detail.tagline,
+            factsLine: TVHeroMetadata.seriesFactsLine(from: detail),
+            starringText: TVHeroMetadata.starringText(from: detail),
+            actions: { actionColumn },
+            belowSynopsis: belowSynopsis
+        )
     }
 
     // MARK: - Hero actions
@@ -156,6 +186,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 action: onToggleWatched
             )
         }
+        // Container binding — flips true when any button in the row has
+        // focus, driving the scroll-to-top in `body`.
+        .focused($actionRowFocused)
     }
 
     /// Best "Play" target for the series: an in-progress episode if there
@@ -239,6 +272,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             selectedSeasonId: selectedSeason?.id,
             onSelect: onSelectSeason
         )
+        // Bound to the whole row: the binding flips true when any chip inside
+        // gains focus, driving the episode-section re-center in `body`.
+        .focused($seasonRowFocused)
     }
 
     @ViewBuilder
