@@ -5008,6 +5008,7 @@ class PlayerViewModel {
     /// we still need to guarantee the backend is torn down so audio can't
     /// outlive the view. `dispose()` is idempotent.
     deinit {
+        print("[CMP-LIFE] deinit PlayerViewModel")
         Self.logger.info("PlayerViewModel.deinit")
         isDisposed = true
         if let systemCaptionObserverToken {

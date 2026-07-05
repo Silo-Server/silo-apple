@@ -189,6 +189,7 @@ final class LoopbackSegmentStore {
     }
 
     deinit {
+        print("[CMP-LIFE] deinit LoopbackSegmentStore")
         if let spillDirectory {
             try? FileManager.default.removeItem(at: spillDirectory)
         }

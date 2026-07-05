@@ -410,6 +410,7 @@ final class AVPlayerBackend {
     }
 
     deinit {
+        print("[CMP-LIFE] deinit AVPlayerBackend")
         dispose()
     }
 

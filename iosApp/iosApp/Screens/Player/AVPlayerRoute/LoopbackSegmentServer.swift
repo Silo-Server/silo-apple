@@ -27,6 +27,8 @@ import Network
 import OSLog
 
 final class LoopbackSegmentServer {
+    // Temporary [CMP-LIFE]: session-pool leak attribution.
+    deinit { print("[CMP-LIFE] deinit LoopbackSegmentServer") }
     private static let startupRequestLogLimit = 80
     private static let responseChunkBytes = 256 * 1024
     private static let logger = Logger(

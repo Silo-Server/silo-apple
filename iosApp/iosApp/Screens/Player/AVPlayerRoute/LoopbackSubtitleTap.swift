@@ -46,6 +46,8 @@ struct LoopbackSubtitleTapTrackInfo {
 }
 
 final class LoopbackSubtitleTap {
+    // Temporary [CMP-LIFE]: session-pool leak attribution.
+    deinit { print("[CMP-LIFE] deinit LoopbackSubtitleTap") }
     /// Safety ceiling per stream. A feature film carries 1-3k dialogue
     /// events; the cap only exists so a pathological source cannot grow
     /// without bound. Ingest beyond the cap is dropped (text cues are

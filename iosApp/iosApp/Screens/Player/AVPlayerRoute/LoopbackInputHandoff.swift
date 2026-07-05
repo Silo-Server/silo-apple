@@ -52,6 +52,7 @@ final class LoopbackInputHandoff {
     private var abandoned = false
 
     deinit {
+        print("[CMP-LIFE] deinit LoopbackInputHandoff hadContext=\(context != nil ? 1 : 0)")
         if context != nil {
             avformat_close_input(&context)
         }

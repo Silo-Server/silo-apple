@@ -81,6 +81,8 @@ private final class ExtractorInterruptToken {
 }
 
 final class AVPlayerEmbeddedSubtitleExtractor {
+    // Temporary [CMP-LIFE]: session-pool leak attribution.
+    deinit { print("[CMP-LIFE] deinit AVPlayerEmbeddedSubtitleExtractor") }
     private static let maxReadAheadSeconds: Double = 45
 
     private struct SlotSelection {

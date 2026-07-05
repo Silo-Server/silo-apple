@@ -159,6 +159,7 @@ final class PlaybackSourceCache {
     }
 
     deinit {
+        print("[CMP-LIFE] deinit PlaybackSourceCache")
         if let diskDirectory {
             try? FileManager.default.removeItem(at: diskDirectory)
         }
@@ -538,6 +539,14 @@ private final class PlaybackSourceResource {
     private var pendingPrefetchStartOffset: Int64?
     private var cancelled = false
     private var discoveredTotalLength: Int64?
+    /// Detached serve tasks hold strong `self` for their whole body, so an
+    /// await that outlives the session (a send parked on TCP backpressure,
+    /// a fetch racing session invalidation) kept the resource — and its
+    /// cache budget — alive forever. `stop()` cancels every tracked task;
+    /// `send` cancels its connection on task cancellation so the parked
+    /// completion fires. Guarded by `prefetchLock`.
+    private var serveTasks: [UUID: Task<Void, Never>] = [:]
+    private var completedServeTaskIDs: Set<UUID> = []
 
     init(
         originURL: URL,
@@ -560,6 +569,7 @@ private final class PlaybackSourceResource {
     }
 
     deinit {
+        print("[CMP-LIFE] deinit PlaybackSourceResource")
         stop()
     }
 
@@ -571,8 +581,14 @@ private final class PlaybackSourceResource {
         prefetchTaskID = nil
         prefetchStartOffset = nil
         pendingPrefetchStartOffset = nil
+        let serving = serveTasks
+        serveTasks.removeAll()
+        completedServeTaskIDs.removeAll()
         prefetchLock.unlock()
         task?.cancel()
+        for (_, serveTask) in serving {
+            serveTask.cancel()
+        }
         session.invalidateAndCancel()
     }
 
@@ -615,14 +631,59 @@ private final class PlaybackSourceResource {
     }
 
     func handle(method: String, rangeHeader: String?, on connection: NWConnection) {
-        Task.detached(priority: .userInitiated) { [weak self, weak connection] in
-            guard let self, let connection else { return }
-            if method == "HEAD" {
-                await self.respondHead(on: connection)
-            } else {
-                await self.respondGet(rangeHeader: rangeHeader, on: connection)
-            }
+        prefetchLock.lock()
+        let alreadyStopped = cancelled
+        prefetchLock.unlock()
+        guard !alreadyStopped else {
+            connection.cancel()
+            return
         }
+        let id = UUID()
+        let task = Task.detached(priority: .userInitiated) { [weak self, weak connection] in
+            if let self, let connection {
+                if method == "HEAD" {
+                    await self.respondHead(on: connection)
+                } else {
+                    await self.respondGet(rangeHeader: rangeHeader, on: connection)
+                }
+            }
+            self?.serveTaskFinished(id)
+        }
+        registerServeTask(task, id: id)
+    }
+
+    /// The task starts running before registration can complete, so a
+    /// fast finish parks its id in `completedServeTaskIDs` for the
+    /// registration to reconcile.
+    private func registerServeTask(_ task: Task<Void, Never>, id: UUID) {
+        var cancelNow = false
+        prefetchLock.lock()
+        if completedServeTaskIDs.remove(id) != nil {
+            // Finished before registration — nothing to track.
+        } else if cancelled {
+            cancelNow = true
+        } else {
+            serveTasks[id] = task
+        }
+        prefetchLock.unlock()
+        if cancelNow {
+            task.cancel()
+        }
+    }
+
+    private func serveTaskFinished(_ id: UUID) {
+        prefetchLock.lock()
+        if serveTasks.removeValue(forKey: id) == nil, !cancelled {
+            completedServeTaskIDs.insert(id)
+        }
+        prefetchLock.unlock()
+    }
+
+    private func isCancelledFlag() -> Bool {
+        prefetchLock.lock()
+        let value = cancelled
+        prefetchLock.unlock()
+        return value
     }
 
     private func respondHead(on connection: NWConnection) async {
@@ -655,7 +716,9 @@ private final class PlaybackSourceResource {
             header += "Content-Length: \(max(0, total - resolved.start))\r\n"
         }
         header += "Connection: close\r\n\r\n"
+        print("[CMP-SRV] get start=\(resolved.start) end=\(resolved.end.map(String.init) ?? "-")")
         guard await send(Data(header.utf8), on: connection, close: false) else {
+            print("[CMP-SRV] get exit reason=header_send_failed")
             return
         }
 
@@ -668,6 +731,7 @@ private final class PlaybackSourceResource {
             let sendLength = responseEnd.map { Int(min(Int64(256 * 1024), $0 - cursor + 1)) } ?? 256 * 1024
             if let cached = cache.read(start: cursor, maxLength: max(1, sendLength)) {
                 guard await send(cached, on: connection, close: false) else {
+                    print("[CMP-SRV] get exit reason=send_failed cursor=\(cursor)")
                     return
                 }
                 cursor += Int64(cached.count)
@@ -713,6 +777,7 @@ private final class PlaybackSourceResource {
             onPlaybackSourceInterrupted?(.prematureEOF(offset: offset, expectedEnd: expectedEnd))
         }
         schedulePrefetch(after: cursor)
+        print("[CMP-SRV] get exit reason=\(endCause) cursor=\(cursor)")
         _ = await send(nil, on: connection, close: true)
     }
 
@@ -826,6 +891,10 @@ private final class PlaybackSourceResource {
     }
 
     private func fetchRange(start: Int64, length: Int) async throws -> (start: Int64, data: Data, totalLength: Int64?) {
+        // Never create a task on a session that may already be invalidated
+        // — the async wrapper's continuation can otherwise hang forever.
+        try Task.checkCancellation()
+        guard !isCancelledFlag() else { throw CancellationError() }
         let upper = max(start, start + Int64(max(1, length)) - 1)
         var request = URLRequest(url: originURL)
         request.httpMethod = "GET"
@@ -888,18 +957,26 @@ private final class PlaybackSourceResource {
         return nil
     }
 
+    /// Cancellation-aware: a send parked on TCP backpressure (peer holds
+    /// the socket but stops reading) withholds `contentProcessed`
+    /// indefinitely; cancelling the serve task cancels the connection,
+    /// which forces the pending completion to fire so the await resumes.
     private func send(_ data: Data?, on connection: NWConnection, close: Bool) async -> Bool {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            connection.send(content: data, isComplete: close, completion: .contentProcessed { error in
-                let success = error == nil
-                if !success {
-                    connection.cancel()
-                }
-                if close {
-                    connection.cancel()
-                }
-                continuation.resume(returning: success)
-            })
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                connection.send(content: data, isComplete: close, completion: .contentProcessed { error in
+                    let success = error == nil
+                    if !success {
+                        connection.cancel()
+                    }
+                    if close {
+                        connection.cancel()
+                    }
+                    continuation.resume(returning: success)
+                })
+            }
+        } onCancel: {
+            connection.cancel()
         }
     }
 
@@ -1034,6 +1111,7 @@ final class PlaybackSourceProxy {
     }
 
     deinit {
+        print("[CMP-LIFE] deinit PlaybackSourceProxy")
         stop()
     }
 
@@ -1043,6 +1121,7 @@ final class PlaybackSourceProxy {
         let open = connections
         connections.removeAll()
         lock.unlock()
+        print("[CMP-LIFE] PlaybackSourceProxy.stop openConnections=\(open.count)")
         resource.stop()
         listener?.cancel()
         listener = nil

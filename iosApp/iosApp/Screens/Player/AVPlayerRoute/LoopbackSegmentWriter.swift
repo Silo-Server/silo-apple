@@ -127,6 +127,8 @@ struct HDR10PlusSEIDetector {
 }
 
 final class LoopbackSegmentWriter {
+    // Temporary [CMP-LIFE]: session-pool leak attribution.
+    deinit { print("[CMP-LIFE] deinit LoopbackSegmentWriter") }
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "LoopbackSegmentWriter"
