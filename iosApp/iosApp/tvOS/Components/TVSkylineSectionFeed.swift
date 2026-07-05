@@ -31,10 +31,18 @@ struct TVSkylineSectionFeed: View {
     @State private var marqueeModel = TVFocusMarqueeModel()
     /// Token handed to row 1 so its first card claims focus on shell entry.
     @State private var contentFocusToken = 0
+    /// Snaps the row band back to the first section before a focus claim.
+    /// The band clips rows outside the viewport, and tvOS refuses to focus a
+    /// clipped view — so when entry focus fires while the user is parked on a
+    /// lower row (e.g. re-clicking the current tab in the top menu), the first
+    /// card's claim silently no-ops unless the band is scrolled home first.
+    @State private var entryScrollToken = 0
     /// Entry tokens that arrived before any row mounted — sections load
     /// async, so the initial hand-down would land on nothing.
     @State private var pendingFocusRequest: Int?
     @State private var lastAppliedRequest = 0
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -84,20 +92,32 @@ struct TVSkylineSectionFeed: View {
                 visibleBandHeight - ContinuumTheme.Skyline.rowBandBottomInset
             )
 
-            ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: ContinuumTheme.Skyline.rowBandPreviewSpacing) {
-                    ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                        featuredRow(section, isFirstRow: index == 0)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .id(section.id)
+            ScrollViewReader { scrollProxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: ContinuumTheme.Skyline.rowBandPreviewSpacing) {
+                        ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
+                            featuredRow(section, isFirstRow: index == 0)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .id(section.id)
+                        }
+                    }
+                    .scrollTargetLayout()
+                    // Allows the final row to top-align like every prior row,
+                    // with a blank preview area underneath instead of clamping.
+                    .padding(.bottom, trailingPreviewPadding)
+                }
+                .scrollTargetBehavior(.viewAligned)
+                // Animated ride home; the first card's focus claim is
+                // re-asserted by MediaRow until the scroll settles, so the
+                // animation can't lose the claim to mid-flight focus repairs.
+                .onChange(of: entryScrollToken) { _, _ in
+                    if let firstId = sections.first?.id {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.slowDuration)) {
+                            scrollProxy.scrollTo(firstId, anchor: .top)
+                        }
                     }
                 }
-                .scrollTargetLayout()
-                // Allows the final row to top-align like every prior row,
-                // with a blank preview area underneath instead of clamping.
-                .padding(.bottom, trailingPreviewPadding)
             }
-            .scrollTargetBehavior(.viewAligned)
             .frame(width: proxy.size.width, height: visibleBandHeight, alignment: .topLeading)
             .clipped()
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .bottomLeading)
@@ -141,7 +161,13 @@ struct TVSkylineSectionFeed: View {
         if isTopMenuFocused { return }
         guard request != lastAppliedRequest else { return }
         lastAppliedRequest = request
-        contentFocusToken += 1
+        // Scroll the band home first, then claim on the next turn: the claim
+        // is a @FocusState write on the first row's first card, which the
+        // engine drops while that card is still clipped out of the viewport.
+        entryScrollToken += 1
+        DispatchQueue.main.async {
+            contentFocusToken += 1
+        }
     }
 
     private func previewFocusedItem(_ item: SectionItem, in section: ResolvedSection) {

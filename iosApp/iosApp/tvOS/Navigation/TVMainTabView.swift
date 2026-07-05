@@ -731,6 +731,7 @@ struct TVMainTabView: View {
     // MARK: - Root selection & focus
 
     private func selectRoot(_ root: TVRootDestination) {
+        let isReselect = root == selectedRoot
         router.popToRoot()
 
         suppressTopMenuFocusForContentHandoff()
@@ -754,7 +755,21 @@ struct TVMainTabView: View {
         // the menu relinquishes its focus (TVTopMenuBar.onChange(isFocusSuppressed)),
         // so without an active hand-down the new content never claims focus and
         // the remote goes dead until the user blindly swipes.
-        contentFocusRequest += 1
+        if isReselect {
+            // Re-selecting the current tab keeps the content view alive (same
+            // `.id`), so a synchronous bump lands the row's focus claim in the
+            // same transaction as the bar's disable + focus teardown — and the
+            // engine's repair from the resigning tab button wins, leaving focus
+            // stranded in the menu. Defer one turn so the first card's claim is
+            // applied after the bar has fully resigned; a fresh tab doesn't need
+            // this because its content mounts a render later and claims in
+            // onAppear anyway.
+            DispatchQueue.main.async {
+                contentFocusRequest += 1
+            }
+        } else {
+            contentFocusRequest += 1
+        }
     }
 
     /// Re-arm the top bar's focus. `focusing` overrides which element the

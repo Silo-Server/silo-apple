@@ -61,6 +61,7 @@ struct MediaRow: View {
     /// identity per page, so the kick has to land on `onAppear`, not only
     /// on a `focusRequest` change).
     @State private var lastAppliedFocusRequest = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private static let focusLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "TVFocus"
@@ -76,8 +77,6 @@ struct MediaRow: View {
         #if os(tvOS)
         .focusSection()
         .modifier(TVRowMoveHandler(onMoveUp: onMoveUp, onMoveDown: onMoveDown))
-        .onAppear { applyFocusRequest(focusRequest) }
-        .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
         .onChange(of: focusedItemId) { _, newValue in
             guard let newValue,
                   let item = items.first(where: { $0.contentId == newValue }) else { return }
@@ -88,13 +87,42 @@ struct MediaRow: View {
     }
 
     #if os(tvOS)
-    private func applyFocusRequest(_ request: Int) {
+    private func applyFocusRequest(_ request: Int, proxy: ScrollViewProxy) {
         guard request > 0, request != lastAppliedFocusRequest,
               let firstItem = items.first else { return }
         lastAppliedFocusRequest = request
+        // Scroll home first, claim a turn later: a row parked deep in its
+        // strip keeps the first card unmounted (LazyHStack) or clipped, and
+        // the focus engine silently drops @FocusState writes to views it
+        // can't focus. The instant scroll mounts/unclips the card; the
+        // deferred write then lands on a focusable target.
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.slowDuration)) {
+            proxy.scrollTo(firstItem.id, anchor: .leading)
+        }
+        DispatchQueue.main.async {
+            Self.focusLogger.debug("mediaRow.applyFocus request=\(request, privacy: .public) first=\(firstItem.contentId, privacy: .public)")
+            claimFirstItemFocus(firstItem)
+        }
+    }
+
+    /// Write the claim, then verify it actually stuck and re-assert if not.
+    /// A single write races two things that both win by coming later: the
+    /// engine's remembered-focus repair after the top bar resigns, and the
+    /// geometric re-repairs it makes while the feed's scroll-to-top slides
+    /// rows (and their cards) under whatever it had focused. @FocusState
+    /// reflects *actual* focus, so a rejected/overridden write reads back as
+    /// a different value — retry until the scroll settles and ours is last.
+    private func claimFirstItemFocus(_ firstItem: SectionItem, attempt: Int = 0) {
         focusedItemId = firstItem.contentId
-        Self.focusLogger.debug("mediaRow.applyFocus request=\(request, privacy: .public) first=\(firstItem.contentId, privacy: .public)")
         onItemFocus?(firstItem)
+        // Window must outlast the ~300ms animated ride home plus the engine's
+        // settling repairs, or the last mid-flight repair wins after all.
+        guard attempt < 8 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            guard focusedItemId != firstItem.contentId else { return }
+            Self.focusLogger.debug("mediaRow.reclaimFocus attempt=\(attempt + 1, privacy: .public) first=\(firstItem.contentId, privacy: .public)")
+            claimFirstItemFocus(firstItem, attempt: attempt + 1)
+        }
     }
     #endif
 
@@ -128,6 +156,12 @@ struct MediaRow: View {
     // MARK: - Content
 
     private var scrollContent: some View {
+        ScrollViewReader { rowProxy in
+            scrollStrip(rowProxy)
+        }
+    }
+
+    private func scrollStrip(_ rowProxy: ScrollViewProxy) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: cardSpacing) {
                 ForEach(items) { item in
@@ -162,11 +196,19 @@ struct MediaRow: View {
                     }
                 }
             }
+            #if !os(tvOS)
             .padding(.horizontal, ContinuumTheme.safePadding)
+            #endif
             .padding(.vertical, verticalCardPadding)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         #if os(tvOS)
+        // The leading gutter must be a content *margin*, not padding inside
+        // the scroll content: programmatic `scrollTo(anchor: .leading)` and
+        // the engine's scroll-to-focused both align to the margin-inset
+        // viewport, so with inner padding they overshoot left by the gutter
+        // width and then visibly drift back to the rest position.
+        .contentMargins(.horizontal, ContinuumTheme.safePadding, for: .scrollContent)
         // tvOS focus lift expands cards on focus — give them breathing room
         // so they don't clip against the row above/below.
         .scrollClipDisabled()
@@ -175,6 +217,11 @@ struct MediaRow: View {
             binding: $focusedItemId,
             firstItemId: items.first?.contentId
         )
+        // The programmatic focus kick needs the scroll proxy (it scrolls the
+        // strip home before claiming), so it hangs off the strip rather than
+        // the row's outer stack.
+        .onAppear { applyFocusRequest(focusRequest, proxy: rowProxy) }
+        .onChange(of: focusRequest) { _, request in applyFocusRequest(request, proxy: rowProxy) }
         #endif
     }
 
