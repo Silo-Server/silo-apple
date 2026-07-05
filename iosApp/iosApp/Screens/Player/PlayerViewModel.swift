@@ -2102,9 +2102,10 @@ class PlayerViewModel {
                 return SourceProxyPreparation(plan: plan, proxy: nil)
             }
             proxy.setSourceBitrate(sourceBitrateBps(for: plan))
-            if plan.engine != .siloPlayerLoopback {
-                proxy.startPrefetch(at: initialSourcePrefetchOffset(for: plan))
-            }
+            // Loopback included: opening the origin stream here overlaps the
+            // TCP/TLS connect and slow-start ramp with demuxer spawn, which
+            // is a full round trip saved on high-latency links.
+            proxy.startPrefetch(at: initialSourcePrefetchOffset(for: plan))
             Self.logger.info("[CMP-SOURCE-CACHE] enabled route=\(plan.engine.label, privacy: .public) budgetBytes=\(cacheBudget, privacy: .public)")
             let streamRequest = StreamRequest(
                 url: localURL,

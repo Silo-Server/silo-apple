@@ -65,10 +65,10 @@ final class PlaybackSourceCache {
     static var siloLoopbackMemoryBudgetBytes: Int {
         isConstrainedMemoryDevice ? 128 * 1024 * 1024 : 256 * 1024 * 1024
     }
-    static let sourcePrefetchChunkBytes = 2 * 1024 * 1024
-    static let highBitrateSourcePrefetchChunkBytes = 8 * 1024 * 1024
-    static let ultraBitrateSourcePrefetchChunkBytes = 16 * 1024 * 1024
     static let sourceDiskSpillBudgetBytes = 512 * 1024 * 1024
+    /// Streaming appends grow a span in place until it reaches this size,
+    /// then roll over to a new span so eviction stays reasonably granular.
+    static let maxAppendSpanBytes = 16 * 1024 * 1024
 
     static var isConstrainedMemoryDevice: Bool {
         #if os(tvOS)
@@ -237,6 +237,15 @@ final class PlaybackSourceCache {
         return data
     }
 
+    /// Whether the byte at `offset` is cached, without the read-head
+    /// side effects of `read`.
+    func contains(offset: Int64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if spans.contains(where: { $0.start <= offset && $0.end >= offset }) { return true }
+        return diskSpans.contains(where: { $0.start <= offset && $0.end >= offset })
+    }
+
     func missingGap(start: Int64, desiredLength: Int, totalLimit: Int64?) -> Gap? {
         guard desiredLength > 0 else { return nil }
         let requestedEnd = min(
@@ -347,6 +356,20 @@ final class PlaybackSourceCache {
     }
 
     private func insertSpanLocked(_ incoming: Span) {
+        // Fast path for streaming appends: the incoming bytes start exactly
+        // where an existing span ends and overlap nothing else, so they can
+        // be appended in place instead of paying the full-copy merge.
+        if let idx = spans.firstIndex(where: { $0.end + 1 == incoming.start }),
+           spans[idx].data.count + incoming.data.count <= Self.maxAppendSpanBytes,
+           !spans.contains(where: { $0.start >= incoming.start && $0.start <= incoming.end }),
+           !diskSpans.contains(where: { rangesOverlap($0.range, incoming.range) }) {
+            spans[idx].data.append(incoming.data)
+            // The span is hot — keep its eviction age current so a stream
+            // that appended for 16 MiB isn't the next eviction victim.
+            spans[idx].createdAt = Date()
+            cachedBytes += incoming.data.count
+            return
+        }
         var start = incoming.start
         var data = incoming.data
         let incomingEnd = incoming.end
@@ -491,37 +514,17 @@ private struct PlaybackSourceRangeRequest {
     }
 }
 
-private struct PlaybackSourceHTTPStatusError: Error, CustomStringConvertible {
-    let statusCode: Int
-    let body: String?
-
-    var description: String {
-        if let body, !body.isEmpty {
-            return "origin HTTP \(statusCode): \(body)"
-        }
-        return "origin HTTP \(statusCode)"
-    }
-}
-
-private enum PlaybackSourceFetchError: Error, CustomStringConvertible {
-    case http(PlaybackSourceHTTPStatusError)
-    case network(Error)
-
-    var description: String {
-        switch self {
-        case .http(let error):
-            return error.description
-        case .network(let error):
-            return String(describing: error)
-        }
-    }
-}
-
 private final class PlaybackSourceResource {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "PlaybackSourceResource"
     )
+
+    enum WaitOutcome {
+        case available
+        case eof
+        case failed
+    }
 
     let token: String
     let originURL: URL
@@ -529,22 +532,22 @@ private final class PlaybackSourceResource {
     let cache: PlaybackSourceCache
     private let onPlaybackSessionMissing: (() -> Void)?
     private let onPlaybackSourceInterrupted: ((PlaybackSourceInterruptionReason) -> Void)?
-    private var chunkBytes: Int
-    private let session: URLSession
-    private let chunkLock = NSLock()
-    private let prefetchLock = NSLock()
-    private var prefetchTask: Task<Void, Never>?
-    private var prefetchTaskID: UUID?
-    private var prefetchStartOffset: Int64?
-    private var pendingPrefetchStartOffset: Int64?
+    private let stateLock = NSLock()
     private var cancelled = false
     private var discoveredTotalLength: Int64?
+    /// A successful origin response has been seen (even if it carried no
+    /// total), so total-length waiters need not block on the next one.
+    private var sawOriginResponse = false
+    private var streams: [PlaybackOriginStream] = []
+    private var demandCounter: UInt64 = 0
+    private var dataWaiters: [UUID: (offset: Int64, continuation: CheckedContinuation<WaitOutcome, Never>)] = [:]
+    private var totalWaiters: [UUID: CheckedContinuation<Int64?, Never>] = [:]
     /// Detached serve tasks hold strong `self` for their whole body, so an
     /// await that outlives the session (a send parked on TCP backpressure,
     /// a fetch racing session invalidation) kept the resource — and its
     /// cache budget — alive forever. `stop()` cancels every tracked task;
     /// `send` cancels its connection on task cancellation so the parked
-    /// completion fires. Guarded by `prefetchLock`.
+    /// completion fires. Guarded by `stateLock`.
     private var serveTasks: [UUID: Task<Void, Never>] = [:]
     private var completedServeTaskIDs: Set<UUID> = []
 
@@ -561,11 +564,6 @@ private final class PlaybackSourceResource {
         self.cache = cache
         self.onPlaybackSessionMissing = onPlaybackSessionMissing
         self.onPlaybackSourceInterrupted = onPlaybackSourceInterrupted
-        self.chunkBytes = PlaybackSourceCache.sourcePrefetchChunkBytes
-        let config = URLSessionConfiguration.ephemeral
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.urlCache = nil
-        self.session = URLSession(configuration: config)
     }
 
     deinit {
@@ -574,22 +572,31 @@ private final class PlaybackSourceResource {
     }
 
     func stop() {
-        prefetchLock.lock()
+        stateLock.lock()
         cancelled = true
-        let task = prefetchTask
-        prefetchTask = nil
-        prefetchTaskID = nil
-        prefetchStartOffset = nil
-        pendingPrefetchStartOffset = nil
+        let streamsToCancel = streams
+        streams.removeAll()
+        let dataResume = dataWaiters.values.map(\.continuation)
+        dataWaiters.removeAll()
+        let totalResume = Array(totalWaiters.values)
+        totalWaiters.removeAll()
         let serving = serveTasks
         serveTasks.removeAll()
         completedServeTaskIDs.removeAll()
-        prefetchLock.unlock()
-        task?.cancel()
+        stateLock.unlock()
+        for stream in streamsToCancel {
+            stream.cancel()
+            cache.endOriginRequest()
+        }
+        for continuation in totalResume {
+            continuation.resume(returning: nil)
+        }
+        for continuation in dataResume {
+            continuation.resume(returning: .failed)
+        }
         for (_, serveTask) in serving {
             serveTask.cancel()
         }
-        session.invalidateAndCancel()
     }
 
     func stats() -> PlaybackSourceProxyStats {
@@ -611,29 +618,18 @@ private final class PlaybackSourceResource {
     }
 
     func startPrefetch(at offset: Int64 = 0) {
-        schedulePrefetch(after: max(0, offset))
+        ensureStream(for: max(0, offset))
     }
 
     func setSourceBitrate(_ bps: Double?) {
         cache.setSourceBitrate(bps)
-        let chunk: Int
-        if let bps, bps >= 200_000_000 {
-            chunk = PlaybackSourceCache.ultraBitrateSourcePrefetchChunkBytes
-        } else if let bps, bps >= 80_000_000 {
-            chunk = PlaybackSourceCache.highBitrateSourcePrefetchChunkBytes
-        } else {
-            chunk = PlaybackSourceCache.sourcePrefetchChunkBytes
-        }
-        chunkLock.lock()
-        chunkBytes = chunk
-        chunkLock.unlock()
-        Self.logger.info("[CMP-SOURCE-CACHE] source bitrate=\(bps ?? 0, privacy: .public) chunkBytes=\(chunk, privacy: .public)")
+        Self.logger.info("[CMP-SOURCE-CACHE] source bitrate=\(bps ?? 0, privacy: .public)")
     }
 
     func handle(method: String, rangeHeader: String?, on connection: NWConnection) {
-        prefetchLock.lock()
+        stateLock.lock()
         let alreadyStopped = cancelled
-        prefetchLock.unlock()
+        stateLock.unlock()
         guard !alreadyStopped else {
             connection.cancel()
             return
@@ -657,7 +653,7 @@ private final class PlaybackSourceResource {
     /// registration to reconcile.
     private func registerServeTask(_ task: Task<Void, Never>, id: UUID) {
         var cancelNow = false
-        prefetchLock.lock()
+        stateLock.lock()
         if completedServeTaskIDs.remove(id) != nil {
             // Finished before registration — nothing to track.
         } else if cancelled {
@@ -665,29 +661,22 @@ private final class PlaybackSourceResource {
         } else {
             serveTasks[id] = task
         }
-        prefetchLock.unlock()
+        stateLock.unlock()
         if cancelNow {
             task.cancel()
         }
     }
 
     private func serveTaskFinished(_ id: UUID) {
-        prefetchLock.lock()
+        stateLock.lock()
         if serveTasks.removeValue(forKey: id) == nil, !cancelled {
             completedServeTaskIDs.insert(id)
         }
-        prefetchLock.unlock()
-    }
-
-    private func isCancelledFlag() -> Bool {
-        prefetchLock.lock()
-        let value = cancelled
-        prefetchLock.unlock()
-        return value
+        stateLock.unlock()
     }
 
     private func respondHead(on connection: NWConnection) async {
-        let total = await discoverTotalLength()
+        let total = await awaitTotalLength(hint: 0)
         var header = "HTTP/1.1 200 OK\r\n"
         if let total {
             header += "Content-Length: \(total)\r\n"
@@ -700,7 +689,7 @@ private final class PlaybackSourceResource {
 
     private func respondGet(rangeHeader: String?, on connection: NWConnection) async {
         let request = PlaybackSourceRangeRequest.parse(rangeHeader)
-        let total = await discoverTotalLength()
+        let total = await awaitTotalLength(hint: request.start)
         let resolved = resolveRequest(request, totalLength: total)
         let responseStatus = rangeHeader == nil ? 200 : 206
         let responseEnd = resolved.end
@@ -735,36 +724,27 @@ private final class PlaybackSourceResource {
                     return
                 }
                 cursor += Int64(cached.count)
-                schedulePrefetch(after: cursor)
+                noteDemandHint(at: cursor)
                 continue
             }
-            let chunkBytes = currentChunkBytes()
-            let fetchLength = responseEnd.map { Int(min(Int64(chunkBytes), max(1, $0 - cursor + 1))) } ?? chunkBytes
-            cache.recordCacheMiss(byteCount: Int64(fetchLength))
-            do {
-                let fetched = try await fetchRange(start: cursor, length: fetchLength)
-                guard !fetched.data.isEmpty else {
-                    sawEmptyFetch = true
-                    break
-                }
-                cache.store(start: fetched.start, data: fetched.data, totalLength: fetched.totalLength)
-                if let totalLength = fetched.totalLength {
-                    discoveredTotalLength = totalLength
-                    cache.setTotalLength(totalLength)
-                }
-            } catch {
+            cache.recordCacheMiss(byteCount: Int64(max(1, sendLength)))
+            switch await awaitData(at: cursor) {
+            case .available:
+                continue
+            case .eof:
+                sawEmptyFetch = true
+            case .failed:
                 sawFetchError = true
-                if !Self.isCancellationError(error) {
-                    Self.logger.info("[CMP-SOURCE-CACHE] foreground range fetch failed start=\(cursor, privacy: .public) error=\(String(describing: error), privacy: .public)")
-                    notifyForegroundInterruptionIfNeeded(error: error, offset: cursor)
-                }
-                break
             }
+            break
         }
+        // An exact range promising bytes past the real EOF (total unknown at
+        // request time) must classify as complete, not premature EOF.
+        let knownTotal = currentTotalLength() ?? total
         let endCause = PlaybackSourceResponseEnd.classify(
             cursor: cursor,
-            responseEnd: responseEnd,
-            totalLength: discoveredTotalLength ?? total,
+            responseEnd: responseEnd.map { end in knownTotal.map { min(end, $0 - 1) } ?? end },
+            totalLength: knownTotal,
             wasCancelled: Task.isCancelled,
             sawEmptyFetch: sawEmptyFetch,
             sawFetchError: sawFetchError
@@ -776,7 +756,7 @@ private final class PlaybackSourceResource {
             )
             onPlaybackSourceInterrupted?(.prematureEOF(offset: offset, expectedEnd: expectedEnd))
         }
-        schedulePrefetch(after: cursor)
+        noteDemandHint(at: cursor)
         print("[CMP-SRV] get exit reason=\(endCause) cursor=\(cursor)")
         _ = await send(nil, on: connection, close: true)
     }
@@ -799,162 +779,365 @@ private final class PlaybackSourceResource {
         }
     }
 
-    private func schedulePrefetch(after offset: Int64) {
-        prefetchLock.lock()
+    // MARK: - Origin stream orchestration
+
+    private func currentTotalLength() -> Int64? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return discoveredTotalLength
+    }
+
+    private func currentState() -> (cancelled: Bool, total: Int64?, sawResponse: Bool) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return (cancelled, discoveredTotalLength, sawOriginResponse)
+    }
+
+    /// Route a byte demand that MISSED the cache onto a stream: ride an
+    /// existing one, spawn a second, or retarget the least-recently-demanded.
+    private func ensureStream(for offset: Int64) {
+        var toStart: PlaybackOriginStream?
+        var toNote: PlaybackOriginStream?
+        var toRetarget: PlaybackOriginStream?
+        var order: UInt64 = 0
+        stateLock.lock()
         guard !cancelled else {
-            prefetchLock.unlock()
+            stateLock.unlock()
             return
         }
-        if let prefetchTask, !prefetchTask.isCancelled {
-            if let prefetchStartOffset,
-               !PlaybackSourcePrefetchPolicy.shouldRetargetPrefetch(
-                    activeStart: prefetchStartOffset,
-                    requestedStart: offset,
-                    chunkBytes: currentChunkBytes()
-               ) {
-                prefetchLock.unlock()
-                return
-            }
-            pendingPrefetchStartOffset = offset
-            prefetchLock.unlock()
+        if let total = discoveredTotalLength, offset >= total {
+            stateLock.unlock()
             return
         }
-        let taskID = UUID()
-        prefetchTaskID = taskID
-        prefetchStartOffset = offset
-        prefetchTask = Task.detached(priority: .utility) { [weak self] in
-            await self?.prefetchLoop(start: offset, taskID: taskID)
+        demandCounter += 1
+        order = demandCounter
+        let live = streams
+        let snapshots = live.map { $0.snapshot() }
+        switch PlaybackOriginStreamPolicy.action(demandOffset: offset, streams: snapshots) {
+        case .rideThrough(let id):
+            toNote = live.first(where: { $0.id == id })
+        case .spawn:
+            let stream = makeStream(startOffset: offset, order: order)
+            streams.append(stream)
+            toStart = stream
+        case .retarget(let id):
+            toRetarget = live.first(where: { $0.id == id })
         }
-        prefetchLock.unlock()
-    }
-
-    private func prefetchLoop(start: Int64, taskID: UUID) async {
-        var cursor: Int64? = start
-        while !Task.isCancelled, cache.shouldPrefetch {
-            guard let fetchStart = cache.nextPrefetchStart(after: cursor) else { break }
-            do {
-                let fetched = try await fetchRange(start: fetchStart, length: currentChunkBytes())
-                guard !fetched.data.isEmpty else { break }
-                cache.store(start: fetched.start, data: fetched.data, totalLength: fetched.totalLength)
-                cursor = fetched.start + Int64(fetched.data.count)
-                if let totalLength = fetched.totalLength {
-                    discoveredTotalLength = totalLength
-                    cache.setTotalLength(totalLength)
-                    if cursor! >= totalLength { break }
-                }
-            } catch {
-                if !Self.isCancellationError(error) {
-                    Self.logger.info("[CMP-SOURCE-CACHE] prefetch failed start=\(fetchStart, privacy: .public) error=\(String(describing: error), privacy: .public)")
-                }
-                break
+        stateLock.unlock()
+        toNote?.noteDemand(offset: offset, order: order)
+        if let toStart {
+            cache.beginOriginRequest()
+            toStart.start()
+        }
+        if let toRetarget {
+            if toRetarget.retarget(to: offset, order: order) {
+                // The victim may have carried waiters for its old region;
+                // nothing fills toward them anymore. Re-drive every waiter
+                // so each re-misses and re-routes against the new layout.
+                redriveAllDataWaiters()
+            } else {
+                // The victim finished or gave up between the snapshot and
+                // the retarget; replace it with a fresh stream.
+                replaceDeadStream(toRetarget, spawningAt: offset, order: order)
             }
         }
-        clearPrefetchTask(taskID: taskID)
     }
 
-    private func clearPrefetchTask(taskID: UUID) {
-        let pending: Int64?
-        prefetchLock.lock()
-        if prefetchTaskID == taskID {
-            prefetchTask = nil
-            prefetchTaskID = nil
-            prefetchStartOffset = nil
-            pending = pendingPrefetchStartOffset
-            pendingPrefetchStartOffset = nil
+    private func redriveAllDataWaiters() {
+        stateLock.lock()
+        let resume = dataWaiters.values.map(\.continuation)
+        dataWaiters.removeAll()
+        stateLock.unlock()
+        for continuation in resume {
+            continuation.resume(returning: .available)
+        }
+    }
+
+    private func replaceDeadStream(
+        _ dead: PlaybackOriginStream,
+        spawningAt offset: Int64,
+        order: UInt64
+    ) {
+        var toStart: PlaybackOriginStream?
+        stateLock.lock()
+        guard !cancelled else {
+            stateLock.unlock()
+            return
+        }
+        if streams.contains(where: { $0 === dead }) {
+            streams.removeAll { $0 === dead }
+            cache.endOriginRequest()
+        }
+        if streams.count < PlaybackOriginStreamPolicy.maxStreams {
+            let stream = makeStream(startOffset: offset, order: order)
+            streams.append(stream)
+            toStart = stream
+        }
+        stateLock.unlock()
+        if let toStart {
+            cache.beginOriginRequest()
+            toStart.start()
         } else {
-            pending = nil
-        }
-        prefetchLock.unlock()
-        if let pending {
-            schedulePrefetch(after: pending)
+            ensureStream(for: offset)
         }
     }
 
-    private func currentChunkBytes() -> Int {
-        chunkLock.lock()
-        let value = chunkBytes
-        chunkLock.unlock()
-        return value
+    /// Record demand served from cache: refreshes the covering stream's
+    /// demand mark (which keeps it "primary" and unparks it when the budget
+    /// frees) but never spawns or retargets — cached reads must not steer
+    /// connections toward data we already have.
+    private func noteDemandHint(at offset: Int64) {
+        var toNote: PlaybackOriginStream?
+        var order: UInt64 = 0
+        stateLock.lock()
+        guard !cancelled else {
+            stateLock.unlock()
+            return
+        }
+        demandCounter += 1
+        order = demandCounter
+        let snapshots = streams.map { $0.snapshot() }
+        if let covering = PlaybackOriginStreamPolicy.coveringStream(offset: offset, streams: snapshots) {
+            toNote = streams.first(where: { $0.id == covering })
+        }
+        stateLock.unlock()
+        toNote?.noteDemand(offset: offset, order: order)
     }
 
-    private func discoverTotalLength() async -> Int64? {
-        if let discoveredTotalLength { return discoveredTotalLength }
-        do {
-            let fetched = try await fetchRange(start: 0, length: 1)
-            cache.store(start: fetched.start, data: fetched.data, totalLength: fetched.totalLength)
-            discoveredTotalLength = fetched.totalLength
-            cache.setTotalLength(fetched.totalLength)
-            return fetched.totalLength
-        } catch {
-            return nil
-        }
-    }
-
-    private func fetchRange(start: Int64, length: Int) async throws -> (start: Int64, data: Data, totalLength: Int64?) {
-        // Never create a task on a session that may already be invalidated
-        // — the async wrapper's continuation can otherwise hang forever.
-        try Task.checkCancellation()
-        guard !isCancelledFlag() else { throw CancellationError() }
-        let upper = max(start, start + Int64(max(1, length)) - 1)
-        var request = URLRequest(url: originURL)
-        request.httpMethod = "GET"
-        for (key, value) in originHeaders {
-            request.setValue(value, forHTTPHeaderField: key)
-        }
-        request.setValue("bytes=\(start)-\(upper)", forHTTPHeaderField: "Range")
-        cache.beginOriginRequest()
-        defer { cache.endOriginRequest() }
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            throw PlaybackSourceFetchError.network(error)
-        }
-        guard let http = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-        guard (200...299).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8)
-            if Self.isPlaybackSessionMissing(statusCode: http.statusCode, body: body) {
-                onPlaybackSessionMissing?()
+    /// Suspend the serve loop until the byte at `offset` is cached, the file
+    /// ends before it, or the responsible stream gives up.
+    private func awaitData(at offset: Int64) async -> WaitOutcome {
+        let state = currentState()
+        if state.cancelled { return .failed }
+        if let total = state.total, offset >= total { return .eof }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<WaitOutcome, Never>) in
+                stateLock.lock()
+                if cancelled {
+                    stateLock.unlock()
+                    continuation.resume(returning: .failed)
+                    return
+                }
+                dataWaiters[id] = (offset, continuation)
+                stateLock.unlock()
+                // Route the demand only after the waiter is registered, so a
+                // stream give-up can never drain the pool between routing
+                // and registration and leave this waiter stranded.
+                ensureStream(for: offset)
+                // The bytes may also have landed between the cache miss and
+                // the registration above; re-check so the waiter can't sleep
+                // through its own wake-up.
+                if cache.contains(offset: offset) {
+                    resumeDataWaiter(id: id, outcome: .available)
+                } else if let total = currentTotalLength(), offset >= total {
+                    resumeDataWaiter(id: id, outcome: .eof)
+                }
             }
-            throw PlaybackSourceFetchError.http(PlaybackSourceHTTPStatusError(statusCode: http.statusCode, body: body))
+        } onCancel: {
+            resumeDataWaiter(id: id, outcome: .failed)
         }
-        let total = Self.totalLength(from: http, fallbackDataLength: data.count)
-        cache.recordOriginTransfer(byteCount: data.count)
-        return (start, data, total)
     }
 
-    private static func isPlaybackSessionMissing(statusCode: Int, body: String?) -> Bool {
-        guard statusCode == 404 else { return false }
-        let text = body ?? ""
-        return text.contains("playback_session_not_found")
-            || text.contains("Playback session not found")
+    private func resumeDataWaiter(id: UUID, outcome: WaitOutcome) {
+        stateLock.lock()
+        let waiter = dataWaiters.removeValue(forKey: id)
+        stateLock.unlock()
+        waiter?.continuation.resume(returning: outcome)
     }
 
-    private func notifyForegroundInterruptionIfNeeded(error: Error, offset: Int64) {
-        guard let reason = Self.interruptionReason(for: error) else { return }
-        Self.logger.warning(
-            "[CMP-SOURCE-CACHE] foreground source interruption offset=\(offset, privacy: .public) reason=\(String(describing: reason), privacy: .public)"
+    /// Total length comes from the first successful origin response
+    /// (Content-Range / Content-Length) — no dedicated probe round trip.
+    private func awaitTotalLength(hint: Int64) async -> Int64? {
+        let state = currentState()
+        if let known = state.total { return known }
+        if state.sawResponse || state.cancelled { return nil }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Int64?, Never>) in
+                stateLock.lock()
+                if cancelled || sawOriginResponse || discoveredTotalLength != nil {
+                    let value = discoveredTotalLength
+                    stateLock.unlock()
+                    continuation.resume(returning: value)
+                    return
+                }
+                totalWaiters[id] = continuation
+                stateLock.unlock()
+                // Register first, then route: if the routed stream gives up
+                // instantly, its drain finds this waiter instead of missing
+                // it (the drain resolves total waiters on any give-up).
+                ensureStream(for: max(0, hint))
+            }
+        } onCancel: {
+            resumeTotalWaiter(id: id)
+        }
+    }
+
+    private func resumeTotalWaiter(id: UUID) {
+        stateLock.lock()
+        let waiter = totalWaiters.removeValue(forKey: id)
+        let value = discoveredTotalLength
+        stateLock.unlock()
+        waiter?.resume(returning: value)
+    }
+
+    private func makeStream(startOffset: Int64, order: UInt64) -> PlaybackOriginStream {
+        PlaybackOriginStream(
+            originURL: originURL,
+            originHeaders: originHeaders,
+            startOffset: startOffset,
+            demandOrder: order,
+            callbacks: PlaybackOriginStream.Callbacks(
+                didStore: { [weak self] _, range in
+                    self?.streamDidStore(range)
+                },
+                didReceiveResponse: { [weak self] _, total in
+                    self?.streamReceivedResponse(total: total)
+                },
+                didDetectSessionMissing: { [weak self] _ in
+                    self?.onPlaybackSessionMissing?()
+                },
+                didFinish: { [weak self] stream in
+                    self?.streamEnded(stream, gaveUpWith: nil, statusCode: nil)
+                },
+                didGiveUp: { [weak self] stream, cause, statusCode in
+                    self?.streamEnded(stream, gaveUpWith: cause, statusCode: statusCode)
+                },
+                mayContinueFilling: { [weak self] stream, cursor, demandMark in
+                    self?.mayContinueFilling(stream, cursor: cursor, demandMark: demandMark) ?? false
+                },
+                store: { [weak self] start, data, total in
+                    guard let self else { return }
+                    self.cache.recordOriginTransfer(byteCount: data.count)
+                    self.cache.store(start: start, data: data, totalLength: total)
+                }
+            )
         )
-        onPlaybackSourceInterrupted?(reason)
     }
 
-    private static func interruptionReason(for error: Error) -> PlaybackSourceInterruptionReason? {
-        if case let PlaybackSourceFetchError.http(httpError) = error {
-            guard [502, 503, 504].contains(httpError.statusCode) else { return nil }
-            return .serverUnavailable(statusCode: httpError.statusCode)
+    private func streamDidStore(_ range: ClosedRange<Int64>) {
+        var resume: [CheckedContinuation<WaitOutcome, Never>] = []
+        stateLock.lock()
+        let satisfied = dataWaiters.filter {
+            $0.value.offset >= range.lowerBound && $0.value.offset <= range.upperBound
+        }.map(\.key)
+        for id in satisfied {
+            if let waiter = dataWaiters.removeValue(forKey: id) {
+                resume.append(waiter.continuation)
+            }
         }
-        if case let PlaybackSourceFetchError.network(underlying) = error,
-           !isCancellationError(underlying) {
-            return .networkUnavailable
+        stateLock.unlock()
+        for continuation in resume {
+            continuation.resume(returning: .available)
         }
-        if !isCancellationError(error),
-           (error as NSError).domain == NSURLErrorDomain {
-            return .networkUnavailable
+    }
+
+    private func streamReceivedResponse(total: Int64?) {
+        var resume: [CheckedContinuation<Int64?, Never>] = []
+        stateLock.lock()
+        sawOriginResponse = true
+        if let total, total > 0 {
+            discoveredTotalLength = max(discoveredTotalLength ?? 0, total)
         }
-        return nil
+        let value = discoveredTotalLength
+        resume = Array(totalWaiters.values)
+        totalWaiters.removeAll()
+        stateLock.unlock()
+        cache.setTotalLength(value)
+        for continuation in resume {
+            continuation.resume(returning: value)
+        }
+    }
+
+    /// A stream left the pool. Finished streams re-drive their waiters
+    /// (data may satisfy them or a new stream will be ensured); a give-up
+    /// fails them and surfaces the interruption exactly once.
+    private func streamEnded(
+        _ stream: PlaybackOriginStream,
+        gaveUpWith cause: PlaybackOriginReconnectPolicy.EndCause?,
+        statusCode: Int?
+    ) {
+        var redrive: [CheckedContinuation<WaitOutcome, Never>] = []
+        var failed: [CheckedContinuation<WaitOutcome, Never>] = []
+        var totalResume: [CheckedContinuation<Int64?, Never>] = []
+        stateLock.lock()
+        let wasTracked = streams.contains(where: { $0 === stream })
+        streams.removeAll { $0 === stream }
+        let survivors = streams.map { $0.snapshot() }
+        for (id, waiter) in dataWaiters {
+            // Waiters a surviving stream still covers re-drive and re-ride
+            // it; only waiters this stream was responsible for fail. A
+            // clean finish re-drives everyone.
+            if cause == nil
+                || PlaybackOriginStreamPolicy.coveringStream(offset: waiter.offset, streams: survivors) != nil {
+                redrive.append(waiter.continuation)
+            } else {
+                failed.append(waiter.continuation)
+            }
+            dataWaiters.removeValue(forKey: id)
+        }
+        if cause != nil {
+            totalResume = Array(totalWaiters.values)
+            totalWaiters.removeAll()
+        }
+        let total = discoveredTotalLength
+        stateLock.unlock()
+        if wasTracked {
+            cache.endOriginRequest()
+        }
+        for continuation in totalResume {
+            continuation.resume(returning: total)
+        }
+        for continuation in redrive {
+            continuation.resume(returning: .available)
+        }
+        for continuation in failed {
+            continuation.resume(returning: .failed)
+        }
+        guard let cause else { return }
+        let reason: PlaybackSourceInterruptionReason?
+        switch cause {
+        case .network, .stalled:
+            reason = .networkUnavailable
+        case .httpOutage(let code):
+            reason = .serverUnavailable(statusCode: code)
+        case .prematureEOF:
+            if let total {
+                reason = .prematureEOF(offset: stream.snapshot().writeCursor, expectedEnd: total - 1)
+            } else {
+                reason = nil
+            }
+        case .httpFatal, .rangeIgnored:
+            reason = nil
+        }
+        if let reason {
+            Self.logger.warning(
+                "[CMP-SOURCE-CACHE] origin interruption reason=\(String(describing: reason), privacy: .public) status=\(statusCode ?? 0, privacy: .public)"
+            )
+            onPlaybackSourceInterrupted?(reason)
+        }
+    }
+
+    private func mayContinueFilling(
+        _ stream: PlaybackOriginStream,
+        cursor: Int64,
+        demandMark: Int64
+    ) -> Bool {
+        stateLock.lock()
+        guard !cancelled else {
+            stateLock.unlock()
+            return false
+        }
+        let maxOrder = streams.map { $0.currentDemandOrder }.max() ?? 0
+        let isMostRecent = stream.currentDemandOrder >= maxOrder
+        stateLock.unlock()
+        return !PlaybackOriginStreamPolicy.shouldPause(
+            writeCursor: cursor,
+            demandMark: demandMark,
+            isMostRecentlyDemanded: isMostRecent,
+            globalBudgetAvailable: cache.shouldPrefetch
+        )
     }
 
     /// Cancellation-aware: a send parked on TCP backpressure (peer holds
@@ -978,31 +1161,6 @@ private final class PlaybackSourceResource {
         } onCancel: {
             connection.cancel()
         }
-    }
-
-    private static func totalLength(from response: HTTPURLResponse, fallbackDataLength: Int) -> Int64? {
-        if let contentRange = response.value(forHTTPHeaderField: "Content-Range"),
-           let slash = contentRange.lastIndex(of: "/") {
-            let suffix = contentRange[contentRange.index(after: slash)...]
-            if suffix != "*", let total = Int64(suffix) {
-                return total
-            }
-        }
-        if let length = response.value(forHTTPHeaderField: "Content-Length"),
-           let value = Int64(length),
-           response.statusCode == 200 {
-            return value
-        }
-        return fallbackDataLength > 0 ? nil : 0
-    }
-
-    private static func isCancellationError(_ error: Error) -> Bool {
-        if error is CancellationError { return true }
-        if case let PlaybackSourceFetchError.network(underlying) = error {
-            return isCancellationError(underlying)
-        }
-        let nsError = error as NSError
-        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
     }
 
     private static func makeToken() -> String {
