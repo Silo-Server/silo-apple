@@ -5509,7 +5509,14 @@ final class LoopbackSegmentWriter {
     }
 
     private func emitMasterPlaylist() {
-        var inf = "#EXT-X-STREAM-INF:BANDWIDTH=18000000,CODECS=\"\(masterCodecString())\""
+        let bandwidth = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(
+            sourceBitrateBps: sessionSpec.sourceBitrateBps
+        )
+        var inf = "#EXT-X-STREAM-INF:BANDWIDTH=\(bandwidth.peak)"
+        if let average = bandwidth.average {
+            inf += ",AVERAGE-BANDWIDTH=\(average)"
+        }
+        inf += ",CODECS=\"\(masterCodecString())\""
         if let supplemental = supplementalCodecString() {
             inf += ",SUPPLEMENTAL-CODECS=\"\(supplemental)\""
         }

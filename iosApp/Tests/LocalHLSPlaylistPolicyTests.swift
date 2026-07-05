@@ -31,4 +31,34 @@ final class LocalHLSPlaylistPolicyTests: XCTestCase {
         XCTAssertEqual(LocalHLSPlaylistPolicy.playlistType(isFinal: true), .vod)
         XCTAssertEqual(LocalHLSPlaylistPolicy.playlistType(isFinal: true).hlsTag, "#EXT-X-PLAYLIST-TYPE:VOD")
     }
+
+    func testMasterBandwidthDeclaresSourceAverageWithPeakHeadroom() {
+        let bw = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: 63_000_000)
+        XCTAssertEqual(bw.average, 63_000_000)
+        XCTAssertEqual(bw.peak, 126_000_000)
+    }
+
+    func testMasterBandwidthNeverDeclaresBelowLegacyFloor() {
+        // Low-bitrate sources keep at least the legacy declaration so a
+        // one-off oversized segment (FLAC audio burst) stays under it.
+        let bw = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: 4_000_000)
+        XCTAssertEqual(bw.average, 4_000_000)
+        XCTAssertEqual(bw.peak, LocalHLSPlaylistPolicy.fallbackMasterBandwidthBps)
+    }
+
+    func testMasterBandwidthFallsBackWhenSourceBitrateUnknown() {
+        XCTAssertEqual(
+            LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: nil).peak,
+            LocalHLSPlaylistPolicy.fallbackMasterBandwidthBps
+        )
+        XCTAssertNil(LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: nil).average)
+        XCTAssertNil(LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: 0).average)
+        XCTAssertNil(LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: .nan).average)
+    }
+
+    func testMasterBandwidthClampsAbsurdSourceBitrates() {
+        let bw = LocalHLSPlaylistPolicy.masterPlaylistBandwidth(sourceBitrateBps: 5e12)
+        XCTAssertEqual(bw.average, 1_000_000_000)
+        XCTAssertEqual(bw.peak, 2_000_000_000)
+    }
 }
