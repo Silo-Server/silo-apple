@@ -88,13 +88,26 @@ struct SubtitleAutoResolver {
         }
 
         // Auto mode skips subs when the audio is already in the
-        // preferred subtitle language.
+        // preferred subtitle language — the one case where the forced
+        // (signs/foreign-dialogue-only) track is what "show forced
+        // subtitles" is FOR. Mirrors the Android resolver.
         if mode == .auto, let audio = inputs.currentAudioLanguage,
            languagesMatch(audio, rawLang) {
+            if inputs.showForced,
+               let forced = inputs.availableSubtitles.first(where: { track in
+                   track.isForced
+                       && track.lang.map { languagesMatch($0, rawLang) } == true
+               }) {
+                return .select(forced)
+            }
             return .disable
         }
 
-        if let pick = bestLanguageMatch(rawLang, in: inputs.availableSubtitles, preferForced: inputs.showForced) {
+        // The user wants readable subs in this language: always the
+        // full-dialogue track. `showForced` must NOT steal this pick —
+        // a forced track is signs-only and reads as "subtitles stopped
+        // working" minutes into any dialogue scene.
+        if let pick = bestLanguageMatch(rawLang, in: inputs.availableSubtitles, preferForced: false) {
             return .select(pick)
         }
 
