@@ -106,4 +106,31 @@ final class SubtitleAutoResolverTests: XCTestCase {
         ))
         XCTAssertEqual(result, .select(full))
     }
+
+    /// Tracks labelled CC/SDH in the title but missing the ffmpeg
+    /// hearing-impaired disposition flag are still demoted below a plain
+    /// track in the same language.
+    func testFullPickDemotesTitleOnlyCCTracks() {
+        let cc = track(id: 12, lang: "eng", title: "English (CC)")
+        let sdh = track(id: 13, lang: "eng", title: "English SDH")
+        let full = track(id: 14, lang: "eng", title: "English")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "en",
+            mode: .auto,
+            showForced: false,
+            tracks: [cc, sdh, full],
+            audioLanguage: "kor"
+        ))
+        XCTAssertEqual(result, .select(full))
+    }
+
+    /// The CC token check must not misread ordinary words containing
+    /// "cc" — a title like "Soccer Cut" is a normal dialogue track.
+    func testCCTokenDoesNotMatchInsideWords() {
+        XCTAssertFalse(SubtitleAutoResolver.titleIndicatesHearingImpaired("Soccer Cut"))
+        XCTAssertTrue(SubtitleAutoResolver.titleIndicatesHearingImpaired("English (CC)"))
+        XCTAssertTrue(SubtitleAutoResolver.titleIndicatesHearingImpaired("English [SDH]"))
+        XCTAssertTrue(SubtitleAutoResolver.titleIndicatesHearingImpaired("Closed Captions"))
+        XCTAssertFalse(SubtitleAutoResolver.titleIndicatesHearingImpaired(nil))
+    }
 }

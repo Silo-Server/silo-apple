@@ -354,7 +354,11 @@ enum DetailPlaybackFormatting {
             return (forced.element, forced.offset)
         }
         if let full = pool.first(where: {
-            !($0.element.forced ?? false) && !($0.element.hearingImpaired ?? false)
+            !($0.element.forced ?? false)
+                && !($0.element.hearingImpaired ?? false)
+                && !SubtitleAutoResolver.titleIndicatesHearingImpaired(
+                    $0.element.title ?? $0.element.embeddedTitle
+                )
         }) {
             return (full.element, full.offset)
         }

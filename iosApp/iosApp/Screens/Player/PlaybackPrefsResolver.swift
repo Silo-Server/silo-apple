@@ -185,13 +185,29 @@ struct SubtitleAutoResolver {
         if preferForced, let forced = pool.first(where: { $0.isForced }) {
             return forced
         }
-        if let nonForced = pool.first(where: { !$0.isForced && !$0.isHearingImpaired }) {
+        if let nonForced = pool.first(where: {
+            !$0.isForced && !$0.isHearingImpaired && !titleIndicatesHearingImpaired($0.title)
+        }) {
             return nonForced
         }
         if let nonForced = pool.first(where: { !$0.isForced }) {
             return nonForced
         }
         return pool.first
+    }
+
+    /// CC/SDH detection from the track title, for files that label the
+    /// track ("English (CC)", "English SDH") without setting the ffmpeg
+    /// hearing-impaired disposition flag. "cc"/"sdh" must match as whole
+    /// tokens — a bare substring check would hit words like "soccer".
+    static func titleIndicatesHearingImpaired(_ title: String?) -> Bool {
+        guard let title, !title.isEmpty else { return false }
+        let lowered = title.lowercased()
+        if lowered.contains("hearing impaired") || lowered.contains("closed caption") {
+            return true
+        }
+        let tokens = lowered.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        return tokens.contains("cc") || tokens.contains("sdh")
     }
 
     /// Loose ISO 639 comparison. Accepts mixed 2-letter / 3-letter
