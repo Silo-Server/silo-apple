@@ -15,6 +15,7 @@ import SwiftUI
 /// geometrically. No manual focus mutation (see docs/tvos-focus.md).
 struct TVSettingsView: View {
     @State private var viewModel = TVSettingsViewModel()
+    @State private var debugSettings = TVDebugSettings.shared
     @State private var showSignOutConfirm = false
     @State private var selectedCategory: TVSettingsCategory = .general
     @FocusState private var railFocus: RailItem?
@@ -253,6 +254,20 @@ struct TVSettingsView: View {
             TVSettingsSectionHeader("ABOUT")
 
             TVSettingsInfoRow(title: "App Version", value: Self.appVersion)
+
+            TVSettingsSectionHeader("DEBUGGING")
+
+            TVSettingsToggleRow(
+                title: "Show Focus Targets",
+                isOn: debugSettings.showFocusTargets
+            ) {
+                debugSettings.setShowFocusTargets(!debugSettings.showFocusTargets)
+            }
+
+            TVSettingsFooter(
+                "Overlays the predicted d-pad destination in each direction "
+                    + "from the focused control. Stored on this Apple TV."
+            )
         }
     }
 

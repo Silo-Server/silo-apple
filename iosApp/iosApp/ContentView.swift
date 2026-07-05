@@ -33,6 +33,9 @@ struct ContentView: View {
         #endif
         .environmentObject(overlayPrefs)
         .preferredColorScheme(.dark)
+        #if os(tvOS)
+        .modifier(TVFocusDebugActivationModifier())
+        #endif
         #if os(iOS)
         // Hold the pairing offer until the startup splash logo finishes so a
         // quickly-discovered TV doesn't pop the card over the animation.

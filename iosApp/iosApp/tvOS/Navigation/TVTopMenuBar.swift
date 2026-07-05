@@ -346,6 +346,12 @@ struct TVTopMenuBar: View {
         // Panel-bearing tabs publish their bounds so the shell can center the
         // anchored dropdown under them (§5.3); other tabs have no panel.
         .modifier(TVTopMenuAnchorPublisher(panel: rootPanel(root)))
+        // Debug-overlay hint: SwiftUI's content→menu section hop lands on
+        // the selected tab, but that rule is invisible to the focus
+        // engine — the selected tab publishes its frame so the overlay
+        // can mark it as the Up destination. Renders nothing when the
+        // overlay setting is off.
+        .background(TVFocusDebugTabFramePublisher(isSelected: selectedRoot == root))
         .accessibilityLabel("\(root.title), tab, \(index + 1) of \(count)")
         .accessibilityHint(rootPanelHint(for: root))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
