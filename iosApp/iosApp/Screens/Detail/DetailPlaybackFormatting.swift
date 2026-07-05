@@ -290,9 +290,9 @@ enum DetailPlaybackFormatting {
     /// for the "Auto" (no explicit override) case, applied to the detail
     /// payload's `SubtitleTrack` list. Returns nil when Auto resolves to no
     /// subtitles (mode off, no preference, or audio already in the preferred
-    /// language). Mirrors `SubtitleAutoResolver.resolve` with the inputs the
-    /// detail page can supply — `showForced` defaults off, which only affects
-    /// the forced-vs-full-dialogue tiebreak.
+    /// language). Mirrors `SubtitleAutoResolver.resolve` branch-for-branch
+    /// with the inputs the detail page can supply, including where
+    /// `showForced` does and does not apply.
     private static func autoResolvedSubtitle(
         version: FileVersion?,
         context: SubtitleAutoContext
@@ -319,13 +319,25 @@ enum DetailPlaybackFormatting {
         if rawLang.isEmpty { return nil }
 
         // Auto mode hides subs when the audio already matches the preferred
-        // subtitle language (e.g. English audio + English sub preference).
+        // subtitle language (e.g. English audio + English sub preference) —
+        // unless forced subs are wanted, in which case the language-matching
+        // forced (signs-only) track is exactly what plays.
         if mode == .auto, let audio = context.audioLanguage,
            SubtitleAutoResolver.languagesMatch(audio, rawLang) {
+            if context.showForced,
+               let forced = tracks.enumerated().first(where: { _, track in
+                   (track.forced ?? false)
+                       && track.language.map { SubtitleAutoResolver.languagesMatch($0, rawLang) } == true
+               }) {
+                return (forced.element, forced.offset)
+            }
             return nil
         }
 
-        if let pick = bestLanguageMatch(rawLang, in: tracks, preferForced: context.showForced) {
+        // The user wants readable subs in this language: always the
+        // full-dialogue track — `showForced` must NOT steal this pick
+        // (mirrors the resolver's preferForced: false here).
+        if let pick = bestLanguageMatch(rawLang, in: tracks, preferForced: false) {
             return pick
         }
 
