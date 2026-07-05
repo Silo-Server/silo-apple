@@ -121,7 +121,10 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
         }
         .padding(.leading, ContinuumTheme.safePadding)
         .padding(.trailing, ContinuumTheme.safePadding)
-        .padding(.bottom, 120)
+        // Keep this tight: the detail pages' outer VStack already adds its
+        // own spacing between the hero and the first content section, so a
+        // large inset here reads as a dead band under the selector row.
+        .padding(.bottom, 48)
     }
 
     private var editorialColumn: some View {
