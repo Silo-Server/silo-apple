@@ -15,6 +15,10 @@ struct TVPlayerTransportCluster: View {
     let onOpenHUD: () -> Void
     let onMoveToScrubber: () -> Void
     let onDismiss: () -> Void
+    /// False while the scrubber's timeline-scrub mode is active — pulls every
+    /// button out of the focus graph so a Down press/swipe on the puck finds
+    /// no target and focus stays on the scrub.
+    var allowsFocus: Bool = true
 
     @FocusState.Binding var focusedButton: FocusTarget?
 
@@ -117,7 +121,7 @@ struct TVPlayerTransportCluster: View {
             )
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
             .contentShape(Circle())
-            .focusable(true)
+            .focusable(allowsFocus)
             .focused($focusedButton, equals: focus)
             .onTapGesture(perform: action)
             .accessibilityLabel(accessibilityLabel)

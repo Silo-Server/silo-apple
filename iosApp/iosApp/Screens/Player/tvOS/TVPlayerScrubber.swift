@@ -15,6 +15,12 @@ struct TVPlayerScrubber: View {
     let onMoveToTransport: () -> Void
     let onExitWhenIdle: () -> Void
 
+    /// Explicit timeline-scrub mode (Select on the puck). Owned by the shell
+    /// so it can drop the transport row out of the focus graph while the
+    /// scrub is modal — otherwise a Down press/swipe moves focus there
+    /// natively, before `onMoveCommand` ever fires.
+    @Binding var isTimelineScrubbing: Bool
+
     /// When true, blurring the scrubber cancels the in-progress scrub rather
     /// than committing it. The shell flips this on before opening a sheet so
     /// the focus-lost path doesn't turn into an accidental seek.
@@ -27,15 +33,14 @@ struct TVPlayerScrubber: View {
     private static let timelineAutoSeekTickNanos: UInt64 = 100_000_000
     private static let timelineAutoSeekBaseStep: Double = 2
     private static let timelineAutoSeekRates = [-32, -16, -8, -4, -2, -1, 1, 2, 4, 8, 16, 32]
-    @State private var isTimelineScrubbing = false
     @State private var timelineAutoSeekRate = 0
     @State private var timelineAutoSeekTask: Task<Void, Never>?
 
     /// Trackpad-drag scrubbing. Translation from one full edge-to-edge swipe
     /// on the Siri Remote surface is ~1000pt, so this maps a full swipe to
-    /// roughly 40% of the timeline — several swipes cross a whole movie
-    /// without a light drag overshooting by minutes.
-    private static let panPointsForFullTimeline: CGFloat = 2400
+    /// roughly 8% of the timeline — a light drag lands within seconds of
+    /// where it started instead of jumping minutes.
+    private static let panPointsForFullTimeline: CGFloat = 12000
     /// Accumulated translation required before a drag starts moving the
     /// playhead; the finger contact from a d-pad click always jitters a few
     /// points and must not nudge the preview.
@@ -419,6 +424,10 @@ struct TVPlayerScrubber: View {
         case .up:
             break
         case .down:
+            // While a scrub is in flight, a downward swipe is almost always
+            // drag spillover, not an intent to leave — trapping it keeps the
+            // preview alive until the user commits (Select) or cancels (Menu).
+            guard !isTimelineScrubbing, !viewModel.isScrubbing else { return }
             onMoveToTransport()
         @unknown default:
             break

@@ -22,6 +22,10 @@ struct TVPlayerControls: View {
     /// commit. Without this, opening the HUD with an in-flight scrub preview
     /// would seek to that preview as a side-effect.
     @State private var cancelPendingScrub: Bool = false
+    /// Mirrors the scrubber's explicit timeline-scrub mode (Select on the
+    /// puck). Held here so the transport cluster can leave the focus graph
+    /// while the scrub is modal.
+    @State private var isTimelineScrubbing: Bool = false
 
     // Focus states. SwiftUI's focus engine only holds focus on one
     // focusable at a time, so selecting one of these implicitly clears the
@@ -296,6 +300,7 @@ struct TVPlayerControls: View {
                 onExitWhenIdle: {
                     viewModel.dismissControls()
                 },
+                isTimelineScrubbing: $isTimelineScrubbing,
                 cancelOnBlur: cancelPendingScrub
             )
             timeRow
@@ -307,6 +312,10 @@ struct TVPlayerControls: View {
                     isScrubberFocused = true
                 },
                 onDismiss: onDismiss,
+                // Timeline scrub is modal: with the transport buttons out of
+                // the focus graph, a Down press/swipe has no target below the
+                // scrubber, so the focus engine leaves the puck alone.
+                allowsFocus: !isTimelineScrubbing,
                 focusedButton: $focusedTransportButton
             )
         }
