@@ -316,13 +316,12 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     // MARK: - More Like This
 
     private var similarSection: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            TVSectionHeader(title: "More Like This")
-            TVSimilarRail(
-                contentId: detail.contentId,
-                onSelect: onNavigateToItem
-            )
-        }
+        // Header lives inside the rail so it disappears with the cards when
+        // recommendations are disabled or empty.
+        TVSimilarRail(
+            contentId: detail.contentId,
+            onSelect: onNavigateToItem
+        )
     }
 
     // MARK: - Cast

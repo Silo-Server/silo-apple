@@ -9,7 +9,10 @@ import SwiftUI
 ///
 /// The rail self-loads on appear and silently hides if the request
 /// fails or returns nothing — recommendations are non-essential, so a
-/// missing rail is preferable to an error placeholder.
+/// missing rail is preferable to an error placeholder. The section
+/// header lives in here (not the parent) for the same reason: when
+/// recommendations are disabled or empty, an orphaned "More Like This"
+/// title must vanish along with the cards.
 struct TVSimilarRail: View {
     let contentId: String
     let onSelect: (String) -> Void
@@ -21,16 +24,26 @@ struct TVSimilarRail: View {
 
     private let cardSpacing: CGFloat = 32
     private let railVerticalPadding: CGFloat = 24
+    /// Header-to-content gap, matching the other detail sections'
+    /// `VStack(spacing: 28)` so the page rhythm stays uniform.
+    private let headerSpacing: CGFloat = 28
 
     var body: some View {
         Group {
             if isLoading {
-                loadingPlaceholder
+                section { loadingPlaceholder }
             } else if !items.isEmpty {
-                rail
+                section { rail }
             }
         }
         .task(id: contentId) { await load() }
+    }
+
+    private func section(@ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: headerSpacing) {
+            TVSectionHeader(title: "More Like This")
+            content()
+        }
     }
 
     // MARK: - Rail

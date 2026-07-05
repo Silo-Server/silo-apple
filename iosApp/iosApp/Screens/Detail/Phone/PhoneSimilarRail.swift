@@ -11,7 +11,9 @@ import SwiftUI
 /// The rail self-loads its data when the parent provides a
 /// `contentId`. Hidden when the request fails or returns nothing —
 /// recommendations are non-essential, so a missing rail is preferable
-/// to an error placeholder.
+/// to an error placeholder. The section header lives in here (not the
+/// parent) for the same reason: when recommendations are disabled or
+/// empty, an orphaned "More Like This" title must vanish with the cards.
 struct PhoneSimilarRail: View {
     let contentId: String
     let onSelect: (String) -> Void
@@ -23,12 +25,22 @@ struct PhoneSimilarRail: View {
     var body: some View {
         Group {
             if isLoading {
-                loadingPlaceholder
+                section { loadingPlaceholder }
             } else if !items.isEmpty {
-                rail
+                section { rail }
             }
         }
         .task(id: contentId) { await load() }
+    }
+
+    private func section(@ViewBuilder content: () -> some View) -> some View {
+        // Header-to-content gap matches the parents' former
+        // `VStack(spacing: 14)` so the page rhythm is unchanged.
+        VStack(alignment: .leading, spacing: 14) {
+            PhoneSectionHeader(title: "More Like This")
+                .padding(.horizontal, ContinuumTheme.safePadding)
+            content()
+        }
     }
 
     // MARK: - Rail

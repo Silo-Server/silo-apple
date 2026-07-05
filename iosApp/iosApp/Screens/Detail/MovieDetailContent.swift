@@ -287,14 +287,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
     }
 
     private var similarSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "More Like This")
-                .padding(.horizontal, ContinuumTheme.safePadding)
-            PhoneSimilarRail(
-                contentId: detail.contentId,
-                onSelect: onNavigateToItem
-            )
-        }
+        // Header lives inside the rail so it disappears with the cards when
+        // recommendations are disabled or empty.
+        PhoneSimilarRail(
+            contentId: detail.contentId,
+            onSelect: onNavigateToItem
+        )
     }
 
     // MARK: - Details

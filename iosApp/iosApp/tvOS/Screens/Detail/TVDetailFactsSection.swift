@@ -13,6 +13,16 @@ struct TVDetailFactsSection: View {
     private let rowGap: CGFloat = 20
     private let maxCreditNames = 3
 
+    // The facts grid is pure text with no actionable child, so nothing here
+    // is a native focus target. On tvOS the scroll view can only bring a
+    // *focusable* view into view, so without this the Details block is
+    // unreachable — pressing Down from the Cast rail finds no target below
+    // and the section never scrolls on-screen. Making the whole block one
+    // passive focus target (Select is a no-op) lets the engine land on it
+    // and scroll it fully into view, the same idiom `TVSelectorValue` uses
+    // for single-option pills.
+    @FocusState private var isFocused: Bool
+
     var body: some View {
         let facts = assembleFacts()
         if !facts.isEmpty {
@@ -38,6 +48,18 @@ struct TVDetailFactsSection: View {
                 }
             }
             .frame(maxWidth: 1400, alignment: .leading)
+            // Focus highlight bleeds outward via negative padding so the
+            // facts text stays aligned with the "Details" header above it.
+            .background(
+                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous)
+                    .fill(Color.white.opacity(isFocused ? 0.06 : 0))
+                    .padding(.horizontal, -28)
+                    .padding(.vertical, -14)
+            )
+            .contentShape(Rectangle())
+            .focusable(true)
+            .focused($isFocused)
+            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
         }
     }
 
