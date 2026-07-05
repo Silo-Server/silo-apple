@@ -53,6 +53,29 @@ struct LoopbackSegmentPlan: Equatable {
         return index
     }
 
+    /// A copy of the plan with segments `keep+1 ... through` merged into
+    /// segment `keep`: their start fences are removed, so segment `keep`
+    /// spans from its own boundary to segment `through`'s end fence. Used by
+    /// the resume-anchor bitstream validation — when a plan boundary's frame
+    /// turns out not to be a true random-access point, the segment AVPlayer
+    /// cold-decodes on resume must instead open at the nearest earlier
+    /// boundary that is one (the playlist advertises
+    /// EXT-X-INDEPENDENT-SEGMENTS, so every advertised segment start is a
+    /// decode-start promise).
+    func coalescingSegments(after keep: Int, through last: Int) -> LoopbackSegmentPlan {
+        guard keep >= 0, last > keep, last < segmentCount else { return self }
+        var mergedBoundaries = boundaries
+        var mergedStartSeconds = startSeconds
+        mergedBoundaries.removeSubrange((keep + 1)...last)
+        mergedStartSeconds.removeSubrange((keep + 1)...last)
+        return LoopbackSegmentPlan(
+            boundaries: mergedBoundaries,
+            startSeconds: mergedStartSeconds,
+            anchorSourceSeconds: anchorSourceSeconds,
+            usedKeyframeIndex: usedKeyframeIndex
+        )
+    }
+
     /// Whether a scanned keyframe index is dense and wide enough to plan
     /// keyframe-aligned segments from, or whether the plan must fall back to
     /// a uniform stride. Two witnesses, both required:

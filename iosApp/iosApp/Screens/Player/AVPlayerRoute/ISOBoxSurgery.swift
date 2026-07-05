@@ -347,6 +347,59 @@ enum ISOBoxSurgery {
         return nil
     }
 
+    /// First VCL NAL type (0-31) in a length-prefixed HEVC packet, or nil
+    /// when the packet holds no VCL NAL. Unlike `firstIRAPNALType`, this
+    /// distinguishes "the opener is a non-IRAP picture" (a container key
+    /// flag lying about a random-access point) from "nothing to judge".
+    static func firstHEVCVCLNALType(packetBytes: UnsafeBufferPointer<UInt8>,
+                                    nalLengthSize: Int) -> Int? {
+        guard nalLengthSize > 0 else { return nil }
+        var offset = 0
+        while offset + nalLengthSize <= packetBytes.count {
+            var nalSize = 0
+            for i in 0..<nalLengthSize {
+                nalSize = (nalSize << 8) | Int(packetBytes[offset + i])
+            }
+            offset += nalLengthSize
+            if nalSize <= 0 || offset + nalSize > packetBytes.count { break }
+            let nalStart = packetBytes.baseAddress!.advanced(by: offset)
+            offset += nalSize
+            guard nalSize >= 2 else { continue }
+            let nalType = (Int(nalStart.pointee) >> 1) & 0x3F
+            if (0...31).contains(nalType) {
+                return nalType
+            }
+        }
+        return nil
+    }
+
+    /// First VCL NAL type (1-5) in a length-prefixed AVC packet, or nil when
+    /// the packet holds no VCL NAL. Only IDR (type 5) is a clean cold-decode
+    /// start for H.264 — container key flags can mark open-GOP I-frames or
+    /// stale-cue targets as sync samples, and a fresh decode there renders
+    /// inter-predicted blocks against missing references.
+    static func firstAVCVCLNALType(packetBytes: UnsafeBufferPointer<UInt8>,
+                                   nalLengthSize: Int) -> Int? {
+        guard nalLengthSize > 0 else { return nil }
+        var offset = 0
+        while offset + nalLengthSize <= packetBytes.count {
+            var nalSize = 0
+            for i in 0..<nalLengthSize {
+                nalSize = (nalSize << 8) | Int(packetBytes[offset + i])
+            }
+            offset += nalLengthSize
+            if nalSize <= 0 || offset + nalSize > packetBytes.count { break }
+            let nalStart = packetBytes.baseAddress!.advanced(by: offset)
+            offset += nalSize
+            guard nalSize >= 1 else { continue }
+            let nalType = Int(nalStart.pointee) & 0x1F
+            if (1...5).contains(nalType) {
+                return nalType
+            }
+        }
+        return nil
+    }
+
     static func nalSummary(packetBytes: UnsafeBufferPointer<UInt8>,
                            nalLengthSize: Int,
                            limit: Int = 32) -> String {

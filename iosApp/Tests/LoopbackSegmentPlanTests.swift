@@ -222,4 +222,40 @@ final class LoopbackSegmentPlanTests: XCTestCase {
         // Past the end fence clamps into the last real segment.
         XCTAssertEqual(plan.segmentIndex(forPlaylistSeconds: 400), 4)
     }
+
+    // MARK: - Resume-anchor coalescing
+
+    func testCoalescingSegmentsMergesBoundariesAndRemapsResume() {
+        // Segments every 4 s over 20 s: boundaries at 0/4/8/12/16, fence 20.
+        let keyframes = stride(from: 0.0, through: 18.0, by: 2.0).map(pts)
+        let plan = LoopbackSegmentPlan.build(
+            keyframePts: keyframes,
+            timeBaseNum: num, timeBaseDen: den,
+            sourceDurationSeconds: 20
+        )
+        // Resume segment 3 failed bitstream validation; anchor at 1.
+        let merged = plan.coalescingSegments(after: 1, through: 3)
+        XCTAssertEqual(merged.segmentCount, plan.segmentCount - 2)
+        XCTAssertEqual(merged.boundaries, [pts(0), pts(4), pts(16), plan.boundaries.last!])
+        XCTAssertEqual(merged.startSeconds, [0, 4, 16, plan.startSeconds.last!])
+        // Segment 1 now spans the merged range; total duration unchanged.
+        XCTAssertEqual(merged.duration(ofSegment: 1), 12, accuracy: 0.001)
+        XCTAssertEqual(merged.totalDurationSeconds, plan.totalDurationSeconds)
+        // A resume time inside the old segment 3 lands in the kept segment.
+        XCTAssertEqual(merged.segmentIndex(forPlaylistSeconds: 13), 1)
+    }
+
+    func testCoalescingSegmentsRejectsInvalidRanges() {
+        let keyframes = stride(from: 0.0, through: 18.0, by: 2.0).map(pts)
+        let plan = LoopbackSegmentPlan.build(
+            keyframePts: keyframes,
+            timeBaseNum: num, timeBaseDen: den,
+            sourceDurationSeconds: 20
+        )
+        XCTAssertEqual(plan.coalescingSegments(after: 2, through: 2), plan)
+        XCTAssertEqual(plan.coalescingSegments(after: 3, through: 1), plan)
+        XCTAssertEqual(plan.coalescingSegments(after: -1, through: 2), plan)
+        // `through` must be a real segment, not the end fence.
+        XCTAssertEqual(plan.coalescingSegments(after: 1, through: plan.segmentCount), plan)
+    }
 }

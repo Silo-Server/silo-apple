@@ -666,8 +666,12 @@ final class LoopbackSegmentWriter {
     private func resolveVODPlanIfNeeded() throws {
         guard sessionSpec.servingMode == .vodPlan else { return }
         if vodPlan == nil {
-            vodPlan = harvestVODPlan()
-            if let plan = vodPlan {
+            if var plan = harvestVODPlan() {
+                // Resume-anchor bitstream check runs BEFORE the plan is
+                // published — the playlist and every restarted producer are
+                // built from whatever goes out here.
+                plan = resumeAnchorValidatedPlan(plan)
+                vodPlan = plan
                 onSegmentPlanResolved?(plan)
             }
         } else {
@@ -709,7 +713,10 @@ final class LoopbackSegmentWriter {
         onVODProducerAnchored?(effectiveBase)
         print("[CMP-AVP] vod producer anchored segment=\(effectiveBase) start=\(sourceStartTimeSeconds)")
         let anchorBoundarySeconds = plan.sourceStartSeconds(ofSegment: effectiveBase)
-        if sourceStartTimeSeconds > anchorBoundarySeconds + 0.05, let inCtx = inputCtx {
+        // The re-seek also runs whenever the resume-anchor probe consumed
+        // packets — even an on-boundary resume needs the cursor put back.
+        if resumeAnchorProbeMovedCursor || sourceStartTimeSeconds > anchorBoundarySeconds + 0.05,
+           let inCtx = inputCtx {
             // Mid-segment resume: the open seek targeted the resume TIME,
             // which parks the demuxer mid-GOP inside the anchor segment —
             // the bootstrap then discards frames up to the NEXT keyframe
@@ -914,6 +921,181 @@ final class LoopbackSegmentWriter {
         )
         print("[CMP-AVP] vod plan resolved segments=\(plan.segmentCount) keyframes=\(keyframePts.count) trusted=\(plan.usedKeyframeIndex) duration=\(String(format: "%.1f", plan.totalDurationSeconds))s")
         return plan
+    }
+
+    /// Cap on how many plan boundaries the resume-anchor validation walks
+    /// back looking for a true random-access point. Each probe costs one
+    /// demuxer seek plus a partial GOP of reads (a range request on remote
+    /// sources), and every merged segment adds decode-and-discard lead-in
+    /// ahead of the resume frame.
+    private static let maxResumeAnchorWalkBack = 4
+    /// Whether the resume-anchor probe consumed demuxer packets — the
+    /// anchor-boundary re-seek in resolveVODPlanIfNeeded must then run even
+    /// when the resume time sits exactly on the anchor boundary.
+    private var resumeAnchorProbeMovedCursor = false
+
+    private struct AnchorOpenerProbe {
+        let codecID: AVCodecID
+        let nalLengthSize: Int
+    }
+
+    private enum AnchorOpenerVerdict {
+        case trueRAP
+        case notRAP(vclType: Int)
+        case inconclusive
+    }
+
+    /// Resume-anchor bitstream validation. The plan's boundaries come from
+    /// the container's keyframe index and `AV_PKT_FLAG_KEY`, both of which
+    /// can call a frame "key" that the bitstream does not back as a
+    /// random-access point (stale MKV cues, open-GOP H.264 I-frames).
+    /// Forward play never notices — the decode is continuous — but the
+    /// playlist advertises EXT-X-INDEPENDENT-SEGMENTS, so AVPlayer
+    /// cold-decodes the resume segment from its first sample, and a non-RAP
+    /// opener renders inter-predicted blocks against missing references
+    /// until the next true keyframe (the resume-time macroblocking).
+    ///
+    /// Verify the resume segment's opener in the bitstream; when it fails,
+    /// merge it into the nearest earlier segment whose opener IS a true RAP
+    /// (never forward — that would visibly skip content). The cold decode
+    /// then starts clean and the resume pre-seek discards the lead-in.
+    private func resumeAnchorValidatedPlan(
+        _ plan: LoopbackSegmentPlan
+    ) -> LoopbackSegmentPlan {
+        guard sourceStartTimeSeconds > plan.anchorSourceSeconds + 0.05,
+              plan.segmentCount > 0 else { return plan }
+        let requested = plan.segmentIndex(
+            forPlaylistSeconds: sourceStartTimeSeconds - plan.anchorSourceSeconds
+        )
+        guard requested > 0, let probe = makeAnchorOpenerProbe() else { return plan }
+        var candidate = requested
+        // Segment 0 is never probed: its boundary is the first indexed
+        // keyframe — the same frame a cold head start decodes from — and the
+        // head IRAP can arrive without AV_PKT_FLAG_KEY (the bootstrap's
+        // flag-repair case), which would false-negative here.
+        let lowest = max(1, requested - Self.maxResumeAnchorWalkBack)
+        while candidate >= lowest {
+            switch probeSegmentOpener(plan: plan, segment: candidate, probe: probe) {
+            case .trueRAP:
+                if candidate == requested {
+                    print("[CMP-AVP] vod resume anchor validated segment=\(requested)")
+                    return plan
+                }
+                print("[CMP-AVP] vod resume anchor walked back requested=\(requested) anchored=\(candidate)")
+                return plan.coalescingSegments(after: candidate, through: requested)
+            case .notRAP(let vclType):
+                print("[CMP-AVP] vod resume anchor segment=\(candidate) opener is not a RAP vcl=\(vclType); walking back")
+                candidate -= 1
+            case .inconclusive:
+                // Can't judge the bitstream (read failure, no VCL found).
+                // Keep the plan as harvested rather than churn seeks.
+                print("[CMP-AVP] vod resume anchor probe inconclusive segment=\(candidate); keeping plan")
+                return plan
+            }
+        }
+        if candidate == 0 {
+            print("[CMP-AVP] vod resume anchor walked back requested=\(requested) anchored=0")
+            return plan.coalescingSegments(after: 0, through: requested)
+        }
+        print("[CMP-AVP] vod resume anchor validation exhausted walk-back requested=\(requested); keeping plan")
+        return plan
+    }
+
+    /// Codec + NAL length prefix for the resume-anchor probe, parsed from
+    /// the input video stream's avcC/hvcC extradata. Nil (skip validation)
+    /// for other codecs or Annex-B extradata.
+    private func makeAnchorOpenerProbe() -> AnchorOpenerProbe? {
+        guard let inCtx = inputCtx,
+              videoInputStreamIndex >= 0,
+              let stream = inCtx.pointee.streams?[videoInputStreamIndex],
+              let codecpar = stream.pointee.codecpar,
+              let extradata = codecpar.pointee.extradata else { return nil }
+        let codecID = codecpar.pointee.codec_id
+        let extradataSize = Int(codecpar.pointee.extradata_size)
+        if codecID == AV_CODEC_ID_H264, extradataSize >= 7, extradata[0] == 1 {
+            return AnchorOpenerProbe(
+                codecID: codecID,
+                nalLengthSize: Int((extradata[4] & 0x03) + 1)
+            )
+        }
+        if codecID == AV_CODEC_ID_HEVC, extradataSize >= 23, extradata[0] == 1 {
+            return AnchorOpenerProbe(
+                codecID: codecID,
+                nalLengthSize: Int((extradata[21] & 0x03) + 1)
+            )
+        }
+        return nil
+    }
+
+    /// Seeks to a plan segment's boundary and inspects the packet the
+    /// restart gate would open that segment on (first container-flagged
+    /// keyframe at or after the boundary): does its bitstream actually hold
+    /// a random-access point? H.264 requires IDR (VCL NAL 5) — open-GOP
+    /// I-frames let later P-frames reference across them. HEVC accepts any
+    /// IRAP (VCL NAL 16-23): trailing pictures after a CRA are clean by
+    /// spec, and the cutter already keeps RASL pictures in the CRA's
+    /// segment.
+    private func probeSegmentOpener(
+        plan: LoopbackSegmentPlan,
+        segment: Int,
+        probe: AnchorOpenerProbe
+    ) -> AnchorOpenerVerdict {
+        guard let inCtx = inputCtx else { return .inconclusive }
+        do {
+            try seekInput(inCtx, toSeconds: plan.sourceStartSeconds(ofSegment: segment))
+        } catch {
+            return .inconclusive
+        }
+        resumeAnchorProbeMovedCursor = true
+        let boundary = plan.boundaries[segment]
+        var packetsRead = 0
+        while packetsRead < 600 {
+            let readPkt = av_packet_alloc()
+            let rc = av_read_frame(inCtx, readPkt)
+            guard rc >= 0, let pkt = readPkt else {
+                var free = readPkt
+                av_packet_free(&free)
+                return .inconclusive
+            }
+            packetsRead += 1
+            var verdict: AnchorOpenerVerdict?
+            if Int(pkt.pointee.stream_index) == videoInputStreamIndex,
+               (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0,
+               pkt.pointee.pts != Int64.min,
+               pkt.pointee.pts >= boundary {
+                verdict = anchorOpenerVerdict(pkt: pkt, probe: probe)
+            }
+            var free = readPkt
+            av_packet_free(&free)
+            if let verdict { return verdict }
+        }
+        return .inconclusive
+    }
+
+    private func anchorOpenerVerdict(
+        pkt: UnsafeMutablePointer<AVPacket>,
+        probe: AnchorOpenerProbe
+    ) -> AnchorOpenerVerdict {
+        guard let dataPtr = pkt.pointee.data else { return .inconclusive }
+        let packetBytes = UnsafeBufferPointer(start: dataPtr,
+                                              count: Int(pkt.pointee.size))
+        let vclType: Int?
+        let isRAP: Bool
+        if probe.codecID == AV_CODEC_ID_H264 {
+            vclType = ISOBoxSurgery.firstAVCVCLNALType(
+                packetBytes: packetBytes,
+                nalLengthSize: probe.nalLengthSize
+            )
+            isRAP = vclType == 5
+        } else {
+            vclType = ISOBoxSurgery.firstHEVCVCLNALType(
+                packetBytes: packetBytes,
+                nalLengthSize: probe.nalLengthSize
+            )
+            isRAP = vclType.map { (16...23).contains($0) } ?? false
+        }
+        guard let vclType else { return .inconclusive }
+        return isRAP ? .trueRAP : .notRAP(vclType: vclType)
     }
 
     /// Routes a video packet through the plan cutter and flushes the open
@@ -3849,32 +4031,54 @@ final class LoopbackSegmentWriter {
         return Int64((seconds * Double(timeBase.den) / Double(timeBase.num)).rounded())
     }
 
+    /// Input-axis DTS of the last video packet that passed timestamp repair.
+    /// The base for synthesizing a post-seek follower's missing DTS: after a
+    /// matroska seek, libavformat leaves DTS unset on the first
+    /// `has_b_frames` video packets (its pts-reorder buffer is cold), so the
+    /// anchor IDR's immediate followers arrive PTS-only.
+    private var lastRepairedVideoInputDTS: Int64?
+
     private func repairMissingMuxerTimestampsIfNeeded(
         pkt: UnsafeMutablePointer<AVPacket>,
         inputStreamIndex: Int,
         noPTS: Int64
     ) -> Bool {
+        let isVideo = inputStreamIndex == videoInputStreamIndex
         let missingPTS = pkt.pointee.pts == noPTS
         let missingDTS = pkt.pointee.dts == noPTS
-        guard missingPTS || missingDTS else { return true }
-        guard !missingPTS else { return false }
+        guard missingPTS || missingDTS else {
+            if isVideo { lastRepairedVideoInputDTS = pkt.pointee.dts }
+            return true
+        }
+        guard !missingPTS, isVideo else { return false }
 
-        let isVideo = inputStreamIndex == videoInputStreamIndex
         let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
-        guard isVideo, isKeyframe else { return false }
-
-        // For an IRAP, pts == dts in decode order, so pts is the exact
-        // repair — never subtract a reorder guess. A `video_delay` backoff
-        // under-shoots deep-reorder streams (250ms real vs 84ms guessed,
-        // living-room resume seam) and goes NEGATIVE at the stream head,
-        // where tfdt is unsigned and `avoid_negative_ts=disabled` writes it
-        // wrapped (2^64-1344, the living-room mid-play timeline jump).
-        // Followers whose real DTS sits below pts are bumped forward by
-        // normalizeVideoMuxerTimestampsIfNeeded instead of being dropped.
-        pkt.pointee.dts = pkt.pointee.pts
+        if isKeyframe {
+            // For an IRAP, pts == dts in decode order, so pts is the exact
+            // repair — never subtract a reorder guess. A `video_delay` backoff
+            // under-shoots deep-reorder streams (250ms real vs 84ms guessed,
+            // living-room resume seam) and goes NEGATIVE at the stream head,
+            // where tfdt is unsigned and `avoid_negative_ts=disabled` writes it
+            // wrapped (2^64-1344, the living-room mid-play timeline jump).
+            // Followers whose real DTS sits below pts are bumped forward by
+            // normalizeVideoMuxerTimestampsIfNeeded instead of being dropped.
+            pkt.pointee.dts = pkt.pointee.pts
+        } else {
+            // Post-seek follower with PTS but no DTS. These are REFERENCE
+            // frames as often as not — the P right after a resume anchor's
+            // IDR anchors the whole first mini-GOP — and dropping one makes
+            // every dependent frame decode against a missing reference
+            // (resume-time macroblocking until the next IDR). Cram its DTS
+            // one tick above the previous video packet's; PTS is untouched,
+            // and the true DTS cadence resumes once the demuxer's reorder
+            // buffer warms up.
+            guard let base = lastRepairedVideoInputDTS else { return false }
+            pkt.pointee.dts = base + 1
+        }
+        lastRepairedVideoInputDTS = pkt.pointee.dts
         repairedMissingVideoDTSCount += 1
-        if repairedMissingVideoDTSCount <= 3 {
-            print("[CMP-AVP] repaired missing video DTS on keyframe pts=\(pkt.pointee.pts) dts=\(pkt.pointee.dts) videoMode=\(videoMode.logToken)")
+        if repairedMissingVideoDTSCount <= 6 {
+            print("[CMP-AVP] repaired missing video DTS pts=\(pkt.pointee.pts) dts=\(pkt.pointee.dts) keyframe=\(isKeyframe) videoMode=\(videoMode.logToken)")
         }
         return true
     }
