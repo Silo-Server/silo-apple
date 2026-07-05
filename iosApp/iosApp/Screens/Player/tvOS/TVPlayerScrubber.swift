@@ -31,6 +31,19 @@ struct TVPlayerScrubber: View {
     @State private var timelineAutoSeekRate = 0
     @State private var timelineAutoSeekTask: Task<Void, Never>?
 
+    /// Trackpad-drag scrubbing. Translation from one full edge-to-edge swipe
+    /// on the Siri Remote surface is ~1000pt, so this maps a full swipe to
+    /// roughly 40% of the timeline — several swipes cross a whole movie
+    /// without a light drag overshooting by minutes.
+    private static let panPointsForFullTimeline: CGFloat = 2400
+    /// Accumulated translation required before a drag starts moving the
+    /// playhead; the finger contact from a d-pad click always jitters a few
+    /// points and must not nudge the preview.
+    private static let panDeadzone: CGFloat = 12
+    @State private var isPanScrubbing = false
+    @State private var panEngaged = false
+    @State private var panAccumulated: CGFloat = 0
+
     // Visual metrics pulled out as compile-time constants so layout doesn't
     // re-evaluate them each pass. Chapter ticks rely on `trackHeight` so the
     // track and ticks stay visually aligned.
@@ -84,11 +97,27 @@ struct TVPlayerScrubber: View {
             .focused($isFocused)
             .onTapGesture { commitScrub() }
             .background {
-                TVDirectionalPressGestureView(
-                    isActive: isFocused && !viewModel.isHoldSeeking && timelineAutoSeekRate == 0,
-                    onArrowTap: handleArrowTap,
-                    onArrowHoldBegin: handleArrowHoldBegin
-                )
+                ZStack {
+                    TVDirectionalPressGestureView(
+                        isActive: isFocused && !viewModel.isHoldSeeking && timelineAutoSeekRate == 0,
+                        onArrowTap: handleArrowTap,
+                        onArrowHoldBegin: handleArrowHoldBegin
+                    )
+                    // Continuous trackpad drag while the puck is selected —
+                    // Select enters timeline-scrub mode, then swipes stream
+                    // through here instead of stepping ±10s/30s per move
+                    // command.
+                    TVPanCaptureView(
+                        isActive: isFocused && isTimelineScrubbing && !isTimelineAutoSeeking,
+                        onPanBegan: {
+                            isPanScrubbing = true
+                            panEngaged = false
+                            panAccumulated = 0
+                        },
+                        onPanChanged: handlePanChanged,
+                        onPanEnded: { isPanScrubbing = false }
+                    )
+                }
                 .frame(width: 1, height: 1)
             }
             .onChange(of: isFocused) { _, focused in
@@ -351,20 +380,40 @@ struct TVPlayerScrubber: View {
         }
     }
 
+    /// Continuous trackpad drag: translation maps linearly onto the
+    /// timeline. A deadzone filters out the contact jitter from clicks; once
+    /// crossed, every subsequent delta moves the preview directly.
+    private func handlePanChanged(_ deltaX: CGFloat) {
+        guard isTimelineScrubbing, viewModel.duration > 0 else { return }
+        if !panEngaged {
+            panAccumulated += deltaX
+            guard abs(panAccumulated) >= Self.panDeadzone else { return }
+            panEngaged = true
+        }
+        let base = viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
+        let deltaSeconds = Double(deltaX / Self.panPointsForFullTimeline) * viewModel.duration
+        let target = min(max(base + deltaSeconds, 0), viewModel.duration)
+        viewModel.updateScrub(fraction: target / viewModel.duration)
+    }
+
     private func handleMove(_ direction: MoveCommandDirection) {
+        // While a trackpad drag is in flight the same swipe also surfaces
+        // here as discrete left/right move commands — the pan owns the
+        // playhead, so the fixed-step path must stay quiet.
+        let panOwnsTimeline = isPanScrubbing && isTimelineScrubbing && !isTimelineAutoSeeking
         switch direction {
         case .left:
             guard viewModel.duration > 0 else { return }
             if isTimelineAutoSeeking {
                 adjustTimelineAutoSeekRate(delta: -1)
-            } else if isTimelineScrubbing {
+            } else if isTimelineScrubbing, !panOwnsTimeline {
                 stepTimeline(by: -Self.scrubBackwardStep)
             }
         case .right:
             guard viewModel.duration > 0 else { return }
             if isTimelineAutoSeeking {
                 adjustTimelineAutoSeekRate(delta: 1)
-            } else if isTimelineScrubbing {
+            } else if isTimelineScrubbing, !panOwnsTimeline {
                 stepTimeline(by: Self.scrubForwardStep)
             }
         case .up:

@@ -81,6 +81,109 @@ struct TVDirectionalPressGestureView: UIViewRepresentable {
     }
 }
 
+/// Window-level trackpad pan bridge. SwiftUI on tvOS only surfaces the Siri
+/// Remote touch surface as discrete `.onMoveCommand` steps, so continuous
+/// drag-the-playhead scrubbing needs a `UIPanGestureRecognizer` reading the
+/// indirect touch stream. Attached to the window (like
+/// `TVDirectionalPressGestureView`) so SwiftUI keeps owning focus while the
+/// pan translation streams through the callbacks.
+struct TVPanCaptureView: UIViewRepresentable {
+    var isActive: Bool
+    var onPanBegan: () -> Void = {}
+    /// Incremental horizontal translation (points) since the last change.
+    var onPanChanged: (CGFloat) -> Void = { _ in }
+    var onPanEnded: () -> Void = {}
+
+    func makeUIView(context: Context) -> PanCaptureUIView {
+        let view = PanCaptureUIView()
+        apply(to: view)
+        return view
+    }
+
+    func updateUIView(_ uiView: PanCaptureUIView, context: Context) {
+        apply(to: uiView)
+    }
+
+    private func apply(to view: PanCaptureUIView) {
+        view.isActive = isActive
+        view.onPanBegan = onPanBegan
+        view.onPanChanged = onPanChanged
+        view.onPanEnded = onPanEnded
+    }
+}
+
+final class PanCaptureUIView: UIView, UIGestureRecognizerDelegate {
+    var isActive: Bool = false
+    var onPanBegan: () -> Void = {}
+    var onPanChanged: (CGFloat) -> Void = { _ in }
+    var onPanEnded: () -> Void = {}
+
+    private weak var attachedWindow: UIWindow?
+    private var panRecognizer: UIPanGestureRecognizer?
+    private var lastTranslationX: CGFloat = 0
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        attachRecognizerIfNeeded()
+    }
+
+    deinit {
+        detachRecognizer()
+    }
+
+    private func attachRecognizerIfNeeded() {
+        guard let window, attachedWindow !== window else { return }
+        detachRecognizer()
+        attachedWindow = window
+
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
+        pan.delegate = self
+        window.addGestureRecognizer(pan)
+        panRecognizer = pan
+    }
+
+    private func detachRecognizer() {
+        if let attachedWindow, let panRecognizer {
+            attachedWindow.removeGestureRecognizer(panRecognizer)
+        }
+        panRecognizer = nil
+        attachedWindow = nil
+    }
+
+    @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            guard isActive else { return }
+            lastTranslationX = recognizer.translation(in: attachedWindow).x
+            onPanBegan()
+        case .changed:
+            guard isActive else { return }
+            let x = recognizer.translation(in: attachedWindow).x
+            onPanChanged(x - lastTranslationX)
+            lastTranslationX = x
+        case .ended, .cancelled, .failed:
+            // Deliver the end even if `isActive` dropped mid-gesture (e.g.
+            // the scrub was cancelled under the finger) so the SwiftUI side
+            // never gets stuck thinking a pan is still in flight.
+            onPanEnded()
+        default:
+            break
+        }
+    }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        isActive
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        true
+    }
+}
+
 final class DirectionalPressGestureUIView: UIView, UIGestureRecognizerDelegate {
     var isActive: Bool = false
     var onArrowTap: (TVPressCaptureView.ArrowDirection) -> Void = { _ in }

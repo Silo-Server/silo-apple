@@ -1187,7 +1187,19 @@ class PlayerViewModel {
         }
         cb.onPauseChange = { [weak self] paused in
             guard let self, !self.isDisposed else { return }
+            let wasPlaying = self.isPlaying
             self.isPlaying = !paused
+            // A pause from any source (remote button, transport button,
+            // Siri, interruption) surfaces the transport overlay and pins
+            // it — no auto-hide runs while paused, so it stays up until
+            // the user acts. Resuming re-arms the auto-hide so a resume
+            // from an external source (Now Playing, Siri) doesn't leave
+            // the overlay stuck on-screen.
+            if paused, wasPlaying, !self.isLoading, !self.hasReachedEndOfFile {
+                self.pinControlsVisible()
+            } else if !paused, self.showControls, !self.isHUDPresented {
+                self.scheduleHideControls()
+            }
             self.nowPlaying.update(
                 title: self.title,
                 duration: self.duration,
