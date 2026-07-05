@@ -114,6 +114,13 @@ struct MobilePlayerControls: View {
             titleBlock
 
             Spacer(minLength: 12)
+
+            if viewModel.isPictureInPicturePossible {
+                controlButton(systemName: "pip.enter") {
+                    viewModel.startPictureInPicture()
+                }
+                .accessibilityLabel("Picture in Picture")
+            }
         }
     }
 

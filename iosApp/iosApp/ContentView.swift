@@ -643,7 +643,8 @@ struct MainTabView: View {
                 resumePositionOverride: payload.resumePosition,
                 offlineDownloadId: payload.offlineDownloadId,
                 posterURLHint: payload.posterURL,
-                backdropURLHint: payload.backdropURL
+                backdropURLHint: payload.backdropURL,
+                viewModel: hostedPlayerViewModel
             )
         }
         #if os(iOS)
@@ -661,6 +662,17 @@ struct MainTabView: View {
         // player, video player) inherit the router — ErrorView requires
         // it and traps when it's absent.
         .environment(router)
+    }
+
+    /// On iOS the player view model is owned by the router's
+    /// `PlaybackSessionHost` so the session can outlive the cover during
+    /// Picture in Picture. Other platforms let `PlayerView` own its own.
+    private var hostedPlayerViewModel: PlayerViewModel? {
+        #if os(iOS)
+        router.playbackHost.viewModel
+        #else
+        nil
+        #endif
     }
 
     private var prefersSidebarLayout: Bool {

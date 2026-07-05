@@ -52,6 +52,7 @@ private enum PlayerDeviceSettingKey: String, CaseIterable {
     case subtitleSyncMs = "player.subtitle_sync_ms"
     case videoGravity = "player.video_gravity"
     case orientationMode = "player.orientation_mode"
+    case autoStartPictureInPicture = "player.auto_start_pip"
 }
 
 private enum PendingDeviceSettingValue {
@@ -182,6 +183,13 @@ final class PlayerSettings {
         didSet { defaults.set(nextUpPromptSeconds, forKey: Self.cacheKey(Keys.nextUpPromptSeconds)) }
     }
 
+    /// iOS: start Picture in Picture automatically when the app backgrounds
+    /// during playback. The key is stored on every platform (device settings
+    /// are queried as a set) but only iOS surfaces or reads it.
+    var autoStartPictureInPicture: Bool {
+        didSet { defaults.set(autoStartPictureInPicture, forKey: Self.cacheKey(Keys.autoStartPictureInPicture)) }
+    }
+
     private let defaults: UserDefaults
     private var pendingDeviceSettingValues: [PlayerDeviceSettingKey: PendingDeviceSettingValue] = [:]
     private var isFlushingPendingDeviceSettings = false
@@ -213,6 +221,7 @@ final class PlayerSettings {
             Keys.playerOrientationMode: PlayerOrientationMode.landscapeLocked.rawValue,
             Keys.autoPlayNextEpisode: true,
             Keys.nextUpPromptSeconds: 30,
+            Keys.autoStartPictureInPicture: true,
         ])
 
         preferredQuality = ApplePlaybackQuality.normalizeStoredId(
@@ -260,6 +269,11 @@ final class PlayerSettings {
         )
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
+        )
+        autoStartPictureInPicture = Self.cachedBool(
+            defaults,
+            key: Keys.autoStartPictureInPicture,
+            defaultValue: true
         )
         syncLegacySubtitleFields(from: subtitleAppearance)
 
@@ -359,6 +373,11 @@ final class PlayerSettings {
         let normalized = Self.clampNextUpPromptSeconds(seconds)
         nextUpPromptSeconds = normalized
         enqueueDeviceSetting(.nextUpPromptSeconds, operation: .set(String(normalized)))
+    }
+
+    func setAutoStartPictureInPicture(_ enabled: Bool) {
+        autoStartPictureInPicture = enabled
+        enqueueDeviceSetting(.autoStartPictureInPicture, operation: .set(boolString(enabled)))
     }
 
     func setHDREnabled(_ enabled: Bool) {
@@ -498,6 +517,11 @@ final class PlayerSettings {
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             effectiveInt(for: .nextUpPromptSeconds, in: effectiveByKey, fallback: 30)
         )
+        autoStartPictureInPicture = effectiveBool(
+            for: .autoStartPictureInPicture,
+            in: effectiveByKey,
+            fallback: true
+        )
         hdrEnabled = effectiveBool(for: .hdrEnabled, in: effectiveByKey, fallback: true)
         preferProfile7HDR10Fallback = effectiveBool(
             for: .dvProfile7HDR10Fallback,
@@ -555,6 +579,9 @@ final class PlayerSettings {
                     Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
                 )
             ),
+            .autoStartPictureInPicture: boolString(
+                Self.cachedBool(defaults, key: Keys.autoStartPictureInPicture, defaultValue: true)
+            ),
             .subtitleAppearance: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance))
                 ?? defaults.string(forKey: Keys.subtitleAppearance)
                 ?? SubtitleAppearance.default.jsonString,
@@ -587,6 +614,11 @@ final class PlayerSettings {
         )
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
+        )
+        autoStartPictureInPicture = Self.cachedBool(
+            defaults,
+            key: Keys.autoStartPictureInPicture,
+            defaultValue: true
         )
         hdrEnabled = Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
         preferProfile7HDR10Fallback = Self.cachedBool(
@@ -809,5 +841,6 @@ final class PlayerSettings {
         static let autoPlayNextEpisode = "autoPlayNext"
         static let legacyAutoPlayNextEpisode = "player.autoPlayNextEpisode"
         static let nextUpPromptSeconds = "player.nextUpPromptSeconds"
+        static let autoStartPictureInPicture = "player.autoStartPictureInPicture"
     }
 }

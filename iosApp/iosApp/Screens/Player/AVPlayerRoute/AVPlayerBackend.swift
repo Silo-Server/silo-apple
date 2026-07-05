@@ -198,6 +198,23 @@ final class AVPlayerBackend {
     var proxyStatsProvider: (() -> PlaybackSourceProxyStats?)?
 
     let avPlayer = AVPlayer()
+    #if os(iOS)
+    /// PiP source layer, set by `AVPlayerSurface` when the render view
+    /// attaches. The engine wrapper builds `ContentSource(playerLayer:)`
+    /// from it.
+    weak var pictureInPictureSourceLayer: AVPlayerLayer? {
+        didSet {
+            guard pictureInPictureSourceLayer !== oldValue,
+                  pictureInPictureSourceLayer != nil else { return }
+            onPictureInPictureLayerReady?()
+        }
+    }
+    var onPictureInPictureLayerReady: (() -> Void)?
+
+    /// The AVPlayer route needs no special PiP-active handling — AVKit
+    /// drives the player directly. Present for engine-protocol parity.
+    func pictureInPictureDidChange(active: Bool) {}
+    #endif
     weak var subtitleOverlay: SubtitleOverlayView?
     var subtitleRendererForOverlay: SubtitleRenderer? {
         subtitleSession?.underlyingRenderer

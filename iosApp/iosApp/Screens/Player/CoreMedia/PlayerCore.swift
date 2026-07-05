@@ -81,9 +81,11 @@ final class PlayerCore: NSObject {
     /// Fires on main when a subtitle slot's loading status changes.
     /// UI can surface a loading spinner or silent-failure indicator.
     var onSubtitleLoadStatusChange: ((SubtitleSlot, SubtitleLoadStatus) -> Void)?
-    /// Fires on main whenever PiP activates/deactivates. UI can dim or hide
-    /// the in-app controls while the layer is pip'd out.
-    var onPictureInPictureActiveChange: ((Bool) -> Void)?
+    #if os(iOS)
+    /// Fires on main when the sample-buffer display layer is attached, so
+    /// the PiP coordinator can build its controller against it.
+    var onPictureInPictureLayerReady: (() -> Void)?
+    #endif
 
     private enum VideoDecodeMode {
         case videoToolbox
@@ -761,11 +763,12 @@ final class PlayerCore: NSObject {
 
     // MARK: - Phase 3 state
 
-    /// PiP controller, lazily created once a display layer is attached.
-    /// tvOS 14.0+ only; guarded with `@available` at use sites.
-    private var pipController: Any?
-    /// True while PiP is on-screen. Exposed via onPictureInPictureActiveChange.
-    private(set) var isPictureInPictureActive: Bool = false
+    #if os(iOS)
+    /// Fallback render tick while PiP runs with the app backgrounded —
+    /// CADisplayLink stops firing in the background, which would starve the
+    /// sample-buffer layer. See `pictureInPictureDidChange(active:)`.
+    private var pipBackgroundTick: DispatchSourceTimer?
+    #endif
     /// True once we've successfully activated AVAudioSession. Guarded so we
     /// don't re-activate on every `load()` (route-change hot path). Reset by
     /// `deactivateAudioSession()` called from `dispose()`.
@@ -1295,33 +1298,44 @@ final class PlayerCore: NSObject {
         }
 
         hasAddedDisplayLayer = true
-        setupPictureInPictureIfNeeded(layer: layer)
+        #if os(iOS)
+        onPictureInPictureLayerReady?()
+        #endif
     }
 
-    /// Lazily construct an AVPictureInPictureController backed by the display
-    /// layer. Disabled for both iOS and tvOS for now. Older OSes get no PiP
-    /// (no-op).
-    private func setupPictureInPictureIfNeeded(layer: AVSampleBufferDisplayLayer) {
-        #if os(iOS) || os(tvOS) || os(macOS)
-        _ = layer
-        return
-        #else
-        guard #available(iOS 15.0, tvOS 15.0, *) else { return }
-        guard pipController == nil else { return }
-        guard AVPictureInPictureController.isPictureInPictureSupported() else {
-            Self.logger.info("PiP unsupported on this device")
-            return
-        }
-        let contentSource = AVPictureInPictureController.ContentSource(
+    #if os(iOS)
+    /// Vend the sample-buffer PiP content source for the coordinator.
+    /// PlayerCore stays the playback delegate (transport is engine-intrinsic);
+    /// the controller lifecycle lives in `PlayerPictureInPictureCoordinator`.
+    func makePictureInPictureContentSource() -> AVPictureInPictureController.ContentSource? {
+        guard let layer = displayLayer else { return nil }
+        return AVPictureInPictureController.ContentSource(
             sampleBufferDisplayLayer: layer,
             playbackDelegate: self
         )
-        let controller = AVPictureInPictureController(contentSource: contentSource)
-        controller.delegate = self
-        pipController = controller
-        Self.logger.info("AVPictureInPictureController created")
-        #endif
     }
+
+    /// While PiP is active with the app backgrounded, CADisplayLink stops
+    /// firing and the sample-buffer layer would starve on a frozen frame.
+    /// Run a plain main-queue timer at display cadence as a fallback tick —
+    /// `videoDisplayLinkTick()` is time-driven and guards its own pause
+    /// state, so redundant foreground ticks are harmless.
+    func pictureInPictureDidChange(active: Bool) {
+        if active {
+            guard pipBackgroundTick == nil else { return }
+            let timer = DispatchSource.makeTimerSource(queue: .main)
+            timer.schedule(deadline: .now(), repeating: 1.0 / 30.0)
+            timer.setEventHandler { [weak self] in
+                self?.videoDisplayLinkTick()
+            }
+            timer.resume()
+            pipBackgroundTick = timer
+        } else {
+            pipBackgroundTick?.cancel()
+            pipBackgroundTick = nil
+        }
+    }
+    #endif
 
     private func setVideoDisplayTickPaused(_ paused: Bool) {
         videoDisplayTickPaused = paused
@@ -1939,14 +1953,12 @@ final class PlayerCore: NSObject {
         setPlaybackTimeline(time: disposedAt, rate: 0)
         audioOutput.pause()
 
-        // Stop PiP first so its playback-delegate callbacks don't land on a
-        // half-torn-down core.
-        if #available(iOS 15.0, tvOS 15.0, *),
-           let pip = pipController as? AVPictureInPictureController,
-           pip.isPictureInPictureActive {
-            pip.stopPictureInPicture()
-        }
-        pipController = nil
+        // The PiP coordinator unbinds before the session tears the core down;
+        // this only settles the background render tick if it is still live.
+        #if os(iOS)
+        pipBackgroundTick?.cancel()
+        pipBackgroundTick = nil
+        #endif
 
         // Unhook requestMediaDataWhenReady blocks (audio side only). Video
         // is push-mode via the CADisplayLink now — invalidate that on main
@@ -5770,59 +5782,13 @@ final class PlayerCore: NSObject {
     #endif
 }
 
-// MARK: - Picture in Picture delegate
+// MARK: - Picture in Picture playback delegate
 
-#if !os(macOS)
-@available(iOS 15.0, tvOS 15.0, *)
-extension PlayerCore: AVPictureInPictureControllerDelegate,
-                               AVPictureInPictureSampleBufferPlaybackDelegate {
-    // MARK: AVPictureInPictureControllerDelegate
-
-    func pictureInPictureControllerWillStartPictureInPicture(
-        _ controller: AVPictureInPictureController
-    ) {
-        Self.logger.info("PiP will start")
-    }
-
-    func pictureInPictureControllerDidStartPictureInPicture(
-        _ controller: AVPictureInPictureController
-    ) {
-        Self.logger.info("PiP did start")
-        isPictureInPictureActive = true
-        DispatchQueue.main.async { [weak self] in
-            self?.onPictureInPictureActiveChange?(true)
-        }
-    }
-
-    func pictureInPictureControllerWillStopPictureInPicture(
-        _ controller: AVPictureInPictureController
-    ) {
-        Self.logger.info("PiP will stop")
-    }
-
-    func pictureInPictureControllerDidStopPictureInPicture(
-        _ controller: AVPictureInPictureController
-    ) {
-        Self.logger.info("PiP did stop")
-        isPictureInPictureActive = false
-        DispatchQueue.main.async { [weak self] in
-            self?.onPictureInPictureActiveChange?(false)
-        }
-    }
-
-    func pictureInPictureController(
-        _ controller: AVPictureInPictureController,
-        failedToStartPictureInPictureWithError error: Error
-    ) {
-        let message = "PiP failed to start: \(error.localizedDescription)"
-        Self.logger.error("\(message, privacy: .public)")
-        DispatchQueue.main.async { [weak self] in
-            self?.onError?(message)
-        }
-    }
-
-    // MARK: AVPictureInPictureSampleBufferPlaybackDelegate
-
+// PlayerCore is only the *playback* delegate (transport verbs against the
+// engine). The AVPictureInPictureControllerDelegate role — lifecycle,
+// restore, active-state fan-out — lives in PlayerPictureInPictureCoordinator.
+#if os(iOS)
+extension PlayerCore: AVPictureInPictureSampleBufferPlaybackDelegate {
     func pictureInPictureController(
         _ controller: AVPictureInPictureController,
         setPlaying playing: Bool

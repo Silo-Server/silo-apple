@@ -25,11 +25,17 @@ struct PlayerView: View {
     let posterURLHint: String?
     let backdropURLHint: String?
 
-    @State private var viewModel = PlayerViewModel()
+    @State private var viewModel: PlayerViewModel
+    /// True when the view model is owned by `PlaybackSessionHost` (iOS cover
+    /// presentation) rather than by this view. Hosted sessions can outlive
+    /// the cover during Picture in Picture, so teardown routes through the
+    /// host instead of `cleanup()`.
+    private let isSessionHosted: Bool
     @Environment(\.dismiss) var dismiss
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
+    @Environment(AppRouter.self) private var router: AppRouter?
     #endif
 
     init(
@@ -41,7 +47,8 @@ struct PlayerView: View {
         resumePositionOverride: Double? = nil,
         offlineDownloadId: String? = nil,
         posterURLHint: String? = nil,
-        backdropURLHint: String? = nil
+        backdropURLHint: String? = nil,
+        viewModel: PlayerViewModel? = nil
     ) {
         self.contentId = contentId
         self.preferredFileId = preferredFileId
@@ -52,6 +59,8 @@ struct PlayerView: View {
         self.offlineDownloadId = offlineDownloadId
         self.posterURLHint = posterURLHint
         self.backdropURLHint = backdropURLHint
+        self.isSessionHosted = viewModel != nil
+        _viewModel = State(initialValue: viewModel ?? PlayerViewModel())
     }
 
     var body: some View {
@@ -226,15 +235,24 @@ struct PlayerView: View {
             orientationCoordinator.activatePlayer()
             #endif
             viewModel.applyArtworkURLHints(posterURL: posterURLHint, backdropURL: backdropURLHint)
-            viewModel.loadAndPlay(
-                contentId: contentId,
-                preferredFileId: preferredFileId,
-                preferredAudioTrackIndex: preferredAudioTrackIndex,
-                preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
-                startFromBeginning: startFromBeginning,
-                resumePositionOverride: resumePositionOverride,
-                offlineDownloadId: offlineDownloadId
-            )
+            // A hosted session re-presented from PiP restore is already live;
+            // re-issuing the load would tear down and restart playback.
+            if !viewModel.hasBegunFirstLoad {
+                viewModel.loadAndPlay(
+                    contentId: contentId,
+                    preferredFileId: preferredFileId,
+                    preferredAudioTrackIndex: preferredAudioTrackIndex,
+                    preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
+                    startFromBeginning: startFromBeginning,
+                    resumePositionOverride: resumePositionOverride,
+                    offlineDownloadId: offlineDownloadId
+                )
+            }
+            #if os(iOS)
+            if isSessionHosted {
+                router?.playbackHost.coverDidPresent()
+            }
+            #endif
             #if os(tvOS)
             TVControlReceiver.shared.registerPlayer(viewModel, contentId: contentId)
             #endif
@@ -243,7 +261,17 @@ struct PlayerView: View {
             #if os(tvOS)
             TVControlReceiver.shared.unregisterPlayer(viewModel)
             #endif
+            #if os(iOS)
+            if isSessionHosted, let router {
+                // The host decides: keep the session alive while PiP floats,
+                // or end it (which runs cleanup()).
+                router.playbackHost.coverDidDismiss()
+            } else {
+                viewModel.cleanup()
+            }
+            #else
             viewModel.cleanup()
+            #endif
             #if os(iOS)
             orientationCoordinator.deactivatePlayer()
             #endif
@@ -270,6 +298,15 @@ struct PlayerView: View {
     }
 
     private func dismissPlayer() {
+        #if os(iOS)
+        if isSessionHosted, let router {
+            // Ends the session unless PiP is active — then playback detaches
+            // and keeps floating over the browse UI.
+            router.playbackHost.userRequestedDismiss()
+            dismiss()
+            return
+        }
+        #endif
         viewModel.cleanup()
         dismiss()
     }

@@ -69,6 +69,21 @@ class AppRouter {
 
     var presentedPlayer: PlayerPresentation?
 
+    #if os(iOS)
+    /// Owns the live video playback session so it can outlive the player
+    /// cover during Picture in Picture. `presentedPlayer` stays the single
+    /// presentation trigger; the host owns view-model lifetime.
+    @ObservationIgnored let playbackHost = PlaybackSessionHost()
+
+    init() {
+        playbackHost.onRequestPresentation = { [weak self] payload in
+            guard let self, self.presentedPlayer == nil else { return false }
+            self.presentedPlayer = payload
+            return true
+        }
+    }
+    #endif
+
     // MARK: - Tab Selection
 
     /// One-shot tab-switch request, consumed (and cleared) by `MainTabView`,
@@ -112,7 +127,7 @@ class AppRouter {
             ))
         }
         #else
-        presentedPlayer = PlayerPresentation(
+        let payload = PlayerPresentation(
             contentId: contentId,
             fileId: fileId,
             audioTrackIndex: audioTrackIndex,
@@ -122,6 +137,10 @@ class AppRouter {
             posterURL: posterURL,
             backdropURL: backdropURL
         )
+        #if os(iOS)
+        playbackHost.beginSession(for: payload)
+        #endif
+        presentedPlayer = payload
         #endif
     }
 
@@ -141,7 +160,7 @@ class AppRouter {
             resumePosition: resumePosition
         ))
         #else
-        presentedPlayer = PlayerPresentation(
+        let payload = PlayerPresentation(
             contentId: contentId,
             fileId: nil,
             audioTrackIndex: nil,
@@ -152,6 +171,10 @@ class AppRouter {
             posterURL: nil,
             backdropURL: nil
         )
+        #if os(iOS)
+        playbackHost.beginSession(for: payload)
+        #endif
+        presentedPlayer = payload
         #endif
     }
 

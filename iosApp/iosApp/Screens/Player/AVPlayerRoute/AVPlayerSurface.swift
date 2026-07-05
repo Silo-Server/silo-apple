@@ -64,6 +64,9 @@ final class AVPlayerLayerView: UIView {
             self.backend = backend
             observeReadyForDisplay()
         }
+        #if os(iOS)
+        backend.pictureInPictureSourceLayer = playerLayer
+        #endif
         let player = backend.avPlayer
         if playerLayer.player === player { return }
         playerLayer.player = player

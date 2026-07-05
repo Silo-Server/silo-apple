@@ -467,6 +467,16 @@ struct PlayerSettingsSheet: View {
                 set: { viewModel.settings.setAutoPlayNextEpisode($0) }
             ))
             .tint(.continuumAccent)
+
+            #if os(iOS)
+            if viewModel.isPictureInPictureSupported {
+                Toggle("Start PiP Automatically", isOn: Binding(
+                    get: { viewModel.settings.autoStartPictureInPicture },
+                    set: { viewModel.setAutoStartPictureInPicture($0) }
+                ))
+                .tint(.continuumAccent)
+            }
+            #endif
         }
     }
 

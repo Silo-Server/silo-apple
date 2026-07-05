@@ -478,6 +478,23 @@ class PlayerViewModel {
     private(set) var activePlayer: ActivePlayer
     private var activeRouteKind: PlaybackEngineKind
 
+    #if os(iOS)
+    /// App-scoped PiP coordinator, injected by `PlaybackSessionHost` before
+    /// the first load. Nil for standalone VMs (DEBUG harness) — PiP is then
+    /// simply unavailable.
+    @ObservationIgnored weak var pictureInPicture: PlayerPictureInPictureCoordinator?
+    /// Coordinator state mirrored for the UI (button visibility) and the
+    /// scene-phase auto-pause gate. Written by `PlaybackSessionHost`.
+    var isPictureInPictureActive = false
+    var isPictureInPicturePossible = false
+    var isPictureInPictureSupported: Bool { pictureInPicture?.isSupported ?? false }
+    #endif
+
+    /// True once the first load has been kicked off. `PlayerView.onAppear`
+    /// uses it to avoid re-issuing `loadAndPlay` when the cover re-presents
+    /// against a live session (PiP restore).
+    private(set) var hasBegunFirstLoad = false
+
     #if DEBUG
     /// Drives the `debugStartFakeLiveSubtitles()` stub. Repeating timer
     /// that feeds canned live cues at `currentTime+` to prove the M2 live
@@ -1088,7 +1105,33 @@ class PlayerViewModel {
         activePlayer = ActivePlayer(renderTarget: installed.renderTarget)
         activeRouteKind = engine
         reapplyUserGain()
+        #if os(iOS)
+        rebindPictureInPicture()
+        #endif
     }
+
+    #if os(iOS)
+    /// Rebuild the PiP binding after an engine install/swap. The coordinator
+    /// tears down the old controller and builds a fresh one once the new
+    /// engine's render layer attaches.
+    private func rebindPictureInPicture() {
+        guard let pip = pictureInPicture else { return }
+        if let engine = playbackCoordinator.activeEngine as? any PictureInPictureEngine {
+            pip.bind(engine: engine, autoStartEnabled: settings.autoStartPictureInPicture)
+        } else {
+            pip.unbind()
+        }
+    }
+
+    func startPictureInPicture() {
+        pictureInPicture?.startManually()
+    }
+
+    func setAutoStartPictureInPicture(_ enabled: Bool) {
+        settings.setAutoStartPictureInPicture(enabled)
+        pictureInPicture?.setAutomaticStart(enabled)
+    }
+    #endif
 
     /// Read-only view of the canonical user volume for gesture overlays
     /// (the stored property stays private so all writes funnel through
@@ -2779,6 +2822,7 @@ class PlayerViewModel {
         origin: LoadOrigin = .userInitiated
     ) {
         guard !isDisposed else { return }
+        hasBegunFirstLoad = true
         #if os(tvOS)
         PosterImageCache.trimDecodedMemory()
         #endif
@@ -3568,6 +3612,13 @@ class PlayerViewModel {
         #else
         switch phase {
         case .background, .inactive:
+            // While PiP owns (or is about to own) playback, backgrounding
+            // must not pause — AVKit hands the video off to the system PiP
+            // window. `isAutoStartArmed` covers the race where scenePhase
+            // fires before AVKit's auto-start delegate callback lands.
+            if isPictureInPictureActive || (pictureInPicture?.isAutoStartArmed ?? false) {
+                break
+            }
             if isPlaying {
                 activePlayer.pause()
             }
@@ -4898,6 +4949,11 @@ class PlayerViewModel {
         guard !isDisposed else { return }
         Self.logger.info("PlayerViewModel.cleanup()")
         isDisposed = true
+        #if os(iOS)
+        // Normally already unbound by PlaybackSessionHost.endSession();
+        // belt-and-suspenders for standalone (non-hosted) teardown paths.
+        pictureInPicture?.unbind()
+        #endif
         activeExecutionPlan = nil
         hasAttemptedNativeDirectRouteRecovery = false
         hasAttemptedSiloRouteCompatibilityFallback = false
