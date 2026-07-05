@@ -1066,17 +1066,10 @@ final class AVPlayerBackend {
         return Self.vodRetentionBudget(availableBytes: freeDiskSpaceBytes())
     }
 
-    /// Pure clamp for the VOD retention budget: quarter of the available
-    /// temp-volume capacity, capped at 2 GiB, floored at 512 MiB. An
-    /// unknown or non-positive capacity reading means the query is broken,
-    /// not that the disk is full — use the cap, never 0: a zero budget
-    /// disables pruning outright and deadlocks the producer once the spill
-    /// gate fills.
+    /// Pure clamp for the VOD retention budget; shared with the source
+    /// cache's spill budget so both spill tiers size against the same policy.
     static func vodRetentionBudget(availableBytes: Int64?) -> Int64 {
-        let cap: Int64 = 2 << 30
-        let floor: Int64 = 512 << 20
-        guard let availableBytes, availableBytes > 0 else { return cap }
-        return min(cap, max(floor, availableBytes / 4))
+        PlaybackDiskBudget.retentionBudget(availableBytes: availableBytes)
     }
 
     /// Swaps the producer (writer only — the store, server, and player item
@@ -2380,8 +2373,7 @@ final class AVPlayerBackend {
     }
 
     private static func freeDiskSpaceBytes() -> Int64? {
-        let attributes = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
-        return (attributes?[.systemFreeSize] as? NSNumber)?.int64Value
+        PlaybackDiskBudget.freeDiskSpaceBytes()
     }
 
     private static func volumeAvailableCapacityBytes() -> Int64? {

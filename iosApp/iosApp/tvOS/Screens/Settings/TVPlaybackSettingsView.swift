@@ -44,7 +44,16 @@ struct TVPlaybackSettingsPane: View {
             Task { await viewModel.setPreferProfile7HDR10Fallback(value) }
         }
 
-        TVSettingsFooter("The fallback plays Dolby Vision Profile 7 as HDR10 on this Apple TV.")
+        TVSettingsToggleRow(
+            title: "Seek Cache",
+            isOn: viewModel.seekCacheEnabled
+        ) {
+            let value = !viewModel.seekCacheEnabled
+            viewModel.seekCacheEnabled = value
+            Task { await viewModel.setSeekCacheEnabled(value) }
+        }
+
+        TVSettingsFooter("The fallback plays Dolby Vision Profile 7 as HDR10 on this Apple TV. Seek Cache keeps recently streamed video in temporary storage during playback so skipping forward and back is instant.")
     }
 
     @ViewBuilder

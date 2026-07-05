@@ -70,11 +70,21 @@ struct PlaybackSettingsView: View {
             ))
             .foregroundStyle(Color.continuumOnSurface)
             .tint(.continuumAccent)
+
+            Toggle("Seek Cache", isOn: Binding(
+                get: { viewModel.seekCacheEnabled },
+                set: { enabled in
+                    viewModel.seekCacheEnabled = enabled
+                    Task { await viewModel.setSeekCacheEnabled(enabled) }
+                }
+            ))
+            .foregroundStyle(Color.continuumOnSurface)
+            .tint(.continuumAccent)
         } header: {
             Text("Streaming")
                 .foregroundStyle(Color.continuumSecondaryText)
         } footer: {
-            Text("The fallback plays Dolby Vision Profile 7 as HDR10 on this device.")
+            Text("The fallback plays Dolby Vision Profile 7 as HDR10 on this device. Seek Cache keeps recently streamed video in temporary storage during playback so skipping forward and back is instant; it is cleared when playback ends.")
                 .foregroundStyle(Color.continuumSecondaryText)
         }
         .listRowBackground(Color.continuumSurfaceElevated)

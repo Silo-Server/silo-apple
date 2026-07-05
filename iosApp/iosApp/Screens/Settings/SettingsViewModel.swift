@@ -33,6 +33,7 @@ class SettingsViewModel {
     var skipIntros: Bool = PlayerSettings.shared.autoSkipIntro
     var skipCredits: Bool = PlayerSettings.shared.autoSkipCredits
     var preferProfile7HDR10Fallback: Bool = PlayerSettings.shared.preferProfile7HDR10Fallback
+    var seekCacheEnabled: Bool = PlayerSettings.shared.seekCacheEnabled
 
     // Subtitle styling (local — applies to renderer overrides, not the
     // language/behavior selection that lives server-side).
@@ -85,6 +86,7 @@ class SettingsViewModel {
         skipIntros = PlayerSettings.shared.autoSkipIntro
         skipCredits = PlayerSettings.shared.autoSkipCredits
         preferProfile7HDR10Fallback = PlayerSettings.shared.preferProfile7HDR10Fallback
+        seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
         subtitleSize = UserDefaults.standard.string(forKey: "subtitleSize") ?? "medium"
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
@@ -152,6 +154,12 @@ class SettingsViewModel {
     }
 
     @MainActor
+    func setSeekCacheEnabled(_ enabled: Bool) async {
+        PlayerSettings.shared.setSeekCacheEnabled(enabled)
+        seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
+    }
+
+    @MainActor
     func resetPlaybackDeviceSettings() async {
         await PlayerSettings.shared.resetAllDeviceSettings()
         preferredQuality = PlayerSettings.shared.preferredQuality
@@ -161,6 +169,7 @@ class SettingsViewModel {
         skipIntros = PlayerSettings.shared.autoSkipIntro
         skipCredits = PlayerSettings.shared.autoSkipCredits
         preferProfile7HDR10Fallback = PlayerSettings.shared.preferProfile7HDR10Fallback
+        seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
     }

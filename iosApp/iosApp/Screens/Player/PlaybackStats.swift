@@ -46,6 +46,7 @@ struct PlaybackStats: Equatable {
     var sourceCacheMissBytes: Int64?
     var sourceActiveOriginRequestCount: Int?
     var sourceDiskSpillBytes: Int64?
+    var sourceDiskBytesWritten: Int64?
     var sourceOriginBytesTransferred: Int64?
     var sourceOriginBitrateBps: Double?
     var generatedAheadSeconds: Double?
@@ -211,6 +212,9 @@ extension PlaybackStats {
         }
         if let sourceDiskSpillBytes {
             rows.append(("Source disk spill", ByteCountFormatter.string(fromByteCount: sourceDiskSpillBytes, countStyle: .file)))
+        }
+        if let sourceDiskBytesWritten, sourceDiskBytesWritten > 0 {
+            rows.append(("Source disk written", ByteCountFormatter.string(fromByteCount: sourceDiskBytesWritten, countStyle: .file)))
         }
         if let sourceOriginBytesTransferred {
             rows.append(("Source origin bytes", ByteCountFormatter.string(fromByteCount: sourceOriginBytesTransferred, countStyle: .file)))

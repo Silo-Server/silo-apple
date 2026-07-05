@@ -47,6 +47,7 @@ private enum PlayerDeviceSettingKey: String, CaseIterable {
     case subtitleAppearance = "subtitle_appearance"
     case hdrEnabled = "player.hdr_enabled"
     case dvProfile7HDR10Fallback = "player.dv_profile7_hdr10_fallback"
+    case seekCacheEnabled = "player.seek_cache_enabled"
     case playbackSpeed = "player.playback_speed"
     case audioSyncMs = "player.audio_sync_ms"
     case subtitleSyncMs = "player.subtitle_sync_ms"
@@ -85,6 +86,14 @@ final class PlayerSettings {
 
     var preferProfile7HDR10Fallback: Bool {
         didSet { defaults.set(preferProfile7HDR10Fallback, forKey: Self.cacheKey(Keys.dvProfile7HDR10Fallback)) }
+    }
+
+    /// Spill streamed bytes to temporary disk storage during playback so
+    /// large forward/backward seeks are served locally. Governs the source
+    /// cache only; the loopback segment store's spill is load-bearing for the
+    /// DV route and stays on regardless.
+    var seekCacheEnabled: Bool {
+        didSet { defaults.set(seekCacheEnabled, forKey: Self.cacheKey(Keys.seekCacheEnabled)) }
     }
 
     var subtitleAppearance: SubtitleAppearance {
@@ -196,6 +205,7 @@ final class PlayerSettings {
             Keys.autoSkipCredits: false,
             Keys.hdrEnabled: true,
             Keys.dvProfile7HDR10Fallback: false,
+            Keys.seekCacheEnabled: true,
             Keys.subtitleAppearance: SubtitleAppearance.default.jsonString,
             Keys.subtitleUsesDeviceAppearanceOverride: false,
             Keys.subtitleMatchesSystemAppearance: false,
@@ -226,6 +236,11 @@ final class PlayerSettings {
             defaults,
             key: Keys.dvProfile7HDR10Fallback,
             defaultValue: false
+        )
+        seekCacheEnabled = Self.cachedBool(
+            defaults,
+            key: Keys.seekCacheEnabled,
+            defaultValue: true
         )
         subtitleAppearance = SubtitleAppearance.decode(from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance)))
         subtitleUsesDeviceAppearanceOverride = Self.cachedBool(
@@ -371,6 +386,11 @@ final class PlayerSettings {
         enqueueDeviceSetting(.dvProfile7HDR10Fallback, operation: .set(boolString(enabled)))
     }
 
+    func setSeekCacheEnabled(_ enabled: Bool) {
+        seekCacheEnabled = enabled
+        enqueueDeviceSetting(.seekCacheEnabled, operation: .set(boolString(enabled)))
+    }
+
     func setPlaybackSpeed(_ rate: Double) {
         let normalized = max(0.25, min(rate, 3.0))
         playbackSpeed = normalized
@@ -504,6 +524,11 @@ final class PlayerSettings {
             in: effectiveByKey,
             fallback: false
         )
+        seekCacheEnabled = effectiveBool(
+            for: .seekCacheEnabled,
+            in: effectiveByKey,
+            fallback: true
+        )
         playbackSpeed = effectiveDouble(for: .playbackSpeed, in: effectiveByKey, fallback: 1.0)
         audioSyncMs = effectiveInt(for: .audioSyncMs, in: effectiveByKey, fallback: 0)
         subtitleSyncMs = effectiveInt(for: .subtitleSyncMs, in: effectiveByKey, fallback: 0)
@@ -593,6 +618,11 @@ final class PlayerSettings {
             defaults,
             key: Keys.dvProfile7HDR10Fallback,
             defaultValue: false
+        )
+        seekCacheEnabled = Self.cachedBool(
+            defaults,
+            key: Keys.seekCacheEnabled,
+            defaultValue: true
         )
         playbackSpeed = Self.cachedDouble(defaults, key: Keys.playbackSpeed, defaultValue: 1.0)
         audioSyncMs = defaults.integer(forKey: Self.cacheKey(Keys.audioSyncMs))
@@ -791,6 +821,7 @@ final class PlayerSettings {
         static let autoSkipCredits = "skipCredits"
         static let hdrEnabled = "player.hdrEnabled"
         static let dvProfile7HDR10Fallback = "player.dvProfile7HDR10Fallback"
+        static let seekCacheEnabled = "player.seekCacheEnabled"
         static let subtitleAppearance = "player.subtitleAppearance"
         static let subtitleUsesDeviceAppearanceOverride = "player.subtitleUsesDeviceAppearanceOverride"
         static let subtitleMatchesSystemAppearance = "player.subtitleMatchesSystemAppearance"

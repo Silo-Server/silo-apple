@@ -2072,7 +2072,10 @@ class PlayerViewModel {
         let proxy = PlaybackSourceProxy(
             originURL: plan.sourceStreamRequest.url,
             originHeaders: plan.sourceStreamRequest.headers,
-            cache: PlaybackSourceCache(maxBytes: cacheBudget),
+            cache: PlaybackSourceCache(
+                maxBytes: cacheBudget,
+                diskSpillEnabled: PlayerSettings.shared.seekCacheEnabled
+            ),
             onPlaybackSessionMissing: { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -5502,6 +5505,7 @@ class PlayerViewModel {
         stats.sourceCacheMissBytes = sourceStats.cacheMissBytes
         stats.sourceActiveOriginRequestCount = sourceStats.activeOriginRequestCount
         stats.sourceDiskSpillBytes = sourceStats.diskSpillBytes
+        stats.sourceDiskBytesWritten = sourceStats.diskBytesWritten
         stats.sourceOriginBytesTransferred = sourceStats.originBytesTransferred
         stats.sourceOriginBitrateBps = sourceStats.currentOriginBitrateBps
     }

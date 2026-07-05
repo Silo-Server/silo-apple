@@ -16,6 +16,8 @@ struct PlaybackSourceProxyStats: Equatable {
     let cacheMissBytes: Int64
     let activeOriginRequestCount: Int
     let diskSpillBytes: Int64
+    let diskBudgetBytes: Int64
+    let diskBytesWritten: Int64
 }
 
 enum PlaybackSourceInterruptionReason: Equatable {
@@ -68,7 +70,17 @@ final class PlaybackSourceCache {
     static var siloLoopbackMemoryBudgetBytes: Int {
         isConstrainedMemoryDevice ? 128 * 1024 * 1024 : 256 * 1024 * 1024
     }
-    static let sourceDiskSpillBudgetBytes = 512 * 1024 * 1024
+    /// Session NAND-write budget multiplier over the disk retention budget.
+    /// Spill writes the stream to flash once per watched-and-evicted byte, so
+    /// an unbounded budget writes a 70 GB remux to NAND every viewing.
+    /// Constrained devices (small-NAND Apple TVs) get half the allowance.
+    static var diskWriteBudgetMultiplier: Int64 {
+        isConstrainedMemoryDevice ? 1 : 2
+    }
+    /// When the retention budget holds less than this much content, the
+    /// wear-per-benefit ratio is poor (a 2 GiB budget is ~4 min of a
+    /// Blu-ray remux) — the write budget is halved for such sources.
+    static let diskWriteBudgetBitrateGateSeconds: Double = 600
     /// Streaming appends grow a span in place until it reaches this size,
     /// then roll over to a new span so eviction stays reasonably granular.
     static let maxAppendSpanBytes = 16 * 1024 * 1024
@@ -94,6 +106,8 @@ final class PlaybackSourceCache {
         let cacheMissBytes: Int64
         let activeOriginRequestCount: Int
         let diskSpillBytes: Int64
+        let diskBudgetBytes: Int64
+        let diskBytesWritten: Int64
     }
 
     struct Gap {
@@ -137,18 +151,36 @@ final class PlaybackSourceCache {
     private var cacheMissBytes: Int64 = 0
     private var activeOriginRequestCount = 0
     private var diskSpillBytes: Int64 = 0
+    private var diskBytesWritten: Int64 = 0
+    private var loggedWriteBudgetExhausted = false
     private var recentTransfers: [(time: Date, bytes: Int)] = []
     private var lastReadEnd: Int64?
     private var sourceBitrateBps: Double?
     private let diskSpillEnabled: Bool
+    private let diskBudgetBytes: Int64
     private let diskDirectory: URL?
 
-    init(maxBytes: Int = PlaybackSourceCache.defaultMemoryBudgetBytes) {
+    /// Env vars remain as dev overrides in both directions; the shipped
+    /// default comes from the caller (user "Seek Cache" setting, default on).
+    private static func resolveDiskSpillEnabled(_ requested: Bool) -> Bool {
+        let env = ProcessInfo.processInfo.environment
+        if env["SILO_DISABLE_SOURCE_DISK_SPILL"] == "1" { return false }
+        if env["SILO_ENABLE_SOURCE_DISK_SPILL"] == "1" { return true }
+        return requested
+    }
+
+    init(
+        maxBytes: Int = PlaybackSourceCache.defaultMemoryBudgetBytes,
+        diskSpillEnabled: Bool = true,
+        diskBudgetBytes: Int64? = nil
+    ) {
         self.maxBytes = maxBytes
         self.highWaterBytes = maxBytes
         self.lowWaterBytes = max(0, maxBytes - 64 * 1024 * 1024)
-        self.diskSpillEnabled = ProcessInfo.processInfo.environment["SILO_ENABLE_SOURCE_DISK_SPILL"] == "1"
-        if diskSpillEnabled {
+        self.diskSpillEnabled = Self.resolveDiskSpillEnabled(diskSpillEnabled)
+        self.diskBudgetBytes = diskBudgetBytes
+            ?? PlaybackDiskBudget.retentionBudget(availableBytes: PlaybackDiskBudget.freeDiskSpaceBytes())
+        if self.diskSpillEnabled {
             let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
                 .appendingPathComponent("continuum-source-cache", isDirectory: true)
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -219,8 +251,12 @@ final class PlaybackSourceCache {
         lock.lock()
         defer { lock.unlock() }
         guard let span = spans.first(where: { $0.start <= start && $0.end >= start }) else {
+            // mmap + .uncached keeps disk hits out of the heap footprint: the
+            // kernel pages the span in and out under memory pressure; only
+            // the requested slice below is copied. Spans are immutable after
+            // their atomic write, so there is no torn-read window.
             if let diskSpan = diskSpans.first(where: { $0.start <= start && $0.end >= start }),
-               let file = try? Data(contentsOf: diskSpan.url) {
+               let file = try? Data(contentsOf: diskSpan.url, options: [.alwaysMapped, .uncached]) {
                 let offset = Int(start - diskSpan.start)
                 let length = min(maxLength, file.count - offset)
                 guard length > 0 else { return nil }
@@ -352,7 +388,9 @@ final class PlaybackSourceCache {
             cacheHitBytes: cacheHitBytes,
             cacheMissBytes: cacheMissBytes,
             activeOriginRequestCount: activeOriginRequestCount,
-            diskSpillBytes: diskSpillBytes
+            diskSpillBytes: diskSpillBytes,
+            diskBudgetBytes: diskSpillEnabled ? diskBudgetBytes : 0,
+            diskBytesWritten: diskBytesWritten
         )
         lock.unlock()
         return snapshot
@@ -420,21 +458,62 @@ final class PlaybackSourceCache {
         }
     }
 
+    /// Session write budget: bounds total NAND writes (retention budget only
+    /// bounds what is *stored*). Once spent, spill stops for the rest of the
+    /// session — including the evict-to-make-room churn — so a long watch
+    /// costs at most a few GiB of flash writes instead of the full stream.
+    private func diskWriteBudgetLocked() -> Int64 {
+        var budget = diskBudgetBytes * Self.diskWriteBudgetMultiplier
+        if let bps = sourceBitrateBps, bps > 0,
+           Double(diskBudgetBytes) / (bps / 8) < Self.diskWriteBudgetBitrateGateSeconds {
+            budget /= 2
+        }
+        return budget
+    }
+
     private func spillToDiskIfEnabledLocked(_ span: Span) {
-        guard diskSpillEnabled,
-              let diskDirectory,
-              diskSpillBytes + Int64(span.data.count) <= Int64(Self.sourceDiskSpillBudgetBytes) else {
+        guard diskSpillEnabled, let diskDirectory else { return }
+        guard diskBytesWritten + Int64(span.data.count) <= diskWriteBudgetLocked() else {
+            if !loggedWriteBudgetExhausted {
+                loggedWriteBudgetExhausted = true
+                print("[CMP-SOURCE-CACHE] spill write-budget exhausted written=\(diskBytesWritten) retained=\(diskSpillBytes) budget=\(diskWriteBudgetLocked())")
+            }
             return
         }
+        makeRoomOnDiskLocked(for: Int64(span.data.count))
+        guard diskSpillBytes + Int64(span.data.count) <= diskBudgetBytes else { return }
         let name = "\(span.start)-\(span.end).bin"
         let url = diskDirectory.appendingPathComponent(name)
         do {
             try span.data.write(to: url, options: .atomic)
             diskSpans.append(DiskSpan(start: span.start, length: span.data.count, url: url, createdAt: Date()))
             diskSpillBytes += Int64(span.data.count)
+            diskBytesWritten += Int64(span.data.count)
         } catch {
             // Spill is opportunistic; active playback can always refetch.
         }
+    }
+
+    /// Frees disk retention for an incoming spill by deleting the spans
+    /// farthest from the playhead first, so a seek-back target is the last
+    /// thing evicted. POSIX keeps any concurrently mapped file valid after
+    /// unlink, and the ledger mutation is under `lock`, so readers are safe.
+    private func makeRoomOnDiskLocked(for incomingBytes: Int64) {
+        let playhead = lastReadEnd ?? 0
+        while diskSpillBytes + incomingBytes > diskBudgetBytes, !diskSpans.isEmpty {
+            guard let victimIndex = diskSpans.indices.max(by: { a, b in
+                distanceFromPlayhead(diskSpans[a], playhead: playhead)
+                    < distanceFromPlayhead(diskSpans[b], playhead: playhead)
+            }) else { return }
+            let victim = diskSpans.remove(at: victimIndex)
+            diskSpillBytes -= Int64(victim.length)
+            try? FileManager.default.removeItem(at: victim.url)
+        }
+    }
+
+    private func distanceFromPlayhead(_ span: DiskSpan, playhead: Int64) -> Int64 {
+        if span.range.contains(playhead) { return 0 }
+        return min(abs(span.start - playhead), abs(span.end - playhead))
     }
 
     private func forwardCachedBytesLocked() -> Int64 {
@@ -616,7 +695,9 @@ private final class PlaybackSourceResource {
             cacheHitBytes: snapshot.cacheHitBytes,
             cacheMissBytes: snapshot.cacheMissBytes,
             activeOriginRequestCount: snapshot.activeOriginRequestCount,
-            diskSpillBytes: snapshot.diskSpillBytes
+            diskSpillBytes: snapshot.diskSpillBytes,
+            diskBudgetBytes: snapshot.diskBudgetBytes,
+            diskBytesWritten: snapshot.diskBytesWritten
         )
     }
 
