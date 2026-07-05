@@ -142,11 +142,11 @@ struct ContinuumTheme {
         static let barHeight: CGFloat = 64
         /// Gap between tab capsules in the bar's center cluster.
         static let tabSpacing: CGFloat = 8
-        static let tabLabelSize: CGFloat = 23
-        static let tabPaddingHorizontal: CGFloat = 26
-        static let tabPaddingVertical: CGFloat = 11
+        static let tabLabelSize: CGFloat = 26
+        static let tabPaddingHorizontal: CGFloat = 29
+        static let tabPaddingVertical: CGFloat = 12
         /// Square hit target of the search button and the profile avatar.
-        static let barIconSize: CGFloat = 52
+        static let barIconSize: CGFloat = 58
         /// Gap between the search button and the avatar.
         static let barTrailingSpacing: CGFloat = 22
         static let wordmarkSize: CGFloat = 26

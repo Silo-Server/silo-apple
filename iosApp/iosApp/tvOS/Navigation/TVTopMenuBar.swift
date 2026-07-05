@@ -415,7 +415,7 @@ struct TVTopMenuBar: View {
 
         return Button(action: onSearch) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: 27, weight: .semibold))
                 .foregroundStyle(isFocused ? Color.continuumBackground : .white.opacity(0.62))
                 .frame(
                     width: ContinuumTheme.Skyline.barIconSize,
