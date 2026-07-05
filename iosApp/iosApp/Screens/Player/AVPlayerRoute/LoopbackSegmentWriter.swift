@@ -482,6 +482,9 @@ final class LoopbackSegmentWriter {
     private var outputAudioCodecToken: String?
     private var audioDecoderCtx: UnsafeMutablePointer<AVCodecContext>?
     private var audioEncoderCtx: UnsafeMutablePointer<AVCodecContext>?
+    /// Reused across every decoded bridge frame (receive_frame unrefs it);
+    /// allocated lazily on the mux queue, freed with the decoder.
+    private var audioDecodedFrame: UnsafeMutablePointer<AVFrame>?
     private var audioSwrCtx: OpaquePointer?
     private var audioSampleFifo: OpaquePointer?
     private var nextEncodedAudioPTS: Int64 = 0
@@ -3354,18 +3357,17 @@ final class LoopbackSegmentWriter {
         }
 
         let avErrorEOF = -Int32(bitPattern: 0x20464F45)
+        let decodedFrame = try reusableAudioDecodedFrame()
         while true {
-            var frame = av_frame_alloc()
-            guard let decodedFrame = frame else {
-                throw LoopbackWriterError.allocOutput
-            }
+            // avcodec_receive_frame unrefs the destination before filling
+            // it, so one persistent frame serves every iteration — the
+            // bridge decodes ~30-90 frames/s and per-frame alloc/free was
+            // steady mux-thread churn.
             let recvR = avcodec_receive_frame(decoderCtx, decodedFrame)
             if recvR == avErrorAgain || recvR == avErrorEOF {
-                av_frame_free(&frame)
                 return
             }
             if recvR < 0 {
-                av_frame_free(&frame)
                 noteAudioDecodeError(stage: "receive", rc: recvR)
                 return
             }
@@ -3374,8 +3376,17 @@ final class LoopbackSegmentWriter {
             if emitDecodedFrames {
                 try sendConvertedFrameToEncoder(decodedFrame)
             }
-            av_frame_free(&frame)
+            av_frame_unref(decodedFrame)
         }
+    }
+
+    private func reusableAudioDecodedFrame() throws -> UnsafeMutablePointer<AVFrame> {
+        if let frame = audioDecodedFrame { return frame }
+        guard let frame = av_frame_alloc() else {
+            throw LoopbackWriterError.allocOutput
+        }
+        audioDecodedFrame = frame
+        return frame
     }
 
     /// VOD: anchor the bridged-audio encoder clock to the session timeline
@@ -3693,22 +3704,17 @@ final class LoopbackSegmentWriter {
 
         _ = avcodec_send_packet(decoderCtx, nil)
         let avErrorEOF = -Int32(bitPattern: 0x20464F45)
+        let decodedFrame = try reusableAudioDecodedFrame()
         while true {
-            var frame = av_frame_alloc()
-            guard let decodedFrame = frame else {
-                throw LoopbackWriterError.allocOutput
-            }
             let recvR = avcodec_receive_frame(decoderCtx, decodedFrame)
             if recvR == avErrorAgain || recvR == avErrorEOF {
-                av_frame_free(&frame)
                 break
             }
             if recvR < 0 {
-                av_frame_free(&frame)
                 throw LoopbackWriterError.audioTranscodeSetup("audio decoder flush failed rc=\(recvR)")
             }
             try sendConvertedFrameToEncoder(decodedFrame)
-            av_frame_free(&frame)
+            av_frame_unref(decodedFrame)
         }
 
         try drainAudioSampleFifo(final: true)
@@ -3721,9 +3727,96 @@ final class LoopbackSegmentWriter {
 
     private func transformVideoPacketIfNeeded(_ pkt: UnsafeMutablePointer<AVPacket>) throws {
         guard videoMode == .convertProfile7To81 else { return }
+        guard pkt.pointee.data != nil, pkt.pointee.size > 0 else { return }
+        // Compact in place instead of rebuilding: BL NALs lead the packet
+        // and stay put, the dropped EL NALs open a gap only behind them,
+        // and the RPU is rewritten where it stands. The old rebuild path
+        // (walk + Data + av_new_packet + memcpy) copied every frame twice
+        // at 60-75 Mbps — a steady mux-thread tax on A12-class devices.
+        let writableR = av_packet_make_writable(pkt)
+        guard writableR >= 0 else { throw LoopbackWriterError.allocOutput }
+        guard let data = pkt.pointee.data else { return }
+        let size = Int(pkt.pointee.size)
+
+        var read = 0
+        var write = 0
+        var changed = false
+        while read + nalLengthSize <= size {
+            var nalSize = 0
+            for i in 0..<nalLengthSize {
+                nalSize = (nalSize << 8) | Int(data[read + i])
+            }
+            let nalStart = read + nalLengthSize
+            guard nalSize >= 2, nalStart + nalSize <= size else {
+                // Malformed tail: mirror the rebuild path — leave the whole
+                // packet verbatim when nothing changed yet, drop the tail
+                // once compaction has started.
+                if !changed { return }
+                break
+            }
+            let byte0 = data[nalStart]
+            let byte1 = data[nalStart + 1]
+            let nalType = Int((byte0 >> 1) & 0x3F)
+            let layerID = Int(((byte0 & 0x01) << 5) | ((byte1 & 0xF8) >> 3))
+            let next = nalStart + nalSize
+
+            if layerID > 0 || nalType == 63 {
+                changed = true
+                read = next
+                continue
+            }
+            if nalType == 62 {
+                let nalData = Data(bytes: data + nalStart, count: nalSize)
+                let payload = try convertRpuNALToProfile81(nalData)
+                let needed = nalLengthSize + payload.count
+                guard write + needed <= next else {
+                    // Converted RPU outgrew the bytes consumed so far. With
+                    // a pristine buffer (no NAL moved or rewritten yet) the
+                    // old rebuild path handles it; after mutation the slack
+                    // equals every dropped EL byte so far, so overrunning it
+                    // means a pathologically grown RPU — surface it.
+                    if !changed && write == read {
+                        try rebuildProfile7Packet(pkt)
+                        return
+                    }
+                    throw LoopbackWriterError.profile81ConversionFailed("rpu_grew_past_compaction_slack")
+                }
+                var length = payload.count
+                for i in stride(from: nalLengthSize - 1, through: 0, by: -1) {
+                    data[write + i] = UInt8(length & 0xFF)
+                    length >>= 8
+                }
+                payload.withUnsafeBytes { raw in
+                    if let base = raw.baseAddress, payload.count > 0 {
+                        memcpy(data + write + nalLengthSize, base, payload.count)
+                    }
+                }
+                write += needed
+                changed = true
+                read = next
+                continue
+            }
+            let span = nalLengthSize + nalSize
+            if write != read {
+                memmove(data + write, data + read, span)
+            }
+            write += span
+            read = next
+        }
+        guard changed else { return }
+        guard write > 0 else {
+            // Everything dropped — mirror the rebuild path's contract of
+            // never emitting an empty packet.
+            return
+        }
+        av_shrink_packet(pkt, Int32(write))
+    }
+
+    /// Rare fallback for the in-place compaction: rebuild the packet into a
+    /// fresh buffer (the pre-compaction transform path).
+    private func rebuildProfile7Packet(_ pkt: UnsafeMutablePointer<AVPacket>) throws {
         guard let dataPtr = pkt.pointee.data else { return }
         let packetBytes = UnsafeBufferPointer(start: dataPtr, count: Int(pkt.pointee.size))
-        guard videoPacketNeedsProfile7Rewrite(packetBytes: packetBytes) else { return }
         let transformed = try transformedVideoPacketData(packetBytes: packetBytes)
 
         var replacement = av_packet_alloc()
@@ -3782,29 +3875,6 @@ final class LoopbackSegmentWriter {
             }
         }
         return output.isEmpty ? Data(buffer: packetBytes) : output
-    }
-
-    private func videoPacketNeedsProfile7Rewrite(
-        packetBytes: UnsafeBufferPointer<UInt8>
-    ) -> Bool {
-        var cursor = 0
-        while cursor + nalLengthSize <= packetBytes.count {
-            var nalSize = 0
-            for i in 0..<nalLengthSize {
-                nalSize = (nalSize << 8) | Int(packetBytes[cursor + i])
-            }
-            let nalStart = cursor + nalLengthSize
-            guard nalSize >= 2, nalStart + nalSize <= packetBytes.count else { return false }
-            let byte0 = packetBytes[nalStart]
-            let byte1 = packetBytes[nalStart + 1]
-            let nalType = Int((byte0 >> 1) & 0x3F)
-            let layerID = Int(((byte0 & 0x01) << 5) | ((byte1 & 0xF8) >> 3))
-            if layerID > 0 || nalType == 62 || nalType == 63 {
-                return true
-            }
-            cursor = nalStart + nalSize
-        }
-        return false
     }
 
     private func convertRpuNALToProfile81(_ nal: Data) throws -> Data {
@@ -4203,8 +4273,11 @@ final class LoopbackSegmentWriter {
             cursor += total
         }
         // Discard consumed prefix. Left-over tail (partial next box) stays
-        // buffered for the next ingest.
-        if cursor > 0 {
+        // buffered for the next ingest. Keep the capacity on a full drain —
+        // the buffer re-grows to a whole mdat every fragment otherwise.
+        if cursor >= boxBuffer.count {
+            boxBuffer.removeAll(keepingCapacity: true)
+        } else if cursor > 0 {
             boxBuffer.removeSubrange(0..<cursor)
         }
     }
@@ -4227,18 +4300,14 @@ final class LoopbackSegmentWriter {
                 return
             case "sidx":
                 if pendingSegmentBytes.isEmpty {
-                    pendingSegmentBytes = Data(slice)
-                    pendingSegmentHasMoof = false
-                    pendingSegmentHasVideo = false
+                    beginPendingSegment(firstBox: Data(slice), hasMoof: false, hasVideo: false)
                 } else {
                     appendToCurrentSegment(slice)
                 }
                 return
             case "styp":
                 if pendingSegmentBytes.isEmpty {
-                    pendingSegmentBytes = Data(slice)
-                    pendingSegmentHasMoof = false
-                    pendingSegmentHasVideo = false
+                    beginPendingSegment(firstBox: Data(slice), hasMoof: false, hasVideo: false)
                 } else {
                     appendToCurrentSegment(slice)
                 }
@@ -4277,9 +4346,7 @@ final class LoopbackSegmentWriter {
         switch type {
         case "styp", "sidx":
             if pendingSegmentBytes.isEmpty {
-                pendingSegmentBytes = Data(slice)
-                pendingSegmentHasMoof = false
-                pendingSegmentHasVideo = false
+                beginPendingSegment(firstBox: Data(slice), hasMoof: false, hasVideo: false)
             } else {
                 appendToCurrentSegment(slice)
             }
@@ -4444,6 +4511,9 @@ final class LoopbackSegmentWriter {
     }
 
     private var pendingSegmentBytes = Data()
+    /// Size of the last finalized segment — the capacity hint for the next
+    /// one (segment sizes are stable within a title).
+    private var lastFinalizedSegmentBytes = 0
     private var pendingSegmentHasVideo = false
     private var pendingSegmentHasMoof = false
 
@@ -4527,7 +4597,16 @@ final class LoopbackSegmentWriter {
         if !pendingSegmentBytes.isEmpty {
             finalizeCurrentSegment()
         }
-        pendingSegmentBytes = Data(firstBox)
+        beginPendingSegment(firstBox: firstBox, hasMoof: hasMoof, hasVideo: hasVideo)
+    }
+
+    /// Start accumulating a new segment with the previous segment's size
+    /// reserved up front — a fresh `Data` otherwise pays the realloc-doubling
+    /// walk to ~35-45 MB on every 4K segment.
+    private func beginPendingSegment(firstBox: Data, hasMoof: Bool, hasVideo: Bool) {
+        var fresh = Data(capacity: max(lastFinalizedSegmentBytes, firstBox.count) + 1024)
+        fresh.append(firstBox)
+        pendingSegmentBytes = fresh
         pendingSegmentHasMoof = hasMoof
         pendingSegmentHasVideo = hasVideo
     }
@@ -4560,6 +4639,7 @@ final class LoopbackSegmentWriter {
         }
         let segmentHasVideo = pendingSegmentHasVideo
         let segSize = pendingSegmentBytes.count
+        lastFinalizedSegmentBytes = segSize
         if !hasWrittenVideoSegment, !segmentHasVideo {
             print("[CMP-AVP] discarded pre-video segment \(currentSegmentIndex) size=\(segSize)")
             pendingSegmentBytes = Data()
@@ -5280,6 +5360,9 @@ final class LoopbackSegmentWriter {
         }
         if audioDecoderCtx != nil {
             avcodec_free_context(&audioDecoderCtx)
+        }
+        if audioDecodedFrame != nil {
+            av_frame_free(&audioDecodedFrame)
         }
         lastMuxedDTSByStream.removeAll()
         lastMuxedPTSByStream.removeAll()

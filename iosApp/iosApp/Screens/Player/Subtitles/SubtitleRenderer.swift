@@ -436,6 +436,36 @@ final class SubtitleRenderer {
 
     // MARK: - Frame size
 
+    /// Pixel scale actually used for libass rasterization. Low-power Apple
+    /// TVs (A12 and earlier) cap the raster at 1080p-class sizes: at the 4K
+    /// UI scale libass shapes and rasterizes every glyph at 4x the pixel
+    /// area, which dominates the residual cue-change render cost there. The
+    /// overlay layer upscales the composite to the display instead, trading
+    /// a little edge sharpness for the raster time.
+    static func renderScale(for size: CGSize, requested scale: CGFloat) -> CGFloat {
+        let safe = scale.isFinite && scale > 0 ? scale : 1
+        guard capsRenderAt1080p, size.height > 0 else { return safe }
+        return min(safe, max(1, 1080 / size.height))
+    }
+
+    #if os(tvOS)
+    /// AppleTV14,x (A15, 3rd-gen 4K) is the first model with headroom for
+    /// 4K glyph rasterization; earlier models cap at 1080p. The simulator's
+    /// machine string is the host's, so it never caps.
+    private static let capsRenderAt1080p: Bool = {
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machine = withUnsafeBytes(of: &systemInfo.machine) { raw in
+            String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
+        }
+        guard machine.hasPrefix("AppleTV") else { return false }
+        let major = Int(machine.dropFirst("AppleTV".count).prefix(while: \.isNumber)) ?? 0
+        return major > 0 && major < 14
+    }()
+    #else
+    private static let capsRenderAt1080p = false
+    #endif
+
     /// Update the libass frame/storage size and video-area margins. Called
     /// by the overlay view's `layoutSubviews`. Safe from main thread — hops
     /// internally.
@@ -444,9 +474,10 @@ final class SubtitleRenderer {
         scale: CGFloat,
         videoInsets: SubtitleVideoInsets = .zero
     ) {
-        let w = Int32(max(1, size.width * scale))
-        let h = Int32(max(1, size.height * scale))
-        let margins = Self.pixelMargins(for: videoInsets, scale: scale)
+        let renderScale = Self.renderScale(for: size, requested: scale)
+        let w = Int32(max(1, size.width * renderScale))
+        let h = Int32(max(1, size.height * renderScale))
+        let margins = Self.pixelMargins(for: videoInsets, scale: renderScale)
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.applyFrameGeometryOnSessionQueue(width: w, height: h, margins: margins)
@@ -644,7 +675,9 @@ final class SubtitleRenderer {
         if let imgPrimary   { canvas.draw(imageList: imgPrimary, offsetX: minX, offsetY: minY) }
 
         let cgImage = canvas.snapshot(scale: scale)
-        let safeScale = scale.isFinite && scale > 0 ? scale : 1
+        // Canvas pixels map to points through the (possibly capped) render
+        // scale, not the requested display scale.
+        let renderScale = Self.renderScale(for: frameSize, requested: scale)
         return SubtitleRenderOutput(
             image: cgImage, isDirty: true, hasContent: hasContent,
             diagChangePrimary: changePrimary, diagChangeSecondary: changeSecondary,
@@ -652,10 +685,10 @@ final class SubtitleRenderer {
             diagImageCount: diagImageCount, diagImageBytes: diagImageBytes,
             diagTrackEvents: diagTrackEvents,
             imageFrame: CGRect(
-                x: CGFloat(minX) / safeScale,
-                y: CGFloat(minY) / safeScale,
-                width: CGFloat(maxX - minX) / safeScale,
-                height: CGFloat(maxY - minY) / safeScale
+                x: CGFloat(minX) / renderScale,
+                y: CGFloat(minY) / renderScale,
+                width: CGFloat(maxX - minX) / renderScale,
+                height: CGFloat(maxY - minY) / renderScale
             )
         )
     }
@@ -665,10 +698,10 @@ final class SubtitleRenderer {
         scale: CGFloat,
         videoInsets: SubtitleVideoInsets = .zero
     ) {
-        let safeScale = scale.isFinite && scale > 0 ? scale : 1
-        let w = Int32(max(1, size.width * safeScale))
-        let h = Int32(max(1, size.height * safeScale))
-        let margins = Self.pixelMargins(for: videoInsets, scale: safeScale)
+        let renderScale = Self.renderScale(for: size, requested: scale)
+        let w = Int32(max(1, size.width * renderScale))
+        let h = Int32(max(1, size.height * renderScale))
+        let margins = Self.pixelMargins(for: videoInsets, scale: renderScale)
         applyFrameGeometryOnSessionQueue(width: w, height: h, margins: margins)
     }
 
