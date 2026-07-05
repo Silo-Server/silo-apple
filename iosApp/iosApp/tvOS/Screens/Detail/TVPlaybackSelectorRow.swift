@@ -27,6 +27,10 @@ struct TVPlaybackSelectorRow: View {
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
+    /// Server-resolved subtitle policy for this item, used to preview what
+    /// "Auto" will land on. Defaulted so callers without it keep a bare "Auto".
+    var subtitleMode: String? = nil
+    var subtitleSignature: SubtitleTrackSignature? = nil
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
@@ -197,7 +201,8 @@ struct TVPlaybackSelectorRow: View {
     private var audioSelector: some View {
         let value = DetailPlaybackFormatting.audioValueLabel(
             version: currentVersion,
-            selectedAudioTrackIndex: selectedAudioTrackIndex
+            selectedAudioTrackIndex: selectedAudioTrackIndex,
+            annotateAuto: true
         )
         if shouldEnableAudioSelector {
             TVSelectorButton(
@@ -234,11 +239,24 @@ struct TVPlaybackSelectorRow: View {
 
     // MARK: - Subtitles
 
+    private var subtitleAutoContext: DetailPlaybackFormatting.SubtitleAutoContext {
+        DetailPlaybackFormatting.SubtitleAutoContext(
+            preferredLanguage: preferredSubtitleLanguage,
+            mode: subtitleMode,
+            signature: subtitleSignature,
+            audioLanguage: DetailPlaybackFormatting.resolvedAudioLanguage(
+                version: currentVersion,
+                selectedAudioTrackIndex: selectedAudioTrackIndex
+            )
+        )
+    }
+
     @ViewBuilder
     private var subtitleSelector: some View {
         let value = DetailPlaybackFormatting.subtitleValueLabel(
             version: currentVersion,
-            selectedSubtitleTrackIndex: selectedSubtitleTrackIndex
+            selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+            autoContext: subtitleAutoContext
         )
         if shouldEnableSubtitleSelector {
             TVSelectorButton(

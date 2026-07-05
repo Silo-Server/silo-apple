@@ -88,6 +88,8 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 selectedVersionFileId: selectedVersionFileId,
                 selectedAudioTrackIndex: selectedAudioTrackIndex,
                 selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+                subtitleMode: detail.effectiveSubtitleMode,
+                subtitleSignature: detail.effectiveSubtitleTrackSignature,
                 onSelectVersion: onSelectVersion,
                 onSelectAudioTrack: onSelectAudioTrack,
                 onSelectSubtitleTrack: onSelectSubtitleTrack

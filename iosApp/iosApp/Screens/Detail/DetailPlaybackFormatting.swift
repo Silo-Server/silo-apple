@@ -145,7 +145,8 @@ enum DetailPlaybackFormatting {
 
     static func audioValueLabel(
         version: FileVersion?,
-        selectedAudioTrackIndex: Int?
+        selectedAudioTrackIndex: Int?,
+        annotateAuto: Bool = false
     ) -> String {
         guard let version,
               let ordinal = resolvedAudioOrdinal(
@@ -155,7 +156,32 @@ enum DetailPlaybackFormatting {
               let track = version.audioTracks?[safe: ordinal] else {
             return "Unknown"
         }
-        return audioTitle(track, ordinal: ordinal)
+        let title = audioTitle(track, ordinal: ordinal)
+        // With no explicit pick, the shown track is whatever Auto resolved to
+        // (preferred/default). Prefix "Auto -" so the row makes clear the
+        // choice was automatic rather than user-selected.
+        if annotateAuto, selectedAudioTrackIndex == nil {
+            return "Auto - \(title)"
+        }
+        return title
+    }
+
+    /// Language of the track that `audioValueLabel` would display, used to
+    /// feed the subtitle auto-resolver (Auto mode hides subs when the audio
+    /// is already in the preferred subtitle language).
+    static func resolvedAudioLanguage(
+        version: FileVersion?,
+        selectedAudioTrackIndex: Int?
+    ) -> String? {
+        guard let version,
+              let ordinal = resolvedAudioOrdinal(
+                  version: version,
+                  selectedAudioTrackIndex: selectedAudioTrackIndex
+              ),
+              let track = version.audioTracks?[safe: ordinal] else {
+            return nil
+        }
+        return track.language
     }
 
     static func audioTitle(_ track: AudioTrack, ordinal: Int) -> String {
@@ -260,6 +286,84 @@ enum DetailPlaybackFormatting {
         return best?.0
     }
 
+    /// Preview the track the player's `SubtitleAutoResolver` would auto-select
+    /// for the "Auto" (no explicit override) case, applied to the detail
+    /// payload's `SubtitleTrack` list. Returns nil when Auto resolves to no
+    /// subtitles (mode off, no preference, or audio already in the preferred
+    /// language). Mirrors `SubtitleAutoResolver.resolve` with the inputs the
+    /// detail page can supply — `showForced` defaults off, which only affects
+    /// the forced-vs-full-dialogue tiebreak.
+    private static func autoResolvedSubtitle(
+        version: FileVersion?,
+        context: SubtitleAutoContext
+    ) -> (track: SubtitleTrack, ordinal: Int)? {
+        let tracks = version?.subtitleTracks ?? []
+        guard !tracks.isEmpty else { return nil }
+
+        let mode = SubtitleMode(rawValue: context.mode ?? "") ?? .auto
+        if mode == .off { return nil }
+
+        if let signature = context.signature,
+           let match = bestSignatureMatch(signature, in: tracks),
+           let ordinal = tracks.firstIndex(where: { $0.id == match.id }) {
+            return (match, ordinal)
+        }
+
+        guard let rawLang = context.preferredLanguage else {
+            if mode == .always {
+                return bestLanguageMatch(nil, in: tracks, preferForced: context.showForced)
+            }
+            return nil
+        }
+
+        if rawLang.isEmpty { return nil }
+
+        // Auto mode hides subs when the audio already matches the preferred
+        // subtitle language (e.g. English audio + English sub preference).
+        if mode == .auto, let audio = context.audioLanguage,
+           SubtitleAutoResolver.languagesMatch(audio, rawLang) {
+            return nil
+        }
+
+        if let pick = bestLanguageMatch(rawLang, in: tracks, preferForced: context.showForced) {
+            return pick
+        }
+
+        if context.showForced,
+           let forced = tracks.enumerated().first(where: { $0.element.forced == true }) {
+            return (forced.element, forced.offset)
+        }
+        return nil
+    }
+
+    /// Language-scored pick mirroring `SubtitleAutoResolver.bestLanguageMatch`
+    /// over `SubtitleTrack`. Prefers full-dialogue (non-forced, non-SDH) unless
+    /// `preferForced` is set. Carries the array offset through as the ordinal.
+    private static func bestLanguageMatch(
+        _ language: String?,
+        in tracks: [SubtitleTrack],
+        preferForced: Bool
+    ) -> (track: SubtitleTrack, ordinal: Int)? {
+        let pool = tracks.enumerated().filter { _, track in
+            guard let language else { return true }
+            guard let trackLang = track.language else { return false }
+            return SubtitleAutoResolver.languagesMatch(trackLang, language)
+        }
+        guard !pool.isEmpty else { return nil }
+        if preferForced, let forced = pool.first(where: { $0.element.forced == true }) {
+            return (forced.element, forced.offset)
+        }
+        if let full = pool.first(where: {
+            !($0.element.forced ?? false) && !($0.element.hearingImpaired ?? false)
+        }) {
+            return (full.element, full.offset)
+        }
+        if let nonForced = pool.first(where: { !($0.element.forced ?? false) }) {
+            return (nonForced.element, nonForced.offset)
+        }
+        return (pool[0].element, pool[0].offset)
+    }
+
     static func subtitleOptions(
         version: FileVersion?,
         selectedSubtitleTrackIndex: Int?,
@@ -297,11 +401,33 @@ enum DetailPlaybackFormatting {
         }
     }
 
+    /// Inputs needed to preview what the player's subtitle auto-resolver
+    /// would land on, so the selector can annotate "Auto" with the concrete
+    /// track (or "None"). Mirrors `SubtitleAutoResolver.Inputs` with the
+    /// subset the detail payload can supply.
+    struct SubtitleAutoContext {
+        var preferredLanguage: String?
+        var mode: String?
+        var signature: SubtitleTrackSignature?
+        var audioLanguage: String?
+        var showForced: Bool = false
+    }
+
     static func subtitleValueLabel(
         version: FileVersion?,
-        selectedSubtitleTrackIndex: Int?
+        selectedSubtitleTrackIndex: Int?,
+        autoContext: SubtitleAutoContext? = nil
     ) -> String {
         if selectedSubtitleTrackIndex == nil {
+            // When we can preview the auto-resolution, always spell it out as
+            // "Auto - <track>" (or "Auto - None"), even for a single track, so
+            // the row shows what will actually play rather than a bare "Auto".
+            if let autoContext {
+                if let resolved = autoResolvedSubtitle(version: version, context: autoContext) {
+                    return "Auto - \(subtitleTitle(resolved.track, ordinal: resolved.ordinal))"
+                }
+                return "Auto - None"
+            }
             let tracks = version?.subtitleTracks ?? []
             if tracks.count == 1, let track = tracks.first {
                 return subtitleTitle(track, ordinal: 0)

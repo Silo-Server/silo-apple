@@ -102,6 +102,8 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                     selectedVersionFileId: selectedNextUpFileId,
                     selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
                     selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
+                    subtitleMode: nextUpPlaybackDetail?.effectiveSubtitleMode,
+                    subtitleSignature: nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
