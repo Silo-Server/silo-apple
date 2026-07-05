@@ -350,8 +350,10 @@ struct TVTopMenuBar: View {
         // the selected tab, but that rule is invisible to the focus
         // engine — the selected tab publishes its frame so the overlay
         // can mark it as the Up destination. Renders nothing when the
-        // overlay setting is off.
+        // overlay setting is off; debug builds only.
+        #if DEBUG
         .background(TVFocusDebugTabFramePublisher(isSelected: selectedRoot == root))
+        #endif
         .accessibilityLabel("\(root.title), tab, \(index + 1) of \(count)")
         .accessibilityHint(rootPanelHint(for: root))
         .accessibilityAddTraits(isSelected ? .isSelected : [])

@@ -1,4 +1,4 @@
-#if os(tvOS)
+#if os(tvOS) && DEBUG
 import Foundation
 import Observation
 

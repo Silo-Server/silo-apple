@@ -33,7 +33,7 @@ struct ContentView: View {
         #endif
         .environmentObject(overlayPrefs)
         .preferredColorScheme(.dark)
-        #if os(tvOS)
+        #if os(tvOS) && DEBUG
         .modifier(TVFocusDebugActivationModifier())
         #endif
         #if os(iOS)
