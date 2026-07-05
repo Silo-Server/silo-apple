@@ -195,6 +195,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         // Container binding — flips true when any button in the row has
         // focus, driving the scroll-to-top in `body`.
         .focused($actionRowFocused)
+        // Mirror of the selector row's full-width focus section: the subtitle
+        // pill below can extend past the last circle button, and an Up press
+        // from that overhang would otherwise skip this row for the synopsis.
+        // Full-width bounds put the row under every selector pill so Up lands
+        // on the nearest action button. Buttons stay left-aligned.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .focusSection()
     }
 
     /// Best "Play" target for the series: an in-progress episode if there
