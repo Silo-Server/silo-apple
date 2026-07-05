@@ -15,6 +15,11 @@ struct CalendarDayShelf: View {
     /// the week strip's day selection to hand focus down to the row it
     /// just scrolled to.
     var focusRequest: Int = 0
+    /// tvOS: called when the focus engine can't resolve an up-move out of
+    /// this shelf natively — which happens when the days above are empty
+    /// "Nothing scheduled" stubs (nothing focusable) and the week strip has
+    /// scrolled off-screen. The host hands focus back up explicitly.
+    var onMoveUp: (() -> Void)? = nil
 
     @FocusState private var focusedItemId: String?
     #if os(tvOS)
@@ -40,6 +45,7 @@ struct CalendarDayShelf: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         #if os(tvOS)
         .focusSection()
+        .modifier(TVShelfMoveHandler(onMoveUp: onMoveUp))
         // `onAppear` covers the shelf being created lazily by the
         // scroll-to-day jump; `onChange` covers shelves already realized.
         .onAppear { applyFocusRequest(focusRequest) }
@@ -134,6 +140,26 @@ struct CalendarDayShelf: View {
 }
 
 #if os(tvOS)
+/// Attaches an `onMoveCommand` only when a handler is supplied, so shelves
+/// that don't need the boundary hook never sit in the focus engine's way —
+/// same pattern as `MediaRow`'s `TVRowMoveHandler`. Bubbled moves in other
+/// directions are dead ends the engine already failed to resolve, so
+/// consuming them changes nothing.
+private struct TVShelfMoveHandler: ViewModifier {
+    let onMoveUp: (() -> Void)?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let onMoveUp {
+            content.onMoveCommand { direction in
+                if direction == .up { onMoveUp() }
+            }
+        } else {
+            content
+        }
+    }
+}
+
 private extension View {
     /// Routes both initial and d-pad-entry focus to the shelf's first
     /// card — same `.userInitiated` defaultFocus pattern as `MediaRow`.

@@ -19,9 +19,16 @@ struct CalendarWeekStrip: View {
     let onPreviousWeek: () -> Void
     let onNextWeek: () -> Void
     let onToday: () -> Void
+    /// tvOS: programmatic focus kick — when this changes to a new non-zero
+    /// token, focus rides home onto the selected day's button. Used by the
+    /// shelf area's boundary up-move when nothing focusable sits between a
+    /// shelf and the strip.
+    var focusRequest: Int = 0
 
     #if os(tvOS)
     @FocusState private var focusedControl: StripControl?
+    /// Each kick token claims focus exactly once (see `CalendarDayShelf`).
+    @State private var lastAppliedFocusRequest = 0
     #endif
 
     var body: some View {
@@ -131,6 +138,39 @@ struct CalendarWeekStrip: View {
         .padding(.horizontal, ContinuumTheme.safePadding)
         .focusSection()
         .animation(ContinuumTheme.springAnimation, value: isCurrentWeek)
+        .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
+        .onAppear { applyFocusRequest(focusRequest) }
+    }
+
+    private func applyFocusRequest(_ request: Int) {
+        guard request > 0, request != lastAppliedFocusRequest else { return }
+        lastAppliedFocusRequest = request
+        // The kick arrives together with a scroll-to-top; the strip may
+        // still be sliding into view, and the focus engine silently drops
+        // writes to off-screen targets. Claim, verify, re-claim until the
+        // scroll settles — same pattern as `MediaRow.claimFirstItemFocus`.
+        let target = StripControl.day(selectedStripDay)
+        DispatchQueue.main.async {
+            claimFocus(on: target)
+        }
+    }
+
+    private func claimFocus(on control: StripControl, attempt: Int = 0) {
+        focusedControl = control
+        guard attempt < 8 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            guard focusedControl != control else { return }
+            claimFocus(on: control, attempt: attempt + 1)
+        }
+    }
+
+    /// The strip's day-button focus values are the exact `week.days` dates;
+    /// `selectedDay` is same-day but not guaranteed same-instant, so resolve
+    /// it back to the matching strip date before claiming focus.
+    private var selectedStripDay: Date {
+        week.days.first { Calendar.current.isDate($0, inSameDayAs: selectedDay) }
+            ?? week.days.first
+            ?? selectedDay
     }
 
     private func chevronButton(

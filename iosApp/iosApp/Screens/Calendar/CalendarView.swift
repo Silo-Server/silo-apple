@@ -18,6 +18,12 @@ struct CalendarView: View {
     /// scrolls to that day's shelf and kicks focus onto its first card.
     @State private var shelfFocusRequest = 0
     @State private var shelfFocusDay: Date?
+    /// Focus hand-back for the boundary up-move: a shelf whose up-press the
+    /// focus engine couldn't resolve (empty days above, strip off-screen)
+    /// asks the week strip to reclaim focus.
+    @State private var stripFocusRequest = 0
+    /// Scroll target for the ride home to the strip/filter area.
+    private static let topContentId = "calendar-top"
     #endif
 
     var body: some View {
@@ -79,7 +85,7 @@ struct CalendarView: View {
                     .padding(.bottom, ContinuumTheme.padding)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                    shelfArea
+                    shelfArea(proxy: proxy)
                 }
                 .padding(.bottom, ContinuumTheme.largePadding)
             }
@@ -205,6 +211,7 @@ struct CalendarView: View {
                     }
                     .padding(.horizontal, ContinuumTheme.safePadding)
                     .focusSection()
+                    .id(Self.topContentId)
 
                     CalendarWeekStrip(
                         week: viewModel.week,
@@ -215,10 +222,11 @@ struct CalendarView: View {
                         onSelectDay: { selectDay($0, proxy: proxy) },
                         onPreviousWeek: { viewModel.goToPreviousWeek() },
                         onNextWeek: { viewModel.goToNextWeek() },
-                        onToday: { Task { await viewModel.goToToday() } }
+                        onToday: { Task { await viewModel.goToToday() } },
+                        focusRequest: stripFocusRequest
                     )
 
-                    shelfArea
+                    shelfArea(proxy: proxy)
                 }
                 .padding(.top, TVTopMenuLayout.contentTopInset)
                 .padding(.bottom, ContinuumTheme.largePadding)
@@ -230,7 +238,7 @@ struct CalendarView: View {
     // MARK: - Shared shelf area
 
     @ViewBuilder
-    private var shelfArea: some View {
+    private func shelfArea(proxy: ScrollViewProxy) -> some View {
         if let error = viewModel.error {
             ErrorView(state: error, onRetry: { Task { await viewModel.load() } })
                 .frame(minHeight: 320)
@@ -248,7 +256,8 @@ struct CalendarView: View {
                         router.navigate(to: .itemDetail(contentId: event.navigationContentId))
                     },
                     prefersDefaultFocusOnFirstItem: day == firstNonEmptyDay,
-                    focusRequest: shelfFocusRequest(for: day)
+                    focusRequest: shelfFocusRequest(for: day),
+                    onMoveUp: shelfMoveUpHandler(for: day, proxy: proxy)
                 )
                 .id(day)
                 .padding(.bottom, shelfBottomPadding)
@@ -364,6 +373,40 @@ struct CalendarView: View {
         return 0
         #endif
     }
+
+    /// tvOS: boundary up-move escape hatch. When the focus engine can't
+    /// resolve an up-press out of a shelf natively — the days above are
+    /// empty "Nothing scheduled" stubs and the week strip has scrolled
+    /// off-screen — the press bubbles to the shelf's `onMoveCommand` and
+    /// lands here: hop to the previous day with events, or ride home to
+    /// the week strip when nothing focusable is above.
+    private func shelfMoveUpHandler(for day: Date, proxy: ScrollViewProxy) -> (() -> Void)? {
+        #if os(tvOS)
+        guard viewModel.hasEvents(on: day) else { return nil }
+        return { handleShelfMoveUp(from: day, proxy: proxy) }
+        #else
+        return nil
+        #endif
+    }
+
+    #if os(tvOS)
+    private func handleShelfMoveUp(from day: Date, proxy: ScrollViewProxy) {
+        if let previous = viewModel.week.days.last(where: {
+            $0 < day && viewModel.hasEvents(on: $0)
+        }) {
+            withAnimation(ContinuumTheme.springAnimation) {
+                proxy.scrollTo(previous, anchor: .top)
+            }
+            shelfFocusDay = previous
+            shelfFocusRequest += 1
+        } else {
+            withAnimation(ContinuumTheme.springAnimation) {
+                proxy.scrollTo(Self.topContentId, anchor: .top)
+            }
+            stripFocusRequest += 1
+        }
+    }
+    #endif
 
     /// Load the active profile so the iOS top bar can render its avatar.
     /// Non-fatal on failure — the bar falls back to a generic icon.
