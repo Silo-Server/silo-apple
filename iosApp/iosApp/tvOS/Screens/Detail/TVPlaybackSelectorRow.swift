@@ -58,6 +58,20 @@ struct TVPlaybackSelectorRow: View {
                 .focusScope(selectorFocusScope)
                 .focusSection()
                 .modifier(SelectorDefaultFocus(focus: defaultSelectorFocus, binding: $focusedSelector))
+                .onChange(of: focusedSelector) { _, newValue in
+                    // The restore default (see `restoreFocus`) must only
+                    // outlive the menu dismissal it serves. Once focus leaves
+                    // the row — up to the action row, or into an opening menu
+                    // — repoint it at the leading pill so re-entering the row
+                    // lands like untouched geometry instead of jumping back
+                    // to the last-modified selector. Swap the value rather
+                    // than clearing it: `SelectorDefaultFocus` branches on
+                    // nil, and re-identifying the row subtree would tear down
+                    // an open Menu.
+                    if newValue == nil, defaultSelectorFocus != nil {
+                        defaultSelectorFocus = firstSelector
+                    }
+                }
                 .task {
                     await ProfilePrefsStore.shared.hydrateIfNeeded()
                     preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
@@ -80,6 +94,15 @@ struct TVPlaybackSelectorRow: View {
                 subtitleSelector
             }
         }
+    }
+
+    /// Leading visible pill — where entry into the row should land once the
+    /// post-menu restore default has served its purpose.
+    private var firstSelector: SelectorFocus {
+        if shouldShowEditionSelector { return .edition }
+        if shouldShowVersionValue { return .version }
+        if shouldShowAudioValue { return .audio }
+        return .subtitles
     }
 
     private var hasAnySelector: Bool {
