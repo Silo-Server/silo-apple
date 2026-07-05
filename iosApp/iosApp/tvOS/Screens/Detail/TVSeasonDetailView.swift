@@ -23,6 +23,12 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     let selectedNextUpAudioTrackIndex: Int?
     let selectedNextUpSubtitleTrackIndex: Int?
     let nextUpPlaybackDetail: ItemDetail?
+    /// True once the user explicitly resets subtitles to "Auto" this visit.
+    /// The server override was just cleared, but the next-up detail's
+    /// `effectiveSubtitle*` still describes the old manual pick until the
+    /// next refetch — suppress it so the "Auto - …" preview doesn't echo the
+    /// cleared selection.
+    var nextUpSubtitleOverrideCleared: Bool = false
     let onPlayEpisode: (_ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool) -> Void
     let onEpisodeTap: (_ contentId: String) -> Void
     let onSelectSeason: (Season) -> Void
@@ -124,8 +130,8 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                     selectedVersionFileId: selectedNextUpFileId,
                     selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
                     selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
-                    subtitleMode: nextUpPlaybackDetail?.effectiveSubtitleMode,
-                    subtitleSignature: nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
+                    subtitleMode: nextUpSubtitleOverrideCleared ? nil : nextUpPlaybackDetail?.effectiveSubtitleMode,
+                    subtitleSignature: nextUpSubtitleOverrideCleared ? nil : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack

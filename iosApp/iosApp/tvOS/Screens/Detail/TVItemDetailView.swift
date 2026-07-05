@@ -19,6 +19,12 @@ struct TVItemDetailView: View {
     @State private var preferredNextUpFileId: Int?
     @State private var preferredNextUpAudioTrackIndex: Int?
     @State private var preferredNextUpSubtitleTrackIndex: Int?
+    /// Set when the user explicitly resets subtitles to "Auto" this visit:
+    /// the server override is cleared with a fire-and-forget DELETE, but the
+    /// already-fetched detail still carries the old `effectiveSubtitle*`, so
+    /// the selector must stop feeding it to the "Auto - …" preview.
+    @State private var didClearSubtitleOverride = false
+    @State private var didClearNextUpSubtitleOverride = false
     @State private var nextUpPlaybackDetail: ItemDetail?
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
@@ -66,6 +72,8 @@ struct TVItemDetailView: View {
             preferredNextUpFileId = nil
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
+            didClearSubtitleOverride = false
+            didClearNextUpSubtitleOverride = false
             nextUpPlaybackDetail = nil
             isLoadingNextUpPlaybackDetail = false
             didLoadNextUpPlaybackDetail = false
@@ -97,6 +105,7 @@ struct TVItemDetailView: View {
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
                 selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
                 nextUpPlaybackDetail: nextUpPlaybackDetail,
+                nextUpSubtitleOverrideCleared: didClearNextUpSubtitleOverride,
                 onPlayEpisode: { id, fileId, startFromBeginning in
                     let episode = viewModel.episodes.first { $0.contentId == id }
                     let resumePosition = startFromBeginning
@@ -160,6 +169,7 @@ struct TVItemDetailView: View {
                     )
                 },
                 onSelectNextUpSubtitleTrack: { index in
+                    didClearNextUpSubtitleOverride = (index == nil)
                     preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: nextUpPlaybackDetail,
                         versionFileId: preferredNextUpFileId,
@@ -208,6 +218,7 @@ struct TVItemDetailView: View {
                 nextUpPlaybackDetail: nextUpPlaybackDetail,
                 isLoadingNextUpPlaybackDetail: isLoadingNextUpPlaybackDetail,
                 didLoadNextUpPlaybackDetail: didLoadNextUpPlaybackDetail,
+                nextUpSubtitleOverrideCleared: didClearNextUpSubtitleOverride,
                 onSelectSeason: { season in
                     Task { await viewModel.selectSeason(season) }
                 },
@@ -266,6 +277,7 @@ struct TVItemDetailView: View {
                     )
                 },
                 onSelectNextUpSubtitleTrack: { index in
+                    didClearNextUpSubtitleOverride = (index == nil)
                     preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: nextUpPlaybackDetail,
                         versionFileId: preferredNextUpFileId,
@@ -307,6 +319,7 @@ struct TVItemDetailView: View {
                 selectedVersionFileId: preferredVersionFileId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
                 selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
+                subtitleOverrideCleared: didClearSubtitleOverride,
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 seasonEpisodes: viewModel.episodes,
@@ -361,6 +374,7 @@ struct TVItemDetailView: View {
                     )
                 },
                 onSelectSubtitleTrack: { index in
+                    didClearSubtitleOverride = (index == nil)
                     preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: detail,
                         versionFileId: preferredVersionFileId,
@@ -597,6 +611,7 @@ struct TVItemDetailView: View {
             preferredNextUpFileId = nil
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
+            didClearNextUpSubtitleOverride = false
             return
         }
 
@@ -606,6 +621,7 @@ struct TVItemDetailView: View {
         preferredNextUpFileId = nil
         preferredNextUpAudioTrackIndex = nil
         preferredNextUpSubtitleTrackIndex = nil
+        didClearNextUpSubtitleOverride = false
 
         do {
             let item = try await ContinuumAPI.shared.itemDetail(contentId: nextUp.contentId)
@@ -650,6 +666,7 @@ struct TVItemDetailView: View {
             preferredNextUpFileId = nil
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
+            didClearNextUpSubtitleOverride = false
             return
         }
 
@@ -659,6 +676,7 @@ struct TVItemDetailView: View {
         preferredNextUpFileId = nil
         preferredNextUpAudioTrackIndex = nil
         preferredNextUpSubtitleTrackIndex = nil
+        didClearNextUpSubtitleOverride = false
 
         do {
             let item = try await ContinuumAPI.shared.itemDetail(contentId: nextUp.contentId)
