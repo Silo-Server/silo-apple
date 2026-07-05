@@ -95,6 +95,35 @@ final class PlaybackSourceCacheDiskSpillTests: XCTestCase {
         XCTAssertLessThanOrEqual(cache.stats().diskSpillBytes, Int64(4 * spanBytes))
     }
 
+    func testBackwardSeekMovesDiskEvictionAnchor() {
+        // lastReadEnd is a monotonic high-water mark; disk eviction must
+        // anchor on the *recent* read position or a backward seek's
+        // neighborhood gets evicted while stale forward spans survive.
+        let cache = makeCache(maxBytes: 2 * spanBytes, diskBudgetBytes: Int64(4 * spanBytes))
+        for i in 0..<6 {
+            cache.store(
+                start: Int64(i * spanBytes * 2),
+                data: Data(repeating: UInt8(i + 1), count: spanBytes),
+                totalLength: nil
+            )
+        }
+        // Play far forward (pins the high-water mark high)...
+        XCTAssertNotNil(cache.read(start: Int64(5 * spanBytes * 2), maxLength: spanBytes))
+        // ...then seek back to the start.
+        XCTAssertNotNil(cache.read(start: 0, maxLength: spanBytes))
+        // Force disk eviction with two more spills.
+        for i in 6..<8 {
+            cache.store(
+                start: Int64(i * spanBytes * 2),
+                data: Data(repeating: UInt8(i + 1), count: spanBytes),
+                totalLength: nil
+            )
+        }
+        // The seek-back neighborhood must survive despite the stale
+        // high-water mark sitting far ahead.
+        XCTAssertEqual(cache.read(start: 0, maxLength: spanBytes), Data(repeating: 1, count: spanBytes))
+    }
+
     func testWriteBudgetStopsSpillAndChurn() {
         // Write budget = multiplier × diskBudget. Give a tiny disk budget so
         // the write budget is exhausted quickly, then verify writes stop.

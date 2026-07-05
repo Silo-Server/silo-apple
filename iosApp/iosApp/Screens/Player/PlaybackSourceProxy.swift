@@ -155,6 +155,11 @@ final class PlaybackSourceCache {
     private var loggedWriteBudgetExhausted = false
     private var recentTransfers: [(time: Date, bytes: Int)] = []
     private var lastReadEnd: Int64?
+    /// Most recent read position (not a high-water mark). `lastReadEnd` is
+    /// monotonic for forward-buffer accounting, so after a backward seek it
+    /// stays pinned ahead of the bytes actually being served — disk eviction
+    /// must anchor here instead, or it protects the wrong neighborhood.
+    private var lastReadPosition: Int64?
     private var sourceBitrateBps: Double?
     private let diskSpillEnabled: Bool
     private let diskBudgetBytes: Int64
@@ -264,6 +269,7 @@ final class PlaybackSourceCache {
                 let data = file.subdata(in: offset..<(offset + length))
                 cacheHitBytes += Int64(data.count)
                 lastReadEnd = max(lastReadEnd ?? 0, start + Int64(data.count) - 1)
+                lastReadPosition = start + Int64(data.count) - 1
                 return data
             }
             return nil
@@ -274,6 +280,7 @@ final class PlaybackSourceCache {
         let data = span.data.subdata(in: offset..<(offset + length))
         cacheHitBytes += Int64(data.count)
         lastReadEnd = max(lastReadEnd ?? 0, start + Int64(data.count) - 1)
+        lastReadPosition = start + Int64(data.count) - 1
         return data
     }
 
@@ -500,7 +507,7 @@ final class PlaybackSourceCache {
     /// thing evicted. POSIX keeps any concurrently mapped file valid after
     /// unlink, and the ledger mutation is under `lock`, so readers are safe.
     private func makeRoomOnDiskLocked(for incomingBytes: Int64) {
-        let playhead = lastReadEnd ?? 0
+        let playhead = lastReadPosition ?? lastReadEnd ?? 0
         while diskSpillBytes + incomingBytes > diskBudgetBytes, !diskSpans.isEmpty {
             guard let victimIndex = diskSpans.indices.max(by: { a, b in
                 distanceFromPlayhead(diskSpans[a], playhead: playhead)
