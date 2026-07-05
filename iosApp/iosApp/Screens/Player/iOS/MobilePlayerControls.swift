@@ -531,10 +531,6 @@ struct MobilePlayerControls: View {
             }
         }
         .buttonBorderShape(.capsule)
-        // A native Menu offers no isPresented hook, so pin the controls the
-        // moment the label is tapped; `switchQuality` re-arms auto-hide
-        // when a choice lands, and any later overlay tap does too.
-        .simultaneousGesture(TapGesture().onEnded { viewModel.pinControlsVisible() })
         .accessibilityLabel("Playback Quality")
         .accessibilityValue(qualityValueText)
     }
@@ -565,6 +561,25 @@ struct MobilePlayerControls: View {
     /// stay sheets; they're multi-step workflows, not pickers.
     private func trackSelectionMenu(style: ActionRowStyle) -> some View {
         Menu {
+            trackSelectionMenuContent
+        } label: {
+            menuPillLabel(
+                systemImage: "captions.bubble",
+                title: style == .icons
+                    ? nil
+                    : (style == .compact ? "Audio & Subs" : "Audio & Subtitles")
+            )
+        }
+        .menuStyle(.button)
+        // Bottom-anchored menus open upward and reverse their items by
+        // default; fixed order keeps Audio on top, reading down.
+        .menuOrder(.fixed)
+        .buttonStyle(.glass)
+        .buttonBorderShape(style == .icons ? .circle : .capsule)
+    }
+
+    @ViewBuilder
+    private var trackSelectionMenuContent: some View {
             if !viewModel.audioTracks.isEmpty {
                 Section("Audio") {
                     ForEach(viewModel.audioTracks) { track in
@@ -625,30 +640,25 @@ struct MobilePlayerControls: View {
                     }
                 }
             }
-        } label: {
-            menuPillLabel(
-                systemImage: "captions.bubble",
-                title: style == .icons
-                    ? nil
-                    : (style == .compact ? "Audio & Subs" : "Audio & Subtitles")
-            )
-        }
-        .menuStyle(.button)
-        // Bottom-anchored menus open upward and reverse their items by
-        // default; fixed order keeps Audio on top, reading down.
-        .menuOrder(.fixed)
-        .buttonStyle(.glass)
-        .buttonBorderShape(style == .icons ? .circle : .capsule)
-        // A native Menu offers no isPresented hook, so pin the controls the
-        // moment the label is tapped; the track-selection methods re-arm
-        // auto-hide when a choice lands, and any later overlay tap does too.
-        .simultaneousGesture(TapGesture().onEnded { viewModel.pinControlsVisible() })
     }
 
     /// Submenu for the secondary subtitle slot, titled with the current pick
     /// so the parent menu shows the state without opening it.
     private var secondarySubtitlesSubmenu: some View {
         Menu {
+            secondarySubtitlesSubmenuContent
+        } label: {
+            Text("Secondary Subtitles")
+            if let current = viewModel.availableSecondarySubtitleTracks.first(
+                where: { $0.trackId == viewModel.selectedSecondarySubtitleId }
+            ) {
+                Text(current.languageFirstPrimaryLabel)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var secondarySubtitlesSubmenuContent: some View {
             trackMenuRow(
                 title: "Off",
                 subtitle: nil,
@@ -668,14 +678,6 @@ struct MobilePlayerControls: View {
                     viewModel.selectSecondarySubtitle(track)
                 }
             }
-        } label: {
-            Text("Secondary Subtitles")
-            if let current = viewModel.availableSecondarySubtitleTracks.first(
-                where: { $0.trackId == viewModel.selectedSecondarySubtitleId }
-            ) {
-                Text(current.languageFirstPrimaryLabel)
-            }
-        }
     }
 
     /// Menu row with the Quality-menu selection idiom (leading checkmark)
@@ -756,7 +758,6 @@ struct MobilePlayerControls: View {
         .menuOrder(.fixed)
         .buttonStyle(.glass)
         .buttonBorderShape(style == .icons ? .circle : .capsule)
-        .simultaneousGesture(TapGesture().onEnded { viewModel.pinControlsVisible() })
     }
 
     private func chapterMenuTitle(_ chapter: PlayerChapterInfo) -> String {
