@@ -30,9 +30,12 @@ enum PlaybackDiskBudget {
 
     /// One-shot per process: delete spill directories left behind by a
     /// force-killed predecessor (their deinit cleanup never ran, and a
-    /// stranded directory can hold up to the full retention budget). Runs
-    /// before the first spilling cache of this process creates its own
-    /// directory, so everything found here is orphaned. `static let`
+    /// stranded directory can hold up to the full retention budget).
+    /// Enumeration happens synchronously on first access — before the first
+    /// spilling cache of this process creates its own directory, so
+    /// everything captured here is orphaned — but the deletions (the slow
+    /// part for a multi-GiB tree) run on a utility queue so session startup
+    /// is never blocked on reclaiming a predecessor's space. `static let`
     /// initialization makes the sweep thread-safe and exactly-once.
     static let sweepOrphanedSpillDirectories: Void = {
         let fm = FileManager.default
@@ -41,12 +44,13 @@ enum PlaybackDiskBudget {
             parents.append(caches.appendingPathComponent("continuum-source-cache", isDirectory: true))
         }
         parents.append(fm.temporaryDirectory.appendingPathComponent("continuum-dv-hls", isDirectory: true))
-        for parent in parents {
-            guard let children = try? fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil) else {
-                continue
-            }
-            for child in children {
-                try? fm.removeItem(at: child)
+        let orphans = parents.flatMap { parent in
+            (try? fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)) ?? []
+        }
+        guard !orphans.isEmpty else { return }
+        DispatchQueue.global(qos: .utility).async {
+            for orphan in orphans {
+                try? FileManager.default.removeItem(at: orphan)
             }
         }
     }()
