@@ -65,6 +65,24 @@ struct EpisodeThumbCard: View {
             playedOverride = nil
         }
         #else
+        Group {
+            if hasContextActions {
+                iosButton.contextMenu {
+                    contextActions
+                }
+            } else {
+                iosButton
+            }
+        }
+        .onChange(of: item.userState?.played) { _, _ in
+            playedOverride = nil
+        }
+        .frame(width: cardWidth)
+        #endif
+    }
+
+    #if !os(tvOS)
+    private var iosButton: some View {
         Button {
             router.pendingZoomSourceID = zoomInstanceID.uuidString
             action()
@@ -85,9 +103,8 @@ struct EpisodeThumbCard: View {
             .zoomTransitionSource(id: zoomInstanceID.uuidString, in: zoomNamespace)
         }
         .buttonStyle(.plain)
-        .frame(width: cardWidth)
-        #endif
     }
+    #endif
 
     // MARK: - Thumbnail
 
@@ -287,6 +304,7 @@ struct EpisodeThumbCard: View {
             button
         }
     }
+    #endif
 
     private var hasContextActions: Bool {
         onSetWatched != nil || onRemoveFromContinueWatching != nil
@@ -315,7 +333,6 @@ struct EpisodeThumbCard: View {
             }
         }
     }
-    #endif
 }
 
 #if os(tvOS)

@@ -107,6 +107,26 @@ struct MediaCard: View {
         }
         #else
         Group {
+            if hasIOSContextActions {
+                iosCardButton.contextMenu {
+                    iosContextActions
+                }
+            } else {
+                iosCardButton
+            }
+        }
+        .onChange(of: userState) { _, _ in
+            playedOverride = nil
+            favoriteOverride = nil
+            watchlistOverride = nil
+        }
+        .frame(width: cardWidth)
+        #endif
+    }
+
+    #if !os(tvOS)
+    private var iosCardButton: some View {
+        Group {
             if let contentId {
                 Button {
                     router.pendingZoomSourceID = zoomInstanceID.uuidString
@@ -123,15 +143,42 @@ struct MediaCard: View {
                 .buttonStyle(.plain)
             }
         }
-        .personalListContextMenu(hasPersonalActions ? personalMenuItems : nil)
-        .onChange(of: userState) { _, _ in
-            playedOverride = nil
-            favoriteOverride = nil
-            watchlistOverride = nil
-        }
-        .frame(width: cardWidth)
-        #endif
     }
+
+    private var hasIOSContextActions: Bool {
+        hasPersonalActions || onSetWatched != nil || onRemoveFromContinueWatching != nil
+    }
+
+    /// Same action set (and ordering) as the tvOS `FocusableMediaCard` menu:
+    /// watched toggle, favorite/watchlist, then the destructive remove.
+    @ViewBuilder
+    private var iosContextActions: some View {
+        if let onSetWatched {
+            Button {
+                let played = !isPlayed
+                playedOverride = played
+                onSetWatched(played)
+            } label: {
+                Label(
+                    isPlayed ? "Mark as Unwatched" : "Mark as Watched",
+                    systemImage: isPlayed ? "circle" : "checkmark.circle"
+                )
+            }
+        }
+
+        if hasPersonalActions {
+            personalMenuItems
+        }
+
+        if let onRemoveFromContinueWatching {
+            Button(role: .destructive) {
+                onRemoveFromContinueWatching()
+            } label: {
+                Label("Remove from Continue Watching", systemImage: "xmark.circle")
+            }
+        }
+    }
+    #endif
 
     // MARK: - Favorite / watchlist context actions
 
