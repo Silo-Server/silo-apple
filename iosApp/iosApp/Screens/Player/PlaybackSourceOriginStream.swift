@@ -18,6 +18,24 @@ enum PlaybackOriginStreamPolicy {
         let startOffset: Int64
         let writeCursor: Int64
         let lastDemandOrder: UInt64
+        /// Seconds since the stream was last pointed at its current region.
+        /// Together with `writeCursor > startOffset` this decides whether the
+        /// stream may be torn down for a new region.
+        let secondsSinceTargeted: TimeInterval
+
+        init(
+            id: UUID,
+            startOffset: Int64,
+            writeCursor: Int64,
+            lastDemandOrder: UInt64,
+            secondsSinceTargeted: TimeInterval = .infinity
+        ) {
+            self.id = id
+            self.startOffset = startOffset
+            self.writeCursor = writeCursor
+            self.lastDemandOrder = lastDemandOrder
+            self.secondsSinceTargeted = secondsSinceTargeted
+        }
     }
 
     enum Action: Equatable {
@@ -25,6 +43,11 @@ enum PlaybackOriginStreamPolicy {
         case rideThrough(UUID)
         case spawn
         case retarget(UUID)
+        /// Every slot is still connecting (nothing delivered since its last
+        /// (re)target and the grace period has not elapsed). The demand's
+        /// waiter stays registered; it is re-driven when a stream delivers
+        /// its first bytes or leaves the pool.
+        case wait
     }
 
     /// A miss this close ahead of a live cursor waits for the stream instead
@@ -34,18 +57,41 @@ enum PlaybackOriginStreamPolicy {
     /// A stream that is not the most recently demanded stops filling once it
     /// is this far past the last offset anything asked it for.
     static let secondaryForwardCapBytes: Int64 = 16 * 1024 * 1024
+    /// A stream that has not delivered since its last (re)target may still be
+    /// torn down for a new region after this long — the escape hatch for a
+    /// connection that opens but never produces (the stall watchdog and
+    /// reconnect ladder are slower).
+    static let retargetGraceSeconds: TimeInterval = 10
+
+    /// The stream a demand at `offset` can wait on (at or just ahead of a
+    /// live cursor), if any.
+    static func rideThroughTarget(offset: Int64, streams: [StreamSnapshot]) -> UUID? {
+        streams.first(where: {
+            offset >= $0.writeCursor && offset - $0.writeCursor <= rideThroughBytes
+        })?.id
+    }
+
+    /// Whether a stream may be torn down and pointed at a new region: it has
+    /// delivered bytes since its last (re)target, or it has had a full grace
+    /// period to try. Retargeting a still-connecting stream is what livelocks
+    /// with more demand regions than slots — each re-driven waiter kills the
+    /// connection the previous one just opened before its first byte lands.
+    static func isRetargetable(_ stream: StreamSnapshot) -> Bool {
+        stream.writeCursor > stream.startOffset
+            || stream.secondsSinceTargeted >= retargetGraceSeconds
+    }
 
     static func action(demandOffset: Int64, streams: [StreamSnapshot]) -> Action {
-        if let covered = streams.first(where: {
-            demandOffset >= $0.writeCursor && demandOffset - $0.writeCursor <= rideThroughBytes
-        }) {
-            return .rideThrough(covered.id)
+        if let covered = rideThroughTarget(offset: demandOffset, streams: streams) {
+            return .rideThrough(covered)
         }
         if streams.count < maxStreams {
             return .spawn
         }
-        guard let victim = streams.min(by: { $0.lastDemandOrder < $1.lastDemandOrder }) else {
-            return .spawn
+        guard let victim = streams
+            .filter(isRetargetable)
+            .min(by: { $0.lastDemandOrder < $1.lastDemandOrder }) else {
+            return .wait
         }
         return .retarget(victim.id)
     }
@@ -66,6 +112,11 @@ enum PlaybackOriginStreamPolicy {
         isMostRecentlyDemanded: Bool,
         globalBudgetAvailable: Bool
     ) -> Bool {
+        // A demand at or ahead of the cursor is blocked on bytes only this
+        // connection will deliver. Budget pressure must never park it: the
+        // budget frees through reads, and the read is exactly what is
+        // blocked — parking here wedges playback permanently.
+        if demandMark >= writeCursor { return false }
         if !globalBudgetAvailable { return true }
         if isMostRecentlyDemanded { return false }
         return writeCursor - demandMark >= secondaryForwardCapBytes
@@ -137,8 +188,21 @@ final class PlaybackOriginStream {
         /// Budget/park decision; called with the stream's current cursor and
         /// demand mark, outside the stream's internal lock.
         let mayContinueFilling: (PlaybackOriginStream, Int64, Int64) -> Bool
+        /// First byte at or after the given offset that the cache does not
+        /// already hold (nil when everything to the known EOF is cached);
+        /// used to jump the connection over long already-cached runs instead
+        /// of re-downloading them.
+        let nextMissingByte: (Int64) -> Int64?
         let store: (Int64, Data, Int64?) -> Void
     }
+
+    /// While filling, every this many delivered bytes the stream checks
+    /// whether an already-cached run starts at its cursor.
+    static let cachedRunCheckStrideBytes: Int64 = 1 * 1024 * 1024
+    /// A cached run at least this long is worth a reconnect to jump over
+    /// instead of re-downloading through it (a back-scrubbed forward cache
+    /// can hold hundreds of megabytes the stream would otherwise re-pull).
+    static let cachedRunSkipBytes: Int64 = 8 * 1024 * 1024
 
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
@@ -156,11 +220,14 @@ final class PlaybackOriginStream {
     private var writeCursor: Int64
     private var demandMark: Int64
     private var demandOrder: UInt64
+    private var targetedAt = Date()
+    private var skipCheckCursor: Int64
     private var parked = false
     private var cancelled = false
     private var finished = false
     private var session: URLSession?
     private var task: URLSessionDataTask?
+    private var currentTaskID: Int?
     private var reconnectTask: Task<Void, Never>?
     private var watchdogTask: Task<Void, Never>?
     private var lastDataAt = Date()
@@ -185,6 +252,7 @@ final class PlaybackOriginStream {
         self.writeCursor = startOffset
         self.demandMark = startOffset
         self.demandOrder = demandOrder
+        self.skipCheckCursor = startOffset + Self.cachedRunCheckStrideBytes
         self.callbacks = callbacks
     }
 
@@ -202,7 +270,8 @@ final class PlaybackOriginStream {
             id: id,
             startOffset: startOffset,
             writeCursor: writeCursor,
-            lastDemandOrder: demandOrder
+            lastDemandOrder: demandOrder,
+            secondsSinceTargeted: Date().timeIntervalSince(targetedAt)
         )
     }
 
@@ -230,6 +299,7 @@ final class PlaybackOriginStream {
         let session = self.session
         self.session = nil
         self.task = nil
+        currentTaskID = nil
         let reconnect = reconnectTask
         reconnectTask = nil
         let watchdog = watchdogTask
@@ -254,23 +324,24 @@ final class PlaybackOriginStream {
             return false
         }
         generation &+= 1
-        let oldSession = session
-        session = nil
+        let oldTask = task
         task = nil
+        currentTaskID = nil
         let reconnect = reconnectTask
         reconnectTask = nil
         startOffset = offset
         writeCursor = offset
         demandMark = offset
         demandOrder = order
+        targetedAt = Date()
+        skipCheckCursor = offset + Self.cachedRunCheckStrideBytes
         parked = false
         bytesSinceConnect = 0
         unproductiveStreak = 0
         lock.unlock()
-        oldSession?.invalidateAndCancel()
+        oldTask?.cancel()
         reconnect?.cancel()
         openConnection()
-        startWatchdog()
         return true
     }
 
@@ -311,7 +382,7 @@ final class PlaybackOriginStream {
         generation &+= 1
         let gen = generation
         let cursor = writeCursor
-        let oldSession = session
+        let oldTask = task
         parked = false
         bytesSinceConnect = 0
         lastDataAt = Date()
@@ -319,20 +390,31 @@ final class PlaybackOriginStream {
         errorBody.removeAll(keepingCapacity: false)
         errorStatusCode = nil
 
-        let config = URLSessionConfiguration.ephemeral
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.urlCache = nil
-        config.httpMaximumConnectionsPerHost = 2
-        // The long-lived request is paused via task suspension for
-        // arbitrarily long stretches; the idle-based request timeout must
-        // never fire underneath it. Wedged transfers are detected by the
-        // stall watchdog instead.
-        config.timeoutIntervalForRequest = 3600
-        let delegateQueue = OperationQueue()
-        delegateQueue.maxConcurrentOperationCount = 1
-        delegateQueue.qualityOfService = .userInitiated
-        let delegate = ConnectionDelegate(stream: self, generation: gen)
-        let newSession = URLSession(configuration: config, delegate: delegate, delegateQueue: delegateQueue)
+        if session == nil {
+            // One session for the stream's whole lifetime. Invalidating a
+            // session destroys its connection pool, so per-attempt sessions
+            // would pay a fresh TCP+TLS handshake plus slow-start on every
+            // reconnect and retarget — the per-request cost this engine
+            // exists to eliminate. Replacement range GETs on the shared
+            // session reuse the warm connection where the transport allows.
+            let config = URLSessionConfiguration.ephemeral
+            config.requestCachePolicy = .reloadIgnoringLocalCacheData
+            config.urlCache = nil
+            config.httpMaximumConnectionsPerHost = 2
+            // The long-lived request is paused via task suspension for
+            // arbitrarily long stretches; the idle-based request timeout must
+            // never fire underneath it. Wedged transfers are detected by the
+            // stall watchdog instead.
+            config.timeoutIntervalForRequest = 3600
+            let delegateQueue = OperationQueue()
+            delegateQueue.maxConcurrentOperationCount = 1
+            delegateQueue.qualityOfService = .userInitiated
+            session = URLSession(
+                configuration: config,
+                delegate: ConnectionDelegate(stream: self),
+                delegateQueue: delegateQueue
+            )
+        }
 
         var request = URLRequest(url: originURL)
         request.httpMethod = "GET"
@@ -341,14 +423,14 @@ final class PlaybackOriginStream {
             request.setValue(value, forHTTPHeaderField: key)
         }
         request.setValue("bytes=\(cursor)-", forHTTPHeaderField: "Range")
-        let newTask = newSession.dataTask(with: request)
-        session = newSession
+        let newTask = session?.dataTask(with: request)
         task = newTask
+        currentTaskID = newTask?.taskIdentifier
         lock.unlock()
 
-        oldSession?.invalidateAndCancel()
+        oldTask?.cancel()
         Self.logger.info("[CMP-SOURCE-CACHE] origin stream connect offset=\(cursor, privacy: .public) gen=\(gen, privacy: .public)")
-        newTask.resume()
+        newTask?.resume()
     }
 
     private func startWatchdog() {
@@ -369,7 +451,7 @@ final class PlaybackOriginStream {
 
     private func reconnectIfStalled() {
         lock.lock()
-        let stalled = !cancelled && !finished && !parked && session != nil
+        let stalled = !cancelled && !finished && !parked && session != nil && task != nil
             && Date().timeIntervalSince(lastDataAt) > PlaybackOriginReconnectPolicy.stallSeconds
         lock.unlock()
         guard stalled else { return }
@@ -385,18 +467,19 @@ final class PlaybackOriginStream {
 
     // MARK: - Delegate plumbing (called on the session delegate queue)
 
-    fileprivate func handleResponse(_ response: URLResponse, generation gen: UInt64) -> Bool {
+    fileprivate func handleResponse(_ response: URLResponse, taskID: Int) -> Bool {
+        lock.lock()
+        guard taskID == currentTaskID, !cancelled else {
+            lock.unlock()
+            return false
+        }
+        let gen = generation
+        let cursor = writeCursor
+        lock.unlock()
         guard let http = response as? HTTPURLResponse else {
             connectionEnded(generation: gen, cause: .network, statusCode: nil)
             return false
         }
-        lock.lock()
-        guard gen == generation, !cancelled else {
-            lock.unlock()
-            return false
-        }
-        let cursor = writeCursor
-        lock.unlock()
 
         switch http.statusCode {
         case 206:
@@ -450,12 +533,13 @@ final class PlaybackOriginStream {
         callbacks.didReceiveResponse(self, total)
     }
 
-    fileprivate func handleData(_ data: Data, generation gen: UInt64) {
+    fileprivate func handleData(_ data: Data, taskID: Int) {
         lock.lock()
-        guard gen == generation, !cancelled else {
+        guard taskID == currentTaskID, !cancelled else {
             lock.unlock()
             return
         }
+        let gen = generation
         if errorStatusCode != nil {
             if errorBody.count < 4096 {
                 errorBody.append(data.prefix(4096 - errorBody.count))
@@ -468,6 +552,20 @@ final class PlaybackOriginStream {
             return
         }
         let start = writeCursor
+        let total = knownTotalLength
+        lock.unlock()
+
+        // Store before publishing the advanced cursor: a snapshot taken
+        // between the two would show these bytes as behind the cursor
+        // (never arriving on this stream) while they are still in flight to
+        // the cache, misrouting the demand onto a fresh connection.
+        callbacks.store(start, data, total)
+
+        lock.lock()
+        guard gen == generation, !cancelled else {
+            lock.unlock()
+            return
+        }
         writeCursor += Int64(data.count)
         let cursor = writeCursor
         let mark = demandMark
@@ -477,15 +575,31 @@ final class PlaybackOriginStream {
             everProductive = true
             unproductiveStreak = 0
         }
-        let total = knownTotalLength
+        let checkCachedRun = cursor >= skipCheckCursor
+        if checkCachedRun {
+            skipCheckCursor = cursor + Self.cachedRunCheckStrideBytes
+        }
         lock.unlock()
 
-        callbacks.store(start, data, total)
         callbacks.didStore(self, start...(cursor - 1))
 
         if let total, cursor >= total {
             finishStream(expectedGeneration: gen)
             return
+        }
+        if checkCachedRun {
+            let nextMissing = callbacks.nextMissingByte(cursor)
+            if nextMissing == nil {
+                // Everything from here to the known EOF is already cached;
+                // the stream's region is done.
+                finishStream(expectedGeneration: gen)
+                return
+            }
+            if let nextMissing, nextMissing - cursor >= Self.cachedRunSkipBytes {
+                Self.logger.info("[CMP-SOURCE-CACHE] origin stream skipping cached run \(cursor, privacy: .public)-\(nextMissing, privacy: .public)")
+                retarget(to: nextMissing, order: currentDemandOrder)
+                return
+            }
         }
         if !callbacks.mayContinueFilling(self, cursor, mark) {
             lock.lock()
@@ -509,12 +623,13 @@ final class PlaybackOriginStream {
         }
     }
 
-    fileprivate func handleCompletion(error: Error?, generation gen: UInt64) {
+    fileprivate func handleCompletion(error: Error?, taskID: Int) {
         lock.lock()
-        guard gen == generation, !cancelled, !finished else {
+        guard taskID == currentTaskID, !cancelled, !finished else {
             lock.unlock()
             return
         }
+        let gen = generation
         let status = errorStatusCode
         let body = String(data: errorBody, encoding: .utf8)
         let cursor = writeCursor
@@ -549,22 +664,34 @@ final class PlaybackOriginStream {
         connectionEnded(generation: gen, cause: .prematureEOF, statusCode: nil)
     }
 
-    private func finishStream(expectedGeneration: UInt64) {
+    /// Shared terminal teardown for finish/give-up. Returns false when this
+    /// generation already ended or the stream is already terminal, so each
+    /// caller fires its callback exactly once.
+    private func terminate(expectedGeneration: UInt64) -> Bool {
         lock.lock()
         guard generation == expectedGeneration, !finished, !cancelled else {
             lock.unlock()
-            return
+            return false
         }
         finished = true
         generation &+= 1
         let session = self.session
         self.session = nil
         self.task = nil
+        currentTaskID = nil
+        let reconnect = reconnectTask
+        reconnectTask = nil
         let watchdog = watchdogTask
         watchdogTask = nil
         lock.unlock()
         session?.invalidateAndCancel()
+        reconnect?.cancel()
         watchdog?.cancel()
+        return true
+    }
+
+    private func finishStream(expectedGeneration: UInt64) {
+        guard terminate(expectedGeneration: expectedGeneration) else { return }
         callbacks.didFinish(self)
     }
 
@@ -580,9 +707,9 @@ final class PlaybackOriginStream {
         }
         generation &+= 1
         let newGeneration = generation
-        let oldSession = session
-        session = nil
+        let oldTask = task
         task = nil
+        currentTaskID = nil
         parked = false
         if bytesSinceConnect < PlaybackOriginReconnectPolicy.productiveBytesFloor {
             unproductiveStreak += 1
@@ -592,7 +719,7 @@ final class PlaybackOriginStream {
         let streak = unproductiveStreak
         let productive = everProductive
         lock.unlock()
-        oldSession?.invalidateAndCancel()
+        oldTask?.cancel()
 
         // The streak was already advanced for this failure; decide() gets the
         // pre-failure count so caps mean "attempts before giving up".
@@ -621,21 +748,7 @@ final class PlaybackOriginStream {
         statusCode: Int?,
         expectedGeneration: UInt64
     ) {
-        lock.lock()
-        guard generation == expectedGeneration, !cancelled, !finished else {
-            lock.unlock()
-            return
-        }
-        finished = true
-        generation &+= 1
-        let session = self.session
-        self.session = nil
-        self.task = nil
-        let watchdog = watchdogTask
-        watchdogTask = nil
-        lock.unlock()
-        session?.invalidateAndCancel()
-        watchdog?.cancel()
+        guard terminate(expectedGeneration: expectedGeneration) else { return }
         Self.logger.warning("[CMP-SOURCE-CACHE] origin stream gave up cause=\(String(describing: cause), privacy: .public)")
         callbacks.didGiveUp(self, cause, statusCode)
     }
@@ -667,13 +780,15 @@ final class PlaybackOriginStream {
 
     // MARK: - URLSession delegate bridge
 
+    /// One delegate for the stream's single long-lived session. Staleness is
+    /// per data task: events carry the task identifier (unique within a
+    /// session) and the stream ignores anything that is not its current task,
+    /// so a cancelled attempt's late deliveries can never corrupt the cursor.
     private final class ConnectionDelegate: NSObject, URLSessionDataDelegate {
         private weak var stream: PlaybackOriginStream?
-        private let generation: UInt64
 
-        init(stream: PlaybackOriginStream, generation: UInt64) {
+        init(stream: PlaybackOriginStream) {
             self.stream = stream
-            self.generation = generation
         }
 
         func urlSession(
@@ -682,7 +797,7 @@ final class PlaybackOriginStream {
             didReceive response: URLResponse,
             completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
         ) {
-            guard let stream, stream.handleResponse(response, generation: generation) else {
+            guard let stream, stream.handleResponse(response, taskID: dataTask.taskIdentifier) else {
                 completionHandler(.cancel)
                 return
             }
@@ -690,11 +805,11 @@ final class PlaybackOriginStream {
         }
 
         func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-            stream?.handleData(data, generation: generation)
+            stream?.handleData(data, taskID: dataTask.taskIdentifier)
         }
 
         func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-            stream?.handleCompletion(error: error, generation: generation)
+            stream?.handleCompletion(error: error, taskID: task.taskIdentifier)
         }
     }
 }

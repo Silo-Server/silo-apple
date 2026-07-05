@@ -7,13 +7,15 @@ final class PlaybackOriginStreamPolicyTests: XCTestCase {
         id: UUID = UUID(),
         start: Int64 = 0,
         cursor: Int64,
-        order: UInt64
+        order: UInt64,
+        age: TimeInterval = .infinity
     ) -> PlaybackOriginStreamPolicy.StreamSnapshot {
         PlaybackOriginStreamPolicy.StreamSnapshot(
             id: id,
             startOffset: start,
             writeCursor: cursor,
-            lastDemandOrder: order
+            lastDemandOrder: order,
+            secondsSinceTargeted: age
         )
     }
 
@@ -68,6 +70,50 @@ final class PlaybackOriginStreamPolicyTests: XCTestCase {
         XCTAssertEqual(PlaybackOriginStreamPolicy.action(demandOffset: 0, streams: []), .spawn)
     }
 
+    func testDemandWaitsWhenEveryStreamIsStillConnecting() {
+        // Neither stream has delivered since its last (re)target and neither
+        // has aged out: retargeting one would kill a connection before its
+        // first byte — with three demand regions and two slots that cycle
+        // livelocks. The demand must wait instead.
+        let fresh = [
+            snapshot(start: 0, cursor: 0, order: 1, age: 0),
+            snapshot(start: 900_000_000, cursor: 900_000_000, order: 2, age: 0),
+        ]
+        XCTAssertEqual(
+            PlaybackOriginStreamPolicy.action(demandOffset: 500_000_000, streams: fresh),
+            .wait
+        )
+    }
+
+    func testDeliveredStreamIsTheRetargetVictimOverAFresherOne() {
+        // Only the stream that has delivered since its target is eligible,
+        // even though the still-connecting one is less recently demanded.
+        let connecting = UUID()
+        let delivered = UUID()
+        let streams = [
+            snapshot(id: connecting, start: 0, cursor: 0, order: 1, age: 0),
+            snapshot(id: delivered, start: 900_000_000, cursor: 901_000_000, order: 2, age: 0),
+        ]
+        XCTAssertEqual(
+            PlaybackOriginStreamPolicy.action(demandOffset: 500_000_000, streams: streams),
+            .retarget(delivered)
+        )
+    }
+
+    func testGracePeriodMakesAWedgedStreamRetargetable() {
+        // A connection that opens but never produces must not block
+        // retargets forever; after the grace period it becomes a victim.
+        let wedged = UUID()
+        let streams = [
+            snapshot(id: wedged, start: 0, cursor: 0, order: 1, age: PlaybackOriginStreamPolicy.retargetGraceSeconds),
+            snapshot(start: 900_000_000, cursor: 900_000_000, order: 2, age: 0),
+        ]
+        XCTAssertEqual(
+            PlaybackOriginStreamPolicy.action(demandOffset: 500_000_000, streams: streams),
+            .retarget(wedged)
+        )
+    }
+
     func testCoveringStreamPrefersNearestRegionStart() {
         let head = UUID()
         let tail = UUID()
@@ -103,6 +149,28 @@ final class PlaybackOriginStreamPolicyTests: XCTestCase {
                 writeCursor: 500_000_000,
                 demandMark: 499_000_000,
                 isMostRecentlyDemanded: true,
+                globalBudgetAvailable: false
+            )
+        )
+    }
+
+    func testBlockedDemandAtCursorOverridesBudgetPark() {
+        // A demand at or ahead of the cursor is blocked on bytes only this
+        // connection will deliver; a full readahead budget must not park it
+        // (the budget frees through reads, and the read is what's blocked).
+        XCTAssertFalse(
+            PlaybackOriginStreamPolicy.shouldPause(
+                writeCursor: 500_000_000,
+                demandMark: 500_000_000,
+                isMostRecentlyDemanded: true,
+                globalBudgetAvailable: false
+            )
+        )
+        XCTAssertFalse(
+            PlaybackOriginStreamPolicy.shouldPause(
+                writeCursor: 500_000_000,
+                demandMark: 502_000_000,
+                isMostRecentlyDemanded: false,
                 globalBudgetAvailable: false
             )
         )

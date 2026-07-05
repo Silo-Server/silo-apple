@@ -85,6 +85,21 @@ final class PlaybackSourceResponseEndTests: XCTestCase {
         XCTAssertEqual(cause, .complete)
     }
 
+    func testRangePromisingPastRealEOFIsComplete() {
+        // An exact range issued while the total was still unknown can
+        // promise bytes past the real EOF; reaching the true end must
+        // classify as complete once the total is known.
+        let cause = PlaybackSourceResponseEnd.classify(
+            cursor: 1000,
+            responseEnd: 1999,
+            totalLength: 1000,
+            wasCancelled: false,
+            sawEmptyFetch: true,
+            sawFetchError: false
+        )
+        XCTAssertEqual(cause, .complete)
+    }
+
     func testExpectedEndFallsBackToTotalLength() {
         let cause = PlaybackSourceResponseEnd.classify(
             cursor: 100,

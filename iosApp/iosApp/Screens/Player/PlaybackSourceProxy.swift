@@ -49,8 +49,11 @@ enum PlaybackSourceResponseEnd: Equatable {
     ) -> PlaybackSourceResponseEnd {
         if wasCancelled { return .cancelled }
         if sawFetchError { return .fetchFailed }
+        // An exact range promising bytes past the real EOF (total unknown at
+        // request time) must classify as complete, not premature EOF.
+        let clampedEnd = responseEnd.map { end in totalLength.map { min(end, $0 - 1) } ?? end }
         guard sawEmptyFetch,
-              let expectedEnd = responseEnd ?? totalLength.map({ max(0, $0 - 1) }),
+              let expectedEnd = clampedEnd ?? totalLength.map({ max(0, $0 - 1) }),
               cursor <= expectedEnd else {
             return .complete
         }
@@ -691,8 +694,25 @@ private final class PlaybackSourceResource {
         let request = PlaybackSourceRangeRequest.parse(rangeHeader)
         let total = await awaitTotalLength(hint: request.start)
         let resolved = resolveRequest(request, totalLength: total)
-        let responseStatus = rangeHeader == nil ? 200 : 206
+        var responseStatus = rangeHeader == nil ? 200 : 206
         let responseEnd = resolved.end
+        if responseStatus == 206, total == nil, responseEnd == nil {
+            if resolved.start == 0 {
+                // No total and no finite end: nothing valid to put in a
+                // Content-Range, but a head-anchored range can be answered
+                // as a plain 200 (a server may always ignore Range).
+                responseStatus = 200
+            } else {
+                // Mid-file open-ended range against an origin that never
+                // reported a total: no valid 206 exists (Content-Range
+                // requires a last-byte-pos). Fail honestly instead of
+                // emitting a 206 the demuxer cannot size.
+                print("[CMP-SRV] get exit reason=no_total_for_range start=\(resolved.start)")
+                let refusal = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                _ = await send(Data(refusal.utf8), on: connection, close: true)
+                return
+            }
+        }
 
         var header = "HTTP/1.1 \(responseStatus) \(HTTPURLResponse.localizedString(forStatusCode: responseStatus))\r\n"
         header += "Accept-Ranges: bytes\r\n"
@@ -701,6 +721,11 @@ private final class PlaybackSourceResource {
             let endLabel = responseEnd ?? (total - 1)
             header += "Content-Range: bytes \(resolved.start)-\(endLabel)/\(total)\r\n"
             header += "Content-Length: \(max(0, endLabel - resolved.start + 1))\r\n"
+        } else if let responseEnd, responseStatus == 206 {
+            // Total still unknown: an exact range can carry the RFC 9110
+            // unknown-complete-length form so the response stays sizeable.
+            header += "Content-Range: bytes \(resolved.start)-\(responseEnd)/*\r\n"
+            header += "Content-Length: \(max(0, responseEnd - resolved.start + 1))\r\n"
         } else if let total, responseStatus == 200 {
             header += "Content-Length: \(max(0, total - resolved.start))\r\n"
         }
@@ -738,19 +763,17 @@ private final class PlaybackSourceResource {
             }
             break
         }
-        // An exact range promising bytes past the real EOF (total unknown at
-        // request time) must classify as complete, not premature EOF.
         let knownTotal = currentTotalLength() ?? total
         let endCause = PlaybackSourceResponseEnd.classify(
             cursor: cursor,
-            responseEnd: responseEnd.map { end in knownTotal.map { min(end, $0 - 1) } ?? end },
+            responseEnd: responseEnd,
             totalLength: knownTotal,
             wasCancelled: Task.isCancelled,
             sawEmptyFetch: sawEmptyFetch,
             sawFetchError: sawFetchError
         )
         if case let .prematureEOF(offset, expectedEnd) = endCause {
-            let totalLabel = (discoveredTotalLength ?? total).map(String.init) ?? "unknown"
+            let totalLabel = knownTotal.map(String.init) ?? "unknown"
             Self.logger.warning(
                 "[CMP-SOURCE-CACHE] premature eof offset=\(offset, privacy: .public) expectedEnd=\(expectedEnd, privacy: .public) total=\(totalLabel, privacy: .public)"
             )
@@ -819,16 +842,22 @@ private final class PlaybackSourceResource {
         case .spawn:
             let stream = makeStream(startOffset: offset, order: order)
             streams.append(stream)
+            // Pair the gauge while still holding the lock: stop() snapshots
+            // `streams` and ends one request per member, so begin must not
+            // trail publication or a racing stop leaves the count stranded.
+            cache.beginOriginRequest()
             toStart = stream
         case .retarget(let id):
             toRetarget = live.first(where: { $0.id == id })
+        case .wait:
+            // Every slot is still connecting; the caller's waiter stays
+            // registered and is re-driven when a stream delivers its first
+            // bytes (streamDidStore) or leaves the pool (streamEnded).
+            break
         }
         stateLock.unlock()
         toNote?.noteDemand(offset: offset, order: order)
-        if let toStart {
-            cache.beginOriginRequest()
-            toStart.start()
-        }
+        toStart?.start()
         if let toRetarget {
             if toRetarget.retarget(to: offset, order: order) {
                 // The victim may have carried waiters for its old region;
@@ -871,11 +900,11 @@ private final class PlaybackSourceResource {
         if streams.count < PlaybackOriginStreamPolicy.maxStreams {
             let stream = makeStream(startOffset: offset, order: order)
             streams.append(stream)
+            cache.beginOriginRequest()
             toStart = stream
         }
         stateLock.unlock()
         if let toStart {
-            cache.beginOriginRequest()
             toStart.start()
         } else {
             ensureStream(for: offset)
@@ -1007,6 +1036,9 @@ private final class PlaybackSourceResource {
                 mayContinueFilling: { [weak self] stream, cursor, demandMark in
                     self?.mayContinueFilling(stream, cursor: cursor, demandMark: demandMark) ?? false
                 },
+                nextMissingByte: { [weak self] cursor in
+                    self?.cache.nextPrefetchStart(after: cursor)
+                },
                 store: { [weak self] start, data, total in
                     guard let self else { return }
                     self.cache.recordOriginTransfer(byteCount: data.count)
@@ -1019,12 +1051,37 @@ private final class PlaybackSourceResource {
     private func streamDidStore(_ range: ClosedRange<Int64>) {
         var resume: [CheckedContinuation<WaitOutcome, Never>] = []
         stateLock.lock()
+        guard !dataWaiters.isEmpty else {
+            stateLock.unlock()
+            return
+        }
         let satisfied = dataWaiters.filter {
             $0.value.offset >= range.lowerBound && $0.value.offset <= range.upperBound
         }.map(\.key)
         for id in satisfied {
             if let waiter = dataWaiters.removeValue(forKey: id) {
                 resume.append(waiter.continuation)
+            }
+        }
+        // Waiters no stream can ride were parked by a `.wait` routing
+        // decision (every slot was still connecting). This delivery may have
+        // made its stream a valid retarget victim, so re-drive them to
+        // re-route; ensureStream retargets on the redriven miss, which makes
+        // the stream ineligible again — at most one re-route per delivery.
+        if !dataWaiters.isEmpty {
+            let snapshots = streams.map { $0.snapshot() }
+            if snapshots.contains(where: { PlaybackOriginStreamPolicy.isRetargetable($0) }) {
+                let stranded = dataWaiters.filter {
+                    PlaybackOriginStreamPolicy.rideThroughTarget(
+                        offset: $0.value.offset,
+                        streams: snapshots
+                    ) == nil
+                }.map(\.key)
+                for id in stranded {
+                    if let waiter = dataWaiters.removeValue(forKey: id) {
+                        resume.append(waiter.continuation)
+                    }
+                }
             }
         }
         stateLock.unlock()
@@ -1096,6 +1153,17 @@ private final class PlaybackSourceResource {
             continuation.resume(returning: .failed)
         }
         guard let cause else { return }
+        // Surface the interruption only when the give-up actually failed a
+        // foreground waiter. A background stream (readahead, tail cues)
+        // dying while playback rides the forward cache must stay silent —
+        // the next cache miss simply routes to a fresh stream, and if that
+        // one also gives up its waiter fails and escalates here.
+        guard !failed.isEmpty else {
+            Self.logger.warning(
+                "[CMP-SOURCE-CACHE] background origin stream gave up cause=\(String(describing: cause), privacy: .public) status=\(statusCode ?? 0, privacy: .public); no foreground waiter affected"
+            )
+            return
+        }
         let reason: PlaybackSourceInterruptionReason?
         switch cause {
         case .network, .stalled:
