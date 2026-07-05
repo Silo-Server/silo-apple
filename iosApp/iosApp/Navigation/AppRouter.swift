@@ -162,6 +162,16 @@ class AppRouter {
         path.append(route)
     }
 
+    /// Swap the top route instead of pushing, so sideways hops between
+    /// sibling pages (e.g. episode → episode on the tvOS detail rail) don't
+    /// stack up — Back exits the chain in one step.
+    func replaceCurrent(with route: Route) {
+        if !path.isEmpty {
+            path.removeLast()
+        }
+        path.append(route)
+    }
+
     /// Pop the top route from the stack.
     func goBack() {
         guard !path.isEmpty else { return }

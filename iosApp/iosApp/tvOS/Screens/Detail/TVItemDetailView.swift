@@ -375,8 +375,10 @@ struct TVItemDetailView: View {
                     )
                 },
                 onSelectSeason: { season in
-                    guard season.id != detail.contentId else { return }
-                    router.navigate(to: .itemDetail(contentId: season.contentId))
+                    // Swap the episode rail in place (series-page behavior)
+                    // instead of pushing the season's own detail page.
+                    guard season.id != viewModel.selectedSeason?.id else { return }
+                    Task { await viewModel.selectSeason(season) }
                 },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
@@ -390,7 +392,11 @@ struct TVItemDetailView: View {
                     router.navigate(to: .itemDetail(contentId: id))
                 },
                 onEpisodeTap: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                    // Episode → episode hops replace the current page so Back
+                    // exits to wherever the chain started (home, series page)
+                    // instead of unwinding every previously viewed episode.
+                    guard id != detail.contentId else { return }
+                    router.replaceCurrent(with: .itemDetail(contentId: id))
                 },
                 belowSynopsis: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)

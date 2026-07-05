@@ -261,6 +261,13 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     }
 
     private var episodeRailEyebrow: String {
+        // Track the chip selection — the rail can show a different season
+        // than the episode's own once the viewer switches in place.
+        if let season = selectedSeason {
+            return season.seasonNumber > 0
+                ? "Season \(season.seasonNumber)"
+                : (season.title ?? "Specials")
+        }
         if let seasonNumber = detail.seasonNumber, seasonNumber > 0 {
             return "Season \(seasonNumber)"
         }
