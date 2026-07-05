@@ -81,6 +81,11 @@ struct SubtitleRenderOutput {
     var diagImageCount: Int = 0
     var diagImageBytes: Int = 0
     var diagTrackEvents: Int32 = 0
+    /// Placement of `image` in overlay points (top-left origin). The
+    /// composite covers only the union of the rects libass painted, not
+    /// the full frame; the overlay positions its contents layer here.
+    /// `.zero` when `image` is nil.
+    var imageFrame: CGRect = .zero
 }
 
 final class SubtitleRenderer {
@@ -598,23 +603,60 @@ final class SubtitleRenderer {
             )
         }
 
-        // Composite into the canvas. Secondary first so primary draws
-        // on top if they happen to overlap.
-        let canvas = ensureCanvas(widthPx: widthPx, heightPx: heightPx)
-        canvas.clear()
-        if let imgSecondary { canvas.draw(imageList: imgSecondary) }
-        if let imgPrimary   { canvas.draw(imageList: imgPrimary) }
-
         frameSizeDirty = false
         lastCompositedImageFingerprint = imageFingerprint
 
+        // Composite only the union of the rects libass painted. The
+        // full-frame canvas was the dominant render cost on tvOS: at 4K
+        // (scale 2) every cue change cleared, copied (`makeImage`), and
+        // re-uploaded a 33 MiB buffer when the painted region is
+        // typically 1-2 MiB. Clipped to the frame like `draw` does.
+        var minX = widthPx, minY = heightPx, maxX = 0, maxY = 0
+        for head in [imgSecondary, imgPrimary] {
+            var node = head
+            while let cur = node {
+                let img = cur.pointee
+                if img.w > 0, img.h > 0, img.bitmap != nil {
+                    minX = min(minX, max(0, Int(img.dst_x)))
+                    minY = min(minY, max(0, Int(img.dst_y)))
+                    maxX = max(maxX, min(widthPx, Int(img.dst_x) + Int(img.w)))
+                    maxY = max(maxY, min(heightPx, Int(img.dst_y) + Int(img.h)))
+                }
+                node = img.next
+            }
+        }
+        guard maxX > minX, maxY > minY else {
+            // Cue ended (or everything rasterized off-frame): dirty with a
+            // nil image so the overlay clears without a full-frame pass.
+            return SubtitleRenderOutput(
+                image: nil, isDirty: true, hasContent: hasContent,
+                diagChangePrimary: changePrimary, diagChangeSecondary: changeSecondary,
+                diagWasFrameSizeDirty: wasFrameSizeDirty, diagGeometryApplies: geometryApplyCount,
+                diagImageCount: diagImageCount, diagImageBytes: diagImageBytes,
+                diagTrackEvents: diagTrackEvents
+            )
+        }
+
+        // Secondary first so primary draws on top if they overlap.
+        let canvas = ensureCanvas(widthPx: maxX - minX, heightPx: maxY - minY)
+        canvas.clear()
+        if let imgSecondary { canvas.draw(imageList: imgSecondary, offsetX: minX, offsetY: minY) }
+        if let imgPrimary   { canvas.draw(imageList: imgPrimary, offsetX: minX, offsetY: minY) }
+
         let cgImage = canvas.snapshot(scale: scale)
+        let safeScale = scale.isFinite && scale > 0 ? scale : 1
         return SubtitleRenderOutput(
             image: cgImage, isDirty: true, hasContent: hasContent,
             diagChangePrimary: changePrimary, diagChangeSecondary: changeSecondary,
             diagWasFrameSizeDirty: wasFrameSizeDirty, diagGeometryApplies: geometryApplyCount,
             diagImageCount: diagImageCount, diagImageBytes: diagImageBytes,
-            diagTrackEvents: diagTrackEvents
+            diagTrackEvents: diagTrackEvents,
+            imageFrame: CGRect(
+                x: CGFloat(minX) / safeScale,
+                y: CGFloat(minY) / safeScale,
+                width: CGFloat(maxX - minX) / safeScale,
+                height: CGFloat(maxY - minY) / safeScale
+            )
         )
     }
 
@@ -803,7 +845,9 @@ private final class CompositorCanvas {
     }
 
     /// Walk a libass `ASS_Image*` linked list and composite each rect's
-    /// alpha mask + flat color into the canvas.
+    /// alpha mask + flat color into the canvas. `offsetX`/`offsetY` map
+    /// frame-space destinations into this canvas (the caller sizes the
+    /// canvas to the union of the painted rects, not the full frame).
     ///
     /// The libass `color` field is `RRGGBBAA` with alpha inverted
     /// (00 = opaque, FF = transparent). Each pixel's effective alpha is
@@ -811,15 +855,15 @@ private final class CompositorCanvas {
     /// channels are premultiplied by that effective alpha and blended
     /// over the existing canvas contents using straightforward `over`
     /// compositing.
-    func draw(imageList head: UnsafeMutablePointer<ASS_Image>) {
+    func draw(imageList head: UnsafeMutablePointer<ASS_Image>, offsetX: Int = 0, offsetY: Int = 0) {
         var current: UnsafeMutablePointer<ASS_Image>? = head
         while let node = current {
             let img = node.pointee
             let w = Int(img.w)
             let h = Int(img.h)
             let stride = Int(img.stride)
-            let dstX = Int(img.dst_x)
-            let dstY = Int(img.dst_y)
+            let dstX = Int(img.dst_x) - offsetX
+            let dstY = Int(img.dst_y) - offsetY
             guard w > 0, h > 0, let bitmap = img.bitmap else {
                 current = img.next
                 continue

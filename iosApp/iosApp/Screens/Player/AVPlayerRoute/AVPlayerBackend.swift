@@ -2217,6 +2217,12 @@ final class AVPlayerBackend {
                 // transport state so on-device render stalls (frozen picture,
                 // advancing audio clock) are diagnosable from the capture.
                 print("[CMP-AVP] vod state pos=\(String(format: "%.2f", position)) tc=\(statusLabel) rate=\(avPlayer.rate) bufAhead=\(String(format: "%.1f", bufferedAhead)) stationaryFor=\(String(format: "%.1f", stationaryFor))\(memSuffix)")
+                // Temporary [CMP-CPU]: per-thread attribution + device core
+                // load at the same cadence, so a pegged-CPU capture names the
+                // hot queue instead of just showing the total.
+                if let cpuLine = PlayerCPUDiagnostics.sampleLine() {
+                    print("[CMP-CPU] " + cpuLine)
+                }
             }
         }
 
@@ -3225,7 +3231,7 @@ final class AVPlayerBackend {
                         )
                     }
                     guard out.isDirty else { return }
-                    overlay?.updateContents(out.image)
+                    overlay?.updateContents(out.image, frame: out.imageFrame)
                 }
             }
         } else if textOverlayMayHaveFrame {

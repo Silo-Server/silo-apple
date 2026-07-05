@@ -123,8 +123,9 @@ final class SubtitleOverlayView: UIView {
         backgroundColor = .clear
         isUserInteractionEnabled = false
         // Overlay sits above the AVSampleBufferDisplayLayer; having
-        // its own layer inside makes the z-order explicit.
-        contentsLayer.contentsGravity = .resizeAspectFill
+        // its own layer inside makes the z-order explicit. Contents are
+        // rendered at the layer's exact pixel size, so `.resize` maps 1:1.
+        contentsLayer.contentsGravity = .resize
         contentsLayer.isOpaque = false
         layer.addSublayer(contentsLayer)
         bitmapCueHost.isOpaque = false
@@ -144,10 +145,15 @@ final class SubtitleOverlayView: UIView {
         fatalError("init(coder:) not implemented")
     }
 
+    /// Placement of the current composited image in overlay points; nil
+    /// means the image covers the full bounds. Kept so layout passes
+    /// don't stretch a bounded image back over the whole overlay.
+    private var contentsFrameOverride: CGRect?
+
     override func layoutSubviews() {
         super.layoutSubviews()
         withoutImplicitLayerAnimation {
-            contentsLayer.frame = bounds
+            contentsLayer.frame = contentsFrameOverride ?? bounds
             bitmapCueHost.frame = bounds
         }
         pushFrameGeometry()
@@ -171,11 +177,19 @@ final class SubtitleOverlayView: UIView {
         renderer?.updateFrameSize(bounds.size, scale: scale, videoInsets: videoInsets)
     }
 
-    /// Assign the newest composited image. Call on main thread.
-    func updateContents(_ image: CGImage?) {
-        // CALayer.contents takes `Any?` — pass `image` directly to avoid
-        // the ARC/CFType dance of an explicit `as CGImage`.
+    /// Assign the newest composited image. `frame` is the image's
+    /// placement in overlay points (top-left origin); nil or `.zero`
+    /// means the image covers the full bounds. Call on main thread.
+    func updateContents(_ image: CGImage?, frame: CGRect? = nil) {
         withoutImplicitLayerAnimation {
+            if image != nil, let frame, frame != .zero {
+                contentsFrameOverride = frame
+            } else {
+                contentsFrameOverride = nil
+            }
+            contentsLayer.frame = contentsFrameOverride ?? bounds
+            // CALayer.contents takes `Any?` — pass `image` directly to avoid
+            // the ARC/CFType dance of an explicit `as CGImage`.
             contentsLayer.contents = image
         }
     }
@@ -245,7 +259,7 @@ final class SubtitleOverlayView: NSView {
         layer?.zPosition = 10_000
         layer?.isOpaque = false
         layer?.masksToBounds = false
-        contentsLayer.contentsGravity = .resizeAspectFill
+        contentsLayer.contentsGravity = .resize
         contentsLayer.isOpaque = false
         contentsLayer.zPosition = 10_000
         layer?.addSublayer(contentsLayer)
@@ -270,9 +284,13 @@ final class SubtitleOverlayView: NSView {
         updateLayout()
     }
 
+    /// Placement of the current composited image in overlay points,
+    /// top-left origin; nil means the image covers the full bounds.
+    private var contentsFrameOverride: CGRect?
+
     private func updateLayout() {
         withoutImplicitLayerAnimation {
-            contentsLayer.frame = bounds
+            applyContentsFrame()
             bitmapCueHost.frame = bounds
         }
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
@@ -282,9 +300,33 @@ final class SubtitleOverlayView: NSView {
         renderer?.updateFrameSize(bounds.size, scale: scale, videoInsets: videoInsets)
     }
 
-    /// Assign the newest composited image. Call on main thread.
-    func updateContents(_ image: CGImage?) {
+    /// `contentsLayer` is not geometry-flipped, so a bounded frame given
+    /// in top-left-origin overlay points must be flipped into AppKit's
+    /// bottom-left layer space.
+    private func applyContentsFrame() {
+        if let frame = contentsFrameOverride {
+            contentsLayer.frame = CGRect(
+                x: frame.minX,
+                y: bounds.height - frame.maxY,
+                width: frame.width,
+                height: frame.height
+            )
+        } else {
+            contentsLayer.frame = bounds
+        }
+    }
+
+    /// Assign the newest composited image. `frame` is the image's
+    /// placement in overlay points (top-left origin); nil or `.zero`
+    /// means the image covers the full bounds. Call on main thread.
+    func updateContents(_ image: CGImage?, frame: CGRect? = nil) {
         withoutImplicitLayerAnimation {
+            if image != nil, let frame, frame != .zero {
+                contentsFrameOverride = frame
+            } else {
+                contentsFrameOverride = nil
+            }
+            applyContentsFrame()
             contentsLayer.contents = image
         }
     }

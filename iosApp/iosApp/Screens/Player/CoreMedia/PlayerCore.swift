@@ -5618,8 +5618,9 @@ final class PlayerCore: NSObject {
             }
             guard out.isDirty else { return }
             let image = out.image
+            let imageFrame = out.imageFrame
             DispatchQueue.main.async {
-                overlay?.updateContents(image)
+                overlay?.updateContents(image, frame: imageFrame)
             }
         }
     }

@@ -247,7 +247,11 @@ final class LoopbackSegmentWriter {
     var onFinished: ((_ error: Error?) -> Void)?
 
     // MARK: - Internal state (muxQueue only)
-    private let muxQueue = DispatchQueue(label: "com.continuum.dv.mux", qos: .userInitiated)
+    /// `.utility`, deliberately: the producer runs 20-60 s ahead of the
+    /// playhead, so it never needs a performance core. At `.userInitiated`
+    /// its demux/remux bursts (100-160 Mbps during window fill) contend
+    /// with mediaserverd's 4K decode and the UI on A12-class Apple TVs.
+    private let muxQueue = DispatchQueue(label: "com.continuum.dv.mux", qos: .utility)
     /// Cancellation flag. Guarded by `cancelLock` so `stop()` can flip it
     /// from any thread — including while the mux loop is blocked inside
     /// `av_read_frame` waiting on a network read. FFmpeg's
