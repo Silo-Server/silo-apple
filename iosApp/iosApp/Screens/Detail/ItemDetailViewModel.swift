@@ -195,6 +195,7 @@ class ItemDetailViewModel {
                 intro: watchDetail.intro,
                 credits: watchDetail.credits,
                 effectiveSubtitleMode: watchDetail.effectiveSubtitleMode,
+                effectiveShowForcedSubtitles: watchDetail.effectiveShowForcedSubtitles,
                 effectiveSubtitleTrackSignature: watchDetail.effectiveSubtitleTrackSignature,
                 overlaySummary: item.overlaySummary,
                 audiobook: item.audiobook,

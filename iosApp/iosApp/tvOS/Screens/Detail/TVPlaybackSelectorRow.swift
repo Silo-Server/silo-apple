@@ -31,6 +31,10 @@ struct TVPlaybackSelectorRow: View {
     /// "Auto" will land on. Defaulted so callers without it keep a bare "Auto".
     var subtitleMode: String? = nil
     var subtitleSignature: SubtitleTrackSignature? = nil
+    /// Profile/item "Show Forced Subtitles" preference — feeds the Auto
+    /// preview's forced-track branch so the row doesn't show "Auto - None"
+    /// when playback would actually start with a forced track.
+    var showForcedSubtitles: Bool = false
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
@@ -270,7 +274,8 @@ struct TVPlaybackSelectorRow: View {
             audioLanguage: DetailPlaybackFormatting.resolvedAudioLanguage(
                 version: currentVersion,
                 selectedAudioTrackIndex: selectedAudioTrackIndex
-            )
+            ),
+            showForced: showForcedSubtitles
         )
     }
 

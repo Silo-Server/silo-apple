@@ -124,7 +124,13 @@ final class PanCaptureUIView: UIView, UIGestureRecognizerDelegate {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        attachRecognizerIfNeeded()
+        // Leaving the window (nil) must tear the recognizer off the old
+        // window deterministically rather than waiting for deinit.
+        if window == nil {
+            detachRecognizer()
+        } else {
+            attachRecognizerIfNeeded()
+        }
     }
 
     deinit {
@@ -201,7 +207,14 @@ final class DirectionalPressGestureUIView: UIView, UIGestureRecognizerDelegate {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        attachRecognizersIfNeeded()
+        // Same teardown contract as PanCaptureUIView: leaving the window
+        // detaches from the old window immediately, not at deinit.
+        if window == nil {
+            cancelAllRepeatTimers()
+            detachRecognizers()
+        } else {
+            attachRecognizersIfNeeded()
+        }
     }
 
     deinit {

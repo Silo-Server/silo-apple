@@ -117,6 +117,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
                 subtitleMode: subtitleOverrideCleared ? nil : detail.effectiveSubtitleMode,
                 subtitleSignature: subtitleOverrideCleared ? nil : detail.effectiveSubtitleTrackSignature,
+                showForcedSubtitles: detail.effectiveShowForcedSubtitles ?? false,
                 onSelectVersion: onSelectVersion,
                 onSelectAudioTrack: onSelectAudioTrack,
                 onSelectSubtitleTrack: onSelectSubtitleTrack

@@ -395,6 +395,7 @@ struct ItemDetail: Codable {
     /// per-movie subtitle override is stored, so it doubles as the
     /// "user picked a track" marker for selector seeding.
     let effectiveSubtitleMode: String?
+    let effectiveShowForcedSubtitles: Bool?
     let effectiveSubtitleTrackSignature: SubtitleTrackSignature?
     let overlaySummary: OverlaySummary?
     let audiobook: AudiobookDetail?

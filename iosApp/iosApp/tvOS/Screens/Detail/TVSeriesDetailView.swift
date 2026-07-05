@@ -138,6 +138,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
                     subtitleMode: nextUpSubtitleOverrideCleared ? nil : nextUpPlaybackDetail?.effectiveSubtitleMode,
                     subtitleSignature: nextUpSubtitleOverrideCleared ? nil : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
+                    showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles ?? false,
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack

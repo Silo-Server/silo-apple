@@ -50,11 +50,12 @@ extension View {
 @MainActor
 enum PersonalListSync {
     /// Returns false when the server call failed — the caller reverts
-    /// its optimistic UI state.
+    /// its optimistic UI state. The sibling flag is only a write-back
+    /// fallback; a fresher cached value for it wins (see `writeBack`).
     static func setFavorite(contentId: String, isFavorite: Bool, inWatchlist: Bool) async -> Bool {
         do {
             try await ContinuumAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
-            writeBack(contentId: contentId, isFavorite: isFavorite, inWatchlist: inWatchlist)
+            writeBack(contentId: contentId, isFavorite: isFavorite, fallbackInWatchlist: inWatchlist)
             return true
         } catch {
             return false
@@ -64,17 +65,33 @@ enum PersonalListSync {
     static func setWatchlist(contentId: String, isFavorite: Bool, inWatchlist: Bool) async -> Bool {
         do {
             try await ContinuumAPI.shared.toggleWatchlist(contentId: contentId, isInWatchlist: inWatchlist)
-            writeBack(contentId: contentId, isFavorite: isFavorite, inWatchlist: inWatchlist)
+            writeBack(contentId: contentId, inWatchlist: inWatchlist, fallbackIsFavorite: isFavorite)
             return true
         } catch {
             return false
         }
     }
 
-    private static func writeBack(contentId: String, isFavorite: Bool, inWatchlist: Bool) {
+    /// Merges the toggled flag over the cached pair rather than writing the
+    /// caller's full snapshot: two quick toggles race their server round
+    /// trips, and the slower write must not revert the sibling flag the
+    /// faster one already committed to the cache. The caller's snapshot is
+    /// only used when nothing is cached yet.
+    private static func writeBack(
+        contentId: String,
+        isFavorite: Bool? = nil,
+        inWatchlist: Bool? = nil,
+        fallbackIsFavorite: Bool = false,
+        fallbackInWatchlist: Bool = false
+    ) {
+        let key = CacheKey.itemUserState(contentId)
+        let cached: UserItemState? = ResponseCache.shared.get(key)
         ResponseCache.shared.set(
-            UserItemState(isFavorite: isFavorite, inWatchlist: inWatchlist),
-            for: CacheKey.itemUserState(contentId)
+            UserItemState(
+                isFavorite: isFavorite ?? cached?.isFavorite ?? fallbackIsFavorite,
+                inWatchlist: inWatchlist ?? cached?.inWatchlist ?? fallbackInWatchlist
+            ),
+            for: key
         )
         ResponseCache.shared.remove(CacheKey.favorites)
         ResponseCache.shared.remove(CacheKey.watchlist)
