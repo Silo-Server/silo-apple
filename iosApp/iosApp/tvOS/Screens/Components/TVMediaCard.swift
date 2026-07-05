@@ -38,6 +38,9 @@ struct TVMediaCard: View {
     /// card's outer VStack silently no-ops. Mirrors `MediaCard.focusedItemId`.
     var focusBinding: FocusState<String?>.Binding? = nil
     var focusContentId: String? = nil
+    /// Catalog identity for the long-press favorite/watchlist menu.
+    /// `nil` (or a nil `userState`) leaves the card without a menu.
+    var contentId: String? = nil
 
     enum FocusTreatment {
         case nativeCard
@@ -45,6 +48,8 @@ struct TVMediaCard: View {
     }
 
     @FocusState private var isFocused: Bool
+    @State private var favoriteOverride: Bool?
+    @State private var watchlistOverride: Bool?
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
 
     private var cardHeight: CGFloat {
@@ -59,9 +64,65 @@ struct TVMediaCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             posterButton
+                .personalListContextMenu(hasPersonalActions ? personalMenuItems : nil)
             caption
         }
         .frame(width: cardWidth)
+        .onChange(of: userState) { _, _ in
+            favoriteOverride = nil
+            watchlistOverride = nil
+        }
+    }
+
+    // MARK: - Favorite / watchlist context actions
+
+    private var hasPersonalActions: Bool {
+        contentId != nil && userState != nil
+    }
+
+    private var isFavorite: Bool {
+        favoriteOverride ?? (userState?.isFavorite == true)
+    }
+
+    private var isInWatchlist: Bool {
+        watchlistOverride ?? (userState?.inWatchlist == true)
+    }
+
+    private var personalMenuItems: PersonalListMenuItems {
+        PersonalListMenuItems(
+            isFavorite: isFavorite,
+            inWatchlist: isInWatchlist,
+            onToggleFavorite: togglePersonalFavorite,
+            onToggleWatchlist: togglePersonalWatchlist
+        )
+    }
+
+    private func togglePersonalFavorite() {
+        guard let contentId else { return }
+        let newValue = !isFavorite
+        let watchlist = isInWatchlist
+        favoriteOverride = newValue
+        Task {
+            if await PersonalListSync.setFavorite(
+                contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
+            ) == false {
+                favoriteOverride = !newValue // Revert on failure
+            }
+        }
+    }
+
+    private func togglePersonalWatchlist() {
+        guard let contentId else { return }
+        let newValue = !isInWatchlist
+        let favorite = isFavorite
+        watchlistOverride = newValue
+        Task {
+            if await PersonalListSync.setWatchlist(
+                contentId: contentId, isFavorite: favorite, inWatchlist: newValue
+            ) == false {
+                watchlistOverride = !newValue // Revert on failure
+            }
+        }
     }
 
     @ViewBuilder

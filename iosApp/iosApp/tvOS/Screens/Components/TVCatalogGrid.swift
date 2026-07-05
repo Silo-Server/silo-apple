@@ -62,7 +62,8 @@ struct TVCatalogGrid: View {
                     prefersDefaultFocus: prefersDefaultFocusOnFirstItem && indexed.index == 0,
                     defaultFocusNamespace: gridFocusNamespace,
                     focusBinding: $focusedItemId,
-                    focusContentId: item.contentId
+                    focusContentId: item.contentId,
+                    contentId: item.contentId
                 )
                 .frame(maxWidth: .infinity)
                 .onAppear { onCellAppear(index: indexed.index) }

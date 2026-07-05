@@ -64,7 +64,13 @@ struct FavoritesView: View {
                         action: {
                             router.navigate(to: .itemDetail(contentId: item.contentId))
                         },
-                        contentId: item.contentId
+                        contentId: item.contentId,
+                        onUserStateChanged: { state in
+                            guard !state.isFavorite else { return }
+                            withAnimation {
+                                items.removeAll { $0.contentId == item.contentId }
+                            }
+                        }
                     )
                     .frame(maxWidth: .infinity)
                 }

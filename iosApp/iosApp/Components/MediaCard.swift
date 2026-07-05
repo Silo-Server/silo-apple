@@ -42,8 +42,14 @@ struct MediaCard: View {
     /// for episodes rendered in a poster row (e.g. "Recently Released
     /// Episodes"). `nil` for movies / series / audiobooks.
     var episodeBadge: String? = nil
+    /// Fires after a favorite/watchlist toggle from the card's context
+    /// menu commits server-side, with the item's new state. Favorites /
+    /// Watchlist grids use it to drop the card from the list in place.
+    var onUserStateChanged: ((MediaItemUserState) -> Void)? = nil
 
     @State private var playedOverride: Bool?
+    @State private var favoriteOverride: Bool?
+    @State private var watchlistOverride: Bool?
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     /// iOS 26 zoom transition namespace, shared from `MainTabView`. When
     /// present (and `contentId` is non-nil) the poster acts as the
@@ -89,12 +95,15 @@ struct MediaCard: View {
                     playedOverride = played
                     handler(played)
                 }
-            }
+            },
+            personalItems: hasPersonalActions ? personalMenuItems : nil
         ) {
             posterImage
         }
-        .onChange(of: userState?.played) { _, _ in
+        .onChange(of: userState) { _, _ in
             playedOverride = nil
+            favoriteOverride = nil
+            watchlistOverride = nil
         }
         #else
         Group {
@@ -114,8 +123,76 @@ struct MediaCard: View {
                 .buttonStyle(.plain)
             }
         }
+        .personalListContextMenu(hasPersonalActions ? personalMenuItems : nil)
+        .onChange(of: userState) { _, _ in
+            playedOverride = nil
+            favoriteOverride = nil
+            watchlistOverride = nil
+        }
         .frame(width: cardWidth)
         #endif
+    }
+
+    // MARK: - Favorite / watchlist context actions
+
+    /// Only cards backed by a catalog item (a `contentId` plus server
+    /// user state) get the favorite/watchlist menu — thumbnails without
+    /// user state (people, collections, discover results) don't.
+    private var hasPersonalActions: Bool {
+        contentId != nil && userState != nil
+    }
+
+    private var isFavorite: Bool {
+        favoriteOverride ?? (userState?.isFavorite == true)
+    }
+
+    private var isInWatchlist: Bool {
+        watchlistOverride ?? (userState?.inWatchlist == true)
+    }
+
+    private var personalMenuItems: PersonalListMenuItems {
+        PersonalListMenuItems(
+            isFavorite: isFavorite,
+            inWatchlist: isInWatchlist,
+            onToggleFavorite: togglePersonalFavorite,
+            onToggleWatchlist: togglePersonalWatchlist
+        )
+    }
+
+    private func togglePersonalFavorite() {
+        guard let contentId else { return }
+        let newValue = !isFavorite
+        let watchlist = isInWatchlist
+        favoriteOverride = newValue
+        Task {
+            if await PersonalListSync.setFavorite(
+                contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
+            ) {
+                onUserStateChanged?(
+                    MediaItemUserState(played: isPlayed, isFavorite: newValue, inWatchlist: watchlist)
+                )
+            } else {
+                favoriteOverride = !newValue // Revert on failure
+            }
+        }
+    }
+
+    private func togglePersonalWatchlist() {
+        guard let contentId else { return }
+        let newValue = !isInWatchlist
+        let favorite = isFavorite
+        watchlistOverride = newValue
+        Task {
+            if await PersonalListSync.setWatchlist(
+                contentId: contentId, isFavorite: favorite, inWatchlist: newValue
+            ) {
+                onUserStateChanged?(
+                    MediaItemUserState(played: isPlayed, isFavorite: favorite, inWatchlist: newValue)
+                )
+            } else {
+                watchlistOverride = !newValue // Revert on failure
+            }
+        }
     }
 
     private var cardContent: some View {
@@ -309,6 +386,9 @@ private struct FocusableMediaCard<Content: View>: View {
     let isWatched: Bool
     let onRemoveFromContinueWatching: (() -> Void)?
     let onSetWatched: ((Bool) -> Void)?
+    /// Favorite / watchlist toggles, built by the owning card. `nil`
+    /// when the card has no catalog identity or user state.
+    let personalItems: PersonalListMenuItems?
     @ViewBuilder var content: () -> Content
 
     @FocusState private var isFocused: Bool
@@ -362,7 +442,7 @@ private struct FocusableMediaCard<Content: View>: View {
     }
 
     private var hasContextActions: Bool {
-        onSetWatched != nil || onRemoveFromContinueWatching != nil
+        onSetWatched != nil || onRemoveFromContinueWatching != nil || personalItems != nil
     }
 
     @ViewBuilder
@@ -376,6 +456,10 @@ private struct FocusableMediaCard<Content: View>: View {
                     systemImage: isWatched ? "circle" : "checkmark.circle"
                 )
             }
+        }
+
+        if let personalItems {
+            personalItems
         }
 
         if let onRemoveFromContinueWatching {
