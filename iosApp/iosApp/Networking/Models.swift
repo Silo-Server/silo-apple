@@ -267,13 +267,17 @@ enum SiloMediaType {
         isMovieLibrary(type) || isSeries(type) || isAudiobookLibrary(type)
     }
 
-    /// Item types from libraries the Apple clients hide (see
-    /// ``isSupportedLibrary``). The server builds Home sections for every
-    /// library type, so these must be stripped client-side too or hidden
-    /// libraries leak rows into Home.
-    static func isUnsupportedSectionItem(_ type: String) -> Bool {
+    /// Section items are kept only when their type maps to a library type
+    /// the Apple clients support (see ``isSupportedLibrary``). The server
+    /// builds Home sections for every library type, so items from hidden
+    /// libraries (ebook, manga, comics, music, …) must be stripped
+    /// client-side or those libraries leak rows into Home.
+    static func isSupportedSectionItem(_ type: String) -> Bool {
+        if isMovieLibrary(type) || isSeries(type) || isAudiobook(type) {
+            return true
+        }
         switch normalized(type) {
-        case "ebook", "ebooks", "manga", "mangas":
+        case "episode", "episodes":
             return true
         default:
             return false
@@ -361,7 +365,7 @@ struct SectionsResponse: Codable {
     ) -> [ResolvedSection] {
         sections.map { section in
             let kept = section.items.filter {
-                !SiloMediaType.isUnsupportedSectionItem($0.type)
+                SiloMediaType.isSupportedSectionItem($0.type)
             }
             guard kept.count != section.items.count else { return section }
             return ResolvedSection(

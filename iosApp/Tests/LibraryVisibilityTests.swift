@@ -41,6 +41,9 @@ final class LibraryVisibilityTests: XCTestCase {
               "items": [
                 { "content_id": "m1", "type": "movie", "title": "A Movie" },
                 { "content_id": "e1", "type": "ebook", "title": "An Ebook" },
+                { "content_id": "ep1", "type": "episode", "title": "An Episode" },
+                { "content_id": "c1", "type": "comic", "title": "A Comic" },
+                { "content_id": "mu1", "type": "music", "title": "An Album" },
                 { "content_id": "a1", "type": "audiobook", "title": "An Audiobook" }
               ]
             },
@@ -61,7 +64,7 @@ final class LibraryVisibilityTests: XCTestCase {
         let response = try! decoder.decode(SectionsResponse.self, from: Data(json.utf8))
 
         XCTAssertEqual(response.sections.map(\.id), ["continue", "manga-recent"])
-        XCTAssertEqual(response.sections[0].items.map(\.contentId), ["m1", "a1"])
+        XCTAssertEqual(response.sections[0].items.map(\.contentId), ["m1", "ep1", "a1"])
         XCTAssertTrue(response.sections[1].items.isEmpty)
     }
 
