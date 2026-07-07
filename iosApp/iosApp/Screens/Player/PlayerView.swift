@@ -207,6 +207,10 @@ struct PlayerView: View {
                 dismissPlayer()
             } else if viewModel.isHUDPresented {
                 viewModel.closeHUD()
+            } else if !viewModel.isPlaying {
+                // While paused, Menu exits the player instead of hiding the
+                // controls over a frozen frame.
+                dismissPlayer()
             } else if viewModel.showControls {
                 viewModel.dismissControls()
             } else {

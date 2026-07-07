@@ -348,7 +348,13 @@ struct TVPlayerControls: View {
                     }
                 },
                 onExitWhenIdle: {
-                    viewModel.dismissControls()
+                    // While paused, Menu exits the player instead of hiding
+                    // the controls over a frozen frame.
+                    if viewModel.isPlaying {
+                        viewModel.dismissControls()
+                    } else {
+                        onDismiss()
+                    }
                 },
                 isTimelineScrubbing: $isTimelineScrubbing,
                 cancelOnBlur: cancelPendingScrub
