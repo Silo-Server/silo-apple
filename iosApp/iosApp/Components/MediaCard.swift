@@ -4,6 +4,8 @@ import SwiftUI
 enum MediaCardAspect {
     /// 2:3 movie/series poster.
     case poster
+    /// 16:9 landscape card for server-configured rows.
+    case landscape
     /// 1:1 tile for audiobook covers.
     case square
 }
@@ -23,6 +25,11 @@ struct MediaCard: View {
     /// don't have an `OverlaySummary` available (e.g. people /
     /// collection thumbnails) leave this off.
     var overlayData: OverlayData? = nil
+    /// Optional transparent title/logo treatment for landscape placeholders.
+    /// Used only when a server row asks for landscape but no stored landscape
+    /// card or backdrop image exists yet.
+    var landscapeLogoUrl: String? = nil
+    var showLandscapeTitleOverlay: Bool = false
     let action: () -> Void
     /// tvOS-only shortcut invoked by the remote's Play/Pause button while
     /// this card owns focus. Select continues to invoke `action`.
@@ -75,6 +82,8 @@ struct MediaCard: View {
         switch aspect {
         case .poster:
             cardWidth * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
+        case .landscape:
+            cardWidth / ContinuumTheme.backdropAspectRatio
         case .square:
             cardWidth
         }
@@ -274,14 +283,30 @@ struct MediaCard: View {
                 contentMode: .fill
             )
                 .frame(width: cardWidth, height: cardHeight)
-                .clipped()
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+
+            if aspect == .landscape, showLandscapeTitleOverlay {
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.75)],
+                    startPoint: .center,
+                    endPoint: .bottom
+                )
+                .frame(width: cardWidth, height: cardHeight)
                 .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+
+                landscapeTitleTreatment
+            }
 
             // Server / user-customized overlays (resolution, HDR, ratings, …)
             // sit under the watched check + progress bar so those built-in
             // affordances always win the same corner if they conflict.
             if let overlayData, overlayStore.enabled {
-                CardOverlays(data: overlayData, prefs: overlayStore.prefs, variant: .poster)
+                CardOverlays(
+                    data: overlayData,
+                    prefs: overlayStore.prefs,
+                    variant: aspect == .landscape ? .wide : .poster
+                )
                     .frame(width: cardWidth, height: cardHeight)
                     .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
             }
@@ -332,6 +357,34 @@ struct MediaCard: View {
             DownloadedBadgeOverlay(contentId: contentId, padding: checkBadgePadding)
             #endif
         }
+        .frame(width: cardWidth, height: cardHeight)
+    }
+
+    @ViewBuilder
+    private var landscapeTitleTreatment: some View {
+        VStack {
+            Spacer()
+            if let logo = landscapeLogoUrl, !logo.isEmpty {
+                AsyncImageView(
+                    url: logo,
+                    targetSize: CGSize(width: cardWidth * 0.7, height: cardHeight * 0.35),
+                    contentMode: .fit
+                )
+                .frame(maxWidth: cardWidth * 0.7, maxHeight: cardHeight * 0.35)
+            } else {
+                Text(title)
+                    .font(.continuumSubheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(Color.black.opacity(0.55)))
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.bottom, 14)
         .frame(width: cardWidth, height: cardHeight)
     }
 

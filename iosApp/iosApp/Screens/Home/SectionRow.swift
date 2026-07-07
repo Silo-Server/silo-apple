@@ -72,6 +72,16 @@ struct SectionRow: View {
     }
 
     private var layout: MediaRowLayout {
+        switch section.cardImageStyle {
+        case .landscape:
+            return .landscape
+        case .portrait:
+            if isAudiobookRow { return .square }
+            return .poster
+        case .auto:
+            break
+        }
+
         if isEpisodeRow { return .thumbnail }
         if isAudiobookRow { return .square }
         return .poster

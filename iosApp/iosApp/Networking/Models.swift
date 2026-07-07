@@ -150,6 +150,20 @@ struct CatalogResponse: Codable {
 
 // MARK: - Home Sections
 
+enum SectionCardImageStyle: String, Codable {
+    case auto
+    case portrait
+    case landscape
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        self = SectionCardImageStyle(rawValue: rawValue) ?? .auto
+    }
+}
+
 struct SectionItem: Codable, Identifiable, Hashable {
     let contentId: String
     let type: String
@@ -180,6 +194,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let posterThumbhash: String?
     let backdropUrl: String?
     let backdropThumbhash: String?
+    let landscapeCardUrl: String?
+    let landscapeCardThumbhash: String?
     let logoUrl: String?
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
@@ -216,6 +232,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
         posterThumbhash = try c.decodeIfPresent(String.self, forKey: .posterThumbhash)
         backdropUrl = try c.decodeIfPresent(String.self, forKey: .backdropUrl)
         backdropThumbhash = try c.decodeIfPresent(String.self, forKey: .backdropThumbhash)
+        landscapeCardUrl = try c.decodeIfPresent(String.self, forKey: .landscapeCardUrl)
+        landscapeCardThumbhash = try c.decodeIfPresent(String.self, forKey: .landscapeCardThumbhash)
         logoUrl = try c.decodeIfPresent(String.self, forKey: .logoUrl)
         userState = try c.decodeIfPresent(MediaItemUserState.self, forKey: .userState)
         overlaySummary = try c.decodeIfPresent(OverlaySummary.self, forKey: .overlaySummary)
@@ -316,6 +334,7 @@ struct ResolvedSection: Codable, Identifiable {
     let totalCount: Int?
     let isCustom: Bool?
     let customized: Bool?
+    let cardImageStyle: SectionCardImageStyle
     let items: [SectionItem]
 
     /// Whether this section is featured (defaults to false if nil).
@@ -330,6 +349,7 @@ struct ResolvedSection: Codable, Identifiable {
         totalCount: Int?,
         isCustom: Bool?,
         customized: Bool?,
+        cardImageStyle: SectionCardImageStyle = .auto,
         items: [SectionItem]
     ) {
         self.id = id
@@ -340,6 +360,7 @@ struct ResolvedSection: Codable, Identifiable {
         self.totalCount = totalCount
         self.isCustom = isCustom
         self.customized = customized
+        self.cardImageStyle = cardImageStyle
         self.items = items
     }
 
@@ -353,6 +374,7 @@ struct ResolvedSection: Codable, Identifiable {
         totalCount = try c.decodeIfPresent(Int.self, forKey: .totalCount)
         isCustom = try c.decodeIfPresent(Bool.self, forKey: .isCustom)
         customized = try c.decodeIfPresent(Bool.self, forKey: .customized)
+        cardImageStyle = try c.decodeIfPresent(SectionCardImageStyle.self, forKey: .cardImageStyle) ?? .auto
         items = try c.decodeIfPresent([SectionItem].self, forKey: .items) ?? []
     }
 }
@@ -391,6 +413,7 @@ struct SectionsResponse: Codable {
                 totalCount: section.totalCount,
                 isCustom: section.isCustom,
                 customized: section.customized,
+                cardImageStyle: section.cardImageStyle,
                 items: kept
             )
         }

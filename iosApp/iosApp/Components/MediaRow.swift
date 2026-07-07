@@ -10,6 +10,7 @@ import os
 /// rows use 1:1 tiles for audiobook covers.
 enum MediaRowLayout {
     case poster
+    case landscape
     case thumbnail
     case square
 }
@@ -54,7 +55,7 @@ struct MediaRow: View {
     /// marquee retains the last previewed item while focus is in chrome.
     var onItemFocus: ((SectionItem) -> Void)? = nil
     /// Optional width for poster/square cards — Skyline's dense landing
-    /// rows (§5.6) pass a compact width. Episode thumbs are unaffected.
+    /// rows (§5.6) pass a compact width. Wide cards are unaffected.
     var cardWidth: CGFloat? = nil
     /// Optional tvOS-only vertical padding override for the card strip.
     /// Standard rows keep the default breathing room for focus lift.
@@ -194,6 +195,26 @@ struct MediaRow: View {
                             cardWidthOverride: cardWidth,
                             episodeBadge: episodeBadge(for: item)
                         )
+                    case .landscape:
+                        MediaCard(
+                            title: posterTitle(for: item),
+                            posterUrl: landscapeImageUrl(for: item),
+                            thumbhash: landscapeThumbhash(for: item),
+                            year: item.year,
+                            progress: progressValue(for: item),
+                            userState: item.userState,
+                            overlayData: OverlayData.from(item),
+                            landscapeLogoUrl: item.logoUrl,
+                            showLandscapeTitleOverlay: shouldShowLandscapeTitleOverlay(for: item),
+                            action: { onItemTap(item.contentId) },
+                            focusedItemId: rowFocusBinding,
+                            contentId: item.contentId,
+                            onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
+                            onSetWatched: watchedToggleAction(for: item),
+                            aspect: .landscape,
+                            cardWidthOverride: ContinuumTheme.thumbnailCardWidth,
+                            episodeBadge: episodeBadge(for: item)
+                        )
                     case .thumbnail:
                         EpisodeThumbCard(
                             item: item,
@@ -283,6 +304,36 @@ struct MediaRow: View {
     /// — the bare `title` is the episode title (often "TBA" when unannounced).
     private func posterTitle(for item: SectionItem) -> String {
         item.type.lowercased() == "episode" ? (item.seriesTitle ?? item.title) : item.title
+    }
+
+    private func landscapeImageUrl(for item: SectionItem) -> String {
+        if let card = item.landscapeCardUrl, !card.isEmpty {
+            return card
+        }
+        if let backdrop = item.backdropUrl, !backdrop.isEmpty {
+            return backdrop
+        }
+        return ""
+    }
+
+    private func landscapeThumbhash(for item: SectionItem) -> String? {
+        if let card = item.landscapeCardThumbhash, !card.isEmpty {
+            return card
+        }
+        if let backdrop = item.backdropThumbhash, !backdrop.isEmpty {
+            return backdrop
+        }
+        return nil
+    }
+
+    private func shouldShowLandscapeTitleOverlay(for item: SectionItem) -> Bool {
+        if let card = item.landscapeCardUrl, !card.isEmpty {
+            return false
+        }
+        if let backdrop = item.backdropUrl, !backdrop.isEmpty {
+            return false
+        }
+        return true
     }
 
     /// "S2 · E10" badge for an episode rendered as a poster, so new episodes

@@ -59,6 +59,8 @@ struct TVMediaCard: View {
         switch aspect {
         case .poster:
             cardWidth * 1.5
+        case .landscape:
+            cardWidth / ContinuumTheme.backdropAspectRatio
         case .square:
             cardWidth
         }
@@ -161,7 +163,11 @@ struct TVMediaCard: View {
             .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
 
             if let overlayData, overlayStore.enabled {
-                CardOverlays(data: overlayData, prefs: overlayStore.prefs, variant: .poster)
+                CardOverlays(
+                    data: overlayData,
+                    prefs: overlayStore.prefs,
+                    variant: aspect == .landscape ? .wide : .poster
+                )
                     .frame(width: cardWidth, height: cardHeight)
                     .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
             }

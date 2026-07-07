@@ -303,6 +303,24 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Silo.app/Silo"
         SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
 
+  # Focused tvOS unit-test bundle for shared home-section model behavior.
+  # Keep this narrow until the broader Tests/ suite is made tvOS-clean.
+  SiloTVTests:
+    type: bundle.unit-test
+    platform: tvOS
+    sources:
+      - path: Tests/LibraryVisibilityTests.swift
+    dependencies:
+      - target: SiloTV
+    settings:
+      base:
+        PRODUCT_NAME: SiloTVTests
+        GENERATE_INFOPLIST_FILE: "YES"
+        SDKROOT: appletvos
+        SUPPORTED_PLATFORMS: "appletvos appletvsimulator"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/SiloTV.app/SiloTV"
+
 schemes:
   Silo:
     build:
@@ -340,10 +358,13 @@ schemes:
     build:
       targets:
         SiloTV: all
+        SiloTVTests: [test]
     run:
       config: Debug
     test:
       config: Debug
+      targets:
+        - SiloTVTests
     archive:
       config: Release
     analyze:

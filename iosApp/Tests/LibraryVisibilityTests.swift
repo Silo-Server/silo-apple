@@ -1,6 +1,13 @@
 import XCTest
 import Foundation
+
+// Shared by SiloTests and SiloTVTests. Keep assertions limited to symbols that
+// exist in both app targets, typically shared networking/model code.
+#if os(tvOS)
+@testable import SiloTV
+#else
 @testable import Silo
+#endif
 
 final class LibraryVisibilityTests: XCTestCase {
     func testLibrariesResponseOnlyIncludesSupportedAppleLibraryTypes() {
@@ -67,6 +74,63 @@ final class LibraryVisibilityTests: XCTestCase {
         XCTAssertEqual(response.sections.map(\.id), ["continue", "manga-recent"])
         XCTAssertEqual(response.sections[0].items.map(\.contentId), ["m1", "ep1", "a1"])
         XCTAssertTrue(response.sections[1].items.isEmpty)
+    }
+
+    func testSectionsResponseDecodesServerCardImageStyleAndLandscapeArtwork() throws {
+        let json = """
+        {
+          "sections": [
+            {
+              "id": "editorial",
+              "section_type": "recently_added",
+              "title": "Editorial",
+              "card_image_style": "landscape",
+              "items": [
+                {
+                  "content_id": "m1",
+                  "type": "movie",
+                  "title": "A Movie",
+                  "landscape_card_url": "/images/m1-landscape.webp",
+                  "landscape_card_thumbhash": "landscape-thumb",
+                  "backdrop_url": "/images/m1-backdrop.webp",
+                  "backdrop_thumbhash": "backdrop-thumb"
+                }
+              ]
+            }
+          ]
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let response = try decoder.decode(SectionsResponse.self, from: Data(json.utf8))
+
+        XCTAssertEqual(response.sections[0].cardImageStyle, .landscape)
+        XCTAssertEqual(response.sections[0].items[0].landscapeCardUrl, "/images/m1-landscape.webp")
+        XCTAssertEqual(response.sections[0].items[0].landscapeCardThumbhash, "landscape-thumb")
+    }
+
+    func testSectionsResponseDefaultsMissingOrUnknownCardImageStyleToAuto() throws {
+        let json = """
+        {
+          "sections": [
+            { "id": "missing", "section_type": "recent", "title": "Missing", "items": [] },
+            {
+              "id": "unknown",
+              "section_type": "recent",
+              "title": "Unknown",
+              "card_image_style": "banner",
+              "items": []
+            }
+          ]
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let response = try decoder.decode(SectionsResponse.self, from: Data(json.utf8))
+
+        XCTAssertEqual(response.sections.map(\.cardImageStyle), [.auto, .auto])
     }
 
     func testSectionsResponseMemberwiseInitAlsoStripsUnsupportedItems() throws {
