@@ -7258,6 +7258,7 @@ class PlayerViewModel {
                 title: track.title,
                 lang: track.language,
                 codec: track.codec,
+                audioProfile: track.profile,
                 audioChannelsLayout: track.channelLayout,
                 audioChannelCount: track.channels,
                 bitrate: track.bitrate.map(Int64.init),
@@ -7284,6 +7285,7 @@ class PlayerViewModel {
                 title: track.title,
                 lang: track.lang,
                 codec: track.codec,
+                audioProfile: track.audioProfile,
                 audioChannelsLayout: track.audioChannelsLayout,
                 audioChannelCount: track.audioChannelCount,
                 bitrate: track.bitrate,
@@ -7342,8 +7344,7 @@ class PlayerViewModel {
         guard normalizedToken(track.codec)?.replacingOccurrences(of: "-", with: "") == "eac3" else {
             return false
         }
-        let titleToken = normalizedToken(track.title)
-        return titleToken?.contains("atmos") == true || titleToken?.contains("joc") == true
+        return track.hasAtmosHint
     }
 
     private func makeLoopbackSessionSpec(

@@ -19,6 +19,9 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     let title: String?
     let lang: String?
     let codec: String?
+    /// Container/server-reported audio profile (for example Atmos/JOC hints
+    /// that are absent from the channel layout).
+    let audioProfile: String?
     /// Channel layout string (e.g. "stereo", "5.1(side)").
     let audioChannelsLayout: String?
     /// Numeric channel count when the demuxer reported it.
@@ -34,10 +37,55 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     let ffIndex: Int?
     let srcId: Int?
 
+    init(
+        trackId: Int64,
+        kind: Kind,
+        title: String?,
+        lang: String?,
+        codec: String?,
+        audioProfile: String? = nil,
+        audioChannelsLayout: String?,
+        audioChannelCount: Int?,
+        bitrate: Int64?,
+        isDefault: Bool,
+        isForced: Bool,
+        isHearingImpaired: Bool,
+        isVisualImpaired: Bool,
+        isExternal: Bool,
+        isSelected: Bool,
+        ffIndex: Int?,
+        srcId: Int?
+    ) {
+        self.trackId = trackId
+        self.kind = kind
+        self.title = title
+        self.lang = lang
+        self.codec = codec
+        self.audioProfile = audioProfile
+        self.audioChannelsLayout = audioChannelsLayout
+        self.audioChannelCount = audioChannelCount
+        self.bitrate = bitrate
+        self.isDefault = isDefault
+        self.isForced = isForced
+        self.isHearingImpaired = isHearingImpaired
+        self.isVisualImpaired = isVisualImpaired
+        self.isExternal = isExternal
+        self.isSelected = isSelected
+        self.ffIndex = ffIndex
+        self.srcId = srcId
+    }
+
     var id: String { "\(kind.rawValue)-\(trackId)" }
 
     var normalizedTitle: String? {
         Self.normalizedText(title)
+    }
+
+    var hasAtmosHint: Bool {
+        [audioProfile, audioChannelsLayout, title].contains { value in
+            guard let token = Self.normalizedText(value)?.lowercased() else { return false }
+            return token.contains("atmos") || token.contains("joc")
+        }
     }
 
     var normalizedLanguageCode: String? {

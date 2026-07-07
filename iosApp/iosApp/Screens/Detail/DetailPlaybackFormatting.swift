@@ -556,6 +556,16 @@ enum DetailPlaybackFormatting {
         return codec.uppercased()
     }
 
+    /// True when the track carries Dolby Atmos. The server frequently omits it
+    /// from `channelLayout` (5.1 bed only), so also check the human title and
+    /// the embedded stream title for "atmos"/"joc".
+    static func audioTrackIsAtmos(_ track: AudioTrack) -> Bool {
+        [track.profile, track.channelLayout, track.title, track.embeddedTitle].contains { value in
+            guard let lowered = value?.lowercased() else { return false }
+            return lowered.contains("atmos") || lowered.contains("joc")
+        }
+    }
+
     static func normalizedSubtitleCodec(_ codec: String?) -> String? {
         guard let codec = codec?.lowercased(), !codec.isEmpty else { return nil }
         if codec == "srt" || codec.contains("subrip") { return "SRT" }
@@ -578,6 +588,7 @@ enum DetailPlaybackFormatting {
     }
 
     private static func compactAudioLayout(_ track: AudioTrack) -> String? {
+        if audioTrackIsAtmos(track) { return "Atmos" }
         if let layout = nonEmpty(track.channelLayout) {
             let lowered = layout.lowercased()
             if lowered.contains("atmos") { return "Atmos" }

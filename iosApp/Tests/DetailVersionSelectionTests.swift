@@ -280,6 +280,33 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertTrue(options[1].isSelected)
     }
 
+    func testAudioProfileCanMarkAtmosWithoutTitleHint() throws {
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "audio_tracks": [
+              {
+                "codec": "eac3",
+                "profile": "Dolby Digital Plus + Dolby Atmos",
+                "layout": "5.1",
+                "channels": 6,
+                "default": true
+              }
+            ]
+          }
+        ]
+        """)
+
+        let track = try XCTUnwrap(versions[0].audioTracks?.first)
+        XCTAssertEqual(track.profile, "Dolby Digital Plus + Dolby Atmos")
+        XCTAssertTrue(DetailPlaybackFormatting.audioTrackIsAtmos(track))
+        XCTAssertEqual(
+            DetailPlaybackFormatting.audioValueLabel(version: versions[0], selectedAudioTrackIndex: nil),
+            "EAC3 Atmos"
+        )
+    }
+
     func testEffectiveAudioLabelPrefersServerEffectiveTrack() {
         let versions = decodedVersions("""
         [
