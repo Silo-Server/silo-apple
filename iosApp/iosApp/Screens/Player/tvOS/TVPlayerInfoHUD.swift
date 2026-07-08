@@ -1,5 +1,31 @@
 #if os(tvOS)
+import QuartzCore
 import SwiftUI
+
+/// Coalesces duplicate d-pad move commands in the HUD's manual-movement
+/// handlers (the docs/tvos-focus.md bridging pattern). SwiftUI surfaces the
+/// Siri Remote's touch surface as discrete `.onMoveCommand` steps alongside
+/// ring clicks, so one physical gesture — a click with a resting-thumb
+/// micro-swipe, or a short swipe — can deliver two same-direction commands
+/// milliseconds apart. Native focus movement dampens that with gesture
+/// physics; manual row stepping does not, and each duplicate steps a whole
+/// row ("focus skips two items"). Dropping a same-direction command inside
+/// the window keeps one physical input to one step while staying below the
+/// ~100 ms cadence of held-press auto-repeat, so held scrolling is
+/// unaffected.
+struct HUDMoveCommandCoalescer {
+    private var lastDirection: MoveCommandDirection?
+    private var lastTime: CFTimeInterval = 0
+    private static let window: CFTimeInterval = 0.08
+
+    mutating func shouldStep(_ direction: MoveCommandDirection) -> Bool {
+        let now = CACurrentMediaTime()
+        let isDuplicate = direction == lastDirection && (now - lastTime) < Self.window
+        lastDirection = direction
+        lastTime = now
+        return !isDuplicate
+    }
+}
 
 /// Infuse-style floating top-center HUD. A pill-tab header (Info / Video /
 /// Audio / Subtitles / Chapters) selects which content pane renders below.
@@ -254,6 +280,7 @@ private struct HUDScrollablePane<Content: View>: View {
     let content: () -> Content
 
     @State private var scrollTargetIndex: Int = 0
+    @State private var moveCoalescer = HUDMoveCommandCoalescer()
     @FocusState private var isFocused: Bool
 
     init(
@@ -297,6 +324,7 @@ private struct HUDScrollablePane<Content: View>: View {
 
     private func handleMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
         guard isFocused else { return }
+        guard moveCoalescer.shouldStep(direction) else { return }
 
         let nextIndex: Int
         switch direction {
@@ -930,6 +958,7 @@ private struct HUDPickerDialog: View {
     let onClose: () -> Void
 
     @FocusState private var focusedOptionID: String?
+    @State private var moveCoalescer = HUDMoveCommandCoalescer()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -991,6 +1020,7 @@ private struct HUDPickerDialog: View {
     }
 
     private func handleMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
+        guard moveCoalescer.shouldStep(direction) else { return }
         let ids = options.map(\.id)
         let index = focusedOptionID.flatMap { ids.firstIndex(of: $0) }
         switch direction {
@@ -1081,6 +1111,7 @@ private struct SubtitleAppearanceDialog: View {
     @State private var activePicker: HUDPickerPresentation?
     @State private var pickerReturnField: Field?
     @FocusState private var focusedField: Field?
+    @State private var moveCoalescer = HUDMoveCommandCoalescer()
 
     private enum Field: Hashable {
         case close
@@ -1384,6 +1415,7 @@ private struct SubtitleAppearanceDialog: View {
     ]
 
     private func handleRowMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
+        guard moveCoalescer.shouldStep(direction) else { return }
         let index = focusedField.flatMap { Self.rowOrder.firstIndex(of: $0) }
         switch direction {
         case .up:
@@ -1502,6 +1534,7 @@ private struct AudioPane: View {
     let onMoveToTabs: () -> Void
 
     @FocusState private var focusedTrackID: String?
+    @State private var moveCoalescer = HUDMoveCommandCoalescer()
 
     var body: some View {
         HStack(alignment: .top, spacing: 48) {
@@ -1554,6 +1587,7 @@ private struct AudioPane: View {
     }
 
     private func handleTrackMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
+        guard moveCoalescer.shouldStep(direction) else { return }
         let ids = trackIDs
         let index = focusedTrackID.flatMap { ids.firstIndex(of: $0) }
         switch direction {
@@ -1613,6 +1647,7 @@ private struct SubtitlesPane: View {
     @State private var activePicker: HUDPickerPresentation?
     @State private var pickerReturnField: Option?
     @FocusState private var focusedOption: Option?
+    @State private var moveCoalescer = HUDMoveCommandCoalescer()
 
     /// Identity for the options-column rows, used only to restore focus when
     /// a picker dialog, the appearance dialog, or the AI/search menu closes.
@@ -1861,6 +1896,7 @@ private struct SubtitlesPane: View {
     }
 
     private func handleTrackMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
+        guard moveCoalescer.shouldStep(direction) else { return }
         let ids = trackListIDs
         let index = focusedTrackID.flatMap { ids.firstIndex(of: $0) }
         switch direction {
@@ -1890,6 +1926,7 @@ private struct SubtitlesPane: View {
     }
 
     private func handleOptionMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
+        guard moveCoalescer.shouldStep(direction) else { return }
         let options = visibleOptions
         let index = focusedOption.flatMap { options.firstIndex(of: $0) }
         switch direction {
@@ -2066,6 +2103,7 @@ private struct ChaptersPane: View {
     let onMoveToTabs: () -> Void
 
     @FocusState private var focusedIndex: Int?
+    @State private var moveCoalescer = HUDMoveCommandCoalescer()
 
     private var currentIndex: Int? {
         viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
@@ -2103,6 +2141,7 @@ private struct ChaptersPane: View {
     }
 
     private func handleMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
+        guard moveCoalescer.shouldStep(direction) else { return }
         let count = viewModel.chapters.count
         switch direction {
         case .up:
