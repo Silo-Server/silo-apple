@@ -3982,6 +3982,16 @@ class PlayerViewModel {
         let externalSubtitleSnapshot = knownExternalSubtitles
         let selectedSubtitleSnapshot = selectedSubtitleId
         let selectedSecondarySubtitleSnapshot = selectedSecondarySubtitleId
+        // An embedded selection can't be re-established by trackId across
+        // the backend rebuild (ids aren't stable), and after a switch to
+        // transcode the same stream may resurface as a sidecar instead.
+        // Snapshot its attributes for fuzzy re-selection — the same
+        // mechanism interruption recovery and route fallback use.
+        let embeddedSubtitleSelectionSnapshot = selectedSubtitleId
+            .flatMap { selectedId in subtitleTracks.first(where: { $0.trackId == selectedId }) }
+            .flatMap { track in
+                SubtitleTrackIdSpace.isSyntheticNonEmbedded(track.trackId) ? nil : TrackSelectionSnapshot(track: track)
+            }
         let previousQualityId = activeQualityId
         if source == "quality" {
             activeQualityId = qualityId
@@ -4041,14 +4051,23 @@ class PlayerViewModel {
                 )
                 self.pendingExternalSubtitles = session.subtitleUrls ?? externalSubtitleSnapshot
                 self.knownExternalSubtitles = self.pendingExternalSubtitles
-                // Only a sidecar selection is re-established across the
-                // backend rebuild. An AI-live selection is intentionally
-                // dropped here (not restored as sidecar and not as embedded):
-                // its cues can't be replayed, so live re-selection is M4's
-                // responsibility via the live coordinator.
+                // Re-establish the subtitle selection across the backend
+                // rebuild. Sidecar ids are stable (urlIndex-derived) and
+                // restore by id; an embedded selection restores by fuzzy
+                // attribute match — against embedded tracks if the new
+                // route enumerates them, or against the sidecar rows the
+                // server extracts them into (see `appendSidecarTracks`).
+                // An AI-live selection is intentionally dropped here (not
+                // restored as sidecar and not as embedded): its cues can't
+                // be replayed, so live re-selection is M4's responsibility
+                // via the live coordinator.
                 if let selectedSubtitleSnapshot,
                    SubtitleTrackIdSpace.isSidecar(selectedSubtitleSnapshot) {
                     self.pendingSidecarSubtitleTrackId = selectedSubtitleSnapshot
+                }
+                self.pendingRecoveredSubtitleSelection = embeddedSubtitleSelectionSnapshot
+                if embeddedSubtitleSelectionSnapshot != nil {
+                    self.hasExplicitSubtitleChoice = true
                 }
                 self.pendingRecoveredSecondarySubtitleId = selectedSecondarySubtitleSnapshot
                 self.duration = session.durationSeconds ?? selectedVersion.duration ?? self.duration
@@ -6179,6 +6198,24 @@ class PlayerViewModel {
         }
 
         if restoredPrimarySidecar { return }
+
+        // A pre-restart embedded selection can resurface as a sidecar when
+        // the new route has the server extract embedded streams into
+        // `subtitle_urls` (direct → transcode switch). If the embedded
+        // snapshot is still pending — no embedded track matched it in
+        // `applyTrackList` — fuzzy-match it against the sidecar rows.
+        if let snapshot = pendingRecoveredSubtitleSelection,
+           let match = bestTrackMatch(
+               for: snapshot,
+               in: subtitleTracks.filter { SubtitleTrackIdSpace.isSidecar($0.trackId) }
+           ) {
+            pendingRecoveredSubtitleSelection = nil
+            if selectedSubtitleId != match.trackId {
+                selectedSubtitleId = match.trackId
+                applySubtitleTrackSelection(match.trackId)
+            }
+            return
+        }
 
         // If a forced sidecar is present, auto-select it. Forced tracks
         // (for non-native dialogue or song lyrics in anime) are meant
