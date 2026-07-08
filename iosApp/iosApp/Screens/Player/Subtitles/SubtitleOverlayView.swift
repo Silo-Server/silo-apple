@@ -34,22 +34,17 @@ private func withoutImplicitLayerAnimation(_ updates: () -> Void) {
 }
 
 /// One positioned bitmap subtitle cue. `frame` is the image rect in
-/// overlay points (top-left origin). `backgroundFrame` is the
-/// preference-driven backing box around it — equal to `frame` when no
-/// box is drawn. All layout math lives with the caller; the overlay
-/// only assigns layer geometry.
+/// overlay points (top-left origin). Bitmap cues render exactly as
+/// authored — no preference-driven restyling. All layout math lives
+/// with the caller; the overlay only assigns layer geometry.
 struct BitmapCuePlacement {
     let image: CGImage
     let frame: CGRect
-    let backgroundFrame: CGRect
-    let backgroundColor: CGColor?
-    let cornerRadius: CGFloat
 }
 
-/// Grow/shrink the host's sublayer list to exactly `count` cue layer
-/// pairs: a container (the preference-driven backing box) holding one
-/// image sublayer. Cue images are pre-cropped to their frames, so
-/// `.resize` maps the image 1:1 onto its layer. Callers wrap this in a
+/// Grow/shrink the host's sublayer list to exactly `count` cue image
+/// layers. Cue images are pre-cropped to their frames, so `.resize`
+/// maps the image 1:1 onto its layer. Callers wrap this in a
 /// no-animation transaction.
 private func syncBitmapCueLayerCount(_ count: Int, host: CALayer) {
     var current = host.sublayers?.count ?? 0
@@ -58,32 +53,18 @@ private func syncBitmapCueLayerCount(_ count: Int, host: CALayer) {
         current -= 1
     }
     while current < count {
-        let container = CALayer()
-        container.isOpaque = false
-        container.masksToBounds = false
         let image = CALayer()
         image.contentsGravity = .resize
         image.isOpaque = false
-        container.addSublayer(image)
-        host.addSublayer(container)
+        host.addSublayer(image)
         current += 1
     }
 }
 
-/// Assign one placement to its container/image layer pair. The image
-/// frame is expressed in the container's coordinate space.
-private func applyBitmapCuePlacement(_ placement: BitmapCuePlacement, to container: CALayer) {
-    container.frame = placement.backgroundFrame
-    container.backgroundColor = placement.backgroundColor
-    container.cornerRadius = placement.cornerRadius
-    guard let imageLayer = container.sublayers?.first else { return }
+/// Assign one placement to its image layer.
+private func applyBitmapCuePlacement(_ placement: BitmapCuePlacement, to imageLayer: CALayer) {
     imageLayer.contents = placement.image
-    imageLayer.frame = CGRect(
-        x: placement.frame.minX - placement.backgroundFrame.minX,
-        y: placement.frame.minY - placement.backgroundFrame.minY,
-        width: placement.frame.width,
-        height: placement.frame.height
-    )
+    imageLayer.frame = placement.frame
 }
 
 private func removeBitmapCueLayers(host: CALayer) {
