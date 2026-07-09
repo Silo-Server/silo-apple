@@ -170,6 +170,32 @@ final class LibraryVisibilityTests: XCTestCase {
         XCTAssertEqual(wide.bottom, 24)
     }
 
+    func testLiveCardOverlaysDoNotReserveSpaceForEmptyLabels() throws {
+        let definition = try XCTUnwrap(OverlayRegistry.def(for: .showStatus))
+        let prefs = OverlaySchema.buildDefaults()
+        let preset = OverlayPresets.preset(prefs.preset)
+        var data = OverlayData()
+
+        data.showStatus = " \n "
+        XCTAssertNil(OverlayBadgeRenderState.resolve(
+            def: definition,
+            data: data,
+            prefs: prefs,
+            preset: preset
+        ))
+
+        data.showStatus = "Continuing"
+        XCTAssertEqual(
+            OverlayBadgeRenderState.resolve(
+                def: definition,
+                data: data,
+                prefs: prefs,
+                preset: preset
+            )?.label,
+            "Continuing"
+        )
+    }
+
     func testSectionsResponseMemberwiseInitAlsoStripsUnsupportedItems() throws {
         let itemJson = """
         { "content_id": "e1", "type": "ebook", "title": "An Ebook" }

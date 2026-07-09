@@ -110,15 +110,18 @@ struct OverlayBadgeRenderState: Equatable {
     let accentColor: Color?
 
     /// Resolve the badge as it would appear on a real card. Returns
-    /// `nil` when the overlay's data extractor returns no label —
-    /// signalling that the badge should not render.
+    /// `nil` when the overlay's data extractor returns no visible label —
+    /// signalling that the badge should not render or reserve stack space.
     static func resolve(
         def: OverlayDef,
         data: OverlayData,
         prefs: CardOverlayPrefs,
         preset: OverlayPreset
     ) -> OverlayBadgeRenderState? {
-        guard let label = def.getValue(data) else { return nil }
+        guard let label = def.getValue(data),
+              !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
         return build(def: def, label: label, data: data, prefs: prefs, preset: preset)
     }
 
