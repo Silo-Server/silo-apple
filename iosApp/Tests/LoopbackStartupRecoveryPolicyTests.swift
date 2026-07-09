@@ -2,6 +2,114 @@ import XCTest
 @testable import Silo
 
 final class LoopbackStartupRecoveryPolicyTests: XCTestCase {
+    func testAudioSessionActivationStateRejectsStaleCompletionAndDeactivates() {
+        var state = AVPlayerAudioSessionActivationState()
+        let first = state.beginActivation()
+        let second = state.beginActivation()
+
+        XCTAssertTrue(first.needsActivation)
+        XCTAssertTrue(second.needsActivation)
+        XCTAssertFalse(state.finishActivation(id: first.id, succeeded: true))
+        XCTAssertTrue(state.finishActivation(id: second.id, succeeded: true))
+        XCTAssertTrue(state.cancelAndDeactivate())
+        XCTAssertFalse(state.isCurrent(id: second.id))
+    }
+
+    func testAudioSessionCoordinatorRunsBlockingOperationsOffMainThread() {
+        let activationFinished = expectation(description: "activation finished")
+        let deactivationFinished = expectation(description: "deactivation finished")
+        var activationWasOffMain = false
+        var deactivationWasOffMain = false
+        let coordinator = AVPlayerAudioSessionCoordinator(
+            workQueue: DispatchQueue(label: "test.audio-session.work"),
+            callbackQueue: .main,
+            activation: {
+                activationWasOffMain = !Thread.isMainThread
+            },
+            deactivation: {
+                deactivationWasOffMain = !Thread.isMainThread
+                deactivationFinished.fulfill()
+            }
+        )
+
+        coordinator.activate { error in
+            XCTAssertNil(error)
+            XCTAssertTrue(Thread.isMainThread)
+            activationFinished.fulfill()
+        }
+        wait(for: [activationFinished], timeout: 2)
+        coordinator.deactivate()
+        wait(for: [deactivationFinished], timeout: 2)
+
+        XCTAssertTrue(activationWasOffMain)
+        XCTAssertTrue(deactivationWasOffMain)
+    }
+
+    func testItemDeathPolicyRequiresConfirmationAndCapsReloads() {
+        var state = LoopbackItemDeathRecoveryState()
+        XCTAssertEqual(
+            state.record(position: 100, evidenceWeight: 1, userPaused: false),
+            .waitForConfirmation
+        )
+        XCTAssertEqual(
+            state.record(position: 100.5, evidenceWeight: 1, userPaused: false),
+            .reload(attempt: 1)
+        )
+        XCTAssertEqual(
+            state.record(position: 100.5, evidenceWeight: 2, userPaused: false),
+            .reload(attempt: 2)
+        )
+        XCTAssertEqual(
+            state.record(position: 100.5, evidenceWeight: 2, userPaused: false),
+            .reload(attempt: 3)
+        )
+        XCTAssertEqual(
+            state.record(position: 100.5, evidenceWeight: 2, userPaused: false),
+            .escalate
+        )
+    }
+
+    func testItemDeathPolicyNeverReloadsUserPause() {
+        var state = LoopbackItemDeathRecoveryState()
+        XCTAssertEqual(
+            state.record(position: 100, evidenceWeight: 2, userPaused: true),
+            .waitForConfirmation
+        )
+    }
+
+    func testItemDeathPolicyResetsAtDifferentPlaybackPosition() {
+        var state = LoopbackItemDeathRecoveryState()
+        XCTAssertEqual(
+            state.record(position: 100, evidenceWeight: 2, userPaused: false),
+            .reload(attempt: 1)
+        )
+        XCTAssertEqual(
+            state.record(position: 110, evidenceWeight: 2, userPaused: false),
+            .reload(attempt: 1)
+        )
+    }
+
+    func testItemDeathSignatures() {
+        XCTAssertTrue(
+            LoopbackItemDeathRecoveryState.isItemDeath(
+                statusCode: -12889,
+                errorDescription: ""
+            )
+        )
+        XCTAssertTrue(
+            LoopbackItemDeathRecoveryState.isItemDeath(
+                statusCode: nil,
+                errorDescription: "No response for media file"
+            )
+        )
+        XCTAssertFalse(
+            LoopbackItemDeathRecoveryState.isItemDeath(
+                statusCode: -12888,
+                errorDescription: "Playlist File unchanged"
+            )
+        )
+    }
+
     private func verdict(
         sinceProgress: Double,
         sinceStart: Double,

@@ -59,6 +59,64 @@ enum DVPreVideoAudioTailPolicy {
     }
 }
 
+/// Resolves the duration written for a look-behind video packet. Matroska
+/// commonly supplies a constant `DefaultDuration` even when its millisecond
+/// block timestamps produce a 41/42 ms DTS cadence. Prefer the forward DTS
+/// delta whenever it is usable so movenc's accumulated track duration cannot
+/// drift past the next real DTS at a fragment boundary.
+enum LoopbackVideoSampleDurationPolicy {
+    static func resolve(
+        existingDuration: Int64,
+        dts: Int64,
+        nextDTS: Int64?,
+        fallback: Int64
+    ) -> Int64 {
+        if let nextDTS, dts != Int64.min, nextDTS != Int64.min {
+            let (delta, overflow) = nextDTS.subtractingReportingOverflow(dts)
+            if !overflow, delta > 0 {
+                return delta
+            }
+        }
+        if existingDuration > 0 {
+            return existingDuration
+        }
+        return max(fallback, 1)
+    }
+}
+
+enum LoopbackVODPreGateAudioBufferPolicy {
+    static let maxPackets = 512
+    static let maxBytes = 8 * 1024 * 1024
+
+    static func canBuffer(
+        isRestart: Bool,
+        isSelectedAudio: Bool,
+        isWaitingForVideoGate: Bool,
+        bufferedPackets: Int,
+        bufferedBytes: Int,
+        packetBytes: Int,
+        maxPackets: Int = Self.maxPackets,
+        maxBytes: Int = Self.maxBytes
+    ) -> Bool {
+        guard isRestart, isSelectedAudio, isWaitingForVideoGate else { return false }
+        let bytes = max(packetBytes, 0)
+        return bufferedPackets < maxPackets && bufferedBytes + bytes <= maxBytes
+    }
+
+    static func shouldDropReplayedPacket(
+        dts: Int64,
+        duration: Int64,
+        gateDTS: Int64
+    ) -> Bool {
+        let span = max(duration, 0)
+        if span > 0 {
+            let (end, overflow) = dts.addingReportingOverflow(span)
+            return !overflow && end <= gateDTS
+        }
+        return dts < gateDTS
+    }
+}
+
 enum DVTrueHDMajorSyncScanner {
     private static let syncWord: [UInt8] = [0xF8, 0x72, 0x6F, 0xBA]
 
@@ -600,6 +658,14 @@ final class LoopbackSegmentWriter {
     /// duplicate audio DTS before handing packets to the MP4 muxer.
     private var lastMuxedDTSByStream: [Int32: Int64] = [:]
     private var lastMuxedPTSByStream: [Int32: Int64] = [:]
+    /// One-packet look-behind for video duration telescoping. The next
+    /// normalized video DTS supplies the pending packet's real duration.
+    private var pendingMuxVideoPacket: UnsafeMutablePointer<AVPacket>?
+    /// Audio packets encountered while a video packet is held. Deferring
+    /// them preserves the original video-before-audio submission order; the
+    /// queue is drained immediately after the held video is finalized.
+    private var pendingMuxAudioPackets: [UnsafeMutablePointer<AVPacket>] = []
+    private var lastResolvedVideoDurationByStream: [Int32: Int64] = [:]
     /// When the loopback starts from a resume point, FFmpeg seeks the source
     /// but source packet timestamps remain absolute. Subtract the first video
     /// timestamp so the generated localhost playlist begins at player time 0.
@@ -963,6 +1029,13 @@ final class LoopbackSegmentWriter {
     /// can size the decode-ramp seam. Mux thread only.
     private var vodPrerollDroppedVideo = 0
     private var vodPrerollDroppedAudio = 0
+    /// Selected-audio packets encountered while a restarted VOD producer is
+    /// still scanning forward to its accepted video keyframe. Wide-interleave
+    /// sources can put the matching audio earlier in file order; replaying it
+    /// after the gate opens prevents a persistent post-recovery A/V offset.
+    private var vodPreGateAudioPackets: [UnsafeMutablePointer<AVPacket>] = []
+    private var vodPreGateAudioBytes = 0
+    private var vodPreGateAudioOverflowLogged = false
 
     /// FFmpeg's mp4 muxer can only build the AC-3/E-AC-3/TrueHD sample-entry
     /// box (dac3/dec3/dmlp) after it has PARSED an audio packet, so under
@@ -1064,15 +1137,108 @@ final class LoopbackSegmentWriter {
         // continuous run's interleaver assigns that same overlapping frame
         // forward. Dropping it would lose exactly one frame per restart
         // (and break restart byte-identity with the continuous run).
-        let duration = max(0, pkt.pointee.duration)
-        let drops: Bool
-        if duration > 0 {
-            drops = pkt.pointee.dts + duration <= threshold
-        } else {
-            drops = pkt.pointee.dts < threshold
-        }
+        let drops = LoopbackVODPreGateAudioBufferPolicy.shouldDropReplayedPacket(
+            dts: pkt.pointee.dts,
+            duration: pkt.pointee.duration,
+            gateDTS: threshold
+        )
         if drops { vodPrerollDroppedAudio += 1 }
         return drops
+    }
+
+    private func bufferVODPreGateAudioIfNeeded(
+        pkt: UnsafeMutablePointer<AVPacket>,
+        inputIdx: Int
+    ) -> Bool {
+        let isRestart = vodActive && vodEffectiveBaseIndex > 0
+        let isSelectedAudio = inputIdx == selectedAudioStreamIndex
+        let waiting = vodAwaitingRestartKeyframe && vodFirstRoutedVideoDts == nil
+        let packetBytes = max(0, Int(pkt.pointee.size))
+        let canBuffer = LoopbackVODPreGateAudioBufferPolicy.canBuffer(
+            isRestart: isRestart,
+            isSelectedAudio: isSelectedAudio,
+            isWaitingForVideoGate: waiting,
+            bufferedPackets: vodPreGateAudioPackets.count,
+            bufferedBytes: vodPreGateAudioBytes,
+            packetBytes: packetBytes
+        )
+        guard canBuffer else {
+            if isRestart, isSelectedAudio, waiting,
+               !vodPreGateAudioOverflowLogged {
+                vodPreGateAudioOverflowLogged = true
+                print(
+                    "[CMP-AVP] vod pre-gate audio buffer full "
+                    + "packets=\(vodPreGateAudioPackets.count) "
+                    + "bytes=\(vodPreGateAudioBytes); dropping further preroll"
+                )
+            }
+            return false
+        }
+        guard let held = av_packet_clone(pkt) else { return false }
+        vodPreGateAudioPackets.append(held)
+        vodPreGateAudioBytes += packetBytes
+        return true
+    }
+
+    private func replayVODPreGateAudioPacketsIfNeeded() throws {
+        guard !vodAwaitingRestartKeyframe,
+              vodFirstRoutedVideoDts != nil,
+              !vodPreGateAudioPackets.isEmpty,
+              let outIdx = streamMap[selectedAudioStreamIndex] else { return }
+
+        var packets = vodPreGateAudioPackets.sorted {
+            Self.packetOrderingTimestamp($0) < Self.packetOrderingTimestamp($1)
+        }
+        let bufferedBytes = vodPreGateAudioBytes
+        vodPreGateAudioPackets.removeAll()
+        vodPreGateAudioBytes = 0
+
+        var replayed = 0
+        var dropped = 0
+        defer {
+            for packet in packets {
+                var free: UnsafeMutablePointer<AVPacket>? = packet
+                av_packet_free(&free)
+            }
+            packets.removeAll()
+        }
+
+        for packet in packets {
+            if vodShouldDropPacket(pkt: packet, inputIdx: selectedAudioStreamIndex) {
+                dropped += 1
+                continue
+            }
+            if let prefedMax = vodPrefedAudioMaxDts {
+                let dts = Self.packetOrderingTimestamp(packet)
+                if dts != Int64.min, dts <= prefedMax {
+                    dropped += 1
+                    continue
+                }
+                vodPrefedAudioMaxDts = nil
+            }
+
+            if selectedAudioOutputMode != .copy {
+                try transcodeAudioPacket(packet)
+            } else {
+                rewritePacketForOutput(
+                    pkt: packet,
+                    outStreamIndex: Int32(outIdx),
+                    inputStreamIndex: selectedAudioStreamIndex
+                )
+                try writePacketToMux(packet)
+            }
+            replayed += 1
+        }
+        print(
+            "[CMP-AVP] vod pre-gate audio replay buffered=\(packets.count) "
+            + "bytes=\(bufferedBytes) replayed=\(replayed) dropped=\(dropped)"
+        )
+    }
+
+    private static func packetOrderingTimestamp(
+        _ packet: UnsafeMutablePointer<AVPacket>
+    ) -> Int64 {
+        packet.pointee.dts != Int64.min ? packet.pointee.dts : packet.pointee.pts
     }
 
     private func prewarmVODCueIndexAndReseek() {
@@ -1418,22 +1584,21 @@ final class LoopbackSegmentWriter {
 
     /// Routes a video packet through the plan cutter and flushes the open
     /// fragment when the packet opens a new segment. Runs BEFORE
-    /// `rewritePacketForOutput` so the packet's PTS is still on the source
-    /// video time base — the same axis as the plan boundaries.
-    private func vodCutBeforeVideoPacketIfNeeded(pkt: UnsafeMutablePointer<AVPacket>) throws {
+    /// `rewritePacketForOutput` changes the packet to the output axis, so the
+    /// caller captures source PTS/keyframe state first and passes them here.
+    private func vodCutBeforeVideoPacketIfNeeded(sourcePTS: Int64, isKeyframe: Bool) throws {
         guard vodActive, vodCutter != nil else { return }
-        let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
-        let target = vodCutter!.index(pts: pkt.pointee.pts, isKeyframe: isKeyframe)
+        let target = vodCutter!.index(pts: sourcePTS, isKeyframe: isKeyframe)
         // Progressive anchor: request an interim fragment flush roughly
-        // every 1.5 s of routed video. The flush runs after this packet is
-        // written (main loop), so the fragment includes it.
-        if vodProgressiveAccumulating, pkt.pointee.pts != Int64.min {
+        // every 1.5 s of routed video. The look-behind path performs the
+        // flush after this sample is actually written, so it is included.
+        if vodProgressiveAccumulating, sourcePTS != Int64.min {
             if vodLastInterimFlushPts == Int64.min {
-                vodLastInterimFlushPts = pkt.pointee.pts
-            } else if pkt.pointee.pts - vodLastInterimFlushPts
+                vodLastInterimFlushPts = sourcePTS
+            } else if sourcePTS - vodLastInterimFlushPts
                         >= ticks(forSeconds: 1.5, timeBase: vodVideoTimeBase) {
                 vodInterimFlushRequested = true
-                vodLastInterimFlushPts = pkt.pointee.pts
+                vodLastInterimFlushPts = sourcePTS
             }
         }
         if !vodHasRoutedVideo {
@@ -1692,6 +1857,10 @@ final class LoopbackSegmentWriter {
                     continue
                 }
 
+                if bufferVODPreGateAudioIfNeeded(pkt: pkt, inputIdx: inputIdx) {
+                    continue
+                }
+
                 if vodActive, vodShouldDropPacket(pkt: pkt, inputIdx: inputIdx) {
                     continue
                 }
@@ -1731,35 +1900,31 @@ final class LoopbackSegmentWriter {
                     } else {
                         try transformVideoPacketIfNeeded(pkt)
                     }
-                    try vodCutBeforeVideoPacketIfNeeded(pkt: pkt)
                 }
 
                 if isCancelled {
                     continue
                 }
-                rewritePacketForOutput(pkt: pkt, outStreamIndex: Int32(outIdx),
-                                       inputStreamIndex: inputIdx)
-                let wr: Int32
-                if LoopbackSegmentWriter.traceThroughput {
-                    let started = CFAbsoluteTimeGetCurrent()
-                    wr = av_interleaved_write_frame(outputCtx, pkt)
-                    throughputTiming.muxMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
-                    throughputTiming.muxPackets += 1
+                if inputIdx == videoInputStreamIndex {
+                    try routeVideoPacketToMux(
+                        pkt,
+                        outStreamIndex: Int32(outIdx),
+                        inputStreamIndex: inputIdx
+                    )
+                    try replayVODPreGateAudioPacketsIfNeeded()
                 } else {
-                    wr = av_interleaved_write_frame(outputCtx, pkt)
-                }
-                try evaluateMuxWriteResult(wr)
-                if vodActive, !initSegmentWritten {
-                    try primeVODMoovAfterFirstAudioIfNeeded()
-                }
-                if vodInterimFlushRequested {
-                    vodInterimFlushRequested = false
-                    performVODInterimFragmentFlush()
+                    rewritePacketForOutput(
+                        pkt: pkt,
+                        outStreamIndex: Int32(outIdx),
+                        inputStreamIndex: inputIdx
+                    )
+                    try writePacketToMux(pkt)
                 }
             }
 
             if !isCancelled {
                 try finishTranscodedAudio()
+                try flushPendingMuxVideoPacket(nextDTS: nil)
                 if vodActive {
                     // The trailer flushes the final open fragment; name it.
                     vodClosingSegmentIndex = vodOpenSegmentIndex
@@ -2943,22 +3108,128 @@ final class LoopbackSegmentWriter {
             }
             guard let outIdx = streamMap[inIdx] else { continue }
             if vodActive, vodShouldDropPacket(pkt: pending, inputIdx: inIdx) { continue }
-            if inIdx == videoInputStreamIndex {
-                try vodCutBeforeVideoPacketIfNeeded(pkt: pending)
-            }
-            rewritePacketForOutput(pkt: pending,
-                                   outStreamIndex: Int32(outIdx),
-                                   inputStreamIndex: inIdx)
-            let wr = av_interleaved_write_frame(outCtx, pending)
             do {
-                try evaluateMuxWriteResult(wr)
+                if inIdx == videoInputStreamIndex {
+                    try routeVideoPacketToMux(
+                        pending,
+                        outStreamIndex: Int32(outIdx),
+                        inputStreamIndex: inIdx
+                    )
+                } else {
+                    rewritePacketForOutput(
+                        pkt: pending,
+                        outStreamIndex: Int32(outIdx),
+                        inputStreamIndex: inIdx
+                    )
+                    try writePacketToMux(pending)
+                }
             } catch {
                 Self.logger.error("pending \(label, privacy: .public) write failed")
                 throw error
             }
-            if vodActive, !initSegmentWritten {
-                try primeVODMoovAfterFirstAudioIfNeeded()
+        }
+    }
+
+    /// Rewrites and holds one video packet until the next normalized video
+    /// DTS is known. The previous packet is written before the current
+    /// sample's keyframe cut, keeping it in its original segment.
+    private func routeVideoPacketToMux(
+        _ pkt: UnsafeMutablePointer<AVPacket>,
+        outStreamIndex: Int32,
+        inputStreamIndex: Int
+    ) throws {
+        let sourcePTS = pkt.pointee.pts
+        let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
+        rewritePacketForOutput(
+            pkt: pkt,
+            outStreamIndex: outStreamIndex,
+            inputStreamIndex: inputStreamIndex
+        )
+
+        try flushPendingMuxVideoPacket(nextDTS: pkt.pointee.dts)
+        try vodCutBeforeVideoPacketIfNeeded(sourcePTS: sourcePTS, isKeyframe: isKeyframe)
+
+        guard let held = av_packet_clone(pkt) else {
+            throw LoopbackWriterError.allocPacket
+        }
+        pendingMuxVideoPacket = held
+    }
+
+    private func flushPendingMuxVideoPacket(nextDTS: Int64?) throws {
+        guard let pending = pendingMuxVideoPacket else { return }
+        pendingMuxVideoPacket = nil
+        defer {
+            var free: UnsafeMutablePointer<AVPacket>? = pending
+            av_packet_free(&free)
+        }
+
+        let streamIndex = pending.pointee.stream_index
+        let fallback = lastResolvedVideoDurationByStream[streamIndex] ?? 1
+        let resolved = LoopbackVideoSampleDurationPolicy.resolve(
+            existingDuration: pending.pointee.duration,
+            dts: pending.pointee.dts,
+            nextDTS: nextDTS,
+            fallback: fallback
+        )
+        pending.pointee.duration = resolved
+        lastResolvedVideoDurationByStream[streamIndex] = resolved
+        try writePacketToMuxImmediately(pending, performPostWriteActions: false)
+        try flushPendingMuxAudioPackets(performPostWriteActions: false)
+        try performMuxPostWriteActions()
+    }
+
+    private func writePacketToMux(_ pkt: UnsafeMutablePointer<AVPacket>) throws {
+        if pendingMuxVideoPacket != nil {
+            guard let held = av_packet_clone(pkt) else {
+                throw LoopbackWriterError.allocPacket
             }
+            pendingMuxAudioPackets.append(held)
+            return
+        }
+        try writePacketToMuxImmediately(pkt)
+    }
+
+    private func flushPendingMuxAudioPackets(performPostWriteActions: Bool) throws {
+        while !pendingMuxAudioPackets.isEmpty {
+            let pending = pendingMuxAudioPackets.removeFirst()
+            defer {
+                var free: UnsafeMutablePointer<AVPacket>? = pending
+                av_packet_free(&free)
+            }
+            try writePacketToMuxImmediately(
+                pending,
+                performPostWriteActions: performPostWriteActions
+            )
+        }
+    }
+
+    private func writePacketToMuxImmediately(
+        _ pkt: UnsafeMutablePointer<AVPacket>,
+        performPostWriteActions: Bool = true
+    ) throws {
+        guard let outputCtx else { return }
+        let wr: Int32
+        if Self.traceThroughput {
+            let started = CFAbsoluteTimeGetCurrent()
+            wr = av_interleaved_write_frame(outputCtx, pkt)
+            throughputTiming.muxMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
+            throughputTiming.muxPackets += 1
+        } else {
+            wr = av_interleaved_write_frame(outputCtx, pkt)
+        }
+        try evaluateMuxWriteResult(wr)
+        if performPostWriteActions {
+            try performMuxPostWriteActions()
+        }
+    }
+
+    private func performMuxPostWriteActions() throws {
+        if vodActive, !initSegmentWritten {
+            try primeVODMoovAfterFirstAudioIfNeeded()
+        }
+        if vodInterimFlushRequested {
+            vodInterimFlushRequested = false
+            performVODInterimFragmentFlush()
         }
     }
 
@@ -4273,9 +4544,8 @@ final class LoopbackSegmentWriter {
             encodedPacket.pointee.stream_index = Int32(audioOutputStreamIndex)
             av_packet_rescale_ts(encodedPacket, encoderCtx.pointee.time_base, outStream.pointee.time_base)
             normalizeMuxerTimestampsIfNeeded(pkt: encodedPacket, outStream: outStream)
-            let wr = av_interleaved_write_frame(outCtx, encodedPacket)
             do {
-                try evaluateMuxWriteResult(wr)
+                try writePacketToMux(encodedPacket)
             } catch {
                 av_packet_free(&packet)
                 throw error
@@ -5997,6 +6267,22 @@ final class LoopbackSegmentWriter {
     // MARK: - Teardown
 
     private func teardown() {
+        if let pendingMuxVideoPacket {
+            var free: UnsafeMutablePointer<AVPacket>? = pendingMuxVideoPacket
+            av_packet_free(&free)
+            self.pendingMuxVideoPacket = nil
+        }
+        for pending in pendingMuxAudioPackets {
+            var free: UnsafeMutablePointer<AVPacket>? = pending
+            av_packet_free(&free)
+        }
+        pendingMuxAudioPackets.removeAll()
+        for pending in vodPreGateAudioPackets {
+            var free: UnsafeMutablePointer<AVPacket>? = pending
+            av_packet_free(&free)
+        }
+        vodPreGateAudioPackets.removeAll()
+        vodPreGateAudioBytes = 0
         for pending in pendingVideoPackets {
             var free: UnsafeMutablePointer<AVPacket>? = pending
             av_packet_free(&free)
@@ -6061,6 +6347,7 @@ final class LoopbackSegmentWriter {
         }
         lastMuxedDTSByStream.removeAll()
         lastMuxedPTSByStream.removeAll()
+        lastResolvedVideoDurationByStream.removeAll()
     }
 
 }
@@ -6103,6 +6390,7 @@ private func ensureAudioFrameSize(codecpar: UnsafeMutablePointer<AVCodecParamete
 enum LoopbackWriterError: Error {
     case allocInput
     case allocOutput
+    case allocPacket
     case openInput(Int32)
     case seekInput(Int32)
     case findStreamInfo

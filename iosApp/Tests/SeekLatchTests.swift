@@ -2,6 +2,26 @@ import XCTest
 @testable import Silo
 
 final class SeekLatchTests: XCTestCase {
+    func testAVPlayerSeekDeadlineCompletesOnlyActiveGeneration() {
+        var state = AVPlayerSeekDeadlineState()
+        let first = state.begin()
+        let second = state.begin()
+
+        XCTAssertFalse(state.complete(first))
+        XCTAssertEqual(state.activeID, second)
+        XCTAssertTrue(state.complete(second))
+        XCTAssertNil(state.activeID)
+    }
+
+    func testAVPlayerSeekDeadlineCancelInvalidatesLateCompletion() {
+        var state = AVPlayerSeekDeadlineState()
+        let id = state.begin()
+        state.cancel()
+
+        XCTAssertNil(state.activeID)
+        XCTAssertFalse(state.complete(id))
+    }
+
     func testFirstSubmitStartsWorker() {
         let latch = SeekLatch()
         XCTAssertTrue(latch.submit(10))

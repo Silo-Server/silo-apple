@@ -40,6 +40,17 @@ import AppKit
 import OSLog
 import VideoToolbox
 
+enum CoreMediaDemuxInterruptPolicy {
+    static func shouldAbort(
+        cancelled: Bool,
+        playbackStopped: Bool,
+        secondsSinceProgress: CFTimeInterval,
+        timeoutSeconds: CFTimeInterval
+    ) -> Bool {
+        cancelled || (!playbackStopped && secondsSinceProgress > timeoutSeconds)
+    }
+}
+
 final class PlayerCore: NSObject {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app.tvos",
@@ -1476,6 +1487,11 @@ final class PlayerCore: NSObject {
         guard !isDisposed else { return }
         userPaused = false
         wasPlayingWhenInterrupted = false
+        // A deliberate pause lets the demux queues fill and then throttles
+        // reads. Without rearming this clock, the first read after a pause
+        // longer than `demuxIOTimeoutSeconds` is immediately killed by the
+        // interrupt callback as a false I/O wedge (AVERROR_EXIT).
+        demuxLastProgressWall = CACurrentMediaTime()
         let time = currentPlaybackTime()
         setPlaybackTimeline(time: time, rate: currentRate)
         audioOutput.setRate(currentRate)
@@ -3166,9 +3182,13 @@ final class PlayerCore: NSObject {
         ctx.pointee.interrupt_callback.callback = { opaque in
             guard let opaque else { return 0 }
             let player = Unmanaged<PlayerCore>.fromOpaque(opaque).takeUnretainedValue()
-            if player.isCancelled { return 1 }
             let elapsed = CACurrentMediaTime() - player.demuxLastProgressWall
-            if elapsed > player.demuxIOTimeoutSeconds {
+            if CoreMediaDemuxInterruptPolicy.shouldAbort(
+                cancelled: player.isCancelled,
+                playbackStopped: player.playbackClock.rate == 0,
+                secondsSinceProgress: elapsed,
+                timeoutSeconds: player.demuxIOTimeoutSeconds
+            ) {
                 return 1 // Abort blocking read — demux loop surfaces as error.
             }
             return 0

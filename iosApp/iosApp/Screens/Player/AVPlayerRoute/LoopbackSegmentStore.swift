@@ -403,7 +403,8 @@ final class LoopbackSegmentStore {
     func readProgressiveSegment(
         named name: String,
         from offset: Int,
-        deadline: Date
+        deadline: Date,
+        waitForStart: Bool = false
     ) -> (Data, Bool) {
         lock.lock()
         defer { lock.unlock() }
@@ -420,6 +421,13 @@ final class LoopbackSegmentStore {
                 return (data.subdata(in: offset..<data.count), true)
             }
             guard let partial = progressiveSegments[name] else {
+                if waitForStart, !evictedResources.contains(name) {
+                    guard Date() < deadline else {
+                        return (Data(), false)
+                    }
+                    lock.wait(until: deadline)
+                    continue
+                }
                 return (Data(), true)
             }
             if offset > partial.count {

@@ -2814,6 +2814,15 @@ class PlayerViewModel {
         activeNotice = nil
         remoteDismissToken = nil
         hideControlsTask?.cancel()
+        skipDebounceTask?.cancel()
+        skipDebounceTask = nil
+        seekFilterTimeoutTask?.cancel()
+        seekFilterTimeoutTask = nil
+        tearDownHoldSeek()
+        isScrubbing = false
+        scrubPreviewTime = currentTime
+        seekOriginTime = nil
+        seekTargetTime = nil
         showControls = false
         showNextUpScreen = false
         nextUpEpisode = nil

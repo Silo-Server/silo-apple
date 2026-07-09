@@ -8,6 +8,194 @@ import UIKit
 import AppKit
 #endif
 
+struct AVPlayerSeekDeadlineState {
+    private var nextID: UInt64 = 0
+    private(set) var activeID: UInt64?
+
+    mutating func begin() -> UInt64 {
+        nextID &+= 1
+        if nextID == 0 { nextID = 1 }
+        activeID = nextID
+        return nextID
+    }
+
+    mutating func complete(_ id: UInt64) -> Bool {
+        guard activeID == id else { return false }
+        activeID = nil
+        return true
+    }
+
+    mutating func cancel() {
+        activeID = nil
+    }
+}
+
+struct LoopbackItemDeathRecoveryState {
+    enum Action: Equatable {
+        case waitForConfirmation
+        case reload(attempt: Int)
+        case escalate
+    }
+
+    static let matchingPositionToleranceSeconds = 2.0
+    static let evidenceRequired = 2
+    static let maximumReloads = 3
+
+    private var anchorPosition: Double?
+    private var evidence = 0
+    private var reloads = 0
+
+    static func isItemDeath(statusCode: Int?, errorDescription: String) -> Bool {
+        statusCode == -12889
+            || statusCode == -15628
+            || errorDescription.contains("-12889")
+            || errorDescription.contains("No response for media file")
+    }
+
+    mutating func record(
+        position: Double,
+        evidenceWeight: Int,
+        userPaused: Bool
+    ) -> Action {
+        guard !userPaused else { return .waitForConfirmation }
+        let normalized = position.isFinite ? max(0, position) : 0
+        if let anchorPosition,
+           abs(anchorPosition - normalized) > Self.matchingPositionToleranceSeconds {
+            evidence = 0
+            reloads = 0
+        }
+        anchorPosition = normalized
+        evidence += max(evidenceWeight, 1)
+        guard evidence >= Self.evidenceRequired else { return .waitForConfirmation }
+        evidence = 0
+        guard reloads < Self.maximumReloads else { return .escalate }
+        reloads += 1
+        return .reload(attempt: reloads)
+    }
+
+    mutating func reset() {
+        anchorPosition = nil
+        evidence = 0
+        reloads = 0
+    }
+}
+
+struct AVPlayerAudioSessionActivationState {
+    struct Request: Equatable {
+        let id: UInt64
+        let needsActivation: Bool
+    }
+
+    private var nextID: UInt64 = 0
+    private var active = false
+    private var activationPending = false
+
+    mutating func beginActivation() -> Request {
+        nextID &+= 1
+        if nextID == 0 { nextID = 1 }
+        let request = Request(id: nextID, needsActivation: !active)
+        activationPending = request.needsActivation
+        return request
+    }
+
+    mutating func finishActivation(id: UInt64, succeeded: Bool) -> Bool {
+        guard nextID == id else { return false }
+        activationPending = false
+        if succeeded { active = true }
+        return true
+    }
+
+    mutating func cancelAndDeactivate() -> Bool {
+        nextID &+= 1
+        if nextID == 0 { nextID = 1 }
+        let shouldDeactivate = active || activationPending
+        active = false
+        activationPending = false
+        return shouldDeactivate
+    }
+
+    func isCurrent(id: UInt64) -> Bool {
+        nextID == id
+    }
+}
+
+/// Serializes the blocking AVAudioSession category/activation calls away
+/// from the main thread. Generation tracking prevents an activation that
+/// finishes after teardown or source replacement from attaching a stale item.
+final class AVPlayerAudioSessionCoordinator: @unchecked Sendable {
+    typealias Operation = () throws -> Void
+
+    private let workQueue: DispatchQueue
+    private let callbackQueue: DispatchQueue
+    private let activation: Operation
+    private let deactivation: Operation
+    private let lock = NSLock()
+    private var state = AVPlayerAudioSessionActivationState()
+
+    init(
+        workQueue: DispatchQueue = DispatchQueue(
+            label: "org.siloserver.silo.avplayer-audio-session",
+            qos: .userInitiated
+        ),
+        callbackQueue: DispatchQueue = .main,
+        activation: @escaping Operation,
+        deactivation: @escaping Operation
+    ) {
+        self.workQueue = workQueue
+        self.callbackQueue = callbackQueue
+        self.activation = activation
+        self.deactivation = deactivation
+    }
+
+    func activate(completion: @escaping (Error?) -> Void) {
+        let request = locked { state.beginActivation() }
+        guard request.needsActivation else {
+            callbackQueue.async { [weak self] in
+                guard self?.isCurrent(id: request.id) == true else { return }
+                completion(nil)
+            }
+            return
+        }
+
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            let error: Error?
+            do {
+                try self.activation()
+                error = nil
+            } catch let activationError {
+                error = activationError
+            }
+            let shouldDeliver = self.locked {
+                self.state.finishActivation(id: request.id, succeeded: error == nil)
+            }
+            guard shouldDeliver else { return }
+            callbackQueue.async { [weak self] in
+                guard self?.isCurrent(id: request.id) == true else { return }
+                completion(error)
+            }
+        }
+    }
+
+    func deactivate() {
+        let shouldDeactivate = locked { state.cancelAndDeactivate() }
+        guard shouldDeactivate else { return }
+        workQueue.async { [deactivation] in
+            try? deactivation()
+        }
+    }
+
+    private func isCurrent(id: UInt64) -> Bool {
+        locked { state.isCurrent(id: id) }
+    }
+
+    private func locked<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+}
+
 final class AVPlayerBackend {
     enum SourceStrategy {
         case remoteHLS(url: URL, headers: [String: String])
@@ -45,6 +233,7 @@ final class AVPlayerBackend {
     private static let loopbackStartupStallWindowSeconds: TimeInterval = 6.0
     private static let loopbackStartupAbsoluteBackstopSeconds: TimeInterval = 60.0
     private static let loopbackSeekWindowTolerance: Double = 0.25
+    private static let seekCompletionDeadlineSeconds: TimeInterval = 15.0
 
     /// Default forward buffer applied once the initial-video-display gate
     /// releases. Used when the source bitrate is unknown. Keep this modest on
@@ -260,6 +449,13 @@ final class AVPlayerBackend {
     private var hasSeekedToStart = false
     private var isDisposed = false
     private var isSeekPending = false
+    private var seekDeadlineState = AVPlayerSeekDeadlineState()
+    private var seekDeadlineWorkItem: DispatchWorkItem?
+    private enum SeekDeadlineKind {
+        case interactive(mediaTarget: Double)
+        case initial(mediaTarget: Double)
+    }
+    private var loopbackItemDeathRecoveryState = LoopbackItemDeathRecoveryState()
     private var isInitialSeekInFlight = false
     private var initialSeekRetryCount = 0
     private var subtitleSession: SubtitleSession?
@@ -363,8 +559,31 @@ final class AVPlayerBackend {
     private var didEscalateLoopbackStall = false
     private var isUserPaused = false
     private var preserveSessionDirectory = false
-    private var audioSessionActive = false
     private var isPreservingTVDisplayCriteriaForReload = false
+
+    private let audioSessionCoordinator: AVPlayerAudioSessionCoordinator = {
+        #if os(macOS)
+        AVPlayerAudioSessionCoordinator(activation: {}, deactivation: {})
+        #else
+        AVPlayerAudioSessionCoordinator(
+            activation: {
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.playback, mode: .moviePlayback, options: [])
+                // Routing preference, not a claim: tells the system this app
+                // plays multichannel content so route negotiation (HDMI/AirPlay)
+                // prefers a multichannel-capable path. AetherEngine sets the
+                // same before its Atmos passthrough; PlayerCore already does.
+                try? session.setSupportsMultichannelContent(true)
+                try session.setActive(true, options: [])
+            },
+            deactivation: {
+                try AVAudioSession.sharedInstance().setActive(
+                    false, options: [.notifyOthersOnDeactivation]
+                )
+            }
+        )
+        #endif
+    }()
 
     private var statusObs: NSKeyValueObservation?
     private var rateObs: NSKeyValueObservation?
@@ -510,12 +729,22 @@ final class AVPlayerBackend {
         let time = CMTime(seconds: playerSeconds, preferredTimescale: 600)
         isSeekPending = true
         let seekItem = currentItem
+        let seekID = beginSeekDeadline(
+            kind: .interactive(mediaTarget: mediaSeconds),
+            item: seekItem
+        )
         Self.logger.info(
             "[CMP-SEEK] AVPlayer seek request media=\(mediaSeconds, privacy: .public) player=\(playerSeconds, privacy: .public) offset=\(self.mediaTimelineOffsetSeconds, privacy: .public)"
         )
         subtitleSession?.flushOnSeek()
         avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             guard let self, !self.isDisposed else { return }
+            guard self.completeSeekDeadline(seekID) else {
+                Self.logger.info(
+                    "[CMP-SEEK] ignoring late/superseded AVPlayer seek completion id=\(seekID, privacy: .public)"
+                )
+                return
+            }
             guard seekItem === self.currentItem else { return }
             self.isSeekPending = false
             self.vodPendingSeekMediaTarget = nil
@@ -528,6 +757,98 @@ final class AVPlayerBackend {
             self.resyncControlledSubtitlesAfterSeek(mediaSeconds: mediaTime)
             self.onTimeChange?(landed)
             self.pumpSubtitleOverlay(referenceTime: mediaTime)
+        }
+    }
+
+    @discardableResult
+    private func beginSeekDeadline(
+        kind: SeekDeadlineKind,
+        item: AVPlayerItem?
+    ) -> UInt64 {
+        seekDeadlineWorkItem?.cancel()
+        let id = seekDeadlineState.begin()
+        let work = DispatchWorkItem { [weak self, weak item] in
+            guard let self, !self.isDisposed else { return }
+            self.handleSeekDeadline(id: id, kind: kind, item: item)
+        }
+        seekDeadlineWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.seekCompletionDeadlineSeconds,
+            execute: work
+        )
+        return id
+    }
+
+    private func completeSeekDeadline(_ id: UInt64) -> Bool {
+        guard seekDeadlineState.complete(id) else { return false }
+        seekDeadlineWorkItem?.cancel()
+        seekDeadlineWorkItem = nil
+        return true
+    }
+
+    private func cancelSeekDeadline() {
+        seekDeadlineWorkItem?.cancel()
+        seekDeadlineWorkItem = nil
+        seekDeadlineState.cancel()
+        isSeekPending = false
+        vodPendingSeekMediaTarget = nil
+    }
+
+    private func handleSeekDeadline(
+        id: UInt64,
+        kind: SeekDeadlineKind,
+        item: AVPlayerItem?
+    ) {
+        guard completeSeekDeadline(id), item === currentItem else { return }
+        isSeekPending = false
+        item?.cancelPendingSeeks()
+
+        switch kind {
+        case .interactive(let mediaTarget):
+            Self.logger.error(
+                "[CMP-SEEK] AVPlayer seek deadline mediaTarget=\(mediaTarget, privacy: .public) id=\(id, privacy: .public); re-enabling recovery"
+            )
+            if case .some(.siloLoopback(let spec)) = currentSourceStrategy {
+                if spec.servingMode == .vodPlan {
+                    Task { @MainActor [weak self] in
+                        guard let self, !self.isDisposed else { return }
+                        // Keep the target latched until the recovery helper
+                        // reads it; the frozen clock is still pre-seek.
+                        self.vodPendingSeekMediaTarget = mediaTarget
+                        self.performVODStallRecovery(
+                            attempt: 1,
+                            frozenPosition: self.playerTime(forMediaTime: mediaTarget)
+                        )
+                        self.vodPendingSeekMediaTarget = nil
+                    }
+                    return
+                } else if let item = currentItem {
+                    recoverLocalLoopbackStallIfNeeded(
+                        item: item,
+                        requireBufferedEdge: false,
+                        reason: "seek_deadline"
+                    )
+                }
+            } else if !isUserPaused {
+                avPlayer.play()
+            }
+            vodPendingSeekMediaTarget = nil
+
+        case .initial(let mediaTarget):
+            isInitialSeekInFlight = false
+            initialSeekRetryCount += 1
+            let retry = initialSeekRetryCount
+            Self.logger.error(
+                "[CMP-SEEK] initial AVPlayer seek deadline mediaTarget=\(mediaTarget, privacy: .public) retry=\(retry, privacy: .public)"
+            )
+            if retry <= 8, let item = currentItem {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self, weak item] in
+                    guard let self, let item, !self.isDisposed, item === self.currentItem else { return }
+                    self.attemptInitialPlaybackStart(for: item, trigger: "deadline-retry-\(retry)")
+                }
+            } else if let item = currentItem {
+                startPlaybackIfNeeded(for: item)
+            }
         }
     }
 
@@ -1150,12 +1471,45 @@ final class AVPlayerBackend {
             avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
             avPlayer.play()
         } else {
-            guard let urlAsset = currentItem?.asset as? AVURLAsset else { return }
             cmpLog("[CMP-AVP] vod stall recovery in-place item reload anchorPlayer=\(anchorPlayer)")
-            prepareAssetPlayback(url: urlAsset.url, headers: [:])
-            avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+            guard let item = currentItem else { return }
+            reloadEstablishedLoopbackItem(item, at: anchorPlayer, reason: "vod_stall")
+        }
+    }
+
+    /// Rebuild only AVFoundation's item/loader state while preserving the
+    /// loopback producer, segment plan/store/server, display criteria, audio
+    /// session, selected tracks, and recovery budgets.
+    @MainActor
+    private func reloadEstablishedLoopbackItem(
+        _ oldItem: AVPlayerItem,
+        at playerSeconds: Double,
+        reason: String
+    ) {
+        guard oldItem === currentItem,
+              let asset = oldItem.asset as? AVURLAsset else { return }
+        cancelSeekDeadline()
+        oldItem.cancelPendingSeeks()
+        detachPerItemObservers()
+
+        let item = AVPlayerItem(asset: AVURLAsset(url: asset.url))
+        item.preferredForwardBufferDuration = max(
+            oldItem.preferredForwardBufferDuration,
+            Self.loopbackStartupForwardBuffer
+        )
+        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        currentItem = item
+        attachItemObservers(item)
+        avPlayer.replaceCurrentItem(with: item)
+
+        let target = CMTime(seconds: max(0, playerSeconds), preferredTimescale: 600)
+        avPlayer.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        if !isUserPaused {
             avPlayer.play()
         }
+        cmpLog(
+            "[CMP-AVP] established loopback item reloaded reason=\(reason) player=\(playerSeconds) url=\(asset.url.absoluteString)"
+        )
     }
 
     private func startSiloLoopback(
@@ -1490,8 +1844,9 @@ final class AVPlayerBackend {
         // The local loopback server is an in-app HTTP surface. Remote auth
         // headers are only for libavformat's source fetch and should not be
         // propagated into AVPlayer's localhost HLS requests.
-        prepareAssetPlayback(url: url, headers: [:])
-        issueVODResumePreSeekIfNeeded(context: "first_segment")
+        prepareAssetPlayback(url: url, headers: [:]) { [weak self] in
+            self?.issueVODResumePreSeekIfNeeded(context: "first_segment")
+        }
     }
 
     /// Resume: aim AVPlayer's very first media fetches at the resume
@@ -1511,8 +1866,23 @@ final class AVPlayerBackend {
         cmpLog("[CMP-AVP] vod resume pre-seek player=\(target) media=\(pendingStartTime) context=\(context)")
     }
 
-    private func prepareAssetPlayback(url: URL, headers: [String: String]) {
-        activateAudioSession()
+    private func prepareAssetPlayback(
+        url: URL,
+        headers: [String: String],
+        completion: (() -> Void)? = nil
+    ) {
+        activateAudioSession { [weak self] error in
+            guard let self, !self.isDisposed else { return }
+            if let error {
+                let message = "AVPlayer audio session setup failed: \(error.localizedDescription)"
+                cmpLog("[CMP-AVP] ERROR: \(message)")
+            }
+            self.finishPreparingAssetPlayback(url: url, headers: headers)
+            completion?()
+        }
+    }
+
+    private func finishPreparingAssetPlayback(url: URL, headers: [String: String]) {
         var options: [String: Any] = [:]
         if !headers.isEmpty {
             options["AVURLAssetHTTPHeaderFieldsKey"] = headers
@@ -1554,38 +1924,12 @@ final class AVPlayerBackend {
         installSubtitleDisplayLink()
     }
 
-    private func activateAudioSession() {
-        #if os(macOS)
-        return
-        #else
-        guard !audioSessionActive else { return }
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .moviePlayback, options: [])
-            // Routing preference, not a claim: tells the system this app
-            // plays multichannel content so route negotiation (HDMI/AirPlay)
-            // prefers a multichannel-capable path. AetherEngine sets the
-            // same before its Atmos passthrough; PlayerCore already does.
-            try? session.setSupportsMultichannelContent(true)
-            try session.setActive(true, options: [])
-            audioSessionActive = true
-        } catch {
-            let message = "AVPlayer audio session setup failed: \(error.localizedDescription)"
-            cmpLog("[CMP-AVP] ERROR: \(message)")
-        }
-        #endif
+    private func activateAudioSession(completion: @escaping (Error?) -> Void) {
+        audioSessionCoordinator.activate(completion: completion)
     }
 
     private func deactivateAudioSession() {
-        #if os(macOS)
-        return
-        #else
-        guard audioSessionActive else { return }
-        audioSessionActive = false
-        try? AVAudioSession.sharedInstance().setActive(
-            false, options: [.notifyOthersOnDeactivation]
-        )
-        #endif
+        audioSessionCoordinator.deactivate()
     }
 
     private func configureEmbeddedSubtitleExtraction(for strategy: SourceStrategy) {
@@ -2558,6 +2902,20 @@ final class AVPlayerBackend {
             cmpLog(
                 "[CMP-AVP] item errorLog status=\(event.errorStatusCode) domain=\(event.errorDomain) uri=\(event.uri ?? "-") comment=\(event.errorComment ?? "-")"
             )
+            if self.didFireFileLoaded,
+               LoopbackItemDeathRecoveryState.isItemDeath(
+                    statusCode: event.errorStatusCode,
+                    errorDescription: event.errorComment ?? ""
+               ) {
+                self.handleLoopbackItemDeathEvidence(
+                    item: item,
+                    statusCode: event.errorStatusCode,
+                    errorDescription: event.errorComment ?? "",
+                    evidenceWeight: event.errorStatusCode == -15628 ? 2 : 1,
+                    trigger: "error_log"
+                )
+                return
+            }
             if event.errorStatusCode == -15628,
                !self.didFireFileLoaded,
                case .siloLoopback = self.currentSourceStrategy {
@@ -2598,6 +2956,21 @@ final class AVPlayerBackend {
 
     private func recoverLocalLoopbackFailureIfNeeded(item: AVPlayerItem, error: Error?) {
         let description = String(describing: error)
+        let statusCode = item.errorLog()?.events.last?.errorStatusCode
+        if didFireFileLoaded,
+           LoopbackItemDeathRecoveryState.isItemDeath(
+                statusCode: statusCode,
+                errorDescription: description
+           ) {
+            handleLoopbackItemDeathEvidence(
+                item: item,
+                statusCode: statusCode,
+                errorDescription: description,
+                evidenceWeight: 2,
+                trigger: "failed_to_end"
+            )
+            return
+        }
         guard description.contains("Playlist File unchanged") || description.contains("-12888") else {
             return
         }
@@ -2612,6 +2985,47 @@ final class AVPlayerBackend {
             return
         }
         recoverLocalLoopbackStallIfNeeded(item: item, requireBufferedEdge: false, reason: "playlist_unchanged")
+    }
+
+    private func handleLoopbackItemDeathEvidence(
+        item: AVPlayerItem,
+        statusCode: Int?,
+        errorDescription: String,
+        evidenceWeight: Int,
+        trigger: String
+    ) {
+        guard case .some(.siloLoopback) = currentSourceStrategy,
+              item === currentItem,
+              didFireFileLoaded else { return }
+        let position = currentTime()
+        let action = loopbackItemDeathRecoveryState.record(
+            position: position,
+            evidenceWeight: evidenceWeight,
+            userPaused: isUserPaused
+        )
+        switch action {
+        case .waitForConfirmation:
+            Self.logger.info(
+                "[CMP-AVP] loopback item-death evidence waiting trigger=\(trigger, privacy: .public) status=\(statusCode ?? 0, privacy: .public) paused=\(self.isUserPaused ? 1 : 0, privacy: .public) pos=\(position, privacy: .public) error=\(errorDescription, privacy: .public)"
+            )
+        case .reload(let attempt):
+            Self.logger.error(
+                "[CMP-AVP] loopback item-death reload trigger=\(trigger, privacy: .public) status=\(statusCode ?? 0, privacy: .public) attempt=\(attempt, privacy: .public) pos=\(position, privacy: .public)"
+            )
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item, item === self.currentItem, !self.isDisposed else { return }
+                self.reloadEstablishedLoopbackItem(
+                    item,
+                    at: position,
+                    reason: "item_death_\(trigger)_\(attempt)"
+                )
+            }
+        case .escalate:
+            Self.logger.error(
+                "[CMP-AVP] loopback item-death reload budget exhausted status=\(statusCode ?? 0, privacy: .public) pos=\(position, privacy: .public)"
+            )
+            onLoopbackStallUnrecoverable?("loopback_item_death")
+        }
     }
 
     private func recoverLocalLoopbackStallIfNeeded(
@@ -2683,6 +3097,10 @@ final class AVPlayerBackend {
 
         isInitialSeekInFlight = true
         isSeekPending = true
+        let seekID = beginSeekDeadline(
+            kind: .initial(mediaTarget: mediaTarget),
+            item: item
+        )
         subtitleSession?.flushOnSeek()
         let time = CMTime(seconds: playerTarget, preferredTimescale: 600)
         Self.logger.info(
@@ -2690,6 +3108,12 @@ final class AVPlayerBackend {
         )
         avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             guard let self, !self.isDisposed, item === self.currentItem else { return }
+            guard self.completeSeekDeadline(seekID) else {
+                Self.logger.info(
+                    "[CMP-SEEK] ignoring late/superseded initial seek completion id=\(seekID, privacy: .public)"
+                )
+                return
+            }
             self.isSeekPending = false
             self.isInitialSeekInFlight = false
 
@@ -3365,6 +3789,8 @@ final class AVPlayerBackend {
     }
 
     private func teardownMediaPipeline(clearDisplayCriteria: Bool = true) {
+        cancelSeekDeadline()
+        loopbackItemDeathRecoveryState.reset()
         if clearDisplayCriteria {
             clearTVDisplayCriteria(context: "teardown")
         } else {

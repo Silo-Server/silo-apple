@@ -8,6 +8,11 @@ import OSLog
 /// window connection. Each chunk is stored (and its waiters woken) when the
 /// response body completes — at most one chunk of latency for a probe read.
 final class PlaybackOriginChunkFetcher {
+    /// Interactive detour/probe fetches must fail fast enough for the source
+    /// window or outage coordinator to recover. Long outage survival is owned
+    /// by `PlaybackOriginReconnectPolicy`, not by one blocked range request.
+    static let interactiveRequestTimeoutSeconds: TimeInterval = 4.0
+
     struct Callbacks {
         /// Store delivered bytes (invoked on the session delegate queue).
         let store: (Int64, Data, Int64?) -> Void
@@ -98,14 +103,19 @@ final class PlaybackOriginChunkFetcher {
         // One keep-alive session for every chunk: per-request sessions pay a
         // fresh TCP+TLS handshake per probe, which is the cost this class
         // exists to avoid.
+        let config = Self.makeSessionConfiguration()
+        let created = URLSession(configuration: config)
+        session = created
+        return created
+    }
+
+    static func makeSessionConfiguration() -> URLSessionConfiguration {
         let config = URLSessionConfiguration.ephemeral
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.urlCache = nil
         config.httpMaximumConnectionsPerHost = 2
-        config.timeoutIntervalForRequest = 30
-        let created = URLSession(configuration: config)
-        session = created
-        return created
+        config.timeoutIntervalForRequest = interactiveRequestTimeoutSeconds
+        return config
     }
 
     private func run(id: UUID, range: Range<Int64>, attempt: Int) {

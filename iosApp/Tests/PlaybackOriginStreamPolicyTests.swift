@@ -102,6 +102,24 @@ final class PlaybackOriginRoutingPolicyTests: XCTestCase {
         XCTAssertEqual(PlaybackOriginRoutingPolicy.windowClaimBytes, 8 * 1024 * 1024)
         XCTAssertEqual(PlaybackOriginRoutingPolicy.rideThroughBytes, 8 * 1024 * 1024)
     }
+
+    func testInteractiveChunkAttemptUsesShortIndependentTimeout() {
+        let configuration = PlaybackOriginChunkFetcher.makeSessionConfiguration()
+        XCTAssertEqual(
+            configuration.timeoutIntervalForRequest,
+            PlaybackOriginChunkFetcher.interactiveRequestTimeoutSeconds
+        )
+        XCTAssertEqual(PlaybackOriginChunkFetcher.interactiveRequestTimeoutSeconds, 4.0)
+        XCTAssertEqual(
+            PlaybackOriginReconnectPolicy.decide(
+                cause: .network,
+                unproductiveStreak: 0,
+                everProductive: false
+            ),
+            .retry(afterSeconds: 0.5),
+            "a short interactive attempt must still flow into the longer reconnect/outage policy"
+        )
+    }
 }
 
 final class PlaybackOriginStreamPolicyTests: XCTestCase {

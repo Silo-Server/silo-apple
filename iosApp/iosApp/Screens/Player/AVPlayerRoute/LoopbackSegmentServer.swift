@@ -31,6 +31,7 @@ final class LoopbackSegmentServer {
     deinit { print("[CMP-LIFE] deinit LoopbackSegmentServer") }
     private static let startupRequestLogLimit = 80
     private static let responseChunkBytes = 256 * 1024
+    static let vodEarlyResponseDelaySeconds: TimeInterval = 2.0
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "LoopbackSegmentServer"
@@ -156,6 +157,19 @@ final class LoopbackSegmentServer {
             defer { lock.unlock() }
             if resumed { return false }
             resumed = true
+            return true
+        }
+    }
+
+    private final class ResponseClaim: @unchecked Sendable {
+        private let lock = NSLock()
+        private var claimed = false
+
+        func claim() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !claimed else { return false }
+            claimed = true
             return true
         }
     }
@@ -332,6 +346,9 @@ final class LoopbackSegmentServer {
     /// and waits, bounded, for the bytes. Runs off the server's queue so a
     /// slow resolution never stalls playlist/init requests.
     var vodSegmentMissResolver: ((Int) -> LoopbackSegmentStore.ResourceResult)?
+    /// Test/diagnostic hook fired when the early read-until-close response is
+    /// committed, before the producer has necessarily published body bytes.
+    var onEarlyVODResponseHeaders: ((String) -> Void)?
 
     private func respondWithStoreResource(
         path: String,
@@ -348,9 +365,36 @@ final class LoopbackSegmentServer {
         case .missing, .gone:
             if let resolver = vodSegmentMissResolver,
                let index = LoopbackSegmentStore.segmentIndex(fromName: path) {
+                let responseClaim = ResponseClaim()
+                if method == .get {
+                    queue.asyncAfter(deadline: .now() + Self.vodEarlyResponseDelaySeconds) { [weak self] in
+                        guard let self, responseClaim.claim() else { return }
+                        cmpLog("[CMP-HLS] early VOD response headers path=\(path)")
+                        self.onEarlyVODResponseHeaders?(path)
+                        self.respondWithProgressiveStream(
+                            name: path,
+                            mime: self.mimeType(for: "m4s"),
+                            requestPath: path,
+                            method: method,
+                            range: rangeHeader,
+                            started: started,
+                            on: connection
+                        )
+                    }
+                }
                 DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                     guard let self else { return }
-                    switch resolver(index) {
+                    let result = resolver(index)
+                    guard responseClaim.claim() else {
+                        // Headers already went out. A found resource is picked
+                        // up by the progressive pump; a terminal miss must
+                        // abort the read-until-close response so AVPlayer can
+                        // retry instead of accepting a false successful EOF.
+                        if case .found = result { return }
+                        connection.cancel()
+                        return
+                    }
+                    switch result {
                     case .found(let resource):
                         self.respondWithResource(
                             resource,
@@ -487,7 +531,8 @@ final class LoopbackSegmentServer {
             let (delta, complete) = store.readProgressiveSegment(
                 named: name,
                 from: offset,
-                deadline: min(overallDeadline, Date().addingTimeInterval(0.25))
+                deadline: min(overallDeadline, Date().addingTimeInterval(0.25)),
+                waitForStart: offset == 0
             )
             let nextOffset = offset + delta.count
             let finish: () -> Void = { [weak self] in
