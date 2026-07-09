@@ -165,9 +165,25 @@ final class PlaybackSourceCache {
     private let diskBudgetBytes: Int64
     private let diskDirectory: URL?
 
+    /// The known total file length, once any origin response reported one.
+    /// Used by the cache-handoff adoption check (a changed total under the
+    /// same file id means the file was replaced and the cached bytes are
+    /// stale).
+    var knownTotalLength: Int64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return totalLength
+    }
+
+    /// Effective disk-spill state after env overrides — the handoff adoption
+    /// check compares it against what a freshly built cache would resolve.
+    var diskSpillActive: Bool { diskSpillEnabled }
+
     /// Env vars remain as dev overrides in both directions; the shipped
     /// default comes from the caller (user "Seek Cache" setting, default on).
-    private static func resolveDiskSpillEnabled(_ requested: Bool) -> Bool {
+    /// Internal (not private) so handoff adoption can resolve the effective
+    /// state a replacement cache would get.
+    static func resolveDiskSpillEnabled(_ requested: Bool) -> Bool {
         let env = ProcessInfo.processInfo.environment
         if env["SILO_DISABLE_SOURCE_DISK_SPILL"] == "1" { return false }
         if env["SILO_ENABLE_SOURCE_DISK_SPILL"] == "1" { return true }
@@ -617,13 +633,33 @@ private final class PlaybackSourceResource {
     }
 
     let token: String
-    let originURL: URL
-    let originHeaders: [String: String]
+    /// Origin endpoint for window/chunk fetches. Mutable for in-place session
+    /// renewal (`retargetOrigin`): a renewed direct-play session serves the
+    /// identical bytes under a new session URL, so the transport swaps
+    /// endpoints while the cache, waiters, and local server stay put. Guarded
+    /// by `stateLock`; every reader (stream/fetcher construction) already
+    /// runs under it.
+    private var originURL: URL
+    private var originHeaders: [String: String]
     let cache: PlaybackSourceCache
     private let onPlaybackSessionMissing: (() -> Void)?
     private let onPlaybackSourceInterrupted: ((PlaybackSourceInterruptionReason) -> Void)?
+    /// Fired on outage entry (true) and recovery (false). Entry means the
+    /// reconnect ladder gave up on a retryable cause and the blocked byte
+    /// demands are parked; the transport keeps re-probing quietly while the
+    /// player rides its buffered runway.
+    private let onOriginOutageChanged: ((Bool) -> Void)?
+    private let outageRideThroughEnabled: Bool
     private let stateLock = NSLock()
     private var cancelled = false
+    /// Origin outage ride-through state (all under `stateLock`): parked
+    /// demands stay registered in `dataWaiters`, `outageProbeTask` drives the
+    /// slow re-probe cadence, and `sessionMissingObserved` widens parking to
+    /// the session-missing 404 whose background renewal is in flight.
+    private var originOutage = false
+    private var outageProbeTask: Task<Void, Never>?
+    private var sessionMissingObserved = false
+    private var lastOutageFailureOffset: Int64 = 0
     private var discoveredTotalLength: Int64?
     /// A successful origin response has been seen (even if it carried no
     /// total), so total-length waiters need not block on the next one.
@@ -650,7 +686,9 @@ private final class PlaybackSourceResource {
         originHeaders: [String: String],
         cache: PlaybackSourceCache,
         onPlaybackSessionMissing: (() -> Void)?,
-        onPlaybackSourceInterrupted: ((PlaybackSourceInterruptionReason) -> Void)?
+        onPlaybackSourceInterrupted: ((PlaybackSourceInterruptionReason) -> Void)?,
+        onOriginOutageChanged: ((Bool) -> Void)? = nil,
+        outageRideThroughEnabled: Bool = PlaybackOriginOutagePolicy.rideThroughEnabled()
     ) {
         self.token = Self.makeToken()
         self.originURL = originURL
@@ -658,6 +696,8 @@ private final class PlaybackSourceResource {
         self.cache = cache
         self.onPlaybackSessionMissing = onPlaybackSessionMissing
         self.onPlaybackSourceInterrupted = onPlaybackSourceInterrupted
+        self.onOriginOutageChanged = onOriginOutageChanged
+        self.outageRideThroughEnabled = outageRideThroughEnabled
     }
 
     deinit {
@@ -668,6 +708,9 @@ private final class PlaybackSourceResource {
     func stop() {
         stateLock.lock()
         cancelled = true
+        originOutage = false
+        let probeToCancel = outageProbeTask
+        outageProbeTask = nil
         let windowToCancel = windowStream
         windowStream = nil
         let fetcherToCancel = chunkFetcher
@@ -680,6 +723,7 @@ private final class PlaybackSourceResource {
         serveTasks.removeAll()
         completedServeTaskIDs.removeAll()
         stateLock.unlock()
+        probeToCancel?.cancel()
         if let windowToCancel {
             windowToCancel.cancel()
             cache.endOriginRequest()
@@ -694,6 +738,132 @@ private final class PlaybackSourceResource {
         for (_, serveTask) in serving {
             serveTask.cancel()
         }
+    }
+
+    /// Swap the origin endpoint in place (silent session renewal): the
+    /// current window and chunk fetcher hold the dead session's URL and are
+    /// cancelled; parked data waiters are re-driven so each re-misses and
+    /// re-routes through the normal machinery (window claim or chunk)
+    /// against the new origin. The cache, serve connections, and local URL
+    /// are untouched — the renewed session must serve the identical bytes.
+    func retargetOrigin(url: URL, headers: [String: String]) {
+        var windowToCancel: PlaybackOriginStream?
+        var fetcherToCancel: PlaybackOriginChunkFetcher?
+        stateLock.lock()
+        guard !cancelled else {
+            stateLock.unlock()
+            return
+        }
+        originURL = url
+        originHeaders = headers
+        windowToCancel = windowStream
+        windowStream = nil
+        fetcherToCancel = chunkFetcher
+        chunkFetcher = nil
+        // A renewed session resolves any outage the dead session caused;
+        // the redrive below re-routes every parked demand at the new origin.
+        let outageCleared = originOutage
+        originOutage = false
+        sessionMissingObserved = false
+        let probeToCancel = outageProbeTask
+        outageProbeTask = nil
+        stateLock.unlock()
+        probeToCancel?.cancel()
+        if let windowToCancel {
+            windowToCancel.cancel()
+            cache.endOriginRequest()
+        }
+        fetcherToCancel?.cancel()
+        redriveAllDataWaiters()
+        if outageCleared {
+            onOriginOutageChanged?(false)
+        }
+        Self.logger.info("[CMP-SOURCE-CACHE] origin retargeted for renewed session")
+    }
+
+    /// Whether the transport is parked in an origin outage. Read by the
+    /// writer's interrupt-callback deadline to allow a blocking source read
+    /// to park instead of timing out at the normal read allowance.
+    var isOriginOutageActive: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return originOutage
+    }
+
+    /// Re-probe the origin immediately (cancels the pending cadence probe).
+    /// The view model nudges this when its server-health poll sees the
+    /// server come back, so recovery isn't gated on the probe cadence.
+    func reprobeOrigin() {
+        var toStart: PlaybackOriginStream?
+        var probeToCancel: Task<Void, Never>?
+        stateLock.lock()
+        guard !cancelled, originOutage, windowStream == nil else {
+            stateLock.unlock()
+            return
+        }
+        probeToCancel = outageProbeTask
+        outageProbeTask = nil
+        demandCounter += 1
+        let parkedDemand = dataWaiters.values.map(\.offset).min() ?? lastOutageFailureOffset
+        let offset = cache.nextPrefetchStart(after: max(0, parkedDemand)) ?? max(0, parkedDemand)
+        let stream = makeStream(startOffset: offset, order: demandCounter)
+        windowStream = stream
+        cache.beginOriginRequest()
+        toStart = stream
+        stateLock.unlock()
+        probeToCancel?.cancel()
+        Self.logger.info("[CMP-OUTAGE] origin re-probe at offset=\(offset, privacy: .public)")
+        toStart?.start()
+    }
+
+    /// Enter (or stay in) outage ride-through after a parked give-up, and
+    /// schedule the next cadence probe. Returns whether this call was the
+    /// outage entry (the caller notifies outside the resource's lock).
+    private func enterOutageAndScheduleProbe(failureOffset: Int64) -> Bool {
+        var entered = false
+        stateLock.lock()
+        guard !cancelled else {
+            stateLock.unlock()
+            return false
+        }
+        entered = !originOutage
+        originOutage = true
+        lastOutageFailureOffset = failureOffset
+        outageProbeTask?.cancel()
+        outageProbeTask = Task { [weak self] in
+            try? await Task.sleep(
+                nanoseconds: UInt64(PlaybackOriginOutagePolicy.probeDelaySeconds * 1_000_000_000)
+            )
+            guard !Task.isCancelled else { return }
+            self?.reprobeOrigin()
+        }
+        stateLock.unlock()
+        return entered
+    }
+
+    /// A successful origin response ends the outage: resume every parked
+    /// demand through the normal re-miss routing.
+    private func clearOutageAfterOriginResponse() {
+        stateLock.lock()
+        guard originOutage else {
+            stateLock.unlock()
+            return
+        }
+        originOutage = false
+        sessionMissingObserved = false
+        let probeToCancel = outageProbeTask
+        outageProbeTask = nil
+        stateLock.unlock()
+        probeToCancel?.cancel()
+        Self.logger.info("[CMP-OUTAGE] origin recovered; resuming parked demands")
+        redriveAllDataWaiters()
+        onOriginOutageChanged?(false)
+    }
+
+    private func noteSessionMissingObserved() {
+        stateLock.lock()
+        sessionMissingObserved = true
+        stateLock.unlock()
     }
 
     func stats() -> PlaybackSourceProxyStats {
@@ -1018,6 +1188,7 @@ private final class PlaybackSourceResource {
                     self?.streamReceivedResponse(total: total)
                 },
                 didDetectSessionMissing: { [weak self] in
+                    self?.noteSessionMissingObserved()
                     self?.onPlaybackSessionMissing?()
                 },
                 didFail: { [weak self] range, cause, statusCode in
@@ -1199,6 +1370,7 @@ private final class PlaybackSourceResource {
                     self?.streamReceivedResponse(total: total)
                 },
                 didDetectSessionMissing: { [weak self] _ in
+                    self?.noteSessionMissingObserved()
                     self?.onPlaybackSessionMissing?()
                 },
                 didFinish: { [weak self] stream in
@@ -1258,6 +1430,7 @@ private final class PlaybackSourceResource {
         for continuation in resume {
             continuation.resume(returning: value)
         }
+        clearOutageAfterOriginResponse()
     }
 
     /// The window stream ended. A clean finish (EOF, or everything to EOF
@@ -1273,7 +1446,15 @@ private final class PlaybackSourceResource {
         var redrive: [CheckedContinuation<WaitOutcome, Never>] = []
         var failed: [CheckedContinuation<WaitOutcome, Never>] = []
         var totalResume: [CheckedContinuation<Int64?, Never>] = []
+        var park = false
         stateLock.lock()
+        if let cause {
+            park = PlaybackOriginOutagePolicy.shouldPark(
+                cause: cause,
+                sessionMissingObserved: sessionMissingObserved,
+                rideThroughEnabled: outageRideThroughEnabled
+            )
+        }
         let wasTracked = windowStream === stream
         if wasTracked {
             windowStream = nil
@@ -1285,10 +1466,14 @@ private final class PlaybackSourceResource {
         for (id, waiter) in dataWaiters {
             if cause == nil || fetcher?.coversInFlight(offset: waiter.offset) == true {
                 redrive.append(waiter.continuation)
+                dataWaiters.removeValue(forKey: id)
+            } else if park {
+                // Outage ride-through: the demand stays registered and parked;
+                // outage recovery (probe success, retarget, or stop) resumes it.
             } else {
                 failed.append(waiter.continuation)
+                dataWaiters.removeValue(forKey: id)
             }
-            dataWaiters.removeValue(forKey: id)
         }
         if cause != nil {
             totalResume = Array(totalWaiters.values)
@@ -1309,6 +1494,16 @@ private final class PlaybackSourceResource {
             continuation.resume(returning: .failed)
         }
         guard let cause else { return }
+        if park {
+            let entered = enterOutageAndScheduleProbe(failureOffset: stream.snapshot().writeCursor)
+            Self.logger.warning(
+                "[CMP-OUTAGE] window gave up cause=\(String(describing: cause), privacy: .public) status=\(statusCode ?? 0, privacy: .public); parked entry=\(entered, privacy: .public)"
+            )
+            if entered {
+                onOriginOutageChanged?(true)
+            }
+            return
+        }
         // Surface the interruption only when the give-up actually failed a
         // foreground waiter. The window dying while playback rides the
         // forward cache must stay silent — the next cache miss routes to a
@@ -1334,9 +1529,16 @@ private final class PlaybackSourceResource {
         var failed: [CheckedContinuation<WaitOutcome, Never>] = []
         var totalResume: [CheckedContinuation<Int64?, Never>] = []
         stateLock.lock()
-        for (id, waiter) in dataWaiters where range.contains(waiter.offset) {
-            failed.append(waiter.continuation)
-            dataWaiters.removeValue(forKey: id)
+        let park = PlaybackOriginOutagePolicy.shouldPark(
+            cause: cause,
+            sessionMissingObserved: sessionMissingObserved,
+            rideThroughEnabled: outageRideThroughEnabled
+        )
+        if !park {
+            for (id, waiter) in dataWaiters where range.contains(waiter.offset) {
+                failed.append(waiter.continuation)
+                dataWaiters.removeValue(forKey: id)
+            }
         }
         totalResume = Array(totalWaiters.values)
         totalWaiters.removeAll()
@@ -1347,6 +1549,16 @@ private final class PlaybackSourceResource {
         }
         for continuation in failed {
             continuation.resume(returning: .failed)
+        }
+        if park {
+            let entered = enterOutageAndScheduleProbe(failureOffset: range.lowerBound)
+            Self.logger.warning(
+                "[CMP-OUTAGE] chunk gave up cause=\(String(describing: cause), privacy: .public) status=\(statusCode ?? 0, privacy: .public); parked entry=\(entered, privacy: .public)"
+            )
+            if entered {
+                onOriginOutageChanged?(true)
+            }
+            return
         }
         guard !failed.isEmpty else {
             Self.logger.warning(
@@ -1455,14 +1667,18 @@ final class PlaybackSourceProxy {
         originHeaders: [String: String],
         cache: PlaybackSourceCache = PlaybackSourceCache(),
         onPlaybackSessionMissing: (() -> Void)? = nil,
-        onPlaybackSourceInterrupted: ((PlaybackSourceInterruptionReason) -> Void)? = nil
+        onPlaybackSourceInterrupted: ((PlaybackSourceInterruptionReason) -> Void)? = nil,
+        onOriginOutageChanged: ((Bool) -> Void)? = nil,
+        outageRideThroughEnabled: Bool = PlaybackOriginOutagePolicy.rideThroughEnabled()
     ) {
         self.resource = PlaybackSourceResource(
             originURL: originURL,
             originHeaders: originHeaders,
             cache: cache,
             onPlaybackSessionMissing: onPlaybackSessionMissing,
-            onPlaybackSourceInterrupted: onPlaybackSourceInterrupted
+            onPlaybackSourceInterrupted: onPlaybackSourceInterrupted,
+            onOriginOutageChanged: onOriginOutageChanged,
+            outageRideThroughEnabled: outageRideThroughEnabled
         )
     }
 
@@ -1558,6 +1774,28 @@ final class PlaybackSourceProxy {
 
     func startPrefetch(at offset: Int64 = 0) {
         resource.startPrefetch(at: offset)
+    }
+
+    /// Swap the origin endpoint in place after a silent session renewal.
+    /// See `PlaybackSourceResource.retargetOrigin`.
+    func retargetOrigin(url: URL, headers: [String: String]) {
+        resource.retargetOrigin(url: url, headers: headers)
+    }
+
+    /// The cache, exposed for handoff across proxy generations: holding it
+    /// past `stop()` keeps its spans (memory and disk) alive so a
+    /// same-file replacement proxy can adopt them instead of re-downloading.
+    /// Dropping the last reference cleans the disk directory via deinit.
+    var handoffCache: PlaybackSourceCache { resource.cache }
+
+    /// Whether the transport is parked in an origin outage. See
+    /// `PlaybackSourceResource.isOriginOutageActive`.
+    var isOriginOutageActive: Bool { resource.isOriginOutageActive }
+
+    /// Re-probe the origin immediately (view-model nudge when the server
+    /// health poll sees the server return).
+    func reprobeOrigin() {
+        resource.reprobeOrigin()
     }
 
     func setSourceBitrate(_ bps: Double?) {

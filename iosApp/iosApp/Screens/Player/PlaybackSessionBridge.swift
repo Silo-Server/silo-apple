@@ -171,6 +171,10 @@ actor PlaybackSessionBridge {
 
     private var sessionId: String?
     private var currentSession: PlaybackSessionResponse?
+    /// The exact request that started the current session, kept as the
+    /// template for a silent same-plan renewal after the server loses the
+    /// session (restart, idle reap, expired reconstruct token).
+    private var lastStartRequest: StartPlaybackRequest?
 
     private struct ClientPlaybackPlan {
         let selectedVersion: FileVersion
@@ -303,6 +307,7 @@ actor PlaybackSessionBridge {
             "/api/v1/playback/start",
             body: request
         )
+        lastStartRequest = request
         logger.info(
             "Session started: method=\(initialSession.playMethod, privacy: .public), streamUrl=\(initialSession.streamUrl, privacy: .public)"
         )
@@ -337,6 +342,76 @@ actor PlaybackSessionBridge {
                 delivery: PlaybackDeliveryStrategy(playMethod: session.playMethod)
             )
         )
+    }
+
+    enum DirectSessionRenewalError: Error {
+        /// No live direct-play session (or no captured start request) to
+        /// renew — the caller must run a full visible renewal instead.
+        case noRenewableSession
+        /// The server re-planned playback (different delivery or file); the
+        /// renewed session cannot be adopted in place.
+        case planChanged(playMethod: String, mediaFileId: Int?)
+    }
+
+    /// Renews a lost direct-play session in place: re-POSTs the captured
+    /// start request (same file, same capability set) at the given position
+    /// and adopts the new session id/stream URL without touching playback.
+    /// The bytes of a direct-play stream are the file itself, so a renewed
+    /// session serves the identical content and the source proxy can simply
+    /// retarget. Throws `planChanged` — after best-effort stopping the
+    /// unwanted new session so it doesn't hold a concurrency-cap slot —
+    /// when the server answers with anything but direct play of the same
+    /// file.
+    func renewDirectSession(
+        position: Double,
+        audioTrackIndex: Int?
+    ) async throws -> PlaybackSessionResponse {
+        guard let template = lastStartRequest,
+              let current = currentSession,
+              PlaybackDeliveryStrategy(playMethod: current.playMethod) == .direct else {
+            throw DirectSessionRenewalError.noRenewableSession
+        }
+        let normalizedPosition = position.isFinite ? max(0, position) : 0
+        let request = StartPlaybackRequest(
+            fileId: template.fileId,
+            profileId: template.profileId,
+            playMethod: template.playMethod,
+            startPosition: normalizedPosition,
+            audioTrackIndex: audioTrackIndex ?? template.audioTrackIndex,
+            preserveDirectAudioSelection: template.preserveDirectAudioSelection,
+            codecsVideo: template.codecsVideo,
+            codecsAudio: template.codecsAudio,
+            containers: template.containers,
+            maxResolution: template.maxResolution,
+            hdr: template.hdr,
+            disableProgressPersistence: template.disableProgressPersistence
+        )
+        logger.info(
+            "Renewing direct session fileId=\(template.fileId, privacy: .public) position=\(normalizedPosition, privacy: .public)"
+        )
+        var renewed: PlaybackSessionResponse = try await ContinuumAPI.shared.post(
+            "/api/v1/playback/start",
+            body: request
+        )
+        guard PlaybackDeliveryStrategy(playMethod: renewed.playMethod) == .direct,
+              renewed.mediaFileId == current.mediaFileId else {
+            try? await ContinuumAPI.shared.delete("/api/v1/playback/\(renewed.sessionId)")
+            throw DirectSessionRenewalError.planChanged(
+                playMethod: renewed.playMethod,
+                mediaFileId: renewed.mediaFileId
+            )
+        }
+        // Same rule as startSession's direct path: pin the caller's position
+        // locally so a server echoing the stored resume point can't snap the
+        // timeline elsewhere.
+        renewed.position = normalizedPosition
+        lastStartRequest = request
+        sessionId = renewed.sessionId
+        currentSession = renewed
+        consecutiveProgressFailures = 0
+        emittedOrphanedSessionWarning = false
+        logger.info("Direct session renewed: \(renewed.sessionId, privacy: .public)")
+        return renewed
     }
 
     func restartCurrentTranscode(

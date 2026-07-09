@@ -196,6 +196,45 @@ final class AVPlayerBackend {
     /// footprint log line. The proxy is owned by PlayerViewModel, so it is
     /// injected as a closure rather than held here.
     var proxyStatsProvider: (() -> PlaybackSourceProxyStats?)?
+    /// Live query into the source proxy's outage state; handed to writers so
+    /// their blocking source reads can park through a flagged outage. Owned
+    /// by PlayerViewModel like `proxyStatsProvider`.
+    var sourceOutageStateProvider: (() -> Bool)?
+    /// While true (view-model-flagged origin outage ride-through), the
+    /// playhead watchdog must not escalate starvation or reanchor exhaustion
+    /// to a route fallback: the route isn't broken, the network is, and the
+    /// outage budget owns the terminal decision.
+    private var externalStallSuppressionActive = false
+
+    func setExternalStallSuppression(_ active: Bool) {
+        guard externalStallSuppressionActive != active else { return }
+        externalStallSuppressionActive = active
+        cmpLog("[CMP-OUTAGE] watchdog suppression \(active ? "on" : "off")")
+    }
+
+    /// Proactive recovery when the view model reports an origin outage has
+    /// ended. An item whose segment requests died during the outage does not
+    /// retry them on its own: the transport and producer recover, but the
+    /// playhead sits waiting on an empty buffer until the (no longer
+    /// suppressed) starvation watchdog degrades the route — even though
+    /// nothing is broken anymore (sim-validated 2026-07-07). Run the same
+    /// stall recovery the playhead watchdog would, immediately.
+    @MainActor
+    func kickPlaybackAfterExternalStallCleared() {
+        guard !isDisposed,
+              let item = currentItem,
+              case .some(.siloLoopback(let spec)) = currentSourceStrategy,
+              !isUserPaused,
+              avPlayer.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
+        let bufferedAhead = bufferedAheadSeconds(for: item, referenceTime: currentTime()) ?? 0
+        guard bufferedAhead < 2.0 else { return }
+        cmpLog("[CMP-OUTAGE] post-outage playback kick pos=\(currentTime()) bufAhead=\(bufferedAhead)")
+        if spec.servingMode == .vodPlan {
+            performVODStallRecovery(attempt: 1, frozenPosition: currentTime())
+        } else {
+            recoverLocalLoopbackStallIfNeeded(item: item, requireBufferedEdge: false, reason: "post_outage_kick")
+        }
+    }
 
     let avPlayer = AVPlayer()
     weak var subtitleOverlay: SubtitleOverlayView?
@@ -1235,6 +1274,9 @@ final class AVPlayerBackend {
             recycledInputHandoff: recycledInput
         )
         let tap = ensureLoopbackSubtitleTap(for: sessionSpec.sourceURL)
+        writer.isSourceOutageActive = { [weak self] in
+            self?.sourceOutageStateProvider?() ?? false
+        }
         writer.onSubtitleTapTracks = { [weak tap] infos in
             tap?.registerTracks(infos)
         }
@@ -2192,6 +2234,16 @@ final class AVPlayerBackend {
            (segmentStore?.secondsSinceLastSegmentServe() ?? .infinity)
                >= Self.playheadWatchdogStarvationServeQuietSeconds,
            !didEscalateLoopbackStall {
+            if externalStallSuppressionActive {
+                // Starved because the origin is down, not because the route
+                // wedged: falling back to the compatibility engine would just
+                // fail against the same dead origin. The outage budget owns
+                // the terminal decision.
+                cmpLog(
+                    "[CMP-OUTAGE] loopback starvation suppressed during origin outage (frozen \(Int(stationaryFor))s)"
+                )
+                return
+            }
             didEscalateLoopbackStall = true
             cmpLog(
                 "[CMP-AVP] loopback starvation: playhead frozen \(Int(stationaryFor))s with empty buffer and no segment serves; escalating to route fallback"
@@ -2223,6 +2275,12 @@ final class AVPlayerBackend {
 
         if watchdogReanchorCount >= Self.playheadWatchdogMaxReanchors {
             guard !didEscalateLoopbackStall else { return }
+            if externalStallSuppressionActive {
+                cmpLog(
+                    "[CMP-OUTAGE] playhead_watchdog exhaustion suppressed during origin outage (reanchors=\(watchdogReanchorCount))"
+                )
+                return
+            }
             didEscalateLoopbackStall = true
             Self.logger.error(
                 "[CMP-AVP] local loopback playhead_watchdog exhausted reanchors=\(self.watchdogReanchorCount, privacy: .public) pos=\(position, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public); escalating to route fallback"

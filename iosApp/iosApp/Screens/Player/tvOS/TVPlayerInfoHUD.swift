@@ -1,31 +1,5 @@
 #if os(tvOS)
-import QuartzCore
 import SwiftUI
-
-/// Coalesces duplicate d-pad move commands in the HUD's manual-movement
-/// handlers (the docs/tvos-focus.md bridging pattern). SwiftUI surfaces the
-/// Siri Remote's touch surface as discrete `.onMoveCommand` steps alongside
-/// ring clicks, so one physical gesture — a click with a resting-thumb
-/// micro-swipe, or a short swipe — can deliver two same-direction commands
-/// milliseconds apart. Native focus movement dampens that with gesture
-/// physics; manual row stepping does not, and each duplicate steps a whole
-/// row ("focus skips two items"). Dropping a same-direction command inside
-/// the window keeps one physical input to one step while staying below the
-/// ~100 ms cadence of held-press auto-repeat, so held scrolling is
-/// unaffected.
-struct HUDMoveCommandCoalescer {
-    private var lastDirection: MoveCommandDirection?
-    private var lastTime: CFTimeInterval = 0
-    private static let window: CFTimeInterval = 0.08
-
-    mutating func shouldStep(_ direction: MoveCommandDirection) -> Bool {
-        let now = CACurrentMediaTime()
-        let isDuplicate = direction == lastDirection && (now - lastTime) < Self.window
-        lastDirection = direction
-        lastTime = now
-        return !isDuplicate
-    }
-}
 
 /// Infuse-style floating top-center HUD. A pill-tab header (Info / Video /
 /// Audio / Subtitles / Chapters) selects which content pane renders below.
@@ -44,6 +18,7 @@ struct HUDMoveCommandCoalescer {
 struct TVPlayerInfoHUD: View {
     let viewModel: PlayerViewModel
     @Binding var activeTab: Tab
+    @State private var readOnlyPaneIsAtTop = true
     /// Focus target for the tab-bar pills, owned by `TVPlayerControls`.
     /// Sharing this via `@FocusState.Binding` lets the parent seed focus on
     /// a specific pill when the HUD opens, which is critical: without a
@@ -108,6 +83,9 @@ struct TVPlayerInfoHUD: View {
                 focusedTab = activeTab
             }
         }
+        .onChange(of: activeTab) { _, _ in
+            readOnlyPaneIsAtTop = true
+        }
         .onExitCommand(perform: onDismiss)
     }
 
@@ -126,6 +104,11 @@ struct TVPlayerInfoHUD: View {
             }
         }
         .focusSection()
+        // Info and Stats are single composite focus owners. Once either has
+        // paged below its top anchor, remove the rail from the focus graph so
+        // an Up press cannot both page the pane and escape to the active tab.
+        // The pane re-enables the rail when it reaches the top again.
+        .disabled(isReadOnlyPaneScrolled)
         // Rail: moving Up from the panel must land on the *active* pill, not
         // the geometrically nearest one — with focus-driven selection a
         // nearest-pill landing would switch panes as a side effect.
@@ -137,12 +120,22 @@ struct TVPlayerInfoHUD: View {
     private var panel: some View {
         Group {
             switch activeTab {
-            case .info:      InfoPane(viewModel: viewModel, onMoveToTabs: focusActiveTab)
-            case .stats:     StatsPane(viewModel: viewModel, onMoveToTabs: focusActiveTab)
+            case .info:
+                InfoPane(
+                    viewModel: viewModel,
+                    isAtTop: $readOnlyPaneIsAtTop,
+                    onMoveToTabs: focusActiveTab
+                )
+            case .stats:
+                StatsPane(
+                    viewModel: viewModel,
+                    isAtTop: $readOnlyPaneIsAtTop,
+                    onMoveToTabs: focusActiveTab
+                )
             case .video:     VideoPane(viewModel: viewModel)
-            case .audio:     AudioPane(viewModel: viewModel, onMoveToTabs: focusActiveTab)
-            case .subtitles: SubtitlesPane(viewModel: viewModel, onCloseHUD: onDismiss, onMoveToTabs: focusActiveTab)
-            case .chapters:  ChaptersPane(viewModel: viewModel, onSelect: onDismiss, onMoveToTabs: focusActiveTab)
+            case .audio:     AudioPane(viewModel: viewModel)
+            case .subtitles: SubtitlesPane(viewModel: viewModel, onCloseHUD: onDismiss)
+            case .chapters:  ChaptersPane(viewModel: viewModel, onSelect: onDismiss)
             }
         }
         .padding(.horizontal, 28)
@@ -164,6 +157,10 @@ struct TVPlayerInfoHUD: View {
         )
         .shadow(color: .black.opacity(0.5), radius: 20, y: 10)
         .focusSection()
+    }
+
+    private var isReadOnlyPaneScrolled: Bool {
+        (activeTab == .info || activeTab == .stats) && !readOnlyPaneIsAtTop
     }
 
     /// Used by the composite Info/Stats panes when Up is pressed at the top
@@ -276,21 +273,23 @@ private struct PaneColumn<Content: View>: View {
 private struct HUDScrollablePane<Content: View>: View {
     let accessibilityLabel: String
     let scrollTargetIDs: [String]
+    @Binding var isAtTop: Bool
     let onMoveToTabs: () -> Void
     let content: () -> Content
 
     @State private var scrollTargetIndex: Int = 0
-    @State private var moveCoalescer = HUDMoveCommandCoalescer()
     @FocusState private var isFocused: Bool
 
     init(
         accessibilityLabel: String,
         scrollTargetIDs: [String] = [],
+        isAtTop: Binding<Bool>,
         onMoveToTabs: @escaping () -> Void,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.accessibilityLabel = accessibilityLabel
         self.scrollTargetIDs = scrollTargetIDs
+        self._isAtTop = isAtTop
         self.onMoveToTabs = onMoveToTabs
         self.content = content
     }
@@ -319,12 +318,20 @@ private struct HUDScrollablePane<Content: View>: View {
             .onChange(of: scrollTargetIDs) { _, targets in
                 scrollTargetIndex = min(scrollTargetIndex, max(targets.count - 1, 0))
             }
+            .onChange(of: scrollTargetIndex) { _, index in
+                isAtTop = index == 0
+            }
+            .onAppear {
+                isAtTop = scrollTargetIndex == 0
+            }
+            .onDisappear {
+                isAtTop = true
+            }
         }
     }
 
     private func handleMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
         guard isFocused else { return }
-        guard moveCoalescer.shouldStep(direction) else { return }
 
         let nextIndex: Int
         switch direction {
@@ -508,6 +515,7 @@ private struct HUDSettingRowLabel: View {
 
 private struct InfoPane: View {
     let viewModel: PlayerViewModel
+    @Binding var isAtTop: Bool
     let onMoveToTabs: () -> Void
 
     private static let topAnchor = "info.top"
@@ -520,6 +528,7 @@ private struct InfoPane: View {
             // and Up returns to the top, then to the tabs. Without any targets
             // the pane was a dead focus stop that couldn't scroll at all.
             scrollTargetIDs: [Self.topAnchor, Self.bottomAnchor],
+            isAtTop: $isAtTop,
             onMoveToTabs: onMoveToTabs
         ) {
             VStack(alignment: .leading, spacing: 0) {
@@ -633,6 +642,7 @@ private struct InfoPane: View {
 
 private struct StatsPane: View {
     let viewModel: PlayerViewModel
+    @Binding var isAtTop: Bool
     let onMoveToTabs: () -> Void
 
     private static let topAnchor = "stats.top"
@@ -642,6 +652,7 @@ private struct StatsPane: View {
         HUDScrollablePane(
             accessibilityLabel: "Playback stats",
             scrollTargetIDs: scrollTargetIDs,
+            isAtTop: $isAtTop,
             onMoveToTabs: onMoveToTabs
         ) {
             VStack(alignment: .leading, spacing: 0) {
@@ -958,7 +969,6 @@ private struct HUDPickerDialog: View {
     let onClose: () -> Void
 
     @FocusState private var focusedOptionID: String?
-    @State private var moveCoalescer = HUDMoveCommandCoalescer()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -989,11 +999,6 @@ private struct HUDPickerDialog: View {
                         focusedOptionID = initialFocusID
                     }
                 }
-                // Manual Up/Down: options scrolled past the clip edge leave
-                // the focus graph and native Up would stall or escape.
-                .onMoveCommand { direction in
-                    handleMove(direction, proxy: proxy)
-                }
             }
         }
         .padding(.horizontal, 34)
@@ -1019,28 +1024,6 @@ private struct HUDPickerDialog: View {
         options.first(where: isSelected)?.id ?? options.first?.id
     }
 
-    private func handleMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
-        guard moveCoalescer.shouldStep(direction) else { return }
-        let ids = options.map(\.id)
-        let index = focusedOptionID.flatMap { ids.firstIndex(of: $0) }
-        switch direction {
-        case .up:
-            guard let index, index > 0 else { return }
-            focusOption(ids[index - 1], proxy: proxy)
-        case .down:
-            guard let index, index < ids.count - 1 else { return }
-            focusOption(ids[index + 1], proxy: proxy)
-        default:
-            break
-        }
-    }
-
-    private func focusOption(_ id: String, proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
-            proxy.scrollTo(id, anchor: .center)
-        }
-        focusedOptionID = id
-    }
 }
 
 private struct HUDPickerOptionRow: View {
@@ -1111,7 +1094,6 @@ private struct SubtitleAppearanceDialog: View {
     @State private var activePicker: HUDPickerPresentation?
     @State private var pickerReturnField: Field?
     @FocusState private var focusedField: Field?
-    @State private var moveCoalescer = HUDMoveCommandCoalescer()
 
     private enum Field: Hashable {
         case close
@@ -1144,7 +1126,6 @@ private struct SubtitleAppearanceDialog: View {
                     closeButton
                 }
 
-                ScrollViewReader { proxy in
                 ScrollView(showsIndicators: true) {
                     VStack(spacing: 2) {
                         HUDToggleRow(
@@ -1359,13 +1340,6 @@ private struct SubtitleAppearanceDialog: View {
                     .padding(.trailing, 8)
                 }
                 .frame(maxHeight: 560)
-                // Manual Up/Down: rows scrolled past the clip edge leave the
-                // focus graph, so native Up would stall or escape instead of
-                // scrolling back. Up from the first row goes to Close.
-                .onMoveCommand { direction in
-                    handleRowMove(direction, proxy: proxy)
-                }
-                }
             }
             .padding(.horizontal, 34)
             .padding(.vertical, 28)
@@ -1405,38 +1379,6 @@ private struct SubtitleAppearanceDialog: View {
         .buttonStyle(HUDCircleButtonStyle())
         .focused($focusedField, equals: .close)
         .accessibilityLabel("Close subtitle appearance")
-    }
-
-    /// Row order, mirroring the dialog's list (Close excluded — it sits
-    /// outside the scroll view and keeps native movement).
-    private static let rowOrder: [Field] = [
-        .matchSystem, .style, .font, .size, .textColor,
-        .outlineToggle, .outlineColor, .backgroundColor, .opacity, .position
-    ]
-
-    private func handleRowMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
-        guard moveCoalescer.shouldStep(direction) else { return }
-        let index = focusedField.flatMap { Self.rowOrder.firstIndex(of: $0) }
-        switch direction {
-        case .up:
-            guard let index, index > 0 else {
-                focusedField = .close
-                return
-            }
-            focusRow(Self.rowOrder[index - 1], proxy: proxy)
-        case .down:
-            guard let index, index < Self.rowOrder.count - 1 else { return }
-            focusRow(Self.rowOrder[index + 1], proxy: proxy)
-        default:
-            break
-        }
-    }
-
-    private func focusRow(_ field: Field, proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
-            proxy.scrollTo(field, anchor: .center)
-        }
-        focusedField = field
     }
 
     private func presentPicker(for field: Field, _ presentation: HUDPickerPresentation) {
@@ -1531,42 +1473,23 @@ private struct HUDCloseButtonLabel: View {
 
 private struct AudioPane: View {
     let viewModel: PlayerViewModel
-    let onMoveToTabs: () -> Void
-
-    @FocusState private var focusedTrackID: String?
-    @State private var moveCoalescer = HUDMoveCommandCoalescer()
 
     var body: some View {
         HStack(alignment: .top, spacing: 48) {
             PaneColumn("Tracks") {
-                ScrollViewReader { proxy in
-                    ScrollView(showsIndicators: false) {
-                        // Eager VStack: LazyVStack estimates offsets for
-                        // unrealized rows, which makes tvOS focus-driven
-                        // keep-visible scrolling jump on long lists. Audio
-                        // track counts are small, so eager is cheap.
-                        VStack(spacing: 2) {
-                            ForEach(viewModel.audioTracks) { track in
-                                HUDTrackRow(
-                                    name: track.primaryLabel,
-                                    attributes: track.attributesLabel,
-                                    isSelected: viewModel.selectedAudioId == track.trackId
-                                ) {
-                                    viewModel.selectAudio(track)
-                                }
-                                .focused($focusedTrackID, equals: String(track.trackId))
-                                .id(String(track.trackId))
+                ScrollView(showsIndicators: false) {
+                    // Keep the complete focus graph mounted so native tvOS
+                    // movement and keep-visible scrolling share one owner.
+                    VStack(spacing: 2) {
+                        ForEach(viewModel.audioTracks) { track in
+                            HUDTrackRow(
+                                name: track.primaryLabel,
+                                attributes: track.attributesLabel,
+                                isSelected: viewModel.selectedAudioId == track.trackId
+                            ) {
+                                viewModel.selectAudio(track)
                             }
                         }
-                    }
-                    // Manual Up/Down (playbook "bridging" pattern): rows
-                    // scrolled past the clip edge drop out of the focus
-                    // graph, so native Up escapes to the tab bar instead of
-                    // scrolling back. Owning the vertical axis makes Up
-                    // deterministic — step to the previous row and scroll it
-                    // into view; only the first row exits to the tabs.
-                    .onMoveCommand { direction in
-                        handleTrackMove(direction, proxy: proxy)
                     }
                 }
             }
@@ -1580,37 +1503,6 @@ private struct AudioPane: View {
                 }
             }
         }
-    }
-
-    private var trackIDs: [String] {
-        viewModel.audioTracks.map { String($0.trackId) }
-    }
-
-    private func handleTrackMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
-        guard moveCoalescer.shouldStep(direction) else { return }
-        let ids = trackIDs
-        let index = focusedTrackID.flatMap { ids.firstIndex(of: $0) }
-        switch direction {
-        case .up:
-            guard let index, index > 0 else {
-                onMoveToTabs()
-                return
-            }
-            focusTrack(ids[index - 1], proxy: proxy)
-        case .down:
-            guard let index, index < ids.count - 1 else { return }
-            focusTrack(ids[index + 1], proxy: proxy)
-        default:
-            // Options column is read-only (no focusables) — consume.
-            break
-        }
-    }
-
-    private func focusTrack(_ id: String, proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
-            proxy.scrollTo(id, anchor: .center)
-        }
-        focusedTrackID = id
     }
 
     private var selectedTrack: PlayerTrack? {
@@ -1637,9 +1529,6 @@ private struct SubtitlesPane: View {
     /// Dismiss the whole HUD (back to the player). Used when an AI subtitle job
     /// is accepted so the live "Preparing subtitles" overlay is visible.
     let onCloseHUD: () -> Void
-    /// Route focus to the active tab pill — Up from the first row of either
-    /// column.
-    let onMoveToTabs: () -> Void
 
     @State private var showAppearanceDialog = false
     @State private var showAITranslateMenu = false
@@ -1647,7 +1536,6 @@ private struct SubtitlesPane: View {
     @State private var activePicker: HUDPickerPresentation?
     @State private var pickerReturnField: Option?
     @FocusState private var focusedOption: Option?
-    @State private var moveCoalescer = HUDMoveCommandCoalescer()
 
     /// Identity for the options-column rows, used only to restore focus when
     /// a picker dialog, the appearance dialog, or the AI/search menu closes.
@@ -1660,8 +1548,6 @@ private struct SubtitlesPane: View {
         case position
         case appearance
     }
-
-    @FocusState private var focusedTrackID: String?
 
     private var overlayActive: Bool {
         showAppearanceDialog || activePicker != nil || showAITranslateMenu
@@ -1793,169 +1679,57 @@ private struct SubtitlesPane: View {
 
     @ViewBuilder
     private var trackRows: some View {
-        ScrollViewReader { proxy in
-            ScrollView(showsIndicators: false) {
-                // Eager VStack, deliberately: LazyVStack estimates offsets for
-                // unrealized rows, and on tvOS that makes the focus engine's
-                // keep-visible scrolling jump/overshoot as rows materialize.
-                // The eager build cost for typical track counts is small, and
-                // correct focus-scroll geometry matters more here.
-                VStack(alignment: .leading, spacing: 2) {
+        ScrollView(showsIndicators: false) {
+            // Eager by design: every native Button stays in one stable focus
+            // graph, and the ScrollView performs its own keep-visible motion.
+            VStack(alignment: .leading, spacing: 2) {
+                HUDTrackRow(
+                    name: "Off",
+                    attributes: nil,
+                    isSelected: viewModel.selectedSubtitleId == nil
+                ) {
+                    viewModel.disableSubtitles()
+                }
+                ForEach(viewModel.orderedSubtitleTracks) { track in
+                    HUDTrackRow(
+                        name: track.primaryLabel,
+                        attributes: track.attributesLabel,
+                        isSelected: viewModel.selectedSubtitleId == track.trackId
+                    ) {
+                        viewModel.selectSubtitle(track)
+                    }
+                }
+
+                if viewModel.supportsSecondarySubtitles,
+                   viewModel.selectedSubtitleId != nil,
+                   !viewModel.availableSecondarySubtitleTracks.isEmpty {
+                    Text("SECONDARY")
+                        .font(.system(size: 14, weight: .semibold))
+                        .tracking(1.6)
+                        .foregroundStyle(.white.opacity(0.45))
+                        .padding(.top, 20)
+                        .padding(.bottom, 4)
+                        .padding(.leading, 14)
                     HUDTrackRow(
                         name: "Off",
                         attributes: nil,
-                        isSelected: viewModel.selectedSubtitleId == nil
+                        isSelected: viewModel.selectedSecondarySubtitleId == nil
                     ) {
-                        viewModel.disableSubtitles()
+                        viewModel.disableSecondarySubtitles()
                     }
-                    .focused($focusedTrackID, equals: "off")
-                    .id("off")
-                    ForEach(viewModel.orderedSubtitleTracks) { track in
+                    ForEach(viewModel.availableSecondarySubtitleTracks) { track in
                         HUDTrackRow(
                             name: track.primaryLabel,
                             attributes: track.attributesLabel,
-                            isSelected: viewModel.selectedSubtitleId == track.trackId
+                            isSelected: viewModel.selectedSecondarySubtitleId == track.trackId,
+                            isDisabled: track.trackId == viewModel.selectedSubtitleId
                         ) {
-                            viewModel.selectSubtitle(track)
-                        }
-                        .focused($focusedTrackID, equals: String(track.trackId))
-                        .id(String(track.trackId))
-                    }
-
-                    if viewModel.supportsSecondarySubtitles,
-                       viewModel.selectedSubtitleId != nil,
-                       !viewModel.availableSecondarySubtitleTracks.isEmpty {
-                        Text("SECONDARY")
-                            .font(.system(size: 14, weight: .semibold))
-                            .tracking(1.6)
-                            .foregroundStyle(.white.opacity(0.45))
-                            .padding(.top, 20)
-                            .padding(.bottom, 4)
-                            .padding(.leading, 14)
-                        HUDTrackRow(
-                            name: "Off",
-                            attributes: nil,
-                            isSelected: viewModel.selectedSecondarySubtitleId == nil
-                        ) {
-                            viewModel.disableSecondarySubtitles()
-                        }
-                        .focused($focusedTrackID, equals: "secondary.off")
-                        .id("secondary.off")
-                        ForEach(viewModel.availableSecondarySubtitleTracks) { track in
-                            HUDTrackRow(
-                                name: track.primaryLabel,
-                                attributes: track.attributesLabel,
-                                isSelected: viewModel.selectedSecondarySubtitleId == track.trackId,
-                                isDisabled: track.trackId == viewModel.selectedSubtitleId
-                            ) {
-                                viewModel.selectSecondarySubtitle(track)
-                            }
-                            .focused($focusedTrackID, equals: "secondary.\(track.trackId)")
-                            .id("secondary.\(track.trackId)")
+                            viewModel.selectSecondarySubtitle(track)
                         }
                     }
                 }
             }
-            // Manual movement (playbook "bridging" pattern): rows scrolled
-            // past the clip edge drop out of the focus graph, so native Up
-            // escapes to the tab bar instead of scrolling back. Owning the
-            // axes makes movement deterministic — Up/Down step rows and
-            // scroll them into view, Right bridges to the Options column,
-            // and only the first row exits Up to the tabs.
-            .onMoveCommand { direction in
-                handleTrackMove(direction, proxy: proxy)
-            }
         }
-    }
-
-    /// Focusable row ids in visual order, mirroring `trackRows` (the disabled
-    /// secondary row is skipped — focus can't land on it).
-    private var trackListIDs: [String] {
-        var ids = ["off"] + viewModel.orderedSubtitleTracks.map { String($0.trackId) }
-        if viewModel.supportsSecondarySubtitles,
-           viewModel.selectedSubtitleId != nil,
-           !viewModel.availableSecondarySubtitleTracks.isEmpty {
-            ids.append("secondary.off")
-            ids += viewModel.availableSecondarySubtitleTracks
-                .filter { $0.trackId != viewModel.selectedSubtitleId }
-                .map { "secondary.\($0.trackId)" }
-        }
-        return ids
-    }
-
-    /// Options-column rows in visual order, mirroring `optionRowsContent`.
-    private var visibleOptions: [Option] {
-        var options: [Option] = []
-        if aiSubtitlesAvailable { options.append(.translate) }
-        if viewModel.subtitleSearchAvailable { options.append(.search) }
-        if viewModel.backendCapabilities.supportsSubtitleDelay { options.append(.delay) }
-        if viewModel.backendCapabilities.supportsSubtitleStyling {
-            options += [.save, .size, .position, .appearance]
-        }
-        return options
-    }
-
-    private func handleTrackMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
-        guard moveCoalescer.shouldStep(direction) else { return }
-        let ids = trackListIDs
-        let index = focusedTrackID.flatMap { ids.firstIndex(of: $0) }
-        switch direction {
-        case .up:
-            guard let index, index > 0 else {
-                onMoveToTabs()
-                return
-            }
-            focusTrack(ids[index - 1], proxy: proxy)
-        case .down:
-            guard let index, index < ids.count - 1 else { return }
-            focusTrack(ids[index + 1], proxy: proxy)
-        case .right:
-            if let first = visibleOptions.first {
-                focusedOption = first
-            }
-        default:
-            break
-        }
-    }
-
-    private func focusTrack(_ id: String, proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
-            proxy.scrollTo(id, anchor: .center)
-        }
-        focusedTrackID = id
-    }
-
-    private func handleOptionMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
-        guard moveCoalescer.shouldStep(direction) else { return }
-        let options = visibleOptions
-        let index = focusedOption.flatMap { options.firstIndex(of: $0) }
-        switch direction {
-        case .up:
-            guard let index, index > 0 else {
-                onMoveToTabs()
-                return
-            }
-            focusOption(options[index - 1], proxy: proxy)
-        case .down:
-            guard let index, index < options.count - 1 else { return }
-            focusOption(options[index + 1], proxy: proxy)
-        case .left:
-            // Bridge back to the track list, landing on the current selection.
-            if let selected = viewModel.selectedSubtitleId {
-                focusedTrackID = String(selected)
-            } else {
-                focusedTrackID = "off"
-            }
-        default:
-            break
-        }
-    }
-
-    private func focusOption(_ option: Option, proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
-            proxy.scrollTo(option, anchor: .center)
-        }
-        focusedOption = option
     }
 
     @ViewBuilder
@@ -1964,16 +1738,8 @@ private struct SubtitlesPane: View {
         // Save, Size, Position, Appearance) the column outgrows the fixed
         // panel height; without a ScrollView the last row clips at the
         // panel edge and focus can't bring it fully into view.
-        ScrollViewReader { proxy in
-            ScrollView(showsIndicators: false) {
-                optionRowsContent
-            }
-            // Manual movement — same rationale as the track list: rows
-            // scrolled past the clip edge leave the focus graph and Up
-            // would escape to the tab bar. Left bridges back to the tracks.
-            .onMoveCommand { direction in
-                handleOptionMove(direction, proxy: proxy)
-            }
+        ScrollView(showsIndicators: false) {
+            optionRowsContent
         }
     }
 
@@ -2100,10 +1866,6 @@ private struct SubtitlesPane: View {
 private struct ChaptersPane: View {
     let viewModel: PlayerViewModel
     let onSelect: () -> Void
-    let onMoveToTabs: () -> Void
-
-    @FocusState private var focusedIndex: Int?
-    @State private var moveCoalescer = HUDMoveCommandCoalescer()
 
     private var currentIndex: Int? {
         viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
@@ -2111,58 +1873,23 @@ private struct ChaptersPane: View {
 
     var body: some View {
         PaneColumn("Chapters") {
-            ScrollViewReader { proxy in
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 2) {
-                        ForEach(Array(viewModel.chapters.enumerated()), id: \.offset) { index, chapter in
-                            HUDChapterRow(
-                                number: index + 1,
-                                title: chapter.title ?? "Chapter \(index + 1)",
-                                time: PlayerTimeFormatter.formatHMS(chapter.time),
-                                isCurrent: currentIndex == index
-                            ) {
-                                viewModel.seekTo(seconds: chapter.time)
-                                onSelect()
-                            }
-                            .focused($focusedIndex, equals: index)
-                            .id(index)
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 2) {
+                    ForEach(Array(viewModel.chapters.enumerated()), id: \.offset) { index, chapter in
+                        HUDChapterRow(
+                            number: index + 1,
+                            title: chapter.title ?? "Chapter \(index + 1)",
+                            time: PlayerTimeFormatter.formatHMS(chapter.time),
+                            isCurrent: currentIndex == index
+                        ) {
+                            viewModel.seekTo(seconds: chapter.time)
+                            onSelect()
                         }
                     }
-                }
-                // Manual Up/Down: chapters scrolled past the clip edge leave
-                // the focus graph, so native Up escapes to the tab bar
-                // instead of scrolling back. Only the first row exits Up.
-                .onMoveCommand { direction in
-                    handleMove(direction, proxy: proxy)
                 }
             }
         }
         .focusSection()
-    }
-
-    private func handleMove(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
-        guard moveCoalescer.shouldStep(direction) else { return }
-        let count = viewModel.chapters.count
-        switch direction {
-        case .up:
-            guard let index = focusedIndex, index > 0 else {
-                onMoveToTabs()
-                return
-            }
-            focusChapter(index - 1, proxy: proxy)
-        case .down:
-            guard let index = focusedIndex, index < count - 1 else { return }
-            focusChapter(index + 1, proxy: proxy)
-        default:
-            break
-        }
-    }
-
-    private func focusChapter(_ index: Int, proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
-            proxy.scrollTo(index, anchor: .center)
-        }
-        focusedIndex = index
     }
 }
 

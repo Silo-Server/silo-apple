@@ -128,6 +128,51 @@ enum PlaybackOriginReconnectPolicy {
     }
 }
 
+/// Ride-through decisions for an origin that has stopped delivering
+/// (workstream B of docs/superpowers/plans/2026-07-07-playback-continuity-client.md).
+/// When the reconnect ladder gives up on a retryable cause, the resource
+/// parks the blocked byte demands instead of failing them, keeps re-probing
+/// the origin on a slow cadence, and lets the player ride its buffered
+/// runway. Visibility is the view model's decision (runway-gated), not the
+/// transport's.
+enum PlaybackOriginOutagePolicy {
+    /// Delay between origin re-probes while parked in an outage. The view
+    /// model's server-health poll nudges an immediate re-probe when the
+    /// health endpoint comes back, so this cadence is only the fallback.
+    /// `var` so tests can compress it.
+    static var probeDelaySeconds: Double = 5.0
+
+    /// Kill switch: setting SILO_DISABLE_OUTAGE_RIDE_THROUGH=1 restores the
+    /// legacy behavior (give-up fails waiters and escalates to the visible
+    /// outage recovery immediately).
+    static func rideThroughEnabled() -> Bool {
+        ProcessInfo.processInfo.environment["SILO_DISABLE_OUTAGE_RIDE_THROUGH"] != "1"
+    }
+
+    /// Whether a give-up with this cause parks the failed byte demands
+    /// (outage ride-through) instead of failing them.
+    ///
+    /// `httpFatal(404)` parks only when the session-missing sentinel was
+    /// observed: the silent background session renewal is in flight and its
+    /// retarget will re-drive the parked demands against the renewed
+    /// session. Every other fatal cause keeps the legacy fail-fast path.
+    static func shouldPark(
+        cause: PlaybackOriginReconnectPolicy.EndCause,
+        sessionMissingObserved: Bool,
+        rideThroughEnabled: Bool
+    ) -> Bool {
+        guard rideThroughEnabled else { return false }
+        switch cause {
+        case .network, .stalled, .httpOutage:
+            return true
+        case .httpFatal(let code):
+            return code == 404 && sessionMissingObserved
+        case .prematureEOF, .rangeIgnored:
+            return false
+        }
+    }
+}
+
 /// One long-lived streaming origin connection: an open-ended
 /// `Range: bytes=<cursor>-` GET whose body is stored into the span cache
 /// incrementally as each URLSession delivery arrives. Throttling is

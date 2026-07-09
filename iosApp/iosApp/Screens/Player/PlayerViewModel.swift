@@ -720,6 +720,24 @@ class PlayerViewModel {
     private var remoteDismissTask: Task<Void, Never>?
     private var progressTask: Task<Void, Never>?
     private var staleSessionRecoveryTask: Task<Void, Never>?
+    /// In-flight silent renewal of a lost direct-play session (same file,
+    /// same plan, new session id — player and cache untouched). Keyed by the
+    /// stale session id for single-flight; transient failures retry on the
+    /// next trigger up to `backgroundRenewalTransientFailureLimit` before
+    /// escalating to the visible stale-session renewal.
+    private var backgroundRenewalTask: Task<Void, Never>?
+    private var backgroundRenewalSessionId: String?
+    private var backgroundRenewalTransientFailures = 0
+    private static let backgroundRenewalTransientFailureLimit = 3
+    /// Origin-outage ride-through (workstream B): while the source proxy is
+    /// parked in an outage, playback rides its buffered runway with no UI
+    /// change; this task polls server health (nudging an immediate re-probe
+    /// when it returns) and escalates to the visible outage recovery only
+    /// when the budget expires. A "Reconnecting" notice appears only if the
+    /// player actually starts buffering during the outage.
+    private var sourceOutageRideThroughTask: Task<Void, Never>?
+    private var sourceOutageActive = false
+    private var sourceOutageNoticeShown = false
     private var serverOutageRecoveryTask: Task<Void, Never>?
     private var serverOutageRecoveryGeneration: UInt64 = 0
     private var activeServerOutageRecoverySessionId: String?
@@ -1234,6 +1252,11 @@ class PlayerViewModel {
         cb.onBufferingChange = { [weak self] buffering in
             guard let self, !self.isDisposed else { return }
             self.isBuffering = buffering
+            if buffering {
+                Task { @MainActor [weak self] in
+                    self?.noteBufferingDuringSourceOutage()
+                }
+            }
             if !buffering {
                 self.bufferingProgress = nil
             }
@@ -1350,8 +1373,25 @@ class PlayerViewModel {
             handleEndOfFile()
             return
         }
-        if isPlaybackSessionMissingMessage(message) || isLikelyExpiredSessionHTTP404(message),
-           attemptStaleSessionRenewal(reason: "player_error", observedPosition: currentTime) {
+        if isPlaybackSessionMissingMessage(message) || isLikelyExpiredSessionHTTP404(message) {
+            if attemptBackgroundSessionRenewal(reason: "player_error", observedPosition: currentTime) {
+                return
+            }
+            if attemptStaleSessionRenewal(reason: "player_error", observedPosition: currentTime) {
+                return
+            }
+        }
+        if isPrematureSourceEndMessage(message) {
+            Self.logger.warning(
+                "Routing premature source end into server outage recovery: \(message, privacy: .public)"
+            )
+            Task { @MainActor [weak self] in
+                guard let self, !self.isDisposed else { return }
+                _ = self.attemptServerOutageRecovery(
+                    reason: .networkUnavailable,
+                    observedPosition: self.currentTime
+                )
+            }
             return
         }
         progressTask?.cancel()
@@ -2015,6 +2055,7 @@ class PlayerViewModel {
         let loadGeneration = streamLoadGeneration
         activePlayer.dispose()
         activePlayer = .none
+        stashSourceCacheHandoff()
         sourceProxy?.stop()
         sourceProxy = nil
 
@@ -2037,6 +2078,7 @@ class PlayerViewModel {
             return
         }
         sourceProxy = prepared.proxy
+        sourceProxyFileId = prepared.proxy != nil ? currentSelectedVersion?.fileId : nil
         let loadPlan = prepared.plan
         activeExecutionPlan = loadPlan
         installPlayer(for: loadPlan.engine)
@@ -2051,6 +2093,9 @@ class PlayerViewModel {
         activePlayer.avBackend?.proxyStatsProvider = { [weak self] in
             self?.sourceProxy?.stats()
         }
+        activePlayer.avBackend?.sourceOutageStateProvider = { [weak self] in
+            self?.sourceProxy?.isOriginOutageActive ?? false
+        }
         do {
             try playbackCoordinator.load(plan: loadPlan)
             activePlayer = ActivePlayer(renderTarget: playbackCoordinator.renderTarget)
@@ -2063,6 +2108,71 @@ class PlayerViewModel {
     private struct SourceProxyPreparation {
         let plan: PlaybackExecutionPlan
         let proxy: PlaybackSourceProxy?
+    }
+
+    /// A torn-down proxy's cache, retained across the teardown so a
+    /// same-file replacement proxy can adopt it (spans stay in memory, spill
+    /// stays on disk) instead of re-downloading. One slot: stashed at every
+    /// proxy stop that might be followed by a same-file reload, resolved
+    /// (adopted or released) by the next `prepareSourceProxy`, and released
+    /// on terminal teardown. Releasing the last reference cleans the disk
+    /// directory via the cache's deinit.
+    private struct SourceCacheHandoff {
+        let fileId: Int
+        let cache: PlaybackSourceCache
+    }
+
+    private var sourceCacheHandoff: SourceCacheHandoff?
+    /// File id the live `sourceProxy` was built for — the stash metadata.
+    /// (`currentSelectedVersion` is already reset by the time some teardown
+    /// paths stop the proxy, so the association must be recorded at install.)
+    private var sourceProxyFileId: Int?
+
+    /// Retain the outgoing proxy's cache for possible adoption by the next
+    /// same-file proxy. Called immediately before `sourceProxy.stop()` on
+    /// non-terminal teardown paths.
+    private func stashSourceCacheHandoff() {
+        guard let proxy = sourceProxy, let fileId = sourceProxyFileId else { return }
+        let cache = proxy.handoffCache
+        sourceCacheHandoff = SourceCacheHandoff(fileId: fileId, cache: cache)
+        Self.logger.info(
+            "[CMP-SOURCE-CACHE] handoff stashed fileId=\(fileId, privacy: .public) cachedBytes=\(cache.stats().cachedBytes, privacy: .public) diskBytes=\(cache.stats().diskSpillBytes, privacy: .public)"
+        )
+    }
+
+    private func discardSourceCacheHandoff() {
+        if sourceCacheHandoff != nil {
+            Self.logger.info("[CMP-SOURCE-CACHE] handoff released")
+        }
+        sourceCacheHandoff = nil
+    }
+
+    /// Resolve the handoff slot against the incoming plan: adopt the cache
+    /// when the adoption policy allows, release it otherwise. Either way the
+    /// slot is emptied — a handoff lives for exactly one load attempt.
+    private func takeAdoptableSourceCache(budgetBytes: Int, diskSpillRequested: Bool) -> PlaybackSourceCache? {
+        guard let handoff = sourceCacheHandoff else { return nil }
+        sourceCacheHandoff = nil
+        let adopt = SourceCacheAdoptionPolicy.shouldAdopt(
+            handoffFileId: handoff.fileId,
+            planFileId: currentSelectedVersion?.fileId,
+            handoffBudgetBytes: handoff.cache.maxBytes,
+            planBudgetBytes: budgetBytes,
+            handoffDiskSpill: handoff.cache.diskSpillActive,
+            planDiskSpill: PlaybackSourceCache.resolveDiskSpillEnabled(diskSpillRequested),
+            cachedTotalLength: handoff.cache.knownTotalLength,
+            expectedFileSize: currentSelectedVersion?.fileSize
+        )
+        guard adopt else {
+            Self.logger.info(
+                "[CMP-SOURCE-CACHE] handoff rejected fileId=\(handoff.fileId, privacy: .public) planFileId=\(self.currentSelectedVersion?.fileId ?? -1, privacy: .public)"
+            )
+            return nil
+        }
+        Self.logger.info(
+            "[CMP-SOURCE-CACHE] handoff adopted fileId=\(handoff.fileId, privacy: .public) cachedBytes=\(handoff.cache.stats().cachedBytes, privacy: .public)"
+        )
+        return handoff.cache
     }
 
     private enum SourceProxyPreparationError: LocalizedError {
@@ -2089,22 +2199,37 @@ class PlayerViewModel {
               plan.engine != .avPlayerHLS,
               plan.engine != .playerCoreDirect,
               ["http", "https"].contains(plan.sourceStreamRequest.url.scheme?.lowercased()) else {
+            // This load runs without a proxy, so any stashed cache has no
+            // adopter — release it rather than hold its disk spans for the
+            // rest of playback.
+            discardSourceCacheHandoff()
             if plan.engine == .siloPlayerLoopback {
                 throw SourceProxyPreparationError.unsupportedSourceURL
             }
             return SourceProxyPreparation(plan: plan, proxy: nil)
         }
         let cacheBudget = sourceCacheBudget(for: plan)
+        let diskSpillRequested = PlayerSettings.shared.seekCacheEnabled
+        let cache = takeAdoptableSourceCache(
+            budgetBytes: cacheBudget,
+            diskSpillRequested: diskSpillRequested
+        ) ?? PlaybackSourceCache(
+            maxBytes: cacheBudget,
+            diskSpillEnabled: diskSpillRequested
+        )
         let proxy = PlaybackSourceProxy(
             originURL: plan.sourceStreamRequest.url,
             originHeaders: plan.sourceStreamRequest.headers,
-            cache: PlaybackSourceCache(
-                maxBytes: cacheBudget,
-                diskSpillEnabled: PlayerSettings.shared.seekCacheEnabled
-            ),
+            cache: cache,
             onPlaybackSessionMissing: { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    if self.attemptBackgroundSessionRenewal(
+                        reason: "source_404",
+                        observedPosition: self.currentTime
+                    ) {
+                        return
+                    }
                     _ = self.attemptStaleSessionRenewal(
                         reason: "source_404",
                         observedPosition: self.currentTime
@@ -2118,6 +2243,11 @@ class PlayerViewModel {
                         reason: reason,
                         observedPosition: self.currentTime
                     )
+                }
+            },
+            onOriginOutageChanged: { [weak self] active in
+                Task { @MainActor [weak self] in
+                    self?.handleOriginOutageChanged(active)
                 }
             }
         )
@@ -2716,6 +2846,7 @@ class PlayerViewModel {
         selectedSubtitleId = nil
         selectedSecondarySubtitleId = nil
         bufferedAheadSeconds = 0
+        stashSourceCacheHandoff()
         sourceProxy?.stop()
         sourceProxy = nil
         subtitleLoadStatus = [.primary: .idle, .secondary: .idle]
@@ -2917,6 +3048,10 @@ class PlayerViewModel {
                 self.autoSkipIntroCancelledKey = nil
                 self.cancelPendingIntroAutoSkip()
                 self.staleSessionRecoverySessionId = nil
+                self.backgroundRenewalTask?.cancel()
+                self.backgroundRenewalTask = nil
+                self.backgroundRenewalSessionId = nil
+                self.backgroundRenewalTransientFailures = 0
 
                 // Snapshot the preferred language for track-list ordering
                 // unconditionally (even with an explicit choice) so the
@@ -3206,6 +3341,7 @@ class PlayerViewModel {
         clearForegroundInterruptionState()
         clearSuspendedPlaybackState()
         clearServerOutageRecoveryState()
+        discardSourceCacheHandoff()
         activePlayer.dispose()
         sourceProxy?.stop()
         sourceProxy = nil
@@ -3213,6 +3349,120 @@ class PlayerViewModel {
         error = message
         isLoading = false
         isPlaying = false
+    }
+
+    /// Silently renews a lost server session in place: the bridge re-POSTs
+    /// the captured start request (same file, same plan), the source proxy
+    /// is retargeted at the renewed stream URL, and the player, remuxer, and
+    /// cache are never touched — zero user-visible effect. Returns false
+    /// when this playback cannot be renewed in place (offline, non-direct
+    /// delivery, no proxy); the caller falls back to the visible renewal.
+    /// A renewal that fails with a re-plan escalates to the visible renewal
+    /// itself; transient failures retry on the next trigger (the 10 s
+    /// progress heartbeat) up to a small cap.
+    @discardableResult
+    private func attemptBackgroundSessionRenewal(reason: String, observedPosition: Double) -> Bool {
+        guard !isDisposed,
+              offlinePlaybackContext == nil,
+              currentDeliveryStrategy == .direct,
+              sourceProxy != nil else {
+            return false
+        }
+        let staleSessionId = activePlaybackSessionId ?? "unknown"
+        if backgroundRenewalSessionId == staleSessionId {
+            return true
+        }
+        backgroundRenewalSessionId = staleSessionId
+        let resumePosition = observedPosition.isFinite
+            ? max(0, observedPosition)
+            : max(0, currentTime)
+
+        Self.logger.warning(
+            "[CMP-RECOVERY] background session renewal started session=\(staleSessionId, privacy: .public) reason=\(reason, privacy: .public) position=\(resumePosition, privacy: .public)"
+        )
+
+        backgroundRenewalTask?.cancel()
+        backgroundRenewalTask = Task { @MainActor [weak self] in
+            guard let self, !self.isDisposed else { return }
+            do {
+                let renewed = try await self.sessionBridge.renewDirectSession(
+                    position: resumePosition,
+                    audioTrackIndex: self.resolvedAudioTrackIndexForResume()
+                )
+                guard !Task.isCancelled, !self.isDisposed else { return }
+                // A fresh load may have replaced this playback while the
+                // renewal was in flight; adopting the new session into it
+                // would cross-wire two generations.
+                guard self.activePlaybackSessionId == staleSessionId,
+                      let proxy = self.sourceProxy else {
+                    Self.logger.info(
+                        "[CMP-RECOVERY] background renewal superseded session=\(staleSessionId, privacy: .public)"
+                    )
+                    return
+                }
+                guard let streamRequest = await self.makeStreamRequest(session: renewed) else {
+                    self.failBackgroundRenewal(
+                        reason: reason,
+                        observedPosition: resumePosition,
+                        detail: "invalid renewed stream URL"
+                    )
+                    return
+                }
+                proxy.retargetOrigin(url: streamRequest.url, headers: streamRequest.headers)
+                self.activePlaybackSessionId = renewed.sessionId
+                self.staleSessionRecoverySessionId = nil
+                self.backgroundRenewalSessionId = nil
+                self.backgroundRenewalTransientFailures = 0
+                await self.realtimeClient.unbind()
+                guard !Task.isCancelled, !self.isDisposed else { return }
+                await self.realtimeClient.bind(sessionId: renewed.sessionId)
+                Self.logger.info(
+                    "[CMP-RECOVERY] background session renewal succeeded old=\(staleSessionId, privacy: .public) new=\(renewed.sessionId, privacy: .public) reason=\(reason, privacy: .public)"
+                )
+            } catch let error as PlaybackSessionBridge.DirectSessionRenewalError {
+                guard !Task.isCancelled, !self.isDisposed else { return }
+                // The server re-planned (or nothing is renewable): only a
+                // full visible renewal can pick up the new plan.
+                self.failBackgroundRenewal(
+                    reason: reason,
+                    observedPosition: resumePosition,
+                    detail: String(describing: error)
+                )
+            } catch {
+                guard !Task.isCancelled, !self.isDisposed else { return }
+                self.backgroundRenewalSessionId = nil
+                self.backgroundRenewalTransientFailures += 1
+                if self.backgroundRenewalTransientFailures >= Self.backgroundRenewalTransientFailureLimit {
+                    self.failBackgroundRenewal(
+                        reason: reason,
+                        observedPosition: resumePosition,
+                        detail: "transient failures exhausted: \(error)"
+                    )
+                } else {
+                    // Leave the flag clear so the next trigger (progress
+                    // heartbeat or stream 404) retries; a genuinely dead
+                    // server escalates through the source-interruption path
+                    // independently of this renewal.
+                    Self.logger.warning(
+                        "[CMP-RECOVERY] background renewal transient failure #\(self.backgroundRenewalTransientFailures) session=\(staleSessionId, privacy: .public): \(String(describing: error), privacy: .public)"
+                    )
+                }
+            }
+        }
+        return true
+    }
+
+    @MainActor
+    private func failBackgroundRenewal(reason: String, observedPosition: Double, detail: String) {
+        Self.logger.warning(
+            "[CMP-RECOVERY] background renewal escalating to visible renewal reason=\(reason, privacy: .public): \(detail, privacy: .public)"
+        )
+        backgroundRenewalSessionId = nil
+        backgroundRenewalTransientFailures = 0
+        _ = attemptStaleSessionRenewal(
+            reason: "\(reason)_bg_renewal_failed",
+            observedPosition: observedPosition
+        )
     }
 
     @discardableResult
@@ -3227,6 +3477,11 @@ class PlayerViewModel {
             return true
         }
         staleSessionRecoverySessionId = staleSessionId
+        // A visible renewal supersedes any in-flight silent one; a late
+        // retarget landing mid-teardown would cross-wire the generations.
+        backgroundRenewalTask?.cancel()
+        backgroundRenewalTask = nil
+        backgroundRenewalSessionId = nil
 
         let resumePosition = observedPosition.isFinite
             ? max(0, observedPosition)
@@ -3272,6 +3527,117 @@ class PlayerViewModel {
         return true
     }
 
+    /// Origin-outage ride-through entry/exit, driven by the source proxy's
+    /// `onOriginOutageChanged`. Entry keeps playback untouched (the player
+    /// rides its buffered runway), suppresses the loopback watchdog
+    /// escalations that would misread the quiet park as a route wedge, and
+    /// starts a server-health poll whose success nudges an immediate origin
+    /// re-probe. Exit restores everything. The visible outage recovery runs
+    /// only when the budget expires.
+    @MainActor
+    private func handleOriginOutageChanged(_ active: Bool) {
+        guard !isDisposed else { return }
+        if active {
+            // A full visible recovery already owns this outage.
+            guard activeServerOutageRecoverySessionId == nil else { return }
+            guard !sourceOutageActive else { return }
+            sourceOutageActive = true
+            sourceOutageNoticeShown = false
+            activePlayer.avBackend?.setExternalStallSuppression(true)
+            Self.logger.warning("[CMP-OUTAGE] ride-through started")
+            if isBuffering {
+                // Already out of runway when the outage was detected (e.g. a
+                // seek beyond the cache raced the outage) — the notice's
+                // buffering-edge trigger won't fire again.
+                noteBufferingDuringSourceOutage()
+            }
+            sourceOutageRideThroughTask?.cancel()
+            sourceOutageRideThroughTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                let deadline = Date().addingTimeInterval(Self.serverOutageRecoveryTimeout)
+                var delay = Self.serverOutageRecoveryInitialDelay
+                while !Task.isCancelled,
+                      !self.isDisposed,
+                      self.sourceOutageActive,
+                      Date() < deadline {
+                    if await self.probeServerHealthOnce() {
+                        Self.logger.info("[CMP-OUTAGE] server healthy; nudging origin re-probe")
+                        self.sourceProxy?.reprobeOrigin()
+                    }
+                    try? await Task.sleep(for: .seconds(delay))
+                    delay = min(delay * 2, Self.serverOutageRecoveryMaxDelay)
+                }
+                guard !Task.isCancelled, !self.isDisposed, self.sourceOutageActive else { return }
+                Self.logger.error("[CMP-OUTAGE] ride-through budget exhausted; escalating to visible recovery")
+                self.sourceOutageActive = false
+                self.sourceOutageNoticeShown = false
+                self.activePlayer.avBackend?.setExternalStallSuppression(false)
+                self.sourceOutageRideThroughTask = nil
+                _ = self.attemptServerOutageRecovery(
+                    reason: .networkUnavailable,
+                    observedPosition: self.currentTime
+                )
+            }
+        } else {
+            guard sourceOutageActive else { return }
+            Self.logger.info("[CMP-OUTAGE] ride-through ended; origin recovered")
+            let showReconnected = sourceOutageNoticeShown
+            clearSourceOutageRideThroughState()
+            // An item whose segment fetches died during the outage won't
+            // retry them on its own — kick the stall recovery immediately
+            // rather than waiting for a watchdog to misread the wedge.
+            activePlayer.avBackend?.kickPlaybackAfterExternalStallCleared()
+            if showReconnected {
+                showNotice(
+                    title: "Reconnected",
+                    message: "Connection to the server was restored.",
+                    tone: .info,
+                    duration: 3
+                )
+            }
+        }
+    }
+
+    private func clearSourceOutageRideThroughState() {
+        sourceOutageActive = false
+        sourceOutageNoticeShown = false
+        activePlayer.avBackend?.setExternalStallSuppression(false)
+        sourceOutageRideThroughTask?.cancel()
+        sourceOutageRideThroughTask = nil
+    }
+
+    /// One server health probe (auth statuses count as reachable — the
+    /// server is up even if this credential can't read /health).
+    private func probeServerHealthOnce() async -> Bool {
+        do {
+            let _: HealthStatus = try await HTTPClient.shared.get("/api/v1/health")
+            return true
+        } catch {
+            if let httpError = error as? HTTPError,
+               let statusCode = httpError.statusCode,
+               statusCode == 401 || statusCode == 403 {
+                return true
+            }
+            return false
+        }
+    }
+
+    /// Show the "Reconnecting" notice the first time the player actually
+    /// runs out of runway during an origin outage — the runway gate that
+    /// keeps short outages entirely invisible.
+    @MainActor
+    private func noteBufferingDuringSourceOutage() {
+        guard sourceOutageActive, !sourceOutageNoticeShown else { return }
+        sourceOutageNoticeShown = true
+        Self.logger.warning("[CMP-OUTAGE] runway exhausted; showing reconnecting notice")
+        showNotice(
+            title: "Reconnecting",
+            message: "Connection to the server was lost. Trying to reconnect…",
+            tone: .warning,
+            duration: Self.serverOutageRecoveryTimeout
+        )
+    }
+
     @discardableResult
     @MainActor
     private func attemptServerOutageRecovery(
@@ -3292,6 +3658,13 @@ class PlayerViewModel {
         serverOutageRecoveryGeneration &+= 1
         let generation = serverOutageRecoveryGeneration
         activeServerOutageRecoverySessionId = interruptedSessionId
+        // Outage recovery tears the proxy down; cancel any in-flight silent
+        // renewal so its retarget can't land mid-teardown, and end the
+        // ride-through (its watchdog suppression must not outlive the proxy).
+        backgroundRenewalTask?.cancel()
+        backgroundRenewalTask = nil
+        backgroundRenewalSessionId = nil
+        clearSourceOutageRideThroughState()
 
         let resumePosition = observedPosition.isFinite
             ? max(0, observedPosition)
@@ -3311,6 +3684,7 @@ class PlayerViewModel {
 
         progressTask?.cancel()
         progressTask = nil
+        stashSourceCacheHandoff()
         sourceProxy?.stop()
         sourceProxy = nil
         activePlayer.dispose()
@@ -3409,6 +3783,15 @@ class PlayerViewModel {
         let lowered = message.lowercased()
         return lowered.contains("playback_session_not_found")
             || lowered.contains("playback session not found")
+    }
+
+    /// The loopback writer's ingest ended clearly short of the known content
+    /// (`LoopbackWriterError.prematureSourceEnd`) — an origin outage, not an
+    /// engine defect. It must route into server-outage recovery, not the
+    /// engine-fallback ladder: degrading to PlayerCore against a dead origin
+    /// trades a recoverable stream for a second failure.
+    private func isPrematureSourceEndMessage(_ message: String) -> Bool {
+        message.contains("prematureSourceEnd")
     }
 
     /// The PlayerCore direct route talks to the origin without the source
@@ -4978,6 +5361,10 @@ class PlayerViewModel {
         progressTask?.cancel()
         staleSessionRecoveryTask?.cancel()
         staleSessionRecoveryTask = nil
+        backgroundRenewalTask?.cancel()
+        backgroundRenewalTask = nil
+        backgroundRenewalSessionId = nil
+        clearSourceOutageRideThroughState()
         clearServerOutageRecoveryState()
         settingsRefreshTask?.cancel()
         settingsRefreshTask = nil
@@ -5030,6 +5417,7 @@ class PlayerViewModel {
         // no-op (the `.none` case) rather than relying on each backend's
         // `isDisposed` guard. `finalPosition` is captured above, before this.
         activePlayer = .none
+        discardSourceCacheHandoff()
         sourceProxy?.stop()
         sourceProxy = nil
 
@@ -6399,6 +6787,12 @@ class PlayerViewModel {
                     isPaused: !self.isPlaying
                 )
                 if result == .missingSession {
+                    if self.attemptBackgroundSessionRenewal(
+                        reason: "progress",
+                        observedPosition: self.currentTime
+                    ) {
+                        continue
+                    }
                     _ = self.attemptStaleSessionRenewal(
                         reason: "progress",
                         observedPosition: self.currentTime

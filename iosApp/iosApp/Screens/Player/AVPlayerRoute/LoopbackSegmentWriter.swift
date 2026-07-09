@@ -1193,7 +1193,7 @@ final class LoopbackSegmentWriter {
         var firstAudioSeconds: Double?
         while !isCancelled, scannedPackets < 50_000, stashed == nil {
             guard let pkt = packet else { break }
-            guard av_read_frame(inCtx, pkt) >= 0 else { break }
+            guard deadlineBoundedReadFrame(inCtx, pkt) >= 0 else { break }
             consumedAny = true
             scannedPackets += 1
             defer { av_packet_unref(pkt) }
@@ -1369,7 +1369,7 @@ final class LoopbackSegmentWriter {
         var packetsRead = 0
         while packetsRead < 600 {
             let readPkt = av_packet_alloc()
-            let rc = av_read_frame(inCtx, readPkt)
+            let rc = deadlineBoundedReadFrame(inCtx, readPkt)
             guard rc >= 0, let pkt = readPkt else {
                 var free = readPkt
                 av_packet_free(&free)
@@ -1645,19 +1645,20 @@ final class LoopbackSegmentWriter {
                 let rc: Int32
                 if LoopbackSegmentWriter.traceThroughput {
                     let started = CFAbsoluteTimeGetCurrent()
-                    rc = av_read_frame(inputCtx, packet)
+                    rc = deadlineBoundedReadFrame(inputCtx, packet)
                     throughputTiming.readMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
                     throughputTiming.readCalls += 1
                 } else {
-                    rc = av_read_frame(inputCtx, packet)
+                    rc = deadlineBoundedReadFrame(inputCtx, packet)
                 }
                 if isCancelled {
                     break
                 }
                 if rc < 0 {
-                    // AVERROR_EOF or any other negative code — treat as
-                    // end-of-input. Fine-grained error handling isn't
-                    // worth the noise for a v1 spike.
+                    // Genuine end-of-content finalizes below; a source that
+                    // died clearly short of the known bytes/plan throws so
+                    // the truncation is never published as a complete VOD.
+                    try throwIfPrematureSourceEnd(readRC: rc)
                     break
                 }
                 emitSourceDownloadStatsIfNeeded()
@@ -1789,6 +1790,52 @@ final class LoopbackSegmentWriter {
         }
     }
 
+    /// Classifies a negative `av_read_frame` result and throws when the
+    /// source clearly ended short of the known content. Both completeness
+    /// signals ride state that is valid whether this producer started at
+    /// byte 0 or was restarted mid-plan: the input IO position is measured
+    /// against the transport's known size, and the plan-axis position uses
+    /// the segment index (plan-absolute) rather than this instance's
+    /// appended-duration counter.
+    private func throwIfPrematureSourceEnd(readRC rc: Int32) throws {
+        var bytePosition: Int64?
+        var fileSizeBytes: Int64?
+        if let pb = inputCtx?.pointee.pb {
+            let position = avio_seek(pb, 0, SEEK_CUR)
+            if position >= 0 { bytePosition = position }
+            let size = avio_size(pb)
+            if size > 0 { fileSizeBytes = size }
+        }
+        var reachedPlanSeconds: Double?
+        var plannedTotalSeconds: Double?
+        if vodActive, let plan = vodPlan, plan.segmentCount > 0 {
+            plannedTotalSeconds = plan.totalDurationSeconds
+            reachedPlanSeconds = plan.startSeconds[min(currentSegmentIndex, plan.segmentCount - 1)]
+        }
+        cancelLock.lock()
+        let deadlineAborted = interruptToken.didAbortOnDeadline
+        cancelLock.unlock()
+        let verdict = LoopbackIngestEndPolicy.classify(
+            readResult: rc,
+            bytePosition: bytePosition,
+            fileSizeBytes: fileSizeBytes,
+            reachedPlanSeconds: reachedPlanSeconds,
+            plannedTotalSeconds: plannedTotalSeconds,
+            deadlineAborted: deadlineAborted
+        )
+        guard case let .prematureSourceEnd(shortfallBytes, shortfallSeconds) = verdict else {
+            return
+        }
+        Self.logger.error(
+            "[CMP-AVP] premature source end rc=\(rc) (\(Self.ffmpegError(rc), privacy: .public)) pos=\(bytePosition ?? -1) size=\(fileSizeBytes ?? -1) reached=\(reachedPlanSeconds ?? -1, format: .fixed(precision: 1))s planned=\(plannedTotalSeconds ?? -1, format: .fixed(precision: 1))s"
+        )
+        throw LoopbackWriterError.prematureSourceEnd(
+            readRC: rc,
+            shortfallBytes: shortfallBytes,
+            shortfallSeconds: shortfallSeconds
+        )
+    }
+
     /// Throws any fatal disk-write error captured by the AVIO write callback
     /// path (`writeInitSegment`, `finalizeCurrentSegment`, `emitPlaylists`,
     /// `emitMasterPlaylist`). Those run synchronously from the muxer's write
@@ -1883,6 +1930,37 @@ final class LoopbackSegmentWriter {
         )
     }
 
+    /// Normal blocking-read allowance — the semantic successor of the old
+    /// 10 s avio `rw_timeout`, enforced by the interrupt-callback span
+    /// deadline so it can stretch to the outage park allowance while the
+    /// source proxy reports an origin outage.
+    static let readDeadlineSeconds: Double = 10
+    /// Span allowance for the whole `avformat_open_input` +
+    /// `find_stream_info` bootstrap (multi-second legitimate on cold-cache
+    /// 4K WAN opens; wedged opens must still fail well before the consumer
+    /// watchdogs give up on the session).
+    static let openDeadlineSeconds: Double = 60
+
+    /// Live query into the source proxy's outage state, installed on the
+    /// interrupt token at open so a blocking read can park through a flagged
+    /// outage instead of timing out. Set by the backend before start.
+    var isSourceOutageActive: (() -> Bool)?
+
+    /// `av_read_frame` with the span deadline armed. Every read in this
+    /// writer goes through here — with `rw_timeout` raised to a backstop,
+    /// the token's deadline is the only thing bounding a wedged read.
+    private func deadlineBoundedReadFrame(
+        _ ctx: UnsafeMutablePointer<AVFormatContext>?,
+        _ pkt: UnsafeMutablePointer<AVPacket>?
+    ) -> Int32 {
+        cancelLock.lock()
+        let token = interruptToken
+        cancelLock.unlock()
+        token.beginBlockingSpan(allowanceSeconds: Self.readDeadlineSeconds)
+        defer { token.endBlockingSpan() }
+        return av_read_frame(ctx, pkt)
+    }
+
     /// Installs the cancellation poll on a context. FFmpeg polls it
     /// between / during I/O ops; returning 1 bails `av_read_frame` (or
     /// open/probe) with AVERROR_EXIT. The opaque target is the writer's
@@ -1900,7 +1978,7 @@ final class LoopbackSegmentWriter {
             callback: { opaque in
                 guard let opaque else { return 0 }
                 let token = Unmanaged<LoopbackInterruptToken>.fromOpaque(opaque).takeUnretainedValue()
-                return token.isCancelled ? 1 : 0
+                return token.shouldInterrupt() ? 1 : 0
             },
             opaque: tokenPtr
         )
@@ -1920,6 +1998,7 @@ final class LoopbackSegmentWriter {
             interruptToken = recycled.token
             cancelLock.unlock()
             recycled.token.reset()
+            recycled.token.setSourceOutageProvider(isSourceOutageActive)
             if isCancelled {
                 // This writer was stopped between init and claim; re-cancel
                 // so the context's reads abort instead of riding rw_timeout.
@@ -1958,7 +2037,14 @@ final class LoopbackSegmentWriter {
         cancelLock.lock()
         let token = interruptToken
         cancelLock.unlock()
+        token.setSourceOutageProvider(isSourceOutageActive)
         installInterruptCallback(on: ctx!, token: token)
+        // Bracket the whole open + stream-info probe: individual IO ops are
+        // no longer bounded by rw_timeout (raised to a far backstop), so the
+        // span deadline is what stops a wedged-at-open source from holding
+        // the mux thread.
+        token.beginBlockingSpan(allowanceSeconds: Self.openDeadlineSeconds)
+        defer { token.endBlockingSpan() }
 
         var options: OpaquePointer?
         if !sourceHeaders.isEmpty {
@@ -1967,9 +2053,13 @@ final class LoopbackSegmentWriter {
                 .joined(separator: "\r\n") + "\r\n"
             av_dict_set(&options, "headers", headerString, 0)
         }
-        // Reasonable network timeout — 10 s — so a broken source doesn't
-        // hang the mux loop forever.
-        av_dict_set(&options, "rw_timeout", "10000000", 0)
+        // Wedge protection lives in the interrupt-callback span deadline
+        // (`deadlineBoundedReadFrame` / the open bracket below): the token
+        // enforces the normal 10 s read allowance but can park a read through
+        // a flagged origin outage — a fixed avio `rw_timeout` cannot. This
+        // avio-level timeout stays only as a far backstop above the token's
+        // outage park allowance.
+        av_dict_set(&options, "rw_timeout", "300000000", 0)
         // Cap probe cost. We only mux video + the selected audio stream
         // (subtitles, fonts, attachments, extra audio are dropped at mux
         // time — see filtering below and at packet copy in the main loop).
@@ -2922,7 +3012,7 @@ final class LoopbackSegmentWriter {
 
         while totalPacketsRead < maxPackets, videoPacketsRead < maxVideoPackets {
             let readPkt = av_packet_alloc()
-            let rc = av_read_frame(inCtx, readPkt)
+            let rc = deadlineBoundedReadFrame(inCtx, readPkt)
             if rc < 0 {
                 var free = readPkt
                 av_packet_free(&free)
@@ -6044,4 +6134,10 @@ enum LoopbackWriterError: Error {
     /// fetched a single media segment — nothing can ever advance the target,
     /// so the park would deadlock the session silently.
     case vodStartupConsumerWedge(parkedSeconds: Int, segment: Int)
+    /// `av_read_frame` ended clearly short of the known content (origin
+    /// outage truncating the proxied body, `rw_timeout` expiry). Finalizing
+    /// would publish a truncated movie as a complete VOD; failing routes the
+    /// session into server-outage recovery instead. The name is matched by
+    /// PlayerViewModel's error routing — keep it stable.
+    case prematureSourceEnd(readRC: Int32, shortfallBytes: Int64?, shortfallSeconds: Double?)
 }
