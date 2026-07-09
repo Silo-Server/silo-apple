@@ -147,16 +147,11 @@ struct EpisodeThumbCard: View {
 
             // Episode badge overlay (e.g. "S2 · E3")
             if let badge = episodeBadge {
-                Text(badge)
-                    .font(.continuumCaption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, badgeHPadding)
-                    .padding(.vertical, badgeVPadding)
-                    .background(
-                        Capsule().fill(Color.black.opacity(0.65))
-                    )
-                    .padding(badgeInset)
+                OverlayTextBadgeView(
+                    label: badge,
+                    preset: OverlayPresets.preset(overlayStore.prefs.preset)
+                )
+                .padding(CardOverlays.layoutInsets(for: .bottomLeft, variant: .landscapeCard))
             }
 
             // Progress bar (resume)
@@ -243,22 +238,6 @@ struct EpisodeThumbCard: View {
     }
 
     // MARK: - Metrics
-
-    private var badgeHPadding: CGFloat {
-        #if os(tvOS)
-        return 14
-        #else
-        return 8
-        #endif
-    }
-
-    private var badgeVPadding: CGFloat {
-        #if os(tvOS)
-        return 7
-        #else
-        return 4
-        #endif
-    }
 
     private var badgeInset: CGFloat {
         #if os(tvOS)

@@ -15,6 +15,32 @@ enum MediaRowLayout {
     case square
 }
 
+enum LandscapeRowArtwork {
+    static func imageUrl(cardUrl: String?, backdropUrl: String?) -> String {
+        if let cardUrl, !cardUrl.isEmpty {
+            return cardUrl
+        }
+        if let backdropUrl, !backdropUrl.isEmpty {
+            return backdropUrl
+        }
+        return ""
+    }
+
+    static func thumbhash(cardThumbhash: String?, backdropThumbhash: String?) -> String? {
+        if let cardThumbhash, !cardThumbhash.isEmpty {
+            return cardThumbhash
+        }
+        if let backdropThumbhash, !backdropThumbhash.isEmpty {
+            return backdropThumbhash
+        }
+        return nil
+    }
+
+    static func showsTitleOverlay(cardUrl: String?) -> Bool {
+        !(cardUrl?.isEmpty == false)
+    }
+}
+
 /// A horizontal scrolling row of media cards with a title header.
 /// Plezy style: section title with optional icon, safe-area leading padding.
 struct MediaRow: View {
@@ -307,33 +333,21 @@ struct MediaRow: View {
     }
 
     private func landscapeImageUrl(for item: SectionItem) -> String {
-        if let card = item.landscapeCardUrl, !card.isEmpty {
-            return card
-        }
-        if let backdrop = item.backdropUrl, !backdrop.isEmpty {
-            return backdrop
-        }
-        return ""
+        LandscapeRowArtwork.imageUrl(
+            cardUrl: item.landscapeCardUrl,
+            backdropUrl: item.backdropUrl
+        )
     }
 
     private func landscapeThumbhash(for item: SectionItem) -> String? {
-        if let card = item.landscapeCardThumbhash, !card.isEmpty {
-            return card
-        }
-        if let backdrop = item.backdropThumbhash, !backdrop.isEmpty {
-            return backdrop
-        }
-        return nil
+        LandscapeRowArtwork.thumbhash(
+            cardThumbhash: item.landscapeCardThumbhash,
+            backdropThumbhash: item.backdropThumbhash
+        )
     }
 
     private func shouldShowLandscapeTitleOverlay(for item: SectionItem) -> Bool {
-        if let card = item.landscapeCardUrl, !card.isEmpty {
-            return false
-        }
-        if let backdrop = item.backdropUrl, !backdrop.isEmpty {
-            return false
-        }
-        return true
+        LandscapeRowArtwork.showsTitleOverlay(cardUrl: item.landscapeCardUrl)
     }
 
     /// "S2 · E10" badge for an episode rendered as a poster, so new episodes

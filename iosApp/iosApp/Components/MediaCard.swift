@@ -26,8 +26,8 @@ struct MediaCard: View {
     /// collection thumbnails) leave this off.
     var overlayData: OverlayData? = nil
     /// Optional transparent title/logo treatment for landscape placeholders.
-    /// Used only when a server row asks for landscape but no stored landscape
-    /// card or backdrop image exists yet.
+    /// Used when a server row asks for landscape but no stored landscape card
+    /// exists yet.
     var landscapeLogoUrl: String? = nil
     var showLandscapeTitleOverlay: Bool = false
     let action: () -> Void
@@ -305,7 +305,7 @@ struct MediaCard: View {
                 CardOverlays(
                     data: overlayData,
                     prefs: overlayStore.prefs,
-                    variant: aspect == .landscape ? .wide : .poster
+                    variant: aspect == .landscape ? .landscapeCard : .poster
                 )
                     .frame(width: cardWidth, height: cardHeight)
                     .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
@@ -314,14 +314,14 @@ struct MediaCard: View {
             // Episode badge (e.g. "S2 · E10") for episodes shown as posters,
             // so new episodes of the same series stay distinguishable.
             if let episodeBadge {
-                Text(episodeBadge)
-                    .font(.continuumCaption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, episodeBadgeHPadding)
-                    .padding(.vertical, episodeBadgeVPadding)
-                    .background(Capsule().fill(Color.black.opacity(0.65)))
-                    .padding(episodeBadgeInset)
+                OverlayTextBadgeView(
+                    label: episodeBadge,
+                    preset: OverlayPresets.preset(overlayStore.prefs.preset)
+                )
+                    .padding(CardOverlays.layoutInsets(
+                        for: .bottomLeft,
+                        variant: aspect == .landscape ? .landscapeCard : .poster
+                    ))
                     .frame(width: cardWidth, height: cardHeight, alignment: .bottomLeading)
             }
 
@@ -437,29 +437,6 @@ struct MediaCard: View {
         #endif
     }
 
-    private var episodeBadgeHPadding: CGFloat {
-        #if os(tvOS)
-        return 14
-        #else
-        return 8
-        #endif
-    }
-
-    private var episodeBadgeVPadding: CGFloat {
-        #if os(tvOS)
-        return 7
-        #else
-        return 4
-        #endif
-    }
-
-    private var episodeBadgeInset: CGFloat {
-        #if os(tvOS)
-        return 14
-        #else
-        return 6
-        #endif
-    }
 }
 
 // MARK: - Zoom transition source helper

@@ -166,7 +166,7 @@ struct TVMediaCard: View {
                 CardOverlays(
                     data: overlayData,
                     prefs: overlayStore.prefs,
-                    variant: aspect == .landscape ? .wide : .poster
+                    variant: aspect == .landscape ? .landscapeCard : .poster
                 )
                     .frame(width: cardWidth, height: cardHeight)
                     .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))

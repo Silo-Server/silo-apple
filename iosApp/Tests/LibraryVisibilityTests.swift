@@ -133,6 +133,43 @@ final class LibraryVisibilityTests: XCTestCase {
         XCTAssertEqual(response.sections.map(\.cardImageStyle), [.auto, .auto])
     }
 
+    func testLandscapeRowsPreferStoredCardButStillOverlayBackdropFallback() {
+        XCTAssertEqual(
+            LandscapeRowArtwork.imageUrl(
+                cardUrl: "/images/stored-landscape.webp",
+                backdropUrl: "/images/backdrop.webp"
+            ),
+            "/images/stored-landscape.webp"
+        )
+        XCTAssertEqual(
+            LandscapeRowArtwork.imageUrl(
+                cardUrl: nil,
+                backdropUrl: "/images/backdrop.webp"
+            ),
+            "/images/backdrop.webp"
+        )
+        XCTAssertNil(
+            LandscapeRowArtwork.thumbhash(
+                cardThumbhash: "",
+                backdropThumbhash: nil
+            )
+        )
+
+        XCTAssertFalse(LandscapeRowArtwork.showsTitleOverlay(cardUrl: "/images/stored-landscape.webp"))
+        XCTAssertTrue(LandscapeRowArtwork.showsTitleOverlay(cardUrl: nil))
+        XCTAssertTrue(LandscapeRowArtwork.showsTitleOverlay(cardUrl: ""))
+    }
+
+    func testLandscapeCardOverlaysKeepBottomBadgesInTheCardCorner() {
+        let landscape = CardOverlays.layoutInsets(for: .bottomLeft, variant: .landscapeCard)
+        XCTAssertEqual(landscape.leading, 8)
+        XCTAssertEqual(landscape.bottom, 8)
+
+        let wide = CardOverlays.layoutInsets(for: .bottomLeft, variant: .wide)
+        XCTAssertEqual(wide.leading, 8)
+        XCTAssertEqual(wide.bottom, 24)
+    }
+
     func testSectionsResponseMemberwiseInitAlsoStripsUnsupportedItems() throws {
         let itemJson = """
         { "content_id": "e1", "type": "ebook", "title": "An Ebook" }

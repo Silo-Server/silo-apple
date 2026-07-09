@@ -18,10 +18,10 @@ struct CardOverlays: View {
     var variant: Variant = .poster
 
     enum Variant {
-        case poster      // standard 2:3 poster card
-        case wide        // backdrop card (continue watching, hero) — leaves
-                         // headroom for the title block / progress bar.
-        case hero        // large backdrop (detail-page hero, featured carousel)
+        case poster        // standard 2:3 poster card
+        case landscapeCard // 16:9 library/home row card
+        case wide          // episode/thumb row card with room for title/progress
+        case hero          // large backdrop (detail-page hero, featured carousel)
     }
 
     var body: some View {
@@ -49,7 +49,7 @@ struct CardOverlays: View {
                     OverlayBadgeView(state: state, preset: preset)
                 }
             }
-            .padding(insets(for: position))
+            .padding(Self.layoutInsets(for: position, variant: variant))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: anchor(for: position))
         }
     }
@@ -70,14 +70,15 @@ struct CardOverlays: View {
         }
     }
 
-    private func insets(for position: OverlayPosition) -> EdgeInsets {
-        // `wide` and `hero` variants leave more bottom room because a
-        // title block / progress bar typically sits under the image.
+    static func layoutInsets(for position: OverlayPosition, variant: Variant) -> EdgeInsets {
+        // `wide` and `hero` variants reserve bottom room for surfaces that
+        // pair the image with title/progress chrome. Landscape row cards keep
+        // badges pinned to the artwork corners.
         let bottomInset: CGFloat = {
             switch variant {
-            case .poster: return 8
-            case .wide:   return 24
-            case .hero:   return 16
+            case .poster, .landscapeCard: return 8
+            case .wide:                   return 24
+            case .hero:                   return 16
             }
         }()
         let sideInset: CGFloat = variant == .hero ? 16 : 8
@@ -163,15 +164,48 @@ struct OverlayBadgeView: View {
     let preset: OverlayPreset
 
     var body: some View {
+        OverlayBadgeChrome(
+            label: state.label,
+            iconId: state.iconId,
+            iconOnly: state.iconOnly,
+            accentColor: state.accentColor,
+            preset: preset
+        )
+    }
+}
+
+struct OverlayTextBadgeView: View {
+    let label: String
+    let preset: OverlayPreset
+
+    var body: some View {
+        OverlayBadgeChrome(
+            label: label,
+            iconId: nil,
+            iconOnly: false,
+            accentColor: nil,
+            preset: preset
+        )
+    }
+}
+
+private struct OverlayBadgeChrome: View {
+    let label: String
+    let iconId: OverlayIconId?
+    let iconOnly: Bool
+    let accentColor: Color?
+    let preset: OverlayPreset
+
+    var body: some View {
         HStack(spacing: 4) {
-            if let iconId = state.iconId {
+            if let iconId {
                 OverlayIcon(
                     iconId: iconId,
                     size: preset.iconSize,
-                    tint: preset.foregroundColor(state.accentColor)
+                    tint: preset.foregroundColor(accentColor)
                 )
             }
-            if !state.iconOnly || state.iconId == nil {
+            if !iconOnly || iconId == nil {
                 badgeText
             }
         }
@@ -184,10 +218,10 @@ struct OverlayBadgeView: View {
 
     @ViewBuilder
     private var badgeText: some View {
-        let text = Text(state.label)
+        let text = Text(label)
             .font(preset.font.weight(preset.textWeight))
             .tracking(preset.tracking)
-            .foregroundColor(preset.foregroundColor(state.accentColor))
+            .foregroundColor(preset.foregroundColor(accentColor))
         Group {
             if let textCase = preset.textCase {
                 text.textCase(textCase)
@@ -200,7 +234,7 @@ struct OverlayBadgeView: View {
 
     @ViewBuilder
     private var background: some View {
-        let color = preset.backgroundColor(state.accentColor)
+        let color = preset.backgroundColor(accentColor)
         if let material = preset.backdropMaterial {
             shape
                 .fill(material)
@@ -212,7 +246,7 @@ struct OverlayBadgeView: View {
 
     @ViewBuilder
     private var border: some View {
-        if let stroke = preset.borderColor(state.accentColor) {
+        if let stroke = preset.borderColor(accentColor) {
             shape.stroke(stroke, lineWidth: 1)
         }
     }
