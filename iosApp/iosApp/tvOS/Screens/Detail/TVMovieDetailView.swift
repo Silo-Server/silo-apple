@@ -51,6 +51,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     // forbids static stored properties on this type.
     private let episodeSectionScrollId = "detail-episode-section"
     private let heroScrollId = "detail-hero"
+    @State private var episodeFocusRequest = 0
 
     var body: some View {
         ScrollViewReader { scrollProxy in
@@ -251,7 +252,8 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 TVSeasonChipRow(
                     seasons: seasons,
                     selectedSeasonId: selectedSeason?.id,
-                    onSelect: onSelectSeason
+                    onSelect: onSelectSeason,
+                    onMoveDown: requestEpisodeFocus
                 )
                 // Container binding — true while any chip has focus, driving
                 // the episode-section re-center in `detailFocusScroll`.
@@ -267,10 +269,15 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 TVEpisodeRail(
                     episodes: seasonEpisodes,
                     onSelect: onEpisodeTap,
-                    currentContentId: detail.contentId
+                    currentContentId: detail.contentId,
+                    focusRequest: episodeFocusRequest
                 )
             }
         }
+    }
+
+    private func requestEpisodeFocus() {
+        episodeFocusRequest &+= 1
     }
 
     private var episodeRailEyebrow: String {

@@ -20,9 +20,14 @@ struct TVEpisodeRail: View {
     /// at first appearance, and made the default focus target when focus
     /// first enters the rail.
     var currentContentId: String? = nil
+    /// Incremented by the parent when Down is pressed from the season row.
+    /// A token (rather than a Bool) lets repeated handoffs request focus and
+    /// also survives the loading state where this rail is temporarily absent.
+    var focusRequest: Int = 0
 
     private let cardSpacing: CGFloat = 36
     @FocusState private var focusedCardId: String?
+    @State private var lastAppliedFocusRequest = 0
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -45,15 +50,35 @@ struct TVEpisodeRail: View {
             .scrollClipDisabled()
             .applyRailDefaultFocus(currentContentId, binding: $focusedCardId)
             .onAppear {
-                guard let id = currentContentId else { return }
-                // Run on next tick so the LazyHStack has instantiated the
-                // target cell before we try to anchor on it.
-                DispatchQueue.main.async {
-                    withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
-                        proxy.scrollTo(id, anchor: .center)
+                if let id = currentContentId {
+                    // Run on next tick so the LazyHStack has instantiated the
+                    // target cell before we try to anchor on it.
+                    DispatchQueue.main.async {
+                        withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
+                            proxy.scrollTo(id, anchor: .center)
+                        }
                     }
                 }
+                applyFocusRequest(focusRequest, proxy: proxy)
             }
+            .onChange(of: focusRequest) { _, request in
+                applyFocusRequest(request, proxy: proxy)
+            }
+        }
+    }
+
+    private func applyFocusRequest(_ request: Int, proxy: ScrollViewProxy) {
+        guard request > 0, request != lastAppliedFocusRequest else { return }
+        guard let target = episodes.first(where: { $0.contentId == currentContentId })?.contentId
+                ?? episodes.first?.contentId else { return }
+        lastAppliedFocusRequest = request
+
+        // The target may live outside the LazyHStack's mounted range. Scroll
+        // and assign focus together on the next run-loop turn so the card is
+        // present when the focus engine resolves the request.
+        DispatchQueue.main.async {
+            proxy.scrollTo(target, anchor: .center)
+            focusedCardId = target
         }
     }
 }

@@ -63,6 +63,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     /// instance, `selectedSeason` mutates — both re-focus Play, while never
     /// yanking focus back within the same season once the viewer moves on.
     @State private var autoFocusedSeasonKey: String?
+    @State private var episodeFocusRequest = 0
 
     var body: some View {
         ScrollViewReader { scrollProxy in
@@ -275,7 +276,8 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                 TVSeasonChipRow(
                     seasons: seasons,
                     selectedSeasonId: selectedSeason?.id,
-                    onSelect: onSelectSeason
+                    onSelect: onSelectSeason,
+                    onMoveDown: requestEpisodeFocus
                 )
                 // Container binding — true while any chip has focus, driving
                 // the episode-section re-center in `detailFocusScroll`.
@@ -295,10 +297,15 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                 TVEpisodeRail(
                     episodes: episodes,
                     onSelect: onEpisodeTap,
-                    currentContentId: nextUpEpisode?.contentId
+                    currentContentId: nextUpEpisode?.contentId,
+                    focusRequest: episodeFocusRequest
                 )
             }
         }
+    }
+
+    private func requestEpisodeFocus() {
+        episodeFocusRequest &+= 1
     }
 
     // MARK: - Cast
