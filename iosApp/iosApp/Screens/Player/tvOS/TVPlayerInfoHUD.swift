@@ -1536,6 +1536,7 @@ private struct SubtitlesPane: View {
     @State private var activePicker: HUDPickerPresentation?
     @State private var pickerReturnField: Option?
     @FocusState private var focusedOption: Option?
+    @FocusState private var entryTrackFocused: Bool
 
     /// Identity for the options-column rows, used only to restore focus when
     /// a picker dialog, the appearance dialog, or the AI/search menu closes.
@@ -1564,6 +1565,10 @@ private struct SubtitlesPane: View {
                     .frame(width: 440, alignment: .topLeading)
                     .focusSection()
             }
+            // The Subtitles pill is geometrically closest to the Options
+            // column. Explicitly route Down into the leftmost Tracks column
+            // so entering this pane is consistent with the other track panes.
+            .defaultFocus($entryTrackFocused, true, priority: .userInitiated)
             .disabled(overlayActive)
             .opacity(overlayActive ? 0.28 : 1)
 
@@ -1690,6 +1695,7 @@ private struct SubtitlesPane: View {
                 ) {
                     viewModel.disableSubtitles()
                 }
+                .focused($entryTrackFocused)
                 ForEach(viewModel.orderedSubtitleTracks) { track in
                     HUDTrackRow(
                         name: track.primaryLabel,
