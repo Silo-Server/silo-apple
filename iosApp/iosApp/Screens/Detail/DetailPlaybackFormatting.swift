@@ -24,7 +24,7 @@ enum DetailPlaybackFormatting {
         let tokens = [
             nonEmpty(version.resolution),
             nonEmpty(normalizedVideoCodec(version.codecVideo)),
-            version.hdr == true ? "HDR" : nil,
+            dynamicRangeLabel(version),
             nonEmpty(normalizedAudioCodec(version.codecAudio)),
         ].compactMap { $0 }
         return tokens.isEmpty ? "Auto" : tokens.joined(separator: " · ")
@@ -43,7 +43,7 @@ enum DetailPlaybackFormatting {
         let tokens = [
             nonEmpty(version.resolution),
             nonEmpty(normalizedVideoCodec(version.codecVideo)),
-            version.hdr == true ? "HDR" : nil,
+            dynamicRangeLabel(version),
             nonEmpty(normalizedAudioCodec(version.codecAudio)),
         ].compactMap { $0 }
         if !tokens.isEmpty {
@@ -515,6 +515,13 @@ enum DetailPlaybackFormatting {
         if codec.contains("av1") { return "AV1" }
         if codec.contains("avc") || codec.contains("h264") { return "H.264" }
         return codec.uppercased()
+    }
+
+    private static func dynamicRangeLabel(_ version: FileVersion) -> String? {
+        if (version.videoTracks ?? []).contains(where: { nonEmpty($0.dolbyVision) != nil }) {
+            return "DV"
+        }
+        return version.hdr == true ? "HDR" : nil
     }
 
     static func normalizedAudioCodec(_ codec: String?) -> String? {

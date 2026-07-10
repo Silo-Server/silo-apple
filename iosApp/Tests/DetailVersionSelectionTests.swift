@@ -40,6 +40,32 @@ final class DetailVersionSelectionTests: XCTestCase {
         )
     }
 
+    func testVersionSelectorUsesDVForDolbyVisionMetadata() {
+        let version = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "resolution": "2160p",
+            "codec_video": "hevc",
+            "codec_audio": "eac3",
+            "hdr": true,
+            "video_tracks": [
+              { "dolby_vision": "Profile 8.1" }
+            ]
+          }
+        ]
+        """)[0]
+
+        XCTAssertEqual(
+            DetailPlaybackFormatting.versionShortLabel(version),
+            "2160p · HEVC · DV · EAC3"
+        )
+        XCTAssertEqual(
+            DetailPlaybackFormatting.versionPrimaryText(version),
+            "2160p · HEVC · DV · EAC3"
+        )
+    }
+
     private func decodedVersions(_ json: String) -> [FileVersion] {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
