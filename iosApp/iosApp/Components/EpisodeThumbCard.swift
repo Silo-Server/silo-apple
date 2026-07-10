@@ -18,7 +18,7 @@ struct EpisodeThumbCard: View {
     /// `MediaCard.focusedItemId` for the contract.
     var focusedItemId: FocusState<String?>.Binding? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
-    var onSetWatched: ((Bool) -> Void)? = nil
+    var onSetWatched: ((Bool) async -> Bool)? = nil
 
     @State private var playedOverride: Bool?
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
@@ -319,8 +319,13 @@ struct EpisodeThumbCard: View {
         if let onSetWatched {
             Button {
                 let played = !isPlayed
-                playedOverride = played
-                onSetWatched(played)
+                Task { @MainActor in
+                    playedOverride = played
+                    let succeeded = await onSetWatched(played)
+                    if !succeeded {
+                        playedOverride = nil
+                    }
+                }
             } label: {
                 Label(
                     isPlayed ? "Mark as Unwatched" : "Mark as Watched",

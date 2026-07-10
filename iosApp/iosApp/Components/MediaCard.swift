@@ -35,7 +35,7 @@ struct MediaCard: View {
 
     var contentId: String? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
-    var onSetWatched: ((Bool) -> Void)? = nil
+    var onSetWatched: ((Bool) async -> Bool)? = nil
     var aspect: MediaCardAspect = .poster
     /// Overrides the theme's default card width. Skyline's dense landing
     /// rows (§5.6) pass 208 so two rows + the marquee fit above the fold;
@@ -97,7 +97,11 @@ struct MediaCard: View {
             onSetWatched: onSetWatched.map { handler in
                 { played in
                     playedOverride = played
-                    handler(played)
+                    let succeeded = await handler(played)
+                    if !succeeded {
+                        playedOverride = nil
+                    }
+                    return succeeded
                 }
             },
             personalItems: hasPersonalActions ? personalMenuItems : nil
@@ -160,8 +164,13 @@ struct MediaCard: View {
         if let onSetWatched {
             Button {
                 let played = !isPlayed
-                playedOverride = played
-                onSetWatched(played)
+                Task { @MainActor in
+                    playedOverride = played
+                    let succeeded = await onSetWatched(played)
+                    if !succeeded {
+                        playedOverride = nil
+                    }
+                }
             } label: {
                 Label(
                     isPlayed ? "Mark as Unwatched" : "Mark as Watched",
@@ -437,7 +446,7 @@ private struct FocusableMediaCard<Content: View>: View {
     let itemId: String?
     let isWatched: Bool
     let onRemoveFromContinueWatching: (() -> Void)?
-    let onSetWatched: ((Bool) -> Void)?
+    let onSetWatched: ((Bool) async -> Bool)?
     /// Favorite / watchlist toggles, built by the owning card. `nil`
     /// when the card has no catalog identity or user state.
     let personalItems: PersonalListMenuItems?
@@ -502,7 +511,9 @@ private struct FocusableMediaCard<Content: View>: View {
     private var contextActions: some View {
         if let onSetWatched {
             Button {
-                onSetWatched(!isWatched)
+                Task { @MainActor in
+                    _ = await onSetWatched(!isWatched)
+                }
             } label: {
                 Label(
                     isWatched ? "Mark as Unwatched" : "Mark as Watched",

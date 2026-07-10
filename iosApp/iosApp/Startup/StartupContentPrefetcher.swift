@@ -21,6 +21,7 @@ enum StartupContentPrefetcher {
     private static var librarySectionsTasks: [Int: Task<SectionsResponse, Error>] = [:]
     private static var browseFirstPageTasks: [String: Task<CatalogResponse, Error>] = [:]
     private static var profileScopedGeneration = 0
+    private static var homeSectionsGeneration = 0
     private static var profilesGeneration = 0
 
     static func resetProfileScopedPrefetches() {
@@ -87,8 +88,18 @@ enum StartupContentPrefetcher {
         }
     }
 
+    /// Cancels only Home's current single-flight request and prevents any
+    /// waiter on that generation from applying its stale response. The shared
+    /// response cache is intentionally left intact for the caller to update.
+    static func invalidateHomeSectionsInFlight() {
+        homeSectionsGeneration += 1
+        homeSectionsTask?.cancel()
+        homeSectionsTask = nil
+    }
+
     static func fetchHomeSections() async throws -> SectionsResponse {
-        let generation = profileScopedGeneration
+        let profileGeneration = profileScopedGeneration
+        let homeGeneration = homeSectionsGeneration
         let task: Task<SectionsResponse, Error>
         if let homeSectionsTask {
             task = homeSectionsTask
@@ -101,15 +112,18 @@ enum StartupContentPrefetcher {
 
         do {
             let response = try await task.value
-            try validateProfileScopedGeneration(generation)
-            if profileScopedGeneration == generation {
+            try validateProfileScopedGeneration(profileGeneration)
+            try validateHomeSectionsGeneration(homeGeneration)
+            if profileScopedGeneration == profileGeneration,
+               homeSectionsGeneration == homeGeneration {
                 homeSectionsTask = nil
             }
             ResponseCache.shared.set(response, for: CacheKey.homeSections)
             prefetchHomeArtwork(for: response)
             return response
         } catch {
-            if profileScopedGeneration == generation {
+            if profileScopedGeneration == profileGeneration,
+               homeSectionsGeneration == homeGeneration {
                 homeSectionsTask = nil
             }
             throw error
@@ -446,6 +460,12 @@ enum StartupContentPrefetcher {
 
     private static func validateProfileScopedGeneration(_ generation: Int) throws {
         guard profileScopedGeneration == generation else {
+            throw CancellationError()
+        }
+    }
+
+    private static func validateHomeSectionsGeneration(_ generation: Int) throws {
+        guard homeSectionsGeneration == generation else {
             throw CancellationError()
         }
     }

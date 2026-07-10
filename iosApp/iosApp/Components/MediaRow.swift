@@ -40,7 +40,7 @@ struct MediaRow: View {
     /// focus engine isn't doing the moving.
     var focusRequest: Int = 0
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
-    var onSetWatched: ((SectionItem, Bool) -> Void)? = nil
+    var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
     var onMoveUp: (() -> Void)? = nil
     /// tvOS-only: reports which of the row's items holds card focus —
     /// the Skyline focus marquee mirrors it. Fires on focus gain only;
@@ -267,9 +267,9 @@ struct MediaRow: View {
         return { onRemoveFromContinueWatching(item) }
     }
 
-    private func watchedToggleAction(for item: SectionItem) -> ((Bool) -> Void)? {
+    private func watchedToggleAction(for item: SectionItem) -> ((Bool) async -> Bool)? {
         guard let onSetWatched else { return nil }
-        return { played in onSetWatched(item, played) }
+        return { played in await onSetWatched(item, played) }
     }
 
     /// Caption for a poster card. Episodes are captioned with the series name

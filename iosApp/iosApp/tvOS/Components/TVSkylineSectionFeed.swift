@@ -26,6 +26,10 @@ struct TVSkylineSectionFeed: View {
     let onTopMenuFocusRequest: (() -> Void)?
     /// Open a content item (detail).
     let onItemTap: (String) -> Void
+    /// Optional Home-only action. Library feeds leave this nil.
+    var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
+    /// Optional Home-only watched-state mutation. Library feeds leave this nil.
+    var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
 
     /// Debounced focused-card state driving the marquee + backdrop.
     @State private var marqueeModel = TVFocusMarqueeModel()
@@ -129,6 +133,8 @@ struct TVSkylineSectionFeed: View {
         SectionRow(
             section: section,
             onItemTap: onItemTap,
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+            onSetWatched: onSetWatched,
             prefersDefaultFocusOnFirstItem: false,
             focusRequest: isFirstRow ? contentFocusToken : 0,
             onMoveUp: isFirstRow ? onTopMenuFocusRequest : nil,

@@ -39,11 +39,14 @@ struct HomeView: View {
     @Environment(AppRouter.self) private var router
 
     var body: some View {
-        // On iOS the header floats over the scroll content, which extends
-        // behind the status bar with a semi-transparent fill. On tvOS the
-        // app-level top bar (owned by `TVMainTabView`) handles profile +
-        // utility actions; Home renders the focus marquee over rows, with
-        // the backdrop tracking whichever card holds focus (§5.4).
+        @Bindable var viewModel = viewModel
+
+        Group {
+            // On iOS the header floats over the scroll content, which extends
+            // behind the status bar with a semi-transparent fill. On tvOS the
+            // app-level top bar (owned by `TVMainTabView`) handles profile +
+            // utility actions; Home renders the focus marquee over rows, with
+            // the backdrop tracking whichever card holds focus (§5.4).
         #if os(tvOS)
         // The shared Skyline feed uses the same layout component as the
         // library Browse tabs; Home supplies only the server-resolved Home rows.
@@ -54,7 +57,9 @@ struct HomeView: View {
                     focusRequest: homeFocusRequest,
                     isTopMenuFocused: isTopMenuFocused,
                     onTopMenuFocusRequest: onTopMenuFocusRequest,
-                    onItemTap: { navigateToDetail($0) }
+                    onItemTap: { navigateToDetail($0) },
+                    onRemoveFromContinueWatching: dismissContinueWatching,
+                    onSetWatched: setWatched
                 )
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadSections() } })
@@ -180,6 +185,15 @@ struct HomeView: View {
         }
         #endif
         #endif
+        }
+        .alert(
+            "Couldn’t Update Item",
+            isPresented: $viewModel.isShowingActionError
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(viewModel.actionError?.message ?? "The item could not be updated. Try again.")
+        }
     }
 
     // MARK: - Content
@@ -199,6 +213,8 @@ struct HomeView: View {
                         SectionRow(
                             section: section,
                             onItemTap: { navigateToDetail($0) },
+                            onRemoveFromContinueWatching: dismissContinueWatching,
+                            onSetWatched: setWatched,
                             prefersDefaultFocusOnFirstItem: index == 0,
                             onMoveUp: index == 0 ? onTopMenuFocusRequest : nil
                         )
@@ -300,6 +316,16 @@ struct HomeView: View {
 
     private func navigateToDetail(_ contentId: String) {
         router.navigate(to: .itemDetail(contentId: contentId))
+    }
+
+    private func dismissContinueWatching(_ item: SectionItem) {
+        Task {
+            await viewModel.dismissContinueWatchingItem(item)
+        }
+    }
+
+    private func setWatched(_ item: SectionItem, played: Bool) async -> Bool {
+        await viewModel.setWatched(item, played: played)
     }
 
     #if !os(tvOS)
