@@ -40,14 +40,17 @@ import AppKit
 import OSLog
 import VideoToolbox
 
+/// Only an explicit user pause suspends the I/O timeout. The playback clock
+/// also reads rate 0 during startup and seek restarts, and those windows
+/// rely on this abort as their only escape from a wedged `av_read_frame`.
 enum CoreMediaDemuxInterruptPolicy {
     static func shouldAbort(
         cancelled: Bool,
-        playbackStopped: Bool,
+        userPaused: Bool,
         secondsSinceProgress: CFTimeInterval,
         timeoutSeconds: CFTimeInterval
     ) -> Bool {
-        cancelled || (!playbackStopped && secondsSinceProgress > timeoutSeconds)
+        cancelled || (!userPaused && secondsSinceProgress > timeoutSeconds)
     }
 }
 
@@ -3185,7 +3188,7 @@ final class PlayerCore: NSObject {
             let elapsed = CACurrentMediaTime() - player.demuxLastProgressWall
             if CoreMediaDemuxInterruptPolicy.shouldAbort(
                 cancelled: player.isCancelled,
-                playbackStopped: player.playbackClock.rate == 0,
+                userPaused: player.userPaused,
                 secondsSinceProgress: elapsed,
                 timeoutSeconds: player.demuxIOTimeoutSeconds
             ) {

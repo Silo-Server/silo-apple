@@ -132,11 +132,18 @@ final class AVPlayerAudioSessionCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     private var state = AVPlayerAudioSessionActivationState()
 
+    /// One serial queue shared by every coordinator: AVAudioSession is a
+    /// process-wide singleton, so an old backend's teardown deactivation and
+    /// a new backend's activation must keep their submission order. Separate
+    /// per-instance queues would let a stale deactivation land after the next
+    /// playback's activation and silently kill its audio route.
+    private static let sharedWorkQueue = DispatchQueue(
+        label: "org.siloserver.silo.avplayer-audio-session",
+        qos: .userInitiated
+    )
+
     init(
-        workQueue: DispatchQueue = DispatchQueue(
-            label: "org.siloserver.silo.avplayer-audio-session",
-            qos: .userInitiated
-        ),
+        workQueue: DispatchQueue = AVPlayerAudioSessionCoordinator.sharedWorkQueue,
         callbackQueue: DispatchQueue = .main,
         activation: @escaping Operation,
         deactivation: @escaping Operation
@@ -455,6 +462,12 @@ final class AVPlayerBackend {
         case interactive(mediaTarget: Double)
         case initial(mediaTarget: Double)
     }
+    /// Kind of the seek behind the active deadline generation. When a new
+    /// deadline supersedes an in-flight `.initial` seek, its AVPlayer
+    /// completion arrives against a stale generation and is ignored, so the
+    /// supersede/cancel paths must release `isInitialSeekInFlight` here —
+    /// nothing else will, and `attemptInitialPlaybackStart` gates on it.
+    private var activeSeekDeadlineKind: SeekDeadlineKind?
     private var loopbackItemDeathRecoveryState = LoopbackItemDeathRecoveryState()
     private var isInitialSeekInFlight = false
     private var initialSeekRetryCount = 0
@@ -766,6 +779,8 @@ final class AVPlayerBackend {
         item: AVPlayerItem?
     ) -> UInt64 {
         seekDeadlineWorkItem?.cancel()
+        releaseSupersededInitialSeekGateIfNeeded()
+        activeSeekDeadlineKind = kind
         let id = seekDeadlineState.begin()
         let work = DispatchWorkItem { [weak self, weak item] in
             guard let self, !self.isDisposed else { return }
@@ -783,15 +798,24 @@ final class AVPlayerBackend {
         guard seekDeadlineState.complete(id) else { return false }
         seekDeadlineWorkItem?.cancel()
         seekDeadlineWorkItem = nil
+        activeSeekDeadlineKind = nil
         return true
     }
 
     private func cancelSeekDeadline() {
         seekDeadlineWorkItem?.cancel()
         seekDeadlineWorkItem = nil
+        releaseSupersededInitialSeekGateIfNeeded()
+        activeSeekDeadlineKind = nil
         seekDeadlineState.cancel()
         isSeekPending = false
         vodPendingSeekMediaTarget = nil
+    }
+
+    private func releaseSupersededInitialSeekGateIfNeeded() {
+        guard seekDeadlineState.activeID != nil,
+              case .some(.initial) = activeSeekDeadlineKind else { return }
+        isInitialSeekInFlight = false
     }
 
     private func handleSeekDeadline(

@@ -391,6 +391,7 @@ final class LoopbackSegmentServer {
                         // abort the read-until-close response so AVPlayer can
                         // retry instead of accepting a false successful EOF.
                         if case .found = result { return }
+                        cmpLog("[CMP-HLS] early VOD response aborted on terminal miss path=\(path)")
                         connection.cancel()
                         return
                     }

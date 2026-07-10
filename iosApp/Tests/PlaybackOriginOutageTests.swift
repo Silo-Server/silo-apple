@@ -285,15 +285,17 @@ final class LoopbackInterruptTokenDeadlineTests: XCTestCase {
         XCTAssertFalse(
             CoreMediaDemuxInterruptPolicy.shouldAbort(
                 cancelled: false,
-                playbackStopped: true,
+                userPaused: true,
                 secondsSinceProgress: 120,
                 timeoutSeconds: 10
             )
         )
+        // Startup and seek restarts run with the playback clock at rate 0
+        // without a user pause — the watchdog must stay armed there.
         XCTAssertTrue(
             CoreMediaDemuxInterruptPolicy.shouldAbort(
                 cancelled: false,
-                playbackStopped: false,
+                userPaused: false,
                 secondsSinceProgress: 10.1,
                 timeoutSeconds: 10
             )
@@ -301,7 +303,7 @@ final class LoopbackInterruptTokenDeadlineTests: XCTestCase {
         XCTAssertTrue(
             CoreMediaDemuxInterruptPolicy.shouldAbort(
                 cancelled: true,
-                playbackStopped: true,
+                userPaused: true,
                 secondsSinceProgress: 0,
                 timeoutSeconds: 10
             )

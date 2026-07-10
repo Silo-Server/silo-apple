@@ -3115,6 +3115,7 @@ final class LoopbackSegmentWriter {
                         outStreamIndex: Int32(outIdx),
                         inputStreamIndex: inIdx
                     )
+                    try replayVODPreGateAudioPacketsIfNeeded()
                 } else {
                     rewritePacketForOutput(
                         pkt: pending,
