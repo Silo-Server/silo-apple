@@ -32,7 +32,7 @@ struct TVPlaybackSelectorRow: View {
     var subtitleMode: String? = nil
     var subtitleSignature: SubtitleTrackSignature? = nil
     /// Profile/item "Show Forced Subtitles" preference — feeds the Auto
-    /// preview's forced-track branch so the row doesn't show "Auto - None"
+    /// preview's forced-track branch so the row doesn't show "Auto: Off"
     /// when playback would actually start with a forced track.
     var showForcedSubtitles: Bool = false
     let onSelectVersion: (Int?) -> Void
@@ -187,10 +187,11 @@ struct TVPlaybackSelectorRow: View {
 
     @ViewBuilder
     private var versionSelector: some View {
-        let value = DetailPlaybackFormatting.versionShortLabel(currentVersion)
+        let summary = DetailPlaybackFormatting.versionShortLabel(currentVersion)
+        let value = selectedVersionFileId == nil ? "Auto: \(summary)" : summary
         if shouldEnableVersionSelector {
             TVSelectorButton(
-                icon: "4k.tv",
+                icon: "tv",
                 label: "Version",
                 value: value
             ) {
@@ -211,7 +212,7 @@ struct TVPlaybackSelectorRow: View {
             }
             .focused($focusedSelector, equals: .version)
         } else {
-            TVSelectorValue(icon: "4k.tv", label: "Version", value: value)
+            TVSelectorValue(icon: "tv", label: "Version", value: value)
         }
     }
 

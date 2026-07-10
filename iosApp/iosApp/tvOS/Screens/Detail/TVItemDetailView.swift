@@ -13,16 +13,10 @@ struct TVItemDetailView: View {
     let contentId: String
 
     @State private var viewModel: ItemDetailViewModel
-    @State private var preferredVersionFileId: Int?
-    @State private var preferredAudioTrackIndex: Int?
-    @State private var preferredSubtitleTrackIndex: Int?
-    @State private var preferredNextUpFileId: Int?
-    @State private var preferredNextUpAudioTrackIndex: Int?
-    @State private var preferredNextUpSubtitleTrackIndex: Int?
     /// Set when the user explicitly resets subtitles to "Auto" this visit:
     /// the server override is cleared with a fire-and-forget DELETE, but the
     /// already-fetched detail still carries the old `effectiveSubtitle*`, so
-    /// the selector must stop feeding it to the "Auto - …" preview.
+    /// the selector must stop feeding it to the "Auto: …" preview.
     @State private var didClearSubtitleOverride = false
     @State private var didClearNextUpSubtitleOverride = false
     @State private var nextUpPlaybackDetail: ItemDetail?
@@ -66,12 +60,6 @@ struct TVItemDetailView: View {
             Self.focusLogger.debug("itemDetail.disappear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
         }
         .task(id: contentId) {
-            preferredVersionFileId = nil
-            preferredAudioTrackIndex = nil
-            preferredSubtitleTrackIndex = nil
-            preferredNextUpFileId = nil
-            preferredNextUpAudioTrackIndex = nil
-            preferredNextUpSubtitleTrackIndex = nil
             didClearSubtitleOverride = false
             didClearNextUpSubtitleOverride = false
             nextUpPlaybackDetail = nil
@@ -80,6 +68,39 @@ struct TVItemDetailView: View {
             await viewModel.loadDetail(contentId: contentId)
             seedSubtitleOverrideIfNeeded()
         }
+    }
+
+    // Selection state lives on the cached view model so a pushed player route
+    // or a temporary navigation away from this item cannot discard it. These
+    // nonmutating proxies keep the existing selector callbacks concise.
+    private var preferredVersionFileId: Int? {
+        get { viewModel.preferredVersionFileId }
+        nonmutating set { viewModel.preferredVersionFileId = newValue }
+    }
+
+    private var preferredAudioTrackIndex: Int? {
+        get { viewModel.preferredAudioTrackIndex }
+        nonmutating set { viewModel.preferredAudioTrackIndex = newValue }
+    }
+
+    private var preferredSubtitleTrackIndex: Int? {
+        get { viewModel.preferredSubtitleTrackIndex }
+        nonmutating set { viewModel.preferredSubtitleTrackIndex = newValue }
+    }
+
+    private var preferredNextUpFileId: Int? {
+        get { viewModel.preferredNextUpFileId }
+        nonmutating set { viewModel.preferredNextUpFileId = newValue }
+    }
+
+    private var preferredNextUpAudioTrackIndex: Int? {
+        get { viewModel.preferredNextUpAudioTrackIndex }
+        nonmutating set { viewModel.preferredNextUpAudioTrackIndex = newValue }
+    }
+
+    private var preferredNextUpSubtitleTrackIndex: Int? {
+        get { viewModel.preferredNextUpSubtitleTrackIndex }
+        nonmutating set { viewModel.preferredNextUpSubtitleTrackIndex = newValue }
     }
 
     @ViewBuilder

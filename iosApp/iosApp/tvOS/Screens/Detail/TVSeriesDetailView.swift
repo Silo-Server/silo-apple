@@ -21,7 +21,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// True once the user explicitly resets subtitles to "Auto" this visit.
     /// The server override was just cleared, but the next-up detail's
     /// `effectiveSubtitle*` still describes the old manual pick until the
-    /// next refetch — suppress it so the "Auto - …" preview doesn't echo the
+    /// next refetch — suppress it so the "Auto: …" preview doesn't echo the
     /// cleared selection.
     var nextUpSubtitleOverrideCleared: Bool = false
     let onSelectSeason: (Season) -> Void
@@ -57,7 +57,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// instance, `selectedSeason` mutates — both re-focus Play, while never
     /// yanking focus back within the same season once the viewer moves on.
     @State private var autoFocusedSeasonKey: String?
-    @State private var episodeFocusRequest = 0
 
     var body: some View {
         ScrollViewReader { scrollProxy in
@@ -285,8 +284,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         TVSeasonChipRow(
             seasons: seasons,
             selectedSeasonId: selectedSeason?.id,
-            onSelect: onSelectSeason,
-            onMoveDown: requestEpisodeFocus
+            onSelect: onSelectSeason
         )
         // Bound to the whole row: the binding flips true when any chip inside
         // gains focus, driving the episode-section re-center in `body`.
@@ -311,14 +309,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             TVEpisodeRail(
                 episodes: episodes,
                 onSelect: onEpisodeTap,
-                currentContentId: nextUpEpisode?.contentId,
-                focusRequest: episodeFocusRequest
+                currentContentId: nextUpEpisode?.contentId
             )
         }
-    }
-
-    private func requestEpisodeFocus() {
-        episodeFocusRequest &+= 1
     }
 
     // MARK: - More Like This

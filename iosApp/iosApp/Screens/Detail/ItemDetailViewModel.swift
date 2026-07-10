@@ -22,6 +22,17 @@ class ItemDetailViewModel {
     var inWatchlist = false
     var isWatched = false
 
+    // tvOS pre-play selector state. ItemDetailCache retains this view model
+    // while the user enters playback or navigates to another item, so manual
+    // Version / Audio / Subtitle picks survive those round trips instead of
+    // being reset every time the detail task restarts.
+    var preferredVersionFileId: Int?
+    var preferredAudioTrackIndex: Int?
+    var preferredSubtitleTrackIndex: Int?
+    var preferredNextUpFileId: Int?
+    var preferredNextUpAudioTrackIndex: Int?
+    var preferredNextUpSubtitleTrackIndex: Int?
+
     // Track the series contentId for season/episode loading
     private var seriesContentId: String?
 

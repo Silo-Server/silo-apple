@@ -21,6 +21,25 @@ final class DetailVersionSelectionTests: XCTestCase {
         )
     }
 
+    func testVersionSelectorUsesRichPrePlaySummary() {
+        let version = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "resolution": "2160p",
+            "codec_video": "hevc",
+            "codec_audio": "truehd",
+            "hdr": true
+          }
+        ]
+        """)[0]
+
+        XCTAssertEqual(
+            DetailPlaybackFormatting.versionShortLabel(version),
+            "2160p · HEVC · HDR · TrueHD"
+        )
+    }
+
     private func decodedVersions(_ json: String) -> [FileVersion] {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -121,7 +140,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             DetailPlaybackFormatting.subtitleValueLabel(
                 version: singleChoiceVersion,
                 selectedSubtitleTrackIndex: nil
-            ) == "SubRip - English"
+            ) == "English · SRT"
         )
 
         let multipleChoiceVersion = decodedVersions("""
@@ -217,10 +236,16 @@ final class DetailVersionSelectionTests: XCTestCase {
             version: version,
             selectedAudioTrackIndex: 0
         )
+        let annotatedAutoLabel = DetailPlaybackFormatting.audioValueLabel(
+            version: version,
+            selectedAudioTrackIndex: nil,
+            annotateAuto: true
+        )
 
         XCTAssertTrue(version.effectiveAudioTrackIndex == 1)
-        XCTAssertTrue(effectiveLabel == "TrueHD 7.1 - Japanese", "Expected effective track label; got \(effectiveLabel)")
-        XCTAssertTrue(selectedLabel == "AAC - English", "Selected ordinal should override effective track; got \(selectedLabel)")
+        XCTAssertTrue(effectiveLabel == "Japanese · TrueHD · 7.1", "Expected effective track label; got \(effectiveLabel)")
+        XCTAssertTrue(selectedLabel == "English · AAC", "Selected ordinal should override effective track; got \(selectedLabel)")
+        XCTAssertEqual(annotatedAutoLabel, "Auto: Japanese · TrueHD · 7.1")
 
         let defaultFallback = decodedVersions("""
         [
@@ -237,7 +262,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             version: defaultFallback,
             selectedAudioTrackIndex: nil
         )
-        XCTAssertTrue(defaultLabel == "AC3 - Spanish", "Expected default track label; got \(defaultLabel)")
+        XCTAssertTrue(defaultLabel == "Spanish · AC3", "Expected default track label; got \(defaultLabel)")
 
         let firstFallback = decodedVersions("""
         [
@@ -254,7 +279,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             version: firstFallback,
             selectedAudioTrackIndex: nil
         )
-        XCTAssertTrue(firstLabel == "AAC - English", "Expected first track fallback; got \(firstLabel)")
+        XCTAssertTrue(firstLabel == "English · AAC", "Expected first track fallback; got \(firstLabel)")
     }
 
     func testAudioLabelsSimplifyTechnicalTitles() {
@@ -285,9 +310,9 @@ final class DetailVersionSelectionTests: XCTestCase {
             selectedAudioTrackIndex: nil
         )
 
-        XCTAssertTrue(label == "EAC3 5.1 - English", "Expected simplified audio label; got \(label)")
-        XCTAssertTrue(options[0].title == "EAC3 5.1 - English")
-        XCTAssertTrue(options[0].detail == "Default · Preferred")
+        XCTAssertTrue(label == "English · EAC3 · 5.1", "Expected simplified audio label; got \(label)")
+        XCTAssertTrue(options[0].title == "English")
+        XCTAssertTrue(options[0].detail == "EAC3 · 5.1 · Default · Preferred")
     }
 
     func testSubtitleNilIndexDoesNotCollideWithOff() {
@@ -328,7 +353,8 @@ final class DetailVersionSelectionTests: XCTestCase {
 
         XCTAssertTrue(options.count == 1)
         XCTAssertTrue(options[0].selectionIndex == nil)
-        XCTAssertTrue(options[0].title == "SubRip - English")
+        XCTAssertTrue(options[0].title == "English")
+        XCTAssertTrue(options[0].detail == "SRT · External · Available in player")
         XCTAssertFalse(options[0].isSelectable)
         XCTAssertFalse(options[0].isSelected)
         XCTAssertTrue(
@@ -373,10 +399,11 @@ final class DetailVersionSelectionTests: XCTestCase {
         )
 
         XCTAssertTrue(options.count == 2)
-        XCTAssertTrue(options[0].title == "SDH - English", "Expected SDH language label; got \(options[0].title)")
-        XCTAssertTrue(options[0].detail == "SubRip · Default", "Expected subtitle type detail; got \(options[0].detail)")
-        XCTAssertTrue(options[1].title == "SubRip - Japanese", "Expected fallback subtitle type and language; got \(options[1].title)")
-        XCTAssertTrue(selectedLabel == "SDH - English", "Expected selected subtitle label; got \(selectedLabel)")
+        XCTAssertTrue(options[0].title == "English", "Expected language-first subtitle label; got \(options[0].title)")
+        XCTAssertTrue(options[0].detail == "SRT · SDH · Default", "Expected subtitle type detail; got \(options[0].detail)")
+        XCTAssertTrue(options[1].title == "Japanese", "Expected language-first subtitle label; got \(options[1].title)")
+        XCTAssertTrue(options[1].detail == "SRT", "Expected subtitle format detail; got \(options[1].detail)")
+        XCTAssertTrue(selectedLabel == "English (SDH) · SRT", "Expected selected subtitle label; got \(selectedLabel)")
     }
 
     func testUntaggedEditionDisplaysStandard() {

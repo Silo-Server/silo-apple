@@ -8,26 +8,17 @@ import SwiftUI
 /// launcher.
 ///
 /// Pass `currentContentId` to highlight the episode currently represented
-/// by the surrounding detail experience. The rail will also scroll that
-/// card to the horizontal center on first appearance and make it the
-/// default focus target when the user d-pads down into the rail, so they
-/// land on the episode represented by the page's primary action rather
-/// than the first card in the season.
+/// by the surrounding detail experience. The rail scrolls that card to the
+/// horizontal center on first appearance, while d-pad entry remains fully
+/// spatial so focus lands beneath the control the user moved down from.
 struct TVEpisodeRail: View {
     let episodes: [EpisodeListItem]
     let onSelect: (String) -> Void
-    /// When non-nil, the matching card is visually highlighted, anchored
-    /// at first appearance, and made the default focus target when focus
-    /// first enters the rail.
+    /// When non-nil, the matching card is visually highlighted and anchored
+    /// at first appearance.
     var currentContentId: String? = nil
-    /// Incremented by the parent when Down is pressed from the season row.
-    /// A token (rather than a Bool) lets repeated handoffs request focus and
-    /// also survives the loading state where this rail is temporarily absent.
-    var focusRequest: Int = 0
 
     private let cardSpacing: CGFloat = 36
-    @FocusState private var focusedCardId: String?
-    @State private var lastAppliedFocusRequest = 0
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -40,7 +31,6 @@ struct TVEpisodeRail: View {
                             onSelect: { onSelect(episode.contentId) }
                         )
                         .id(episode.contentId)
-                        .focused($focusedCardId, equals: episode.contentId)
                     }
                 }
                 .padding(.vertical, 32)
@@ -48,56 +38,16 @@ struct TVEpisodeRail: View {
             }
             .focusSection()
             .scrollClipDisabled()
-            .applyRailDefaultFocus(currentContentId, binding: $focusedCardId)
             .onAppear {
-                if let id = currentContentId {
-                    // Run on next tick so the LazyHStack has instantiated the
-                    // target cell before we try to anchor on it.
-                    DispatchQueue.main.async {
-                        withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
-                            proxy.scrollTo(id, anchor: .center)
-                        }
+                guard let id = currentContentId else { return }
+                // Run on next tick so the LazyHStack has instantiated the
+                // target cell before we try to anchor on it.
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
+                        proxy.scrollTo(id, anchor: .center)
                     }
                 }
-                applyFocusRequest(focusRequest, proxy: proxy)
             }
-            .onChange(of: focusRequest) { _, request in
-                applyFocusRequest(request, proxy: proxy)
-            }
-        }
-    }
-
-    private func applyFocusRequest(_ request: Int, proxy: ScrollViewProxy) {
-        guard request > 0, request != lastAppliedFocusRequest else { return }
-        guard let target = episodes.first(where: { $0.contentId == currentContentId })?.contentId
-                ?? episodes.first?.contentId else { return }
-        lastAppliedFocusRequest = request
-
-        // The target may live outside the LazyHStack's mounted range. Scroll
-        // and assign focus together on the next run-loop turn so the card is
-        // present when the focus engine resolves the request.
-        DispatchQueue.main.async {
-            proxy.scrollTo(target, anchor: .center)
-            focusedCardId = target
-        }
-    }
-}
-
-private extension View {
-    /// Routes d-pad-driven focus arriving at the rail to the card matching
-    /// `currentContentId`. `prefersDefaultFocus` only fires for automatic
-    /// focus evaluations (scope first appears, structural changes); d-pad
-    /// entry is user-initiated and falls back to geometric proximity
-    /// unless we explicitly mark it `userInitiated`.
-    @ViewBuilder
-    func applyRailDefaultFocus(
-        _ currentContentId: String?,
-        binding: FocusState<String?>.Binding
-    ) -> some View {
-        if let currentContentId {
-            self.defaultFocus(binding, currentContentId, priority: .userInitiated)
-        } else {
-            self
         }
     }
 }

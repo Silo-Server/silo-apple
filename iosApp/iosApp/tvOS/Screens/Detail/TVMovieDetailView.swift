@@ -17,7 +17,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     /// True once the user explicitly resets subtitles to "Auto" this visit.
     /// The server override was just cleared, but `detail.effectiveSubtitle*`
     /// still describes the old manual pick until the next refetch — suppress
-    /// it so the "Auto - …" preview doesn't echo the cleared selection.
+    /// it so the "Auto: …" preview doesn't echo the cleared selection.
     var subtitleOverrideCleared: Bool = false
     let seasons: [Season]
     let selectedSeason: Season?
@@ -51,7 +51,6 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     // forbids static stored properties on this type.
     private let episodeSectionScrollId = "detail-episode-section"
     private let heroScrollId = "detail-hero"
-    @State private var episodeFocusRequest = 0
 
     var body: some View {
         ScrollViewReader { scrollProxy in
@@ -252,8 +251,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 TVSeasonChipRow(
                     seasons: seasons,
                     selectedSeasonId: selectedSeason?.id,
-                    onSelect: onSelectSeason,
-                    onMoveDown: requestEpisodeFocus
+                    onSelect: onSelectSeason
                 )
                 // Container binding — true while any chip has focus, driving
                 // the episode-section re-center in `detailFocusScroll`.
@@ -269,15 +267,10 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 TVEpisodeRail(
                     episodes: seasonEpisodes,
                     onSelect: onEpisodeTap,
-                    currentContentId: detail.contentId,
-                    focusRequest: episodeFocusRequest
+                    currentContentId: detail.contentId
                 )
             }
         }
-    }
-
-    private func requestEpisodeFocus() {
-        episodeFocusRequest &+= 1
     }
 
     private var episodeRailEyebrow: String {

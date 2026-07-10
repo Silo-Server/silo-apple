@@ -82,7 +82,6 @@ struct TVSeasonChipRow: View {
     let seasons: [Season]
     let selectedSeasonId: String?
     let onSelect: (Season) -> Void
-    var onMoveDown: (() -> Void)? = nil
 
     @FocusState private var focusedSeasonId: String?
 
@@ -104,14 +103,6 @@ struct TVSeasonChipRow: View {
             }
             .scrollClipDisabled()
             .focusSection()
-            // Down is an intentional boundary handoff. After a season change
-            // the episode rail may be temporarily replaced by a loader, so
-            // native geometry has no target until the new episodes arrive.
-            .onMoveCommand { direction in
-                if direction == .down {
-                    onMoveDown?()
-                }
-            }
             .applyChipRowDefaultFocus(selectedSeasonId, binding: $focusedSeasonId)
             .onChange(of: selectedSeasonId) { _, newId in
                 guard let newId else { return }
