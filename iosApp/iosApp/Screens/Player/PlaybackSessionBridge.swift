@@ -57,8 +57,8 @@ struct PreparedPlayback {
         if let resolution = selectedVersion.resolution, !resolution.isEmpty {
             badges.append(PlayerMetadata.badgeLabel(forResolution: resolution))
         }
-        if selectedVersion.hdr == true {
-            badges.append("HDR")
+        if let dynamicRange = DetailPlaybackFormatting.dynamicRangeBadgeLabel(selectedVersion) {
+            badges.append(dynamicRange)
         }
         if let codec = selectedVersion.codecVideo?.uppercased(), !codec.isEmpty {
             badges.append(codec)

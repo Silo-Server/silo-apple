@@ -205,7 +205,8 @@ final class HDRDisplayCriteriaPolicyTests: XCTestCase {
                     frameRate: "23.976", bitrate: nil, profile: nil,
                     level: nil, bitDepth: nil, colorRange: nil, colorSpace: nil,
                     colorPrimaries: nil, colorTransfer: colorTransfer,
-                    videoRange: videoRange, dolbyVision: nil, title: nil,
+                    videoRange: videoRange, videoRangeType: nil,
+                    dolbyVision: nil, dvProfile: nil, title: nil,
                     language: nil
                 )
             ],

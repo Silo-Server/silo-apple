@@ -303,8 +303,71 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertTrue(DetailPlaybackFormatting.audioTrackIsAtmos(track))
         XCTAssertEqual(
             DetailPlaybackFormatting.audioValueLabel(version: versions[0], selectedAudioTrackIndex: nil),
-            "EAC3 Atmos"
+            "DD+ Atmos"
         )
+    }
+
+    func testAtmosLabelsDistinguishCodecFamily() throws {
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "audio_tracks": [
+              { "codec": "eac3", "profile": "Dolby Digital Plus + Dolby Atmos", "language": "eng" },
+              { "codec": "truehd", "profile": "Dolby TrueHD + Dolby Atmos" },
+              { "codec": "opus", "title": "English Atmos" },
+              { "codec": "eac3", "profile": "Dolby Digital Plus" }
+            ]
+          }
+        ]
+        """)
+        let tracks = try XCTUnwrap(versions[0].audioTracks)
+
+        XCTAssertEqual(DetailPlaybackFormatting.atmosBadgeLabel(tracks[0]), "DD+ Atmos")
+        XCTAssertEqual(DetailPlaybackFormatting.atmosBadgeLabel(tracks[1]), "TrueHD Atmos")
+        XCTAssertEqual(DetailPlaybackFormatting.atmosBadgeLabel(tracks[2]), "Atmos")
+        XCTAssertNil(DetailPlaybackFormatting.atmosBadgeLabel(tracks[3]))
+        XCTAssertEqual(DetailPlaybackFormatting.audioTitle(tracks[0], ordinal: 0), "English")
+        XCTAssertEqual(
+            DetailPlaybackFormatting.audioDetail(tracks[0], ordinal: 0, version: versions[0]),
+            "DD+ Atmos"
+        )
+    }
+
+    func testDynamicRangeLabelsPreferDolbyVisionEvidence() {
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "resolution": "2160p",
+            "hdr": true,
+            "video_tracks": [
+              { "codec": "hevc", "dv_profile": 8, "video_range_type": "DOVIWithHDR10" }
+            ]
+          },
+          {
+            "file_id": 2,
+            "resolution": "2160p",
+            "hdr": true,
+            "video_tracks": [
+              { "codec": "hevc", "video_range_type": "HDR10" }
+            ]
+          },
+          {
+            "file_id": 3,
+            "resolution": "2160p",
+            "hdr": false,
+            "video_tracks": [
+              { "codec": "hevc", "dolby_vision": "Profile 5" }
+            ]
+          }
+        ]
+        """)
+
+        XCTAssertEqual(DetailPlaybackFormatting.dynamicRangeBadgeLabel(versions[0]), "DV")
+        XCTAssertEqual(DetailPlaybackFormatting.versionShortLabel(versions[0]), "2160p · DV")
+        XCTAssertEqual(DetailPlaybackFormatting.dynamicRangeBadgeLabel(versions[1]), "HDR")
+        XCTAssertEqual(DetailPlaybackFormatting.dynamicRangeBadgeLabel(versions[2]), "DV")
     }
 
     func testEffectiveAudioLabelPrefersServerEffectiveTrack() {

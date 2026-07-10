@@ -570,8 +570,8 @@ enum TVHeroMetadata {
         if let res = resolutionLabel(version.resolution) {
             tokens.append(.chip(res))
         }
-        if version.hdr == true {
-            tokens.append(.chip(dolbyVisionLabel(version: version) ?? "HDR"))
+        if let dynamicRange = DetailPlaybackFormatting.dynamicRangeBadgeLabel(version) {
+            tokens.append(.chip(dynamicRange))
         }
         if let audio = primaryAudioLabel(version: version) {
             tokens.append(.chip(audio))
@@ -600,21 +600,13 @@ enum TVHeroMetadata {
         return nil
     }
 
-    private static func dolbyVisionLabel(version: FileVersion) -> String? {
-        let videoTracks = version.videoTracks ?? []
-        if videoTracks.contains(where: { ($0.dolbyVision ?? "").isEmpty == false }) {
-            return "DOLBY VISION"
-        }
-        return nil
-    }
-
     private static func primaryAudioLabel(version: FileVersion) -> String? {
         let tracks = version.audioTracks ?? []
         let defaultTrack = tracks.first(where: { $0.isDefault == true }) ?? tracks.first
         guard let track = defaultTrack else { return nil }
 
+        if let atmos = DetailPlaybackFormatting.atmosBadgeLabel(track) { return atmos }
         if let layout = track.channelLayout?.lowercased() {
-            if layout.contains("atmos") { return "ATMOS" }
             if layout.contains("7.1") { return "7.1" }
             if layout.contains("5.1") { return "5.1" }
             if layout.contains("stereo") || layout == "2.0" { return nil }

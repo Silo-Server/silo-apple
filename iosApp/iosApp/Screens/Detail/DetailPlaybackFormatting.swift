@@ -24,7 +24,7 @@ enum DetailPlaybackFormatting {
         let tokens = [
             nonEmpty(version.resolution),
             nonEmpty(normalizedVideoCodec(version.codecVideo)),
-            dynamicRangeLabel(version),
+            dynamicRangeBadgeLabel(version),
             nonEmpty(normalizedAudioCodec(version.codecAudio)),
         ].compactMap { $0 }
         return tokens.isEmpty ? "Auto" : tokens.joined(separator: " · ")
@@ -43,7 +43,7 @@ enum DetailPlaybackFormatting {
         let tokens = [
             nonEmpty(version.resolution),
             nonEmpty(normalizedVideoCodec(version.codecVideo)),
-            dynamicRangeLabel(version),
+            dynamicRangeBadgeLabel(version),
             nonEmpty(normalizedAudioCodec(version.codecAudio)),
         ].compactMap { $0 }
         if !tokens.isEmpty {
@@ -197,11 +197,15 @@ enum DetailPlaybackFormatting {
         if let title = usefulAudioTitle(track), title != audioTitle(track, ordinal: ordinal) {
             tokens.append(title)
         }
-        if let codec = normalizedAudioCodec(track.codec) {
-            tokens.append(codec)
-        }
-        if let layout = compactAudioLayout(track) {
-            tokens.append(layout)
+        if let atmos = atmosBadgeLabel(track) {
+            tokens.append(atmos)
+        } else {
+            if let codec = normalizedAudioCodec(track.codec) {
+                tokens.append(codec)
+            }
+            if let layout = compactAudioLayout(track) {
+                tokens.append(layout)
+            }
         }
         if track.isDefault == true {
             tokens.append("Default")
@@ -213,11 +217,15 @@ enum DetailPlaybackFormatting {
     }
 
     private static func audioSummary(_ track: AudioTrack, ordinal: Int) -> String {
-        let tokens = [
-            languageDisplayName(track.language),
-            nonEmpty(normalizedAudioCodec(track.codec)),
-            compactAudioLayout(track),
-        ].compactMap { $0 }
+        var tokens = [languageDisplayName(track.language)].compactMap { $0 }
+        if let atmos = atmosBadgeLabel(track) {
+            tokens.append(atmos)
+        } else {
+            tokens += [
+                nonEmpty(normalizedAudioCodec(track.codec)),
+                compactAudioLayout(track),
+            ].compactMap { $0 }
+        }
         return tokens.isEmpty ? audioTitle(track, ordinal: ordinal) : tokens.joined(separator: " · ")
     }
 
@@ -535,8 +543,18 @@ enum DetailPlaybackFormatting {
         return codec.uppercased()
     }
 
-    private static func dynamicRangeLabel(_ version: FileVersion) -> String? {
-        if (version.videoTracks ?? []).contains(where: { nonEmpty($0.dolbyVision) != nil }) {
+    static func videoTrackIsDolbyVision(_ track: VideoTrack) -> Bool {
+        if nonEmpty(track.dolbyVision) != nil || (track.dvProfile ?? 0) > 0 {
+            return true
+        }
+        return [track.videoRange, track.videoRangeType].compactMap(nonEmpty).contains { value in
+            let normalized = value.lowercased()
+            return normalized.contains("dolbyvision") || normalized.contains("dovi")
+        }
+    }
+
+    static func dynamicRangeBadgeLabel(_ version: FileVersion) -> String? {
+        if (version.videoTracks ?? []).contains(where: videoTrackIsDolbyVision) {
             return "DV"
         }
         return version.hdr == true ? "HDR" : nil
@@ -563,6 +581,16 @@ enum DetailPlaybackFormatting {
         [track.profile, track.channelLayout, track.title, track.embeddedTitle].contains { value in
             guard let lowered = value?.lowercased() else { return false }
             return lowered.contains("atmos") || lowered.contains("joc")
+        }
+    }
+
+    static func atmosBadgeLabel(_ track: AudioTrack) -> String? {
+        guard audioTrackIsAtmos(track) else { return nil }
+
+        switch normalizedAudioCodec(track.codec) {
+        case "EAC3": return "DD+ Atmos"
+        case "TrueHD": return "TrueHD Atmos"
+        default: return "Atmos"
         }
     }
 
