@@ -67,6 +67,11 @@ struct ContentView: View {
             #endif
             router.expiredSession()
         }
+        #if os(tvOS)
+        .onReceive(NotificationCenter.default.publisher(for: .temporaryRemoteAuthExpired)) { _ in
+            TVControlReceiver.shared.temporaryAuthExpired()
+        }
+        #endif
         .task {
             // Debug: auto-play from launch argument -debugPlay <contentId>
             if let idx = CommandLine.arguments.firstIndex(of: "-debugPlay"),

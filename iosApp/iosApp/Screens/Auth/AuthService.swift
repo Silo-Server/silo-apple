@@ -280,4 +280,12 @@ final class AuthService: @unchecked Sendable {
         ItemDetailCache.shared.clearAll()
         #endif
     }
+
+    /// A remote-playback handoff changes server/account/profile without
+    /// touching the persistent registry. Treat both entry and restoration as
+    /// full auth boundaries so cached user data cannot cross identities.
+    @MainActor
+    func clearCachesForTemporaryIdentityChange() {
+        clearAllCaches()
+    }
 }

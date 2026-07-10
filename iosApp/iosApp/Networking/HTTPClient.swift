@@ -551,13 +551,16 @@ actor HTTPClient {
             } else {
                 let body = String(data: data, encoding: .utf8) ?? ""
                 Self.logger.error("Refresh failed: status=\(http.statusCode, privacy: .public) body=\(body, privacy: .private)")
-                await tokenStore.clearTokens()
+                let temporaryScopeExpired = await tokenStore.hasTemporaryScope()
+                if !temporaryScopeExpired {
+                    await tokenStore.clearTokens()
+                }
                 // Tell the UI to route back to login for the current
                 // server. The registry entry (URL + display name) is
                 // preserved so the user doesn't have to re-add it.
                 await MainActor.run {
                     NotificationCenter.default.post(
-                        name: .continuumSessionExpired,
+                        name: temporaryScopeExpired ? .temporaryRemoteAuthExpired : .continuumSessionExpired,
                         object: nil
                     )
                 }

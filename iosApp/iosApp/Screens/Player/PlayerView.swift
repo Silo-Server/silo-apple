@@ -31,6 +31,9 @@ struct PlayerView: View {
     #if os(iOS)
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
     #endif
+    #if os(tvOS)
+    @State private var remoteIdentityNotice: RemotePlaybackIdentityManager.ActiveIdentity?
+    #endif
 
     init(
         contentId: String,
@@ -175,9 +178,18 @@ struct PlayerView: View {
                     }
                     #endif
 
+                    #if os(tvOS)
+                    if let identity = remoteIdentityNotice {
+                        RemotePlaybackIdentityNotice(identity: identity)
+                            .transition(.opacity)
+                    } else if let notice = viewModel.activeNotice ?? viewModel.suspendedNotice {
+                        PlayerNoticeOverlay(notice: notice)
+                    }
+                    #else
                     if let notice = viewModel.activeNotice ?? viewModel.suspendedNotice {
                         PlayerNoticeOverlay(notice: notice)
                     }
+                    #endif
                 }
             }
         }
@@ -241,13 +253,26 @@ struct PlayerView: View {
             )
             #if os(tvOS)
             TVControlReceiver.shared.registerPlayer(viewModel, contentId: contentId)
+            withAnimation(.easeInOut(duration: 0.2)) {
+                remoteIdentityNotice = RemotePlaybackIdentityManager.shared.activeIdentity
+            }
             #endif
         }
+        #if os(tvOS)
+        .task(id: remoteIdentityNotice?.generationID) {
+            guard remoteIdentityNotice != nil else { return }
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                remoteIdentityNotice = nil
+            }
+        }
+        #endif
         .onDisappear {
+            viewModel.cleanup()
             #if os(tvOS)
             TVControlReceiver.shared.unregisterPlayer(viewModel)
             #endif
-            viewModel.cleanup()
             #if os(iOS)
             orientationCoordinator.deactivatePlayer()
             #endif

@@ -6,6 +6,9 @@ extension Notification.Name {
     /// screen — the registry entry is preserved so the user only has to
     /// re-enter credentials.
     static let continuumSessionExpired = Notification.Name("continuumSessionExpired")
+    /// Posted when a playback-only remote handoff session expires. The TV
+    /// restores its persistent identity instead of routing the app to login.
+    static let temporaryRemoteAuthExpired = Notification.Name("temporaryRemoteAuthExpired")
 }
 
 /// Central navigation controller for the Continuum iOS app.

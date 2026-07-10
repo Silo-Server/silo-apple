@@ -8,12 +8,14 @@ struct SiloControlTarget: Identifiable, Equatable {
     let endpoint: NWEndpoint
     let serverId: String
     let serverName: String?
+    let protocolVersion: Int
     /// The TV's advertised "currently playing" flag (Bonjour TXT `playing`).
     /// False for TVs running an older build that doesn't advertise it.
     var isPlaying: Bool = false
 
     static func == (lhs: SiloControlTarget, rhs: SiloControlTarget) -> Bool {
         lhs.id == rhs.id && lhs.isPlaying == rhs.isPlaying
+            && lhs.serverId == rhs.serverId && lhs.protocolVersion == rhs.protocolVersion
     }
 }
 
@@ -34,13 +36,8 @@ final class SiloControlBrowser {
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             Task { @MainActor in
                 guard let self else { return }
-                let activeServerId = ServerRegistry.shared.activeServerId
                 self.found = results
                     .compactMap { Self.makeTarget($0) }
-                    .filter { target in
-                        guard let activeServerId else { return false }
-                        return target.serverId == activeServerId
-                    }
                     .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             }
         }
@@ -65,6 +62,7 @@ final class SiloControlBrowser {
             endpoint: result.endpoint,
             serverId: serverId,
             serverName: txt["serverName"],
+            protocolVersion: Int(txt["v"] ?? "1") ?? 1,
             isPlaying: txt["playing"] == "1"
         )
     }

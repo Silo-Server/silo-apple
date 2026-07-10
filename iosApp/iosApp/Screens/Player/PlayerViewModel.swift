@@ -692,6 +692,7 @@ class PlayerViewModel {
     /// load cycles because this snapshot is a long-lived PlayerViewModel concern.
     private var realtimeUnavailabilityObserverToken: UUID?
     private var realtimeConnectivityObserverToken: UUID?
+    private var cleanupCompletionTask: Task<Void, Never>?
 
     /// Build the live-subtitle coordinator with adapters bound to this VM. The
     /// adapters touch the VM's playback + live-track + notice surface, so they
@@ -5425,7 +5426,7 @@ class PlayerViewModel {
         realtimeConnectivityObserverToken = nil
         let unavailabilityToken = realtimeUnavailabilityObserverToken
         realtimeUnavailabilityObserverToken = nil
-        Task {
+        cleanupCompletionTask = Task {
             // Remove our availability observer before tearing down the realtime
             // client; normal fresh-load unbinds preserve this observer.
             if let connectivityToken {
@@ -5439,6 +5440,17 @@ class PlayerViewModel {
                 await sessionBridge.stopSession(position: finalPosition, isPaused: true)
             }
         }
+    }
+
+    @MainActor
+    func waitForCleanupCompletion() async {
+        // onDisappear calls cleanup immediately before unregistering the TV
+        // receiver. Yield briefly if presentation teardown has not installed
+        // the final progress task yet.
+        for _ in 0..<100 where cleanupCompletionTask == nil {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        await cleanupCompletionTask?.value
     }
 
     /// Safety net: SwiftUI normally drives `cleanup()` from `PlayerView.onDisappear`,
