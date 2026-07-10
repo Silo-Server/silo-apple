@@ -433,7 +433,18 @@ final class AVPlayerBackend {
     }
 
     let avPlayer = AVPlayer()
-    weak var subtitleOverlay: SubtitleOverlayView?
+    private let subtitleOverlayAttachments = SubtitleOverlayAttachmentRegistry()
+    var subtitleOverlay: SubtitleOverlayView? {
+        subtitleOverlayAttachments.currentOverlay
+    }
+
+    func attachSubtitleOverlay(_ overlay: SubtitleOverlayView, owner: AnyObject) {
+        subtitleOverlayAttachments.attach(owner: owner, overlay: overlay)
+    }
+
+    func detachSubtitleOverlay(owner: AnyObject) {
+        subtitleOverlayAttachments.detach(owner: owner)
+    }
     var subtitleRendererForOverlay: SubtitleRenderer? {
         subtitleSession?.underlyingRenderer
     }

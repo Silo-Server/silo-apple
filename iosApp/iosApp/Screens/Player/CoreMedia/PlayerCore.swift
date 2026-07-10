@@ -811,10 +811,21 @@ final class PlayerCore: NSObject {
     /// is reset (tracks/cache) per load via `teardown()`.
     private var subtitleSession: SubtitleSession?
 
-    /// Weak reference to the overlay view mounted by `PlayerSurface`.
-    /// Set by `PlayerSurfaceHostView.attach(player:)`. The display-link
-    /// tick pumps composited `CGImage`s into it.
-    weak var subtitleOverlay: SubtitleOverlayView?
+    /// Live overlay views mounted by `PlayerSurface`. Next Up transitions can
+    /// overlap a mini-player and full-screen surface, so ownership is tracked
+    /// rather than stored in one racy weak property.
+    private let subtitleOverlayAttachments = SubtitleOverlayAttachmentRegistry()
+    var subtitleOverlay: SubtitleOverlayView? {
+        subtitleOverlayAttachments.currentOverlay
+    }
+
+    func attachSubtitleOverlay(_ overlay: SubtitleOverlayView, owner: AnyObject) {
+        subtitleOverlayAttachments.attach(owner: owner, overlay: overlay)
+    }
+
+    func detachSubtitleOverlay(owner: AnyObject) {
+        subtitleOverlayAttachments.detach(owner: owner)
+    }
 
     /// Renderer handle exposed so the overlay view can receive frame-size
     /// notifications directly on layout.

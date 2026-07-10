@@ -23,7 +23,7 @@ struct AVPlayerSurface: UIViewRepresentable {
         view.attach(backend: backend)
         view.setVideoGravity(videoGravity)
         view.attachSubtitleRenderer(backend.subtitleRendererForOverlay)
-        backend.subtitleOverlay = view.subtitleOverlay
+        backend.attachSubtitleOverlay(view.subtitleOverlay, owner: view)
         return view
     }
 
@@ -31,7 +31,11 @@ struct AVPlayerSurface: UIViewRepresentable {
         uiView.attach(backend: backend)
         uiView.setVideoGravity(videoGravity)
         uiView.attachSubtitleRenderer(backend.subtitleRendererForOverlay)
-        backend.subtitleOverlay = uiView.subtitleOverlay
+        backend.attachSubtitleOverlay(uiView.subtitleOverlay, owner: uiView)
+    }
+
+    static func dismantleUIView(_ uiView: AVPlayerLayerView, coordinator: ()) {
+        uiView.detachSubtitleOverlay()
     }
 }
 
@@ -77,6 +81,10 @@ final class AVPlayerLayerView: UIView {
 
     func attachSubtitleRenderer(_ renderer: SubtitleRenderer?) {
         subtitleOverlay.renderer = renderer
+    }
+
+    func detachSubtitleOverlay() {
+        backend?.detachSubtitleOverlay(owner: self)
     }
 
     override func layoutSubviews() {

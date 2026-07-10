@@ -19,12 +19,70 @@
 //
 
 import CoreGraphics
+import Foundation
 import QuartzCore
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
 import AppKit
 #endif
+
+/// Tracks every live SwiftUI player surface for one playback backend.
+///
+/// The Next Up transition briefly keeps its mini-player and the returning
+/// full-screen player alive together. A single weak overlay property is racy:
+/// the outgoing surface can be the last writer and then deallocate, leaving the
+/// subtitle pump with `nil`. Keeping weak registrations lets detach restore the
+/// newest remaining surface instead.
+final class SubtitleOverlayAttachmentRegistry {
+    private final class Entry {
+        weak var owner: AnyObject?
+        weak var overlay: SubtitleOverlayView?
+        var sequence: UInt64
+
+        init(owner: AnyObject, overlay: SubtitleOverlayView, sequence: UInt64) {
+            self.owner = owner
+            self.overlay = overlay
+            self.sequence = sequence
+        }
+    }
+
+    private let lock = NSLock()
+    private var entries: [ObjectIdentifier: Entry] = [:]
+    private var sequence: UInt64 = 0
+
+    func attach(owner: AnyObject, overlay: SubtitleOverlayView) {
+        lock.lock()
+        defer { lock.unlock() }
+        pruneReleasedEntries()
+        sequence &+= 1
+        entries[ObjectIdentifier(owner)] = Entry(
+            owner: owner,
+            overlay: overlay,
+            sequence: sequence
+        )
+    }
+
+    func detach(owner: AnyObject) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.removeValue(forKey: ObjectIdentifier(owner))
+        pruneReleasedEntries()
+    }
+
+    var currentOverlay: SubtitleOverlayView? {
+        lock.lock()
+        defer { lock.unlock() }
+        pruneReleasedEntries()
+        return entries.values.max(by: { $0.sequence < $1.sequence })?.overlay
+    }
+
+    private func pruneReleasedEntries() {
+        entries = entries.filter { _, entry in
+            entry.owner != nil && entry.overlay != nil
+        }
+    }
+}
 
 private func withoutImplicitLayerAnimation(_ updates: () -> Void) {
     CATransaction.begin()
