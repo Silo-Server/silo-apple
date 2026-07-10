@@ -427,11 +427,22 @@ struct TVItemDetailView: View {
                     router.navigate(to: .itemDetail(contentId: id))
                 },
                 onEpisodeTap: { id in
-                    // Episode → episode hops replace the current page so Back
-                    // exits to wherever the chain started (home, series page)
-                    // instead of unwinding every previously viewed episode.
-                    guard id != detail.contentId else { return }
-                    router.replaceCurrent(with: .itemDetail(contentId: id))
+                    let episode = viewModel.episodes.first { $0.contentId == id }
+                    let resumePosition = playableResumePosition(
+                        position: episode?.userData?.positionSeconds,
+                        duration: episode?.userData?.durationSeconds
+                    )
+
+                    // Present independently of the navigation stack. Once
+                    // playback reports that it is actually running, the
+                    // hidden detail route is replaced with this episode so
+                    // dismissing the player returns to what was just played.
+                    router.presentPlayer(
+                        contentId: id,
+                        startFromBeginning: false,
+                        resumePosition: resumePosition,
+                        returnToContentId: id == detail.contentId ? nil : id
+                    )
                 },
                 belowSynopsis: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)

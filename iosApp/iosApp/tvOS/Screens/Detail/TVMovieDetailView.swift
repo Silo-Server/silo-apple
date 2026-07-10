@@ -51,6 +51,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     // forbids static stored properties on this type.
     private let episodeSectionScrollId = "detail-episode-section"
     private let heroScrollId = "detail-hero"
+    @State private var focusedEpisodeContentId: String?
 
     var body: some View {
         ScrollViewReader { scrollProxy in
@@ -100,6 +101,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 episodeSectionId: episodeSectionScrollId,
                 heroId: heroScrollId
             )
+            .onPlayPauseCommand(perform: playFocusedEpisodeOrCurrent)
         }
     }
 
@@ -267,9 +269,23 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 TVEpisodeRail(
                     episodes: seasonEpisodes,
                     onSelect: onEpisodeTap,
+                    onFocusedEpisodeChange: { focusedEpisodeContentId = $0 },
                     currentContentId: detail.contentId
                 )
             }
+        }
+    }
+
+    /// Siri Remote Play/Pause is a page-level shortcut. A different episode
+    /// highlighted in the rail wins; every other focus zone plays the episode
+    /// represented by this detail page and preserves its selector overrides.
+    private func playFocusedEpisodeOrCurrent() {
+        guard detail.type == "episode" else { return }
+        if let focusedEpisodeContentId,
+           focusedEpisodeContentId != detail.contentId {
+            onEpisodeTap(focusedEpisodeContentId)
+        } else {
+            onPlay(false)
         }
     }
 

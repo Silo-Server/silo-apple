@@ -120,7 +120,12 @@ struct TVMainTabView: View {
                 startFromBeginning: payload.startFromBeginning,
                 resumePositionOverride: payload.resumePosition,
                 posterURLHint: payload.posterURL,
-                backdropURLHint: payload.backdropURL
+                backdropURLHint: payload.backdropURL,
+                onPlaybackStarted: {
+                    guard let returnToContentId = payload.returnToContentId,
+                          router.presentedPlayer?.id == payload.id else { return }
+                    router.replaceCurrent(with: .itemDetail(contentId: returnToContentId))
+                }
             )
         }
         .confirmationDialog(

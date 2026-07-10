@@ -19,6 +19,9 @@ struct TVMediaCard: View {
     /// callers without per-item OverlaySummary should leave it off.
     var overlayData: OverlayData? = nil
     let action: () -> Void
+    /// Remote Play/Pause shortcut. When nil, the card does not intercept the
+    /// command (used for non-playable containers such as series).
+    var playAction: (() -> Void)? = nil
     /// Width of the poster. Defaults to the theme's standard poster size.
     /// Override with a smaller value in space-constrained grids (e.g. the
     /// Library tab where the alphabet rail forces cards to shrink).
@@ -134,12 +137,14 @@ struct TVMediaCard: View {
                 .focused($isFocused)
                 .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
                 .applyRailFocus(focusBinding, contentId: focusContentId)
+                .applyTVCardPlayPauseAction(playAction)
         case .ring:
             Button(action: action) { posterImage }
                 .buttonStyle(TVPosterRingButtonStyle())
                 .focused($isFocused)
                 .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
                 .applyRailFocus(focusBinding, contentId: focusContentId)
+                .applyTVCardPlayPauseAction(playAction)
         }
     }
 
@@ -215,6 +220,15 @@ struct TVMediaCard: View {
 }
 
 private extension View {
+    @ViewBuilder
+    func applyTVCardPlayPauseAction(_ action: (() -> Void)?) -> some View {
+        if let action {
+            self.onPlayPauseCommand(perform: action)
+        } else {
+            self
+        }
+    }
+
     /// Binds the inner button to a parent rail's `@FocusState` so the rail can
     /// route d-pad-entry default focus onto this specific card. No-op when the
     /// rail doesn't manage focus. Mirrors `MediaCard.applyRowFocus`.

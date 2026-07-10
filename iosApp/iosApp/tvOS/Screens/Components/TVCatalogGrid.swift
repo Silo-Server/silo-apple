@@ -31,6 +31,7 @@ struct TVCatalogGrid: View {
     @Namespace private var gridFocusNamespace
     @FocusState private var focusedItemId: String?
     @State private var lastAppliedFocusRequest = 0
+    @Environment(AppRouter.self) private var router
 
     private let columnSpacing: CGFloat = 40
     private let rowSpacing: CGFloat = 60
@@ -63,6 +64,7 @@ struct TVCatalogGrid: View {
                             userState: item.userState,
                             overlayData: OverlayData.from(item),
                             action: { onItemTap(item.contentId) },
+                            playAction: playAction(for: item),
                             cardWidth: cardWidth,
                             aspect: item.isAudiobook ? .square : .poster,
                             prefersDefaultFocus: prefersDefaultFocusOnFirstItem
@@ -117,6 +119,17 @@ struct TVCatalogGrid: View {
         let threshold = items.count - (prefetchRowsRemaining * columnCount)
         if index >= threshold {
             onNearEnd(index)
+        }
+    }
+
+    private func playAction(for item: BrowseItem) -> (() -> Void)? {
+        guard SiloMediaType.isDirectlyPlayable(item.type) else { return nil }
+        return {
+            router.presentPlayer(
+                contentId: item.contentId,
+                posterURL: item.posterUrl,
+                backdropURL: item.backdropUrl
+            )
         }
     }
 

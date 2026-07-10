@@ -24,8 +24,10 @@ struct PlayerView: View {
     /// for artwork. Nil falls back to the prior fetch-on-prepare path.
     let posterURLHint: String?
     let backdropURLHint: String?
+    let onPlaybackStarted: (() -> Void)?
 
     @State private var viewModel = PlayerViewModel()
+    @State private var didNotifyPlaybackStarted = false
     @Environment(\.dismiss) var dismiss
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
@@ -44,7 +46,8 @@ struct PlayerView: View {
         resumePositionOverride: Double? = nil,
         offlineDownloadId: String? = nil,
         posterURLHint: String? = nil,
-        backdropURLHint: String? = nil
+        backdropURLHint: String? = nil,
+        onPlaybackStarted: (() -> Void)? = nil
     ) {
         self.contentId = contentId
         self.preferredFileId = preferredFileId
@@ -55,6 +58,7 @@ struct PlayerView: View {
         self.offlineDownloadId = offlineDownloadId
         self.posterURLHint = posterURLHint
         self.backdropURLHint = backdropURLHint
+        self.onPlaybackStarted = onPlaybackStarted
     }
 
     var body: some View {
@@ -232,6 +236,11 @@ struct PlayerView: View {
         #endif
         .onChange(of: scenePhase) { _, newPhase in
             viewModel.handleScenePhase(newPhase)
+        }
+        .onChange(of: viewModel.isPlaying) { _, isPlaying in
+            guard isPlaying, !didNotifyPlaybackStarted else { return }
+            didNotifyPlaybackStarted = true
+            onPlaybackStarted?()
         }
         .onChange(of: viewModel.remoteDismissToken) { _, newValue in
             guard newValue != nil else { return }

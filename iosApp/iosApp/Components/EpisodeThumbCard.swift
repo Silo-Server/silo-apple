@@ -11,6 +11,9 @@ struct EpisodeThumbCard: View {
     let item: SectionItem
     var showProgress: Bool = false
     let action: () -> Void
+    /// tvOS-only shortcut invoked by the remote's Play/Pause button while
+    /// this card owns focus. Select continues to invoke `action`.
+    var playAction: (() -> Void)? = nil
     /// tvOS-only: parent row's focus tracking binding. See
     /// `MediaCard.focusedItemId` for the contract.
     var focusedItemId: FocusState<String?>.Binding? = nil
@@ -290,6 +293,7 @@ struct EpisodeThumbCard: View {
         .buttonStyle(.card)
         .focused($isFocused)
         .applyRowFocus(focusedItemId, itemId: item.contentId)
+        .applyEpisodePlayPauseAction(playAction)
 
         thumbnailButtonWithContext(button)
     }
@@ -337,6 +341,15 @@ struct EpisodeThumbCard: View {
 
 #if os(tvOS)
 private extension View {
+    @ViewBuilder
+    func applyEpisodePlayPauseAction(_ action: (() -> Void)?) -> some View {
+        if let action {
+            self.onPlayPauseCommand(perform: action)
+        } else {
+            self
+        }
+    }
+
     /// Mirrors `MediaCard.applyRowFocus` so episode thumbs participate
     /// in the row's `defaultFocus(... priority: .userInitiated)` mechanism.
     @ViewBuilder

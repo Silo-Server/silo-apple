@@ -26,6 +26,10 @@ struct SectionRow: View {
     /// Down at the row boundary — forwarded to `MediaRow` for the section pager.
     var onMoveDown: (() -> Void)? = nil
 
+    #if os(tvOS)
+    @Environment(AppRouter.self) private var router
+    #endif
+
     private var isContinueWatching: Bool {
         section.sectionType == "continue_watching" || section.sectionType == "in_progress"
     }
@@ -78,6 +82,7 @@ struct SectionRow: View {
             title: section.title,
             items: section.items,
             onItemTap: onItemTap,
+            onItemPlay: playItem,
             onSeeAll: onSeeAll,
             showProgress: showProgress,
             icon: isContinueWatching ? "play.circle.fill" : nil,
@@ -92,6 +97,17 @@ struct SectionRow: View {
             cardVerticalPadding: cardVerticalPadding,
             onMoveDown: onMoveDown
         )
+    }
+
+    private func playItem(_ item: SectionItem) {
+        #if os(tvOS)
+        router.presentPlayer(
+            contentId: item.contentId,
+            resumePosition: item.positionSeconds,
+            posterURL: item.posterUrl,
+            backdropURL: item.backdropUrl
+        )
+        #endif
     }
 
     private func removeFromContinueWatching(_ item: SectionItem) {

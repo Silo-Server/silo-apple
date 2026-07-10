@@ -14,11 +14,13 @@ import SwiftUI
 struct TVEpisodeRail: View {
     let episodes: [EpisodeListItem]
     let onSelect: (String) -> Void
+    var onFocusedEpisodeChange: ((String?) -> Void)? = nil
     /// When non-nil, the matching card is visually highlighted and anchored
     /// at first appearance.
     var currentContentId: String? = nil
 
     private let cardSpacing: CGFloat = 36
+    @FocusState private var focusedCardId: String?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -31,6 +33,7 @@ struct TVEpisodeRail: View {
                             onSelect: { onSelect(episode.contentId) }
                         )
                         .id(episode.contentId)
+                        .focused($focusedCardId, equals: episode.contentId)
                     }
                 }
                 .padding(.vertical, 32)
@@ -38,6 +41,12 @@ struct TVEpisodeRail: View {
             }
             .focusSection()
             .scrollClipDisabled()
+            .onChange(of: focusedCardId) { _, contentId in
+                onFocusedEpisodeChange?(contentId)
+            }
+            .onDisappear {
+                onFocusedEpisodeChange?(nil)
+            }
             .onAppear {
                 guard let id = currentContentId else { return }
                 // Run on next tick so the LazyHStack has instantiated the

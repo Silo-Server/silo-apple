@@ -24,6 +24,9 @@ struct MediaCard: View {
     /// collection thumbnails) leave this off.
     var overlayData: OverlayData? = nil
     let action: () -> Void
+    /// tvOS-only shortcut invoked by the remote's Play/Pause button while
+    /// this card owns focus. Select continues to invoke `action`.
+    var playAction: (() -> Void)? = nil
     /// tvOS-only: binding to the parent row's `@FocusState` so the parent
     /// can route default focus (`defaultFocus(_:_:priority: .userInitiated)`)
     /// to a specific card. Pass `nil` for callers that don't need row-level
@@ -86,6 +89,7 @@ struct MediaCard: View {
             year: year,
             cardWidth: cardWidth,
             action: action,
+            playAction: playAction,
             focusedItemId: focusedItemId,
             itemId: contentId,
             isWatched: isPlayed,
@@ -424,6 +428,7 @@ private struct FocusableMediaCard<Content: View>: View {
     let year: Int?
     let cardWidth: CGFloat
     let action: () -> Void
+    let playAction: (() -> Void)?
     /// Parent row's focus tracking binding. When paired with `itemId`,
     /// the button binds via `.focused(_, equals: itemId)` so the row's
     /// `defaultFocus(... priority: .userInitiated)` can land focus here
@@ -473,6 +478,7 @@ private struct FocusableMediaCard<Content: View>: View {
         .buttonStyle(.card)
         .focused($isFocused)
         .applyRowFocus(focusedItemId, itemId: itemId)
+        .applyPlayPauseAction(playAction)
 
         mediaButtonWithContext(button)
     }
@@ -520,6 +526,15 @@ private struct FocusableMediaCard<Content: View>: View {
 }
 
 private extension View {
+    @ViewBuilder
+    func applyPlayPauseAction(_ action: (() -> Void)?) -> some View {
+        if let action {
+            self.onPlayPauseCommand(perform: action)
+        } else {
+            self
+        }
+    }
+
     /// Conditionally binds this view to the parent row's `@FocusState`
     /// so `defaultFocus(... priority: .userInitiated)` upstream can land
     /// focus on it. No-op when either argument is nil (e.g., on iOS or

@@ -64,6 +64,7 @@ struct FavoritesView: View {
                         action: {
                             router.navigate(to: .itemDetail(contentId: item.contentId))
                         },
+                        playAction: playAction(for: item),
                         contentId: item.contentId,
                         onUserStateChanged: { state in
                             guard !state.isFavorite else { return }
@@ -77,6 +78,21 @@ struct FavoritesView: View {
             }
             .padding(ContinuumTheme.padding)
         }
+    }
+
+    private func playAction(for item: BrowseItem) -> (() -> Void)? {
+        #if os(tvOS)
+        guard SiloMediaType.isDirectlyPlayable(item.type) else { return nil }
+        return {
+            router.presentPlayer(
+                contentId: item.contentId,
+                posterURL: item.posterUrl,
+                backdropURL: item.backdropUrl
+            )
+        }
+        #else
+        return nil
+        #endif
     }
 
     private func loadFavorites() async {

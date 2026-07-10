@@ -20,6 +20,9 @@ struct MediaRow: View {
     let title: String
     let items: [SectionItem]
     let onItemTap: (String) -> Void
+    /// tvOS-only direct-play action for focused leaf items. Container items
+    /// intentionally receive no Play/Pause command and retain normal focus.
+    var onItemPlay: ((SectionItem) -> Void)? = nil
     var onSeeAll: (() -> Void)? = nil
     var showProgress: Bool = false
     var icon: String? = nil
@@ -176,6 +179,7 @@ struct MediaRow: View {
                             userState: item.userState,
                             overlayData: OverlayData.from(item),
                             action: { onItemTap(item.contentId) },
+                            playAction: playAction(for: item),
                             focusedItemId: rowFocusBinding,
                             contentId: item.contentId,
                             onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
@@ -189,6 +193,7 @@ struct MediaRow: View {
                             item: item,
                             showProgress: showProgress,
                             action: { onItemTap(item.contentId) },
+                            playAction: playAction(for: item),
                             focusedItemId: rowFocusBinding,
                             onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
                             onSetWatched: watchedToggleAction(for: item)
@@ -246,6 +251,15 @@ struct MediaRow: View {
               let dur = item.durationSeconds,
               dur > 0, pos > 0 else { return nil }
         return pos / dur
+    }
+
+    private func playAction(for item: SectionItem) -> (() -> Void)? {
+        #if os(tvOS)
+        guard SiloMediaType.isDirectlyPlayable(item.type), let onItemPlay else { return nil }
+        return { onItemPlay(item) }
+        #else
+        return nil
+        #endif
     }
 
     private func continueWatchingRemovalAction(for item: SectionItem) -> (() -> Void)? {

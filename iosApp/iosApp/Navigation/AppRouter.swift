@@ -60,6 +60,9 @@ class AppRouter {
         let subtitleTrackIndex: Int?
         let startFromBeginning: Bool
         let resumePosition: Double?
+        /// Optional detail destination to install behind the full-screen
+        /// player once playback has actually started.
+        let returnToContentId: String?
         /// Set for offline playback of a completed download.
         var offlineDownloadId: String? = nil
         /// Hints supplied by the originating screen (e.g. the detail page,
@@ -94,6 +97,7 @@ class AppRouter {
         subtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool = false,
         resumePosition: Double? = nil,
+        returnToContentId: String? = nil,
         posterURL: String? = nil,
         backdropURL: String? = nil
     ) {
@@ -122,6 +126,7 @@ class AppRouter {
             subtitleTrackIndex: subtitleTrackIndex,
             startFromBeginning: startFromBeginning,
             resumePosition: resumePosition,
+            returnToContentId: returnToContentId,
             posterURL: posterURL,
             backdropURL: backdropURL
         )
@@ -151,6 +156,7 @@ class AppRouter {
             subtitleTrackIndex: nil,
             startFromBeginning: startFromBeginning,
             resumePosition: resumePosition,
+            returnToContentId: nil,
             offlineDownloadId: downloadId,
             posterURL: nil,
             backdropURL: nil
