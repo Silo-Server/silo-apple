@@ -293,9 +293,14 @@ final class ReceiverPairingCoordinator {
     static func persistServer(url: String, fetchedName: String?, access: String, refresh: String) async {
         let id = ServerRegistry.serverId(for: url)
         let entry = ServerEntry(id: id, url: url, fetchedName: fetchedName, userOverrideName: nil, profileId: nil, lastUsedAt: Date())
-        ServerRegistry.shared.addOrUpdate(entry)
+        // Device authorization can replace the account for an already-saved
+        // server URL. Preserve its name, but never carry the previous account's
+        // profile selection across that credential boundary.
+        ServerRegistry.shared.addOrUpdate(entry, preservingProfile: false)
         await TokenStore.shared.setServerUrl(url)
         await TokenStore.shared.switchActiveServer(serverId: id)
+        await TokenStore.shared.setProfileId(nil)
+        await TokenStore.shared.setProfileToken(nil)
         await TokenStore.shared.saveTokens(accessToken: access, refreshToken: refresh)
         await ServerRegistry.shared.switchTo(serverId: id)
     }

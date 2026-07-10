@@ -120,6 +120,52 @@ private let pendingPoll = DeviceLoginPollResponse(
     status: "pending", pollAfter: 1, accessToken: nil, refreshToken: nil, expiresIn: nil, user: nil
 )
 
+// MARK: - Server session persistence
+
+@MainActor
+final class ServerSessionPersistenceTests: XCTestCase {
+    /// Companion authorization may install a different user's credentials for
+    /// an existing URL. That boundary must not inherit the previous account's
+    /// profile, while ordinary metadata upserts continue preserving it.
+    func testNewSessionUpsertClearsExistingProfile() {
+        let suiteName = "ServerSessionPersistenceTests.suite.\(UUID().uuidString)"
+        let standardName = "ServerSessionPersistenceTests.standard.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        let standard = UserDefaults(suiteName: standardName)!
+        defer {
+            suite.removePersistentDomain(forName: suiteName)
+            standard.removePersistentDomain(forName: standardName)
+        }
+
+        let registry = ServerRegistry(
+            defaults: SharedDefaults(suite: suite, standard: standard),
+            keychain: SharedKeychain(service: "ServerSessionPersistenceTests.\(UUID().uuidString)", accessGroup: nil)
+        )
+        let serverID = ServerRegistry.serverId(for: "https://home.example")
+        registry.addOrUpdate(ServerEntry(
+            id: serverID,
+            url: "https://home.example",
+            fetchedName: "Home",
+            userOverrideName: "My Server",
+            profileId: "OLD-PROFILE",
+            lastUsedAt: Date()
+        ))
+
+        registry.addOrUpdate(ServerEntry(
+            id: serverID,
+            url: "https://home.example",
+            fetchedName: "Home Renamed",
+            userOverrideName: nil,
+            profileId: nil,
+            lastUsedAt: Date()
+        ), preservingProfile: false)
+
+        XCTAssertNil(registry.entry(with: serverID)?.profileId)
+        XCTAssertEqual(registry.entry(with: serverID)?.userOverrideName, "My Server")
+        XCTAssertEqual(registry.entry(with: serverID)?.fetchedName, "Home Renamed")
+    }
+}
+
 // MARK: - Companion
 
 @MainActor

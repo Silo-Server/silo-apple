@@ -120,10 +120,12 @@ final class ServerRegistry {
     /// that only know the URL + fetched name don't clobber remembered
     /// session state.
     @discardableResult
-    func addOrUpdate(_ entry: ServerEntry) -> ServerEntry {
+    func addOrUpdate(_ entry: ServerEntry, preservingProfile: Bool = true) -> ServerEntry {
         var merged = entry
         if let existing = self.entries.first(where: { $0.id == entry.id }) {
-            if merged.profileId == nil { merged.profileId = existing.profileId }
+            if preservingProfile, merged.profileId == nil {
+                merged.profileId = existing.profileId
+            }
             if merged.userOverrideName == nil {
                 merged.userOverrideName = existing.userOverrideName
             }
