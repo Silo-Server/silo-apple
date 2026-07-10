@@ -65,6 +65,7 @@ final class AVPlayerLayerView: UIView {
 
     func attach(backend: AVPlayerBackend) {
         if self.backend !== backend {
+            self.backend?.detachSubtitleOverlay(owner: self)
             self.backend = backend
             observeReadyForDisplay()
         }

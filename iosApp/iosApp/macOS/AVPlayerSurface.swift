@@ -7,21 +7,22 @@ struct AVPlayerSurface: NSViewRepresentable {
 
     func makeNSView(context: Context) -> ContinuumMacPlayerView {
         let view = ContinuumMacPlayerView()
-        view.attach(player: backend.avPlayer)
-        view.attachSubtitleRenderer(backend.subtitleRendererForOverlay)
-        backend.subtitleOverlay = view.subtitleOverlay
+        view.attach(backend: backend)
         return view
     }
 
     func updateNSView(_ nsView: ContinuumMacPlayerView, context: Context) {
-        nsView.attach(player: backend.avPlayer)
-        nsView.attachSubtitleRenderer(backend.subtitleRendererForOverlay)
-        backend.subtitleOverlay = nsView.subtitleOverlay
+        nsView.attach(backend: backend)
+    }
+
+    static func dismantleNSView(_ nsView: ContinuumMacPlayerView, coordinator: ()) {
+        nsView.detachSubtitleOverlay()
     }
 }
 
 final class ContinuumMacPlayerView: AVPlayerView {
     let subtitleOverlay = SubtitleOverlayView()
+    private weak var backend: AVPlayerBackend?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -39,13 +40,20 @@ final class ContinuumMacPlayerView: AVPlayerView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func attach(player: AVPlayer) {
-        if self.player === player { return }
-        self.player = player
+    func attach(backend: AVPlayerBackend) {
+        if self.backend !== backend {
+            self.backend?.detachSubtitleOverlay(owner: self)
+            self.backend = backend
+        }
+        if player !== backend.avPlayer {
+            player = backend.avPlayer
+        }
+        subtitleOverlay.renderer = backend.subtitleRendererForOverlay
+        backend.attachSubtitleOverlay(subtitleOverlay, owner: self)
     }
 
-    func attachSubtitleRenderer(_ renderer: SubtitleRenderer?) {
-        subtitleOverlay.renderer = renderer
+    func detachSubtitleOverlay() {
+        backend?.detachSubtitleOverlay(owner: self)
     }
 
     private func addSubtitleOverlay() {

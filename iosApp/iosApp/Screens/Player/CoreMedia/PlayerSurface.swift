@@ -87,6 +87,7 @@ final class PlayerSurfaceHostView: UIView {
 
     func attach(player: PlayerCore) {
         if attachedPlayer === player { return }
+        attachedPlayer?.detachSubtitleOverlay(owner: self)
         attachedPlayer = player
         player.attach(to: displayLayer)
 

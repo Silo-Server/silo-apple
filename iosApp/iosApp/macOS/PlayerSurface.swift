@@ -15,6 +15,10 @@ struct PlayerSurface: NSViewRepresentable {
     func updateNSView(_ nsView: PlayerSurfaceHostView, context: Context) {
         nsView.attach(player: player)
     }
+
+    static func dismantleNSView(_ nsView: PlayerSurfaceHostView, coordinator: ()) {
+        nsView.detachSubtitleOverlay()
+    }
 }
 
 final class PlayerSurfaceHostView: NSView {
@@ -45,10 +49,11 @@ final class PlayerSurfaceHostView: NSView {
 
     func attach(player: PlayerCore) {
         if attachedPlayer === player { return }
+        attachedPlayer?.detachSubtitleOverlay(owner: self)
         attachedPlayer = player
         player.attach(to: displayLayer)
         subtitleOverlay.renderer = player.subtitleRendererForOverlay
-        player.subtitleOverlay = subtitleOverlay
+        player.attachSubtitleOverlay(subtitleOverlay, owner: self)
 
         // Track the video's presentation size so layout() can pin the
         // subtitle overlay to the displayed video rect — keeps libass font
@@ -58,6 +63,10 @@ final class PlayerSurfaceHostView: NSView {
             self?.videoPresentationSize = size
             self?.needsLayout = true
         }
+    }
+
+    func detachSubtitleOverlay() {
+        attachedPlayer?.detachSubtitleOverlay(owner: self)
     }
 
     override func layout() {

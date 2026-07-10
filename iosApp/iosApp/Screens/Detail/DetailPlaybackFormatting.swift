@@ -479,7 +479,7 @@ enum DetailPlaybackFormatting {
         if let codec = normalizedSubtitleCodec(track.codec) {
             tokens.append(codec)
         }
-        if track.forced == true {
+        if isForced(track) {
             tokens.append("Forced")
         }
         if isHearingImpaired(track) {
@@ -639,11 +639,14 @@ enum DetailPlaybackFormatting {
     }
 
     private static func containsAccessibilityMarker(_ value: String) -> Bool {
-        let words = value
-            .lowercased()
+        let lowered = value.lowercased()
+        let words = lowered
             .split { !$0.isLetter }
             .map(String.init)
-        return words.contains("sdh") || words.contains("cc") || words.contains("hi")
+        return words.contains("sdh")
+            || words.contains("cc")
+            || words.contains("hi")
+            || lowered.contains("hearing impaired")
     }
 
     private static func isRedundantSubtitleTitle(_ title: String, track: SubtitleTrack) -> Bool {

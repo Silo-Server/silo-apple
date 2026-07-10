@@ -428,6 +428,7 @@ struct TVItemDetailView: View {
                 },
                 onEpisodeTap: { id in
                     let episode = viewModel.episodes.first { $0.contentId == id }
+                    let isCurrentEpisode = id == detail.contentId
                     let resumePosition = playableResumePosition(
                         position: episode?.userData?.positionSeconds,
                         duration: episode?.userData?.durationSeconds
@@ -439,9 +440,12 @@ struct TVItemDetailView: View {
                     // dismissing the player returns to what was just played.
                     router.presentPlayer(
                         contentId: id,
+                        fileId: isCurrentEpisode ? playbackFileId(for: detail) : nil,
+                        audioTrackIndex: isCurrentEpisode ? preferredAudioTrackIndex : nil,
+                        subtitleTrackIndex: isCurrentEpisode ? preferredSubtitleTrackIndex : nil,
                         startFromBeginning: false,
                         resumePosition: resumePosition,
-                        returnToContentId: id == detail.contentId ? nil : id
+                        returnToContentId: isCurrentEpisode ? nil : id
                     )
                 },
                 belowSynopsis: {

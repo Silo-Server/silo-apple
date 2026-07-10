@@ -406,6 +406,45 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertTrue(selectedLabel == "English (SDH) · SRT", "Expected selected subtitle label; got \(selectedLabel)")
     }
 
+    func testSubtitleLabelsDoNotDuplicateTitleBasedMarkers() {
+        let version = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "subtitle_tracks": [
+              {
+                "index": 2,
+                "title": "Signs and Songs Forced",
+                "codec": "srt",
+                "language": "eng",
+                "forced": false
+              },
+              {
+                "index": 3,
+                "title": "Director's Commentary (Hearing Impaired)",
+                "codec": "srt"
+              }
+            ]
+          }
+        ]
+        """)[0]
+
+        let options = DetailPlaybackFormatting.subtitleOptions(
+            version: version,
+            selectedSubtitleTrackIndex: 2,
+            preferredLanguage: nil
+        )
+
+        XCTAssertTrue(options[0].detail == "Signs and Songs Forced · SRT · Forced")
+        XCTAssertTrue(
+            DetailPlaybackFormatting.subtitleValueLabel(
+                version: version,
+                selectedSubtitleTrackIndex: 3
+            ) == "Director's Commentary (Hearing Impaired) · SRT",
+            "The hearing-impaired marker is already present in the detail title and should not be repeated"
+        )
+    }
+
     func testUntaggedEditionDisplaysStandard() {
         let versions = decodedVersions("""
         [
