@@ -11,6 +11,10 @@ struct CompanionPairingCardModifier: ViewModifier {
     /// While false, discovery still runs but the card is withheld — used to
     /// keep the pairing offer from popping over the startup splash animation.
     var enabled: Bool = true
+    /// Discovery can find a TV before this phone finishes signing in. Recheck
+    /// eligibility whenever auth advances so that already-discovered TV is
+    /// offered as soon as the new server token has been persisted.
+    var authState: AppRouter.AuthState
     @State private var browser = TVPairingBrowser()
     @State private var dismissed: Set<String> = []
     @State private var active: DiscoveredTV?
@@ -35,6 +39,12 @@ struct CompanionPairingCardModifier: ViewModifier {
             .onChange(of: enabled) { _, isEnabled in
                 // Splash just finished: offer any TV discovered in the meantime.
                 if isEnabled, let tv = candidate { latch(tv) }
+            }
+            .onChange(of: authState) { _, _ in
+                // The candidate may have been discovered while signed out. Its
+                // Bonjour identity does not change when login succeeds, so the
+                // candidate onChange above will not fire a second time.
+                if let tv = candidate { latch(tv) }
             }
             .onChange(of: active) { old, new in
                 // A card just closed (its TV is now in `dismissed`); offer the
@@ -75,8 +85,11 @@ struct CompanionPairingCardModifier: ViewModifier {
 }
 
 extension View {
-    func companionPairingCard(enabled: Bool = true) -> some View {
-        modifier(CompanionPairingCardModifier(enabled: enabled))
+    func companionPairingCard(
+        enabled: Bool = true,
+        authState: AppRouter.AuthState
+    ) -> some View {
+        modifier(CompanionPairingCardModifier(enabled: enabled, authState: authState))
     }
 }
 #endif

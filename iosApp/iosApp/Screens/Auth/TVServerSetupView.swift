@@ -1,9 +1,9 @@
 #if os(tvOS)
 import SwiftUI
 
-/// First-run server entry on tvOS (Aurora). The screen advertises on the LAN the
+/// First-run server entry on tvOS. The screen advertises on the LAN the
 /// moment it appears, so a nearby iPhone can set this TV up hands-off. Two paths
-/// sit side by side over the aurora backdrop: a live "Set up with iPhone" status
+/// sit side by side: a live "Set up with iPhone" status
 /// card and a fully functional manual-entry card (the emphasized, default-focused
 /// path). When a phone connects, the same screen swaps *in place* to the pairing
 /// panel — no cover, so nothing ever bleeds through behind it.
@@ -103,10 +103,13 @@ struct TVServerSetupView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
 
             VStack(spacing: 14) {
-                AuroraEyebrow(text: "Step 01 — Connect", centered: true)
-                Text("Add your server")
+                AuroraEyebrow(text: "Connect", centered: true)
+                Text("Connect this Apple TV")
                     .font(.continuumTitle)
                     .foregroundStyle(Color.auroraInk)
+                Text("Use your iPhone, or enter the server address with the remote.")
+                    .font(.continuumCaption)
+                    .foregroundStyle(Color.auroraInkSecondary)
             }
         }
         .frame(maxHeight: .infinity)
@@ -117,6 +120,8 @@ struct TVServerSetupView: View {
         HStack {
             SiloWordmarkView(width: 132)
             Spacer(minLength: 0)
+            AuroraJourneyProgress(currentStep: 1)
+                .frame(width: 430)
         }
     }
 
@@ -129,10 +134,10 @@ struct TVServerSetupView: View {
             SearchingBeacon()
                 .frame(maxWidth: .infinity, alignment: .center)
             Spacer(minLength: 20)
-            Text("Looking for your iPhone…")
+            Text("Looking for an iPhone…")
                 .font(.continuumHeadline)
                 .foregroundStyle(Color.auroraInk)
-            Text("Open Silo on your iPhone on the same Wi-Fi. It’ll offer to set up this Apple TV — the address and your account come across automatically.")
+            Text("Open Silo on an iPhone connected to the same Wi-Fi. Accept the setup card and Silo will securely bring over the server and account.")
                 .font(.continuumBody)
                 .foregroundStyle(Color.auroraInkSecondary)
                 .lineSpacing(4)
@@ -145,7 +150,7 @@ struct TVServerSetupView: View {
     }
 
     private var phoneSetupPill: some View {
-        Text("SET UP WITH IPHONE")
+        Text("RECOMMENDED · USE IPHONE")
             .font(.system(size: 14, weight: .semibold, design: .monospaced))
             .tracking(2)
             .foregroundStyle(Color.auroraInkSecondary)
@@ -178,7 +183,7 @@ struct TVServerSetupView: View {
 
     private var manualCard: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Text("Enter it here")
+            Text("Enter the server address")
                 .font(.continuumHeadline)
                 .foregroundStyle(Color.auroraInk)
 
@@ -186,7 +191,7 @@ struct TVServerSetupView: View {
                 fieldLabel("Server address")
                 AuroraInputField(
                     text: $viewModel.host,
-                    placeholder: "media.example.com",
+                    placeholder: "silo.example.com",
                     focus: $focusedField,
                     equals: .host,
                     contentType: .URL,
@@ -194,13 +199,17 @@ struct TVServerSetupView: View {
                 )
             }
 
+            Label("Secure HTTPS is tried automatically.", systemImage: "lock.shield")
+                .font(.continuumCaption)
+                .foregroundStyle(Color.auroraInkSecondary)
+
             Button {
                 withAnimation(ContinuumTheme.springAnimation) {
                     viewModel.showsAdvancedOptions.toggle()
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Text("Advanced options")
+                    Text("Protocol and port")
                     Image(systemName: "chevron.down")
                         .rotationEffect(.degrees(viewModel.showsAdvancedOptions ? 180 : 0))
                 }
@@ -232,10 +241,10 @@ struct TVServerSetupView: View {
             if let error = viewModel.error {
                 HStack(spacing: 10) {
                     Image(systemName: "exclamationmark.circle.fill")
-                        .foregroundStyle(Color.continuumError)
+                        .foregroundStyle(Color.requestRose)
                     Text(error)
                         .font(.continuumCaption)
-                        .foregroundStyle(Color.continuumError)
+                        .foregroundStyle(Color.requestRose)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .transition(.opacity)
@@ -247,7 +256,7 @@ struct TVServerSetupView: View {
                 guard !viewModel.isLoading else { return }
                 Task { await viewModel.connect(router: router) }
             } label: {
-                Text(viewModel.isLoading ? "Connecting…" : "Connect")
+                Text(viewModel.isLoading ? "Connecting…" : "Connect to server")
             }
             .buttonStyle(AuroraPrimaryButtonStyle(isLoading: viewModel.isLoading))
             .focused($focusedField, equals: .connect)

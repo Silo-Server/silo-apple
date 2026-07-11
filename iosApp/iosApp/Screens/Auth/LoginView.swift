@@ -1,9 +1,9 @@
 import SwiftUI
 
 #if !os(tvOS)
-/// Password-first sign-in (Aurora). iOS/macOS only — tvOS uses `TVLoginView`,
+/// Password-first sign-in. iOS/macOS only — tvOS uses `TVLoginView`,
 /// which leads with QR device-login. Here the phone *is* the device, so we go
-/// straight to username/password over the plum backdrop.
+/// straight to username/password.
 struct LoginView: View {
     var router: AppRouter
     @State private var viewModel = LoginViewModel()
@@ -13,20 +13,33 @@ struct LoginView: View {
 
     var body: some View {
         AuroraScreen(variant: .signIn, scrim: .soft) {
-            SiloWordmarkView(width: 132)
+            SiloWordmarkView(width: 112)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 26)
+
+            AuroraJourneyProgress(currentStep: 2)
+                .frame(maxWidth: 330)
                 .frame(maxWidth: .infinity)
                 .padding(.bottom, 30)
 
-            VStack(spacing: 12) {
-                AuroraEyebrow(text: "Step 02 — Sign in", centered: true)
+            VStack(spacing: 10) {
+                AuroraEyebrow(text: "Account", centered: true)
                 Text("Welcome back")
                     .font(.continuumTitle)
                     .foregroundStyle(Color.auroraInk)
                 if let host = hostLabel {
-                    Text(host)
-                        .font(.system(size: 14, weight: .regular, design: .monospaced))
-                        .foregroundStyle(Color.auroraInkTertiary)
+                    Label(host, systemImage: "server.rack")
+                        .font(.system(size: 13, weight: .regular, design: .monospaced))
+                        .foregroundStyle(Color.auroraInkSecondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Capsule().fill(Color.white.opacity(0.07)))
+                        .overlay(Capsule().stroke(Color.continuumOutline, lineWidth: 1))
                 }
+                Text("Sign in to choose a profile and start watching.")
+                    .font(.continuumBody)
+                    .foregroundStyle(Color.auroraInkSecondary)
+                    .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
             .padding(.bottom, 24)
@@ -69,17 +82,16 @@ struct LoginView: View {
                 .disabled(viewModel.isLoading)
                 .padding(.top, 4)
 
-                HStack(spacing: 14) {
-                    if viewModel.signupEnabled {
-                        Button("Create account") { router.navigate(to: .signup) }
-                            .buttonStyle(AuroraGhostButtonStyle())
-                    }
-                    Button("Change server") { router.resetToServerSetup() }
+                if viewModel.signupEnabled {
+                    Button("Create an account") { router.navigate(to: .signup) }
                         .buttonStyle(AuroraGhostButtonStyle())
+                        .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
+
+                Button("Use a different server") { router.resetToServerSetup() }
+                    .buttonStyle(AuroraGhostButtonStyle())
+                    .frame(maxWidth: .infinity)
                 .disabled(viewModel.isLoading)
-                .padding(.top, 4)
             }
             .padding(22)
             .auroraGlass(cornerRadius: 24, emphasized: true)

@@ -2,12 +2,11 @@
 import SwiftUI
 import UIKit
 
-// MARK: - Aurora text field
+// MARK: - First-run text field
 //
 // A controlled field so we own the placeholder contrast and focus treatment
 // in both states. On tvOS a focused TextField gets a light system platter, so
-// the focused state is deliberately a warm cream fill with dark text + a gold
-// ring (reads as intentional, high contrast) rather than fighting it.
+// the focused state deliberately mirrors that high-contrast treatment.
 
 struct AuroraInputField<F: Hashable>: View {
     @Binding var text: String
@@ -53,16 +52,16 @@ struct AuroraInputField<F: Hashable>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: height)
         .background(
-            RoundedRectangle(cornerRadius: AuroraControl.corner, style: .continuous)
-                .fill(isFocused ? AuroraControl.activeFill : Color.white.opacity(0.06))
+            RoundedRectangle(cornerRadius: AuroraControl.corner)
+                .fill(isFocused ? AuroraControl.activeFill : Color.continuumSurfaceElevated.opacity(0.82))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: AuroraControl.corner, style: .continuous)
+            RoundedRectangle(cornerRadius: AuroraControl.corner)
                 .stroke(isFocused ? Color.auroraAccent : Color.white.opacity(0.16),
-                        lineWidth: isFocused ? 3 : 1.5)
+                        lineWidth: isFocused ? 3 : 1)
         )
-        .shadow(color: isFocused ? Color.auroraAccent.opacity(0.4) : .clear,
-                radius: isFocused ? 20 : 0, y: 0)
+        .shadow(color: isFocused ? Color.auroraAccent.opacity(0.28) : .clear,
+                radius: isFocused ? 16 : 0, y: 0)
         .animation(ContinuumTheme.springAnimation, value: isFocused)
     }
 

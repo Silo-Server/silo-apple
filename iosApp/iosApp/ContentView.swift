@@ -39,7 +39,10 @@ struct ContentView: View {
         #if os(iOS)
         // Hold the pairing offer until the startup splash logo finishes so a
         // quickly-discovered TV doesn't pop the card over the animation.
-        .companionPairingCard(enabled: didFinishStartupSplash && router.authState != .loading)
+        .companionPairingCard(
+            enabled: didFinishStartupSplash && router.authState != .loading,
+            authState: router.authState
+        )
         #endif
         .modifier(DebugPlayerPresentationModifier(
             contentId: debugPlayContentId,

@@ -9,7 +9,7 @@ import SwiftUI
 enum AuroraFieldContentType { case username, password, email, oneTimeCode, url }
 enum AuroraFieldKeyboard { case `default`, url, email, number }
 
-// MARK: - Field label (mono caps)
+// MARK: - Field label
 
 struct AuroraFieldLabel: View {
     let text: String
@@ -34,18 +34,18 @@ struct AuroraErrorLabel: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .font(.continuumCaption)
-        .foregroundStyle(Color.continuumError)
+        .foregroundStyle(Color.requestRose)
         .frame(maxWidth: .infinity, alignment: .leading)
         .transition(.opacity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Error: \(text)")
     }
 }
 
-// MARK: - Editable Aurora field (iOS/macOS)
+// MARK: - Editable first-run field (iOS/macOS)
 //
-// A real, editable field styled with the Aurora chrome. The placeholder is a
-// controlled overlay so we own its contrast on the plum background; the live
-// `TextField`/`SecureField` carries the caret, selection, and keyboard. When
-// focused it flips to the warm cream fill + gold ring used across the flow.
+// The placeholder is a controlled overlay so its contrast remains predictable;
+// the live `TextField`/`SecureField` owns caret, selection, and keyboard.
 
 struct AuroraTextField<F: Hashable>: View {
     let label: String
@@ -103,16 +103,16 @@ struct AuroraTextField<F: Hashable>: View {
             .padding(.horizontal, 16)
             .frame(height: AuroraControl.height)
             .background(
-                RoundedRectangle(cornerRadius: AuroraControl.corner, style: .continuous)
-                    .fill(isFocused ? AuroraControl.activeFill : Color.white.opacity(0.06))
+                    RoundedRectangle(cornerRadius: AuroraControl.corner)
+                    .fill(isFocused ? AuroraControl.activeFill : Color.continuumSurfaceElevated.opacity(0.82))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: AuroraControl.corner, style: .continuous)
+                RoundedRectangle(cornerRadius: AuroraControl.corner)
                     .stroke(isFocused ? Color.auroraAccent : Color.white.opacity(0.16),
-                            lineWidth: isFocused ? 2 : 1.5)
+                            lineWidth: isFocused ? 2 : 1)
             )
-            .shadow(color: isFocused ? Color.auroraAccent.opacity(0.35) : .clear,
-                    radius: isFocused ? 16 : 0)
+            .shadow(color: isFocused ? Color.auroraAccent.opacity(0.22) : .clear,
+                    radius: isFocused ? 12 : 0)
             .animation(ContinuumTheme.springAnimation, value: isFocused)
         }
     }
@@ -150,7 +150,7 @@ struct AuroraTextField<F: Hashable>: View {
 
 // MARK: - Screen scaffold
 
-/// Aurora backdrop + a vertically scrollable, keyboard-friendly column capped
+/// Silo backdrop + a vertically scrollable, keyboard-friendly column capped
 /// to a comfortable reading width. Callers supply the wordmark + content.
 struct AuroraScreen<Content: View>: View {
     var variant: AuroraVariant

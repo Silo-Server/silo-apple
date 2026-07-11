@@ -1,7 +1,7 @@
 import SwiftUI
 
 #if !os(tvOS)
-/// Account registration (Aurora). Shown when signup is enabled on the server.
+/// Account registration. Shown when signup is enabled on the server.
 struct SignupView: View {
     var router: AppRouter
     @State private var viewModel = SignupViewModel()
@@ -11,16 +11,26 @@ struct SignupView: View {
 
     var body: some View {
         AuroraScreen(variant: .signIn, scrim: .soft) {
-            SiloWordmarkView(width: 132)
+            SiloWordmarkView(width: 112)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 26)
+
+            AuroraJourneyProgress(currentStep: 2)
+                .frame(maxWidth: 330)
                 .frame(maxWidth: .infinity)
                 .padding(.bottom, 30)
 
-            VStack(spacing: 12) {
-                AuroraEyebrow(text: "Create account", centered: true)
+            VStack(spacing: 10) {
+                AuroraEyebrow(text: "Account", centered: true)
                 Text("Create your account")
                     .font(.continuumTitle)
                     .foregroundStyle(Color.auroraInk)
                     .multilineTextAlignment(.center)
+                Text("Your invite code connects this account to the right Silo household.")
+                    .font(.continuumBody)
+                    .foregroundStyle(Color.auroraInkSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity)
             .padding(.bottom, 24)
@@ -42,6 +52,9 @@ struct SignupView: View {
                     isSecure: true, showsRevealToggle: true,
                     contentType: .password, onSubmit: { focusedField = .confirm }
                 )
+                Text("Use at least 8 characters.")
+                    .font(.continuumCaption)
+                    .foregroundStyle(Color.auroraInkSecondary)
                 AuroraTextField(
                     label: "Confirm password", text: $viewModel.confirmPassword, placeholder: "••••••",
                     focus: $focusedField, equals: .confirm,

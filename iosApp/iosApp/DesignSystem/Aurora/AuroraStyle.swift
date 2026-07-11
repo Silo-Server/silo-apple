@@ -1,49 +1,121 @@
 import SwiftUI
 
-// MARK: - Aurora palette
+// MARK: - First-run palette
 //
-// The "Aurora" first-run direction: a warm, cinematic skin layered on the
-// existing Skyline tokens. Warm off-white ink instead of pure grey, a single
-// champagne-gold accent, and a deep plum night base behind the aurora
-// backdrop. These live alongside the Continuum palette and skin the first-run
-// flow (server → sign-in → profile) across iOS, tvOS, and macOS.
+// Authentication uses the same OLED-black, monochrome language as the signed-
+// in product. The existing Aurora names are retained to avoid a broad source
+// migration, but the tokens deliberately map onto Silo's core palette.
 
 extension Color {
-    /// Warm off-white primary text (#F3EFE9) — replaces #EDEDED for the Aurora flow.
-    static let auroraInk = Color(hex: "#F3EFE9")
-    /// Champagne-gold accent (#F3D3A0) — eyebrows, hairlines, focus glow, wordmark dot.
-    static let auroraAccent = Color(hex: "#F3D3A0")
-    /// Deep plum night sky, top → bottom.
-    static let auroraNightTop = Color(hex: "#1C1329")
-    static let auroraNightMid = Color(hex: "#0D0A17")
-    static let auroraNightBottom = Color(hex: "#070509")
-    /// Dark glass tint laid over the material blur.
-    static let auroraGlassTint = Color(hex: "#171019")
+    static let auroraInk = Color.continuumOnSurface
+    static let auroraAccent = Color.continuumAccent
+    static let auroraNightTop = Color(hex: "#081117")
+    static let auroraNightMid = Color(hex: "#030608")
+    static let auroraNightBottom = Color.continuumBackground
+    static let auroraGlassTint = Color.continuumSurfaceVariant
 
     static var auroraInkSecondary: Color { auroraInk.opacity(0.62) }
     static var auroraInkTertiary: Color { auroraInk.opacity(0.40) }
 }
 
-// MARK: - Eyebrow (gold hairline + mono caps label)
+// MARK: - Eyebrow
 
 struct AuroraEyebrow: View {
     let text: String
     var centered: Bool = false
 
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: eyebrowSpacing) {
             Rectangle()
                 .fill(LinearGradient(
                     colors: [Color.auroraAccent, Color.auroraAccent.opacity(0)],
                     startPoint: .leading, endPoint: .trailing))
-                .frame(width: 46, height: 1)
+                .frame(width: lineWidth, height: 1)
             Text(text.uppercased())
-                .font(.system(size: 17, weight: .semibold, design: .monospaced))
-                .tracking(3.5)
+                .font(.system(size: fontSize, weight: .semibold, design: .monospaced))
+                .tracking(tracking)
                 .foregroundStyle(Color.auroraAccent)
         }
         .frame(maxWidth: centered ? .infinity : nil)
+        .accessibilityAddTraits(.isHeader)
     }
+
+    #if os(tvOS)
+    private let fontSize: CGFloat = 15
+    private let tracking: CGFloat = 2.6
+    private let lineWidth: CGFloat = 40
+    private let eyebrowSpacing: CGFloat = 14
+    #else
+    private let fontSize: CGFloat = 11
+    private let tracking: CGFloat = 1.5
+    private let lineWidth: CGFloat = 28
+    private let eyebrowSpacing: CGFloat = 10
+    #endif
+}
+
+// MARK: - Journey progress
+
+/// Keeps the server → account → profile journey visible without turning
+/// first run into a modal wizard. Completed steps use a checkmark so state is
+/// not communicated by color alone.
+struct AuroraJourneyProgress: View {
+    let currentStep: Int
+
+    private let labels = ["Server", "Account", "Profile"]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            ForEach(Array(labels.enumerated()), id: \.offset) { index, label in
+                let step = index + 1
+
+                if index > 0 {
+                    Rectangle()
+                        .fill(step <= currentStep ? Color.auroraAccent : Color.continuumOutline)
+                        .frame(height: 1)
+                        .padding(.top, progressDotSize / 2)
+                        .accessibilityHidden(true)
+                }
+
+                VStack(spacing: 7) {
+                    ZStack {
+                        Circle()
+                            .fill(step <= currentStep ? Color.auroraAccent : Color.continuumSurfaceElevated)
+                        Circle()
+                            .stroke(step <= currentStep ? Color.auroraAccent : Color.continuumOutline, lineWidth: 1)
+                        if step < currentStep {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: progressGlyphSize, weight: .bold))
+                                .foregroundStyle(Color.continuumBackground)
+                        } else {
+                            Text("\(step)")
+                                .font(.system(size: progressGlyphSize, weight: .bold, design: .monospaced))
+                                .foregroundStyle(step == currentStep ? Color.continuumBackground : Color.auroraInkSecondary)
+                        }
+                    }
+                    .frame(width: progressDotSize, height: progressDotSize)
+
+                    Text(label.uppercased())
+                        .font(.system(size: progressLabelSize, weight: .semibold, design: .monospaced))
+                        .tracking(1.2)
+                        .foregroundStyle(step == currentStep ? Color.auroraInk : Color.auroraInkTertiary)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(label), step \(step) of \(labels.count)")
+                .accessibilityValue(step < currentStep ? "Completed" : step == currentStep ? "Current" : "Not started")
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    #if os(tvOS)
+    private let progressDotSize: CGFloat = 30
+    private let progressGlyphSize: CGFloat = 13
+    private let progressLabelSize: CGFloat = 13
+    #else
+    private let progressDotSize: CGFloat = 24
+    private let progressGlyphSize: CGFloat = 10
+    private let progressLabelSize: CGFloat = 9
+    #endif
 }
 
 // MARK: - Liquid glass panel
@@ -54,39 +126,28 @@ struct AuroraGlassPanel: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .siloGlass(in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous),
-                       tint: Color.auroraGlassTint.opacity(0.5))
+            .siloGlass(in: RoundedRectangle(cornerRadius: cornerRadius),
+                       tint: Color.auroraGlassTint.opacity(0.72))
             .overlay {
-                // gradient hairline border
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: cornerRadius)
                     .strokeBorder(borderGradient, lineWidth: 1)
             }
-            .overlay {
-                // top sheen
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(RadialGradient(
-                        colors: [.white.opacity(0.10), .clear],
-                        center: .top, startRadius: 0, endRadius: 440))
-                    .blendMode(.plusLighter)
-                    .allowsHitTesting(false)
-            }
             .background {
-                // soft gold halo for the recommended card
                 if emphasized {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(Color.auroraAccent.opacity(0.16))
-                        .blur(radius: 26)
-                        .padding(-6)
+                    RoundedRectangle(cornerRadius: cornerRadius)
+                        .fill(Color.auroraAccent.opacity(0.10))
+                        .blur(radius: 34)
+                        .padding(-4)
                 }
             }
-            .shadow(color: .black.opacity(0.75), radius: 60, x: 0, y: 40)
+            .shadow(color: .black.opacity(0.55), radius: 36, x: 0, y: 22)
     }
 
     private var borderGradient: LinearGradient {
         LinearGradient(
             colors: emphasized
-                ? [Color.auroraAccent.opacity(0.6), Color.auroraAccent.opacity(0.16), .white.opacity(0.04)]
-                : [.white.opacity(0.34), .white.opacity(0.06), .white.opacity(0.02)],
+                ? [Color.auroraAccent.opacity(0.42), .white.opacity(0.12), .white.opacity(0.04)]
+                : [.white.opacity(0.22), .white.opacity(0.08), .white.opacity(0.03)],
             startPoint: .top, endPoint: .bottom)
     }
 }
@@ -97,7 +158,7 @@ extension View {
     }
 }
 
-// MARK: - Primary button (warm cream pill + gold focus glow)
+// MARK: - Primary button
 
 struct AuroraPrimaryButtonStyle: ButtonStyle {
     var isLoading: Bool = false
@@ -111,50 +172,58 @@ private struct AuroraPrimaryBody: View {
     let configuration: ButtonStyle.Configuration
     let isLoading: Bool
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 10) {
             if isLoading {
                 ProgressView()
-                    .tint(Color(hex: "#20160A"))
+                    .tint(Color.continuumBackground)
                     .scaleEffect(0.8)
             }
             configuration.label
         }
-        .font(.system(size: 24, weight: .semibold))
-        .foregroundStyle(Color(hex: "#20160A"))
+        .font(.system(size: buttonFontSize, weight: .semibold))
+        .foregroundStyle(Color.continuumBackground)
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 18)
-        .padding(.horizontal, 30)
+        .frame(minHeight: AuroraControl.height)
+        .padding(.horizontal, buttonHorizontalPadding)
         .background(
-            RoundedRectangle(cornerRadius: AuroraControl.corner, style: .continuous).fill(LinearGradient(
-                colors: [Color(hex: "#FDF7EC"), Color(hex: "#F1E3CD")],
-                startPoint: .top, endPoint: .bottom))
+            RoundedRectangle(cornerRadius: AuroraControl.corner)
+                .fill(Color.continuumOnSurface)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: AuroraControl.corner, style: .continuous)
-                .stroke(.white, lineWidth: isFocused ? 3 : 0)
+            RoundedRectangle(cornerRadius: AuroraControl.corner)
+                .stroke(isFocused ? Color.auroraAccent : .clear, lineWidth: 3)
         )
         .overlay {
             if isFocused {
-                RoundedRectangle(cornerRadius: AuroraControl.corner, style: .continuous)
-                    .stroke(Color.auroraAccent.opacity(0.55), lineWidth: 8)
-                    .padding(-5)
-                    .blur(radius: 8)
+                RoundedRectangle(cornerRadius: AuroraControl.corner)
+                    .stroke(Color.auroraAccent.opacity(0.4), lineWidth: 6)
+                    .padding(-4)
+                    .blur(radius: 6)
             }
         }
-        .scaleEffect(isFocused && !reduceMotion ? 1.05 : 1.0)
+        .scaleEffect(isFocused && !reduceMotion ? 1.035 : 1.0)
         .shadow(
-            color: isFocused ? Color.auroraAccent.opacity(0.5) : .black.opacity(0.45),
-            radius: isFocused ? 26 : 16, y: 8)
-        .opacity(configuration.isPressed ? 0.85 : 1.0)
+            color: isFocused ? Color.auroraAccent.opacity(0.28) : .black.opacity(0.3),
+            radius: isFocused ? 20 : 10, y: 6)
+        .opacity(!isEnabled ? 0.4 : configuration.isPressed ? 0.75 : 1.0)
         .focusEffectDisabled()
         .animation(ContinuumTheme.springAnimation, value: isFocused)
     }
+
+    #if os(tvOS)
+    private let buttonFontSize: CGFloat = 24
+    private let buttonHorizontalPadding: CGFloat = 30
+    #else
+    private let buttonFontSize: CGFloat = 17
+    private let buttonHorizontalPadding: CGFloat = 20
+    #endif
 }
 
-// MARK: - Ghost button (tertiary — "Use a password instead")
+// MARK: - Secondary button
 
 struct AuroraGhostButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -180,19 +249,19 @@ private struct AuroraGhostBody: View {
     var body: some View {
         configuration.label
             .font(.system(size: fontSize, weight: .medium))
-            .foregroundStyle(isFocused ? Color.auroraNightBottom : Color.auroraInkSecondary)
+            .foregroundStyle(isFocused ? Color.continuumBackground : Color.auroraInkSecondary)
             .padding(.horizontal, hPadding)
             .padding(.vertical, vPadding)
             .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: AuroraControl.corner)
                     .fill(isFocused ? Color.auroraInk : Color.white.opacity(0.06))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: AuroraControl.corner)
                     .stroke(isFocused ? .white : .white.opacity(0.14),
                             lineWidth: isFocused ? 2 : 1)
             )
-            .scaleEffect(isFocused ? 1.04 : 1.0)
+            .scaleEffect(isFocused ? 1.025 : 1.0)
             .opacity(configuration.isPressed ? 0.7 : 1.0)
             .focusEffectDisabled()
             .animation(ContinuumTheme.springAnimation, value: isFocused)
@@ -211,8 +280,8 @@ struct AuroraStepRow: View {
                 .font(.system(size: 21, weight: .semibold, design: .monospaced))
                 .foregroundStyle(Color.auroraAccent)
                 .frame(width: 46, height: 46)
-                .background(Circle().fill(Color.auroraAccent.opacity(0.16)))
-                .overlay(Circle().stroke(Color.auroraAccent.opacity(0.34), lineWidth: 1))
+                .background(Circle().fill(Color.auroraAccent.opacity(0.12)))
+                .overlay(Circle().stroke(Color.auroraAccent.opacity(0.44), lineWidth: 1))
             Text(text)
                 .font(.system(size: 23, weight: .regular))
                 .foregroundStyle(Color.auroraInkSecondary)
@@ -230,11 +299,14 @@ enum AuroraControl {
     #else
     static let height: CGFloat = 52
     #endif
-    static let corner: CGFloat = 14
-    /// Warm cream fill used when a field/segment is focused.
-    static let activeFill = Color(hex: "#F4EEE2")
-    static let activeInk = Color(hex: "#1A1206")
-    static let activePlaceholder = Color(hex: "#4A4035")
+    #if os(tvOS)
+    static let corner: CGFloat = 12
+    #else
+    static let corner: CGFloat = 10
+    #endif
+    static let activeFill = Color.continuumOnSurface
+    static let activeInk = Color.continuumBackground
+    static let activePlaceholder = Color(hex: "#5E6269")
 }
 
 // MARK: - Aurora segmented option (equal-width, single-line chip)
@@ -246,19 +318,25 @@ struct AuroraSegment: View {
     var height: CGFloat = AuroraControl.height
 
     var body: some View {
-        Text(title)
-            .font(.system(size: 21, weight: .semibold))
+        HStack(spacing: 8) {
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: segmentCheckSize, weight: .bold))
+            }
+            Text(title)
+        }
+            .font(.system(size: segmentFontSize, weight: .semibold))
             .lineLimit(1)
             .minimumScaleFactor(0.7)
             .foregroundStyle(textColor)
             .frame(maxWidth: .infinity)
             .frame(height: height)
             .background(
-                RoundedRectangle(cornerRadius: AuroraControl.corner, style: .continuous)
+                RoundedRectangle(cornerRadius: AuroraControl.corner)
                     .fill(fill)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: AuroraControl.corner, style: .continuous)
+                RoundedRectangle(cornerRadius: AuroraControl.corner)
                     .stroke(stroke, lineWidth: 1.5)
             )
             .animation(ContinuumTheme.springAnimation, value: isFocused)
@@ -270,10 +348,18 @@ struct AuroraSegment: View {
     }
     private var fill: Color {
         if isFocused { return AuroraControl.activeFill }
-        return isSelected ? Color.auroraAccent.opacity(0.18) : Color.white.opacity(0.06)
+        return isSelected ? Color.auroraAccent.opacity(0.14) : Color.white.opacity(0.06)
     }
     private var stroke: Color {
         if isFocused { return .clear }
-        return isSelected ? Color.auroraAccent.opacity(0.5) : Color.white.opacity(0.14)
+        return isSelected ? Color.auroraAccent.opacity(0.52) : Color.white.opacity(0.14)
     }
+
+    #if os(tvOS)
+    private let segmentFontSize: CGFloat = 21
+    private let segmentCheckSize: CGFloat = 16
+    #else
+    private let segmentFontSize: CGFloat = 15
+    private let segmentCheckSize: CGFloat = 11
+    #endif
 }

@@ -170,6 +170,10 @@ struct ProfileSelectionView: View {
 
     private var titleBlock: some View {
         VStack(spacing: 6) {
+            AuroraJourneyProgress(currentStep: 3)
+                .frame(maxWidth: journeyWidth)
+                .padding(.bottom, journeyBottomPadding)
+
             #if os(tvOS)
             Text("Who's watching?")
                 .font(.system(size: titleSize, weight: .semibold))
@@ -346,6 +350,8 @@ struct ProfileSelectionView: View {
     private let subtitleSize: CGFloat = 22
     private let chipSize: CGFloat = 18
     private let headerTopPadding: CGFloat = 100
+    private let journeyWidth: CGFloat = 430
+    private let journeyBottomPadding: CGFloat = 18
     private let tileMinWidth: CGFloat = 300
     private let tileMaxWidth: CGFloat = 340
     private let tileSpacing: CGFloat = 56
@@ -355,6 +361,8 @@ struct ProfileSelectionView: View {
     private let subtitleSize: CGFloat = 15
     private let chipSize: CGFloat = 13
     private let headerTopPadding: CGFloat = 24
+    private let journeyWidth: CGFloat = 330
+    private let journeyBottomPadding: CGFloat = 14
     private let tileMinWidth: CGFloat = 140
     private let tileMaxWidth: CGFloat = 180
     private let tileSpacing: CGFloat = 16
