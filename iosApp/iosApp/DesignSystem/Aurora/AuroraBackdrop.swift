@@ -41,8 +41,8 @@ struct AuroraBackdrop: View {
 
                 RadialGradient(
                     colors: [
-                        Color.auroraAccent.opacity(0.15 * variant.intensity),
-                        Color(hex: "#123442").opacity(0.10 * variant.intensity),
+                        Color.auroraAccent.opacity(0.08 * variant.intensity),
+                        Color(hex: "#18212A").opacity(0.08 * variant.intensity),
                         .clear,
                     ],
                     center: variant.glowCenter,
