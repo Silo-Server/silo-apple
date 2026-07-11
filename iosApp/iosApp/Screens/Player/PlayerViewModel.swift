@@ -997,6 +997,14 @@ class PlayerViewModel {
         let hiddenIds = Set([lastLoadRequest?.contentId, nextUpEpisode?.contentId].compactMap { $0 })
         return nextUpOnDeckItems.filter { !hiddenIds.contains($0.contentId) }
     }
+
+    var canShowNextUpScreen: Bool {
+        nextUpEpisode != nil
+            || !nextUpCarouselItems.isEmpty
+            || isLoadingNextUpEpisode
+            || isLoadingNextUpOnDeck
+    }
+
     private var currentRouteCapabilities: ApplePlaybackRouteCapabilities {
         return activeExecutionPlan?.routeCapabilities ?? activeRouteKind.routeCapabilities
     }
@@ -1666,10 +1674,12 @@ class PlayerViewModel {
         guard remaining >= 0, remaining <= Double(promptSeconds) else {
             return false
         }
-        return nextUpEpisode != nil
-            || !nextUpCarouselItems.isEmpty
-            || isLoadingNextUpEpisode
-            || isLoadingNextUpOnDeck
+        return canShowNextUpScreen
+    }
+
+    func showNextUpNow() {
+        guard canShowNextUpScreen else { return }
+        beginNextUpPostroll(videoEnded: false)
     }
 
     private func beginNextUpPostroll(videoEnded: Bool) {
