@@ -426,7 +426,7 @@ struct TVPlayerControls: View {
             if viewModel.duration > 0 {
                 Text("−\(formatTime(remainingTime))")
                     .font(.system(size: 28, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.7))
+                    .foregroundStyle(.white)
                     .monospacedDigit()
             }
         }
