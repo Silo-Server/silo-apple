@@ -340,6 +340,16 @@ final class TVFocusMarqueeModel {
         guard let urlString, !urlString.isEmpty, let url = URL(string: urlString) else { return }
         guard urlString != lastSampledTintURL else { return }
 
+        // A previously-sampled tint (startup prefetch, earlier focus visit)
+        // applies synchronously, so a cold-entry seed paints the wash on the
+        // same frame as the backdrop.
+        if let cached = HeroBackdropPalette.cachedTint(for: url) {
+            lastSampledTintURL = urlString
+            tintTask?.cancel()
+            tintColor = cached
+            return
+        }
+
         lastSampledTintURL = urlString
         tintTask?.cancel()
         tintTask = Task { [weak self] in

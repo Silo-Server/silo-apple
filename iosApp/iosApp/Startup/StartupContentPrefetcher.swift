@@ -398,6 +398,14 @@ enum StartupContentPrefetcher {
 
         guard !urls.isEmpty else { return }
         PosterImageCache.prefetcher.startPrefetching(with: urls)
+
+        // Warm the marquee's initial tint: tvOS seeds the marquee with the
+        // first row's first item on cold entry, and a cached sample lets the
+        // tint wash paint on the same frame as the backdrop instead of
+        // fading up from the black background once sampling finishes.
+        if let firstBackdrop = normalizedURL(from: contentSections.first?.items.first?.backdropUrl) {
+            Task { _ = await HeroBackdropPalette.tintColor(for: firstBackdrop) }
+        }
     }
 
     private static func prefetchSectionArtwork(for response: SectionsResponse, maxCount: Int) {

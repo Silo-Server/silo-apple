@@ -19,6 +19,17 @@ enum HeroBackdropPalette {
         .workingColorSpace: NSNull(),
     ])
 
+    /// Sampled tints keyed by backdrop URL. Sampling is deterministic per
+    /// URL, so surfaces seeded on cold entry can read a previously-warmed
+    /// tint synchronously and paint it on their first frame.
+    @MainActor private static var tintCache: [String: Color] = [:]
+
+    /// Synchronous lookup of a previously-sampled tint. `nil` when the
+    /// URL hasn't been sampled this session — fall back to `tintColor(for:)`.
+    @MainActor static func cachedTint(for url: URL) -> Color? {
+        tintCache[url.absoluteString]
+    }
+
     /// Fetch and sample a tint color for the given URL. Returns `nil`
     /// if the image can't be loaded or sampled — callers should fall
     /// back to the app background.
@@ -40,9 +51,13 @@ enum HeroBackdropPalette {
 
         do {
             let image = try await ImagePipeline.shared.image(for: request)
-            return await Task.detached(priority: .utility) {
+            let tint = await Task.detached(priority: .utility) {
                 sampleTint(from: image)
             }.value
+            if let tint {
+                await MainActor.run { tintCache[url.absoluteString] = tint }
+            }
+            return tint
         } catch {
             return nil
         }

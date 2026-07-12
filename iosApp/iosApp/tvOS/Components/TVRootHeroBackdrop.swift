@@ -76,8 +76,18 @@ struct TVRootHeroBackdrop: View {
             startPoint: .topTrailing,
             endPoint: .bottomLeading
         )
-        .animation(reduceMotion ? nil : .easeInOut(duration: crossfadeDuration), value: tintColor)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: isVisible)
+        // The first tint (cold-entry seed with a prefetch-warmed sample)
+        // snaps in with the artwork; only tint→tint changes crossfade.
+        .animation(
+            reduceMotion || !hasDisplayedArtwork
+                ? nil
+                : .easeInOut(duration: crossfadeDuration),
+            value: tintColor
+        )
+        .animation(
+            reduceMotion || !hasDisplayedArtwork ? nil : .easeInOut(duration: 0.24),
+            value: isVisible
+        )
     }
 
     @ViewBuilder
