@@ -826,11 +826,20 @@ struct TVMainTabView: View {
             return
         }
 
+        // Paint the avatar from the startup prefetch immediately; the fetch
+        // below reconciles (and joins the prefetch's request when it is
+        // still in flight rather than issuing a second one).
+        if currentProfile == nil,
+           let cached: [UserProfile] = ResponseCache.shared.get(CacheKey.profiles) {
+            currentProfile = cached.first(where: { $0.id == profileId })
+        }
+
         do {
-            let profiles = try await AuthService.shared.getProfiles()
+            let profiles = try await StartupContentPrefetcher.fetchProfiles()
             currentProfile = profiles.first(where: { $0.id == profileId })
         } catch {
-            currentProfile = nil
+            // Keep the cached avatar on a transient failure; it already
+            // matches the active profile id.
         }
     }
 

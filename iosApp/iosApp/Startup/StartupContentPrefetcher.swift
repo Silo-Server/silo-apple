@@ -2,7 +2,14 @@ import Foundation
 
 @MainActor
 enum StartupContentPrefetcher {
+    // tvOS paints a full-width first row plus the focus marquee's logo and
+    // backdrop on entry, so it needs a deeper artwork warmup than the
+    // phone-sized first screen.
+    #if os(tvOS)
+    private static let maxHomeArtworkURLs = 28
+    #else
     private static let maxHomeArtworkURLs = 12
+    #endif
     private static let maxSectionArtworkURLs = 12
     private static let maxBrowseArtworkURLs = 12
     private static let maxProfileArtworkURLs = 8
@@ -302,6 +309,11 @@ enum StartupContentPrefetcher {
         switch state {
         case .authenticated:
             prefetchAuthenticatedContent()
+            // The root top bar renders the active profile's avatar right
+            // after launch. Warm the list here (cold launch only) so it
+            // doesn't fill in late; sign-in / profile-selection flows have
+            // just fetched profiles, so they don't need this.
+            prefetchProfiles()
         case .needsProfile:
             prefetchProfiles()
         case .loading, .needsServerSetup, .needsLogin:

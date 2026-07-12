@@ -30,6 +30,19 @@ struct CachedAsyncImage: View {
                         .aspectRatio(contentMode: contentMode)
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .clipped()
+                } else if state.error == nil, let warmed = prefetchedImage() {
+                    // The startup/grid prefetchers warm the memory cache under
+                    // the bare-URL key, while the request above is keyed by
+                    // URL + resize processor — a miss for Nuke's synchronous
+                    // first check. Painting the warmed full-size decode here
+                    // makes a prefetched card render finished on its first
+                    // frame; the downsampled result then swaps in with
+                    // identical pixels, so the handoff is invisible.
+                    Image(platformImage: warmed)
+                        .resizable()
+                        .aspectRatio(contentMode: contentMode)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
                 } else if state.error != nil {
                     placeholder(in: geometry.size)
                         .overlay {
@@ -46,6 +59,13 @@ struct CachedAsyncImage: View {
             .transition(.opacity)
             .animation(.easeOut(duration: ContinuumTheme.slowDuration), value: url)
         }
+    }
+
+    /// Synchronous memory-cache lookup for the unprocessed URL the
+    /// prefetchers warm. Cheap dictionary access — safe to call from `body`.
+    private func prefetchedImage() -> PlatformImage? {
+        guard let url = URL(string: url) else { return nil }
+        return ImagePipeline.shared.cache[ImageRequest(url: url)]?.image
     }
 
     // MARK: - Request construction

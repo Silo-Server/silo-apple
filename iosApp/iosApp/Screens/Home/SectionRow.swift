@@ -11,6 +11,8 @@ struct SectionRow: View {
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
     var prefersDefaultFocusOnFirstItem: Bool = false
+    /// Forwarded to `MediaRow` — see `MediaRow.defaultFocusPriority`.
+    var defaultFocusPriority: DefaultFocusEvaluationPriority = .userInitiated
     /// Programmatic focus kick forwarded to the underlying `MediaRow` — used
     /// when an unrelated view (e.g. the tvOS top menu) hands focus down into
     /// this row rather than the user d-padding into it.
@@ -90,6 +92,7 @@ struct SectionRow: View {
             icon: isContinueWatching ? "play.circle.fill" : nil,
             layout: layout,
             prefersDefaultFocusOnFirstItem: prefersDefaultFocusOnFirstItem,
+            defaultFocusPriority: defaultFocusPriority,
             focusRequest: focusRequest,
             onRemoveFromContinueWatching: isContinueWatching ? onRemoveFromContinueWatching : nil,
             onSetWatched: { item, played in

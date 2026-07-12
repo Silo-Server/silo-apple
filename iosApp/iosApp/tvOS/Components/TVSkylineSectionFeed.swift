@@ -73,11 +73,15 @@ struct TVSkylineSectionFeed: View {
             )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { requestEntryFocus(focusRequest) }
+        .onAppear {
+            seedMarqueeFromFirstItem()
+            requestEntryFocus(focusRequest)
+        }
         .onChange(of: focusRequest) { _, request in requestEntryFocus(request) }
         // Rows mount only after the async section load; a deferred entry
         // token re-fires once they exist.
         .onChange(of: sections.map(\.id)) { _, _ in
+            seedMarqueeFromFirstItem()
             if let pending = pendingFocusRequest { requestEntryFocus(pending) }
         }
     }
@@ -135,7 +139,14 @@ struct TVSkylineSectionFeed: View {
             onItemTap: onItemTap,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
             onSetWatched: onSetWatched,
-            prefersDefaultFocusOnFirstItem: false,
+            // Cold entry: let the engine's *initial* focus resolution land on
+            // the first card so it renders already focused instead of growing
+            // a few frames after the page paints. `.automatic` keeps d-pad
+            // movement between rows geometric — only system-initiated
+            // resolutions use the preference. The imperative entry token
+            // below is unchanged and covers every other entry path.
+            prefersDefaultFocusOnFirstItem: isFirstRow,
+            defaultFocusPriority: .automatic,
             focusRequest: isFirstRow ? contentFocusToken : 0,
             onMoveUp: isFirstRow ? onTopMenuFocusRequest : nil,
             onItemFocus: { item in
@@ -178,6 +189,19 @@ struct TVSkylineSectionFeed: View {
 
     private func previewFocusedItem(_ item: SectionItem, in section: ResolvedSection) {
         marqueeModel.preview(TVMarqueeContent(item: item, rowTitle: section.title))
+    }
+
+    /// Cold-entry backdrop: the marquee normally waits for the first card's
+    /// focus report plus the 150 ms rest debounce, which paints the hero as
+    /// a fade-in after the page is already visible. Entry focus always lands
+    /// on the first row's first card, so pre-display that item as soon as
+    /// sections exist; if focus somehow lands elsewhere, the focus-driven
+    /// preview corrects within the debounce window.
+    private func seedMarqueeFromFirstItem() {
+        guard marqueeModel.content == nil,
+              let section = sections.first,
+              let item = section.items.first else { return }
+        marqueeModel.seed(TVMarqueeContent(item: item, rowTitle: section.title))
     }
 
 }

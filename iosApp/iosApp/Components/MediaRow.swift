@@ -33,6 +33,12 @@ struct MediaRow: View {
     /// `.defaultFocus($focusedItemId, firstId, priority: .userInitiated)`;
     /// see CLAUDE.md's "tvOS default focus on d-pad entry" pattern.
     var prefersDefaultFocusOnFirstItem: Bool = false
+    /// Priority for the first-item default focus. `.userInitiated` (the
+    /// default) also snaps d-pad entry into the row onto the first card;
+    /// pass `.automatic` when only the engine's own resolutions (initial
+    /// focus on cold launch) should use the preference, keeping directional
+    /// entry geometric.
+    var defaultFocusPriority: DefaultFocusEvaluationPriority = .userInitiated
     /// Programmatic kick: when this value changes to non-zero, focus
     /// jumps to the first item. Used by callers (e.g. PlayerView) that
     /// shift focus from an unrelated view rather than via d-pad entry —
@@ -220,7 +226,8 @@ struct MediaRow: View {
         .applyDefaultFirstItemFocus(
             enabled: prefersDefaultFocusOnFirstItem,
             binding: $focusedItemId,
-            firstItemId: items.first?.contentId
+            firstItemId: items.first?.contentId,
+            priority: defaultFocusPriority
         )
         // The programmatic focus kick needs the scroll proxy (it scrolls the
         // strip home before claiming), so it hangs off the strip rather than
@@ -371,10 +378,11 @@ private extension View {
     func applyDefaultFirstItemFocus(
         enabled: Bool,
         binding: FocusState<String?>.Binding,
-        firstItemId: String?
+        firstItemId: String?,
+        priority: DefaultFocusEvaluationPriority
     ) -> some View {
         if enabled, let firstItemId {
-            self.defaultFocus(binding, firstItemId, priority: .userInitiated)
+            self.defaultFocus(binding, firstItemId, priority: priority)
         } else {
             self
         }
