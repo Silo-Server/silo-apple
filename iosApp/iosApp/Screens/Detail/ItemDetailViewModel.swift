@@ -372,6 +372,9 @@ class ItemDetailViewModel {
     func setEpisodeWatched(contentId: String, played: Bool) async -> Bool {
         do {
             try await ContinuumAPI.shared.setWatched(contentId: contentId, played: played)
+            if contentId == detail?.contentId {
+                isWatched = played
+            }
             invalidateRelatedCaches(contentId: contentId)
             if let seriesId = seriesContentId, let seasonNumber = selectedSeason?.seasonNumber {
                 await loadEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
