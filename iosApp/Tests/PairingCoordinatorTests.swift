@@ -109,7 +109,7 @@ private func expectEventually(
 }
 
 private func entry(_ id: String, name: String) -> ServerEntry {
-    ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, userOverrideName: nil, profileId: nil, lastUsedAt: Date())
+    ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, profileId: nil, lastUsedAt: Date())
 }
 
 private let approvedPoll = DeviceLoginPollResponse(
@@ -127,7 +127,7 @@ final class ServerSessionPersistenceTests: XCTestCase {
     /// Companion authorization may install a different user's credentials for
     /// an existing URL. That boundary must not inherit the previous account's
     /// profile, while ordinary metadata upserts continue preserving it.
-    func testNewSessionUpsertClearsExistingProfile() {
+    func testNewSessionUpsertClearsExistingProfileAndRefreshesServerName() {
         let suiteName = "ServerSessionPersistenceTests.suite.\(UUID().uuidString)"
         let standardName = "ServerSessionPersistenceTests.standard.\(UUID().uuidString)"
         let suite = UserDefaults(suiteName: suiteName)!
@@ -146,7 +146,6 @@ final class ServerSessionPersistenceTests: XCTestCase {
             id: serverID,
             url: "https://home.example",
             fetchedName: "Home",
-            userOverrideName: "My Server",
             profileId: "OLD-PROFILE",
             lastUsedAt: Date()
         ))
@@ -155,14 +154,13 @@ final class ServerSessionPersistenceTests: XCTestCase {
             id: serverID,
             url: "https://home.example",
             fetchedName: "Home Renamed",
-            userOverrideName: nil,
             profileId: nil,
             lastUsedAt: Date()
         ), preservingProfile: false)
 
         XCTAssertNil(registry.entry(with: serverID)?.profileId)
-        XCTAssertEqual(registry.entry(with: serverID)?.userOverrideName, "My Server")
         XCTAssertEqual(registry.entry(with: serverID)?.fetchedName, "Home Renamed")
+        XCTAssertEqual(registry.entry(with: serverID)?.displayName, "Home Renamed")
     }
 }
 

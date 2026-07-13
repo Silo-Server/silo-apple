@@ -4,8 +4,8 @@ import OSLog
 /// A single Silo server the user has added to the device.
 ///
 /// The registry stores one of these per remembered server. Tokens live in
-/// Keychain keyed by `id`, never in the entry itself. `userOverrideName`
-/// wins over the server-advertised `fetchedName` when both are present.
+/// Keychain keyed by `id`, never in the entry itself. The display name is
+/// always server-administered through the advertised `fetchedName`.
 struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// Stable client-derived ID: base64url of the normalized URL's UTF-8
     /// bytes. Reversible — but the registry treats it as opaque.
@@ -18,9 +18,6 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// Filled on first successful connect and refreshed opportunistically.
     var fetchedName: String?
 
-    /// User-provided override. Wins over `fetchedName`.
-    var userOverrideName: String?
-
     /// Remembered profile for this server. Set after `selectProfile`.
     var profileId: String?
 
@@ -28,9 +25,8 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// list; not part of identity.
     var lastUsedAt: Date
 
-    /// Display label for lists/menus. User override → fetched name → URL.
+    /// Display label for lists/menus. Server-advertised name → URL.
     var displayName: String {
-        if let name = userOverrideName, !name.isEmpty { return name }
         if let name = fetchedName, !name.isEmpty { return name }
         return url
     }
@@ -115,19 +111,15 @@ final class ServerRegistry {
 
     // MARK: - Mutations
 
-    /// Insert or update an entry. Preserves existing `profileId` and
-    /// `userOverrideName` if the incoming entry left them nil, so callers
-    /// that only know the URL + fetched name don't clobber remembered
-    /// session state.
+    /// Insert or update an entry. Preserves an existing `profileId` when the
+    /// incoming entry leaves it nil, so callers that only know the URL and
+    /// fetched name do not clobber remembered session state.
     @discardableResult
     func addOrUpdate(_ entry: ServerEntry, preservingProfile: Bool = true) -> ServerEntry {
         var merged = entry
         if let existing = self.entries.first(where: { $0.id == entry.id }) {
             if preservingProfile, merged.profileId == nil {
                 merged.profileId = existing.profileId
-            }
-            if merged.userOverrideName == nil {
-                merged.userOverrideName = existing.userOverrideName
             }
             if merged.fetchedName == nil { merged.fetchedName = existing.fetchedName }
         }
@@ -143,13 +135,6 @@ final class ServerRegistry {
     func setProfileId(_ profileId: String?, for serverId: String) {
         guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return }
         entries[idx].profileId = profileId
-        persist()
-    }
-
-    func rename(serverId: String, userOverrideName: String?) {
-        guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return }
-        let trimmed = userOverrideName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        entries[idx].userOverrideName = (trimmed?.isEmpty ?? true) ? nil : trimmed
         persist()
     }
 
@@ -360,7 +345,6 @@ final class ServerRegistry {
             id: id,
             url: normalized,
             fetchedName: nil,
-            userOverrideName: nil,
             profileId: defaults.string(forKey: "profileId"),
             lastUsedAt: Date()
         )

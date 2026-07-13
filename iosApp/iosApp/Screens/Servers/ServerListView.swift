@@ -3,8 +3,8 @@ import SwiftUI
 /// Picker + management UI for the set of saved Silo servers.
 ///
 /// Shared between iOS and tvOS with minor platform-specific tweaks:
-/// - iOS: Navigation `List` with swipe-to-delete and long-press rename.
-/// - tvOS: focus-aware tile row; rename via an on-screen alert.
+/// - iOS: Navigation `List` with swipe-to-delete.
+/// - tvOS: focusable read-only server summary with a separate remove action.
 ///
 /// Switching a server asks the `AppRouter` to re-evaluate auth state so
 /// the user lands on login or profile-select for the new server (or on
@@ -12,8 +12,6 @@ import SwiftUI
 struct ServerListView: View {
     @Environment(AppRouter.self) private var router
     @State private var registry = ServerRegistry.shared
-    @State private var renameTarget: ServerEntry?
-    @State private var renameInput: String = ""
     @State private var removeTarget: ServerEntry?
     #if os(tvOS)
     @FocusState private var focusedRow: TVRow?
@@ -21,57 +19,30 @@ struct ServerListView: View {
 
     var body: some View {
         #if os(tvOS)
-        tvOSContent
-            .continuumBackground()
-            .fullScreenCover(item: $renameTarget) { entry in
-                TVServerRenameSheet(entry: entry)
+        ZStack {
+            tvOSContent
+                .disabled(removeTarget != nil)
+
+            if let entry = removeTarget {
+                TVSettingsConfirmationOverlay(
+                    title: "Remove this server?",
+                    message: "Sign-in credentials for \(entry.displayName) will be forgotten on this device.",
+                    confirmTitle: "Remove",
+                    cancel: { dismissRemoveConfirmation(for: entry) },
+                    confirm: { remove(entry) }
+                )
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                .zIndex(1)
             }
-            .alert(
-                "Remove this server?",
-                isPresented: Binding(
-                    get: { removeTarget != nil },
-                    set: { if !$0 { removeTarget = nil } }
-                ),
-                presenting: removeTarget
-            ) { entry in
-                Button("Remove", role: .destructive) {
-                    remove(entry)
-                }
-                Button("Cancel", role: .cancel) { removeTarget = nil }
-            } message: { entry in
-                Text("Sign-in credentials for \(entry.displayName) will be forgotten on this device.")
-            }
+        }
+        .continuumBackground()
+        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: removeTarget)
         #else
         contentList
             .navigationTitle("Servers")
             .continuumNavigationTitleDisplayMode(.inline)
             .continuumBackground()
             .continuumScrollContentBackgroundHidden()
-            .alert(
-                "Rename server",
-                isPresented: Binding(
-                    get: { renameTarget != nil },
-                    set: { if !$0 { renameTarget = nil } }
-                ),
-                presenting: renameTarget
-            ) { entry in
-                #if !os(tvOS)
-                TextField("Name", text: $renameInput)
-                #endif
-                Button("Save") {
-                    registry.rename(serverId: entry.id, userOverrideName: renameInput)
-                    renameTarget = nil
-                }
-                if entry.userOverrideName != nil {
-                    Button("Reset to server-provided name", role: .destructive) {
-                        registry.rename(serverId: entry.id, userOverrideName: nil)
-                        renameTarget = nil
-                    }
-                }
-                Button("Cancel", role: .cancel) { renameTarget = nil }
-            } message: { _ in
-                Text("Override the server-provided name with a label just for this device.")
-            }
             .alert(
                 "Remove this server?",
                 isPresented: Binding(
@@ -114,7 +85,7 @@ struct ServerListView: View {
                     Text("Manage Servers")
                         .font(.system(size: 38, weight: .semibold))
                         .foregroundColor(.continuumOnSurface)
-                    Text("Switch between saved Silo servers or add another connection.")
+                    Text("Manage saved Silo servers or add another connection.")
                         .font(.system(size: 20))
                         .foregroundColor(.continuumSecondaryText)
                 }
@@ -151,7 +122,7 @@ struct ServerListView: View {
                 .buttonStyle(TVSettingsPaneRowStyle())
                 .focused($focusedRow, equals: .add)
 
-                TVSettingsFooter("Press and hold a saved server to rename or remove it. Selecting the active server refreshes its sign-in state.")
+                TVSettingsFooter("Select the trash icon to remove a saved server.")
             }
             .frame(maxWidth: 1080, alignment: .leading)
             .padding(.bottom, 64)
@@ -167,54 +138,43 @@ struct ServerListView: View {
     }
 
     private func tvOSRow(for entry: ServerEntry) -> some View {
-        Button {
-            switchTo(entry)
-        } label: {
-            HStack(spacing: 18) {
-                Image(systemName: entry.id == registry.activeServerId
-                      ? "checkmark.circle.fill"
-                      : "server.rack")
-                    .font(.system(size: 24, weight: .medium))
-                    .frame(width: 34)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(entry.displayName)
-                        .font(.system(size: 26, weight: .medium))
-                        .lineLimit(1)
-                    Text(entry.url)
-                        .font(.system(size: 19))
-                        .opacity(0.62)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 16)
-
-                if entry.id == registry.activeServerId {
-                    Text("Active")
-                        .font(.system(size: 19, weight: .semibold))
-                        .opacity(0.72)
-                }
+        HStack(spacing: 12) {
+            Button(action: {}) {
+                TVServerSummaryLabel(
+                    entry: entry,
+                    isActive: entry.id == registry.activeServerId
+                )
             }
-        }
-        .buttonStyle(TVSettingsPaneRowStyle())
-        .focused($focusedRow, equals: .server(entry.id))
-        .contextMenu {
+            .buttonStyle(TVSettingsPaneRowStyle())
+            .focused($focusedRow, equals: .server(entry.id))
+            .accessibilityHint("Server names are managed by the server administrator")
+
             Button {
-                renameTarget = entry
-            } label: {
-                Label("Rename", systemImage: "pencil")
-            }
-            Button(role: .destructive) {
                 removeTarget = entry
             } label: {
-                Label("Remove Server", systemImage: "trash")
+                Image(systemName: "trash")
+                    .font(.system(size: 24, weight: .semibold))
+                    .frame(maxWidth: .infinity, minHeight: 49)
             }
+            .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
+            .frame(width: 92)
+            .focused($focusedRow, equals: .remove(entry.id))
+            .accessibilityLabel("Remove \(entry.displayName)")
         }
     }
 
     private enum TVRow: Hashable {
         case server(String)
+        case remove(String)
         case add
+    }
+
+    private func dismissRemoveConfirmation(for entry: ServerEntry) {
+        removeTarget = nil
+        Task { @MainActor in
+            await Task.yield()
+            focusedRow = .remove(entry.id)
+        }
     }
     #endif
 
@@ -271,19 +231,6 @@ struct ServerListView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            Button {
-                renameInput = entry.userOverrideName ?? entry.fetchedName ?? ""
-                renameTarget = entry
-            } label: {
-                Label("Rename", systemImage: "pencil")
-            }
-            Button(role: .destructive) {
-                removeTarget = entry
-            } label: {
-                Label("Remove Server", systemImage: "trash")
-            }
-        }
         #if !os(tvOS)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
@@ -291,13 +238,6 @@ struct ServerListView: View {
             } label: {
                 Label("Remove", systemImage: "trash")
             }
-            Button {
-                renameInput = entry.userOverrideName ?? entry.fetchedName ?? ""
-                renameTarget = entry
-            } label: {
-                Label("Rename", systemImage: "pencil")
-            }
-            .tint(.continuumOnSurface)
         }
         #endif
     }
@@ -344,65 +284,37 @@ struct ServerListView: View {
 }
 
 #if os(tvOS)
-private struct TVServerRenameSheet: View {
+private struct TVServerSummaryLabel: View {
     let entry: ServerEntry
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var name: String
-    @FocusState private var focusedField: Field?
-
-    init(entry: ServerEntry) {
-        self.entry = entry
-        _name = State(initialValue: entry.userOverrideName ?? entry.fetchedName ?? "")
-    }
+    let isActive: Bool
 
     var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 28) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("SERVER")
-                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                        .tracking(2)
-                        .foregroundColor(.continuumSecondaryText)
-                    Text("Rename Server")
-                        .font(.system(size: 42, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface)
-                    Text("Override the server-provided name with a label just for this Apple TV.")
-                        .font(.system(size: 21))
-                        .foregroundColor(.continuumSecondaryText)
-                }
+        HStack(spacing: 18) {
+            Image(systemName: isActive ? "checkmark.circle.fill" : "server.rack")
+                .font(.system(size: 24, weight: .medium))
+                .frame(width: 34)
 
-                TextField("Server Name", text: $name)
-                    .textContentType(.name)
-                    .font(.system(size: 26))
-                    .focused($focusedField, equals: .name)
-
-                HStack(spacing: 18) {
-                    Button("Cancel") { dismiss() }
-                    Button("Save") {
-                        ServerRegistry.shared.rename(serverId: entry.id, userOverrideName: name)
-                        dismiss()
-                    }
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    if entry.userOverrideName != nil {
-                        Button("Use Server Name", role: .destructive) {
-                            ServerRegistry.shared.rename(serverId: entry.id, userOverrideName: nil)
-                            dismiss()
-                        }
-                    }
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.displayName)
+                    .font(.system(size: 26, weight: .medium))
+                    .lineLimit(1)
+                Text(entry.url)
+                    .font(.system(size: 19))
+                    .opacity(0.62)
+                    .lineLimit(1)
             }
-            .frame(maxWidth: 900, maxHeight: .infinity, alignment: .center)
-            .padding(.horizontal, 80)
-            .background(Color.continuumBackground.ignoresSafeArea())
-            .defaultFocus($focusedField, .name)
-            .onExitCommand { dismiss() }
-        }
-    }
 
-    private enum Field: Hashable {
-        case name
+            Spacer(minLength: 16)
+
+            if isActive {
+                Text("Active")
+                    .font(.system(size: 19, weight: .semibold))
+                    .opacity(0.72)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(isActive ? "Active" : "Saved")
     }
 }
 #endif

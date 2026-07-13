@@ -24,26 +24,24 @@ struct TVSettingsView: View {
     @Environment(AppRouter.self) private var router
 
     var body: some View {
-        HStack(alignment: .top, spacing: 64) {
-            rail
-                .frame(width: 430)
-                .focusSection()
-                .defaultFocus(
-                    $railFocus,
-                    .category(selectedCategory),
-                    priority: .userInitiated
-                )
-                .onExitCommand(perform: exitSettingsToHome)
+        ZStack {
+            settingsContent
+                .disabled(showSignOutConfirm)
 
-            detailPane
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .focusSection()
-                .defaultFocus($detailFocus, .top, priority: .userInitiated)
-                .onExitCommand(perform: returnFocusToRail)
+            if showSignOutConfirm {
+                TVSettingsConfirmationOverlay(
+                    title: "Sign Out",
+                    message: "You will be returned to the login screen.",
+                    confirmTitle: "Sign Out",
+                    cancel: dismissSignOutConfirmation,
+                    confirm: router.signOutAndReset
+                )
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                .zIndex(1)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .safeAreaPadding(.horizontal, ContinuumTheme.Skyline.safeAreaX)
-        .safeAreaPadding(.top, 64)
+        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSignOutConfirm)
         .defaultFocus($railFocus, .category(selectedCategory))
         .task { await viewModel.load() }
         .onChange(of: railFocus) { _, focus in
@@ -67,14 +65,29 @@ struct TVSettingsView: View {
         .onChange(of: viewModel.editorPreferredMetadataLanguage) { _, _ in
             Task { await viewModel.saveMetadataLanguage() }
         }
-        .alert("Sign Out", isPresented: $showSignOutConfirm) {
-            Button("Sign Out", role: .destructive) {
-                router.signOutAndReset()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("You will be returned to the login screen.")
+    }
+
+    private var settingsContent: some View {
+        HStack(alignment: .top, spacing: 64) {
+            rail
+                .frame(width: 430)
+                .focusSection()
+                .defaultFocus(
+                    $railFocus,
+                    .category(selectedCategory),
+                    priority: .userInitiated
+                )
+                .onExitCommand(perform: exitSettingsToHome)
+
+            detailPane
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .focusSection()
+                .defaultFocus($detailFocus, .top, priority: .userInitiated)
+                .onExitCommand(perform: returnFocusToRail)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .safeAreaPadding(.horizontal, ContinuumTheme.Skyline.safeAreaX)
+        .safeAreaPadding(.top, 64)
     }
 
     // MARK: - Left rail
@@ -186,6 +199,14 @@ struct TVSettingsView: View {
     private func returnFocusToRail() {
         detailFocus = nil
         railFocus = .category(selectedCategory)
+    }
+
+    private func dismissSignOutConfirmation() {
+        showSignOutConfirm = false
+        Task { @MainActor in
+            await Task.yield()
+            railFocus = .signOut
+        }
     }
 
     private func exitSettingsToHome() {

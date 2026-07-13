@@ -348,6 +348,80 @@ struct TVSettingsFooter: View {
     }
 }
 
+// MARK: - Confirmation overlay
+
+/// Settings-styled destructive confirmation used instead of the native tvOS
+/// alert, whose app-wide tint can leave focused Cancel text without contrast.
+struct TVSettingsConfirmationOverlay: View {
+    let title: String
+    let message: String
+    let confirmTitle: String
+    let cancel: () -> Void
+    let confirm: () -> Void
+
+    @FocusState private var focusedAction: Action?
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.62)
+                .ignoresSafeArea()
+                .onTapGesture(perform: cancel)
+
+            VStack(spacing: 28) {
+                VStack(spacing: 12) {
+                    Text(title)
+                        .font(.system(size: 38, weight: .semibold))
+                        .foregroundColor(.continuumOnSurface)
+
+                    Text(message)
+                        .font(.system(size: 22))
+                        .foregroundColor(.continuumSecondaryText)
+                        .multilineTextAlignment(.center)
+                }
+
+                HStack(spacing: 16) {
+                    Button(action: cancel) {
+                        Text("Cancel")
+                            .font(.system(size: 24, weight: .semibold))
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                        .buttonStyle(TVSettingsPaneRowStyle())
+                        .frame(width: 260)
+                        .focused($focusedAction, equals: .cancel)
+
+                    Button(action: confirm) {
+                        Text(confirmTitle)
+                            .font(.system(size: 24, weight: .semibold))
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                        .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
+                        .frame(width: 260)
+                        .focused($focusedAction, equals: .confirm)
+                }
+            }
+            .padding(.horizontal, 48)
+            .padding(.vertical, 42)
+            .background(
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .fill(Color.continuumSurfaceElevated)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+            )
+            .focusSection()
+            .defaultFocus($focusedAction, .cancel, priority: .userInitiated)
+            .onExitCommand(perform: cancel)
+        }
+        .onAppear { focusedAction = .cancel }
+    }
+
+    private enum Action: Hashable {
+        case cancel
+        case confirm
+    }
+}
+
 // MARK: - Picker sheet
 
 /// Modal option picker presented by `.fullScreenCover(item:)` (tvOS 26

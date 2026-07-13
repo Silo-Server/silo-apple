@@ -100,7 +100,6 @@ final class AuthService: @unchecked Sendable {
             id: id,
             url: normalized,
             fetchedName: fetchedName,
-            userOverrideName: nil,
             profileId: nil,
             lastUsedAt: Date()
         )

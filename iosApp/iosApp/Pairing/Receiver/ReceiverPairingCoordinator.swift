@@ -292,7 +292,7 @@ final class ReceiverPairingCoordinator {
     /// Commit the now-trusted server + tokens. Runs only after a successful poll.
     static func persistServer(url: String, fetchedName: String?, access: String, refresh: String) async {
         let id = ServerRegistry.serverId(for: url)
-        let entry = ServerEntry(id: id, url: url, fetchedName: fetchedName, userOverrideName: nil, profileId: nil, lastUsedAt: Date())
+        let entry = ServerEntry(id: id, url: url, fetchedName: fetchedName, profileId: nil, lastUsedAt: Date())
         // Device authorization can replace the account for an already-saved
         // server URL. Preserve its name, but never carry the previous account's
         // profile selection across that credential boundary.
