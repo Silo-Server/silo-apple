@@ -8,7 +8,7 @@ struct PINEntryView: View {
 
     @State private var pin: String = ""
     @State private var isShaking: Bool = false
-    @Namespace private var padNamespace
+    @FocusState private var focusedPadKey: String?
     @Environment(\.dismiss) private var dismiss
 
     private let maxDigits = 4
@@ -81,7 +81,14 @@ struct PINEntryView: View {
             .shadow(color: .black.opacity(0.45), radius: 36, y: 18)
             .focusSection()
         }
-        .onExitCommand(perform: cancel)
+        .onExitCommand(perform: handleExit)
+        .task {
+            // The profile grid is disabled in the same update that inserts
+            // this overlay. Wait for it to relinquish focus, then hand the
+            // single native keypad graph to its center key.
+            await Task.yield()
+            focusedPadKey = "5"
+        }
     }
     #endif
 
@@ -123,8 +130,8 @@ struct PINEntryView: View {
             ForEach(1...9, id: \.self) { digit in
                 NumberPadButton(
                     label: "\(digit)",
-                    prefersDefaultFocus: digit == 1,
-                    defaultFocusNamespace: padNamespace
+                    focus: $focusedPadKey,
+                    focusValue: "\(digit)"
                 ) {
                     appendDigit("\(digit)")
                 }
@@ -132,19 +139,25 @@ struct PINEntryView: View {
 
             Color.clear.frame(height: NumberPadButton.size)
 
-            NumberPadButton(label: "0") {
+            NumberPadButton(
+                label: "0",
+                focus: $focusedPadKey,
+                focusValue: "0"
+            ) {
                 appendDigit("0")
             }
 
-            NumberPadButton(label: "delete.backward", isSystemImage: true) {
+            NumberPadButton(
+                label: "delete.backward",
+                isSystemImage: true,
+                focus: $focusedPadKey,
+                focusValue: "delete"
+            ) {
                 deleteDigit()
             }
         }
         #if os(tvOS)
         .frame(width: 360)
-        // Seed first focus on the "1" key so the pad opens ready for input
-        // rather than letting the engine pick a key geometrically.
-        .focusScope(padNamespace)
         #endif
     }
 
@@ -158,6 +171,14 @@ struct PINEntryView: View {
             onCancel()
         } else {
             dismiss()
+        }
+    }
+
+    private func handleExit() {
+        if pin.isEmpty {
+            cancel()
+        } else {
+            deleteDigit()
         }
     }
 
@@ -190,8 +211,8 @@ struct PINEntryView: View {
 private struct NumberPadButton: View {
     let label: String
     var isSystemImage: Bool = false
-    var prefersDefaultFocus: Bool = false
-    var defaultFocusNamespace: Namespace.ID? = nil
+    var focus: FocusState<String?>.Binding? = nil
+    var focusValue: String? = nil
     let action: () -> Void
     static var size: CGFloat {
         #if os(tvOS)
@@ -201,7 +222,17 @@ private struct NumberPadButton: View {
         #endif
     }
 
+    @ViewBuilder
     var body: some View {
+        if let focus, let focusValue {
+            button
+                .focused(focus, equals: focusValue)
+        } else {
+            button
+        }
+    }
+
+    private var button: some View {
         Button(action: action) {
             if isSystemImage {
                 Image(systemName: label)
@@ -211,11 +242,12 @@ private struct NumberPadButton: View {
                     .font(.continuumPIN)
             }
         }
-        .buttonStyle(NumberPadButtonStyle())
-        #if os(tvOS)
-        // Lets a single key (the "1") claim initial focus on the PIN pad.
-        .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
-        #endif
+        .buttonStyle(NumberPadButtonStyle(isFocused: isFocused))
+    }
+
+    private var isFocused: Bool {
+        guard let focusValue else { return false }
+        return focus?.wrappedValue == focusValue
     }
 
     private var symbolSize: CGFloat {
@@ -228,14 +260,16 @@ private struct NumberPadButton: View {
 }
 
 private struct NumberPadButtonStyle: ButtonStyle {
+    let isFocused: Bool
+
     func makeBody(configuration: Configuration) -> some View {
-        NumberPadButtonBody(configuration: configuration)
+        NumberPadButtonBody(configuration: configuration, isFocused: isFocused)
     }
 }
 
 private struct NumberPadButtonBody: View {
     let configuration: ButtonStyle.Configuration
-    @Environment(\.isFocused) private var isFocused
+    let isFocused: Bool
 
     var body: some View {
         configuration.label
