@@ -15,9 +15,14 @@ struct TVEpisodeRail: View {
     let episodes: [EpisodeListItem]
     let onSelect: (String) -> Void
     var onFocusedEpisodeChange: ((String?) -> Void)? = nil
+    var onSetWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
+    var onSetFavorite: ((_ contentId: String, _ isFavorite: Bool) async -> Bool)? = nil
     /// When non-nil, the matching card is visually highlighted and anchored
     /// at first appearance.
     var currentContentId: String? = nil
+    var currentContentIsFavorite = false
+    var favoriteStates: [String: Bool] = [:]
+    var prefersCurrentContentFocus = false
 
     private let cardSpacing: CGFloat = 36
     @FocusState private var focusedCardId: String?
@@ -30,7 +35,12 @@ struct TVEpisodeRail: View {
                         TVEpisodeCard(
                             episode: episode,
                             isCurrent: currentContentId == episode.contentId,
-                            onSelect: { onSelect(episode.contentId) }
+                            onSelect: { onSelect(episode.contentId) },
+                            onSetWatched: onSetWatched,
+                            initialIsFavorite: currentContentId == episode.contentId
+                                ? currentContentIsFavorite
+                                : favoriteStates[episode.contentId] ?? false,
+                            onSetFavorite: onSetFavorite
                         )
                         .id(episode.contentId)
                         .focused($focusedCardId, equals: episode.contentId)
@@ -40,6 +50,10 @@ struct TVEpisodeRail: View {
                 .padding(.horizontal, ContinuumTheme.safePadding)
             }
             .focusSection()
+            .applyCurrentEpisodeDefaultFocus(
+                prefersCurrentContentFocus ? currentContentId : nil,
+                binding: $focusedCardId
+            )
             .scrollClipDisabled()
             .onChange(of: focusedCardId) { _, contentId in
                 onFocusedEpisodeChange?(contentId)
@@ -61,19 +75,40 @@ struct TVEpisodeRail: View {
     }
 }
 
+private extension View {
+    @ViewBuilder
+    func applyCurrentEpisodeDefaultFocus(
+        _ contentId: String?,
+        binding: FocusState<String?>.Binding
+    ) -> some View {
+        if let contentId {
+            defaultFocus(binding, contentId, priority: .userInitiated)
+        } else {
+            self
+        }
+    }
+}
+
 struct TVEpisodeCard: View {
     let episode: EpisodeListItem
     var isCurrent: Bool = false
     let onSelect: () -> Void
+    var onSetWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
+    var initialIsFavorite = false
+    var onSetFavorite: ((_ contentId: String, _ isFavorite: Bool) async -> Bool)? = nil
+
+    @State private var playedOverride: Bool?
+    @State private var favoriteOverride: Bool?
 
     private let cardWidth: CGFloat = 460
     private let stillHeight: CGFloat = 260
     private let stillCornerRadius: CGFloat = 10
 
     var body: some View {
-        Button(action: onSelect) {
+        let button = Button(action: onSelect) {
             EpisodeCardLabel(
                 episode: episode,
+                isPlayed: isPlayed,
                 isCurrent: isCurrent,
                 cardWidth: cardWidth,
                 stillHeight: stillHeight,
@@ -81,11 +116,63 @@ struct TVEpisodeCard: View {
             )
         }
         .buttonStyle(EpisodeCardStyle())
+
+        if onSetWatched != nil || onSetFavorite != nil {
+            button.contextMenu { contextActions }
+        } else {
+            button
+        }
+    }
+
+    private var isPlayed: Bool {
+        playedOverride ?? episode.userData?.played ?? false
+    }
+
+    private var isFavorite: Bool {
+        favoriteOverride ?? initialIsFavorite
+    }
+
+    @ViewBuilder
+    private var contextActions: some View {
+        if let onSetWatched {
+            Button {
+                let played = !isPlayed
+                playedOverride = played
+                Task {
+                    if await onSetWatched(episode.contentId, played) == false {
+                        playedOverride = !played
+                    }
+                }
+            } label: {
+                Label(
+                    isPlayed ? "Mark as Unwatched" : "Mark as Watched",
+                    systemImage: isPlayed ? "circle" : "checkmark.circle"
+                )
+            }
+        }
+
+        if let onSetFavorite {
+            Button {
+                let newValue = !isFavorite
+                favoriteOverride = newValue
+                Task {
+                    if await onSetFavorite(episode.contentId, newValue) == false {
+                        favoriteOverride = !newValue
+                    }
+                }
+            } label: {
+                Label(
+                    isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                    systemImage: isFavorite ? "heart.slash" : "heart"
+                )
+            }
+        }
     }
 }
 
 private struct EpisodeCardLabel: View {
     let episode: EpisodeListItem
+    let isPlayed: Bool
     let isCurrent: Bool
     let cardWidth: CGFloat
     let stillHeight: CGFloat
@@ -186,12 +273,12 @@ private struct EpisodeCardLabel: View {
                     .frame(width: cardWidth, height: stillHeight)
             }
 
-            if episode.userData?.played == true {
+            if isPlayed {
                 Color.black.opacity(0.35)
                     .frame(width: cardWidth, height: stillHeight)
             }
 
-            if episode.userData?.played == true {
+            if isPlayed {
                 VStack {
                     HStack {
                         Spacer()

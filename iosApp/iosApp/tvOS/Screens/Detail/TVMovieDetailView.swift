@@ -22,6 +22,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     let seasons: [Season]
     let selectedSeason: Season?
     let seasonEpisodes: [EpisodeListItem]
+    let episodeFavoriteStates: [String: Bool]
     let isLoadingEpisodes: Bool
     let onPlay: (_ startFromBeginning: Bool) -> Void
     let onSelectVersion: (Int?) -> Void
@@ -34,6 +35,8 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     let onEpisodeTap: (String) -> Void
+    let onSetEpisodeWatched: (_ contentId: String, _ played: Bool) async -> Bool
+    let onSetEpisodeFavorite: (_ contentId: String, _ isFavorite: Bool) async -> Bool
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the synopsis.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
@@ -270,7 +273,12 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                     episodes: seasonEpisodes,
                     onSelect: onEpisodeTap,
                     onFocusedEpisodeChange: { focusedEpisodeContentId = $0 },
-                    currentContentId: detail.contentId
+                    onSetWatched: onSetEpisodeWatched,
+                    onSetFavorite: onSetEpisodeFavorite,
+                    currentContentId: detail.contentId,
+                    currentContentIsFavorite: isFavorite,
+                    favoriteStates: episodeFavoriteStates,
+                    prefersCurrentContentFocus: true
                 )
                 .padding(.horizontal, -ContinuumTheme.safePadding)
             }

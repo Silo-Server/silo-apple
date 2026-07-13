@@ -344,6 +344,7 @@ struct TVItemDetailView: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 seasonEpisodes: viewModel.episodes,
+                episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 onPlay: { startFromBeginning in
                     let resumePosition = startFromBeginning ? nil : playableResumePosition(for: detail)
@@ -447,6 +448,12 @@ struct TVItemDetailView: View {
                         resumePosition: resumePosition,
                         returnToContentId: isCurrentEpisode ? nil : id
                     )
+                },
+                onSetEpisodeWatched: { id, played in
+                    await viewModel.setEpisodeWatched(contentId: id, played: played)
+                },
+                onSetEpisodeFavorite: { id, isFavorite in
+                    await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
                 },
                 belowSynopsis: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)

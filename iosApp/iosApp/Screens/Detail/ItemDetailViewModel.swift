@@ -15,6 +15,7 @@ class ItemDetailViewModel {
     var seasons: [Season] = []
     var selectedSeason: Season?
     var episodes: [EpisodeListItem] = []
+    var episodeFavoriteStates: [String: Bool] = [:]
     var isLoadingEpisodes = false
 
     // User actions
@@ -284,6 +285,34 @@ class ItemDetailViewModel {
             // we hydrated from cache.
         }
         isLoadingEpisodes = false
+        if detail?.type == "episode" {
+            await refreshEpisodeFavoriteStates(for: episodes)
+        } else {
+            episodeFavoriteStates = [:]
+        }
+    }
+
+    private func refreshEpisodeFavoriteStates(for episodes: [EpisodeListItem]) async {
+        let states = await withTaskGroup(of: (String, Bool).self) { group in
+            for episode in episodes {
+                group.addTask {
+                    let isFavorite = (try? await ContinuumAPI.shared.isFavorite(
+                        contentId: episode.contentId
+                    )) ?? false
+                    return (episode.contentId, isFavorite)
+                }
+            }
+
+            var states: [String: Bool] = [:]
+            for await (contentId, isFavorite) in group {
+                states[contentId] = isFavorite
+            }
+            return states
+        }
+
+        let currentIds = Set(self.episodes.map(\.contentId))
+        guard currentIds == Set(episodes.map(\.contentId)) else { return }
+        episodeFavoriteStates = states
     }
 
     // MARK: - User Actions
@@ -337,6 +366,34 @@ class ItemDetailViewModel {
             invalidateRelatedCaches(contentId: contentId)
         } catch {
             isWatched.toggle() // Revert on failure
+        }
+    }
+
+    func setEpisodeWatched(contentId: String, played: Bool) async -> Bool {
+        do {
+            try await ContinuumAPI.shared.setWatched(contentId: contentId, played: played)
+            invalidateRelatedCaches(contentId: contentId)
+            if let seriesId = seriesContentId, let seasonNumber = selectedSeason?.seasonNumber {
+                await loadEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func setEpisodeFavorite(contentId: String, isFavorite: Bool) async -> Bool {
+        do {
+            try await ContinuumAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
+            if contentId == detail?.contentId {
+                self.isFavorite = isFavorite
+                writeBackUserState(contentId: contentId)
+            }
+            episodeFavoriteStates[contentId] = isFavorite
+            invalidateRelatedCaches(contentId: contentId)
+            return true
+        } catch {
+            return false
         }
     }
 
