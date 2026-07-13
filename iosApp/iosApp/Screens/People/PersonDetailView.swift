@@ -36,6 +36,7 @@ final class PersonDetailViewModel {
     var error: ErrorState?
     var hasMore = true
     var selectedFilter: PersonMediaFilter = .all
+    var availableFilters = PersonMediaFilter.allCases
     var totalItems: Int?
     var isRefreshingMetadata = false
 
@@ -102,7 +103,9 @@ final class PersonDetailViewModel {
                 person = try await ContinuumAPI.shared.person(id: personId)
             }
             scheduleMetadataRefreshIfNeeded(for: person)
+            async let availability: Void = refreshAvailableFilters(generation: currentGeneration)
             await fetchPage(reset: true, generation: currentGeneration)
+            await availability
         } catch {
             guard currentGeneration == generation else { return }
             self.error = ErrorState(error)
@@ -240,6 +243,34 @@ final class PersonDetailViewModel {
         } catch {
             guard currentGeneration == generation else { return }
             self.error = ErrorState(error)
+        }
+    }
+
+    private func refreshAvailableFilters(generation currentGeneration: Int) async {
+        async let movies = catalogHasItems(type: "movie")
+        async let series = catalogHasItems(type: "series")
+        let results = await (movies, series)
+        guard currentGeneration == generation else { return }
+
+        var filters: [PersonMediaFilter] = [.all]
+        if results.0 != false { filters.append(.movies) }
+        if results.1 != false { filters.append(.series) }
+        availableFilters = filters
+    }
+
+    /// `nil` means the availability check failed. In that case the filter
+    /// remains visible rather than hiding content based on a network error.
+    private func catalogHasItems(type: String) async -> Bool? {
+        do {
+            let response = try await ContinuumAPI.shared.personCatalogItems(
+                personId: personId,
+                type: type,
+                offset: 0,
+                limit: 1
+            )
+            return !response.items.isEmpty || (response.total ?? 0) > 0
+        } catch {
+            return nil
         }
     }
 
@@ -421,7 +452,7 @@ private struct TVPersonDetailContent: View {
                 Spacer()
             }
 
-            PersonFilterBar(selected: viewModel.selectedFilter) { filter in
+            PersonFilterBar(filters: viewModel.availableFilters, selected: viewModel.selectedFilter) { filter in
                 Task { await viewModel.applyFilter(filter) }
             }
         }
@@ -551,7 +582,7 @@ private struct PhonePersonDetailContent: View {
             }
             .padding(.horizontal, ContinuumTheme.padding)
 
-            PersonFilterBar(selected: viewModel.selectedFilter) { filter in
+            PersonFilterBar(filters: viewModel.availableFilters, selected: viewModel.selectedFilter) { filter in
                 Task { await viewModel.applyFilter(filter) }
             }
             .padding(.horizontal, ContinuumTheme.padding)
@@ -638,13 +669,14 @@ private struct PersonMetadataRefreshIndicator: View {
 }
 
 private struct PersonFilterBar: View {
+    let filters: [PersonMediaFilter]
     let selected: PersonMediaFilter
     let onSelect: (PersonMediaFilter) -> Void
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(PersonMediaFilter.allCases) { filter in
+                ForEach(filters) { filter in
                     PersonFilterButton(
                         title: filter.title,
                         isSelected: filter == selected,
