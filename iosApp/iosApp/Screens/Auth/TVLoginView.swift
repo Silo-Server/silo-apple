@@ -304,6 +304,7 @@ struct TVLoginView: View {
                     AuroraInputField(
                         text: $loginVM.username,
                         placeholder: "yourname",
+                        inputTitle: "Username",
                         focus: $focusedField,
                         equals: .username,
                         contentType: .username
@@ -317,6 +318,7 @@ struct TVLoginView: View {
                         AuroraInputField(
                             text: $loginVM.password,
                             placeholder: "••••••",
+                            inputTitle: "Password",
                             focus: $focusedField,
                             equals: .password,
                             isSecure: !showPassword,

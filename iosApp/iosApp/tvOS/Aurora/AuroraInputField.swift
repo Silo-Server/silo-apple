@@ -11,6 +11,7 @@ import UIKit
 struct AuroraInputField<F: Hashable>: View {
     @Binding var text: String
     var placeholder: String
+    var inputTitle: String? = nil
     var focus: FocusState<F?>.Binding
     var equals: F
     var isSecure: Bool = false
@@ -45,7 +46,7 @@ struct AuroraInputField<F: Hashable>: View {
                 .textInputAutocapitalization(.never)
                 .tint(.clear)
                 .opacity(0.02)
-                .accessibilityLabel(placeholder)
+                .accessibilityLabel(inputTitle ?? placeholder)
         }
         .font(.system(size: 26))
         .padding(.horizontal, 22)
@@ -80,9 +81,9 @@ struct AuroraInputField<F: Hashable>: View {
     @ViewBuilder
     private var fieldView: some View {
         if isSecure {
-            SecureField("", text: $text)
+            SecureField(inputTitle ?? placeholder, text: $text)
         } else {
-            TextField("", text: $text)
+            TextField(inputTitle ?? placeholder, text: $text)
         }
     }
 }
