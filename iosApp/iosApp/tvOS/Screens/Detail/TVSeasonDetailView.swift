@@ -301,6 +301,9 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                     onSetWatched: onSetEpisodeWatched,
                     onSetFavorite: onSetEpisodeFavorite,
                     currentContentId: nextUpEpisode?.contentId,
+                    currentContentIsFavorite: nextUpEpisode.map {
+                        episodeFavoriteStates[$0.contentId] ?? false
+                    } ?? false,
                     favoriteStates: episodeFavoriteStates
                 )
             }
