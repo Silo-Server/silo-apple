@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var router = AppRouter()
+    @State private var serverRegistry = ServerRegistry.shared
     @State private var audioStore = AudioPlaybackStore()
     #if os(iOS)
     @State private var siloControl = SiloControlClient()
@@ -27,6 +28,10 @@ struct ContentView: View {
 
     var body: some View {
         authContent
+        // A server change is a hard data boundary even when both servers map
+        // to the same auth state. Re-key the routed subtree so profile, home,
+        // library, focus, and modal state cannot survive from the old server.
+        .id(serverRegistry.activeServerId)
         .environment(audioStore)
         #if os(iOS)
         .environment(siloControl)
