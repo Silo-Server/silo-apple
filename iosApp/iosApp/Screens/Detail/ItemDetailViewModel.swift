@@ -18,6 +18,11 @@ class ItemDetailViewModel {
     var episodeFavoriteStates: [String: Bool] = [:]
     var isLoadingEpisodes = false
 
+    /// Protects local context-menu updates from older favorite lookups that
+    /// finish after the user has already changed an episode's state.
+    private var episodeFavoriteMutationVersions: [String: Int] = [:]
+    private var episodeFavoriteRefreshGeneration = 0
+
     // User actions
     var isFavorite = false
     var inWatchlist = false
@@ -263,7 +268,11 @@ class ItemDetailViewModel {
         await loadEpisodes(seriesId: seriesId, seasonNumber: season.seasonNumber)
     }
 
-    func loadEpisodes(seriesId: String, seasonNumber: Int) async {
+    func loadEpisodes(
+        seriesId: String,
+        seasonNumber: Int,
+        refreshFavoriteStates: Bool = true
+    ) async {
         let key = CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
         // Hydrate from cache so the rail paints immediately, then
         // refresh silently in the background.
@@ -285,34 +294,57 @@ class ItemDetailViewModel {
             // we hydrated from cache.
         }
         isLoadingEpisodes = false
-        if detail?.type == "episode" {
+        if refreshFavoriteStates {
             await refreshEpisodeFavoriteStates(for: episodes)
-        } else {
-            episodeFavoriteStates = [:]
         }
     }
 
-    private func refreshEpisodeFavoriteStates(for episodes: [EpisodeListItem]) async {
-        let states = await withTaskGroup(of: (String, Bool).self) { group in
-            for episode in episodes {
-                group.addTask {
-                    let isFavorite = (try? await ContinuumAPI.shared.isFavorite(
-                        contentId: episode.contentId
-                    )) ?? false
-                    return (episode.contentId, isFavorite)
-                }
-            }
+    private func refreshEpisodeFavoriteStates(
+        for episodes: [EpisodeListItem],
+        maxConcurrent: Int = 6
+    ) async {
+        episodeFavoriteRefreshGeneration += 1
+        let generation = episodeFavoriteRefreshGeneration
+        let mutationVersionsAtStart = episodeFavoriteMutationVersions
+        var states: [String: Bool] = [:]
 
-            var states: [String: Bool] = [:]
-            for await (contentId, isFavorite) in group {
-                states[contentId] = isFavorite
+        // Query in small batches so a long season cannot fan out an
+        // unbounded number of requests against the server.
+        for batchStart in stride(from: 0, to: episodes.count, by: maxConcurrent) {
+            let batchEnd = min(batchStart + maxConcurrent, episodes.count)
+            let batch = Array(episodes[batchStart..<batchEnd])
+            let batchStates = await withTaskGroup(of: (String, Bool?).self) { group in
+                for episode in batch {
+                    group.addTask {
+                        let isFavorite = try? await ContinuumAPI.shared.isFavorite(
+                            contentId: episode.contentId
+                        )
+                        return (episode.contentId, isFavorite)
+                    }
+                }
+
+                var results: [String: Bool] = [:]
+                for await (contentId, isFavorite) in group {
+                    if let isFavorite {
+                        results[contentId] = isFavorite
+                    }
+                }
+                return results
             }
-            return states
+            states.merge(batchStates) { _, refreshed in refreshed }
         }
 
         let currentIds = Set(self.episodes.map(\.contentId))
-        guard currentIds == Set(episodes.map(\.contentId)) else { return }
-        episodeFavoriteStates = states
+        guard generation == episodeFavoriteRefreshGeneration,
+              currentIds == Set(episodes.map(\.contentId)) else { return }
+
+        var mergedStates = episodeFavoriteStates.filter { currentIds.contains($0.key) }
+        for (contentId, isFavorite) in states {
+            guard episodeFavoriteMutationVersions[contentId]
+                    == mutationVersionsAtStart[contentId] else { continue }
+            mergedStates[contentId] = isFavorite
+        }
+        episodeFavoriteStates = mergedStates
     }
 
     // MARK: - User Actions
@@ -377,7 +409,11 @@ class ItemDetailViewModel {
             }
             invalidateRelatedCaches(contentId: contentId)
             if let seriesId = seriesContentId, let seasonNumber = selectedSeason?.seasonNumber {
-                await loadEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
+                await loadEpisodes(
+                    seriesId: seriesId,
+                    seasonNumber: seasonNumber,
+                    refreshFavoriteStates: false
+                )
             }
             return true
         } catch {
@@ -392,6 +428,7 @@ class ItemDetailViewModel {
                 self.isFavorite = isFavorite
                 writeBackUserState(contentId: contentId)
             }
+            episodeFavoriteMutationVersions[contentId, default: 0] += 1
             episodeFavoriteStates[contentId] = isFavorite
             invalidateRelatedCaches(contentId: contentId)
             return true

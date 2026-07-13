@@ -244,16 +244,15 @@ class AppRouter {
                 await ServerRegistry.shared.remove(serverId: serverId)
             }
             await MainActor.run {
-                self.path = NavigationPath()
                 let auth = AuthService.shared
                 if !auth.hasServer {
-                    self.authState = .needsServerSetup
+                    self.resetToServerSetup()
                 } else if !auth.isLoggedIn {
-                    self.authState = .needsLogin
+                    self.resetToLogin()
                 } else if !auth.hasProfile {
-                    self.authState = .needsProfile
+                    self.showProfileSelection()
                 } else {
-                    self.authState = .authenticated
+                    self.resetToHome()
                 }
             }
         }

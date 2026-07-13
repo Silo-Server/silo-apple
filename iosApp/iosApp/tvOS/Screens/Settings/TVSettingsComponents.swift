@@ -310,6 +310,7 @@ struct TVSettingsInfoRow: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
         )
+        .accessibilityElement(children: .combine)
     }
 }
 

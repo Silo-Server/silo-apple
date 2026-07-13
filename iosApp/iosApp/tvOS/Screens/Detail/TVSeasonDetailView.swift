@@ -18,6 +18,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
+    let episodeFavoriteStates: [String: Bool]
     let isLoadingEpisodes: Bool
     let selectedNextUpFileId: Int?
     let selectedNextUpAudioTrackIndex: Int?
@@ -31,6 +32,8 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     var nextUpSubtitleOverrideCleared: Bool = false
     let onPlayEpisode: (_ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool) -> Void
     let onEpisodeTap: (_ contentId: String) -> Void
+    let onSetEpisodeWatched: (_ contentId: String, _ played: Bool) async -> Bool
+    let onSetEpisodeFavorite: (_ contentId: String, _ isFavorite: Bool) async -> Bool
     let onSelectSeason: (Season) -> Void
     let onSelectNextUpVersion: (Int?) -> Void
     let onSelectNextUpAudioTrack: (Int?) -> Void
@@ -295,7 +298,10 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                 TVEpisodeRail(
                     episodes: episodes,
                     onSelect: onEpisodeTap,
-                    currentContentId: nextUpEpisode?.contentId
+                    onSetWatched: onSetEpisodeWatched,
+                    onSetFavorite: onSetEpisodeFavorite,
+                    currentContentId: nextUpEpisode?.contentId,
+                    favoriteStates: episodeFavoriteStates
                 )
             }
         }

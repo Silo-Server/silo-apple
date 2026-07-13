@@ -121,6 +121,7 @@ struct TVItemDetailView: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
+                episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 selectedNextUpFileId: preferredNextUpFileId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
@@ -158,6 +159,12 @@ struct TVItemDetailView: View {
                 },
                 onEpisodeTap: { id in
                     router.navigate(to: .itemDetail(contentId: id))
+                },
+                onSetEpisodeWatched: { id, played in
+                    await viewModel.setEpisodeWatched(contentId: id, played: played)
+                },
+                onSetEpisodeFavorite: { id, isFavorite in
+                    await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
                 },
                 onSelectSeason: { season in
                     guard season.id != detail.contentId else { return }
@@ -232,6 +239,7 @@ struct TVItemDetailView: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
+                episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 selectedNextUpFileId: preferredNextUpFileId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
@@ -270,6 +278,12 @@ struct TVItemDetailView: View {
                 },
                 onEpisodeTap: { id in
                     router.navigate(to: .itemDetail(contentId: id))
+                },
+                onSetEpisodeWatched: { id, played in
+                    await viewModel.setEpisodeWatched(contentId: id, played: played)
+                },
+                onSetEpisodeFavorite: { id, isFavorite in
+                    await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
                 },
                 onSelectNextUpVersion: { fileId in
                     preferredNextUpFileId = fileId

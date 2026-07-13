@@ -101,6 +101,7 @@ struct TVSubtitleSettingsPane: View {
             let enabled = !viewModel.subtitleUsesDeviceAppearanceOverride
             Task { await viewModel.setSubtitleDeviceOverrideEnabled(enabled) }
         }
+        .disabled(viewModel.subtitleMatchesSystemAppearance)
 
         TVSettingsNestedGroup(enabled: viewModel.subtitleUsesDeviceAppearanceOverride) {
             pickerRow("Font Size", options: TVSettingsOptions.subtitleSize,

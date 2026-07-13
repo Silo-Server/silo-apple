@@ -52,19 +52,7 @@ struct ServerListView: View {
                 presenting: removeTarget
             ) { entry in
                 Button("Remove", role: .destructive) {
-                    let wasActive = entry.id == registry.activeServerId
-                    Task {
-                        await registry.remove(serverId: entry.id)
-                        await MainActor.run {
-                            removeTarget = nil
-                            // Removing the active server leaves the app
-                            // pointed at a fallback (or none). Re-enter
-                            // the auth state machine so the user lands
-                            // in the right place instead of on a stale
-                            // main-app screen.
-                            if wasActive { refreshAuthState() }
-                        }
-                    }
+                    remove(entry)
                 }
                 Button("Cancel", role: .cancel) { removeTarget = nil }
             } message: { entry in
