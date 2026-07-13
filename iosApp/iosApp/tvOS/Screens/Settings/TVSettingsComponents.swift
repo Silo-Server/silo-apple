@@ -134,12 +134,13 @@ private struct TVSettingsRailRowBody: View {
 
     private var foreground: Color {
         if isDestructive {
-            return isFocused ? Color(hex: "#D22F3F") : .continuumError
+            return isFocused ? .white : .continuumError
         }
         return isFocused ? .continuumBackground : .continuumOnSurface
     }
 
     private var fill: Color {
+        if isDestructive && isFocused { return .continuumError }
         if isFocused { return .continuumOnSurface }
         if isSelected { return .continuumChromeSelectedFill }
         return .clear

@@ -167,7 +167,9 @@ struct TVSettingsView: View {
                 Spacer(minLength: 0)
             }
         }
-        .buttonStyle(TVSettingsRailRowStyle(isSelected: category == selectedCategory))
+        .buttonStyle(TVSettingsRailRowStyle(
+            isSelected: category == selectedCategory && railFocus != .signOut
+        ))
         .focused($railFocus, equals: .category(category))
     }
 
