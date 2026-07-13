@@ -36,7 +36,7 @@ struct TVSettingsView: View {
                     cancel: dismissSignOutConfirmation,
                     confirm: router.signOutAndReset
                 )
-                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                .transition(.opacity)
                 .zIndex(1)
             }
         }
