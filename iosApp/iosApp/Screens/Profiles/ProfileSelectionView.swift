@@ -9,7 +9,11 @@ struct ProfileSelectionView: View {
     @State private var viewModel = ProfileSelectionViewModel()
     @State private var pinEntryContext: PINEntryContext?
     @State private var showCreateProfile: Bool = false
+    @State private var showSignOutConfirm: Bool = false
     @Namespace private var profileFocusNamespace
+    #if os(tvOS)
+    @FocusState private var isSignOutFocused: Bool
+    #endif
 
     private enum PINEntryPurpose: String {
         case profileSelection
@@ -35,8 +39,8 @@ struct ProfileSelectionView: View {
 
             pickerContent
                 #if os(tvOS)
-                .disabled(isPINEntryPresented)
-                .accessibilityHidden(isPINEntryPresented)
+                .disabled(isPINEntryPresented || showSignOutConfirm)
+                .accessibilityHidden(isPINEntryPresented || showSignOutConfirm)
                 #endif
         }
         .task {
@@ -44,7 +48,7 @@ struct ProfileSelectionView: View {
         }
         #if os(tvOS)
         .overlay {
-            pinEntryOverlay
+            profileOverlay
         }
         #endif
         #if os(tvOS)
@@ -206,7 +210,11 @@ struct ProfileSelectionView: View {
     /// for the identity moment.
     private var signOutChip: some View {
         Button {
+            #if os(tvOS)
+            showSignOutConfirm = true
+            #else
             router.signOutAndReset()
+            #endif
         } label: {
             HStack(spacing: 6) {
                 Text("Sign Out")
@@ -216,6 +224,9 @@ struct ProfileSelectionView: View {
             }
         }
         .buttonStyle(GhostChipButtonStyle())
+        #if os(tvOS)
+        .focused($isSignOutFocused)
+        #endif
     }
 
     /// Companion to `signOutChip`. Routes to the server picker so the
@@ -305,14 +316,36 @@ struct ProfileSelectionView: View {
         Task { await viewModel.clearTemporaryManagementContextIfNeeded() }
     }
 
+    #if os(tvOS)
     @ViewBuilder
-    private var pinEntryOverlay: some View {
-        if let context = pinEntryContext {
+    private var profileOverlay: some View {
+        if showSignOutConfirm {
+            TVSettingsConfirmationOverlay(
+                title: "Sign Out",
+                message: "Choose whether to keep or remove this server from this Apple TV.",
+                confirmTitle: "Sign Out",
+                additionalDestructiveTitle: "Sign Out & Remove Server",
+                cancel: dismissSignOutConfirmation,
+                confirm: router.signOutAndReset,
+                additionalDestructiveAction: router.signOutRemoveServerAndReset
+            )
+            .transition(.opacity)
+            .zIndex(10)
+        } else if let context = pinEntryContext {
             pinEntryContent(for: context)
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 .zIndex(10)
         }
     }
+
+    private func dismissSignOutConfirmation() {
+        showSignOutConfirm = false
+        Task { @MainActor in
+            await Task.yield()
+            isSignOutFocused = true
+        }
+    }
+    #endif
 
     private func pinEntryContent(for context: PINEntryContext) -> some View {
         PINEntryView(
