@@ -272,6 +272,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                     onFocusedEpisodeChange: { focusedEpisodeContentId = $0 },
                     currentContentId: detail.contentId
                 )
+                .padding(.horizontal, -ContinuumTheme.safePadding)
             }
         }
     }
