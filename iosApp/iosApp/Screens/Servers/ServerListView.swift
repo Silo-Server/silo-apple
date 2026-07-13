@@ -15,13 +15,36 @@ struct ServerListView: View {
     @State private var renameTarget: ServerEntry?
     @State private var renameInput: String = ""
     @State private var removeTarget: ServerEntry?
+    #if os(tvOS)
+    @FocusState private var focusedRow: TVRow?
+    #endif
 
     var body: some View {
+        #if os(tvOS)
+        tvOSContent
+            .continuumBackground()
+            .fullScreenCover(item: $renameTarget) { entry in
+                TVServerRenameSheet(entry: entry)
+            }
+            .alert(
+                "Remove this server?",
+                isPresented: Binding(
+                    get: { removeTarget != nil },
+                    set: { if !$0 { removeTarget = nil } }
+                ),
+                presenting: removeTarget
+            ) { entry in
+                Button("Remove", role: .destructive) {
+                    remove(entry)
+                }
+                Button("Cancel", role: .cancel) { removeTarget = nil }
+            } message: { entry in
+                Text("Sign-in credentials for \(entry.displayName) will be forgotten on this device.")
+            }
+        #else
         contentList
             .navigationTitle("Servers")
-            #if !os(tvOS)
             .continuumNavigationTitleDisplayMode(.inline)
-            #endif
             .continuumBackground()
             .continuumScrollContentBackgroundHidden()
             .alert(
@@ -76,7 +99,124 @@ struct ServerListView: View {
             } message: { entry in
                 Text("Sign-in credentials for \(entry.displayName) will be forgotten on this device.")
             }
+        #endif
     }
+
+    #if os(tvOS)
+    private var tvOSContent: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("CONNECTION")
+                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                        .tracking(2)
+                        .foregroundColor(.continuumSecondaryText)
+                    Text("Manage Servers")
+                        .font(.system(size: 38, weight: .semibold))
+                        .foregroundColor(.continuumOnSurface)
+                    Text("Switch between saved Silo servers or add another connection.")
+                        .font(.system(size: 20))
+                        .foregroundColor(.continuumSecondaryText)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 18)
+
+                TVSettingsSectionHeader("SAVED SERVERS")
+
+                if registry.sortedEntries.isEmpty {
+                    TVSettingsFooter("No servers have been saved on this Apple TV.")
+                } else {
+                    ForEach(registry.sortedEntries) { entry in
+                        tvOSRow(for: entry)
+                    }
+                }
+
+                TVSettingsSectionHeader("CONNECTIONS")
+
+                Button {
+                    router.navigate(to: .serverSetup)
+                } label: {
+                    HStack(spacing: 16) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 22, weight: .semibold))
+                            .frame(width: 28)
+                        Text("Add Server")
+                            .font(.system(size: 26))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 18, weight: .semibold))
+                            .opacity(0.55)
+                    }
+                }
+                .buttonStyle(TVSettingsPaneRowStyle())
+                .focused($focusedRow, equals: .add)
+
+                TVSettingsFooter("Press and hold a saved server to rename or remove it. Selecting the active server refreshes its sign-in state.")
+            }
+            .frame(maxWidth: 1080, alignment: .leading)
+            .padding(.bottom, 64)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .safeAreaPadding(.horizontal, ContinuumTheme.Skyline.safeAreaX)
+        .safeAreaPadding(.top, 64)
+        .defaultFocus($focusedRow, defaultTVRow)
+    }
+
+    private var defaultTVRow: TVRow {
+        registry.sortedEntries.first.map { .server($0.id) } ?? .add
+    }
+
+    private func tvOSRow(for entry: ServerEntry) -> some View {
+        Button {
+            switchTo(entry)
+        } label: {
+            HStack(spacing: 18) {
+                Image(systemName: entry.id == registry.activeServerId
+                      ? "checkmark.circle.fill"
+                      : "server.rack")
+                    .font(.system(size: 24, weight: .medium))
+                    .frame(width: 34)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(entry.displayName)
+                        .font(.system(size: 26, weight: .medium))
+                        .lineLimit(1)
+                    Text(entry.url)
+                        .font(.system(size: 19))
+                        .opacity(0.62)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 16)
+
+                if entry.id == registry.activeServerId {
+                    Text("Active")
+                        .font(.system(size: 19, weight: .semibold))
+                        .opacity(0.72)
+                }
+            }
+        }
+        .buttonStyle(TVSettingsPaneRowStyle())
+        .focused($focusedRow, equals: .server(entry.id))
+        .contextMenu {
+            Button {
+                renameTarget = entry
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+            Button(role: .destructive) {
+                removeTarget = entry
+            } label: {
+                Label("Remove Server", systemImage: "trash")
+            }
+        }
+    }
+
+    private enum TVRow: Hashable {
+        case server(String)
+        case add
+    }
+    #endif
 
     private var contentList: some View {
         List {
@@ -175,6 +315,17 @@ struct ServerListView: View {
         }
     }
 
+    private func remove(_ entry: ServerEntry) {
+        let wasActive = entry.id == registry.activeServerId
+        Task {
+            await registry.remove(serverId: entry.id)
+            await MainActor.run {
+                removeTarget = nil
+                if wasActive { refreshAuthState() }
+            }
+        }
+    }
+
     /// Recompute auth state for the (possibly new) active server and
     /// drop any in-tab navigation that belonged to the previous server.
     private func refreshAuthState() {
@@ -191,3 +342,67 @@ struct ServerListView: View {
         }
     }
 }
+
+#if os(tvOS)
+private struct TVServerRenameSheet: View {
+    let entry: ServerEntry
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @FocusState private var focusedField: Field?
+
+    init(entry: ServerEntry) {
+        self.entry = entry
+        _name = State(initialValue: entry.userOverrideName ?? entry.fetchedName ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 28) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("SERVER")
+                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                        .tracking(2)
+                        .foregroundColor(.continuumSecondaryText)
+                    Text("Rename Server")
+                        .font(.system(size: 42, weight: .semibold))
+                        .foregroundColor(.continuumOnSurface)
+                    Text("Override the server-provided name with a label just for this Apple TV.")
+                        .font(.system(size: 21))
+                        .foregroundColor(.continuumSecondaryText)
+                }
+
+                TextField("Server Name", text: $name)
+                    .textContentType(.name)
+                    .font(.system(size: 26))
+                    .focused($focusedField, equals: .name)
+
+                HStack(spacing: 18) {
+                    Button("Cancel") { dismiss() }
+                    Button("Save") {
+                        ServerRegistry.shared.rename(serverId: entry.id, userOverrideName: name)
+                        dismiss()
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    if entry.userOverrideName != nil {
+                        Button("Use Server Name", role: .destructive) {
+                            ServerRegistry.shared.rename(serverId: entry.id, userOverrideName: nil)
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: 900, maxHeight: .infinity, alignment: .center)
+            .padding(.horizontal, 80)
+            .background(Color.continuumBackground.ignoresSafeArea())
+            .defaultFocus($focusedField, .name)
+            .onExitCommand { dismiss() }
+        }
+    }
+
+    private enum Field: Hashable {
+        case name
+    }
+}
+#endif

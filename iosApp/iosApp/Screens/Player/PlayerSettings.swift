@@ -121,6 +121,18 @@ final class PlayerSettings {
         }
     }
 
+    /// Server/profile fallback used while this device's custom appearance
+    /// override is off. Kept separate so refreshing the effective value does
+    /// not destroy the user's locally cached custom style.
+    private var inheritedSubtitleAppearance: SubtitleAppearance {
+        didSet {
+            defaults.set(
+                inheritedSubtitleAppearance.sanitized().jsonString,
+                forKey: Self.cacheKey(Keys.inheritedSubtitleAppearance)
+            )
+        }
+    }
+
     var subtitleUsesDeviceAppearanceOverride: Bool {
         didSet {
             defaults.set(
@@ -149,7 +161,10 @@ final class PlayerSettings {
 
     /// The appearance the player should actually render with.
     var effectiveSubtitleAppearance: SubtitleAppearance {
-        subtitleMatchesSystemAppearance ? subtitleSystemAppearance : subtitleAppearance
+        if subtitleMatchesSystemAppearance { return subtitleSystemAppearance }
+        return subtitleUsesDeviceAppearanceOverride
+            ? subtitleAppearance
+            : inheritedSubtitleAppearance
     }
 
     var subtitleFontSize: Double {
@@ -225,6 +240,7 @@ final class PlayerSettings {
             Keys.dvProfile7HDR10Fallback: false,
             Keys.seekCacheEnabled: true,
             Keys.subtitleAppearance: SubtitleAppearance.default.jsonString,
+            Keys.inheritedSubtitleAppearance: SubtitleAppearance.default.jsonString,
             Keys.subtitleUsesDeviceAppearanceOverride: false,
             Keys.subtitleMatchesSystemAppearance: false,
             Keys.subtitleFontSize: 44.0,
@@ -262,6 +278,9 @@ final class PlayerSettings {
             defaultValue: true
         )
         subtitleAppearance = SubtitleAppearance.decode(from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance)))
+        inheritedSubtitleAppearance = SubtitleAppearance.decode(
+            from: defaults.string(forKey: Self.cacheKey(Keys.inheritedSubtitleAppearance))
+        )
         subtitleUsesDeviceAppearanceOverride = Self.cachedBool(
             defaults,
             key: Keys.subtitleUsesDeviceAppearanceOverride,
@@ -570,10 +589,15 @@ final class PlayerSettings {
 
         if let entry = effectiveByKey[PlayerDeviceSettingKey.subtitleAppearance.rawValue] {
             subtitleUsesDeviceAppearanceOverride = entry.hasDeviceOverride
-            subtitleAppearance = SubtitleAppearance.decode(from: entry.effectiveValue)
+            let effectiveAppearance = SubtitleAppearance.decode(from: entry.effectiveValue)
+            if entry.hasDeviceOverride {
+                subtitleAppearance = effectiveAppearance
+            } else {
+                inheritedSubtitleAppearance = effectiveAppearance
+            }
         } else {
             subtitleUsesDeviceAppearanceOverride = false
-            subtitleAppearance = .default
+            inheritedSubtitleAppearance = .default
         }
     }
 
@@ -670,6 +694,9 @@ final class PlayerSettings {
             defaultValue: false
         )
         subtitleAppearance = SubtitleAppearance.decode(from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance)))
+        inheritedSubtitleAppearance = SubtitleAppearance.decode(
+            from: defaults.string(forKey: Self.cacheKey(Keys.inheritedSubtitleAppearance))
+        )
     }
 
     @MainActor
@@ -857,6 +884,7 @@ final class PlayerSettings {
         static let dvProfile7HDR10Fallback = "player.dvProfile7HDR10Fallback"
         static let seekCacheEnabled = "player.seekCacheEnabled"
         static let subtitleAppearance = "player.subtitleAppearance"
+        static let inheritedSubtitleAppearance = "player.inheritedSubtitleAppearance"
         static let subtitleUsesDeviceAppearanceOverride = "player.subtitleUsesDeviceAppearanceOverride"
         static let subtitleMatchesSystemAppearance = "player.subtitleMatchesSystemAppearance"
         static let subtitleFontSize = "player.subtitleFontSize"

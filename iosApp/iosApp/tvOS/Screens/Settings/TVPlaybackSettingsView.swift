@@ -6,6 +6,7 @@ import SwiftUI
 /// covers (plain sheets render as narrow clipped cards on tvOS 26).
 struct TVPlaybackSettingsPane: View {
     @Bindable var viewModel: TVSettingsViewModel
+    let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     @State private var activePicker: PickerKind?
 
     var body: some View {
@@ -29,6 +30,7 @@ struct TVPlaybackSettingsPane: View {
             title: "Quality",
             value: TVSettingsOptions.label(for: viewModel.preferredQuality, in: TVSettingsOptions.quality)
         ) { activePicker = .quality }
+        .focused(detailFocus, equals: .top)
 
         TVSettingsPickerRow(
             title: "Audio Language",

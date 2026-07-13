@@ -12,15 +12,15 @@ import SwiftUI
 ///
 /// Focus model: one native graph. Each pane is a `.focusSection()`;
 /// vertical movement stays in-pane and Left/Right bridges panes
-/// geometrically. No manual focus mutation (see docs/tvos-focus.md).
+/// geometrically. User-initiated default focus makes each pane's anchor
+/// win during that native resolution; Select/Menu use the same anchors
+/// explicitly (see docs/tvos-focus.md).
 struct TVSettingsView: View {
     @State private var viewModel = TVSettingsViewModel()
     @State private var showSignOutConfirm = false
-    #if DEBUG
-    @State private var debugSettings = TVDebugSettings.shared
-    #endif
     @State private var selectedCategory: TVSettingsCategory = .general
     @FocusState private var railFocus: RailItem?
+    @FocusState private var detailFocus: TVSettingsDetailFocus?
     @Environment(AppRouter.self) private var router
 
     var body: some View {
@@ -28,10 +28,18 @@ struct TVSettingsView: View {
             rail
                 .frame(width: 430)
                 .focusSection()
+                .defaultFocus(
+                    $railFocus,
+                    .category(selectedCategory),
+                    priority: .userInitiated
+                )
+                .onExitCommand(perform: exitSettingsToHome)
 
             detailPane
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .focusSection()
+                .defaultFocus($detailFocus, .top, priority: .userInitiated)
+                .onExitCommand(perform: returnFocusToRail)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .safeAreaPadding(.horizontal, ContinuumTheme.Skyline.safeAreaX)
@@ -90,7 +98,7 @@ struct TVSettingsView: View {
 
             signOutRow
 
-            Text("Silo \(Self.appVersion)")
+            Text("Silo \(Self.versionString)")
                 .font(.system(size: 16, weight: .medium, design: .monospaced))
                 .tracking(1)
                 .foregroundColor(.continuumSecondaryText.opacity(0.7))
@@ -133,7 +141,7 @@ struct TVSettingsView: View {
 
     private func categoryRow(_ category: TVSettingsCategory) -> some View {
         Button {
-            selectedCategory = category
+            enterDetailPane(for: category)
         } label: {
             HStack(spacing: 16) {
                 Image(systemName: category.icon)
@@ -168,6 +176,21 @@ struct TVSettingsView: View {
     private func switchProfile() {
         AuthService.shared.profileId = nil
         router.showProfileSelection()
+    }
+
+    private func enterDetailPane(for category: TVSettingsCategory) {
+        selectedCategory = category
+        detailFocus = .top
+    }
+
+    private func returnFocusToRail() {
+        detailFocus = nil
+        railFocus = .category(selectedCategory)
+    }
+
+    private func exitSettingsToHome() {
+        router.popToRoot()
+        router.switchTab(to: .home)
     }
 
     // MARK: - Detail pane
@@ -211,11 +234,11 @@ struct TVSettingsView: View {
     private var paneContent: some View {
         switch selectedCategory {
         case .general:
-            TVGeneralSettingsPane()
+            TVGeneralSettingsPane(detailFocus: $detailFocus)
         case .playback:
-            TVPlaybackSettingsPane(viewModel: viewModel)
+            TVPlaybackSettingsPane(viewModel: viewModel, detailFocus: $detailFocus)
         case .subtitles:
-            TVSubtitleSettingsPane(viewModel: viewModel)
+            TVSubtitleSettingsPane(viewModel: viewModel, detailFocus: $detailFocus)
         case .server:
             serverPane
         }
@@ -252,27 +275,12 @@ struct TVSettingsView: View {
                 }
             }
             .buttonStyle(TVSettingsPaneRowStyle())
+            .focused($detailFocus, equals: .top)
 
             TVSettingsSectionHeader("ABOUT")
 
-            TVSettingsInfoRow(title: "App Version", value: Self.appVersion)
+            TVSettingsInfoRow(title: "App Version", value: Self.versionString)
 
-            #if DEBUG
-            TVSettingsSectionHeader("DEBUGGING")
-
-            TVSettingsToggleRow(
-                title: "Show Focus Targets",
-                isOn: debugSettings.showFocusTargets
-            ) {
-                debugSettings.setShowFocusTargets(!debugSettings.showFocusTargets)
-            }
-
-            TVSettingsFooter(
-                "Overlays the predicted d-pad destination in each direction "
-                    + "from the focused control. Stored on this Apple TV. "
-                    + "Debug builds only."
-            )
-            #endif
         }
     }
 
@@ -284,9 +292,20 @@ struct TVSettingsView: View {
         case signOut
     }
 
-    private static var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+    private static var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        guard let build = info?["CFBundleVersion"] as? String,
+              !build.isEmpty,
+              build != version else {
+            return version
+        }
+        return "\(version) (\(build))"
     }
+}
+
+enum TVSettingsDetailFocus: Hashable {
+    case top
 }
 
 // MARK: - Categories

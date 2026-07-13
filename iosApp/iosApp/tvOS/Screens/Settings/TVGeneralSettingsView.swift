@@ -9,6 +9,7 @@ import SwiftUI
 /// top-menu / header customization would live.
 struct TVGeneralSettingsPane: View {
     @State private var navPrefs = TVNavPreferences.shared
+    let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -23,6 +24,7 @@ struct TVGeneralSettingsPane: View {
             ) {
                 navPrefs.setShowAudiobooks(!navPrefs.showAudiobooks)
             }
+            .focused(detailFocus, equals: .top)
 
             TVSettingsFooter("Adds an Audiobooks tab to the top menu when your server has an audiobook library. Hidden by default.")
         }

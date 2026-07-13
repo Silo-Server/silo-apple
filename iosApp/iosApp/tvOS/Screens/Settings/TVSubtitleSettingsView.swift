@@ -7,7 +7,9 @@ import SwiftUI
 /// appearance block writes a per-device override directly.
 struct TVSubtitleSettingsPane: View {
     @Bindable var viewModel: TVSettingsViewModel
+    let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     @State private var activePicker: PickerKind?
+    @State private var showResetConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -19,6 +21,14 @@ struct TVSubtitleSettingsPane: View {
         }
         .fullScreenCover(item: $activePicker) { kind in
             pickerSheet(for: kind)
+        }
+        .alert("Reset Custom Appearance?", isPresented: $showResetConfirmation) {
+            Button("Reset", role: .destructive) {
+                Task { await viewModel.resetSubtitleAppearance() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This restores all custom subtitle appearance options to their defaults.")
         }
     }
 
@@ -32,6 +42,7 @@ struct TVSubtitleSettingsPane: View {
             title: "Language",
             value: TVSettingsOptions.label(for: viewModel.editorSubtitleLanguage, in: TVSettingsOptions.subtitleLanguage)
         ) { activePicker = .language }
+        .focused(detailFocus, equals: .top)
 
         TVSettingsPickerRow(
             title: "Behavior",
@@ -84,61 +95,79 @@ struct TVSubtitleSettingsPane: View {
         }
 
         TVSettingsToggleRow(
-            title: "Custom Appearance",
+            title: "Custom Subtitle Appearance",
             isOn: viewModel.subtitleUsesDeviceAppearanceOverride
         ) {
             let enabled = !viewModel.subtitleUsesDeviceAppearanceOverride
             Task { await viewModel.setSubtitleDeviceOverrideEnabled(enabled) }
         }
 
-        pickerRow("Font Size", options: TVSettingsOptions.subtitleSize,
-                  selection: viewModel.subtitleAppearance.fontSize.rawValue, kind: .fontSize)
-        pickerRow("Font Family", options: TVSettingsOptions.fontFamily,
-                  selection: viewModel.subtitleAppearance.fontFamily.rawValue, kind: .fontFamily)
-        pickerRow("Font Color", options: TVSettingsOptions.fontColor,
-                  selection: viewModel.subtitleAppearance.fontColor.lowercased(), kind: .fontColor)
+        TVSettingsNestedGroup(enabled: viewModel.subtitleUsesDeviceAppearanceOverride) {
+            pickerRow("Font Size", options: TVSettingsOptions.subtitleSize,
+                      selection: viewModel.subtitleAppearance.fontSize.rawValue, kind: .fontSize)
+            pickerRow("Font Family", options: TVSettingsOptions.fontFamily,
+                      selection: viewModel.subtitleAppearance.fontFamily.rawValue, kind: .fontFamily)
+            pickerRow("Font Color", options: TVSettingsOptions.fontColor,
+                      selection: viewModel.subtitleAppearance.fontColor.lowercased(), kind: .fontColor)
 
-        TVSettingsToggleRow(
-            title: "Text Outline",
-            isOn: viewModel.subtitleAppearance.textOutline
-        ) {
-            var next = viewModel.subtitleAppearance
-            next.textOutline.toggle()
-            Task { await viewModel.setSubtitleAppearance(next) }
+            TVSettingsToggleRow(
+                title: "Text Outline",
+                isOn: viewModel.subtitleAppearance.textOutline
+            ) {
+                guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
+                var next = viewModel.subtitleAppearance
+                next.textOutline.toggle()
+                Task { await viewModel.setSubtitleAppearance(next) }
+            }
+
+            TVSettingsPickerRow(
+                title: "Outline Color",
+                value: viewModel.subtitleAppearance.textOutline
+                    ? TVSettingsOptions.label(
+                        for: viewModel.subtitleAppearance.textOutlineColor.lowercased(),
+                        in: TVSettingsOptions.outlineColor
+                    )
+                    : "—"
+            ) {
+                guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
+                activePicker = .outlineColor
+            }
+
+            pickerRow("Background Style", options: TVSettingsOptions.backgroundStyle,
+                      selection: viewModel.subtitleAppearance.backgroundStyle.rawValue, kind: .backgroundStyle)
+
+            TVSettingsPickerRow(
+                title: "Background Opacity",
+                value: viewModel.subtitleAppearance.backgroundStyle == .box
+                    ? "\(viewModel.subtitleAppearance.backgroundOpacity)%"
+                    : "—"
+            ) {
+                guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
+                activePicker = .backgroundOpacity
+            }
+
+            TVSettingsPickerRow(
+                title: "Background Color",
+                value: viewModel.subtitleAppearance.backgroundStyle == .box
+                    ? TVSettingsOptions.label(
+                        for: viewModel.subtitleAppearance.backgroundColor.lowercased(),
+                        in: TVSettingsOptions.backgroundColor
+                    )
+                    : "—"
+            ) {
+                guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
+                activePicker = .backgroundColor
+            }
+
+            pickerRow("Position", options: TVSettingsOptions.position,
+                      selection: viewModel.subtitleAppearance.position.rawValue, kind: .position)
+
+            Button("Reset Custom Appearance", role: .destructive) {
+                guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
+                showResetConfirmation = true
+            }
+            .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
         }
-
-        TVSettingsPickerRow(
-            title: "Outline Color",
-            value: viewModel.subtitleAppearance.textOutline
-                ? TVSettingsOptions.label(
-                    for: viewModel.subtitleAppearance.textOutlineColor.lowercased(),
-                    in: TVSettingsOptions.outlineColor
-                )
-                : "—"
-        ) { activePicker = .outlineColor }
-
-        pickerRow("Background Style", options: TVSettingsOptions.backgroundStyle,
-                  selection: viewModel.subtitleAppearance.backgroundStyle.rawValue, kind: .backgroundStyle)
-
-        TVSettingsPickerRow(
-            title: "Background Opacity",
-            value: viewModel.subtitleAppearance.backgroundStyle == .box
-                ? "\(viewModel.subtitleAppearance.backgroundOpacity)%"
-                : "—"
-        ) { activePicker = .backgroundOpacity }
-
-        TVSettingsPickerRow(
-            title: "Background Color",
-            value: viewModel.subtitleAppearance.backgroundStyle == .box
-                ? TVSettingsOptions.label(
-                    for: viewModel.subtitleAppearance.backgroundColor.lowercased(),
-                    in: TVSettingsOptions.backgroundColor
-                )
-                : "—"
-        ) { activePicker = .backgroundColor }
-
-        pickerRow("Position", options: TVSettingsOptions.position,
-                  selection: viewModel.subtitleAppearance.position.rawValue, kind: .position)
 
         TVSettingsFooter(appearanceFooterText)
     }
@@ -184,7 +213,10 @@ struct TVSubtitleSettingsPane: View {
         TVSettingsPickerRow(
             title: title,
             value: TVSettingsOptions.label(for: selection, in: options)
-        ) { activePicker = kind }
+        ) {
+            guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
+            activePicker = kind
+        }
     }
 
     // MARK: - Pickers
