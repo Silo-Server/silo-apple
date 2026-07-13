@@ -127,7 +127,10 @@ struct ServerListView: View {
 
     private func tvOSRow(for entry: ServerEntry) -> some View {
         HStack(spacing: 12) {
-            Button(action: {}) {
+            Button {
+                guard entry.id != registry.activeServerId else { return }
+                switchTo(entry)
+            } label: {
                 TVServerSummaryLabel(
                     entry: entry,
                     isActive: entry.id == registry.activeServerId
@@ -135,7 +138,11 @@ struct ServerListView: View {
             }
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($focusedRow, equals: .server(entry.id))
-            .accessibilityHint("Server names are managed by the server administrator")
+            .accessibilityHint(
+                entry.id == registry.activeServerId
+                    ? "Current server. Server names are managed by the server administrator"
+                    : "Switch to this server. Server names are managed by the server administrator"
+            )
 
             Button {
                 removeTarget = entry
