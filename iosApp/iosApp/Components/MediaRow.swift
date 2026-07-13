@@ -270,7 +270,7 @@ struct MediaRow: View {
     }
 
     private func continueWatchingRemovalAction(for item: SectionItem) -> (() -> Void)? {
-        guard item.progressUpdatedAt != nil, let onRemoveFromContinueWatching else { return nil }
+        guard let onRemoveFromContinueWatching else { return nil }
         return { onRemoveFromContinueWatching(item) }
     }
 

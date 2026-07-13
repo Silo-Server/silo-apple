@@ -95,13 +95,14 @@ class HomeViewModel {
     }
 
     func dismissContinueWatchingItem(_ item: SectionItem) async {
-        guard let progressUpdatedAt = item.progressUpdatedAt,
-              pendingContinueWatchingDismissals.insert(item.contentId).inserted else {
+        guard pendingContinueWatchingDismissals.insert(item.contentId).inserted else {
             return
         }
         defer { pendingContinueWatchingDismissals.remove(item.contentId) }
 
         actionError = nil
+        let progressUpdatedAt = item.progressUpdatedAt
+            ?? ISO8601DateFormatter().string(from: Date())
 
         do {
             try await dismissContinueWatching(item.contentId, progressUpdatedAt)
