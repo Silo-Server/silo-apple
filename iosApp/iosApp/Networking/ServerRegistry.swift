@@ -121,7 +121,9 @@ final class ServerRegistry {
             if preservingProfile, merged.profileId == nil {
                 merged.profileId = existing.profileId
             }
-            if merged.fetchedName == nil { merged.fetchedName = existing.fetchedName }
+            if merged.fetchedName == nil || merged.fetchedName?.isEmpty == true {
+                merged.fetchedName = existing.fetchedName
+            }
         }
         if let idx = self.entries.firstIndex(where: { $0.id == entry.id }) {
             self.entries[idx] = merged

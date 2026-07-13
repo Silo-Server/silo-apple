@@ -117,10 +117,20 @@ struct TVEpisodeCard: View {
         }
         .buttonStyle(EpisodeCardStyle())
 
-        if onSetWatched != nil || onSetFavorite != nil {
-            button.contextMenu { contextActions }
-        } else {
-            button
+        Group {
+            if onSetWatched != nil || onSetFavorite != nil {
+                button.contextMenu { contextActions }
+            } else {
+                button
+            }
+        }
+        .onChange(of: episode.userData?.played) { _, refreshedValue in
+            guard let playedOverride, refreshedValue == playedOverride else { return }
+            self.playedOverride = nil
+        }
+        .onChange(of: initialIsFavorite) { _, refreshedValue in
+            guard let favoriteOverride, refreshedValue == favoriteOverride else { return }
+            self.favoriteOverride = nil
         }
     }
 
@@ -140,7 +150,7 @@ struct TVEpisodeCard: View {
                 playedOverride = played
                 Task {
                     if await onSetWatched(episode.contentId, played) == false {
-                        playedOverride = !played
+                        playedOverride = nil
                     }
                 }
             } label: {
@@ -157,7 +167,7 @@ struct TVEpisodeCard: View {
                 favoriteOverride = newValue
                 Task {
                     if await onSetFavorite(episode.contentId, newValue) == false {
-                        favoriteOverride = !newValue
+                        favoriteOverride = nil
                     }
                 }
             } label: {
