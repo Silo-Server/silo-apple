@@ -233,6 +233,32 @@ class AppRouter {
         }
     }
 
+    /// Sign out and forget the active server entirely. If another saved
+    /// server becomes active, re-enter its existing auth state; otherwise
+    /// return to server setup.
+    func signOutRemoveServerAndReset() {
+        Task {
+            let serverId = ServerRegistry.shared.activeServerId
+            await AuthService.shared.signOut()
+            if let serverId {
+                await ServerRegistry.shared.remove(serverId: serverId)
+            }
+            await MainActor.run {
+                self.path = NavigationPath()
+                let auth = AuthService.shared
+                if !auth.hasServer {
+                    self.authState = .needsServerSetup
+                } else if !auth.isLoggedIn {
+                    self.authState = .needsLogin
+                } else if !auth.hasProfile {
+                    self.authState = .needsProfile
+                } else {
+                    self.authState = .authenticated
+                }
+            }
+        }
+    }
+
     /// A refresh failed for the active server. Keep the registry entry,
     /// drop tokens (already done by the refresh path), and route to the
     /// login screen so the user can re-enter credentials. If no server

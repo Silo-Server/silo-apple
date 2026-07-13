@@ -31,10 +31,12 @@ struct TVSettingsView: View {
             if showSignOutConfirm {
                 TVSettingsConfirmationOverlay(
                     title: "Sign Out",
-                    message: "You will be returned to the login screen.",
+                    message: "Choose whether to keep or remove this server from this Apple TV.",
                     confirmTitle: "Sign Out",
+                    additionalDestructiveTitle: "Sign Out & Remove Server",
                     cancel: dismissSignOutConfirmation,
-                    confirm: router.signOutAndReset
+                    confirm: router.signOutAndReset,
+                    additionalDestructiveAction: router.signOutRemoveServerAndReset
                 )
                 .transition(.opacity)
                 .zIndex(1)

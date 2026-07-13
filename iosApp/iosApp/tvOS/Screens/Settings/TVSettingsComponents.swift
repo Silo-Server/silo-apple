@@ -356,8 +356,10 @@ struct TVSettingsConfirmationOverlay: View {
     let title: String
     let message: String
     let confirmTitle: String
+    var additionalDestructiveTitle: String? = nil
     let cancel: () -> Void
     let confirm: () -> Void
+    var additionalDestructiveAction: (() -> Void)? = nil
 
     @FocusState private var focusedAction: Action?
 
@@ -386,17 +388,33 @@ struct TVSettingsConfirmationOverlay: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                     }
                         .buttonStyle(TVSettingsPaneRowStyle())
-                        .frame(width: 260)
+                        .frame(width: buttonWidth)
                         .focused($focusedAction, equals: .cancel)
 
                     Button(action: confirm) {
                         Text(confirmTitle)
                             .font(.system(size: 24, weight: .semibold))
                             .frame(maxWidth: .infinity, alignment: .center)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
                     }
                         .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
-                        .frame(width: 260)
+                        .frame(width: buttonWidth)
                         .focused($focusedAction, equals: .confirm)
+
+                    if let additionalDestructiveTitle,
+                       let additionalDestructiveAction {
+                        Button(action: additionalDestructiveAction) {
+                            Text(additionalDestructiveTitle)
+                                .font(.system(size: 24, weight: .semibold))
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.65)
+                        }
+                        .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
+                        .frame(width: buttonWidth)
+                        .focused($focusedAction, equals: .additionalDestructive)
+                    }
                 }
             }
             .padding(.horizontal, 48)
@@ -419,6 +437,11 @@ struct TVSettingsConfirmationOverlay: View {
     private enum Action: Hashable {
         case cancel
         case confirm
+        case additionalDestructive
+    }
+
+    private var buttonWidth: CGFloat {
+        additionalDestructiveTitle == nil ? 260 : 320
     }
 }
 
