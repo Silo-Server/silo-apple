@@ -171,7 +171,7 @@ final class ServerRegistry {
         // not be able to land on the new server's token slot. See
         // `HTTPClient.cancelInFlightRequests` for the ordering contract.
         await HTTPClient.shared.cancelInFlightRequests()
-        await StartupContentPrefetcher.resetAllPrefetches()
+        await AuthService.shared.clearCachesForServerChange()
 
         let entry = entries.first(where: { $0.id == serverId })!
         defaults.set(entry.url, forKey: "serverUrl")
@@ -220,9 +220,16 @@ final class ServerRegistry {
     /// next-most-recent server becomes active; if none remain, the active
     /// slot is cleared.
     func remove(serverId: String) async {
+        let removesActiveServer = activeServerId == serverId
+        if removesActiveServer {
+            // Stop old-server responses and clear every process-wide cache
+            // before publishing the fallback ID to observing views.
+            await HTTPClient.shared.cancelInFlightRequests()
+            await AuthService.shared.clearCachesForServerChange()
+        }
         await TokenStore.shared.deleteTokens(for: serverId)
         entries.removeAll(where: { $0.id == serverId })
-        if activeServerId == serverId {
+        if removesActiveServer {
             let fallback = entries.sorted { $0.lastUsedAt > $1.lastUsedAt }.first
             activeServerId = fallback?.id
             if let fallback {

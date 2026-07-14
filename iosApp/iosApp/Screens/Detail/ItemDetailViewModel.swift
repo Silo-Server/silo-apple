@@ -431,6 +431,11 @@ class ItemDetailViewModel {
             if contentId == detail?.contentId {
                 self.isFavorite = isFavorite
                 writeBackUserState(contentId: contentId)
+            } else {
+                // The sibling's cached watchlist value is not loaded here, so
+                // discard its combined user-state entry rather than pairing
+                // the new favorite value with unrelated detail-item state.
+                ResponseCache.shared.remove(CacheKey.itemUserState(contentId))
             }
             episodeFavoriteMutationVersions[contentId, default: 0] += 1
             episodeFavoriteStates[contentId] = isFavorite

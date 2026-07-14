@@ -287,4 +287,12 @@ final class AuthService: @unchecked Sendable {
     func clearCachesForTemporaryIdentityChange() {
         clearAllCaches()
     }
+
+    /// A server switch is the same hard identity boundary as sign-out for
+    /// process-wide response and prefetch caches, even when both servers are
+    /// already authenticated and the router's auth state does not change.
+    @MainActor
+    func clearCachesForServerChange() {
+        clearAllCaches()
+    }
 }
