@@ -407,7 +407,11 @@ class ItemDetailViewModel {
             if contentId == detail?.contentId {
                 isWatched = played
             }
-            invalidateRelatedCaches(contentId: contentId)
+            invalidateRelatedCaches(
+                contentId: contentId,
+                seriesId: seriesContentId,
+                seasonNumber: selectedSeason?.seasonNumber
+            )
             if let seriesId = seriesContentId, let seasonNumber = selectedSeason?.seasonNumber {
                 await loadEpisodes(
                     seriesId: seriesId,
@@ -449,12 +453,16 @@ class ItemDetailViewModel {
     /// watched). Drops the cached payloads so the next visit fetches
     /// fresh — painted content keeps showing in the meantime via the
     /// existing `detail` binding.
-    private func invalidateRelatedCaches(contentId: String) {
+    private func invalidateRelatedCaches(
+        contentId: String,
+        seriesId: String? = nil,
+        seasonNumber: Int? = nil
+    ) {
         ResponseCache.shared.remove(CacheKey.itemDetail(contentId))
-        if let seriesId = detail?.seriesId {
+        if let seriesId = seriesId ?? detail?.seriesId {
             ResponseCache.shared.remove(CacheKey.itemDetail(seriesId))
             ResponseCache.shared.remove(CacheKey.itemSeasons(seriesId))
-            if let seasonNumber = detail?.seasonNumber {
+            if let seasonNumber = seasonNumber ?? detail?.seasonNumber {
                 ResponseCache.shared.remove(
                     CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
                 )
