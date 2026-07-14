@@ -112,6 +112,19 @@ struct ContentView: View {
                 #endif
             }
         }
+        .task(id: serverRegistry.activeServerId) {
+            // `activeServerId` changes before ServerRegistry finishes its
+            // async token retarget. Complete that boundary here before any
+            // server-scoped overlay request, then clear and rehydrate even
+            // when the destination remains `.authenticated`.
+            await TokenStore.shared.switchActiveServer(
+                serverId: serverRegistry.activeServerId ?? ""
+            )
+            overlayPrefs.clear()
+            if router.authState == .authenticated {
+                await overlayPrefs.hydrateIfNeeded()
+            }
+        }
         .onChange(of: scenePhase) { _, newPhase in
             #if os(iOS)
             switch newPhase {
