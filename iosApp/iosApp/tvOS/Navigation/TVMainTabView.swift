@@ -217,6 +217,17 @@ struct TVMainTabView: View {
                 }
             }
         }
+        .onChange(of: router.requestedTab) { _, requestedTab in
+            guard let requestedTab else { return }
+            router.requestedTab = nil
+
+            // tvOS owns a custom root selector rather than MainTabView's
+            // AppTab binding. Settings uses this one-shot request so its
+            // final Menu/Back exits to Home regardless of the prior root.
+            if requestedTab == .home {
+                selectRoot(.home)
+            }
+        }
         .onChange(of: navPrefs.showAudiobooks) {
             // Turning a tab off while parked on it would otherwise orphan the
             // page with no matching tab in the bar; snap back to Home.
