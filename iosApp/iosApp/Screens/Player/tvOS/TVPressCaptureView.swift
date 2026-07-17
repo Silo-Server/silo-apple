@@ -27,6 +27,11 @@ struct TVPressCaptureView: UIViewRepresentable {
     var onArrowHoldRepeat: (ArrowDirection) -> Void = { _ in }
     /// Release after a hold.
     var onArrowHoldEnd: (ArrowDirection) -> Void = { _ in }
+    /// Finger contact with the Siri Remote touch surface, without requiring
+    /// the clickpad/Select button to be pressed.
+    var onTouchSurfaceContactBegan: () -> Void = {}
+    var onTouchSurfaceContactEnded: () -> Void = {}
+    var onTouchSurfaceContactCancelled: () -> Void = {}
     /// Select (center button) press. Menu is intentionally not intercepted
     /// so SwiftUI's `.onExitCommand` chain continues to own it.
     var onSelect: () -> Void = {}
@@ -47,6 +52,9 @@ struct TVPressCaptureView: UIViewRepresentable {
         view.onArrowHoldBegin = onArrowHoldBegin
         view.onArrowHoldRepeat = onArrowHoldRepeat
         view.onArrowHoldEnd = onArrowHoldEnd
+        view.onTouchSurfaceContactBegan = onTouchSurfaceContactBegan
+        view.onTouchSurfaceContactEnded = onTouchSurfaceContactEnded
+        view.onTouchSurfaceContactCancelled = onTouchSurfaceContactCancelled
         view.onSelect = onSelect
     }
 }
@@ -344,6 +352,9 @@ final class PressCaptureUIView: UIView {
     var onArrowHoldBegin: (TVPressCaptureView.ArrowDirection) -> Void = { _ in }
     var onArrowHoldRepeat: (TVPressCaptureView.ArrowDirection) -> Void = { _ in }
     var onArrowHoldEnd: (TVPressCaptureView.ArrowDirection) -> Void = { _ in }
+    var onTouchSurfaceContactBegan: () -> Void = {}
+    var onTouchSurfaceContactEnded: () -> Void = {}
+    var onTouchSurfaceContactCancelled: () -> Void = {}
     var onSelect: () -> Void = {}
 
     /// Threshold between "tap" and "hold". 300 ms is snappy enough that a
@@ -362,8 +373,29 @@ final class PressCaptureUIView: UIView {
     /// simultaneous presses (rare on the Siri Remote, but possible on a
     /// Bluetooth keyboard) track independently.
     private var pending: [UIPress.PressType: Pending] = [:]
+    private var activeIndirectTouchIDs: Set<ObjectIdentifier> = []
 
     override var canBecomeFocused: Bool { true }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let indirectTouches = touches.filter { $0.type == .indirect }
+        let wasInactive = activeIndirectTouchIDs.isEmpty
+        activeIndirectTouchIDs.formUnion(indirectTouches.map(ObjectIdentifier.init))
+        if wasInactive, !activeIndirectTouchIDs.isEmpty {
+            onTouchSurfaceContactBegan()
+        }
+        super.touchesBegan(touches, with: event)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        finishIndirectTouches(touches, cancelled: false)
+        super.touchesEnded(touches, with: event)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        finishIndirectTouches(touches, cancelled: true)
+        super.touchesCancelled(touches, with: event)
+    }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
@@ -442,6 +474,21 @@ final class PressCaptureUIView: UIView {
             onArrowHoldEnd(entry.direction)
         } else {
             onArrowTap(entry.direction)
+        }
+    }
+
+    private func finishIndirectTouches(_ touches: Set<UITouch>, cancelled: Bool) {
+        let endedIDs = touches
+            .filter { $0.type == .indirect }
+            .map(ObjectIdentifier.init)
+        guard !endedIDs.isEmpty else { return }
+        activeIndirectTouchIDs.subtract(endedIDs)
+        if activeIndirectTouchIDs.isEmpty {
+            if cancelled {
+                onTouchSurfaceContactCancelled()
+            } else {
+                onTouchSurfaceContactEnded()
+            }
         }
     }
 
