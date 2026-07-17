@@ -3861,6 +3861,20 @@ class PlayerViewModel {
         scheduleHideControls()
     }
 
+    #if os(tvOS)
+    /// Native-player Select behavior for timeline entry: pause immediately
+    /// and keep the full transport mounted. When controls were hidden,
+    /// `TVPlayerControls` consumes a separate request token to focus and
+    /// activate its timeline scrubber.
+    func pauseForTimelineSelection() {
+        guard !isBackgroundSuspended, !isLoading, !hasReachedEndOfFile else { return }
+        if isPlaying {
+            activePlayer.pause()
+        }
+        pinControlsVisible()
+    }
+    #endif
+
     func switchQuality(_ qualityId: String) {
         guard !isBackgroundSuspended else { return }
         guard let plan = activeExecutionPlan else { return }
@@ -4181,12 +4195,13 @@ class PlayerViewModel {
     /// prior optimistic target) — the midpoint between that and the new
     /// target still correctly rejects drainage from either the current or
     /// the prior seek.
-    private func commitSeek(to target: Double, source: String = "unspecified") {
+    @discardableResult
+    private func commitSeek(to target: Double, source: String = "unspecified") -> Bool {
         Self.logger.info(
             "[CMP-SEEK] commit requested source=\(source, privacy: .public) target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public) route=\(self.activeRouteKind.label, privacy: .public) offset=\(self.playbackTimelineOffset, privacy: .public)"
         )
         if reloadServerBackedHLSForSeek(to: target) {
-            return
+            return true
         }
 
         hasReachedEndOfFile = false
@@ -4212,6 +4227,7 @@ class PlayerViewModel {
             self.seekTargetTime = nil
             self.seekFilterTimeoutTask = nil
         }
+        return false
     }
 
     private func reloadServerBackedHLSForSeek(to target: Double) -> Bool {
@@ -4655,7 +4671,7 @@ class PlayerViewModel {
         scrubPreviewTime = max(0, min(fraction, 1)) * duration
     }
 
-    func endScrub() {
+    func endScrub(resumePlayback: Bool = false) {
         guard !isBackgroundSuspended else { return }
         guard !hasReachedEndOfFile else { return }
         guard isScrubbing else { return }
@@ -4664,7 +4680,10 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-SEEK] scrub ended target=\(self.scrubPreviewTime, privacy: .public) current=\(self.currentTime, privacy: .public)"
         )
-        commitSeek(to: scrubPreviewTime, source: "scrub")
+        let reloadsPlaybackPipeline = commitSeek(to: scrubPreviewTime, source: "scrub")
+        if resumePlayback, !reloadsPlaybackPipeline {
+            activePlayer.play()
+        }
         scheduleHideControls()
     }
 

@@ -374,11 +374,13 @@ struct TVPlayerScrubber: View {
     /// of waiting for the debounce to fire.
     private func commitScrub() {
         if isTimelineScrubbing || viewModel.isScrubbing {
+            let resumesPlayback = isTimelineScrubbing
             stopTimelineAutoSeek()
             isTimelineScrubbing = false
-            viewModel.endScrub()
+            viewModel.endScrub(resumePlayback: resumesPlayback)
         } else {
             guard viewModel.duration > 0 else { return }
+            viewModel.pauseForTimelineSelection()
             let fraction = viewModel.currentTime / viewModel.duration
             viewModel.beginScrub(fraction: fraction)
             isTimelineScrubbing = true
