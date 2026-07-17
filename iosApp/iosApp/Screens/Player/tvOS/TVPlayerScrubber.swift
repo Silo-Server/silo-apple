@@ -12,6 +12,7 @@ import SwiftUI
 struct TVPlayerScrubber: View {
     let viewModel: PlayerViewModel
     @FocusState.Binding var isFocused: Bool
+    let onToggleTimeDisplayMode: () -> Void
     let onSelectInteraction: () -> Void
     let onMoveToTransport: () -> Void
     let onExitWhenIdle: () -> Void
@@ -118,6 +119,7 @@ struct TVPlayerScrubber: View {
                     // command.
                     TVPanCaptureView(
                         isActive: isFocused && isTimelineScrubbing && !isTimelineAutoSeeking,
+                        onSurfaceTap: onToggleTimeDisplayMode,
                         onPanBegan: {
                             isPanScrubbing = true
                             panEngaged = false

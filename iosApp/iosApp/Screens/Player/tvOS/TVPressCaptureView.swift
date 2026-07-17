@@ -205,6 +205,8 @@ final class TouchSurfaceContactGestureUIView: UIView, UIGestureRecognizerDelegat
 /// pan translation streams through the callbacks.
 struct TVPanCaptureView: UIViewRepresentable {
     var isActive: Bool
+    /// A stationary indirect touch while timeline selection is active.
+    var onSurfaceTap: () -> Void = {}
     var onPanBegan: () -> Void = {}
     /// Incremental horizontal translation (points) since the last change.
     var onPanChanged: (CGFloat) -> Void = { _ in }
@@ -222,6 +224,7 @@ struct TVPanCaptureView: UIViewRepresentable {
 
     private func apply(to view: PanCaptureUIView) {
         view.isActive = isActive
+        view.onSurfaceTap = onSurfaceTap
         view.onPanBegan = onPanBegan
         view.onPanChanged = onPanChanged
         view.onPanEnded = onPanEnded
@@ -230,12 +233,14 @@ struct TVPanCaptureView: UIViewRepresentable {
 
 final class PanCaptureUIView: UIView, UIGestureRecognizerDelegate {
     var isActive: Bool = false
+    var onSurfaceTap: () -> Void = {}
     var onPanBegan: () -> Void = {}
     var onPanChanged: (CGFloat) -> Void = { _ in }
     var onPanEnded: () -> Void = {}
 
     private weak var attachedWindow: UIWindow?
     private var panRecognizer: UIPanGestureRecognizer?
+    private var tapRecognizer: UITapGestureRecognizer?
     private var lastTranslationX: CGFloat = 0
 
     override func didMoveToWindow() {
@@ -263,14 +268,33 @@ final class PanCaptureUIView: UIView, UIGestureRecognizerDelegate {
         pan.delegate = self
         window.addGestureRecognizer(pan)
         panRecognizer = pan
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleSurfaceTap(_:)))
+        tap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        // A stationary contact toggles the clocks only after the pan has
+        // failed. Any real movement therefore remains exclusively a scrub.
+        tap.require(toFail: pan)
+        window.addGestureRecognizer(tap)
+        tapRecognizer = tap
     }
 
     private func detachRecognizer() {
         if let attachedWindow, let panRecognizer {
             attachedWindow.removeGestureRecognizer(panRecognizer)
         }
+        if let attachedWindow, let tapRecognizer {
+            attachedWindow.removeGestureRecognizer(tapRecognizer)
+        }
         panRecognizer = nil
+        tapRecognizer = nil
         attachedWindow = nil
+    }
+
+    @objc private func handleSurfaceTap(_ recognizer: UITapGestureRecognizer) {
+        guard isActive, recognizer.state == .ended else { return }
+        onSurfaceTap()
     }
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {

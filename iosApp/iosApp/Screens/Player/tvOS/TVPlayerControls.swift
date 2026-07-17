@@ -100,7 +100,7 @@ struct TVPlayerControls: View {
         }
         .background {
             TVTouchSurfaceContactGestureView(
-                isActive: viewModel.showControls && !isHUDPresented,
+                isActive: viewModel.showControls && !isHUDPresented && !isTimelineScrubbing,
                 onContactBegan: {
                     fullHUDContactCanToggle = true
                 },
@@ -430,6 +430,7 @@ struct TVPlayerControls: View {
             TVPlayerScrubber(
                 viewModel: viewModel,
                 isFocused: $isScrubberFocused,
+                onToggleTimeDisplayMode: onToggleTimeDisplayMode,
                 onSelectInteraction: {
                     fullHUDContactCanToggle = false
                 },
