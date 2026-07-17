@@ -30,6 +30,7 @@ struct TVPressCaptureView: UIViewRepresentable {
     var onArrowHoldEnd: (ArrowDirection) -> Void = { _ in }
     /// Finger contact with the Siri Remote touch surface, without requiring
     /// the clickpad/Select button to be pressed.
+    var onDirectionalPressBegan: () -> Void = {}
     var onTouchSurfaceContactBegan: () -> Void = {}
     var onTouchSurfaceContactEnded: () -> Void = {}
     var onTouchSurfaceContactCancelled: () -> Void = {}
@@ -53,6 +54,7 @@ struct TVPressCaptureView: UIViewRepresentable {
         view.onArrowHoldBegin = onArrowHoldBegin
         view.onArrowHoldRepeat = onArrowHoldRepeat
         view.onArrowHoldEnd = onArrowHoldEnd
+        view.onDirectionalPressBegan = onDirectionalPressBegan
         view.onTouchSurfaceContactBegan = onTouchSurfaceContactBegan
         view.onTouchSurfaceContactEnded = onTouchSurfaceContactEnded
         view.onTouchSurfaceContactCancelled = onTouchSurfaceContactCancelled
@@ -99,6 +101,7 @@ struct TVTouchSurfaceContactGestureView: UIViewRepresentable {
     var onContactBegan: () -> Void = {}
     var onContactEnded: () -> Void = {}
     var onContactCancelled: () -> Void = {}
+    var onDirectionalPressBegan: () -> Void = {}
 
     func makeUIView(context: Context) -> TouchSurfaceContactGestureUIView {
         let view = TouchSurfaceContactGestureUIView()
@@ -115,6 +118,7 @@ struct TVTouchSurfaceContactGestureView: UIViewRepresentable {
         view.onContactBegan = onContactBegan
         view.onContactEnded = onContactEnded
         view.onContactCancelled = onContactCancelled
+        view.onDirectionalPressBegan = onDirectionalPressBegan
     }
 }
 
@@ -123,9 +127,11 @@ final class TouchSurfaceContactGestureUIView: UIView, UIGestureRecognizerDelegat
     var onContactBegan: () -> Void = {}
     var onContactEnded: () -> Void = {}
     var onContactCancelled: () -> Void = {}
+    var onDirectionalPressBegan: () -> Void = {}
 
     private weak var attachedWindow: UIWindow?
     private var contactRecognizer: TouchSurfaceContactGestureRecognizer?
+    private var directionalPressRecognizers: [UIGestureRecognizer] = []
     private var isTrackingContact = false
 
     override func didMoveToWindow() {
@@ -154,6 +160,19 @@ final class TouchSurfaceContactGestureUIView: UIView, UIGestureRecognizerDelegat
         contact.delegate = self
         window.addGestureRecognizer(contact)
         contactRecognizer = contact
+
+        for pressType in [UIPress.PressType.leftArrow, .rightArrow, .upArrow, .downArrow] {
+            let press = NonPreventingDirectionalPressGestureRecognizer(
+                target: self,
+                action: #selector(handleDirectionalPress(_:))
+            )
+            press.allowedPressTypes = [NSNumber(value: pressType.rawValue)]
+            press.minimumPressDuration = 0
+            press.cancelsTouchesInView = false
+            press.delegate = self
+            window.addGestureRecognizer(press)
+            directionalPressRecognizers.append(press)
+        }
     }
 
     private func detachRecognizer() {
@@ -164,8 +183,19 @@ final class TouchSurfaceContactGestureUIView: UIView, UIGestureRecognizerDelegat
         if let attachedWindow, let contactRecognizer {
             attachedWindow.removeGestureRecognizer(contactRecognizer)
         }
+        if let attachedWindow {
+            for recognizer in directionalPressRecognizers {
+                attachedWindow.removeGestureRecognizer(recognizer)
+            }
+        }
+        directionalPressRecognizers.removeAll()
         contactRecognizer = nil
         attachedWindow = nil
+    }
+
+    @objc private func handleDirectionalPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard isActive, recognizer.state == .began else { return }
+        onDirectionalPressBegan()
     }
 
     @objc private func handleContact(_ recognizer: TouchSurfaceContactGestureRecognizer) {
@@ -276,6 +306,19 @@ final class TouchSurfaceContactGestureRecognizer: UIGestureRecognizer {
             activeTouchIDs.remove(id)
             initialLocations.removeValue(forKey: id)
         }
+    }
+}
+
+/// Observes a directional click at press-down without participating in
+/// gesture arbitration. The full HUD uses it only to disqualify the current
+/// light-touch contact from toggling the clock labels on release.
+final class NonPreventingDirectionalPressGestureRecognizer: UILongPressGestureRecognizer {
+    override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool {
+        false
+    }
+
+    override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool {
+        false
     }
 }
 
@@ -543,6 +586,7 @@ final class PressCaptureUIView: UIView {
     var onArrowHoldBegin: (TVPressCaptureView.ArrowDirection) -> Void = { _ in }
     var onArrowHoldRepeat: (TVPressCaptureView.ArrowDirection) -> Void = { _ in }
     var onArrowHoldEnd: (TVPressCaptureView.ArrowDirection) -> Void = { _ in }
+    var onDirectionalPressBegan: () -> Void = {}
     var onTouchSurfaceContactBegan: () -> Void = {}
     var onTouchSurfaceContactEnded: () -> Void = {}
     var onTouchSurfaceContactCancelled: () -> Void = {}
@@ -594,6 +638,7 @@ final class PressCaptureUIView: UIView {
             if let direction = Self.arrowDirection(from: press.type),
                capturedDirections.contains(direction) {
                 handled = true
+                onDirectionalPressBegan()
                 startArrow(type: press.type, direction: direction)
             } else if press.type == .select {
                 handled = true

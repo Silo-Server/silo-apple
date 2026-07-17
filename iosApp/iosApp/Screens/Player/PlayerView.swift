@@ -136,6 +136,9 @@ struct PlayerView: View {
                                 case .up, .down: break
                                 }
                             },
+                            onDirectionalPressBegan: {
+                                timelinePreviewContactCanToggle = false
+                            },
                             onTouchSurfaceContactBegan: {
                                 handleTimelinePreviewContactBegan()
                             },
