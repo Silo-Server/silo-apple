@@ -1,6 +1,7 @@
 #if os(tvOS)
 import SwiftUI
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 
 /// Bridges the Siri Remote's press lifecycle into SwiftUI. `.onMoveCommand`
 /// only exposes single press events with no way to distinguish a held
@@ -89,10 +90,10 @@ struct TVDirectionalPressGestureView: UIViewRepresentable {
     }
 }
 
-/// Window-level light-touch bridge for the Siri Remote surface. It observes
-/// indirect contact without claiming SwiftUI focus or cancelling the
-/// scrubber's own Select and pan gestures. Moving beyond UIKit's normal
-/// long-press tolerance cancels the contact, so swipes do not toggle labels.
+/// Window-level light-touch bridge for the Siri Remote surface. This uses a
+/// custom recognizer so full-HUD contact follows the same raw indirect-touch
+/// lifecycle as `PressCaptureUIView`, rather than approximating contact with
+/// tap or long-press semantics that tvOS may arbitrate away.
 struct TVTouchSurfaceContactGestureView: UIViewRepresentable {
     var isActive: Bool
     var onContactBegan: () -> Void = {}
@@ -124,7 +125,7 @@ final class TouchSurfaceContactGestureUIView: UIView, UIGestureRecognizerDelegat
     var onContactCancelled: () -> Void = {}
 
     private weak var attachedWindow: UIWindow?
-    private var contactRecognizer: UILongPressGestureRecognizer?
+    private var contactRecognizer: TouchSurfaceContactGestureRecognizer?
     private var isTrackingContact = false
 
     override func didMoveToWindow() {
@@ -145,10 +146,11 @@ final class TouchSurfaceContactGestureUIView: UIView, UIGestureRecognizerDelegat
         detachRecognizer()
         attachedWindow = window
 
-        let contact = UILongPressGestureRecognizer(target: self, action: #selector(handleContact(_:)))
-        contact.minimumPressDuration = 0
+        let contact = TouchSurfaceContactGestureRecognizer(target: self, action: #selector(handleContact(_:)))
         contact.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
         contact.cancelsTouchesInView = false
+        contact.delaysTouchesBegan = false
+        contact.delaysTouchesEnded = false
         contact.delegate = self
         window.addGestureRecognizer(contact)
         contactRecognizer = contact
@@ -166,7 +168,7 @@ final class TouchSurfaceContactGestureUIView: UIView, UIGestureRecognizerDelegat
         attachedWindow = nil
     }
 
-    @objc private func handleContact(_ recognizer: UILongPressGestureRecognizer) {
+    @objc private func handleContact(_ recognizer: TouchSurfaceContactGestureRecognizer) {
         switch recognizer.state {
         case .began:
             guard isActive else { return }
@@ -197,6 +199,86 @@ final class TouchSurfaceContactGestureUIView: UIView, UIGestureRecognizerDelegat
     }
 }
 
+/// Continuous raw-contact recognizer for the Siri Remote touch surface. It
+/// recognizes immediately on indirect touch-down, ends on lift, and cancels
+/// once movement becomes an intentional swipe. It never prevents or can be
+/// prevented by the scrubber's pan/focus recognizers, so observing a tap has
+/// no effect on existing remote behavior.
+final class TouchSurfaceContactGestureRecognizer: UIGestureRecognizer {
+    private static let movementTolerance: CGFloat = 12
+
+    private var initialLocations: [ObjectIdentifier: CGPoint] = [:]
+    private var activeTouchIDs: Set<ObjectIdentifier> = []
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        let indirectTouches = touches.filter { $0.type == .indirect }
+        guard !indirectTouches.isEmpty else { return }
+
+        let wasInactive = activeTouchIDs.isEmpty
+        for touch in indirectTouches {
+            let id = ObjectIdentifier(touch)
+            activeTouchIDs.insert(id)
+            initialLocations[id] = touch.location(in: view)
+        }
+
+        if wasInactive {
+            state = .began
+        }
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard state == .began || state == .changed else { return }
+
+        for touch in touches where touch.type == .indirect {
+            let id = ObjectIdentifier(touch)
+            guard let origin = initialLocations[id] else { continue }
+            let location = touch.location(in: view)
+            if hypot(location.x - origin.x, location.y - origin.y) > Self.movementTolerance {
+                state = .cancelled
+                return
+            }
+        }
+
+        state = .changed
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        remove(touches)
+        if activeTouchIDs.isEmpty, state == .began || state == .changed {
+            state = .ended
+        }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        remove(touches)
+        if state == .began || state == .changed {
+            state = .cancelled
+        }
+    }
+
+    override func reset() {
+        initialLocations.removeAll()
+        activeTouchIDs.removeAll()
+        super.reset()
+    }
+
+    override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool {
+        false
+    }
+
+    override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool {
+        false
+    }
+
+    private func remove(_ touches: Set<UITouch>) {
+        for touch in touches where touch.type == .indirect {
+            let id = ObjectIdentifier(touch)
+            activeTouchIDs.remove(id)
+            initialLocations.removeValue(forKey: id)
+        }
+    }
+}
+
 /// Window-level trackpad pan bridge. SwiftUI on tvOS only surfaces the Siri
 /// Remote touch surface as discrete `.onMoveCommand` steps, so continuous
 /// drag-the-playhead scrubbing needs a `UIPanGestureRecognizer` reading the
@@ -205,8 +287,6 @@ final class TouchSurfaceContactGestureUIView: UIView, UIGestureRecognizerDelegat
 /// pan translation streams through the callbacks.
 struct TVPanCaptureView: UIViewRepresentable {
     var isActive: Bool
-    /// A stationary indirect touch while timeline selection is active.
-    var onSurfaceTap: () -> Void = {}
     var onPanBegan: () -> Void = {}
     /// Incremental horizontal translation (points) since the last change.
     var onPanChanged: (CGFloat) -> Void = { _ in }
@@ -224,7 +304,6 @@ struct TVPanCaptureView: UIViewRepresentable {
 
     private func apply(to view: PanCaptureUIView) {
         view.isActive = isActive
-        view.onSurfaceTap = onSurfaceTap
         view.onPanBegan = onPanBegan
         view.onPanChanged = onPanChanged
         view.onPanEnded = onPanEnded
@@ -233,14 +312,12 @@ struct TVPanCaptureView: UIViewRepresentable {
 
 final class PanCaptureUIView: UIView, UIGestureRecognizerDelegate {
     var isActive: Bool = false
-    var onSurfaceTap: () -> Void = {}
     var onPanBegan: () -> Void = {}
     var onPanChanged: (CGFloat) -> Void = { _ in }
     var onPanEnded: () -> Void = {}
 
     private weak var attachedWindow: UIWindow?
     private var panRecognizer: UIPanGestureRecognizer?
-    private var tapRecognizer: UITapGestureRecognizer?
     private var lastTranslationX: CGFloat = 0
 
     override func didMoveToWindow() {
@@ -265,36 +342,18 @@ final class PanCaptureUIView: UIView, UIGestureRecognizerDelegate {
 
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
         pan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
+        pan.cancelsTouchesInView = false
         pan.delegate = self
         window.addGestureRecognizer(pan)
         panRecognizer = pan
-
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleSurfaceTap(_:)))
-        tap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
-        tap.cancelsTouchesInView = false
-        tap.delegate = self
-        // A stationary contact toggles the clocks only after the pan has
-        // failed. Any real movement therefore remains exclusively a scrub.
-        tap.require(toFail: pan)
-        window.addGestureRecognizer(tap)
-        tapRecognizer = tap
     }
 
     private func detachRecognizer() {
         if let attachedWindow, let panRecognizer {
             attachedWindow.removeGestureRecognizer(panRecognizer)
         }
-        if let attachedWindow, let tapRecognizer {
-            attachedWindow.removeGestureRecognizer(tapRecognizer)
-        }
         panRecognizer = nil
-        tapRecognizer = nil
         attachedWindow = nil
-    }
-
-    @objc private func handleSurfaceTap(_ recognizer: UITapGestureRecognizer) {
-        guard isActive, recognizer.state == .ended else { return }
-        onSurfaceTap()
     }
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {

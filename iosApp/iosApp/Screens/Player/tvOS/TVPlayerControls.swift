@@ -100,7 +100,10 @@ struct TVPlayerControls: View {
         }
         .background {
             TVTouchSurfaceContactGestureView(
-                isActive: viewModel.showControls && !isHUDPresented && !isTimelineScrubbing,
+                // Keep the raw contact observer active in both normal HUD
+                // and timeline-selection states. Its simultaneous-recognition
+                // delegate lets an actual pan continue to own scrubbing.
+                isActive: viewModel.showControls && !isHUDPresented,
                 onContactBegan: {
                     fullHUDContactCanToggle = true
                 },
@@ -430,7 +433,6 @@ struct TVPlayerControls: View {
             TVPlayerScrubber(
                 viewModel: viewModel,
                 isFocused: $isScrubberFocused,
-                onToggleTimeDisplayMode: onToggleTimeDisplayMode,
                 onSelectInteraction: {
                     fullHUDContactCanToggle = false
                 },
