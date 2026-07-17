@@ -49,6 +49,9 @@ struct TVPlayerScrubber: View {
     @State private var isPanScrubbing = false
     @State private var panEngaged = false
     @State private var panAccumulated: CGFloat = 0
+    /// Distinguishes entering/exiting timeline mode from a real seek. A
+    /// Select-only round trip should resume the paused pipeline in place.
+    @State private var hasTimelineSelectionMoved = false
 
     // Visual metrics pulled out as compile-time constants so layout doesn't
     // re-evaluate them each pass. Chapter ticks rely on `trackHeight` so the
@@ -142,6 +145,11 @@ struct TVPlayerScrubber: View {
                     } else {
                         viewModel.endScrub()
                     }
+                }
+            }
+            .onChange(of: isTimelineScrubbing) { _, scrubbing in
+                if scrubbing {
+                    hasTimelineSelectionMoved = false
                 }
             }
             .onMoveCommand(perform: handleMove)
@@ -377,9 +385,10 @@ struct TVPlayerScrubber: View {
         onSelectInteraction()
         if isTimelineScrubbing || viewModel.isScrubbing {
             let resumesPlayback = isTimelineScrubbing
+            let shouldSeek = !isTimelineScrubbing || hasTimelineSelectionMoved
             stopTimelineAutoSeek()
             isTimelineScrubbing = false
-            viewModel.endScrub(resumePlayback: resumesPlayback)
+            viewModel.endScrub(resumePlayback: resumesPlayback, shouldSeek: shouldSeek)
         } else {
             guard viewModel.duration > 0 else { return }
             viewModel.pauseForTimelineSelection()
@@ -402,6 +411,9 @@ struct TVPlayerScrubber: View {
         let base = viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
         let deltaSeconds = Double(deltaX / Self.panPointsForFullTimeline) * viewModel.duration
         let target = min(max(base + deltaSeconds, 0), viewModel.duration)
+        if target != base {
+            hasTimelineSelectionMoved = true
+        }
         viewModel.updateScrub(fraction: target / viewModel.duration)
     }
 
@@ -441,6 +453,9 @@ struct TVPlayerScrubber: View {
     private func stepTimeline(by delta: Double) {
         let base = viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
         let target = min(max(base + delta, 0), viewModel.duration)
+        if target != base {
+            hasTimelineSelectionMoved = true
+        }
         viewModel.updateScrub(fraction: target / viewModel.duration)
     }
 

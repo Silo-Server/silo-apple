@@ -4671,16 +4671,30 @@ class PlayerViewModel {
         scrubPreviewTime = max(0, min(fraction, 1)) * duration
     }
 
-    func endScrub(resumePlayback: Bool = false) {
+    func endScrub(resumePlayback: Bool = false, shouldSeek: Bool = true) {
         guard !isBackgroundSuspended else { return }
         guard !hasReachedEndOfFile else { return }
         guard isScrubbing else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
-        Self.logger.info(
-            "[CMP-SEEK] scrub ended target=\(self.scrubPreviewTime, privacy: .public) current=\(self.currentTime, privacy: .public)"
-        )
-        let reloadsPlaybackPipeline = commitSeek(to: scrubPreviewTime, source: "scrub")
+        let reloadsPlaybackPipeline: Bool
+        if shouldSeek {
+            Self.logger.info(
+                "[CMP-SEEK] scrub ended target=\(self.scrubPreviewTime, privacy: .public) current=\(self.currentTime, privacy: .public)"
+            )
+            reloadsPlaybackPipeline = commitSeek(to: scrubPreviewTime, source: "scrub")
+        } else {
+            // Select entered and exited timeline mode without moving the
+            // playhead. Keep the backend parked at its exact paused position
+            // instead of issuing a redundant seek that can snap to a nearby
+            // keyframe and briefly rebuffer.
+            isScrubbing = false
+            scrubPreviewTime = currentTime
+            reloadsPlaybackPipeline = false
+            Self.logger.info(
+                "[CMP-SEEK] scrub ended without movement; resuming without seek at current=\(self.currentTime, privacy: .public)"
+            )
+        }
         if resumePlayback, !reloadsPlaybackPipeline {
             activePlayer.play()
         }
