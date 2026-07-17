@@ -422,6 +422,11 @@ class PlayerViewModel {
     var nextUpCountdownSeconds: Int?
     var nextUpCountdownTotalSeconds: Int = 10
     var nextUpScreenVideoEnded = false
+    private enum NextUpPresentationSource {
+        case automatic
+        case hud
+    }
+    private var nextUpPresentationSource: NextUpPresentationSource = .automatic
     private var serverProvidedChapters: [PlayerChapterInfo] = []
 
     /// Secondary metadata surfaced to the player overlay. Populated from
@@ -967,6 +972,7 @@ class PlayerViewModel {
     private static let serverOutageRecoveryMaxDelay: TimeInterval = 8
     private static let serverOutageRecoveryTimeout: TimeInterval = 90
     private static let nextUpCountdownDefaultSeconds = 10
+    private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let introAutoSkipCountdownDefaultSeconds = 5
     static var nextUpCountdownTotal: Int { nextUpCountdownDefaultSeconds }
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -1659,7 +1665,7 @@ class PlayerViewModel {
             return
         }
         guard !nextUpPromptDismissed else { return }
-        beginNextUpPostroll(videoEnded: false)
+        beginNextUpPostroll(videoEnded: false, source: .automatic)
     }
 
     private func shouldShowNextUpBeforeEnd(at movieTime: Double) -> Bool {
@@ -1673,11 +1679,18 @@ class PlayerViewModel {
 
     func showNextUpNow() {
         guard canShowNextUpScreen else { return }
-        beginNextUpPostroll(videoEnded: false)
+        beginNextUpPostroll(videoEnded: false, source: .hud)
     }
 
-    private func beginNextUpPostroll(videoEnded: Bool) {
+    private func beginNextUpPostroll(
+        videoEnded: Bool,
+        source: NextUpPresentationSource = .automatic
+    ) {
+        let wasAlreadyShowing = showNextUpScreen
         let wasShowingBeforeEnd = showNextUpScreen && !nextUpScreenVideoEnded
+        if !wasAlreadyShowing {
+            nextUpPresentationSource = source
+        }
         showNextUpScreen = true
         nextUpScreenVideoEnded = videoEnded
         showControls = false
@@ -1740,7 +1753,15 @@ class PlayerViewModel {
         }
 
         let remaining = max(0, duration - movieTime)
-        nextUpCountdownTotalSeconds = max(1, settings.nextUpPromptSeconds)
+        if nextUpPresentationSource == .hud,
+           remaining >= Self.nextUpHUDCountdownThresholdSeconds {
+            nextUpCountdownSeconds = nil
+            nextUpCountdownTotalSeconds = Int(Self.nextUpHUDCountdownThresholdSeconds)
+            return
+        }
+        nextUpCountdownTotalSeconds = nextUpPresentationSource == .hud
+            ? Int(Self.nextUpHUDCountdownThresholdSeconds)
+            : max(1, settings.nextUpPromptSeconds)
         nextUpCountdownSeconds = max(0, Int(ceil(remaining)))
         if remaining <= 0.35 {
             playNextEpisodeNow()
@@ -1767,12 +1788,38 @@ class PlayerViewModel {
         cancelNextUpCountdown()
     }
 
-    func keepWatchingCurrentEpisode() {
+    @discardableResult
+    func keepWatchingCurrentEpisode() -> Bool {
+        // An autoplay load failure may restore the postroll after disposing
+        // the old playback pipeline. There is no current episode to resume in
+        // that state, so let the shell fall back to closing the player.
+        guard !activePlayer.isNone else { return false }
+
+        let shouldResumeAfterEnd = nextUpScreenVideoEnded || hasReachedEndOfFile
         nextUpAutoplayCancelled = true
         nextUpPromptDismissed = true
         showNextUpScreen = false
         nextUpScreenVideoEnded = false
         cancelNextUpCountdown()
+
+        if shouldResumeAfterEnd,
+           duration.isFinite,
+           duration > 0,
+           !activePlayer.isNone {
+            // Returning from the terminal postroll needs a real playable
+            // position; resuming at exact EOF would immediately present the
+            // postroll again. Replay a short tail of the current episode.
+            hasReachedEndOfFile = false
+            let target = max(0, duration - 10)
+            let reloadsPlaybackPipeline = commitSeek(to: target, source: "nextUpBack")
+            if !reloadsPlaybackPipeline {
+                activePlayer.play()
+            }
+        } else if !isPlaying {
+            activePlayer.play()
+        }
+        scheduleHideControls()
+        return true
     }
 
     func setNextUpAutoPlayEnabled(_ enabled: Bool) {
@@ -2823,6 +2870,7 @@ class PlayerViewModel {
         nextUpCountdownSeconds = nil
         nextUpCountdownTotalSeconds = Self.nextUpCountdownDefaultSeconds
         nextUpScreenVideoEnded = false
+        nextUpPresentationSource = .automatic
         nextUpAutoplayCancelled = false
         nextUpPromptDismissed = false
         audioTracks = []

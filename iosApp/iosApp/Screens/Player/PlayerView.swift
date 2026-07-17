@@ -76,7 +76,11 @@ struct PlayerView: View {
                 if viewModel.showNextUpScreen {
                     PlayerNextUpScreen(
                         viewModel: viewModel,
-                        onBack: { dismissPlayer() },
+                        onBack: {
+                            if !viewModel.keepWatchingCurrentEpisode() {
+                                dismissPlayer()
+                            }
+                        },
                         miniPlayer: { playerSurface(ignoresSafeArea: false) }
                     )
                     .transition(.opacity)
@@ -245,7 +249,9 @@ struct PlayerView: View {
         // it; this fallback keeps the user from getting stuck.
         .onExitCommand {
             if viewModel.showNextUpScreen {
-                dismissPlayer()
+                if !viewModel.keepWatchingCurrentEpisode() {
+                    dismissPlayer()
+                }
             } else if viewModel.isHoldSeeking {
                 viewModel.cancelHoldSeek()
             } else if viewModel.isBackgroundSuspended {
@@ -756,7 +762,9 @@ private struct PlayerNextUpScreen<MiniPlayer: View>: View {
     private func actionRow(hasNextEpisode: Bool) -> some View {
         #if os(tvOS)
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 24) {
+            // Reserve enough room for the primary pill's focused scale and
+            // outer focus outline so the countdown never overlaps it.
+            HStack(spacing: 56) {
                 if hasNextEpisode {
                     Button(action: { viewModel.playNextEpisodeNow() }) {
                         HStack(spacing: 18) {
