@@ -99,7 +99,8 @@ struct PlayerView: View {
                     //
                     // Two modes:
                     //   • Not in seek mode: Tap Left/Right = quick skip,
-                    //     Tap Up/Down = open player menus, Tap Select = pause and
+                    //     Tap Down = open the player menu, Tap Up = reveal the
+                    //     full transport HUD, Tap Select = pause and
                     //     enter the focused timeline,
                     //     Hold Left/Right = enter seek mode.
                     //   • In seek mode: Tap Left/Right = adjust rate along
@@ -121,7 +122,7 @@ struct PlayerView: View {
                                     case .left:  viewModel.skipBackward()
                                     case .right: viewModel.skipForward()
                                     case .down:  viewModel.openSettingsHUD()
-                                    case .up:    viewModel.openPlaybackHUD()
+                                    case .up:    viewModel.revealControls()
                                     }
                                 }
                             },
