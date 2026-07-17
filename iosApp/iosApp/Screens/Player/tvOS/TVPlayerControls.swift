@@ -41,6 +41,10 @@ struct TVPlayerControls: View {
     /// puck). Held here so the transport cluster can leave the focus graph
     /// while the scrub is modal.
     @State private var isTimelineScrubbing: Bool = false
+    /// Tracks whether the current explicit timeline session interrupted
+    /// active playback. Exiting a timeline opened from an already-paused
+    /// HUD must leave playback paused, while Select from playing resumes.
+    @State private var resumePlaybackAfterTimelineSelection = false
     /// True while the scrubber owns focus. The transport row leaves the
     /// focus graph for that duration so a Down press has no native target:
     /// the engine otherwise moves focus geometrically — to whichever button
@@ -160,6 +164,9 @@ struct TVPlayerControls: View {
         .onChange(of: timelineSelectionRequest) { _, request in
             guard request != nil else { return }
             fullHUDContactCanToggle = false
+            // PlayerView only issues this request from its playing Select
+            // path, immediately after pausing the backend.
+            resumePlaybackAfterTimelineSelection = true
             enterTimelineSelection()
         }
         .onChange(of: viewModel.showControls) { _, _ in
@@ -459,6 +466,7 @@ struct TVPlayerControls: View {
                     }
                 },
                 isTimelineScrubbing: $isTimelineScrubbing,
+                resumePlaybackAfterTimelineSelection: $resumePlaybackAfterTimelineSelection,
                 cancelOnBlur: cancelPendingScrub
             )
             timeRow
@@ -576,6 +584,7 @@ struct TVPlayerControls: View {
 
         guard viewModel.duration > 0 else {
             isTimelineScrubbing = false
+            resumePlaybackAfterTimelineSelection = false
             isScrubberFocused = true
             return
         }

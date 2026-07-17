@@ -22,6 +22,11 @@ struct TVPlayerScrubber: View {
     /// natively, before `onMoveCommand` ever fires.
     @Binding var isTimelineScrubbing: Bool
 
+    /// Whether this explicit timeline session paused active playback and
+    /// should therefore resume it when committed. Kept by the shell so an
+    /// externally-requested session can carry its pre-pause state in.
+    @Binding var resumePlaybackAfterTimelineSelection: Bool
+
     /// When true, blurring the scrubber cancels the in-progress scrub rather
     /// than committing it. The shell flips this on before opening a sheet so
     /// the focus-lost path doesn't turn into an accidental seek.
@@ -139,6 +144,7 @@ struct TVPlayerScrubber: View {
                     if isTimelineScrubbing {
                         stopTimelineAutoSeek()
                         isTimelineScrubbing = false
+                        resumePlaybackAfterTimelineSelection = false
                         viewModel.cancelScrub()
                     } else if cancelOnBlur {
                         viewModel.cancelScrub()
@@ -336,6 +342,7 @@ struct TVPlayerScrubber: View {
     private func beginTimelineHoldIfNeeded() {
         guard !isTimelineScrubbing else { return }
         guard viewModel.duration > 0 else { return }
+        resumePlaybackAfterTimelineSelection = viewModel.isPlaying
         let base = viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
         viewModel.beginScrub(fraction: min(max(base / viewModel.duration, 0), 1))
         isTimelineScrubbing = true
@@ -376,6 +383,7 @@ struct TVPlayerScrubber: View {
         guard isTimelineScrubbing || viewModel.isScrubbing else { return }
         stopTimelineAutoSeek()
         isTimelineScrubbing = false
+        resumePlaybackAfterTimelineSelection = false
         viewModel.cancelScrub()
     }
 
@@ -384,13 +392,15 @@ struct TVPlayerScrubber: View {
     private func commitScrub() {
         onSelectInteraction()
         if isTimelineScrubbing || viewModel.isScrubbing {
-            let resumesPlayback = isTimelineScrubbing
+            let resumesPlayback = isTimelineScrubbing && resumePlaybackAfterTimelineSelection
             let shouldSeek = !isTimelineScrubbing || hasTimelineSelectionMoved
             stopTimelineAutoSeek()
             isTimelineScrubbing = false
+            resumePlaybackAfterTimelineSelection = false
             viewModel.endScrub(resumePlayback: resumesPlayback, shouldSeek: shouldSeek)
         } else {
             guard viewModel.duration > 0 else { return }
+            resumePlaybackAfterTimelineSelection = viewModel.isPlaying
             viewModel.pauseForTimelineSelection()
             let fraction = viewModel.currentTime / viewModel.duration
             viewModel.beginScrub(fraction: fraction)
