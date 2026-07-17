@@ -22,6 +22,7 @@ struct TVPlayerControls: View {
     let showsTimelinePreview: Bool
     let timeDisplayMode: TVPlayerTimeDisplayMode
     let timelineSelectionRequest: UUID?
+    let onToggleTimeDisplayMode: () -> Void
     let onDismiss: () -> Void
 
     @Environment(\.scenePhase) private var scenePhase
@@ -50,6 +51,10 @@ struct TVPlayerControls: View {
     /// any other reason (intro skip, HUD) so direction moves into the row
     /// keep working from elsewhere.
     @State private var trapsTransportFocus = false
+    /// A touch-surface contact can toggle the full HUD's clock labels only
+    /// if it ends as a light touch. Select and drag interactions clear this
+    /// candidate so their existing transport behavior remains exclusive.
+    @State private var fullHUDContactCanToggle = false
 
     // Focus states. SwiftUI's focus engine only holds focus on one
     // focusable at a time, so selecting one of these implicitly clears the
@@ -93,6 +98,23 @@ struct TVPlayerControls: View {
                 .transition(.opacity)
             }
         }
+        .background {
+            TVTouchSurfaceContactGestureView(
+                isActive: viewModel.showControls && !isHUDPresented,
+                onContactBegan: {
+                    fullHUDContactCanToggle = true
+                },
+                onContactEnded: {
+                    guard fullHUDContactCanToggle else { return }
+                    fullHUDContactCanToggle = false
+                    onToggleTimeDisplayMode()
+                },
+                onContactCancelled: {
+                    fullHUDContactCanToggle = false
+                }
+            )
+            .frame(width: 1, height: 1)
+        }
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isHUDPresented)
         // Menu / exit handling intentionally lives at the `PlayerView` level
         // rather than here. That higher handler reads `viewModel.isHUDPresented`
@@ -100,6 +122,7 @@ struct TVPlayerControls: View {
         // the HUD's tab pill — adding a handler here would consume Menu while
         // the HUD is closed and break the "dismiss controls first" path.
         .onChange(of: isHUDPresented) { _, presented in
+            fullHUDContactCanToggle = false
             if !presented {
                 cancelPendingScrub = false
                 focusedHUDTab = nil
@@ -133,7 +156,11 @@ struct TVPlayerControls: View {
         }
         .onChange(of: timelineSelectionRequest) { _, request in
             guard request != nil else { return }
+            fullHUDContactCanToggle = false
             enterTimelineSelection()
+        }
+        .onChange(of: viewModel.showControls) { _, _ in
+            fullHUDContactCanToggle = false
         }
         // Re-arm the auto-hide whenever focus moves between transport controls,
         // so navigating the overlay doesn't let the fixed 5s timer hide it (and
@@ -403,6 +430,9 @@ struct TVPlayerControls: View {
             TVPlayerScrubber(
                 viewModel: viewModel,
                 isFocused: $isScrubberFocused,
+                onSelectInteraction: {
+                    fullHUDContactCanToggle = false
+                },
                 onMoveToTransport: {
                     // This fires only because the trap kept the transport row
                     // out of the focus graph (no native Down target). Restore

@@ -162,6 +162,11 @@ struct PlayerView: View {
                             showsTimelinePreview: isTimelinePreviewVisible,
                             timeDisplayMode: timelineTimeDisplayMode,
                             timelineSelectionRequest: timelineSelectionRequest,
+                            onToggleTimeDisplayMode: {
+                                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+                                    timelineTimeDisplayMode.toggle()
+                                }
+                            },
                             onDismiss: { dismissPlayer() }
                         )
                     }
@@ -272,6 +277,8 @@ struct PlayerView: View {
         .onChange(of: viewModel.showControls) { _, visible in
             if visible {
                 hideTimelinePreview()
+            } else {
+                timelineTimeDisplayMode = .elapsedRemaining
             }
         }
         #endif

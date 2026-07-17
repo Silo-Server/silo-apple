@@ -89,6 +89,114 @@ struct TVDirectionalPressGestureView: UIViewRepresentable {
     }
 }
 
+/// Window-level light-touch bridge for the Siri Remote surface. It observes
+/// indirect contact without claiming SwiftUI focus or cancelling the
+/// scrubber's own Select and pan gestures. Moving beyond UIKit's normal
+/// long-press tolerance cancels the contact, so swipes do not toggle labels.
+struct TVTouchSurfaceContactGestureView: UIViewRepresentable {
+    var isActive: Bool
+    var onContactBegan: () -> Void = {}
+    var onContactEnded: () -> Void = {}
+    var onContactCancelled: () -> Void = {}
+
+    func makeUIView(context: Context) -> TouchSurfaceContactGestureUIView {
+        let view = TouchSurfaceContactGestureUIView()
+        apply(to: view)
+        return view
+    }
+
+    func updateUIView(_ uiView: TouchSurfaceContactGestureUIView, context: Context) {
+        apply(to: uiView)
+    }
+
+    private func apply(to view: TouchSurfaceContactGestureUIView) {
+        view.isActive = isActive
+        view.onContactBegan = onContactBegan
+        view.onContactEnded = onContactEnded
+        view.onContactCancelled = onContactCancelled
+    }
+}
+
+final class TouchSurfaceContactGestureUIView: UIView, UIGestureRecognizerDelegate {
+    var isActive: Bool = false
+    var onContactBegan: () -> Void = {}
+    var onContactEnded: () -> Void = {}
+    var onContactCancelled: () -> Void = {}
+
+    private weak var attachedWindow: UIWindow?
+    private var contactRecognizer: UILongPressGestureRecognizer?
+    private var isTrackingContact = false
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            detachRecognizer()
+        } else {
+            attachRecognizerIfNeeded()
+        }
+    }
+
+    deinit {
+        detachRecognizer()
+    }
+
+    private func attachRecognizerIfNeeded() {
+        guard let window, attachedWindow !== window else { return }
+        detachRecognizer()
+        attachedWindow = window
+
+        let contact = UILongPressGestureRecognizer(target: self, action: #selector(handleContact(_:)))
+        contact.minimumPressDuration = 0
+        contact.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
+        contact.cancelsTouchesInView = false
+        contact.delegate = self
+        window.addGestureRecognizer(contact)
+        contactRecognizer = contact
+    }
+
+    private func detachRecognizer() {
+        if isTrackingContact {
+            isTrackingContact = false
+            onContactCancelled()
+        }
+        if let attachedWindow, let contactRecognizer {
+            attachedWindow.removeGestureRecognizer(contactRecognizer)
+        }
+        contactRecognizer = nil
+        attachedWindow = nil
+    }
+
+    @objc private func handleContact(_ recognizer: UILongPressGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            guard isActive else { return }
+            isTrackingContact = true
+            onContactBegan()
+        case .ended:
+            guard isTrackingContact else { return }
+            isTrackingContact = false
+            onContactEnded()
+        case .cancelled, .failed:
+            guard isTrackingContact else { return }
+            isTrackingContact = false
+            onContactCancelled()
+        default:
+            break
+        }
+    }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        isActive
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        true
+    }
+}
+
 /// Window-level trackpad pan bridge. SwiftUI on tvOS only surfaces the Siri
 /// Remote touch surface as discrete `.onMoveCommand` steps, so continuous
 /// drag-the-playhead scrubbing needs a `UIPanGestureRecognizer` reading the

@@ -12,6 +12,7 @@ import SwiftUI
 struct TVPlayerScrubber: View {
     let viewModel: PlayerViewModel
     @FocusState.Binding var isFocused: Bool
+    let onSelectInteraction: () -> Void
     let onMoveToTransport: () -> Void
     let onExitWhenIdle: () -> Void
 
@@ -373,6 +374,7 @@ struct TVPlayerScrubber: View {
     /// Select on an in-flight scrub commits the preview immediately instead
     /// of waiting for the debounce to fire.
     private func commitScrub() {
+        onSelectInteraction()
         if isTimelineScrubbing || viewModel.isScrubbing {
             let resumesPlayback = isTimelineScrubbing
             stopTimelineAutoSeek()
