@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var audioStore = AudioPlaybackStore()
     #if os(iOS)
     @State private var siloControl = SiloControlClient()
+    @State private var invitationCoordinator = ServerInvitationCoordinator.shared
     #endif
     @State private var debugPlayContentId: String?
     @State private var didAttemptDebugAutoPlay = false
@@ -56,6 +57,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .continuumDeepLink)) { notification in
             guard let url = notification.userInfo?["url"] as? URL else { return }
             #if os(iOS)
+            if invitationCoordinator.receive(url) {
+                return
+            }
             ApplePushDeepLinkCoordinator.shared.clearPendingDeepLink(matching: url)
             #endif
             handleDeepLink(url)
@@ -173,7 +177,45 @@ struct ContentView: View {
             Task { await DownloadManager.shared.onAppActive() }
             #endif
         }
+        #if os(iOS)
+        .sheet(item: invitationBinding) { invitation in
+            ServerInvitationConfirmationView(
+                invitation: invitation,
+                coordinator: invitationCoordinator,
+                router: router
+            )
+        }
+        .alert(item: invitationNoticeBinding) { notice in
+            Alert(
+                title: Text(notice.title),
+                message: Text(notice.message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+        #endif
     }
+
+    #if os(iOS)
+    private var invitationBinding: Binding<ServerInvitation?> {
+        Binding(
+            get: { invitationCoordinator.pendingInvitation },
+            set: { invitation in
+                if invitation == nil, invitationCoordinator.pendingInvitation != nil {
+                    invitationCoordinator.cancel()
+                } else if let invitation {
+                    invitationCoordinator.pendingInvitation = invitation
+                }
+            }
+        )
+    }
+
+    private var invitationNoticeBinding: Binding<ServerInvitationNotice?> {
+        Binding(
+            get: { invitationCoordinator.notice },
+            set: { invitationCoordinator.notice = $0 }
+        )
+    }
+    #endif
 
     @ViewBuilder
     private var authContent: some View {
@@ -241,9 +283,9 @@ struct ContentView: View {
     /// `pendingDeepLink` and drained on the next `.authenticated`
     /// transition.
     private func handleDeepLink(_ url: URL) {
-        guard let host = url.host else { return }
+        guard let deepLink = ContinuumDeepLink.parse(url) else { return }
 
-        if host == "downloads" {
+        if deepLink == .downloads {
             guard router.authState == .authenticated else {
                 pendingDeepLink = url
                 return
@@ -260,25 +302,18 @@ struct ContentView: View {
             return
         }
 
-        guard !url.pathComponents.isEmpty else { return }
-        let contentId = url.pathComponents
-            .dropFirst()
-            .first?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let contentId, !contentId.isEmpty else { return }
-
         guard router.authState == .authenticated else {
             pendingDeepLink = url
             return
         }
 
-        switch host {
-        case "item":
+        switch deepLink {
+        case .item(let contentId):
             router.navigate(to: .itemDetail(contentId: contentId))
-        case "play":
+        case .play(let contentId):
             Task { await routePlayDeepLink(contentId: contentId) }
-        default:
-            break
+        case .downloads:
+            return
         }
     }
 
@@ -472,7 +507,16 @@ struct ContentView: View {
             EmptyStateView(icon: "person.badge.plus", title: "Sign up from a phone or the web", subtitle: nil)
                 .continuumBackground()
             #else
-            SignupView(router: router)
+            SignupView(
+                router: router,
+                initialInviteCode: {
+                    #if os(iOS)
+                    invitationCoordinator.consumeSignupInviteCode()
+                    #else
+                    nil
+                    #endif
+                }
+            )
             #endif
         case .login:
             loginRoot
@@ -528,7 +572,16 @@ struct ContentView: View {
             EmptyStateView(icon: "person.badge.plus", title: "Sign up from a phone or the web", subtitle: nil)
                 .continuumBackground()
             #else
-            SignupView(router: router)
+            SignupView(
+                router: router,
+                initialInviteCode: {
+                    #if os(iOS)
+                    invitationCoordinator.consumeSignupInviteCode()
+                    #else
+                    nil
+                    #endif
+                }
+            )
             #endif
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)

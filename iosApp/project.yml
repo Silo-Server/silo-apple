@@ -60,7 +60,7 @@ targets:
     # Target-level `settings` entries win over xcconfig, so they MUST
     # NOT be set below.
     configFiles:
-      Debug: Signing/Silo.xcconfig
+      Debug: Signing/SiloDebug.xcconfig
       Release: Signing/Silo.xcconfig
     settings:
       base:

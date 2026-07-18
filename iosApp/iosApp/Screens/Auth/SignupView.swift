@@ -4,10 +4,16 @@ import SwiftUI
 /// Account registration. Shown when signup is enabled on the server.
 struct SignupView: View {
     var router: AppRouter
+    var initialInviteCode: () -> String?
     @State private var viewModel = SignupViewModel()
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable { case username, email, password, confirm, invite }
+
+    init(router: AppRouter, initialInviteCode: @escaping () -> String? = { nil }) {
+        self.router = router
+        self.initialInviteCode = initialInviteCode
+    }
 
     var body: some View {
         AuroraScreen(variant: .signIn, scrim: .soft) {
@@ -90,6 +96,11 @@ struct SignupView: View {
             .animation(.easeInOut(duration: 0.2), value: viewModel.error)
         }
         .navigationBarBackButtonHidden()
+        .onAppear {
+            guard viewModel.inviteCode.isEmpty,
+                  let inviteCode = initialInviteCode() else { return }
+            viewModel.inviteCode = inviteCode
+        }
     }
 
     private func createAccount() {

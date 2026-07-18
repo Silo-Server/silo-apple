@@ -1,0 +1,23 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "298TA5KFL8.org.siloserver.silo"
+        ],
+        "components": [
+          {
+            "/": "/",
+            "#": "v=1&action=signup&server=*",
+            "comment": "Silo signup invitation prototype"
+          },
+          {
+            "/": "/",
+            "#": "v=1&action=add-server&server=*",
+            "comment": "Silo add-server invitation prototype"
+          }
+        ]
+      }
+    ]
+  }
+}

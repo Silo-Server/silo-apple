@@ -32,20 +32,30 @@ struct SiloApp: App {
         WindowGroup {
             ContentView()
                 .onOpenURL { url in
-                    NotificationCenter.default.post(
-                        name: .continuumDeepLink,
-                        object: nil,
-                        userInfo: ["url": url]
-                    )
+                    Self.forwardDeepLink(url)
                 }
+                #if os(iOS)
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    guard let url = activity.webpageURL else { return }
+                    Self.forwardDeepLink(url)
+                }
+                #endif
         }
+    }
+
+    private static func forwardDeepLink(_ url: URL) {
+        NotificationCenter.default.post(
+            name: .continuumDeepLink,
+            object: nil,
+            userInfo: ["url": url]
+        )
     }
 }
 
 extension Notification.Name {
-    /// Posted whenever the app receives a `continuum://` deep-link URL
-    /// (debug launches, Top Shelf taps). `ContentView` consumes it and
-    /// queues until the auth state machine reaches `.authenticated`.
+    /// Posted whenever the app receives a custom-scheme URL or, on iOS, a
+    /// Universal Link. ContentView sends each URL to the appropriate app-level
+    /// coordinator and queues continuum content routes until authenticated.
     static let continuumDeepLink = Notification.Name("continuumDeepLink")
 }
 

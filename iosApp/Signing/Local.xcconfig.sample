@@ -46,6 +46,7 @@
 // app, and Top Shelf all need stripped `.personal.entitlements` variants:
 //
 // SILO_IOS_ENTITLEMENTS                  = Silo.personal.entitlements
+// SILO_IOS_DEBUG_ENTITLEMENTS            = Silo.personal.entitlements
 // SILO_NOTIFICATION_SERVICE_ENTITLEMENTS = NotificationService/NotificationService.personal.entitlements
 // SILO_TV_ENTITLEMENTS                   = SiloTV.personal.entitlements
 // SILO_TOPSHELF_ENTITLEMENTS             = TopShelf/TopShelf.personal.entitlements

@@ -1,0 +1,7 @@
+// iOS development-only signing additions. Release continues to use
+// Signing/Silo.xcconfig directly, so prototype Associated Domains never
+// reach archives or TestFlight builds.
+
+#include "Silo.xcconfig"
+
+CODE_SIGN_ENTITLEMENTS = $(SILO_IOS_DEBUG_ENTITLEMENTS)
