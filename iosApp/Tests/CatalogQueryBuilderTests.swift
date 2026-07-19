@@ -47,6 +47,19 @@ final class CatalogQueryBuilderTests: XCTestCase {
         XCTAssertNil(build(.none, mediaType: .series, includeType: false)["type"])
     }
 
+    func testMixedLibraryTypeScope() {
+        XCTAssertNil(build(.none, mediaType: .mixed, includeType: true)["type"],
+                     "mixed browses merged — no library-derived scope")
+
+        // The user-chosen Type facet always scopes, even when includeType is
+        // false (the iOS path), and wins over the library-derived scope.
+        var s = CatalogFilterState(); s.mediaScope = "series"
+        XCTAssertEqual(build(s, mediaType: .mixed, includeType: false)["type"], "series")
+        XCTAssertEqual(build(s, mediaType: .mixed, includeType: true)["type"], "series")
+        XCTAssertNil(build(s, mediaType: .mixed)["groups[0][match]"],
+                     "media scope is a query param, not a rule group")
+    }
+
     func testMultiGenreBecomesOneAnyGroup() {
         var s = CatalogFilterState(); s.genres = ["Drama", "Action"]
         let q = build(s)

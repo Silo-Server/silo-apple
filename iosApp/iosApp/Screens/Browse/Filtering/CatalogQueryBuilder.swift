@@ -33,7 +33,14 @@ enum CatalogQueryBuilder {
             "match": state.matchAll ? "all" : "any",
         ]
         if let libraryId { q["library_id"] = String(libraryId) }
-        if includeType, let type = mediaType.catalogTypeParam { q["type"] = type }
+        // A user-chosen Type facet (mixed libraries) always scopes the query;
+        // it is valid by construction, unlike the library-derived scope that
+        // `includeType` guards.
+        if let scope = state.mediaScope {
+            q["type"] = scope
+        } else if includeType, let type = mediaType.catalogTypeParam {
+            q["type"] = type
+        }
         if let prefix = state.namePrefix { q["name_prefix"] = prefix }
         if let snapshot { q["snapshot_at"] = snapshot }
         if !includeTotal { q["include_total"] = "false" }

@@ -27,6 +27,14 @@ class BrowseViewModel {
 
     func configure(libraryId: Int?) {
         self.libraryId = libraryId
+        // Resolve the media family from the cached library list when we can —
+        // a mixed library must be known up front (it can't be refined from
+        // items, whose concrete types are movie/series).
+        if let libraryId,
+           let cached: LibrariesResponse = ResponseCache.shared.get(CacheKey.userLibraries),
+           let library = cached.libraries.first(where: { $0.id == libraryId }) {
+            mediaType = BrowseMediaType.from(libraryType: library.type)
+        }
         // Restore persisted sort/filters for this library + profile (no-op
         // when the user turned "Preserve" off).
         if let saved = BrowsePrefsStore.shared.savedState(libraryId: libraryId) {
@@ -202,7 +210,9 @@ class BrowseViewModel {
     /// vocabulary matches the library (audiobook vs video) without ever
     /// sending a `type` scope that could filter the page empty.
     private func refineMediaType(from response: CatalogResponse) {
-        guard let first = response.items.first else { return }
+        // A mixed library was resolved from the library list in `configure`;
+        // refining from a (movie or series) item would hide the Type facet.
+        guard mediaType != .mixed, let first = response.items.first else { return }
         mediaType = BrowseMediaType.from(libraryType: first.type)
     }
 }

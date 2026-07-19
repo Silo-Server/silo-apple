@@ -252,6 +252,7 @@ private struct LibrarySelectorButton: View {
 
     private var typeLabel: String {
         if library.isAudiobookLibrary { return "Audiobooks" }
+        if library.isMixedLibrary { return "Movies & Series" }
         if library.isSeriesLibrary { return "Series" }
         if library.type == "movies" { return "Movies" }
         if library.type == "music" { return "Music" }
@@ -366,6 +367,7 @@ private struct LibraryPickerRow: View {
 
     private var iconName: String {
         if library.isAudiobookLibrary { return "book.closed.fill" }
+        if library.isMixedLibrary { return "square.stack.3d.up.fill" }
         if library.isSeriesLibrary { return "tv.fill" }
         if library.type == "movies" { return "film.fill" }
         if library.type == "music" { return "music.note" }
@@ -374,6 +376,7 @@ private struct LibraryPickerRow: View {
 
     private var typeLabel: String {
         if library.isAudiobookLibrary { return "Audiobooks library" }
+        if library.isMixedLibrary { return "Movies & Series library" }
         if library.isSeriesLibrary { return "TV library" }
         if library.type == "movies" { return "Movies library" }
         if library.type == "music" { return "Music library" }

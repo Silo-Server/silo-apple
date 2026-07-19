@@ -65,11 +65,13 @@ enum TVLibraryTabType: String, CaseIterable, Hashable {
         }
     }
 
-    /// Whether a server library belongs under this tab.
+    /// Whether a server library belongs under this tab. A mixed library
+    /// (movies + series in one folder) belongs to both video tabs — it stays
+    /// one browsable library, reachable from either dropdown.
     func matches(_ library: Library) -> Bool {
         switch self {
-        case .movies: return library.type == "movies"
-        case .series: return library.isSeriesLibrary
+        case .movies: return library.type == "movies" || library.isMixedLibrary
+        case .series: return library.isSeriesLibrary || library.isMixedLibrary
         case .music: return library.type == "music"
         case .audiobooks: return library.isAudiobookLibrary
         }

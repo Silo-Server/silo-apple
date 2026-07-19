@@ -271,8 +271,14 @@ enum SiloMediaType {
         }
     }
 
+    /// A "mixed" library holds movies and series in one folder; each item
+    /// still carries its own concrete `type`, so it browses as one library.
+    static func isMixedLibrary(_ type: String) -> Bool {
+        normalized(type) == "mixed"
+    }
+
     static func isSupportedLibrary(_ type: String) -> Bool {
-        isMovieLibrary(type) || isSeries(type) || isAudiobookLibrary(type)
+        isMovieLibrary(type) || isSeries(type) || isAudiobookLibrary(type) || isMixedLibrary(type)
     }
 
     /// Section items are kept only when their type maps to a library type
@@ -1139,6 +1145,7 @@ struct Library: Codable, Identifiable, Hashable {
     var isMovieLibrary: Bool { SiloMediaType.isMovieLibrary(type) }
     var isAudiobookLibrary: Bool { SiloMediaType.isAudiobookLibrary(type) }
     var isSeriesLibrary: Bool { SiloMediaType.isSeries(type) }
+    var isMixedLibrary: Bool { SiloMediaType.isMixedLibrary(type) }
     var isSupportedLibrary: Bool { SiloMediaType.isSupportedLibrary(type) }
 }
 
