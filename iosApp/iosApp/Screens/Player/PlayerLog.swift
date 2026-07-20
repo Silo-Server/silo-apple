@@ -12,17 +12,18 @@
 //  often with subtly different formatting (e.g. `startTime=0.0` vs
 //  `startTime=0.000000`) which doubled the log volume during a session.
 //
-//  `cmpLog` collapses that to a single `print` call. `print` already
-//  reaches both surfaces — stdout is captured by tvOS device console, and
-//  the iOS process log mirrors stdout into the system log — so we lose
-//  nothing by going through one path. Genuine errors that need
-//  filterable subsystem/category routing keep their `Logger.error` call;
-//  this helper only replaces the diagnostic-trace pairs.
+//  `cmpLog` keeps stdout as the live troubleshooting surface and also feeds
+//  the diagnostics ring through `DiagLog`, so crash bundles carry the same
+//  curated player trace without relying only on OSLog harvesting.
 //
 
 import Foundation
 
 @inline(__always)
 func cmpLog(_ message: @autoclosure () -> String) {
-    print(message())
+    let rendered = message()
+    print(rendered)
+    #if os(iOS) || os(tvOS)
+    DiagLog.i(.playback, "CMP", rendered)
+    #endif
 }

@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(tvOS)
+import UIKit
+#endif
 
 struct ContentView: View {
     @State private var router = AppRouter()
@@ -61,6 +64,9 @@ struct ContentView: View {
             handleDeepLink(url)
         }
         .onAppear {
+            #if os(tvOS)
+            ExitSentinel.shared.appDidEnterForeground()
+            #endif
             #if os(iOS)
             if let url = ApplePushDeepLinkCoordinator.shared.consumePendingDeepLink() {
                 handleDeepLink(url)
@@ -79,6 +85,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .temporaryRemoteAuthExpired)) { _ in
             TVControlReceiver.shared.temporaryAuthExpired()
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
+            ExitSentinel.shared.appWillTerminate()
+        }
         #endif
         .task {
             // Debug: auto-play from launch argument -debugPlay <contentId>
@@ -96,6 +105,9 @@ struct ContentView: View {
                     pendingDeepLink = nil
                     handleDeepLink(pending)
                 }
+                #if os(tvOS)
+                await ExitSentinel.shared.captureLeftoverIfNeeded()
+                #endif
                 await overlayPrefs.hydrateIfNeeded()
                 // Hydrate AI capabilities on a cold relaunch into a restored
                 // session — `selectProfile` only refreshes on a fresh sign-in,
@@ -126,6 +138,14 @@ struct ContentView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
+            #if os(iOS) || os(tvOS)
+            DiagnosticsCoordinator.recordBreadcrumb(
+                category: .lifecycle,
+                tag: "Scene",
+                message: "scene phase changed",
+                attrs: ["state": .string(Self.diagnosticsScenePhase(newPhase))]
+            )
+            #endif
             #if os(iOS)
             switch newPhase {
             case .active:
@@ -137,6 +157,17 @@ struct ContentView: View {
                 if DownloadManager.shared.downloadsEnabled {
                     DownloadBackgroundRefresh.schedule()
                 }
+            default:
+                break
+            }
+            #endif
+            #if os(tvOS)
+            switch newPhase {
+            case .active:
+                ExitSentinel.shared.appDidEnterForeground()
+                Task { await ExitSentinel.shared.captureLeftoverIfNeeded() }
+            case .background:
+                ExitSentinel.shared.appDidEnterBackground()
             default:
                 break
             }
@@ -174,6 +205,21 @@ struct ContentView: View {
             #endif
         }
     }
+
+    #if os(iOS) || os(tvOS)
+    private static func diagnosticsScenePhase(_ phase: ScenePhase) -> String {
+        switch phase {
+        case .active:
+            return "active"
+        case .inactive:
+            return "inactive"
+        case .background:
+            return "background"
+        @unknown default:
+            return "unknown"
+        }
+    }
+    #endif
 
     @ViewBuilder
     private var authContent: some View {

@@ -248,6 +248,11 @@ final class AuthService: @unchecked Sendable {
     /// server. Call `ServerRegistry.shared.remove(serverId:)` to fully
     /// forget a server instead.
     func signOut() async {
+        #if os(iOS) || os(tvOS)
+        let purgedDiagnostics = await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
+        #else
+        let purgedDiagnostics = false
+        #endif
         // Best-effort server-side logout; never block sign-out on a
         // server-side error, since the client wants to end the session
         // regardless.
@@ -257,7 +262,10 @@ final class AuthService: @unchecked Sendable {
             // Swallow; state will still be cleared locally.
         }
         if let activeId = ServerRegistry.shared.activeServerId {
-            await ServerRegistry.shared.signOut(serverId: activeId)
+            await ServerRegistry.shared.signOut(
+                serverId: activeId,
+                purgeDiagnostics: !purgedDiagnostics
+            )
         } else {
             await TokenStore.shared.clearTokens()
         }

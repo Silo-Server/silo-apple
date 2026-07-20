@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://silo-server.dev/schemas/client-diagnostics/v1/logline.schema.json",
+  "title": "Silo Client Diagnostics Log Line v1",
+  "type": "object",
+  "required": [
+    "ts",
+    "run",
+    "lvl",
+    "cat",
+    "tag",
+    "msg"
+  ],
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 64
+    },
+    "run": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "lvl": {
+      "type": "string",
+      "enum": [
+        "V",
+        "D",
+        "I",
+        "W",
+        "E"
+      ],
+      "maxLength": 1
+    },
+    "cat": {
+      "type": "string",
+      "enum": [
+        "playback",
+        "focus",
+        "network",
+        "lifecycle",
+        "browse",
+        "cast",
+        "download",
+        "crash",
+        "other"
+      ],
+      "maxLength": 32
+    },
+    "tag": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "msg": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "attrs": {
+      "type": "object",
+      "description": "Attribute keys are registered in attr-registry.json. Production clients drop unregistered keys before upload.",
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string",
+            "maxLength": 512
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "integer"
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          },
+          {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": true
+}

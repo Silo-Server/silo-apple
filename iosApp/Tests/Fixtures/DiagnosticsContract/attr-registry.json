@@ -1,0 +1,105 @@
+{
+  "$schema": "https://silo-server.dev/schemas/client-diagnostics/v1/attr-registry.schema.json",
+  "schema_version": 1,
+  "policy": "Attribute keys are registered per category. Debug builds and CI should fail unregistered keys; production clients drop unregistered keys before upload.",
+  "categories": {
+    "playback": {
+      "sink": {
+        "type": "string",
+        "description": "Current audio output sink, such as HDMI or speaker."
+      },
+      "fmt": {
+        "type": "string",
+        "description": "Media or passthrough format identifier, such as truehd."
+      },
+      "decoder": {
+        "type": "string",
+        "description": "Selected decoder name."
+      },
+      "width": {
+        "type": "integer",
+        "description": "Video width in pixels."
+      },
+      "height": {
+        "type": "integer",
+        "description": "Video height in pixels."
+      },
+      "hdr_mode": {
+        "type": "string",
+        "description": "Active HDR mode or selected tone-mapping mode."
+      },
+      "bitrate_kbps": {
+        "type": "integer",
+        "description": "Observed or selected bitrate in kilobits per second."
+      },
+      "dropped_frames": {
+        "type": "integer",
+        "description": "Dropped video frame count."
+      },
+      "audio_underruns": {
+        "type": "integer",
+        "description": "Audio underrun count."
+      },
+      "session_id": {
+        "type": "string",
+        "description": "Playback session identifier for correlation with operational logs."
+      },
+      "play_method": {
+        "type": "string",
+        "description": "Selected playback delivery method such as direct, remux, or transcode."
+      },
+      "position_seconds": {
+        "type": "number",
+        "description": "Current playback position in seconds."
+      },
+      "reason": {
+        "type": "string",
+        "description": "Playback route, interruption, or lifecycle reason."
+      }
+    },
+    "focus": {
+      "target": {
+        "type": "string",
+        "description": "Focusable element or logical destination."
+      },
+      "action": {
+        "type": "string",
+        "description": "Focus action or navigation direction."
+      }
+    },
+    "network": {
+      "method": {
+        "type": "string",
+        "description": "HTTP method."
+      },
+      "path": {
+        "type": "string",
+        "description": "Templated path without query string."
+      },
+      "status": {
+        "type": "integer",
+        "description": "HTTP status code."
+      },
+      "duration_ms": {
+        "type": "integer",
+        "description": "Request duration in milliseconds."
+      }
+    },
+    "lifecycle": {
+      "state": {
+        "type": "string",
+        "description": "App lifecycle state."
+      }
+    },
+    "crash": {
+      "fingerprint": {
+        "type": "string",
+        "description": "Client-side dedupe fingerprint."
+      },
+      "source": {
+        "type": "string",
+        "description": "Crash source matching manifest crash.source."
+      }
+    }
+  }
+}

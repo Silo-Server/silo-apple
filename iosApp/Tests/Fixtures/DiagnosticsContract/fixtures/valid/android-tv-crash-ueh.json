@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "report": {
+    "type": "crash",
+    "captured_at": "2026-07-19T18:22:31Z",
+    "capture_session_id": "run_android_tv_ueh_001",
+    "app_version": "1.4.2",
+    "app_build": "20841",
+    "platform": "android-tv",
+    "os_version": "11 (API 30)",
+    "profile_id": "prof_living_room"
+  },
+  "destination": {
+    "server_instance_id": "srv_home_01"
+  },
+  "consent": {
+    "mode": "prompt",
+    "notice_version": 1
+  },
+  "crash": {
+    "summary": "NullPointerException in PlaybackSessionManager.start",
+    "stack_excerpt": "java.lang.NullPointerException: player was null\n\tat org.siloserver.silo.PlaybackSessionManager.start(PlaybackSessionManager.kt:42)",
+    "thread": "main",
+    "foreground": true,
+    "source": "ueh",
+    "provenance": "pre_failure",
+    "occurred_at": "2026-07-19T18:22:31Z"
+  },
+  "device_summary": {
+    "manufacturer": "NVIDIA",
+    "model": "SHIELD Android TV",
+    "os": "11",
+    "form_factor": "tv"
+  },
+  "playback_session_ids": [
+    "ps_9f2a"
+  ],
+  "log_summary": {
+    "lines": 3841,
+    "bytes_gz": 412034,
+    "dropped_lines": 12,
+    "categories": [
+      "playback",
+      "focus",
+      "network"
+    ],
+    "debug_logging": true
+  },
+  "archive": {
+    "entries": [
+      "manifest.json",
+      "device.json",
+      "logs.jsonl",
+      "crash/summary.json",
+      "crash/stack.txt"
+    ],
+    "bytes": 498112,
+    "uncompressed_bytes": 3110400,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

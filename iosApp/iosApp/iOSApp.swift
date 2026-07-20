@@ -10,6 +10,10 @@ struct SiloApp: App {
     #endif
 
     init() {
+        #if os(tvOS)
+        ExitSentinel.shared.appDidLaunch()
+        #endif
+
         #if DEBUG && os(macOS)
         if DVLoopbackFixtureRunner.isRequested {
             DVLoopbackFixtureRunner.runFromCommandLineAndExit()
@@ -26,6 +30,19 @@ struct SiloApp: App {
         // runs so poster/backdrop-heavy screens reuse the same pipeline on
         // both iOS and tvOS.
         PosterImageCache.install()
+
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .lifecycle,
+            tag: "App",
+            message: "app launched",
+            attrs: ["state": .string("launch")]
+        )
+        #endif
+
+        #if os(iOS)
+        MetricKitCapture.shared.start()
+        #endif
     }
 
     var body: some Scene {

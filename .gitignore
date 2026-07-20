@@ -4,9 +4,11 @@ iosApp/Silo.xcodeproj/
 xcuserdata/
 *.xcuserstate
 DerivedData/
+iosApp/.deriveddata/
 
 # SwiftPM / CocoaPods
 .build/
+iosApp/.spm-packages/
 iosApp/Pods/
 
 # Fastlane build outputs (IPAs, archives from the ipa_*_unsigned lanes)

@@ -47,6 +47,15 @@ actor HTTPClient {
         self.longWaitSession = session ?? Self.makeSession(requestTimeout: 90)
         self.tokenStore = tokenStore
 
+        self.decoder = Self.makeJSONDecoder()
+
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.dateEncodingStrategy = .iso8601
+        self.encoder = encoder
+    }
+
+    static func makeJSONDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .custom { decoder in
@@ -59,12 +68,7 @@ actor HTTPClient {
                 debugDescription: "Unparseable ISO-8601 date: \(str)"
             )
         }
-        self.decoder = decoder
-
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.dateEncodingStrategy = .iso8601
-        self.encoder = encoder
+        return decoder
     }
 
     /// `URLSession` configured for an auth-gated REST API: no shared HTTP
@@ -125,6 +129,23 @@ actor HTTPClient {
         query: [String: String] = [:]
     ) async throws {
         _ = try await sendRaw(method: "POST", path: path, query: query, body: body)
+    }
+
+    func postMultipart<T: Decodable>(
+        _ path: String,
+        parts: [HTTPMultipartPart],
+        timeout: HTTPTimeout = .extended
+    ) async throws -> T {
+        let data = try await sendMultipartRaw(method: "POST", path: path, parts: parts, timeout: timeout)
+        if data.isEmpty, let empty = EmptyResponse.empty as? T {
+            return empty
+        }
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            Self.logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
+            throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
+        }
     }
 
     func put<T: Decodable>(
@@ -316,6 +337,57 @@ actor HTTPClient {
         return data
     }
 
+    private func sendMultipartRaw(
+        method: String,
+        path: String,
+        parts: [HTTPMultipartPart],
+        timeout: HTTPTimeout = .extended
+    ) async throws -> Data {
+        let serverUrl = await tokenStore.getServerUrl()
+        guard !serverUrl.isEmpty else {
+            throw HTTPError.serverUrlNotConfigured
+        }
+
+        let authStateBeforeRequest = await tokenStore.getAccessToken()
+        let boundary = "SiloDiagnostics-\(UUID().uuidString)"
+        let body = Self.multipartBody(parts: parts, boundary: boundary)
+        var request = try buildRequest(
+            serverUrl: serverUrl,
+            method: method,
+            path: path,
+            query: [:],
+            body: Optional<String>.none
+        )
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        await attachAuthHeaders(&request, accessToken: authStateBeforeRequest)
+
+        let (data, response) = try await perform(request: request, timeout: timeout)
+
+        if response.statusCode == 401, shouldAttemptRefresh(path: path) {
+            let refreshed = await refreshTokens(tokenAtRequestTime: authStateBeforeRequest)
+            if refreshed {
+                let refreshedAuthState = await tokenStore.getAccessToken()
+                var retry = try buildRequest(
+                    serverUrl: serverUrl,
+                    method: method,
+                    path: path,
+                    query: [:],
+                    body: Optional<String>.none
+                )
+                retry.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+                retry.httpBody = body
+                await attachAuthHeaders(&retry, accessToken: refreshedAuthState)
+                let (retryData, retryResponse) = try await perform(request: retry, timeout: timeout)
+                try ensureSuccess(retryData, retryResponse, method: method)
+                return retryData
+            }
+        }
+
+        try ensureSuccess(data, response, method: method)
+        return data
+    }
+
     // MARK: - Request building
 
     private func buildRequest(
@@ -359,6 +431,19 @@ actor HTTPClient {
         }
 
         return request
+    }
+
+    private static func multipartBody(parts: [HTTPMultipartPart], boundary: String) -> Data {
+        var body = Data()
+        for part in parts {
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data("Content-Disposition: form-data; name=\"\(part.name)\"\r\n".utf8))
+            body.append(Data("Content-Type: \(part.contentType)\r\n\r\n".utf8))
+            body.append(part.data)
+            body.append(Data("\r\n".utf8))
+        }
+        body.append(Data("--\(boundary)--\r\n".utf8))
+        return body
     }
 
     private func attachAuthHeaders(_ request: inout URLRequest, accessToken: String?) async {
@@ -588,6 +673,12 @@ actor HTTPClient {
 enum HTTPTimeout {
     case standard
     case extended
+}
+
+struct HTTPMultipartPart {
+    let name: String
+    let contentType: String
+    let data: Data
 }
 
 // MARK: - Error

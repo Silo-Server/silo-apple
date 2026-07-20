@@ -1,0 +1,57 @@
+{
+  "captured_at": "2026-07-19T18:22:31Z",
+  "provenance": "pre_failure",
+  "identity": {
+    "manufacturer": "NVIDIA",
+    "model": "SHIELD Android TV",
+    "device": "mdarcy",
+    "form_factor": "tv",
+    "device_id": "dev_8f4a"
+  },
+  "display": {
+    "mode": "3840x2160@59.94",
+    "modes_supported": [
+      "3840x2160@59.94",
+      "1920x1080@60"
+    ],
+    "hdr_types": [
+      "HDR10",
+      "HLG",
+      "DV"
+    ],
+    "wide_gamut": true
+  },
+  "audio": {
+    "outputs": [
+      {
+        "type": "HDMI",
+        "encodings": [
+          "AC3",
+          "EAC3",
+          "TRUEHD"
+        ],
+        "channels": 8
+      }
+    ],
+    "passthrough": [
+      "AC3",
+      "EAC3",
+      "TRUEHD"
+    ],
+    "suppressions": []
+  },
+  "video_codecs": [
+    {
+      "mime": "video/hevc",
+      "hw": true,
+      "profiles": [
+        "Main10",
+        "DV P8"
+      ],
+      "max": "4096x2160@60"
+    }
+  ],
+  "network": {
+    "transport": "ethernet"
+  }
+}

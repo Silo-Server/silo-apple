@@ -101,6 +101,14 @@ class AppRouter {
         posterURL: String? = nil,
         backdropURL: String? = nil
     ) {
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .focus,
+            tag: "Navigation",
+            message: "player presented",
+            attrs: ["target": .string("player"), "action": .string("present")]
+        )
+        #endif
         #if os(macOS)
         if let fileId {
             navigate(to: .playerWithFile(
@@ -141,6 +149,14 @@ class AppRouter {
         startFromBeginning: Bool = false,
         resumePosition: Double? = nil
     ) {
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .focus,
+            tag: "Navigation",
+            message: "offline player presented",
+            attrs: ["target": .string("offlinePlayer"), "action": .string("present")]
+        )
+        #endif
         #if os(macOS)
         navigate(to: .offlinePlayer(
             downloadId: downloadId,
@@ -168,6 +184,7 @@ class AppRouter {
 
     /// Push a route onto the navigation stack.
     func navigate(to route: Route) {
+        recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "navigate")
         path.append(route)
     }
 
@@ -175,6 +192,7 @@ class AppRouter {
     /// sibling pages (e.g. episode → episode on the tvOS detail rail) don't
     /// stack up — Back exits the chain in one step.
     func replaceCurrent(with route: Route) {
+        recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "replace")
         if !path.isEmpty {
             path.removeLast()
         }
@@ -184,34 +202,40 @@ class AppRouter {
     /// Pop the top route from the stack.
     func goBack() {
         guard !path.isEmpty else { return }
+        recordScreenBreadcrumb(target: "previous", action: "back")
         path.removeLast()
     }
 
     /// Pop to root of the current navigation stack.
     func popToRoot() {
+        recordScreenBreadcrumb(target: "root", action: "popToRoot")
         path = NavigationPath()
     }
 
     /// Return to the login screen (e.g., on sign-out).
     func resetToLogin() {
+        recordScreenBreadcrumb(target: "login", action: "reset")
         path = NavigationPath()
         authState = .needsLogin
     }
 
     /// Transition to profile selection after successful login.
     func showProfileSelection() {
+        recordScreenBreadcrumb(target: "profileSelection", action: "reset")
         path = NavigationPath()
         authState = .needsProfile
     }
 
     /// Transition to the authenticated home screen.
     func resetToHome() {
+        recordScreenBreadcrumb(target: "home", action: "reset")
         path = NavigationPath()
         authState = .authenticated
     }
 
     /// Return to server setup (e.g., to change servers).
     func resetToServerSetup() {
+        recordScreenBreadcrumb(target: "serverSetup", action: "reset")
         path = NavigationPath()
         authState = .needsServerSetup
     }
@@ -263,11 +287,95 @@ class AppRouter {
     /// login screen so the user can re-enter credentials. If no server
     /// is active at all (e.g. all removed), fall back to server setup.
     func expiredSession() {
+        recordScreenBreadcrumb(target: "login", action: "sessionExpired")
         path = NavigationPath()
         if ServerRegistry.shared.hasActiveServer {
             authState = .needsLogin
         } else {
             authState = .needsServerSetup
+        }
+    }
+
+    private func recordScreenBreadcrumb(target: String, action: String) {
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .focus,
+            tag: "Navigation",
+            message: "screen changed",
+            attrs: [
+                "target": .string(target),
+                "action": .string(action),
+            ]
+        )
+        #endif
+    }
+}
+
+private extension Route {
+    var diagnosticsTarget: String {
+        switch self {
+        case .serverSetup:
+            return "serverSetup"
+        case .login:
+            return "login"
+        case .serverNeedsSetup:
+            return "serverNeedsSetup"
+        case .signup:
+            return "signup"
+        case .profileSelection:
+            return "profileSelection"
+        case .home:
+            return "home"
+        case .search:
+            return "search"
+        case .browse:
+            return "browse"
+        case .library:
+            return "library"
+        case .libraryCollection:
+            return "libraryCollection"
+        case .itemDetail:
+            return "itemDetail"
+        case .personDetail:
+            return "personDetail"
+        case .player:
+            return "player"
+        case .playerWithFile:
+            return "playerWithFile"
+        case .favorites:
+            return "favorites"
+        case .watchlist:
+            return "watchlist"
+        case .history:
+            return "history"
+        case .collections:
+            return "collections"
+        case .collectionDetail:
+            return "collectionDetail"
+        case .settings:
+            return "settings"
+        case .recommendations:
+            return "recommendations"
+        case .admin:
+            return "admin"
+        case .serverList:
+            return "serverList"
+        case .downloads:
+            return "downloads"
+        case .requestsHub:
+            return "requestsHub"
+        case .requestDetail:
+            return "requestDetail"
+        case .myRequests:
+            return "myRequests"
+        case .offlinePlayer:
+            return "offlinePlayer"
+        case .offlineSeriesBrowse:
+            return "offlineSeriesBrowse"
+        case .offlineDownloadDetail:
+            return "offlineDownloadDetail"
+        case .tvLibraryGrid:
+            return "tvLibraryGrid"
         }
     }
 }

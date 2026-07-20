@@ -205,7 +205,15 @@ final class ServerRegistry {
     /// and profile selection; URL + display name remain so the user can
     /// log back in. If `serverId` is the active server, the legacy
     /// `profileId` UserDefaults key is cleared too.
-    func signOut(serverId: String) async {
+    func signOut(serverId: String, purgeDiagnostics: Bool = true) async {
+        #if os(iOS) || os(tvOS)
+        if purgeDiagnostics {
+            if serverId == activeServerId {
+                await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
+            }
+            await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
+        }
+        #endif
         await TokenStore.shared.deleteTokens(for: serverId)
         if let idx = entries.firstIndex(where: { $0.id == serverId }) {
             entries[idx].profileId = nil
@@ -221,6 +229,12 @@ final class ServerRegistry {
     /// slot is cleared.
     func remove(serverId: String) async {
         let removesActiveServer = activeServerId == serverId
+        #if os(iOS) || os(tvOS)
+        if removesActiveServer {
+            await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
+        }
+        await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
+        #endif
         if removesActiveServer {
             // Stop old-server responses and clear every process-wide cache
             // before publishing the fallback ID to observing views.

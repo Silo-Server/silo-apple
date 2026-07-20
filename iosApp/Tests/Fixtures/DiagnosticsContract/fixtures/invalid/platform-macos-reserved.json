@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "report": {
+    "type": "manual",
+    "captured_at": "2026-07-19T18:22:31Z",
+    "capture_session_id": "run_macos_reserved",
+    "app_version": "1.4.2",
+    "app_build": "20841",
+    "platform": "macos",
+    "os_version": "26.0",
+    "profile_id": "prof_mac"
+  },
+  "destination": {
+    "server_instance_id": "srv_home_01"
+  },
+  "consent": {
+    "mode": "manual",
+    "notice_version": 1
+  },
+  "device_summary": {
+    "manufacturer": "Apple",
+    "model": "Mac",
+    "os": "26.0",
+    "form_factor": "desktop"
+  },
+  "playback_session_ids": [],
+  "log_summary": {
+    "lines": 1,
+    "bytes_gz": 100,
+    "dropped_lines": 0,
+    "categories": [
+      "other"
+    ],
+    "debug_logging": false
+  },
+  "archive": {
+    "entries": [
+      "manifest.json"
+    ],
+    "bytes": 100,
+    "uncompressed_bytes": 200,
+    "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  }
+}

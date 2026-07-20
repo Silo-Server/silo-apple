@@ -933,11 +933,22 @@ final class PlayerCore: NSObject {
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonRaw)
         else { return }
         let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
-            .map { "\($0.portName)/\($0.portType.rawValue)" }
+            .map(\.portType.rawValue)
             .joined(separator: ",")
         Self.logger.info(
             "AVAudioSession route changed: reason=\(reason.rawValue) outputs=\(outputs, privacy: .public)"
         )
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .playback,
+            tag: "AudioRoute",
+            message: "audio route changed",
+            attrs: [
+                "reason": .string(String(reason.rawValue)),
+                "sink": .string(outputs.isEmpty ? "none" : outputs),
+            ]
+        )
+        #endif
         // For reasons that change downstream channel layout (new device,
         // category change, override), drop any pending audio chunks so the
         // engine reprepares against the new route's preferred format on the
@@ -2680,9 +2691,8 @@ final class PlayerCore: NSObject {
 
     /// Start a 1Hz diagnostics timer that emits a single-line snapshot
     /// covering sync time vs wall time, audio clock, queue depths, and
-    /// display-link / audio-renderer readiness. Uses `print()` so the line
-    /// reaches `devicectl ... --console`. Remove once the slow-motion bug
-    /// is pinned down.
+    /// display-link / audio-renderer readiness. Uses `cmpLog` so the line
+    /// reaches `devicectl ... --console` and the diagnostics ring.
     private func startDiagnostics() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -2693,7 +2703,7 @@ final class PlayerCore: NSObject {
             self.lastDiagAudioEnqueueCount = 0
             self.vSyncHolds = 0
             self.vSyncDrops = 0
-            print(String(format:
+            cmpLog(String(format:
                 "[CMP] startDiagnostics wallStart=%.3f syncStart=%.3f rate=%.2f videoFPS=%.2f refreshRate=%.2f",
                 self.diagStartWall, self.diagStartSyncTime,
                 Double(self.playbackClock.rate), self.videoFPS, Double(self.refreshRate)))
@@ -2760,13 +2770,13 @@ final class PlayerCore: NSObject {
         let audioStatus = audioOutput.statusCode
         if audioStatus != lastAudioRendererStatus {
             let err = audioOutput.lastErrorDescription ?? "nil"
-            print("[CMP] audioOutput.status \(lastAudioRendererStatus) -> \(audioStatus) error=\(err)")
+            cmpLog("[CMP] audioOutput.status \(lastAudioRendererStatus) -> \(audioStatus) error=\(err)")
             lastAudioRendererStatus = audioStatus
         }
         let demuxIdle = now - demuxLastProgressWall
         let health = playbackHealthStats()
         let bufferedAhead = bufferedSecondsEstimate() ?? -1
-        print(String(format:
+        cmpLog(String(format:
             "[CMP-DIAG] wall=%.2f sync=%.3f adv=%.3f ratio=%.3f rate=%.2f ac.pts=%.3f ac.cur=%.3f vidEnq=+%llu aEnq=+%llu holds=%llu drops=%llu vDec=%d vtIn=%d vPkts=%d aPkts=%d layerRdy=%d layerSt=%d audRdy=%d audSt=%d audFeed=%llu rd=%llu rt=%llu idle=%.2f bufS=%.2f rebuf=%d seeks=%llu coal=%llu ladder=%llu/%llu/%llu",
             wall, syncTime, syncAdvance, ratio, Double(syncRate),
             audioPts, audioCurrent,
@@ -2810,7 +2820,7 @@ final class PlayerCore: NSObject {
                 didRecover = true
             }
             if syncRate == 0 {
-                print(String(format:
+                cmpLog(String(format:
                     "[CMP] stall-recover: playbackRate=0 (userPaused=false); restoring rate=%.2f",
                     Double(currentRate)))
                 let resumeTime = currentPlaybackTime()
@@ -2825,7 +2835,7 @@ final class PlayerCore: NSObject {
                aPkts > 0,
                audioEnqDelta == 0,
                demuxIdle > 2.0 {
-                print(String(format:
+                cmpLog(String(format:
                     "[CMP] stall-recover: audio feed idle while ready (aPkts=%d idle=%.2f); nudging feed",
                     aPkts, demuxIdle))
                 audioOutput.nudgeRequestMediaDataWhenReady()
@@ -5106,7 +5116,7 @@ final class PlayerCore: NSObject {
             hasLoggedFirstDecodedVideoBuffer = true
             let width = CVPixelBufferGetWidth(imageBuffer)
             let height = CVPixelBufferGetHeight(imageBuffer)
-            print(String(format:
+            cmpLog(String(format:
                 "[CMP] firstDecodedBuffer %dx%d pts=%.3f",
                 width, height, ptsSeconds))
         }
@@ -5129,7 +5139,7 @@ final class PlayerCore: NSObject {
             }
             let ttffMs = Int((CFAbsoluteTimeGetCurrent() - ttffLoadAnchor) * 1000)
             Self.logger.info("[CMP-TTFF] route=playerCoreDirect first_frame_ms=\(ttffMs)")
-            print("[CMP-TTFF] route=playerCoreDirect first_frame_ms=\(ttffMs)")
+            cmpLog("[CMP-TTFF] route=playerCoreDirect first_frame_ms=\(ttffMs)")
         }
     }
 

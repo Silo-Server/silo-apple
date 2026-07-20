@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "report": {
+    "type": "hang",
+    "captured_at": "2026-07-19T21:15:00Z",
+    "capture_session_id": "run_ios_metric_042",
+    "app_version": "1.4.2",
+    "app_build": "20841",
+    "platform": "ios",
+    "os_version": "26.0",
+    "profile_id": "prof_phone"
+  },
+  "destination": {
+    "server_instance_id": "srv_home_01"
+  },
+  "consent": {
+    "mode": "always",
+    "notice_version": 1
+  },
+  "crash": {
+    "summary": "Main thread hang reported by MetricKit",
+    "stack_excerpt": "Thread 0 name: main\n0 Silo PlayerCore.waitForRouteChange",
+    "thread": "main",
+    "foreground": true,
+    "source": "metrickit",
+    "provenance": "metric_reporting_period",
+    "occurred_at": "2026-07-19T21:15:00Z"
+  },
+  "device_summary": {
+    "manufacturer": "Apple",
+    "model": "iPhone17,2",
+    "os": "26.0",
+    "form_factor": "phone"
+  },
+  "playback_session_ids": [
+    "ps_ios_103"
+  ],
+  "log_summary": {
+    "lines": 902,
+    "bytes_gz": 84511,
+    "dropped_lines": 0,
+    "categories": [
+      "playback",
+      "lifecycle",
+      "network"
+    ],
+    "debug_logging": true
+  },
+  "archive": {
+    "entries": [
+      "manifest.json",
+      "device.json",
+      "logs.jsonl",
+      "crash/summary.json",
+      "crash/metrickit.json",
+      "breadcrumbs.jsonl"
+    ],
+    "bytes": 141120,
+    "uncompressed_bytes": 812400,
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}
