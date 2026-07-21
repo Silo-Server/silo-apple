@@ -16,6 +16,12 @@ enum DiagLog {
     static let captureSessionID = UUID().uuidString.lowercased()
     static let ring = LogRing()
 
+    /// Registers a server hostname to be replaced with its hashed token in
+    /// every future log line, even when it appears outside URL syntax.
+    static func registerSensitiveHost(_ host: String) {
+        DiagnosticsRedactor.registerSensitiveHost(host)
+    }
+
     static func d(_ category: Category, _ tag: String, _ message: String, _ attrs: [String: DiagLogAttributeValue] = [:]) {
         append(level: .debug, category: category, tag: tag, message: message, attrs: attrs)
     }
@@ -180,7 +186,11 @@ private extension DiagLogAttributeValue {
 
 private enum DiagnosticsRedactor {
     private static let urlRegex = try! NSRegularExpression(
-        pattern: #"https?://[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+"#,
+        pattern: #"(?:https?|wss?)://[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+"#,
+        options: []
+    )
+    private static let emailRegex = try! NSRegularExpression(
+        pattern: #"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"#,
         options: []
     )
     private static let authorizationRegex = try! NSRegularExpression(
@@ -200,9 +210,52 @@ private enum DiagnosticsRedactor {
         options: []
     )
     private static let secretKeyValueRegex = try! NSRegularExpression(
-        pattern: #"(?i)\b(access_token|profile_token|refresh_token|token|jwt|signature|sig|api_key|apikey|key)\s*=\s*[^\s&;,]+"#,
+        pattern: #"(?i)\b(access_token|profile_token|refresh_token|token|jwt|signature|sig|api_key|apikey|key|username|user_name|login|email|user)\s*[:=]\s*[^\s&;,]+"#,
         options: []
     )
+
+    // The active/remembered server hostnames, registered by ServerRegistry.
+    // These are the identifiers most likely to leak as bare text (outside
+    // URL syntax), and matching known strings avoids false positives that a
+    // generic domain regex would hit (bundle ids, file names, versions).
+    private static let knownHostsLock = NSLock()
+    private static var knownSensitiveHosts: [String] = []
+
+    static func registerSensitiveHost(_ host: String) {
+        let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty, !isLoopbackHost(normalized) else { return }
+        knownHostsLock.lock()
+        defer { knownHostsLock.unlock() }
+        if !knownSensitiveHosts.contains(normalized) {
+            // Longest first so "media.example.com" wins over "example.com".
+            knownSensitiveHosts.append(normalized)
+            knownSensitiveHosts.sort { $0.count > $1.count }
+        }
+    }
+
+    private static func isLoopbackHost(_ host: String) -> Bool {
+        host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+    }
+
+    private static func hostToken(_ host: String) -> String {
+        "[host:" + DiagnosticsSHA256.shortHex(data: Data(host.lowercased().utf8), count: 12) + "]"
+    }
+
+    private static func replaceKnownHosts(in value: String) -> String {
+        knownHostsLock.lock()
+        let hosts = knownSensitiveHosts
+        knownHostsLock.unlock()
+        guard !hosts.isEmpty else { return value }
+        var result = value
+        for host in hosts {
+            guard result.range(of: host, options: .caseInsensitive) != nil else { continue }
+            let token = hostToken(host)
+            while let range = result.range(of: host, options: .caseInsensitive) {
+                result.replaceSubrange(range, with: token)
+            }
+        }
+        return result
+    }
 
     static func sanitizedError(_ error: any Error) -> String {
         let message = (error as NSError).localizedDescription
@@ -218,20 +271,23 @@ private enum DiagnosticsRedactor {
         result = replaceMatches(in: result, regex: cookieRegex, replacement: "Cookie: [redacted]")
         result = replaceMatches(in: result, regex: bearerRegex, replacement: "Bearer [redacted]")
         result = replaceMatches(in: result, regex: jwtRegex, replacement: "[redacted_token]")
+        result = replaceMatches(in: result, regex: emailRegex, replacement: "[redacted_email]")
         result = replaceSecretKeyValues(in: result)
+        result = replaceKnownHosts(in: result)
         return trim(result, maxLength: maxLength)
     }
 
     static func normalizedURLString(_ url: URL) -> String {
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = components.scheme else {
             return "[redacted_url]"
         }
-        components.user = nil
-        components.password = nil
-        components.port = nil
-        components.query = nil
-        components.fragment = nil
-        return components.url?.absoluteString ?? "[redacted_url]"
+        // Drop credentials, port, query, and fragment; hash the host so log
+        // lines stay correlatable without exposing the server's domain.
+        // Loopback hosts carry no PII and stay literal for playback debugging.
+        let host = components.host ?? ""
+        let renderedHost = host.isEmpty || isLoopbackHost(host.lowercased()) ? host : hostToken(host)
+        return scheme + "://" + renderedHost + components.percentEncodedPath
     }
 
     private static func replaceURLs(in value: String) -> String {
@@ -263,15 +319,13 @@ private enum DiagnosticsRedactor {
     }
 
     private static func replaceSecretKeyValues(in value: String) -> String {
-        let source = value as NSString
-        let matches = secretKeyValueRegex.matches(in: value, range: NSRange(location: 0, length: source.length))
-        var result = value
-        for match in matches.reversed() {
-            let raw = source.substring(with: match.range)
-            let key = raw.split(separator: "=", maxSplits: 1).first.map(String.init) ?? "token"
-            result = (result as NSString).replacingCharacters(in: match.range, with: "\(key)=[redacted]")
-        }
-        return result
+        let range = NSRange(location: 0, length: (value as NSString).length)
+        return secretKeyValueRegex.stringByReplacingMatches(
+            in: value,
+            options: [],
+            range: range,
+            withTemplate: "$1=[redacted]"
+        )
     }
 
     private static func trim(_ value: String, maxLength: Int) -> String {

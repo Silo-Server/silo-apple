@@ -116,6 +116,7 @@ final class ServerRegistry {
     /// fetched name do not clobber remembered session state.
     @discardableResult
     func addOrUpdate(_ entry: ServerEntry, preservingProfile: Bool = true) -> ServerEntry {
+        registerDiagnosticsSensitiveHosts([entry])
         var merged = entry
         if let existing = self.entries.first(where: { $0.id == entry.id }) {
             if preservingProfile, merged.profileId == nil {
@@ -301,6 +302,7 @@ final class ServerRegistry {
             let state = try JSONDecoder().decode(RegistryState.self, from: data)
             self.entries = state.entries
             self.activeServerId = state.activeServerId
+            registerDiagnosticsSensitiveHosts(state.entries)
         } catch {
             Self.logger.error("Registry decode failed: \(error.localizedDescription, privacy: .public). Starting empty.")
             return
@@ -318,6 +320,19 @@ final class ServerRegistry {
                 }
             }
         }
+    }
+
+    /// Diagnostics log lines replace known server hostnames with hashed
+    /// tokens; every remembered server's host is sensitive, not just the
+    /// active one.
+    private func registerDiagnosticsSensitiveHosts(_ entries: [ServerEntry]) {
+        #if os(iOS) || os(tvOS)
+        for entry in entries {
+            if let host = URL(string: entry.url)?.host {
+                DiagLog.registerSensitiveHost(host)
+            }
+        }
+        #endif
     }
 
     private func persist() {
