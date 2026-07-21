@@ -192,7 +192,7 @@ final class SubtitleOverlayView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         withoutImplicitLayerAnimation {
-            contentsLayer.frame = contentsFrameOverride ?? bounds
+            contentsLayer.frame = resolvedContentsFrame
             bitmapCueHost.frame = bounds
         }
         pushFrameGeometry()
@@ -226,11 +226,40 @@ final class SubtitleOverlayView: UIView {
             } else {
                 contentsFrameOverride = nil
             }
-            contentsLayer.frame = contentsFrameOverride ?? bounds
+            contentsLayer.frame = resolvedContentsFrame
             // CALayer.contents takes `Any?` — pass `image` directly to avoid
             // the ARC/CFType dance of an explicit `as CGImage`.
             contentsLayer.contents = image
         }
+    }
+
+    /// tvOS can crop the outer portion of the full-screen render surface for
+    /// overscan. The Bottom preset intentionally uses the letterbox bar, but
+    /// its final composited image still has to remain inside the title-safe
+    /// region. Translate the already-rendered image as one unit so multi-line
+    /// cues preserve their spacing and alignment.
+    private var resolvedContentsFrame: CGRect {
+        guard var frame = contentsFrameOverride else { return bounds }
+        #if os(tvOS)
+        let safeFrame = bounds.inset(by: safeAreaInsets)
+        guard !safeFrame.isEmpty else { return frame }
+
+        if frame.width <= safeFrame.width {
+            if frame.minX < safeFrame.minX {
+                frame.origin.x += safeFrame.minX - frame.minX
+            } else if frame.maxX > safeFrame.maxX {
+                frame.origin.x -= frame.maxX - safeFrame.maxX
+            }
+        }
+        if frame.height <= safeFrame.height {
+            if frame.minY < safeFrame.minY {
+                frame.origin.y += safeFrame.minY - frame.minY
+            } else if frame.maxY > safeFrame.maxY {
+                frame.origin.y -= frame.maxY - safeFrame.maxY
+            }
+        }
+        #endif
+        return frame
     }
 
     /// Replace the bitmap cue layers with the given placements. Frames
