@@ -45,5 +45,19 @@ final class LogRing {
         os_unfair_lock_unlock(&lock)
         return LogRingSnapshot(lines: snapshotLines, droppedCount: dropped)
     }
+
+    /// Drops every buffered line and resets the dropped-line counter. Used when
+    /// the active diagnostics binding changes so a new binding's manual report
+    /// or crash snapshot cannot include the previous binding's log lines.
+    func clear() {
+        os_unfair_lock_lock(&lock)
+        for index in lines.indices {
+            lines[index] = nil
+        }
+        nextIndex = 0
+        count = 0
+        droppedCount = 0
+        os_unfair_lock_unlock(&lock)
+    }
 }
 #endif

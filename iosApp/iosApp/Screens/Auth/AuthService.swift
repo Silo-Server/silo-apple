@@ -171,6 +171,13 @@ final class AuthService: @unchecked Sendable {
         // automatic restoration when the user switches back.
         self.profileId = profileId
         await clearPerProfileCaches()
+        #if os(iOS) || os(tvOS)
+        // A child profile can't manage diagnostics. Re-evaluate breadcrumb
+        // eligibility now that the active profile changed so an adult→child
+        // switch disarms breadcrumb/session capture even though the
+        // server/account binding is unchanged.
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
         // Re-probe AI capabilities for the newly-selected profile. Fire and
         // forget — gating defaults to "unavailable" until the probes land,
         // so nothing blocks on this.

@@ -180,7 +180,16 @@ actor PlaybackSessionBridge {
         sessionId = session.sessionId
         currentSession = session
         #if os(iOS) || os(tvOS)
-        RecentSessionTracker.shared.record(sessionID: session.sessionId)
+        // Only record the session id for later diagnostics bundling when
+        // diagnostics is actually collecting for the active binding. Recording
+        // unconditionally would accumulate playback identifiers from periods
+        // where capture is off (Crash Reports = Never, or a disabled/
+        // storage-unavailable status) that could then surface in a later manual
+        // report or after diagnostics is re-enabled. The breadcrumb below is
+        // already gated by the same signal inside the journal.
+        if DiagnosticsCoordinator.isDiagnosticsCaptureEnabled {
+            RecentSessionTracker.shared.record(sessionID: session.sessionId)
+        }
         DiagnosticsCoordinator.recordBreadcrumb(
             category: .playback,
             tag: "PlaybackSession",

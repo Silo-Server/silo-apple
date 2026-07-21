@@ -28,6 +28,14 @@ actor DiagnosticsCoordinator {
     })
     nonisolated private static let breadcrumbContextLock = NSLock()
     nonisolated(unsafe) private static var breadcrumbConsentContext: BreadcrumbConsentContext?
+    /// Whether the profile active right now may capture diagnostics. Breadcrumb
+    /// capture is a synchronous gate, but child-profile eligibility needs an
+    /// async lookup, so it is cached here and re-resolved on profile switches
+    /// (`activeProfileDidChange`) and status refreshes. Defaults to eligible; a
+    /// switch marks it ineligible immediately and only re-enables once the async
+    /// child check confirms a non-child profile, so no breadcrumb is captured
+    /// under a child in the resolution window. Guarded by `breadcrumbContextLock`.
+    nonisolated(unsafe) private static var activeProfileBreadcrumbEligible = true
 
     private let api: DiagnosticsAPI
     private let continuumAPI: ContinuumAPI
@@ -92,6 +100,10 @@ actor DiagnosticsCoordinator {
             noticeVersion: status.consentNoticeVersion,
             statusAvailable: status.status == .available
         )
+        // Keep the synchronous breadcrumb eligibility flag current for the
+        // profile in view (covers a launch directly into a child profile).
+        // Fire-and-forget so a status refresh is not gated on getProfiles.
+        Task { await reevaluateActiveProfileBreadcrumbEligibility() }
         if let serverId = ServerRegistry.shared.activeServerId {
             Self.ServerBindingIndex.record(
                 serverId: serverId,
@@ -292,28 +304,41 @@ actor DiagnosticsCoordinator {
         )
 
         do {
-            // Snapshot the destination identity before building the bundle. The
-            // build harvests OSLog and gzips the archive, which takes long
-            // enough for the active server/account to change underneath us.
-            // HTTPClient resolves the current TokenStore at request time, and a
-            // same-server account switch keeps the report's server_instance_id
-            // while swapping the account — so without re-checking, this old
-            // report could post to the newly active account. Verify the active
-            // identity is unchanged right before the POST; if it moved (or the
-            // token vanished mid-flight) keep the report retryable rather than
-            // upload to an unverified destination. The next attempt's
-            // `isUploadable` check above reclassifies a genuine account move as
-            // a destination mismatch precisely.
+            // Snapshot the destination *identity* before building the bundle.
+            // The build harvests OSLog and gzips the archive, which takes long
+            // enough for the active server/account/profile to change underneath
+            // us. HTTPClient resolves the current TokenStore at request time,
+            // and a same-server account switch keeps the report's
+            // server_instance_id while swapping the account — so without
+            // re-checking, this old report could post to the newly active
+            // account.
+            //
+            // Compare a *stable* identity — the active server registry id and
+            // the selected profile — not the access-token value. HTTPClient can
+            // transparently refresh an expired access token while buildBundle is
+            // running; fingerprinting the token would misread that refresh as a
+            // destination change and, on the already-throttled Always path, turn
+            // a sendable report into keptRetryable and defer the next auto-upload
+            // for 24h. A genuine account switch on the same server passes through
+            // a token-cleared (unauthenticated) state and lands on a different
+            // profile, so requiring the token to still be present (sign-out
+            // check) plus an unchanged server and profile still rejects a moved
+            // destination. The captured profile is also re-checked against the
+            // active one so the server's X-Profile-Id can't disagree with the
+            // manifest's report.profile_id. The next attempt's `isUploadable`
+            // check above reclassifies a genuine account move as a destination
+            // mismatch precisely.
             let destinationServerRegistryID = ServerRegistry.shared.activeServerId
-            let destinationTokenFingerprint = await Self.currentAccessTokenFingerprint()
+            let destinationProfileID = await TokenStore.shared.getProfileId()
             let capturedProfileID = report.manifest.report.profileID
             let bundle = try await buildBundle(for: report)
-            guard destinationTokenFingerprint != nil,
+            let activeProfileID = await TokenStore.shared.getProfileId()
+            guard await Self.currentAccessTokenFingerprint() != nil,
                   ServerRegistry.shared.activeServerId == destinationServerRegistryID,
-                  await Self.currentAccessTokenFingerprint() == destinationTokenFingerprint,
+                  activeProfileID == destinationProfileID,
                   !Self.isProfileUploadMismatch(
                     captured: capturedProfileID,
-                    active: await TokenStore.shared.getProfileId()
+                    active: activeProfileID
                   ) else {
                 return .keptRetryable
             }
@@ -786,16 +811,18 @@ actor DiagnosticsCoordinator {
         )
         Self.breadcrumbContextLock.unlock()
         // A server/account switch mid-run leaves the previous binding's trail in
-        // the on-disk breadcrumb journal. MetricKit (and the tvOS abnormal-exit
-        // path) can later bundle it into a report bound to the NEW account,
-        // leaking the old account's navigation/playback breadcrumbs (including
-        // session_ids). Rotate the journal when the active binding actually
-        // changes so the new binding starts clean. A plain refresh of the same
-        // binding keeps its trail, and the first establish of a launch
-        // (previousBinding == nil) keeps the prior run's breadcrumbs so the
-        // abnormal-exit capture can still read them.
+        // the on-disk breadcrumb journal AND in the process-wide log ring.
+        // MetricKit (and the tvOS abnormal-exit path) can later bundle either
+        // into a report bound to the NEW account, leaking the old account's
+        // navigation/playback breadcrumbs and CMP/playback log lines (including
+        // session_ids). Rotate the journal and clear the ring when the active
+        // binding actually changes so the new binding starts clean. A plain
+        // refresh of the same binding keeps its trail, and the first establish
+        // of a launch (previousBinding == nil) keeps the prior run's lines so
+        // the abnormal-exit capture can still read them.
         if let previousBinding, previousBinding != binding {
             Self.purgeBreadcrumbJournal()
+            DiagLog.ring.clear()
         }
         #if os(tvOS)
         ExitSentinel.shared.setCaptureEnabled {
@@ -862,8 +889,54 @@ actor DiagnosticsCoordinator {
         currentBreadcrumbBinding()
     }
 
+    /// Whether diagnostics is actively collecting for the account currently in
+    /// view — server-available, consent not Never, and a non-child profile.
+    /// Exposed so playback-session recording (RecentSessionTracker) uses the
+    /// same gate as breadcrumb capture and does not accumulate session IDs while
+    /// collection is off; those would otherwise surface in a later manual report
+    /// or after diagnostics is re-enabled for the same binding.
+    nonisolated static var isDiagnosticsCaptureEnabled: Bool {
+        breadcrumbCaptureEnabled()
+    }
+
+    /// Re-evaluate breadcrumb eligibility for the profile now active. Call on
+    /// profile switches: a child profile can't manage diagnostics, so breadcrumb
+    /// capture and the tvOS exit sentinel must disarm even though the
+    /// server/account binding (and its consent) is unchanged. Fails closed
+    /// immediately, then confirms asynchronously so a switch into a child profile
+    /// can't capture even one breadcrumb before the child lookup lands.
+    nonisolated static func activeProfileDidChange() {
+        setActiveProfileBreadcrumbEligible(false)
+        Task { await shared.reevaluateActiveProfileBreadcrumbEligibility() }
+    }
+
+    func reevaluateActiveProfileBreadcrumbEligibility() async {
+        let isChild = await activeProfileIsChild()
+        // Eligible only when positively known to be a non-child profile; an
+        // undeterminable status (offline getProfiles failure) fails closed,
+        // consistent with the persistent-capture child gate in captureContext().
+        Self.setActiveProfileBreadcrumbEligible(isChild == false)
+    }
+
+    nonisolated private static func setActiveProfileBreadcrumbEligible(_ eligible: Bool) {
+        breadcrumbContextLock.lock()
+        activeProfileBreadcrumbEligible = eligible
+        breadcrumbContextLock.unlock()
+    }
+
     nonisolated private static func breadcrumbCaptureEnabled() -> Bool {
-        breadcrumbCaptureEnabled(for: resolvedBreadcrumbContext())
+        // A child profile can't manage diagnostics, so breadcrumb capture (and
+        // the tvOS exit sentinel that shares this gate) must disarm the moment
+        // one becomes active — even though the server/account binding and its
+        // consent are unchanged. Mirrors the persistent-capture child gate in
+        // captureContext(); the eligibility flag is re-resolved on profile
+        // switches and status refreshes. Read the flag before resolving the
+        // context, which takes the same lock.
+        breadcrumbContextLock.lock()
+        let profileEligible = activeProfileBreadcrumbEligible
+        breadcrumbContextLock.unlock()
+        guard profileEligible else { return false }
+        return breadcrumbCaptureEnabled(for: resolvedBreadcrumbContext())
     }
 
     /// Pure consent check shared by the live gate and tests. No resolvable

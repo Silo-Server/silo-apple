@@ -22,6 +22,13 @@ enum DiagLog {
         DiagnosticsRedactor.registerSensitiveHost(host)
     }
 
+    /// Test hook: clears the registered sensitive hosts. The registry is
+    /// process-wide, so a test that registers a pathological host must reset it
+    /// afterward or the host leaks into later tests' redaction output.
+    static func resetSensitiveHostsForTesting() {
+        DiagnosticsRedactor.resetSensitiveHostsForTesting()
+    }
+
     static func d(_ category: Category, _ tag: String, _ message: String, _ attrs: [String: DiagLogAttributeValue] = [:]) {
         append(level: .debug, category: category, tag: tag, message: message, attrs: attrs)
     }
@@ -243,6 +250,12 @@ private enum DiagnosticsRedactor {
         }
     }
 
+    static func resetSensitiveHostsForTesting() {
+        knownHostsLock.lock()
+        knownSensitiveHosts.removeAll()
+        knownHostsLock.unlock()
+    }
+
     private static func isLoopbackHost(_ host: String) -> Bool {
         host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
     }
@@ -256,12 +269,34 @@ private enum DiagnosticsRedactor {
         let hosts = knownSensitiveHosts
         knownHostsLock.unlock()
         guard !hosts.isEmpty else { return value }
-        var result = value
-        for host in hosts {
-            guard result.range(of: host, options: .caseInsensitive) != nil else { continue }
-            let token = hostToken(host)
-            while let range = result.range(of: host, options: .caseInsensitive) {
-                result.replaceSubrange(range, with: token)
+        // Single forward pass over the original text. At each position we try
+        // the registered hosts (already sorted longest-first, so the longest
+        // match wins) and, on a match, emit that host's token and jump past the
+        // matched span. Emitted tokens are appended to `result` and never
+        // re-scanned, so a host that is a substring of its own replacement
+        // token — e.g. "host" inside "[host:…]" — cannot re-match and spin the
+        // way an in-place `while range` replace would.
+        var result = ""
+        var index = value.startIndex
+        while index < value.endIndex {
+            var matched = false
+            for host in hosts {
+                guard let end = value.index(index, offsetBy: host.count, limitedBy: value.endIndex) else {
+                    continue
+                }
+                // `host` is normalized to lowercase at registration; compare a
+                // lowercased candidate of equal length for a case-insensitive
+                // match. Hosts are non-empty, so `index` always advances.
+                if value[index..<end].lowercased() == host {
+                    result += hostToken(host)
+                    index = end
+                    matched = true
+                    break
+                }
+            }
+            if !matched {
+                result.append(value[index])
+                index = value.index(after: index)
             }
         }
         return result

@@ -40,6 +40,30 @@ final class LogRingTests: XCTestCase {
         XCTAssertEqual(snapshot.droppedCount, 0)
     }
 
+    func testClearDropsAllLinesAndResetsDroppedCount() {
+        let ring = LogRing(capacity: 3)
+
+        for index in 0..<5 {
+            ring.append("line-\(index)")
+        }
+        // Filled past capacity, so there is a non-zero dropped count to reset.
+        XCTAssertEqual(ring.snapshot().droppedCount, 2)
+
+        ring.clear()
+
+        let cleared = ring.snapshot()
+        XCTAssertTrue(cleared.lines.isEmpty)
+        XCTAssertEqual(cleared.droppedCount, 0)
+
+        // The ring is reusable after clearing: new lines start a fresh window
+        // with no carryover from before the clear.
+        ring.append("fresh-0")
+        ring.append("fresh-1")
+        let reused = ring.snapshot()
+        XCTAssertEqual(reused.lines, ["fresh-0", "fresh-1"])
+        XCTAssertEqual(reused.droppedCount, 0)
+    }
+
     func testConcurrentAppendsAccountForDroppedLines() {
         let iterations = 500
         let capacity = 100

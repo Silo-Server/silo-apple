@@ -4,6 +4,19 @@ import XCTest
 /// Redaction is asserted through `DiagLog.renderedLine`, the same path every
 /// captured log line takes before it reaches the ring.
 final class DiagnosticsRedactionTests: XCTestCase {
+    // The sensitive-host registry is process-wide static state. Reset it around
+    // every test so a host registered in one test (e.g. the pathological "host"
+    // regression below) can't leak into another and mangle its expected tokens.
+    override func setUp() {
+        super.setUp()
+        DiagLog.resetSensitiveHostsForTesting()
+    }
+
+    override func tearDown() {
+        DiagLog.resetSensitiveHostsForTesting()
+        super.tearDown()
+    }
+
     private func rendered(_ message: String) throws -> String {
         try XCTUnwrap(
             DiagLog.renderedLine(level: .info, category: .other, tag: "Test", message: message)
@@ -49,6 +62,20 @@ final class DiagnosticsRedactionTests: XCTestCase {
         let line = try rendered("reachability probe for bare-host.example.net timed out")
         XCTAssertFalse(line.contains("bare-host.example.net"))
         XCTAssertTrue(line.contains("[host:"))
+    }
+
+    // Regression: a registered host that is a substring of its own replacement
+    // token — "host" hashes to "[host:…]", which itself contains "host" — must
+    // not spin forever re-matching the freshly inserted token. Rendering
+    // completes (a hang here would time out the suite) and the bare "host"
+    // occurrence is tokenized exactly once.
+    func testRegisteredHostThatIsSubstringOfItsTokenTerminates() throws {
+        DiagLog.registerSensitiveHost("host")
+        let line = try rendered("connect to host failed")
+        XCTAssertTrue(line.contains("[host:"))
+        // No literal bare " host " word survives outside the token; the only
+        // "host" left is the token's own "[host:" prefix.
+        XCTAssertFalse(line.contains("to host failed"))
     }
 
     func testBearerTokenStaysRedacted() throws {
