@@ -50,7 +50,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             "codec_audio": "eac3",
             "hdr": true,
             "video_tracks": [
-              { "dolby_vision": "Profile 8.1" }
+              { "dolby_vision": "Profile 8.1", "color_range": "tv" }
             ]
           }
         ]
@@ -64,6 +64,25 @@ final class DetailVersionSelectionTests: XCTestCase {
             DetailPlaybackFormatting.versionPrimaryText(version),
             "2160p · HEVC · DV · EAC3"
         )
+        XCTAssertEqual(version.videoTracks?.first?.colorRange, "tv")
+        XCTAssertEqual(ApplePlaybackRoutePlanner.unambiguousColorRange(for: version), "tv")
+    }
+
+    func testColorRangeFallbackRequiresAnUnambiguousVideoTrack() throws {
+        let version = try XCTUnwrap(decodedVersions("""
+        [
+          {
+            "file_id": 22,
+            "file_path": "/media/multi-angle.mkv",
+            "video_tracks": [
+              { "index": 0, "color_range": "tv" },
+              { "index": 1, "color_range": "pc" }
+            ]
+          }
+        ]
+        """).first)
+
+        XCTAssertNil(ApplePlaybackRoutePlanner.unambiguousColorRange(for: version))
     }
 
     private func decodedVersions(_ json: String) -> [FileVersion] {

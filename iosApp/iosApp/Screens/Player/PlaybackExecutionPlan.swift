@@ -295,13 +295,15 @@ struct PlaybackSourceMetadata: Equatable {
     let audioCodec: String?
     let subtitleCodecs: [String]
     let dolbyVisionProfile: Int?
+    let colorRange: String?
 
     static let unknown = PlaybackSourceMetadata(
         container: nil,
         videoCodec: nil,
         audioCodec: nil,
         subtitleCodecs: [],
-        dolbyVisionProfile: nil
+        dolbyVisionProfile: nil,
+        colorRange: nil
     )
 }
 

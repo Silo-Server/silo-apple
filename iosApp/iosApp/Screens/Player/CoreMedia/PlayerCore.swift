@@ -537,6 +537,8 @@ final class PlayerCore: NSObject {
 
     private var refreshRate: Float = 24.0
     private var dynamicRange: SpikeDynamicRange = .sdr
+    private var sourceColorRangeHint: String?
+    private var resolvedVideoColorRange: String?
     /// Parsed Dolby Vision config record from the stream's `AV_PKT_DATA_DOVI_CONF`
     /// side data. `nil` when the source is not DV. Set during
     /// `buildVideoFormatDescription`.
@@ -1382,7 +1384,12 @@ final class PlayerCore: NSObject {
         return true
     }
 
-    func load(url: URL, headers: [String: String], startTime: Double) {
+    func load(
+        url: URL,
+        headers: [String: String],
+        startTime: Double,
+        colorRangeHint: String? = nil
+    ) {
         guard !isDisposed else { return }
 
         // Stash the load args so the rejection signal (fired from deep inside
@@ -1391,6 +1398,8 @@ final class PlayerCore: NSObject {
         lastLoadURL = url
         lastLoadHeaders = headers
         lastLoadStartTime = startTime
+        sourceColorRangeHint = VideoColorMetadata.normalizedColorRangeName(colorRangeHint)
+        resolvedVideoColorRange = nil
         pendingRejection = nil
         ttffLoadAnchor = CFAbsoluteTimeGetCurrent()
 
@@ -3509,6 +3518,8 @@ final class PlayerCore: NSObject {
               let codecparPtr = stream.pointee.codecpar
         else { return false }
         let codecpar = codecparPtr.pointee
+        resolvedVideoColorRange = VideoColorMetadata.colorRangeName(codecpar.color_range)
+            ?? sourceColorRangeHint
         videoDecodeOutputDimensions = nil
         useUntimedCompressedVideoSamples = false
 
@@ -3693,7 +3704,10 @@ final class PlayerCore: NSObject {
         // work because their BL is HDR10/SDR/HLG-compatible and VT decodes the
         // BL with 'hvc1' while the dvcC atom + RPU-carrying NALs pass through
         // for the display to apply DV dynamic metadata.
-        let fullRange = codecpar.color_range == AVCOL_RANGE_JPEG
+        let fullRange = VideoColorMetadata.isFullRange(
+            codecpar.color_range,
+            fallbackName: resolvedVideoColorRange
+        )
         // Pick a CVPixelBuffer format that matches the advertised fullRange.
         // Mismatches (e.g. `FullRangeVideo=true` + video-range pixel format)
         // leave VT with no registered decoder → unimpErr (-4). This is what
@@ -4529,7 +4543,10 @@ final class PlayerCore: NSObject {
         height: Int
     ) -> CVPixelBuffer? {
         let outputFormat = VideoColorMetadata.highBitDepthOutputPixelFormat(
-            fullRange: frame.pointee.color_range == AVCOL_RANGE_JPEG)
+            fullRange: VideoColorMetadata.isFullRange(
+                frame.pointee.color_range,
+                fallbackName: resolvedVideoColorRange
+            ))
         let attrs: CFDictionary = [
             kCVPixelBufferIOSurfacePropertiesKey: [:],
             kCVPixelBufferMetalCompatibilityKey: true,
@@ -4630,7 +4647,10 @@ final class PlayerCore: NSObject {
             return nil
         }
 
-        let pixelFormat = frame.pointee.color_range == AVCOL_RANGE_JPEG
+        let pixelFormat = VideoColorMetadata.isFullRange(
+            frame.pointee.color_range,
+            fallbackName: resolvedVideoColorRange
+        )
             ? kCVPixelFormatType_420YpCbCr8PlanarFullRange
             : kCVPixelFormatType_420YpCbCr8Planar
         let attrs: CFDictionary = [

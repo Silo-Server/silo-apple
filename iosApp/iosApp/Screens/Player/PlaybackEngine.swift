@@ -93,7 +93,8 @@ final class CompatibilityPlayerEngine: PlaybackEngine {
         core.load(
             url: plan.streamRequest.url,
             headers: plan.streamRequest.headers,
-            startTime: plan.startMode.seconds
+            startTime: plan.startMode.seconds,
+            colorRangeHint: plan.sourceMetadata.colorRange
         )
     }
 

@@ -477,6 +477,11 @@ extension ApplePlaybackRoutePlanner {
     static func hevcLoopbackVideoRange(for version: FileVersion) -> String {
         videoRange(for: .passthroughHEVC, source: version)
     }
+
+    static func unambiguousColorRange(for version: FileVersion) -> String? {
+        guard let tracks = version.videoTracks, tracks.count == 1 else { return nil }
+        return tracks[0].colorRange
+    }
 }
 
 private extension ApplePlaybackRoutePlanner {
@@ -719,7 +724,8 @@ private extension ApplePlaybackRoutePlanner {
             videoCodec: normalizedVideoCodec(version.codecVideo ?? session.playbackInfo?.videoCodec),
             audioCodec: normalizedAudioCodec(version.codecAudio ?? session.playbackInfo?.audioCodec),
             subtitleCodecs: embeddedSubtitleCodecs(for: version),
-            dolbyVisionProfile: dolbyVisionProfile(for: version)
+            dolbyVisionProfile: dolbyVisionProfile(for: version),
+            colorRange: unambiguousColorRange(for: version)
         )
     }
 
