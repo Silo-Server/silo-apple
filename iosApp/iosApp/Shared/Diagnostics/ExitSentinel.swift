@@ -109,6 +109,36 @@ final class ExitSentinel {
         ))
     }
 
+    /// Fill in the diagnostics binding on the *current run's* marker as soon as
+    /// diagnostics resolves it, rather than waiting for the next foreground. The
+    /// sentinel arms in `SiloApp.init` — before the first status refresh — so on
+    /// a first login after install (or after a purge), with no last-known
+    /// snapshot, the marker is written with `binding == nil`. The coordinator
+    /// calls this on refresh completion so a crash later in this same foreground
+    /// is attributed to the right account instead of being treated as a legacy
+    /// (unbound) marker on relaunch. No-op if there is no marker, it belongs to
+    /// another run, or it is already bound; the original `startedAt` is kept so
+    /// the run's duration is unchanged. Resolving binding/profile before calling
+    /// keeps this off the coordinator's breadcrumb-context lock (see
+    /// `appDidEnterForeground`).
+    func bindCurrentMarker(binding: DiagnosticsBinding, profileID: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard captureEnabledGate() else { return }
+        guard let existing = readMarker(),
+              existing.runID == DiagLog.captureSessionID,
+              existing.binding == nil else {
+            return
+        }
+        writeMarker(ExitSentinelMarker(
+            runID: existing.runID,
+            startedAt: existing.startedAt,
+            binding: binding,
+            profileID: profileID
+        ))
+    }
+
     func purge() {
         lock.lock()
         defer { lock.unlock() }

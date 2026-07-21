@@ -254,6 +254,22 @@ actor DiagnosticsCoordinator {
             return .keptDestinationMismatch
         }
 
+        // The server attributes an upload to the profile in the X-Profile-Id
+        // header (HTTPClient sends the *currently active* profile) and rejects
+        // it as profile_mismatch (HTTP 400) when that disagrees with the
+        // manifest's captured report.profile_id. A report captured under
+        // profile A must therefore not be uploaded while profile B is active;
+        // hold it retryable so it uploads cleanly next time the capturing
+        // profile is active. Checked here before the (slow) bundle build for
+        // the common case, and again right before the POST below in case the
+        // profile switches while the bundle is building.
+        if Self.isProfileUploadMismatch(
+            captured: report.manifest.report.profileID,
+            active: await TokenStore.shared.getProfileId()
+        ) {
+            return .keptRetryable
+        }
+
         // Refresh both the consent notice version and mode from the current
         // consent record before building the upload. If the server's notice
         // advanced after capture, the frozen manifest would carry a stale
@@ -276,7 +292,31 @@ actor DiagnosticsCoordinator {
         )
 
         do {
+            // Snapshot the destination identity before building the bundle. The
+            // build harvests OSLog and gzips the archive, which takes long
+            // enough for the active server/account to change underneath us.
+            // HTTPClient resolves the current TokenStore at request time, and a
+            // same-server account switch keeps the report's server_instance_id
+            // while swapping the account — so without re-checking, this old
+            // report could post to the newly active account. Verify the active
+            // identity is unchanged right before the POST; if it moved (or the
+            // token vanished mid-flight) keep the report retryable rather than
+            // upload to an unverified destination. The next attempt's
+            // `isUploadable` check above reclassifies a genuine account move as
+            // a destination mismatch precisely.
+            let destinationServerRegistryID = ServerRegistry.shared.activeServerId
+            let destinationTokenFingerprint = await Self.currentAccessTokenFingerprint()
+            let capturedProfileID = report.manifest.report.profileID
             let bundle = try await buildBundle(for: report)
+            guard destinationTokenFingerprint != nil,
+                  ServerRegistry.shared.activeServerId == destinationServerRegistryID,
+                  await Self.currentAccessTokenFingerprint() == destinationTokenFingerprint,
+                  !Self.isProfileUploadMismatch(
+                    captured: capturedProfileID,
+                    active: await TokenStore.shared.getProfileId()
+                  ) else {
+                return .keptRetryable
+            }
             let response = try await api.upload(
                 manifestData: bundle.manifestData,
                 bundleData: bundle.bundleData
@@ -300,14 +340,15 @@ actor DiagnosticsCoordinator {
         } catch {
             // A persistent capture (crash/hang/abnormal-exit) must survive being
             // offline: fall back to the last-known-good status/binding so it is
-            // still queued locally. But an identity-level failure —
-            // identityChanged (signed out / no access token) or a missing
-            // account user id — means there is no authenticated identity to
-            // attribute a capture to. Falling back to the last-known binding
-            // would bind the report to a signed-out or previous account, so we
-            // skip entirely; only genuine offline/status failures use the
-            // fallback (and only for persistent captures).
-            guard !(error is DiagnosticsCoordinatorError),
+            // still queued locally. But the fallback is only safe for genuinely
+            // transient failures — offline/network or a 5xx server error. A
+            // definitive server answer (401/403 auth failure, 404 missing
+            // endpoint, any other 4xx) or an identity-level coordinator error
+            // means the session may already be signed out or the endpoint gone;
+            // binding a capture to the last-known binding there would attribute
+            // it to a signed-out or stale account, so we fail closed. Also only
+            // persistent captures use the fallback at all.
+            guard Self.isTransientCaptureFallbackFailure(error),
                   requirePersistentCapture,
                   let fallback = lastKnownSnapshotForActiveServer() else {
                 return nil
@@ -664,6 +705,51 @@ actor DiagnosticsCoordinator {
         }
     }
 
+    /// Whether a `refreshStatus()` failure is transient enough that a
+    /// persistent capture may fall back to the last-known snapshot. Only
+    /// offline/network errors and 5xx server errors qualify; auth/permission
+    /// failures (401/403), a missing endpoint (404), any other definitive
+    /// server answer, and identity-level coordinator errors fail closed so a
+    /// capture is never queued against a signed-out or unavailable binding.
+    nonisolated static func isTransientCaptureFallbackFailure(_ error: Error) -> Bool {
+        if error is DiagnosticsCoordinatorError {
+            return false
+        }
+        if let httpError = error as? HTTPError {
+            switch httpError {
+            case .network:
+                return true
+            case .http(let statusCode, _):
+                return (500...599).contains(statusCode)
+            case .serverUrlNotConfigured, .invalidURL, .invalidResponse,
+                 .encodingFailed, .decodingFailed:
+                return false
+            }
+        }
+        // HTTPClient wraps transport failures as `.network`, but treat a raw
+        // URLError as transient too in case one reaches here unwrapped.
+        if error is URLError {
+            return true
+        }
+        return false
+    }
+
+    /// Mirror of the server's `resolveProfileID` conflict rule: an upload is
+    /// rejected as profile_mismatch only when the manifest's captured
+    /// `report.profile_id` and the X-Profile-Id header (the profile active at
+    /// upload time) are both non-empty and disagree. If either side is
+    /// nil/blank the server resolves attribution from the single present value
+    /// with no conflict, so those cases must not be held back. Whitespace is
+    /// trimmed on both sides to match the server's comparison exactly.
+    nonisolated static func isProfileUploadMismatch(captured: String?, active: String?) -> Bool {
+        let capturedID = captured?.trimmingCharacters(in: .whitespaces) ?? ""
+        let activeID = active?.trimmingCharacters(in: .whitespaces) ?? ""
+        guard !capturedID.isEmpty, !activeID.isEmpty else {
+            return false
+        }
+        return capturedID != activeID
+    }
+
     private static func currentAccessTokenFingerprint() async -> String? {
         guard let token = await TokenStore.shared.getAccessToken(), !token.isEmpty else {
             return nil
@@ -715,6 +801,17 @@ actor DiagnosticsCoordinator {
         ExitSentinel.shared.setCaptureEnabled {
             DiagnosticsCoordinator.breadcrumbCaptureEnabled()
         }
+        // The tvOS sentinel arms in SiloApp.init, before the first status
+        // refresh. With no last-known snapshot the current run's marker was
+        // written with binding == nil and would otherwise only be back-filled
+        // on a later foreground event. Bind it now — the moment the diagnostics
+        // binding first resolves — so a crash later in this same foreground is
+        // attributed to this account instead of being treated as a legacy
+        // marker (and bound to whoever is active) on relaunch.
+        ExitSentinel.shared.bindCurrentMarker(
+            binding: binding,
+            profileID: AuthService.shared.profileId
+        )
         #endif
     }
 

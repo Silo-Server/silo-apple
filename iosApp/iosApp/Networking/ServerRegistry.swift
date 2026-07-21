@@ -206,14 +206,20 @@ final class ServerRegistry {
     /// and profile selection; URL + display name remain so the user can
     /// log back in. If `serverId` is the active server, the legacy
     /// `profileId` UserDefaults key is cleared too.
-    func signOut(serverId: String, purgeDiagnostics: Bool = true) async {
+    ///
+    /// The registry-wide diagnostics purge always runs: it clears reports and
+    /// consent stored under *older* `server_instance_id`s recorded for this
+    /// registry URL (e.g. after a server restore/reinstall at the same URL),
+    /// which a current-binding-only purge would leave behind. Pass
+    /// `purgeCurrentBinding: false` when the caller already purged the active
+    /// binding while still authenticated (AuthService.signOut does, so the
+    /// binding resolves against a live session) to avoid duplicate current work.
+    func signOut(serverId: String, purgeCurrentBinding: Bool = true) async {
         #if os(iOS) || os(tvOS)
-        if purgeDiagnostics {
-            if serverId == activeServerId {
-                await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
-            }
-            await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
+        if purgeCurrentBinding, serverId == activeServerId {
+            await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
         }
+        await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
         #endif
         await TokenStore.shared.deleteTokens(for: serverId)
         if let idx = entries.firstIndex(where: { $0.id == serverId }) {

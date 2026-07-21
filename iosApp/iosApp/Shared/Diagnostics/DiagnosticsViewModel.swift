@@ -353,6 +353,17 @@ final class DiagnosticsViewModel {
     }
 
     private func currentIdentity() async -> RuntimeIdentity? {
+        // A present, non-empty access token is still required so a sign-out
+        // mid-load (token cleared) is detected as an identity change. But the
+        // token's *value* is deliberately not part of the identity: HTTPClient
+        // can transparently refresh an expired access token during load()'s
+        // status/user calls, and fingerprinting the token would misread that
+        // refresh as an account change and reset() — dropping the pending
+        // prompt or Always-mode auto-upload until another foreground. The stable
+        // identity is the server registry id plus the selected profile; a real
+        // account switch on the same server goes through an unauthenticated
+        // state that clears the token and bumps `generation`, both already
+        // guarded here.
         guard let serverRegistryID = ServerRegistry.shared.activeServerId,
               let token = await TokenStore.shared.getAccessToken(),
               !token.isEmpty else {
@@ -360,7 +371,6 @@ final class DiagnosticsViewModel {
         }
         return RuntimeIdentity(
             serverRegistryID: serverRegistryID,
-            accessTokenFingerprint: DiagnosticsSHA256.hex(data: Data(token.utf8)),
             profileID: AuthService.shared.profileId
         )
     }
@@ -380,7 +390,6 @@ final class DiagnosticsViewModel {
 
     private struct RuntimeIdentity: Equatable {
         let serverRegistryID: String
-        let accessTokenFingerprint: String
         let profileID: String?
     }
 }

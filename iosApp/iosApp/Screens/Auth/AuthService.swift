@@ -249,9 +249,14 @@ final class AuthService: @unchecked Sendable {
     /// forget a server instead.
     func signOut() async {
         #if os(iOS) || os(tvOS)
-        let purgedDiagnostics = await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
+        // Purge the active binding now, while still authenticated: the /logout
+        // below invalidates the session, after which the binding could only be
+        // resolved from the last-known snapshot. The registry-wide purge always
+        // runs in ServerRegistry.signOut regardless, catching diagnostics under
+        // older server_instance_ids for this URL.
+        let purgedCurrentBinding = await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
         #else
-        let purgedDiagnostics = false
+        let purgedCurrentBinding = false
         #endif
         // Best-effort server-side logout; never block sign-out on a
         // server-side error, since the client wants to end the session
@@ -262,9 +267,11 @@ final class AuthService: @unchecked Sendable {
             // Swallow; state will still be cleared locally.
         }
         if let activeId = ServerRegistry.shared.activeServerId {
+            // Only skip the redundant current-binding purge if it already
+            // succeeded above; the registry-wide purge runs either way.
             await ServerRegistry.shared.signOut(
                 serverId: activeId,
-                purgeDiagnostics: !purgedDiagnostics
+                purgeCurrentBinding: !purgedCurrentBinding
             )
         } else {
             await TokenStore.shared.clearTokens()

@@ -204,6 +204,73 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(DiagnosticsCoordinator.breadcrumbCaptureEnabled(for: available, consentStore: store))
     }
 
+    // MARK: - Offline capture fallback restricted to transient failures (round 4)
+
+    func testCaptureFallbackAllowsTransientFailures() {
+        // Offline / transport failures and 5xx server errors are transient: a
+        // persistent capture may fall back to the last-known snapshot.
+        XCTAssertTrue(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+            HTTPError.network(underlying: URLError(.notConnectedToInternet))
+        ))
+        XCTAssertTrue(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+            URLError(.timedOut)
+        ))
+        XCTAssertTrue(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+            HTTPError.http(statusCode: 500, body: nil)
+        ))
+        XCTAssertTrue(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+            HTTPError.http(statusCode: 503, body: nil)
+        ))
+    }
+
+    func testCaptureFallbackFailsClosedOnDefinitiveFailures() {
+        // Auth/permission failures, a missing endpoint, other 4xx, malformed
+        // responses, and identity-level coordinator errors must NOT fall back —
+        // the session may be signed out or the endpoint gone, so capturing
+        // against the last-known binding would misattribute the report.
+        for status in [400, 401, 403, 404, 409, 422] {
+            XCTAssertFalse(
+                DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+                    HTTPError.http(statusCode: status, body: nil)
+                ),
+                "HTTP \(status) must fail closed"
+            )
+        }
+        XCTAssertFalse(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+            HTTPError.invalidResponse
+        ))
+        XCTAssertFalse(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+            HTTPError.decodingFailed(type: "X", underlying: URLError(.cannotDecodeContentData))
+        ))
+        XCTAssertFalse(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+            DiagnosticsCoordinatorError.identityChanged
+        ))
+        XCTAssertFalse(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+            DiagnosticsCoordinatorError.missingAccountUserID
+        ))
+    }
+
+    // MARK: - Profile-mismatch upload gate (round 4, finding 6)
+
+    func testProfileUploadMismatchHoldsOnlyOnBothPresentDisagreement() {
+        // Both present and different -> the server would reject with
+        // profile_mismatch, so the client must hold the report.
+        XCTAssertTrue(DiagnosticsCoordinator.isProfileUploadMismatch(captured: "profile-a", active: "profile-b"))
+        XCTAssertTrue(DiagnosticsCoordinator.isProfileUploadMismatch(captured: " profile-a ", active: "profile-b"))
+
+        // Same profile (after trim) -> no conflict.
+        XCTAssertFalse(DiagnosticsCoordinator.isProfileUploadMismatch(captured: "profile-a", active: "profile-a"))
+        XCTAssertFalse(DiagnosticsCoordinator.isProfileUploadMismatch(captured: " profile-a ", active: "profile-a"))
+
+        // Either side nil/blank -> the server resolves from the single present
+        // value with no conflict, so these must NOT be held.
+        XCTAssertFalse(DiagnosticsCoordinator.isProfileUploadMismatch(captured: nil, active: "profile-b"))
+        XCTAssertFalse(DiagnosticsCoordinator.isProfileUploadMismatch(captured: "profile-a", active: nil))
+        XCTAssertFalse(DiagnosticsCoordinator.isProfileUploadMismatch(captured: nil, active: nil))
+        XCTAssertFalse(DiagnosticsCoordinator.isProfileUploadMismatch(captured: "   ", active: "profile-b"))
+        XCTAssertFalse(DiagnosticsCoordinator.isProfileUploadMismatch(captured: "profile-a", active: "   "))
+    }
+
     // MARK: - Helpers
 
     private func makeConsentStore() -> DiagnosticsConsentStore {
