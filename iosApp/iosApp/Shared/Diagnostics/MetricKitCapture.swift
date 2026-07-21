@@ -55,16 +55,12 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
             ) else {
                 return
             }
-            // Scope breadcrumbs to the incident's reporting window. The journal
-            // outlives the crashed run and, by delivery time (often next
-            // launch), also holds relaunch and unrelated breadcrumbs; snapshot
-            // only the window's lines so the report doesn't carry post-incident
-            // context.
-            let breadcrumbs = DiagnosticsCoordinator.shared.breadcrumbsData(
-                inWindowFrom: periodStart,
-                to: periodEnd
-            )
-            let logSnapshot = await DiagnosticsCoordinator.shared.logSnapshotArtifact(since: periodStart)
+            // MetricKit exposes a reporting interval, not the instant or local
+            // run that produced a crash/hang. A relaunch can occur before that
+            // interval ends, so timestamp filtering cannot safely distinguish
+            // failed-run breadcrumbs/logs from the new session. Keep only the
+            // MetricKit diagnostic and post-restart device snapshot until a
+            // reliable incident/run correlation is available.
             let report = try? Self.captureFixtureDiagnostic(
                 rawJSON: rawJSON,
                 type: type,
@@ -72,9 +68,7 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
                 periodEnd: periodEnd,
                 context: context,
                 store: PendingReportStore.shared,
-                deviceSnapshotBuilder: .live,
-                breadcrumbsData: breadcrumbs,
-                logSnapshot: logSnapshot
+                deviceSnapshotBuilder: .live
             )
             if report != nil {
                 NotificationCenter.default.post(name: .diagnosticsPendingReportCreated, object: nil)
@@ -90,9 +84,7 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
         periodEnd: Date,
         context: DiagnosticsCaptureContext,
         store: PendingReportStore,
-        deviceSnapshotBuilder: DeviceSnapshotBuilder,
-        breadcrumbsData: Data? = nil,
-        logSnapshot: PendingReportArtifact? = nil
+        deviceSnapshotBuilder: DeviceSnapshotBuilder
     ) throws -> PendingReport? {
         let fingerprint = MetricKitDiagnosticParser.fingerprint(for: rawJSON)
         guard !store.hasSeenFingerprint(fingerprint, now: periodEnd) else {
@@ -111,21 +103,16 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
             capturedAt: periodEnd,
             crash: crash,
             deviceSummary: deviceSnapshotBuilder.deviceSummary(from: device),
-            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(for: context.binding)
+            // MetricKit does not expose a local run/incident identifier. A
+            // binding-scoped recent-session list can include playback from the
+            // relaunch that receives this payload, so it cannot be attributed
+            // safely to the diagnostic.
+            playbackSessionIDs: []
         )
 
-        var artifacts = [
+        let artifacts = [
             PendingReportArtifact(relativePath: "crash/metrickit.json", data: rawJSON),
         ]
-        if let breadcrumbsData, !breadcrumbsData.isEmpty {
-            artifacts.append(PendingReportArtifact(relativePath: "breadcrumbs.jsonl", data: breadcrumbsData))
-        }
-        // Logs snapshotted at delivery time (see logSnapshotArtifact) so the
-        // report carries the failure-time ring rather than the live one read
-        // whenever the bundle is finally uploaded.
-        if let logSnapshot, !logSnapshot.data.isEmpty {
-            artifacts.append(logSnapshot)
-        }
 
         return try store.save(PendingReportCapture(
             binding: context.binding,

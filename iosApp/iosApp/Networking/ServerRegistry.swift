@@ -183,14 +183,19 @@ final class ServerRegistry {
         }
         #if os(iOS) || os(tvOS)
         // Activating a server restores its saved profile via the mirror above,
-        // bypassing AuthService's profileId setter. Re-evaluate diagnostics
-        // eligibility so a restored child profile can't inherit the previous
-        // server's adult eligibility for the breadcrumb/sentinel gate.
-        DiagnosticsCoordinator.activeProfileDidChange()
+        // bypassing AuthService's profileId setter. Fail diagnostics closed
+        // synchronously, but do not start `/profiles` while URL routing and the
+        // active token slot still refer to different servers.
+        DiagnosticsCoordinator.activeProfileWillChange()
         #endif
         activeServerId = serverId
         touchLastUsed(serverId)
         await TokenStore.shared.switchActiveServer(serverId: serverId)
+        #if os(iOS) || os(tvOS)
+        // URL, active id, and credential slot now agree; it is safe to resolve
+        // the restored profile against the newly selected server.
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
 
         // Switching between already-added servers is a per-server boundary too:
         // drop the previous server's AI capability/quota probes after the URL,

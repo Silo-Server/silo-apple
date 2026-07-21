@@ -69,11 +69,13 @@ actor DiagnosticsAPI {
                 parts: [
                     HTTPMultipartPart(
                         name: "manifest",
+                        filename: "manifest.json",
                         contentType: "application/json",
                         data: manifestData
                     ),
                     HTTPMultipartPart(
                         name: "bundle",
+                        filename: "bundle.tar.gz",
                         contentType: "application/gzip",
                         data: bundleData
                     ),

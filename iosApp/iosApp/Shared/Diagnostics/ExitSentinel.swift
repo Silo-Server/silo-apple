@@ -57,6 +57,36 @@ struct ExitSentinelMarkerStore {
 
     func writeCurrent(_ marker: ExitSentinelMarker) { write(marker, to: currentURL) }
 
+    /// Attach the resolved binding/profile to this run's marker, or rebind it
+    /// after a same-foreground server/account change. Filling an initially nil
+    /// binding preserves the original launch time. Changing an already-bound
+    /// identity starts a fresh marker window so OSLog harvested for the new
+    /// account cannot reach back into the previous account's run segment.
+    @discardableResult
+    func bindCurrentRun(
+        runID: String,
+        binding: DiagnosticsBinding,
+        profileID: String?,
+        now: Date = Date()
+    ) -> ExitSentinelMarker? {
+        guard let existing = readCurrent(), existing.runID == runID else {
+            return nil
+        }
+        guard existing.binding != binding || existing.profileID != profileID else {
+            return existing
+        }
+        let marker = ExitSentinelMarker(
+            runID: existing.runID,
+            startedAt: existing.binding == nil
+                ? existing.startedAt
+                : DiagnosticsTimestamp.string(from: now),
+            binding: binding,
+            profileID: profileID
+        )
+        writeCurrent(marker)
+        return marker
+    }
+
     /// Promote an unclean previous run's marker — one sitting in the current
     /// slot with a different run id — into the leftover slot *before* the caller
     /// overwrites the current slot with this run's marker, so the crash evidence
@@ -83,6 +113,19 @@ struct ExitSentinelMarkerStore {
     /// leftover slot is deliberately left intact so an un-captured crash marker
     /// is retried on the next launch instead of being lost.
     func clearCurrent() { remove(at: currentURL) }
+
+    /// Clear the current slot only when it belongs to `runID`. During cold
+    /// launch the slot can still hold an unclean previous run that has not yet
+    /// been promoted to the leftover slot; profile-gate disarming must preserve
+    /// that crash evidence for `appDidEnterForeground()` to promote.
+    @discardableResult
+    func clearCurrent(runID: String) -> Bool {
+        guard readCurrent()?.runID == runID else {
+            return false
+        }
+        clearCurrent()
+        return true
+    }
 
     func clearLeftover() { remove(at: leftoverURL) }
 
@@ -140,15 +183,17 @@ final class ExitSentinel {
 
     // Consent gate, wired by DiagnosticsCoordinator to the same signal that
     // gates breadcrumb capture (mode != never for the active binding). While
-    // disabled the sentinel neither arms nor reports, and any marker left on
-    // disk is removed. Read under `lock` (see appDidEnterForeground) and
+    // disabled the sentinel neither arms nor reports. This process's current
+    // marker is removed, but an unclean previous run is preserved for later
+    // promotion/capture. Read under `lock` (see appDidEnterForeground) and
     // replaced only through `setCaptureEnabled` so the closure storage is
     // never accessed concurrently.
-    private var captureEnabledGate: () -> Bool = { true }
+    private var captureEnabledGate: () -> Bool = { false }
 
     private let store: ExitSentinelMarkerStore
     private let lock = NSLock()
     private var leftoverMarker: ExitSentinelMarker?
+    private var isForeground = false
 
     /// Serializes replacing the consent gate with the lock that guards its
     /// read, so the coordinator can update it off the main actor safely.
@@ -178,11 +223,7 @@ final class ExitSentinel {
         lock.lock()
         defer { lock.unlock() }
 
-        guard captureEnabledGate() else {
-            leftoverMarker = nil
-            store.clearAll()
-            return
-        }
+        isForeground = true
 
         // Preserve an unclean previous run's marker into the leftover slot
         // before arming (overwriting) the current slot below, so a crash marker
@@ -193,19 +234,50 @@ final class ExitSentinel {
             leftoverMarker = preserved
         }
 
+        guard captureEnabledGate() else {
+            store.clearCurrent(runID: DiagLog.captureSessionID)
+            return
+        }
+        armCurrentRun(binding: binding, profileID: profileID, now: now)
+    }
+
+    /// Reconcile the marker after the latest async profile check. This is not a
+    /// synthetic foreground event: a successful adult result arms only if a
+    /// real lifecycle callback says the app is still foreground. A backgrounded
+    /// app remains disarmed until its next real `appDidEnterForeground()`.
+    func profileEligibilityDidResolve(
+        binding: DiagnosticsBinding,
+        profileID: String?,
+        now: Date = Date()
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard captureEnabledGate() else {
+            store.clearCurrent(runID: DiagLog.captureSessionID)
+            return
+        }
+        guard isForeground else { return }
+        armCurrentRun(binding: binding, profileID: profileID, now: now)
+    }
+
+    /// Arm or update this process's marker. Caller holds `lock`.
+    private func armCurrentRun(
+        binding: DiagnosticsBinding?,
+        profileID: String?,
+        now: Date
+    ) {
         let existing = store.readCurrent()
         if let existing, existing.runID == DiagLog.captureSessionID {
-            // The current run's marker already exists. Rewrite it only to fill
-            // in the binding once it becomes known — the first foreground can
-            // precede the first status refresh — keeping the original start
-            // time so the run's duration is unchanged.
-            if existing.binding == nil, binding != nil {
-                store.writeCurrent(ExitSentinelMarker(
+            // Fill an initially unknown binding, or rebind an existing marker
+            // after a server/account switch in this same foreground run.
+            if let binding {
+                store.bindCurrentRun(
                     runID: existing.runID,
-                    startedAt: existing.startedAt,
                     binding: binding,
-                    profileID: profileID
-                ))
+                    profileID: profileID,
+                    now: now
+                )
             }
             return
         }
@@ -219,32 +291,34 @@ final class ExitSentinel {
 
     /// Fill in the diagnostics binding on the *current run's* marker as soon as
     /// diagnostics resolves it, rather than waiting for the next foreground. The
-    /// sentinel arms in `SiloApp.init` — before the first status refresh — so on
-    /// a first login after install (or after a purge), with no last-known
-    /// snapshot, the marker is written with `binding == nil`. The coordinator
-    /// calls this on refresh completion so a crash later in this same foreground
-    /// is attributed to the right account instead of being treated as a legacy
-    /// (unbound) marker on relaunch. No-op if there is no marker, it belongs to
-    /// another run, or it is already bound; the original `startedAt` is kept so
-    /// the run's duration is unchanged. Resolving binding/profile before calling
-    /// keeps this off the coordinator's breadcrumb-context lock (see
-    /// `appDidEnterForeground`).
-    func bindCurrentMarker(binding: DiagnosticsBinding, profileID: String?) {
+    /// sentinel receives its first lifecycle callback before status/profile
+    /// resolution. If it was already armed from last-known context, this fills
+    /// an unknown binding; otherwise the later eligibility reconciliation arms
+    /// it. If the marker is already bound to another account, rewrite it and
+    /// begin a new evidence window for the new binding.
+    /// Resolving binding/profile before calling keeps this off the coordinator's
+    /// breadcrumb-context lock (see `appDidEnterForeground`).
+    func bindCurrentMarker(binding: DiagnosticsBinding, profileID: String?, now: Date = Date()) {
         lock.lock()
         defer { lock.unlock() }
 
         guard captureEnabledGate() else { return }
-        guard let existing = store.readCurrent(),
-              existing.runID == DiagLog.captureSessionID,
-              existing.binding == nil else {
-            return
-        }
-        store.writeCurrent(ExitSentinelMarker(
-            runID: existing.runID,
-            startedAt: existing.startedAt,
+        store.bindCurrentRun(
+            runID: DiagLog.captureSessionID,
             binding: binding,
-            profileID: profileID
-        ))
+            profileID: profileID,
+            now: now
+        )
+    }
+
+    /// Immediately remove only this run's armed marker when profile eligibility
+    /// is forced closed. A previously preserved crash leftover remains available
+    /// for its original adult profile; a newly confirmed adult profile re-arms
+    /// the current run only when the tracked lifecycle is still foreground.
+    func disarmCurrentRun() {
+        lock.lock()
+        defer { lock.unlock() }
+        store.clearCurrent(runID: DiagLog.captureSessionID)
     }
 
     func purge() {
@@ -260,11 +334,11 @@ final class ExitSentinel {
     }
 
     func appDidEnterBackground() {
-        clearMarker()
+        clearMarkerAndLeaveForeground()
     }
 
     func appWillTerminate() {
-        clearMarker()
+        clearMarkerAndLeaveForeground()
     }
 
     func captureLeftoverIfNeeded() async {
@@ -292,10 +366,11 @@ final class ExitSentinel {
     /// Clears only the current-run slot; the preserved leftover slot survives a
     /// normal background/terminate so an un-captured crash marker is retried on
     /// the next launch.
-    private func clearMarker() {
+    private func clearMarkerAndLeaveForeground() {
         lock.lock()
         defer { lock.unlock() }
 
+        isForeground = false
         store.clearCurrent()
     }
 }

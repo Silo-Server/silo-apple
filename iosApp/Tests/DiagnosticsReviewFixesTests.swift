@@ -343,6 +343,30 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertEqual(store.readLeftover(), firstCrash)
     }
 
+    func testExitSentinelStoreDisarmsOnlyTheCurrentProcessRun() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ExitSentinelStoreTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let store = ExitSentinelMarkerStore(
+            currentURL: directory.appendingPathComponent("exit-sentinel.json", isDirectory: false)
+        )
+
+        let previousCrash = ExitSentinelMarker(
+            runID: "previous-run",
+            startedAt: "2026-07-21T10:00:00.000Z"
+        )
+        store.writeCurrent(previousCrash)
+        XCTAssertFalse(store.clearCurrent(runID: "current-run"))
+        XCTAssertEqual(store.readCurrent(), previousCrash)
+
+        store.writeCurrent(ExitSentinelMarker(
+            runID: "current-run",
+            startedAt: "2026-07-21T11:00:00.000Z"
+        ))
+        XCTAssertTrue(store.clearCurrent(runID: "current-run"))
+        XCTAssertNil(store.readCurrent())
+    }
+
     func testExitSentinelStoreLeftoverURLIsDistinctSibling() {
         let currentURL = URL(fileURLWithPath: "/tmp/diag/exit-sentinel.json")
         let store = ExitSentinelMarkerStore(currentURL: currentURL)
@@ -351,38 +375,182 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertNotEqual(store.currentURL, store.leftoverURL)
     }
 
-    // MARK: - MetricKit breadcrumb window filtering (round 6 #4)
+    // MARK: - MetricKit evidence isolation (PR #98)
 
-    func testBreadcrumbsInWindowKeepsOnlyIncidentWindowLines() {
-        func line(at seconds: TimeInterval) -> DiagnosticsLogLine {
+    func testMetricKitCaptureOmitsUncorrelatedProcessEvidence() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diag-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = PendingReportStore(rootDirectory: root)
+        let capturedAt = Date(timeIntervalSince1970: 2_000)
+        let context = DiagnosticsCaptureContext(
+            binding: DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a"),
+            profileID: "profile-a",
+            consentMode: .always,
+            noticeVersion: 1,
+            appVersion: "1.0.0",
+            appBuild: "1",
+            platform: .ios,
+            osVersion: "18.0"
+        )
+
+        let report = try XCTUnwrap(MetricKitCapture.captureFixtureDiagnostic(
+            rawJSON: Data(#"{"diagnostic":"fixture"}"#.utf8),
+            type: .crash,
+            periodStart: capturedAt.addingTimeInterval(-3_600),
+            periodEnd: capturedAt,
+            context: context,
+            store: store,
+            deviceSnapshotBuilder: .live
+        ))
+
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: report.directoryURL.appendingPathComponent("crash/metrickit.json").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: report.directoryURL.appendingPathComponent("logs.jsonl").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: report.directoryURL.appendingPathComponent("breadcrumbs.jsonl").path
+        ))
+        XCTAssertTrue(report.manifest.playbackSessionIds.isEmpty)
+    }
+
+    func testAbnormalExitLogsRequireFailedRunID() throws {
+        func breadcrumb(runID: String, at seconds: TimeInterval) -> DiagnosticsLogLine {
             DiagnosticsLogLine(
                 ts: DiagnosticsTimestamp.string(from: Date(timeIntervalSince1970: seconds)),
-                run: "run",
+                run: runID,
                 lvl: .info,
                 cat: .lifecycle,
                 tag: "Scene",
                 msg: "state"
             )
         }
-        let unparseable = DiagnosticsLogLine(
-            ts: "not-a-date", run: "run", lvl: .info, cat: .lifecycle, tag: "Scene", msg: "state"
+
+        func renderedLine(runID: String, at seconds: TimeInterval) throws -> String {
+            let line = breadcrumb(runID: runID, at: seconds)
+            let data = try DiagnosticsJSONCoding.makeEncoder().encode(line)
+            return try XCTUnwrap(String(data: data, encoding: .utf8))
+        }
+
+        let beforeStart = try renderedLine(runID: "failed-run", at: 900)
+        let failedRun = try renderedLine(runID: "failed-run", at: 1_050)
+        let relaunch = try renderedLine(runID: "new-run", at: 1_100)
+        let filtered = DiagnosticsCoordinator.logLines(
+            [beforeStart, failedRun, relaunch, "not-json"],
+            forRunID: "failed-run",
+            since: Date(timeIntervalSince1970: 1_000)
         )
 
-        let beforeWindow = line(at: 500)       // older retained segment
-        let atStart = line(at: 1_000)
-        let midWindow = line(at: 1_050)
-        let atEnd = line(at: 1_100)
-        let withinMargin = line(at: 1_125)     // clock skew after periodEnd
-        let relaunch = line(at: 5_000)         // next-launch breadcrumb
+        XCTAssertEqual(filtered, [failedRun])
 
-        let filtered = DiagnosticsCoordinator.breadcrumbsInWindow(
-            [beforeWindow, atStart, midWindow, atEnd, withinMargin, relaunch, unparseable],
-            from: Date(timeIntervalSince1970: 1_000),
-            to: Date(timeIntervalSince1970: 1_100),
-            margin: 30
+        let beforeStartBreadcrumb = breadcrumb(runID: "failed-run", at: 900)
+        let failedRunBreadcrumb = breadcrumb(runID: "failed-run", at: 1_050)
+        let relaunchBreadcrumb = breadcrumb(runID: "new-run", at: 1_100)
+        XCTAssertEqual(
+            DiagnosticsCoordinator.breadcrumbLines(
+                [beforeStartBreadcrumb, failedRunBreadcrumb, relaunchBreadcrumb],
+                forRunID: "failed-run",
+                since: Date(timeIntervalSince1970: 1_000)
+            ),
+            [failedRunBreadcrumb]
         )
+    }
 
-        XCTAssertEqual(filtered, [atStart, midWindow, atEnd, withinMargin])
+    // MARK: - Offline profile eligibility cache (PR #98)
+
+    func testProfileEligibilityCacheIsScopedToBindingAndProfile() {
+        let suite = UserDefaults(suiteName: "diag-tests-\(UUID().uuidString)")!
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        let store = DiagnosticsProfileEligibilityStore(defaults: defaults)
+        let bindingA = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-a")
+        let bindingB = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-b")
+
+        store.record(isChild: false, profileID: "profile-1", binding: bindingA)
+        store.record(isChild: true, profileID: "profile-1", binding: bindingB)
+
+        XCTAssertEqual(store.isChild(profileID: "profile-1", binding: bindingA), false)
+        XCTAssertEqual(store.isChild(profileID: "profile-1", binding: bindingB), true)
+        XCTAssertNil(store.isChild(profileID: "profile-2", binding: bindingA))
+
+        // The next-launch store sees the same last-known values while offline.
+        let reloaded = DiagnosticsProfileEligibilityStore(defaults: defaults)
+        XCTAssertEqual(reloaded.isChild(profileID: "profile-1", binding: bindingA), false)
+    }
+
+    // MARK: - Exit sentinel rebinding (PR #98)
+
+    func testExitSentinelStoreRebindsCurrentRunAndResetsEvidenceWindow() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ExitSentinelStoreTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let store = ExitSentinelMarkerStore(
+            currentURL: directory.appendingPathComponent("exit-sentinel.json", isDirectory: false)
+        )
+        let originalStart = "2026-07-21T10:00:00.000Z"
+        let bindingA = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-a")
+        let bindingB = DiagnosticsBinding(serverInstanceID: "srv-b", accountUserID: "acct-b")
+        store.writeCurrent(ExitSentinelMarker(runID: "run", startedAt: originalStart))
+
+        let initiallyBound = try XCTUnwrap(store.bindCurrentRun(
+            runID: "run",
+            binding: bindingA,
+            profileID: "profile-a",
+            now: Date(timeIntervalSince1970: 1_000)
+        ))
+        XCTAssertEqual(initiallyBound.startedAt, originalStart)
+        XCTAssertEqual(initiallyBound.binding, bindingA)
+
+        let reboundAt = Date(timeIntervalSince1970: 2_000)
+        let rebound = try XCTUnwrap(store.bindCurrentRun(
+            runID: "run",
+            binding: bindingB,
+            profileID: "profile-b",
+            now: reboundAt
+        ))
+        XCTAssertEqual(rebound.startedAt, DiagnosticsTimestamp.string(from: reboundAt))
+        XCTAssertEqual(rebound.binding, bindingB)
+        XCTAssertEqual(rebound.profileID, "profile-b")
+
+        // Re-applying the same identity must not move the start time forward.
+        let unchanged = try XCTUnwrap(store.bindCurrentRun(
+            runID: "run",
+            binding: bindingB,
+            profileID: "profile-b",
+            now: Date(timeIntervalSince1970: 3_000)
+        ))
+        XCTAssertEqual(unchanged, rebound)
+    }
+
+    // MARK: - Diagnostics multipart filenames (PR #98)
+
+    func testDiagnosticsMultipartPartsIncludeStableFilenames() {
+        let body = HTTPClient.multipartBody(
+            parts: [
+                HTTPMultipartPart(
+                    name: "manifest",
+                    filename: "manifest.json",
+                    contentType: "application/json",
+                    data: Data("{}".utf8)
+                ),
+                HTTPMultipartPart(
+                    name: "bundle",
+                    filename: "bundle.tar.gz",
+                    contentType: "application/gzip",
+                    data: Data([0x1f, 0x8b])
+                ),
+            ],
+            boundary: "diagnostics-test"
+        )
+        let rendered = String(decoding: body, as: UTF8.self)
+
+        XCTAssertTrue(rendered.contains(
+            #"Content-Disposition: form-data; name="manifest"; filename="manifest.json""#
+        ))
+        XCTAssertTrue(rendered.contains(
+            #"Content-Disposition: form-data; name="bundle"; filename="bundle.tar.gz""#
+        ))
     }
 
     // MARK: - Helpers

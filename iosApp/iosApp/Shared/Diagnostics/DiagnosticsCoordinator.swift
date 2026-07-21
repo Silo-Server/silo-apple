@@ -10,6 +10,94 @@ struct DiagnosticsStatusSnapshot: Equatable, Codable {
     let binding: DiagnosticsBinding
 }
 
+struct DiagnosticsProfileEligibilityRecord: Codable, Equatable {
+    let binding: DiagnosticsBinding
+    let profileID: String
+    let isChild: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case binding
+        case profileID = "profile_id"
+        case isChild = "is_child"
+    }
+}
+
+/// Persists the last profile eligibility resolved from `/profiles`, scoped to
+/// the diagnostics binding as well as the profile id. MetricKit can deliver a
+/// one-shot crash payload on a later offline launch; this cache lets that path
+/// retain the last known adult eligibility without ever reusing another
+/// account's profile result.
+final class DiagnosticsProfileEligibilityStore {
+    static let shared = DiagnosticsProfileEligibilityStore()
+
+    private static let key = "diagnostics.profileEligibility.v1"
+    private let defaults: SharedDefaults
+    private let lock = NSLock()
+
+    init(defaults: SharedDefaults = .shared) {
+        self.defaults = defaults
+    }
+
+    func record(isChild: Bool, profileID: String, binding: DiagnosticsBinding) {
+        guard !profileID.isEmpty else { return }
+        lock.lock()
+        var records = load()
+        records.removeAll { $0.binding == binding && $0.profileID == profileID }
+        records.append(DiagnosticsProfileEligibilityRecord(
+            binding: binding,
+            profileID: profileID,
+            isChild: isChild
+        ))
+        save(records)
+        lock.unlock()
+    }
+
+    func isChild(profileID: String, binding: DiagnosticsBinding) -> Bool? {
+        lock.lock()
+        let value = load().first { $0.binding == binding && $0.profileID == profileID }?.isChild
+        lock.unlock()
+        return value
+    }
+
+    func remove(binding: DiagnosticsBinding) {
+        lock.lock()
+        let records = load()
+        let filtered = records.filter { $0.binding != binding }
+        if filtered.count != records.count {
+            save(filtered)
+        }
+        lock.unlock()
+    }
+
+    func remove(serverInstanceID: String) {
+        lock.lock()
+        let records = load()
+        let filtered = records.filter { $0.binding.serverInstanceID != serverInstanceID }
+        if filtered.count != records.count {
+            save(filtered)
+        }
+        lock.unlock()
+    }
+
+    private func load() -> [DiagnosticsProfileEligibilityRecord] {
+        guard let data = defaults.data(forKey: Self.key),
+              let records = try? DiagnosticsJSONCoding.makeDecoder().decode(
+                  [DiagnosticsProfileEligibilityRecord].self,
+                  from: data
+              ) else {
+            return []
+        }
+        return records
+    }
+
+    private func save(_ records: [DiagnosticsProfileEligibilityRecord]) {
+        guard let data = try? DiagnosticsJSONCoding.makeEncoder().encode(records) else {
+            return
+        }
+        defaults.set(data, forKey: Self.key)
+    }
+}
+
 enum DiagnosticsUploadDecision: Equatable {
     case uploaded(DiagnosticsUploadResponse)
     case keptRetryable
@@ -31,11 +119,16 @@ actor DiagnosticsCoordinator {
     /// Whether the profile active right now may capture diagnostics. Breadcrumb
     /// capture is a synchronous gate, but child-profile eligibility needs an
     /// async lookup, so it is cached here and re-resolved on profile switches
-    /// (`activeProfileDidChange`) and status refreshes. Defaults to eligible; a
-    /// switch marks it ineligible immediately and only re-enables once the async
-    /// child check confirms a non-child profile, so no breadcrumb is captured
-    /// under a child in the resolution window. Guarded by `breadcrumbContextLock`.
-    nonisolated(unsafe) private static var activeProfileBreadcrumbEligible = true
+    /// (`activeProfileDidChange`) and status refreshes. Defaults to ineligible:
+    /// a restored child profile can cold-launch without performing a profile
+    /// write, so capture must stay off until an async child check positively
+    /// confirms the active profile is not a child. Guarded by
+    /// `breadcrumbContextLock`.
+    nonisolated(unsafe) private static var activeProfileBreadcrumbEligible = false
+    /// Monotonic token for async profile-eligibility checks. A profile/server
+    /// change can start a new `/profiles` request before the old one completes;
+    /// only the newest generation may publish into the synchronous capture gate.
+    nonisolated(unsafe) private static var activeProfileEligibilityGeneration: UInt64 = 0
 
     private let api: DiagnosticsAPI
     private let continuumAPI: ContinuumAPI
@@ -43,6 +136,7 @@ actor DiagnosticsCoordinator {
     private let pendingStore: PendingReportStore
     private let bundleBuilder: DiagnosticsBundleBuilder
     private let deviceSnapshotBuilder: DeviceSnapshotBuilder
+    private let profileEligibilityStore: DiagnosticsProfileEligibilityStore
 
     private var cachedStatus: DiagnosticsStatusSnapshot?
     private var cachedStatusServerRegistryID: String?
@@ -54,7 +148,8 @@ actor DiagnosticsCoordinator {
         consentStore: DiagnosticsConsentStore = .shared,
         pendingStore: PendingReportStore = .shared,
         bundleBuilder: DiagnosticsBundleBuilder = DiagnosticsBundleBuilder(),
-        deviceSnapshotBuilder: DeviceSnapshotBuilder = .live
+        deviceSnapshotBuilder: DeviceSnapshotBuilder = .live,
+        profileEligibilityStore: DiagnosticsProfileEligibilityStore = .shared
     ) {
         self.api = api
         self.continuumAPI = continuumAPI
@@ -62,6 +157,7 @@ actor DiagnosticsCoordinator {
         self.pendingStore = pendingStore
         self.bundleBuilder = bundleBuilder
         self.deviceSnapshotBuilder = deviceSnapshotBuilder
+        self.profileEligibilityStore = profileEligibilityStore
     }
 
     func refreshStatus() async throws -> DiagnosticsStatusSnapshot {
@@ -103,7 +199,10 @@ actor DiagnosticsCoordinator {
         // Keep the synchronous breadcrumb eligibility flag current for the
         // profile in view (covers a launch directly into a child profile).
         // Fire-and-forget so a status refresh is not gated on getProfiles.
-        Task { await reevaluateActiveProfileBreadcrumbEligibility() }
+        let eligibilityGeneration = Self.beginActiveProfileEligibilityResolution(invalidateCurrent: false)
+        Task {
+            await reevaluateActiveProfileBreadcrumbEligibility(generation: eligibilityGeneration)
+        }
         if let serverId = ServerRegistry.shared.activeServerId {
             Self.ServerBindingIndex.record(
                 serverId: serverId,
@@ -151,17 +250,48 @@ actor DiagnosticsCoordinator {
         guard let profiles = try? await AuthService.shared.getProfiles() else {
             return nil
         }
-        return profiles.first { $0.id == profileID }?.isChild
+        return profiles.first(where: { $0.id == profileID })?.isChild
     }
 
     /// Child status of the profile active right now. No profile selected means
     /// no child session is in front of us, so it reports non-child (false); an
     /// active profile whose child status can't be resolved reports nil.
-    private func activeProfileIsChild() async -> Bool? {
+    private func activeProfileIsChild(
+        binding: DiagnosticsBinding,
+        persistResult: Bool = true
+    ) async -> Bool? {
         guard let activeProfileID = AuthService.shared.profileId else {
             return false
         }
-        return await profileIsChild(activeProfileID)
+        let serverRegistryID = ServerRegistry.shared.activeServerId
+        let isChild = await profileIsChild(activeProfileID)
+        // A profile/server switch can happen while `/profiles` is in flight.
+        // Never publish the result into the new identity's synchronous gate.
+        guard activeProfileID == AuthService.shared.profileId,
+              serverRegistryID == ServerRegistry.shared.activeServerId,
+              binding == Self.currentDiagnosticsBinding else {
+            return nil
+        }
+        if let isChild, persistResult {
+            profileEligibilityStore.record(
+                isChild: isChild,
+                profileID: activeProfileID,
+                binding: binding
+            )
+        }
+        return isChild
+    }
+
+    /// Last positively resolved child status for this exact account/profile.
+    /// Persistent captures use it only after accepting a last-known diagnostics
+    /// status fallback, because re-fetching `/profiles` while offline would turn
+    /// an otherwise valid crash capture into a guaranteed drop. An absent cache
+    /// entry fails closed.
+    private func cachedActiveProfileIsChild(binding: DiagnosticsBinding) -> Bool? {
+        guard let activeProfileID = AuthService.shared.profileId else {
+            return false
+        }
+        return profileEligibilityStore.isChild(profileID: activeProfileID, binding: binding)
     }
 
     func pendingReportsForCurrentBinding() async -> [PendingReport] {
@@ -210,10 +340,12 @@ actor DiagnosticsCoordinator {
     }
 
     /// Freezes the current log ring plus this-process OSLog into a `logs.jsonl`
-    /// artifact so it can be stored with a pending report at capture time.
-    func logSnapshotArtifact(since: Date) -> PendingReportArtifact? {
+    /// artifact so it can be stored with an abnormal-exit report at capture
+    /// time. The tvOS sentinel provides the concrete start of the failed run.
+    func logSnapshotArtifact(since start: Date, runID: String) -> PendingReportArtifact? {
         let ringSnapshot = DiagLog.ring.snapshot()
-        let lines = ringSnapshot.lines + harvestOSLogLines(since: since)
+        let candidateLines = ringSnapshot.lines + harvestOSLogLines(since: start)
+        let lines = Self.logLines(candidateLines, forRunID: runID, since: start)
         guard !lines.isEmpty else {
             return nil
         }
@@ -360,8 +492,10 @@ actor DiagnosticsCoordinator {
         requirePersistentCapture: Bool = true
     ) async -> DiagnosticsCaptureContext? {
         let snapshot: DiagnosticsStatusSnapshot
+        let usedLastKnownSnapshot: Bool
         do {
             snapshot = try await refreshStatus()
+            usedLastKnownSnapshot = false
         } catch {
             // A persistent capture (crash/hang/abnormal-exit) must survive being
             // offline: fall back to the last-known-good status/binding so it is
@@ -379,6 +513,7 @@ actor DiagnosticsCoordinator {
                 return nil
             }
             snapshot = fallback
+            usedLastKnownSnapshot = true
         }
 
         let record = consentStore.record(
@@ -397,17 +532,17 @@ actor DiagnosticsCoordinator {
             if record.mode == .never {
                 return nil
             }
-            // Child profiles cannot manage diagnostics. A crash captured while
-            // one is active must not be persisted as an account-bound report,
-            // or an adult profile on the same account could later be prompted
-            // to upload the child's session. Fail closed: persist only when the
-            // active profile is positively known to be non-child. An
-            // undeterminable child status (getProfiles() failed while offline,
-            // or an unknown profile) skips capture rather than risk saving a
-            // child session's crash — the prompt/upload gate looks at the
-            // current profile, not the report's captured profile, so an
-            // unknown-at-capture child could otherwise be uploaded by an adult.
-            guard await activeProfileIsChild() == false else {
+            // Child profiles cannot manage diagnostics. Resolve live whenever
+            // the status request succeeded. If the status itself fell back
+            // because the server is offline, use only the last eligibility
+            // recorded for this exact binding/profile; making another live
+            // `/profiles` request there would always fail and discard a
+            // one-shot MetricKit delivery. Missing or stale identity data still
+            // fails closed.
+            let isChild = usedLastKnownSnapshot
+                ? cachedActiveProfileIsChild(binding: snapshot.binding)
+                : await activeProfileIsChild(binding: snapshot.binding)
+            guard isChild == false else {
                 return nil
             }
         }
@@ -445,10 +580,12 @@ actor DiagnosticsCoordinator {
         if serverInstanceIDs.isEmpty {
             pendingStore.purge(serverInstanceID: serverId)
             consentStore.remove(serverInstanceID: serverId)
+            profileEligibilityStore.remove(serverInstanceID: serverId)
         } else {
             for serverInstanceID in serverInstanceIDs {
                 pendingStore.purge(serverInstanceID: serverInstanceID)
                 consentStore.remove(serverInstanceID: serverInstanceID)
+                profileEligibilityStore.remove(serverInstanceID: serverInstanceID)
             }
         }
         Self.ServerBindingIndex.remove(serverId: serverId)
@@ -506,7 +643,11 @@ actor DiagnosticsCoordinator {
         let device = deviceSnapshotBuilder.build(provenance: .postRestart)
         let capturedAt = Date()
         let breadcrumbLines = Self.breadcrumbJournal.readAll()
-        let crashedRunBreadcrumbLines = breadcrumbLines.filter { $0.run == marker.runID }
+        let crashedRunBreadcrumbLines = Self.breadcrumbLines(
+            breadcrumbLines,
+            forRunID: marker.runID,
+            since: marker.startedAtDate
+        )
         let lastKnownAliveAt = crashedRunBreadcrumbLines
             .compactMap { DiagnosticsDates.date(from: $0.ts) }
             .max()
@@ -539,7 +680,7 @@ actor DiagnosticsCoordinator {
         if !breadcrumbs.isEmpty {
             artifacts.append(PendingReportArtifact(relativePath: "breadcrumbs.jsonl", data: breadcrumbs))
         }
-        if let logSnapshot = logSnapshotArtifact(since: marker.startedAtDate) {
+        if let logSnapshot = logSnapshotArtifact(since: marker.startedAtDate, runID: marker.runID) {
             artifacts.append(logSnapshot)
         }
 
@@ -588,36 +729,36 @@ actor DiagnosticsCoordinator {
         Self.renderBreadcrumbs(Self.breadcrumbJournal.readAll())
     }
 
-    /// Breadcrumbs whose timestamp falls inside an incident window, with a
-    /// margin on each side. MetricKit delivers crash/hang diagnostics after the
-    /// fact (often the next launch), by which point the journal has accumulated
-    /// relaunch startup/navigation breadcrumbs and older retained segments;
-    /// scoping to the MetricKit payload's reporting window keeps that unrelated
-    /// pre- and post-incident context out of the report.
-    nonisolated func breadcrumbsData(inWindowFrom start: Date, to end: Date, margin: TimeInterval = 120) -> Data {
-        Self.renderBreadcrumbs(
-            Self.breadcrumbsInWindow(Self.breadcrumbJournal.readAll(), from: start, to: end, margin: margin)
-        )
-    }
-
-    /// Keeps only the breadcrumb lines whose timestamp lands within
-    /// `[min(start,end) - margin, max(start,end) + margin]`. The margin absorbs
-    /// clock skew between breadcrumb timestamps and the MetricKit period
-    /// boundaries. A line whose timestamp can't be parsed can't be attributed to
-    /// the window, so it is dropped.
-    nonisolated static func breadcrumbsInWindow(
+    nonisolated static func breadcrumbLines(
         _ lines: [DiagnosticsLogLine],
-        from start: Date,
-        to end: Date,
-        margin: TimeInterval
+        forRunID runID: String,
+        since start: Date
     ) -> [DiagnosticsLogLine] {
-        let lowerBound = min(start, end).addingTimeInterval(-margin)
-        let upperBound = max(start, end).addingTimeInterval(margin)
-        return lines.filter { line in
-            guard let timestamp = DiagnosticsDates.date(from: line.ts) else {
+        lines.filter { line in
+            guard line.run == runID,
+                  let timestamp = DiagnosticsDates.date(from: line.ts) else {
                 return false
             }
-            return timestamp >= lowerBound && timestamp <= upperBound
+            return timestamp >= start
+        }
+    }
+
+    /// Keeps only evidence emitted by the failed process run. The abnormal-exit
+    /// marker is consumed on the next launch, when both the ring and OSLog can
+    /// already contain new-session lines whose timestamps are after `start`.
+    nonisolated static func logLines(
+        _ lines: [String],
+        forRunID runID: String,
+        since start: Date
+    ) -> [String] {
+        let decoder = DiagnosticsJSONCoding.makeDecoder()
+        return lines.filter { line in
+            guard let decoded = try? decoder.decode(DiagnosticsLogLine.self, from: Data(line.utf8)),
+                  decoded.run == runID,
+                  let timestamp = DiagnosticsDates.date(from: decoded.ts) else {
+                return false
+            }
+            return timestamp >= start
         }
     }
 
@@ -657,6 +798,7 @@ actor DiagnosticsCoordinator {
             cachedStatusAccessTokenFingerprint = nil
         }
         Self.LastKnownStatusStore.removeSnapshots(matching: binding)
+        profileEligibilityStore.remove(binding: binding)
         Self.clearBreadcrumbConsentContext(matching: binding)
     }
 
@@ -938,23 +1080,107 @@ actor DiagnosticsCoordinator {
     /// server/account binding (and its consent) is unchanged. Fails closed
     /// immediately, then confirms asynchronously so a switch into a child profile
     /// can't capture even one breadcrumb before the child lookup lands.
-    nonisolated static func activeProfileDidChange() {
-        setActiveProfileBreadcrumbEligible(false)
-        Task { await shared.reevaluateActiveProfileBreadcrumbEligibility() }
+    nonisolated static func activeProfileWillChange() {
+        _ = beginActiveProfileEligibilityResolution(invalidateCurrent: true)
     }
 
-    func reevaluateActiveProfileBreadcrumbEligibility() async {
-        let isChild = await activeProfileIsChild()
+    nonisolated static func activeProfileDidChange() {
+        let generation = beginActiveProfileEligibilityResolution(invalidateCurrent: true)
+        Task {
+            await shared.reevaluateActiveProfileBreadcrumbEligibility(generation: generation)
+        }
+    }
+
+    func reevaluateActiveProfileBreadcrumbEligibility(generation: UInt64) async {
+        guard let binding = Self.currentDiagnosticsBinding else {
+            _ = Self.publishActiveProfileBreadcrumbEligibility(false, generation: generation)
+            return
+        }
+        let isChild = await activeProfileIsChild(
+            binding: binding,
+            persistResult: false
+        )
         // Eligible only when positively known to be a non-child profile; an
         // undeterminable status (offline getProfiles failure) fails closed,
         // consistent with the persistent-capture child gate in captureContext().
-        Self.setActiveProfileBreadcrumbEligible(isChild == false)
+        let eligible = isChild == false
+        let resolvedEligibility = isChild.flatMap { isChild in
+            AuthService.shared.profileId.map { profileID in
+                (
+                    store: profileEligibilityStore,
+                    isChild: isChild,
+                    profileID: profileID,
+                    binding: binding
+                )
+            }
+        }
+        guard Self.publishActiveProfileBreadcrumbEligibility(
+            eligible,
+            generation: generation,
+            resolvedEligibility: resolvedEligibility
+        ) else {
+            return
+        }
+        #if os(tvOS)
+        ExitSentinel.shared.profileEligibilityDidResolve(
+            binding: binding,
+            profileID: AuthService.shared.profileId
+        )
+        #endif
     }
 
-    nonisolated private static func setActiveProfileBreadcrumbEligible(_ eligible: Bool) {
+    /// Start an async resolution and return its ownership token. Explicit
+    /// profile/server changes invalidate synchronously; routine same-identity
+    /// status refreshes keep the last resolved gate while revalidating so they
+    /// do not create a sentinel coverage gap.
+    nonisolated private static func beginActiveProfileEligibilityResolution(
+        invalidateCurrent: Bool
+    ) -> UInt64 {
         breadcrumbContextLock.lock()
+        activeProfileEligibilityGeneration &+= 1
+        if invalidateCurrent {
+            activeProfileBreadcrumbEligible = false
+        }
+        let generation = activeProfileEligibilityGeneration
+        breadcrumbContextLock.unlock()
+        #if os(tvOS)
+        if invalidateCurrent {
+            // The marker may belong to the prior adult profile. Remove this
+            // process's current-run slot immediately; a previous-run crash
+            // marker is preserved by the run-id check.
+            ExitSentinel.shared.disarmCurrentRun()
+        }
+        #endif
+        return generation
+    }
+
+    /// Publish only if no newer profile/server resolution has started.
+    @discardableResult
+    nonisolated private static func publishActiveProfileBreadcrumbEligibility(
+        _ eligible: Bool,
+        generation: UInt64,
+        resolvedEligibility: (
+            store: DiagnosticsProfileEligibilityStore,
+            isChild: Bool,
+            profileID: String,
+            binding: DiagnosticsBinding
+        )? = nil
+    ) -> Bool {
+        breadcrumbContextLock.lock()
+        guard generation == activeProfileEligibilityGeneration else {
+            breadcrumbContextLock.unlock()
+            return false
+        }
+        if let resolvedEligibility {
+            resolvedEligibility.store.record(
+                isChild: resolvedEligibility.isChild,
+                profileID: resolvedEligibility.profileID,
+                binding: resolvedEligibility.binding
+            )
+        }
         activeProfileBreadcrumbEligible = eligible
         breadcrumbContextLock.unlock()
+        return true
     }
 
     nonisolated private static func breadcrumbCaptureEnabled() -> Bool {
