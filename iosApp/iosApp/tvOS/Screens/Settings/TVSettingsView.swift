@@ -17,6 +17,7 @@ import SwiftUI
 /// explicitly (see docs/tvos-focus.md).
 struct TVSettingsView: View {
     @State private var viewModel = TVSettingsViewModel()
+    @State private var diagnosticsModel = DiagnosticsViewModel()
     @State private var showSignOutConfirm = false
     @State private var selectedCategory: TVSettingsCategory = .general
     @FocusState private var railFocus: RailItem?
@@ -45,7 +46,10 @@ struct TVSettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSignOutConfirm)
         .defaultFocus($railFocus, .category(selectedCategory))
-        .task { await viewModel.load() }
+        .task {
+            await viewModel.load()
+            await diagnosticsModel.load(profile: viewModel.activeProfile)
+        }
         .onChange(of: railFocus) { _, focus in
             // The pane previews whatever category the rail focus rests on.
             // Profile / Sign Out keep the last category visible.
@@ -66,6 +70,11 @@ struct TVSettingsView: View {
         }
         .onChange(of: viewModel.editorPreferredMetadataLanguage) { _, _ in
             Task { await viewModel.saveMetadataLanguage() }
+        }
+        .onChange(of: diagnosticsModel.shouldShowSettings) { _, isVisible in
+            if !isVisible, selectedCategory == .diagnostics {
+                selectedCategory = .general
+            }
         }
     }
 
@@ -105,7 +114,7 @@ struct TVSettingsView: View {
             profileRow
                 .padding(.bottom, 22)
 
-            ForEach(TVSettingsCategory.allCases) { category in
+            ForEach(visibleCategories) { category in
                 categoryRow(category)
             }
 
@@ -264,6 +273,8 @@ struct TVSettingsView: View {
             TVPlaybackSettingsPane(viewModel: viewModel, detailFocus: $detailFocus)
         case .subtitles:
             TVSubtitleSettingsPane(viewModel: viewModel, detailFocus: $detailFocus)
+        case .diagnostics:
+            TVDiagnosticsSettingsPane(model: diagnosticsModel, detailFocus: $detailFocus)
         case .server:
             serverPane
         }
@@ -317,6 +328,12 @@ struct TVSettingsView: View {
         case signOut
     }
 
+    private var visibleCategories: [TVSettingsCategory] {
+        TVSettingsCategory.allCases.filter { category in
+            category != .diagnostics || diagnosticsModel.shouldShowSettings
+        }
+    }
+
     private static var versionString: String {
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "1.0.0"
@@ -339,6 +356,7 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
     case general
     case playback
     case subtitles
+    case diagnostics
     case server
 
     var id: String { rawValue }
@@ -348,6 +366,7 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
         case .general: return "General"
         case .playback: return "Playback"
         case .subtitles: return "Subtitles"
+        case .diagnostics: return "Diagnostics"
         case .server: return "Server"
         }
     }
@@ -357,6 +376,7 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
         case .general: return "gearshape"
         case .playback: return "play.rectangle"
         case .subtitles: return "captions.bubble"
+        case .diagnostics: return "stethoscope"
         case .server: return "server.rack"
         }
     }
@@ -364,6 +384,7 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
     var eyebrow: String {
         switch self {
         case .general, .playback, .subtitles: return "PREFERENCES"
+        case .diagnostics: return "SUPPORT"
         case .server: return "CONNECTION"
         }
     }
@@ -376,6 +397,8 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
             return "Streaming quality and episode behavior for this Apple TV."
         case .subtitles:
             return "Language, behavior, and on-screen appearance."
+        case .diagnostics:
+            return "Review and send diagnostics to this Silo server."
         case .server:
             return "The Silo server this Apple TV is connected to."
         }

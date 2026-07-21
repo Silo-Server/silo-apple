@@ -36,6 +36,8 @@ actor DiagnosticsCoordinator {
     private let deviceSnapshotBuilder: DeviceSnapshotBuilder
 
     private var cachedStatus: DiagnosticsStatusSnapshot?
+    private var cachedStatusServerRegistryID: String?
+    private var cachedStatusAccessTokenFingerprint: String?
 
     init(
         api: DiagnosticsAPI = .shared,
@@ -54,8 +56,18 @@ actor DiagnosticsCoordinator {
     }
 
     func refreshStatus() async throws -> DiagnosticsStatusSnapshot {
+        let requestServerRegistryID = ServerRegistry.shared.activeServerId
+        let requestAccessTokenFingerprint = await Self.currentAccessTokenFingerprint()
+        guard requestServerRegistryID != nil, requestAccessTokenFingerprint != nil else {
+            throw DiagnosticsCoordinatorError.identityChanged
+        }
+
         let status = try await api.getDiagnosticsStatus()
         let user = try await continuumAPI.currentUser()
+        guard requestServerRegistryID == ServerRegistry.shared.activeServerId,
+              requestAccessTokenFingerprint == (await Self.currentAccessTokenFingerprint()) else {
+            throw DiagnosticsCoordinatorError.identityChanged
+        }
         guard let accountUserID = user.id, !accountUserID.isEmpty else {
             throw DiagnosticsCoordinatorError.missingAccountUserID
         }
@@ -65,6 +77,8 @@ actor DiagnosticsCoordinator {
         )
         let snapshot = DiagnosticsStatusSnapshot(status: status, binding: binding)
         cachedStatus = snapshot
+        cachedStatusServerRegistryID = requestServerRegistryID
+        cachedStatusAccessTokenFingerprint = requestAccessTokenFingerprint
         updateBreadcrumbConsentContext(binding: binding, noticeVersion: status.consentNoticeVersion)
         if let serverId = ServerRegistry.shared.activeServerId {
             Self.ServerBindingIndex.record(
@@ -74,6 +88,15 @@ actor DiagnosticsCoordinator {
         }
         _ = consentStore.record(for: binding, currentNoticeVersion: status.consentNoticeVersion)
         return snapshot
+    }
+
+    func cachedStatusForActiveServer() async -> DiagnosticsStatusSnapshot? {
+        guard cachedStatusServerRegistryID == ServerRegistry.shared.activeServerId,
+              let cachedStatusAccessTokenFingerprint,
+              cachedStatusAccessTokenFingerprint == (await Self.currentAccessTokenFingerprint()) else {
+            return nil
+        }
+        return cachedStatus
     }
 
     func pendingReportsForCurrentBinding() async -> [PendingReport] {
@@ -97,6 +120,37 @@ actor DiagnosticsCoordinator {
             droppedLogLines: ringSnapshot.droppedCount,
             redactionTokens: redactionTokens
         )
+    }
+
+    func createManualReport() async throws -> PendingReport {
+        guard let context = await captureContext(requirePersistentCapture: false) else {
+            throw DiagnosticsCoordinatorError.missingCaptureContext
+        }
+
+        let capturedAt = Date()
+        let device = deviceSnapshotBuilder.build(provenance: .preFailure)
+        let manifest = context.makeManifestDraft(
+            type: .manual,
+            capturedAt: capturedAt,
+            crash: nil,
+            deviceSummary: deviceSnapshotBuilder.deviceSummary(from: device),
+            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(),
+            consentMode: .manual
+        )
+        let fingerprint = DiagnosticsSHA256.hex(
+            data: Data("manual|\(DiagLog.captureSessionID)|\(DiagnosticsTimestamp.string(from: capturedAt))".utf8)
+        )
+
+        return try pendingStore.save(PendingReportCapture(
+            binding: context.binding,
+            profileID: context.profileID,
+            type: .manual,
+            fingerprint: fingerprint,
+            capturedAt: capturedAt,
+            manifest: manifest,
+            deviceSnapshot: device,
+            artifacts: []
+        ))
     }
 
     func upload(report: PendingReport) async -> DiagnosticsUploadDecision {
@@ -392,6 +446,13 @@ actor DiagnosticsCoordinator {
         }
     }
 
+    private static func currentAccessTokenFingerprint() async -> String? {
+        guard let token = await TokenStore.shared.getAccessToken(), !token.isEmpty else {
+            return nil
+        }
+        return DiagnosticsSHA256.hex(data: Data(token.utf8))
+    }
+
     private struct BreadcrumbConsentContext {
         let binding: DiagnosticsBinding
         let noticeVersion: Int
@@ -483,5 +544,7 @@ actor DiagnosticsCoordinator {
 
 enum DiagnosticsCoordinatorError: Error, Equatable {
     case missingAccountUserID
+    case missingCaptureContext
+    case identityChanged
 }
 #endif

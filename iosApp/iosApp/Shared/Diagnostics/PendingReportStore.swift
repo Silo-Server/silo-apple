@@ -123,7 +123,8 @@ struct DiagnosticsCaptureContext {
         crash: DiagnosticsCrashInfo?,
         deviceSummary: DiagnosticsManifest.DeviceSummary,
         playbackSessionIDs: [String],
-        captureSessionID: String = DiagLog.captureSessionID
+        captureSessionID: String = DiagLog.captureSessionID,
+        consentMode: ConsentMode? = nil
     ) -> DiagnosticsManifestDraft {
         DiagnosticsManifestDraft(
             schemaVersion: 1,
@@ -138,7 +139,7 @@ struct DiagnosticsCaptureContext {
                 profileID: profileID
             ),
             destination: DiagnosticsManifest.Destination(serverInstanceID: binding.serverInstanceID),
-            consent: DiagnosticsManifest.Consent(mode: consentMode, noticeVersion: noticeVersion),
+            consent: DiagnosticsManifest.Consent(mode: consentMode ?? self.consentMode, noticeVersion: noticeVersion),
             crash: crash,
             deviceSummary: deviceSummary,
             playbackSessionIds: Array(playbackSessionIDs.prefix(20)),

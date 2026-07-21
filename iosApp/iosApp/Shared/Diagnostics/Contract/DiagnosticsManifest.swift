@@ -1,7 +1,7 @@
 #if os(iOS) || os(tvOS)
 import Foundation
 
-enum ReportType: String, Codable, Equatable, CaseIterable {
+enum ReportType: String, Codable, Equatable, Hashable, CaseIterable {
     case crash
     case anr
     case nativeCrash = "native_crash"

@@ -50,7 +50,7 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
                 return
             }
             let breadcrumbs = DiagnosticsCoordinator.shared.breadcrumbsData()
-            _ = try? Self.captureFixtureDiagnostic(
+            let report = try? Self.captureFixtureDiagnostic(
                 rawJSON: rawJSON,
                 type: type,
                 periodStart: periodStart,
@@ -60,6 +60,9 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
                 deviceSnapshotBuilder: .live,
                 breadcrumbsData: breadcrumbs
             )
+            if report != nil {
+                NotificationCenter.default.post(name: .diagnosticsPendingReportCreated, object: nil)
+            }
         }
     }
 

@@ -15,6 +15,9 @@ struct ContentView: View {
     @State private var didStartInitialStateCheck = false
     @State private var didFinishStartupSplash = false
     @State private var pendingInitialAuthState: AppRouter.AuthState?
+    #if os(iOS) || os(tvOS)
+    @State private var diagnosticsModel = DiagnosticsViewModel()
+    #endif
     /// Deep link URL received before the auth state was ready. Drained
     /// on the next `.authenticated` transition so Top Shelf taps during
     /// a cold launch still route to the correct screen.
@@ -56,6 +59,12 @@ struct ContentView: View {
             contentId: debugPlayContentId,
             isPresented: debugPlayerPresentation
         ))
+        #if os(iOS) || os(tvOS)
+        .modifier(DiagnosticsPromptPresentationModifier(
+            model: diagnosticsModel,
+            isEnabled: router.authState == .authenticated
+        ))
+        #endif
         .onReceive(NotificationCenter.default.publisher(for: .continuumDeepLink)) { notification in
             guard let url = notification.userInfo?["url"] as? URL else { return }
             #if os(iOS)
@@ -81,6 +90,12 @@ struct ContentView: View {
             #endif
             router.expiredSession()
         }
+        #if os(iOS) || os(tvOS)
+        .onReceive(NotificationCenter.default.publisher(for: .diagnosticsPendingReportCreated)) { _ in
+            guard router.authState == .authenticated else { return }
+            Task { await diagnosticsModel.handleForeground() }
+        }
+        #endif
         #if os(tvOS)
         .onReceive(NotificationCenter.default.publisher(for: .temporaryRemoteAuthExpired)) { _ in
             TVControlReceiver.shared.temporaryAuthExpired()
@@ -99,6 +114,11 @@ struct ContentView: View {
             }
         }
         .task(id: router.authState) {
+            #if os(iOS) || os(tvOS)
+            if router.authState != .authenticated {
+                diagnosticsModel.reset()
+            }
+            #endif
             await maybeAutoPlayForDebug()
             if router.authState == .authenticated {
                 if let pending = pendingDeepLink {
@@ -107,6 +127,9 @@ struct ContentView: View {
                 }
                 #if os(tvOS)
                 await ExitSentinel.shared.captureLeftoverIfNeeded()
+                #endif
+                #if os(iOS) || os(tvOS)
+                await diagnosticsModel.handleForeground()
                 #endif
                 await overlayPrefs.hydrateIfNeeded()
                 // Hydrate AI capabilities on a cold relaunch into a restored
@@ -125,6 +148,9 @@ struct ContentView: View {
             }
         }
         .task(id: serverRegistry.activeServerId) {
+            #if os(iOS) || os(tvOS)
+            diagnosticsModel.reset()
+            #endif
             // `activeServerId` changes before ServerRegistry finishes its
             // async token retarget. Complete that boundary here before any
             // server-scoped overlay request, then clear and rehydrate even
@@ -135,8 +161,19 @@ struct ContentView: View {
             overlayPrefs.clear()
             if router.authState == .authenticated {
                 await overlayPrefs.hydrateIfNeeded()
+                #if os(iOS) || os(tvOS)
+                await diagnosticsModel.handleForeground()
+                #endif
             }
         }
+        #if os(iOS) || os(tvOS)
+        .task(id: serverRegistry.activeProfileId) {
+            diagnosticsModel.reset()
+            if router.authState == .authenticated {
+                await diagnosticsModel.handleForeground()
+            }
+        }
+        #endif
         .onChange(of: scenePhase) { _, newPhase in
             #if os(iOS) || os(tvOS)
             DiagnosticsCoordinator.recordBreadcrumb(
@@ -165,7 +202,6 @@ struct ContentView: View {
             switch newPhase {
             case .active:
                 ExitSentinel.shared.appDidEnterForeground()
-                Task { await ExitSentinel.shared.captureLeftoverIfNeeded() }
             case .background:
                 ExitSentinel.shared.appDidEnterBackground()
             default:
@@ -184,6 +220,14 @@ struct ContentView: View {
             // the happy path.
             guard newPhase == .active,
                   router.authState == .authenticated else { return }
+            #if os(tvOS)
+            Task {
+                await ExitSentinel.shared.captureLeftoverIfNeeded()
+                await diagnosticsModel.handleForeground()
+            }
+            #elseif os(iOS)
+            Task { await diagnosticsModel.handleForeground() }
+            #endif
             Task { await overlayPrefs.hydrateIfNeeded() }
             // Same rationale as overlay hydration above: a transiently-failed
             // capability probe (or one skipped on a cold restore) gets a

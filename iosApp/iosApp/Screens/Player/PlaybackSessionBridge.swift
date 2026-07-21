@@ -179,8 +179,8 @@ actor PlaybackSessionBridge {
     private func adoptSession(_ session: PlaybackSessionResponse) {
         sessionId = session.sessionId
         currentSession = session
-        RecentSessionTracker.shared.record(sessionID: session.sessionId)
         #if os(iOS) || os(tvOS)
+        RecentSessionTracker.shared.record(sessionID: session.sessionId)
         DiagnosticsCoordinator.recordBreadcrumb(
             category: .playback,
             tag: "PlaybackSession",

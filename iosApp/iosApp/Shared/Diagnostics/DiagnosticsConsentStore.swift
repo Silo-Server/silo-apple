@@ -44,11 +44,20 @@ struct DiagnosticsConsentRecord: Codable, Equatable, Sendable {
     }
 }
 
+struct DiagnosticsSentReport: Codable, Equatable, Identifiable, Sendable {
+    let shortID: String
+    let sentAt: String
+
+    var id: String { "\(shortID)|\(sentAt)" }
+}
+
 final class DiagnosticsConsentStore {
     static let shared = DiagnosticsConsentStore()
 
     private static let recordsKey = "diagnostics.consent.records.v1"
     private static let debugLoggingKey = "diagnostics.debugLoggingEnabled.v1"
+    private static let sentHistoryKey = "diagnostics.sentHistory.v1"
+    private static let sentHistoryLimit = 10
 
     private let defaults: SharedDefaults
     private let onNeverSelected: (DiagnosticsBinding) -> Void
@@ -139,6 +148,9 @@ final class DiagnosticsConsentStore {
         var records = loadRecords()
         records.removeValue(forKey: binding.storageKey)
         saveRecords(records)
+        var history = loadSentHistory()
+        history.removeValue(forKey: binding.storageKey)
+        saveSentHistory(history)
     }
 
     func remove(serverInstanceID: String) {
@@ -150,6 +162,35 @@ final class DiagnosticsConsentStore {
             record.binding.serverInstanceID != serverInstanceID
         }
         saveRecords(records)
+        var history = loadSentHistory()
+        history = history.filter { key, _ in
+            !key.hasPrefix("\(serverInstanceID)|")
+        }
+        saveSentHistory(history)
+    }
+
+    func recordSent(shortID: String, for binding: DiagnosticsBinding, now: Date = Date()) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var history = loadSentHistory()
+        var reports = history[binding.storageKey] ?? []
+        reports.removeAll { $0.shortID == shortID }
+        reports.insert(
+            DiagnosticsSentReport(
+                shortID: shortID,
+                sentAt: DiagnosticsTimestamp.string(from: now)
+            ),
+            at: 0
+        )
+        history[binding.storageKey] = Array(reports.prefix(Self.sentHistoryLimit))
+        saveSentHistory(history)
+    }
+
+    func sentHistory(for binding: DiagnosticsBinding) -> [DiagnosticsSentReport] {
+        lock.lock()
+        defer { lock.unlock() }
+        return loadSentHistory()[binding.storageKey] ?? []
     }
 
     func resetForTests() {
@@ -158,6 +199,7 @@ final class DiagnosticsConsentStore {
 
         defaults.removeObject(forKey: Self.recordsKey)
         defaults.removeObject(forKey: Self.debugLoggingKey)
+        defaults.removeObject(forKey: Self.sentHistoryKey)
     }
 
     static func canManageDiagnostics(profile: UserProfile?) -> Bool {
@@ -179,6 +221,23 @@ final class DiagnosticsConsentStore {
             return
         }
         defaults.set(data, forKey: Self.recordsKey)
+    }
+
+    private func loadSentHistory() -> [String: [DiagnosticsSentReport]] {
+        guard let data = defaults.data(forKey: Self.sentHistoryKey) else {
+            return [:]
+        }
+        return (try? DiagnosticsJSONCoding.makeDecoder().decode(
+            [String: [DiagnosticsSentReport]].self,
+            from: data
+        )) ?? [:]
+    }
+
+    private func saveSentHistory(_ history: [String: [DiagnosticsSentReport]]) {
+        guard let data = try? DiagnosticsJSONCoding.makeEncoder().encode(history) else {
+            return
+        }
+        defaults.set(data, forKey: Self.sentHistoryKey)
     }
 }
 #endif
