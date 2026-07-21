@@ -226,8 +226,16 @@ actor DiagnosticsCoordinator {
     }
 
     func upload(report: PendingReport) async -> DiagnosticsUploadDecision {
-        guard let context = await captureContext(requirePersistentCapture: false),
-              report.isUploadable(to: context.binding) else {
+        // A non-persistent capture context is nil only when the status refresh
+        // failed (offline or identity mid-change) — the destination was never
+        // actually checked. Returning keptDestinationMismatch here would show
+        // the wrong message and, on the Always path (already throttled before
+        // upload), suppress retries for 24h. Keep it retryable instead; a
+        // genuine binding mismatch is still reported below.
+        guard let context = await captureContext(requirePersistentCapture: false) else {
+            return .keptRetryable
+        }
+        guard report.isUploadable(to: context.binding) else {
             return .keptDestinationMismatch
         }
 
@@ -282,6 +290,14 @@ actor DiagnosticsCoordinator {
             currentNoticeVersion: snapshot.status.consentNoticeVersion
         )
         if requirePersistentCapture {
+            // The server-side feature must be available. When offline we fall
+            // back to the last-known status above, so persist only if that
+            // last-known status was itself available — a disabled or
+            // storage-unavailable server must never accumulate crash reports
+            // that could auto-upload once it is re-enabled.
+            guard snapshot.status.status == .available else {
+                return nil
+            }
             if record.mode == .never {
                 return nil
             }
@@ -345,6 +361,23 @@ actor DiagnosticsCoordinator {
         guard let context = await captureContext() else {
             return false
         }
+        // Attribute the report to the account that was active when the marker
+        // was written, never to whoever is active now. The evidence (this-run
+        // breadcrumbs/logs) belongs to the crashed account.
+        //
+        // - Marker carries a binding (written with binding support): capture
+        //   only when it still matches the active account. A mismatch means a
+        //   different account is in front of us now; drop the stale marker
+        //   rather than leak the crashed account's breadcrumbs/logs to it.
+        // - Legacy marker without a binding (predates binding support): we
+        //   cannot prove which account crashed, so fall back to the current
+        //   binding — the pre-existing best-effort behavior.
+        if let markerBinding = marker.binding, markerBinding != context.binding {
+            return true
+        }
+        let boundContext = marker.binding != nil
+            ? context.overridingProfileID(marker.profileID)
+            : context
         let fingerprint = DiagnosticsSHA256.hex(
             data: Data("exit_sentinel|\(marker.runID)|\(marker.startedAt)".utf8)
         )
@@ -372,12 +405,12 @@ actor DiagnosticsCoordinator {
             occurredAtStart: marker.startedAt,
             occurredAtEnd: DiagnosticsTimestamp.string(from: capturedAt)
         )
-        let manifest = context.makeManifestDraft(
+        let manifest = boundContext.makeManifestDraft(
             type: .abnormalExit,
             capturedAt: capturedAt,
             crash: crash,
             deviceSummary: deviceSnapshotBuilder.deviceSummary(from: device),
-            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(for: context.binding),
+            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(for: boundContext.binding),
             captureSessionID: marker.runID
         )
         var artifacts: [PendingReportArtifact] = []
@@ -394,8 +427,8 @@ actor DiagnosticsCoordinator {
 
         do {
             _ = try pendingStore.save(PendingReportCapture(
-                binding: context.binding,
-                profileID: context.profileID,
+                binding: boundContext.binding,
+                profileID: boundContext.profileID,
                 type: .abnormalExit,
                 fingerprint: fingerprint,
                 capturedAt: capturedAt,
@@ -454,9 +487,26 @@ actor DiagnosticsCoordinator {
     private func purgeDiagnostics(for binding: DiagnosticsBinding) {
         pendingStore.purge(binding: binding)
         consentStore.remove(binding: binding)
+        clearContext(for: binding)
         #if os(tvOS)
         ExitSentinel.shared.purge()
         #endif
+    }
+
+    /// After purging a binding (e.g. an active-server sign-out) the pending
+    /// files and consent record are gone, but the cached/persisted status and
+    /// the breadcrumb consent context can still point at it. Since the consent
+    /// record was removed, a later capture or breadcrumb check would recreate
+    /// it as the default Ask and resume saving diagnostics for the signed-out
+    /// account. Drop every in-memory and persisted pointer to the binding.
+    private func clearContext(for binding: DiagnosticsBinding) {
+        if cachedStatus?.binding == binding {
+            cachedStatus = nil
+            cachedStatusServerRegistryID = nil
+            cachedStatusAccessTokenFingerprint = nil
+        }
+        Self.LastKnownStatusStore.removeSnapshots(matching: binding)
+        Self.clearBreadcrumbConsentContext(matching: binding)
     }
 
     private func handleUploadError(
@@ -569,7 +619,7 @@ actor DiagnosticsCoordinator {
         return DiagnosticsSHA256.hex(data: Data(token.utf8))
     }
 
-    private struct BreadcrumbConsentContext {
+    struct BreadcrumbConsentContext {
         let binding: DiagnosticsBinding
         let noticeVersion: Int
     }
@@ -589,10 +639,40 @@ actor DiagnosticsCoordinator {
     }
 
     nonisolated private static func currentBreadcrumbBinding() -> DiagnosticsBinding? {
+        resolvedBreadcrumbContext()?.binding
+    }
+
+    /// The breadcrumb consent context for the account currently in view. A live
+    /// status refresh populates it (see `updateBreadcrumbConsentContext`);
+    /// until the first refresh of a launch it is nil, so fall back to the last
+    /// successful status persisted for the active server. That lets a fresh
+    /// launch honor the account's stored consent — including Never — before any
+    /// network call, and lets abnormal-exit markers record a binding even
+    /// before the first refresh. Returns nil when nothing is known yet, which
+    /// callers treat as "capture disabled".
+    nonisolated private static func resolvedBreadcrumbContext() -> BreadcrumbConsentContext? {
         breadcrumbContextLock.lock()
-        let binding = breadcrumbConsentContext?.binding
+        let context = breadcrumbConsentContext
         breadcrumbContextLock.unlock()
-        return binding
+        if let context {
+            return context
+        }
+        guard let serverId = ServerRegistry.shared.activeServerId,
+              let snapshot = LastKnownStatusStore.snapshot(for: serverId) else {
+            return nil
+        }
+        return BreadcrumbConsentContext(
+            binding: snapshot.binding,
+            noticeVersion: snapshot.status.consentNoticeVersion
+        )
+    }
+
+    nonisolated private static func clearBreadcrumbConsentContext(matching binding: DiagnosticsBinding) {
+        breadcrumbContextLock.lock()
+        if breadcrumbConsentContext?.binding == binding {
+            breadcrumbConsentContext = nil
+        }
+        breadcrumbContextLock.unlock()
     }
 
     /// The binding for the server/account currently in view, captured at the
@@ -605,14 +685,22 @@ actor DiagnosticsCoordinator {
     }
 
     nonisolated private static func breadcrumbCaptureEnabled() -> Bool {
-        breadcrumbContextLock.lock()
-        let context = breadcrumbConsentContext
-        breadcrumbContextLock.unlock()
+        breadcrumbCaptureEnabled(for: resolvedBreadcrumbContext())
+    }
 
+    /// Pure consent check shared by the live gate and tests. No resolvable
+    /// context means no account has been established yet on this launch, so
+    /// breadcrumb capture stays disabled rather than defaulting on — otherwise
+    /// a Never account's fresh launch would write breadcrumbs until the first
+    /// status refresh.
+    nonisolated static func breadcrumbCaptureEnabled(
+        for context: BreadcrumbConsentContext?,
+        consentStore: DiagnosticsConsentStore = .shared
+    ) -> Bool {
         guard let context else {
-            return true
+            return false
         }
-        return DiagnosticsConsentStore.shared.persistentCaptureEnabled(
+        return consentStore.persistentCaptureEnabled(
             for: context.binding,
             currentNoticeVersion: context.noticeVersion
         )
@@ -688,6 +776,16 @@ actor DiagnosticsCoordinator {
             let snapshot = load()[serverId]
             lock.unlock()
             return snapshot
+        }
+
+        static func removeSnapshots(matching binding: DiagnosticsBinding) {
+            lock.lock()
+            let index = load()
+            let filtered = index.filter { $0.value.binding != binding }
+            if filtered.count != index.count {
+                save(filtered)
+            }
+            lock.unlock()
         }
 
         private static func load() -> [String: DiagnosticsStatusSnapshot] {

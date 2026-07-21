@@ -113,6 +113,7 @@ final class DiagnosticsViewModel {
         let eligible = pendingReports.filter { report in
             report.binding.type != .manual
                 && !report.state.isPermanentFailure
+                && !report.state.promptDeclined
                 && DiagnosticsPromptPolicy.isEligible(
                     reportBinding: report.binding.binding,
                     currentBinding: snapshot.binding,
@@ -188,11 +189,12 @@ final class DiagnosticsViewModel {
 
     func declinePrompt() {
         guard let prompt else { return }
+        // Suppress re-prompting for each declined report's lifetime. The
+        // auto-upload throttle used previously only lasts 24h (reports live 7
+        // days), so it would re-surface the same crash on a later foreground.
+        // The report stays sendable manually from settings.
         for report in prompt.reports {
-            pendingStore.recordAutoUploadAttempt(
-                fingerprint: report.binding.fingerprint,
-                binding: report.binding.binding
-            )
+            pendingStore.markPromptDeclined(report)
         }
         self.prompt = nil
     }
@@ -288,10 +290,15 @@ final class DiagnosticsViewModel {
         isWorking = true
         defer { isWorking = false }
 
-        for report in pendingReports where !report.state.isPermanentFailure && pendingStore.canAutoUpload(
-            fingerprint: report.binding.fingerprint,
-            binding: binding
-        ) {
+        // A report the user explicitly declined stays sendable manually but is
+        // never sent automatically — not by prompt and not by Always-mode
+        // auto-upload — even if they later switch to Always.
+        for report in pendingReports where !report.state.isPermanentFailure
+            && !report.state.promptDeclined
+            && pendingStore.canAutoUpload(
+                fingerprint: report.binding.fingerprint,
+                binding: binding
+            ) {
             pendingStore.recordAutoUploadAttempt(
                 fingerprint: report.binding.fingerprint,
                 binding: binding

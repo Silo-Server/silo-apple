@@ -1,20 +1,38 @@
-#if os(tvOS)
+#if os(iOS) || os(tvOS)
 import Foundation
 
 struct ExitSentinelMarker: Codable, Equatable {
     let runID: String
     let startedAt: String
+    /// The diagnostics binding active when the run started. Optional so markers
+    /// written before binding support (and early launches before the first
+    /// status refresh) still decode. Capture attributes the report to this
+    /// binding, not to whoever is active at relaunch.
+    let binding: DiagnosticsBinding?
+    /// The capturing profile active at run start, attribution only.
+    let profileID: String?
 
     enum CodingKeys: String, CodingKey {
         case runID = "run_id"
         case startedAt = "started_at"
+        case binding
+        case profileID = "profile_id"
+    }
+
+    init(runID: String, startedAt: String, binding: DiagnosticsBinding? = nil, profileID: String? = nil) {
+        self.runID = runID
+        self.startedAt = startedAt
+        self.binding = binding
+        self.profileID = profileID
     }
 
     var startedAtDate: Date {
         DiagnosticsDates.date(from: startedAt) ?? .distantPast
     }
 }
+#endif
 
+#if os(tvOS)
 final class ExitSentinel {
     static let shared = ExitSentinel()
 
@@ -49,6 +67,13 @@ final class ExitSentinel {
     }
 
     func appDidEnterForeground(now: Date = Date()) {
+        // Resolve the binding/profile before taking `lock`: reading the binding
+        // hits the coordinator's breadcrumb-context lock, and the coordinator
+        // takes that lock before wiring our capture gate — grabbing it here,
+        // outside `lock`, keeps the two locks from nesting in opposite orders.
+        let binding = DiagnosticsCoordinator.currentDiagnosticsBinding
+        let profileID = AuthService.shared.profileId
+
         lock.lock()
         defer { lock.unlock() }
 
@@ -58,14 +83,29 @@ final class ExitSentinel {
             return
         }
 
-        if let marker = readMarker(), marker.runID != DiagLog.captureSessionID {
-            leftoverMarker = marker
-        } else if readMarker()?.runID == DiagLog.captureSessionID {
+        let existing = readMarker()
+        if let existing, existing.runID != DiagLog.captureSessionID {
+            leftoverMarker = existing
+        } else if let existing, existing.runID == DiagLog.captureSessionID {
+            // The current run's marker already exists. Rewrite it only to fill
+            // in the binding once it becomes known — the first foreground can
+            // precede the first status refresh — keeping the original start
+            // time so the run's duration is unchanged.
+            if existing.binding == nil, binding != nil {
+                writeMarker(ExitSentinelMarker(
+                    runID: existing.runID,
+                    startedAt: existing.startedAt,
+                    binding: binding,
+                    profileID: profileID
+                ))
+            }
             return
         }
         writeMarker(ExitSentinelMarker(
             runID: DiagLog.captureSessionID,
-            startedAt: DiagnosticsTimestamp.string(from: now)
+            startedAt: DiagnosticsTimestamp.string(from: now),
+            binding: binding,
+            profileID: profileID
         ))
     }
 

@@ -86,11 +86,20 @@ struct PendingReportState: Codable, Equatable {
     /// same oversized payload will always be rejected, so it is excluded from
     /// auto-upload and prompting.
     var tooLarge: Bool
+    /// The user tapped "Don't Send" on this report's Ask-mode prompt. Unlike a
+    /// permanent failure the report stays visible and sendable from settings;
+    /// this only suppresses re-prompting for the report's remaining lifetime.
+    /// The auto-upload throttle alone can't do this — it expires in 24h while
+    /// reports live 7 days, so the same crash would re-prompt on a later
+    /// foreground.
+    var promptDeclined: Bool
 
     static let empty = PendingReportState(needsServerUpdate: false)
 
     /// A permanent failure the client cannot resolve by retrying. Such reports
     /// are kept locally (for visibility) but never auto-uploaded or prompted.
+    /// A declined prompt is not a permanent failure — the report can still be
+    /// sent manually and auto-uploads under Always.
     var isPermanentFailure: Bool {
         needsServerUpdate || tooLarge
     }
@@ -98,17 +107,20 @@ struct PendingReportState: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case needsServerUpdate = "needs_server_update"
         case tooLarge = "too_large"
+        case promptDeclined = "prompt_declined"
     }
 
-    init(needsServerUpdate: Bool, tooLarge: Bool = false) {
+    init(needsServerUpdate: Bool, tooLarge: Bool = false, promptDeclined: Bool = false) {
         self.needsServerUpdate = needsServerUpdate
         self.tooLarge = tooLarge
+        self.promptDeclined = promptDeclined
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         needsServerUpdate = try container.decodeIfPresent(Bool.self, forKey: .needsServerUpdate) ?? false
         tooLarge = try container.decodeIfPresent(Bool.self, forKey: .tooLarge) ?? false
+        promptDeclined = try container.decodeIfPresent(Bool.self, forKey: .promptDeclined) ?? false
     }
 }
 
@@ -138,6 +150,22 @@ struct DiagnosticsCaptureContext {
     let appBuild: String
     let platform: Platform
     let osVersion: String
+
+    /// Returns a copy attributed to a different capturing profile — used when
+    /// an abnormal-exit report must carry the profile that was active at crash
+    /// time (from the marker) rather than the one active at capture time.
+    func overridingProfileID(_ profileID: String?) -> DiagnosticsCaptureContext {
+        DiagnosticsCaptureContext(
+            binding: binding,
+            profileID: profileID,
+            consentMode: consentMode,
+            noticeVersion: noticeVersion,
+            appVersion: appVersion,
+            appBuild: appBuild,
+            platform: platform,
+            osVersion: osVersion
+        )
+    }
 
     func makeManifestDraft(
         type: ReportType,
@@ -364,6 +392,17 @@ final class PendingReportStore {
 
         var state = report.state
         state.tooLarge = true
+        try? writeJSON(state, to: report.directoryURL.appendingPathComponent("state.json"))
+    }
+
+    /// Records that the user declined this report's prompt, suppressing further
+    /// prompts for its lifetime while leaving it sendable from settings.
+    func markPromptDeclined(_ report: PendingReport) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var state = report.state
+        state.promptDeclined = true
         try? writeJSON(state, to: report.directoryURL.appendingPathComponent("state.json"))
     }
 

@@ -92,7 +92,97 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertNoThrow(try crash.validate())
     }
 
+    // MARK: - Declined-prompt suppression (round 2 #6)
+
+    func testPendingReportStateDecodesLegacyStateWithoutPromptDeclined() throws {
+        let legacy = try DiagnosticsJSONCoding.makeDecoder().decode(
+            PendingReportState.self,
+            from: Data(#"{"needs_server_update": false, "too_large": false}"#.utf8)
+        )
+        XCTAssertFalse(legacy.promptDeclined)
+        XCTAssertFalse(legacy.isPermanentFailure)
+    }
+
+    func testMarkPromptDeclinedPersistsAndStaysSendable() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diag-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = PendingReportStore(rootDirectory: root)
+
+        let report = try store.save(makeCapture(noticeVersion: 1))
+        XCTAssertFalse(report.state.promptDeclined)
+
+        store.markPromptDeclined(report)
+
+        let reloaded = try XCTUnwrap(store.report(id: report.id))
+        XCTAssertTrue(reloaded.state.promptDeclined)
+        // A declined prompt is not a permanent failure: the report is still
+        // visible and sendable from settings, it just never re-prompts.
+        XCTAssertFalse(reloaded.state.isPermanentFailure)
+    }
+
+    // MARK: - Abnormal-exit marker binding (round 2 #3)
+
+    func testExitSentinelMarkerRoundTripsBindingAndProfile() throws {
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "acct-a")
+        let marker = ExitSentinelMarker(
+            runID: "run-1",
+            startedAt: "2026-07-20T10:00:00Z",
+            binding: binding,
+            profileID: "prof-1"
+        )
+        let data = try DiagnosticsJSONCoding.makeEncoder().encode(marker)
+        let decoded = try DiagnosticsJSONCoding.makeDecoder().decode(ExitSentinelMarker.self, from: data)
+        XCTAssertEqual(decoded, marker)
+        XCTAssertEqual(decoded.binding, binding)
+        XCTAssertEqual(decoded.profileID, "prof-1")
+    }
+
+    func testExitSentinelMarkerDecodesLegacyWithoutBinding() throws {
+        let legacy = Data(#"{"run_id":"run-2","started_at":"2026-07-20T10:00:00Z"}"#.utf8)
+        let decoded = try DiagnosticsJSONCoding.makeDecoder().decode(ExitSentinelMarker.self, from: legacy)
+        XCTAssertEqual(decoded.runID, "run-2")
+        XCTAssertNil(decoded.binding)
+        XCTAssertNil(decoded.profileID)
+    }
+
+    // MARK: - Breadcrumb capture defaults off (round 2 #4)
+
+    func testBreadcrumbCaptureDisabledWithoutContext() {
+        let store = makeConsentStore()
+        // No resolvable consent context on a fresh launch must not default on.
+        XCTAssertFalse(DiagnosticsCoordinator.breadcrumbCaptureEnabled(for: nil, consentStore: store))
+    }
+
+    func testBreadcrumbCaptureRespectsStoredConsent() {
+        let store = makeConsentStore()
+
+        let neverBinding = DiagnosticsBinding(serverInstanceID: "srv-never", accountUserID: "acct")
+        store.setMode(.never, for: neverBinding, noticeVersion: 1)
+        let neverContext = DiagnosticsCoordinator.BreadcrumbConsentContext(
+            binding: neverBinding,
+            noticeVersion: 1
+        )
+        XCTAssertFalse(DiagnosticsCoordinator.breadcrumbCaptureEnabled(for: neverContext, consentStore: store))
+
+        let askBinding = DiagnosticsBinding(serverInstanceID: "srv-ask", accountUserID: "acct")
+        store.setMode(.ask, for: askBinding, noticeVersion: 1)
+        let askContext = DiagnosticsCoordinator.BreadcrumbConsentContext(
+            binding: askBinding,
+            noticeVersion: 1
+        )
+        XCTAssertTrue(DiagnosticsCoordinator.breadcrumbCaptureEnabled(for: askContext, consentStore: store))
+    }
+
     // MARK: - Helpers
+
+    private func makeConsentStore() -> DiagnosticsConsentStore {
+        let suite = UserDefaults(suiteName: "diag-tests-\(UUID().uuidString)")!
+        return DiagnosticsConsentStore(
+            defaults: SharedDefaults(suite: suite, standard: suite),
+            onNeverSelected: { _ in }
+        )
+    }
 
     private func makeCapture(noticeVersion: Int) -> PendingReportCapture {
         let binding = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
