@@ -113,6 +113,11 @@ struct ContentView: View {
                 debugPlayContentId = contentId
             }
         }
+        #if DEBUG
+        .task {
+            await maybeDebugAutoLogin()
+        }
+        #endif
         .task(id: router.authState) {
             #if os(iOS) || os(tvOS)
             if router.authState != .authenticated {
@@ -499,6 +504,46 @@ struct ContentView: View {
         }
         return CommandLine.arguments[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    #if DEBUG
+    private func debugLaunchArgValue(_ name: String) -> String? {
+        guard let index = CommandLine.arguments.firstIndex(of: name),
+              index + 1 < CommandLine.arguments.count else {
+            return nil
+        }
+        return CommandLine.arguments[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Debug: sign in from launch arguments
+    /// `-debugServer <url> -debugUsername <user> -debugPassword <pass>`,
+    /// selecting the primary (or only) PIN-less profile. Simulator-driven
+    /// end-to-end runs use this to reach `.authenticated` without UI input.
+    private func maybeDebugAutoLogin() async {
+        guard router.authState != .authenticated,
+              let server = debugLaunchArgValue("-debugServer"),
+              let username = debugLaunchArgValue("-debugUsername"),
+              let password = debugLaunchArgValue("-debugPassword") else {
+            return
+        }
+        do {
+            _ = try await AuthService.shared.checkServer(url: server)
+            try await AuthService.shared.login(username: username, password: password)
+            let profiles = try await StartupContentPrefetcher.fetchProfiles()
+            guard let profile = profiles.first(where: \.isPrimary)
+                ?? (profiles.count == 1 ? profiles.first : nil) else {
+                print("[DebugAutoLogin] no selectable profile for \(username)")
+                return
+            }
+            try await AuthService.shared.selectProfile(profileId: profile.id)
+            StartupContentPrefetcher.prefetchAuthenticatedContent()
+            await PlayerSettings.shared.refreshFromServer()
+            router.resetToHome()
+            print("[DebugAutoLogin] signed in as \(username), profile \(profile.name)")
+        } catch {
+            print("[DebugAutoLogin] failed: \(error)")
+        }
+    }
+    #endif
 
     private func resolveDebugSearchContentId(query: String) async throws -> String {
         let response = try await ContinuumAPI.shared.catalog(query: [
