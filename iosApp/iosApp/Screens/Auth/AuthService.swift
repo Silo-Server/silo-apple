@@ -27,6 +27,13 @@ final class AuthService: @unchecked Sendable {
     /// `UserDefaults["profileId"]` key that sync callers still read.
     /// Clearing also invalidates the profile token so the next request
     /// doesn't send a stale `X-Profile-Token` header.
+    ///
+    /// Every write re-evaluates diagnostics eligibility (see the setter): the
+    /// active profile changes through many paths beyond `selectProfile` —
+    /// clearing it to enter profile selection, per-tab profile switches — and a
+    /// child profile can't manage diagnostics, so the synchronous
+    /// breadcrumb/sentinel gate must fail closed on any change until the new
+    /// profile is confirmed non-child.
     var profileId: String? {
         get { defaults.string(forKey: SharedStorage.profileIdKey) }
         set {
@@ -37,6 +44,14 @@ final class AuthService: @unchecked Sendable {
             if newValue == nil {
                 Task { await TokenStore.shared.setProfileToken(nil) }
             }
+            #if os(iOS) || os(tvOS)
+            // Fail the breadcrumb/session/exit-sentinel gate closed on every
+            // profile change, not just the `selectProfile` path, so early
+            // navigation/playback breadcrumbs (or the tvOS marker) can't be
+            // captured under the previous profile's eligibility before the
+            // async child-profile re-check lands.
+            DiagnosticsCoordinator.activeProfileDidChange()
+            #endif
         }
     }
 
@@ -168,16 +183,12 @@ final class AuthService: @unchecked Sendable {
         try await ContinuumAPI.shared.selectProfile(profileId: profileId, pin: pin)
         // Persist through the profileId setter so the registry entry
         // for the active server also records the selection, enabling
-        // automatic restoration when the user switches back.
+        // automatic restoration when the user switches back. The setter also
+        // re-evaluates diagnostics eligibility (an adult→child switch must
+        // disarm breadcrumb/session/exit-sentinel capture even though the
+        // server/account binding is unchanged).
         self.profileId = profileId
         await clearPerProfileCaches()
-        #if os(iOS) || os(tvOS)
-        // A child profile can't manage diagnostics. Re-evaluate breadcrumb
-        // eligibility now that the active profile changed so an adult→child
-        // switch disarms breadcrumb/session capture even though the
-        // server/account binding is unchanged.
-        DiagnosticsCoordinator.activeProfileDidChange()
-        #endif
         // Re-probe AI capabilities for the newly-selected profile. Fire and
         // forget — gating defaults to "unavailable" until the probes land,
         // so nothing blocks on this.

@@ -181,6 +181,13 @@ final class ServerRegistry {
         } else {
             defaults.removeObject(forKey: "profileId")
         }
+        #if os(iOS) || os(tvOS)
+        // Activating a server restores its saved profile via the mirror above,
+        // bypassing AuthService's profileId setter. Re-evaluate diagnostics
+        // eligibility so a restored child profile can't inherit the previous
+        // server's adult eligibility for the breadcrumb/sentinel gate.
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
         activeServerId = serverId
         touchLastUsed(serverId)
         await TokenStore.shared.switchActiveServer(serverId: serverId)
@@ -266,6 +273,13 @@ final class ServerRegistry {
                 defaults.removeObject(forKey: "profileId")
                 await TokenStore.shared.switchActiveServer(serverId: "")
             }
+            #if os(iOS) || os(tvOS)
+            // Removing the active server restores a different profile (the
+            // fallback's, or none) via the mirror above without AuthService's
+            // setter. Fail the diagnostics gate closed until the new active
+            // profile is confirmed, same as `switchTo`.
+            DiagnosticsCoordinator.activeProfileDidChange()
+            #endif
             await MainActor.run {
                 AICapabilities.shared.reset()
                 RequestsFeatureStore.shared.reset()

@@ -588,6 +588,39 @@ actor DiagnosticsCoordinator {
         Self.renderBreadcrumbs(Self.breadcrumbJournal.readAll())
     }
 
+    /// Breadcrumbs whose timestamp falls inside an incident window, with a
+    /// margin on each side. MetricKit delivers crash/hang diagnostics after the
+    /// fact (often the next launch), by which point the journal has accumulated
+    /// relaunch startup/navigation breadcrumbs and older retained segments;
+    /// scoping to the MetricKit payload's reporting window keeps that unrelated
+    /// pre- and post-incident context out of the report.
+    nonisolated func breadcrumbsData(inWindowFrom start: Date, to end: Date, margin: TimeInterval = 120) -> Data {
+        Self.renderBreadcrumbs(
+            Self.breadcrumbsInWindow(Self.breadcrumbJournal.readAll(), from: start, to: end, margin: margin)
+        )
+    }
+
+    /// Keeps only the breadcrumb lines whose timestamp lands within
+    /// `[min(start,end) - margin, max(start,end) + margin]`. The margin absorbs
+    /// clock skew between breadcrumb timestamps and the MetricKit period
+    /// boundaries. A line whose timestamp can't be parsed can't be attributed to
+    /// the window, so it is dropped.
+    nonisolated static func breadcrumbsInWindow(
+        _ lines: [DiagnosticsLogLine],
+        from start: Date,
+        to end: Date,
+        margin: TimeInterval
+    ) -> [DiagnosticsLogLine] {
+        let lowerBound = min(start, end).addingTimeInterval(-margin)
+        let upperBound = max(start, end).addingTimeInterval(margin)
+        return lines.filter { line in
+            guard let timestamp = DiagnosticsDates.date(from: line.ts) else {
+                return false
+            }
+            return timestamp >= lowerBound && timestamp <= upperBound
+        }
+    }
+
     nonisolated private static func renderBreadcrumbs(_ lines: [DiagnosticsLogLine]) -> Data {
         guard !lines.isEmpty else {
             return Data()

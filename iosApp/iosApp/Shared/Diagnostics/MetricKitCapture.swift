@@ -55,7 +55,15 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
             ) else {
                 return
             }
-            let breadcrumbs = DiagnosticsCoordinator.shared.breadcrumbsData()
+            // Scope breadcrumbs to the incident's reporting window. The journal
+            // outlives the crashed run and, by delivery time (often next
+            // launch), also holds relaunch and unrelated breadcrumbs; snapshot
+            // only the window's lines so the report doesn't carry post-incident
+            // context.
+            let breadcrumbs = DiagnosticsCoordinator.shared.breadcrumbsData(
+                inWindowFrom: periodStart,
+                to: periodEnd
+            )
             let logSnapshot = await DiagnosticsCoordinator.shared.logSnapshotArtifact(since: periodStart)
             let report = try? Self.captureFixtureDiagnostic(
                 rawJSON: rawJSON,

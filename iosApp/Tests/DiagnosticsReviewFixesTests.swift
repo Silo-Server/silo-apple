@@ -271,6 +271,120 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertFalse(DiagnosticsCoordinator.isProfileUploadMismatch(captured: "profile-a", active: "   "))
     }
 
+    // MARK: - Exit sentinel leftover preservation (round 6 #3)
+
+    func testExitSentinelStorePreservesLeftoverAcrossArmAndTerminate() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ExitSentinelStoreTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let currentURL = directory.appendingPathComponent("exit-sentinel.json", isDirectory: false)
+        let store = ExitSentinelMarkerStore(currentURL: currentURL)
+
+        // A previous run exited uncleanly: its marker is still in the current
+        // slot at relaunch.
+        let crashed = ExitSentinelMarker(
+            runID: "crashed-run",
+            startedAt: "2026-07-20T10:00:00.000Z",
+            binding: DiagnosticsBinding(serverInstanceID: "srv", accountUserID: "acct"),
+            profileID: "prof"
+        )
+        store.writeCurrent(crashed)
+
+        // Relaunch arms this run: promote the leftover first, then overwrite the
+        // current slot with the new run's marker.
+        XCTAssertEqual(store.preserveLeftoverFromCurrentSlot(currentRunID: "relaunch-run"), crashed)
+        store.writeCurrent(ExitSentinelMarker(runID: "relaunch-run", startedAt: "2026-07-20T11:00:00.000Z"))
+
+        // The crash evidence lives in the leftover slot, distinct from the
+        // current-run slot, so arming did not destroy it.
+        XCTAssertEqual(store.readLeftover(), crashed)
+        XCTAssertEqual(store.readCurrent()?.runID, "relaunch-run")
+
+        // A normal background/terminate of the relaunch clears only the current
+        // slot — the un-captured crash marker must survive for the next launch.
+        store.clearCurrent()
+        XCTAssertNil(store.readCurrent())
+        XCTAssertEqual(store.readLeftover(), crashed)
+
+        // Next launch, current slot empty: the persisted leftover is surfaced
+        // again for a capture retry.
+        let nextLaunch = ExitSentinelMarkerStore(currentURL: currentURL)
+        XCTAssertEqual(nextLaunch.preserveLeftoverFromCurrentSlot(currentRunID: "next-run"), crashed)
+
+        // Only an explicit clear (successful capture) discards it.
+        nextLaunch.clearLeftover()
+        XCTAssertNil(nextLaunch.readLeftover())
+    }
+
+    func testExitSentinelStoreDoesNotPromoteCurrentRunOrClobberLeftover() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ExitSentinelStoreTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let store = ExitSentinelMarkerStore(
+            currentURL: directory.appendingPathComponent("exit-sentinel.json", isDirectory: false)
+        )
+
+        // The current run's own marker is not crash evidence: it must not be
+        // promoted into the leftover slot.
+        store.writeCurrent(ExitSentinelMarker(runID: "current-run", startedAt: "2026-07-20T10:00:00.000Z"))
+        XCTAssertNil(store.preserveLeftoverFromCurrentSlot(currentRunID: "current-run"))
+        XCTAssertNil(store.readLeftover())
+
+        // A leftover a prior relaunch already failed to capture is never
+        // clobbered by a newer crash marker (the single-slot capture path keeps
+        // the older evidence deterministically).
+        let firstCrash = ExitSentinelMarker(runID: "first-crash", startedAt: "2026-07-20T09:00:00.000Z")
+        store.writeCurrent(firstCrash)
+        XCTAssertEqual(store.preserveLeftoverFromCurrentSlot(currentRunID: "run-a"), firstCrash)
+
+        let secondCrash = ExitSentinelMarker(runID: "second-crash", startedAt: "2026-07-20T09:30:00.000Z")
+        store.writeCurrent(secondCrash)
+        XCTAssertEqual(store.preserveLeftoverFromCurrentSlot(currentRunID: "run-b"), firstCrash)
+        XCTAssertEqual(store.readLeftover(), firstCrash)
+    }
+
+    func testExitSentinelStoreLeftoverURLIsDistinctSibling() {
+        let currentURL = URL(fileURLWithPath: "/tmp/diag/exit-sentinel.json")
+        let store = ExitSentinelMarkerStore(currentURL: currentURL)
+        XCTAssertEqual(store.currentURL, currentURL)
+        XCTAssertEqual(store.leftoverURL, URL(fileURLWithPath: "/tmp/diag/exit-sentinel-leftover.json"))
+        XCTAssertNotEqual(store.currentURL, store.leftoverURL)
+    }
+
+    // MARK: - MetricKit breadcrumb window filtering (round 6 #4)
+
+    func testBreadcrumbsInWindowKeepsOnlyIncidentWindowLines() {
+        func line(at seconds: TimeInterval) -> DiagnosticsLogLine {
+            DiagnosticsLogLine(
+                ts: DiagnosticsTimestamp.string(from: Date(timeIntervalSince1970: seconds)),
+                run: "run",
+                lvl: .info,
+                cat: .lifecycle,
+                tag: "Scene",
+                msg: "state"
+            )
+        }
+        let unparseable = DiagnosticsLogLine(
+            ts: "not-a-date", run: "run", lvl: .info, cat: .lifecycle, tag: "Scene", msg: "state"
+        )
+
+        let beforeWindow = line(at: 500)       // older retained segment
+        let atStart = line(at: 1_000)
+        let midWindow = line(at: 1_050)
+        let atEnd = line(at: 1_100)
+        let withinMargin = line(at: 1_125)     // clock skew after periodEnd
+        let relaunch = line(at: 5_000)         // next-launch breadcrumb
+
+        let filtered = DiagnosticsCoordinator.breadcrumbsInWindow(
+            [beforeWindow, atStart, midWindow, atEnd, withinMargin, relaunch, unparseable],
+            from: Date(timeIntervalSince1970: 1_000),
+            to: Date(timeIntervalSince1970: 1_100),
+            margin: 30
+        )
+
+        XCTAssertEqual(filtered, [atStart, midWindow, atEnd, withinMargin])
+    }
+
     // MARK: - Helpers
 
     private func makeConsentStore() -> DiagnosticsConsentStore {
