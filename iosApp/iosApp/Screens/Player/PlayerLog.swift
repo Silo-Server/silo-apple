@@ -20,10 +20,17 @@
 import Foundation
 
 @inline(__always)
-func cmpLog(_ message: @autoclosure () -> String) {
+func cmpLog(_ message: @autoclosure () -> String, verbose: Bool = false) {
     let rendered = message()
     print(rendered)
     #if os(iOS) || os(tvOS)
-    DiagLog.i(.playback, "CMP", rendered)
+    // Verbose, high-frequency traces (e.g. the 1 Hz `[CMP-DIAG]` telemetry)
+    // only enter the diagnostics ring when the user has opted into Debug
+    // Logging. Errors and lifecycle lines are always kept so crash bundles
+    // retain the essential player context regardless of the toggle. stdout
+    // always receives the line for live `devicectl --console` troubleshooting.
+    if !verbose || DiagnosticsConsentStore.shared.debugLoggingEnabled {
+        DiagLog.i(.playback, "CMP", rendered)
+    }
     #endif
 }

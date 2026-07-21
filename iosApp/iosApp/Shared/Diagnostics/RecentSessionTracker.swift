@@ -4,10 +4,17 @@ import Foundation
 struct RecentPlaybackSessionEntry: Codable, Equatable {
     let sessionID: String
     let recordedAt: String
+    /// The diagnostics binding (server instance + account) active when the
+    /// session was recorded. Playback session IDs are server-scoped, so a
+    /// report may only surface sessions captured under its own binding.
+    /// `nil` for legacy entries or sessions recorded before the binding was
+    /// known; those never match a report binding and are excluded.
+    let binding: DiagnosticsBinding?
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case recordedAt = "recorded_at"
+        case binding
     }
 }
 
@@ -24,7 +31,11 @@ final class RecentSessionTracker {
         self.defaults = defaults
     }
 
-    func record(sessionID: String, now: Date = Date()) {
+    func record(
+        sessionID: String,
+        binding: DiagnosticsBinding? = DiagnosticsCoordinator.currentDiagnosticsBinding,
+        now: Date = Date()
+    ) {
         guard !sessionID.isEmpty else { return }
 
         lock.lock()
@@ -34,7 +45,8 @@ final class RecentSessionTracker {
         entries.removeAll { $0.sessionID == sessionID }
         entries.append(RecentPlaybackSessionEntry(
             sessionID: sessionID,
-            recordedAt: DiagnosticsTimestamp.string(from: now)
+            recordedAt: DiagnosticsTimestamp.string(from: now),
+            binding: binding
         ))
         if entries.count > Self.maxEntries {
             entries = Array(entries.suffix(Self.maxEntries))
@@ -42,11 +54,15 @@ final class RecentSessionTracker {
         save(entries)
     }
 
-    func recentSessionIDs(limit: Int = 10) -> [String] {
+    /// Recent session IDs recorded under `binding`, newest first. Sessions
+    /// from other server/accounts are excluded so they cannot leak into a
+    /// report bound elsewhere.
+    func recentSessionIDs(for binding: DiagnosticsBinding, limit: Int = 10) -> [String] {
         lock.lock()
         defer { lock.unlock() }
 
         return load()
+            .filter { $0.binding == binding }
             .suffix(max(0, limit))
             .reversed()
             .map(\.sessionID)

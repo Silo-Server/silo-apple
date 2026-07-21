@@ -5,7 +5,7 @@ import OSLog
 import UIKit
 #endif
 
-struct DiagnosticsStatusSnapshot: Equatable {
+struct DiagnosticsStatusSnapshot: Equatable, Codable {
     let status: DiagnosticsStatusResponse
     let binding: DiagnosticsBinding
 }
@@ -14,6 +14,7 @@ enum DiagnosticsUploadDecision: Equatable {
     case uploaded(DiagnosticsUploadResponse)
     case keptRetryable
     case keptNeedsServerUpdate
+    case keptTooLarge
     case keptStaleConsent
     case keptDestinationMismatch
     case discardedInvalidLocalBundle
@@ -57,15 +58,21 @@ actor DiagnosticsCoordinator {
 
     func refreshStatus() async throws -> DiagnosticsStatusSnapshot {
         let requestServerRegistryID = ServerRegistry.shared.activeServerId
-        let requestAccessTokenFingerprint = await Self.currentAccessTokenFingerprint()
-        guard requestServerRegistryID != nil, requestAccessTokenFingerprint != nil else {
+        guard requestServerRegistryID != nil,
+              await Self.currentAccessTokenFingerprint() != nil else {
             throw DiagnosticsCoordinatorError.identityChanged
         }
 
         let status = try await api.getDiagnosticsStatus()
         let user = try await continuumAPI.currentUser()
+        // Re-check the *stable* identity after the awaits: the active server
+        // registry id plus the freshly fetched account user id. Comparing
+        // these rather than raw access-token fingerprints means a transparent
+        // token refresh HTTPClient may perform during these calls is not
+        // misread as an identity change. A genuine change — server switch or
+        // sign-out — still flips the server id or drops the token.
         guard requestServerRegistryID == ServerRegistry.shared.activeServerId,
-              requestAccessTokenFingerprint == (await Self.currentAccessTokenFingerprint()) else {
+              let accessTokenFingerprint = await Self.currentAccessTokenFingerprint() else {
             throw DiagnosticsCoordinatorError.identityChanged
         }
         guard let accountUserID = user.id, !accountUserID.isEmpty else {
@@ -78,7 +85,8 @@ actor DiagnosticsCoordinator {
         let snapshot = DiagnosticsStatusSnapshot(status: status, binding: binding)
         cachedStatus = snapshot
         cachedStatusServerRegistryID = requestServerRegistryID
-        cachedStatusAccessTokenFingerprint = requestAccessTokenFingerprint
+        cachedStatusAccessTokenFingerprint = accessTokenFingerprint
+        persistLastKnownSnapshot(snapshot, serverRegistryID: requestServerRegistryID)
         updateBreadcrumbConsentContext(binding: binding, noticeVersion: status.consentNoticeVersion)
         if let serverId = ServerRegistry.shared.activeServerId {
             Self.ServerBindingIndex.record(
@@ -99,6 +107,36 @@ actor DiagnosticsCoordinator {
         return cachedStatus
     }
 
+    /// Best-effort last-known-good status for the active server, used when a
+    /// live refresh is impossible (offline). Prefers the in-memory cache from
+    /// this session, then the value persisted from the previous successful
+    /// refresh — the latter survives relaunch, so a crash delivered by
+    /// MetricKit at the next launch can still be queued while offline.
+    private func lastKnownSnapshotForActiveServer() -> DiagnosticsStatusSnapshot? {
+        guard let activeServerId = ServerRegistry.shared.activeServerId else {
+            return nil
+        }
+        if cachedStatusServerRegistryID == activeServerId, let cachedStatus {
+            return cachedStatus
+        }
+        return Self.LastKnownStatusStore.snapshot(for: activeServerId)
+    }
+
+    private func persistLastKnownSnapshot(_ snapshot: DiagnosticsStatusSnapshot, serverRegistryID: String?) {
+        guard let serverRegistryID else { return }
+        Self.LastKnownStatusStore.record(snapshot, for: serverRegistryID)
+    }
+
+    private func activeProfileIsChild() async -> Bool? {
+        guard let activeProfileID = AuthService.shared.profileId else {
+            return nil
+        }
+        guard let profiles = try? await AuthService.shared.getProfiles() else {
+            return nil
+        }
+        return profiles.first { $0.id == activeProfileID }?.isChild
+    }
+
     func pendingReportsForCurrentBinding() async -> [PendingReport] {
         guard let context = await captureContext(requirePersistentCapture: false) else {
             return []
@@ -111,15 +149,49 @@ actor DiagnosticsCoordinator {
     }
 
     func buildBundle(for report: PendingReport) async throws -> DiagnosticsBundleBuildResult {
+        let redactionTokens = await Self.currentTokenRedactionValues()
+
+        // Crash/hang/abnormal-exit reports snapshot their logs at capture time
+        // (see `logSnapshotArtifact`). Prefer that frozen snapshot so a report
+        // sent hours or days later — possibly after using another server or
+        // profile — carries the failure-time logs, not the current in-memory
+        // ring. Manual reports have no snapshot and use the live ring.
+        if let snapshotData = try? Data(contentsOf: logSnapshotURL(for: report)) {
+            let lines = String(decoding: snapshotData, as: UTF8.self)
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .map(String.init)
+            return try bundleBuilder.build(
+                report: report,
+                logLines: lines,
+                droppedLogLines: 0,
+                redactionTokens: redactionTokens
+            )
+        }
+
         let ringSnapshot = DiagLog.ring.snapshot()
         let osLogLines = harvestOSLogLines(since: report.binding.capturedAtDate)
-        let redactionTokens = await Self.currentTokenRedactionValues()
         return try bundleBuilder.build(
             report: report,
             logLines: ringSnapshot.lines + osLogLines,
             droppedLogLines: ringSnapshot.droppedCount,
             redactionTokens: redactionTokens
         )
+    }
+
+    private nonisolated func logSnapshotURL(for report: PendingReport) -> URL {
+        report.directoryURL.appendingPathComponent("logs.jsonl")
+    }
+
+    /// Freezes the current log ring plus this-process OSLog into a `logs.jsonl`
+    /// artifact so it can be stored with a pending report at capture time.
+    func logSnapshotArtifact(since: Date) -> PendingReportArtifact? {
+        let ringSnapshot = DiagLog.ring.snapshot()
+        let lines = ringSnapshot.lines + harvestOSLogLines(since: since)
+        guard !lines.isEmpty else {
+            return nil
+        }
+        let data = Data(lines.joined(separator: "\n").appending("\n").utf8)
+        return PendingReportArtifact(relativePath: "logs.jsonl", data: data)
     }
 
     func createManualReport() async throws -> PendingReport {
@@ -134,7 +206,7 @@ actor DiagnosticsCoordinator {
             capturedAt: capturedAt,
             crash: nil,
             deviceSummary: deviceSnapshotBuilder.deviceSummary(from: device),
-            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(),
+            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(for: context.binding),
             consentMode: .manual
         )
         let fingerprint = DiagnosticsSHA256.hex(
@@ -159,6 +231,17 @@ actor DiagnosticsCoordinator {
             return .keptDestinationMismatch
         }
 
+        // Refresh only the consent notice version from the current consent
+        // record before building the upload. If the server's notice advanced
+        // after capture, the frozen manifest would carry a stale
+        // notice_version and be rejected as stale_consent on every retry —
+        // even after the user re-consents. The report evidence stays frozen.
+        let currentNoticeVersion = consentStore.record(
+            for: report.binding.binding,
+            currentNoticeVersion: context.noticeVersion
+        ).noticeVersion
+        let report = pendingStore.updatingConsentNoticeVersion(report, to: currentNoticeVersion)
+
         do {
             let bundle = try await buildBundle(for: report)
             let response = try await api.upload(
@@ -182,15 +265,36 @@ actor DiagnosticsCoordinator {
         do {
             snapshot = try await refreshStatus()
         } catch {
-            return nil
+            // The server is unreachable (or the identity is mid-change). For a
+            // persistent capture (crash/hang/abnormal-exit) we must not drop
+            // the report just because we are offline: fall back to the
+            // last-known-good status/binding so it is still queued locally.
+            // Only give up when there is genuinely no known binding to bind to.
+            guard requirePersistentCapture,
+                  let fallback = lastKnownSnapshotForActiveServer() else {
+                return nil
+            }
+            snapshot = fallback
         }
 
         let record = consentStore.record(
             for: snapshot.binding,
             currentNoticeVersion: snapshot.status.consentNoticeVersion
         )
-        if requirePersistentCapture, record.mode == .never {
-            return nil
+        if requirePersistentCapture {
+            if record.mode == .never {
+                return nil
+            }
+            // Child profiles cannot manage diagnostics. A crash captured while
+            // one is active must not be persisted as an account-bound report,
+            // or an adult profile on the same account could later be prompted
+            // to upload the child's session. Mirror DiagnosticsPromptPolicy's
+            // isChildProfile gating; only skip when we positively know it is a
+            // child (an unknown profile stays capturable and is gated at the
+            // prompt/upload layer).
+            if await activeProfileIsChild() == true {
+                return nil
+            }
         }
 
         return DiagnosticsCaptureContext(
@@ -273,13 +377,19 @@ actor DiagnosticsCoordinator {
             capturedAt: capturedAt,
             crash: crash,
             deviceSummary: deviceSnapshotBuilder.deviceSummary(from: device),
-            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(),
+            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(for: context.binding),
             captureSessionID: marker.runID
         )
         var artifacts: [PendingReportArtifact] = []
-        let breadcrumbs = Self.renderBreadcrumbs(breadcrumbLines)
+        // Only the crashed run's breadcrumbs — the journal can also hold this
+        // relaunch's startup/navigation lines and older retained segments,
+        // which would pollute the failed run's evidence.
+        let breadcrumbs = Self.renderBreadcrumbs(crashedRunBreadcrumbLines)
         if !breadcrumbs.isEmpty {
             artifacts.append(PendingReportArtifact(relativePath: "breadcrumbs.jsonl", data: breadcrumbs))
+        }
+        if let logSnapshot = logSnapshotArtifact(since: marker.startedAtDate) {
+            artifacts.append(logSnapshot)
         }
 
         do {
@@ -369,7 +479,13 @@ actor DiagnosticsCoordinator {
         case .archiveMismatch, .invalidBundle:
             pendingStore.delete(report)
             return .discardedInvalidLocalBundle
-        case .disabled, .storageUnavailable, .quotaExceeded, .tooLarge, .busy, .retryable, .underlying:
+        case .tooLarge:
+            // The bundle is over the server's size limit. Its artifacts and
+            // archive are fixed, so retrying uploads the same rejected payload
+            // forever. Mark it a permanent local failure instead.
+            pendingStore.markTooLarge(report)
+            return .keptTooLarge
+        case .disabled, .storageUnavailable, .quotaExceeded, .busy, .retryable, .underlying:
             return .keptRetryable
         }
     }
@@ -466,7 +582,7 @@ actor DiagnosticsCoordinator {
         )
         Self.breadcrumbContextLock.unlock()
         #if os(tvOS)
-        ExitSentinel.shared.captureEnabled = {
+        ExitSentinel.shared.setCaptureEnabled {
             DiagnosticsCoordinator.breadcrumbCaptureEnabled()
         }
         #endif
@@ -477,6 +593,15 @@ actor DiagnosticsCoordinator {
         let binding = breadcrumbConsentContext?.binding
         breadcrumbContextLock.unlock()
         return binding
+    }
+
+    /// The binding for the server/account currently in view, captured at the
+    /// last successful status refresh. Exposed so playback-session recording
+    /// can scope entries to the active binding (see `RecentSessionTracker`),
+    /// preventing another server/account's session IDs from leaking into a
+    /// report bound elsewhere.
+    nonisolated static var currentDiagnosticsBinding: DiagnosticsBinding? {
+        currentBreadcrumbBinding()
     }
 
     nonisolated private static func breadcrumbCaptureEnabled() -> Bool {
@@ -534,6 +659,49 @@ actor DiagnosticsCoordinator {
         }
 
         private static func save(_ index: [String: [String]]) {
+            guard let data = try? DiagnosticsJSONCoding.makeEncoder().encode(index) else {
+                return
+            }
+            SharedDefaults.shared.set(data, forKey: key)
+        }
+    }
+
+    /// Persists the last successful diagnostics status per server registry id
+    /// so a persistent capture (crash/hang/abnormal-exit) can still be queued
+    /// when the server is unreachable — including on the very next launch after
+    /// a crash, before any live refresh has run.
+    private enum LastKnownStatusStore {
+        private static let key = "diagnostics.lastKnownStatus.v1"
+        private static let lock = NSLock()
+
+        static func record(_ snapshot: DiagnosticsStatusSnapshot, for serverId: String) {
+            guard !serverId.isEmpty else { return }
+            lock.lock()
+            var index = load()
+            index[serverId] = snapshot
+            save(index)
+            lock.unlock()
+        }
+
+        static func snapshot(for serverId: String) -> DiagnosticsStatusSnapshot? {
+            lock.lock()
+            let snapshot = load()[serverId]
+            lock.unlock()
+            return snapshot
+        }
+
+        private static func load() -> [String: DiagnosticsStatusSnapshot] {
+            guard let data = SharedDefaults.shared.data(forKey: key),
+                  let decoded = try? DiagnosticsJSONCoding.makeDecoder().decode(
+                    [String: DiagnosticsStatusSnapshot].self,
+                    from: data
+                  ) else {
+                return [:]
+            }
+            return decoded
+        }
+
+        private static func save(_ index: [String: DiagnosticsStatusSnapshot]) {
             guard let data = try? DiagnosticsJSONCoding.makeEncoder().encode(index) else {
                 return
             }

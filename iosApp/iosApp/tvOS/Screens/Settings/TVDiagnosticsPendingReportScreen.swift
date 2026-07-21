@@ -55,6 +55,7 @@ struct TVDiagnosticsPendingReportScreen: View {
 
                     Button("Delete Report") { showDeleteConfirmation = true }
                         .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
+                        .disabled(model.isWorking)
                         .focused($focusedAction, equals: .delete)
                 }
             }

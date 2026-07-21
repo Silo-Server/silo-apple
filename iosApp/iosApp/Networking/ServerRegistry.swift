@@ -388,6 +388,11 @@ final class ServerRegistry {
         )
         self.entries = [entry]
         self.activeServerId = id
+        // load() registers persisted entries for redaction, but migration
+        // installs this entry directly and returns before that path. Register
+        // it here so the legacy host is hashed in diagnostics logs on the very
+        // first post-upgrade launch.
+        registerDiagnosticsSensitiveHosts([entry])
         if normalized != raw {
             defaults.set(normalized, forKey: "serverUrl")
         }

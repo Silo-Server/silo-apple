@@ -2787,7 +2787,8 @@ final class PlayerCore: NSObject {
             demuxReadCount, demuxReturnCount, demuxIdle,
             bufferedAhead, health.rebufferCount, health.seekCount,
             health.coalescedSeekCount, health.avsyncFlushCount,
-            health.avsyncGopDropCount, health.avsyncReseekCount))
+            health.avsyncGopDropCount, health.avsyncReseekCount),
+            verbose: true)
         emitPlaybackStatsSnapshot(
             syncRate: Double(syncRate),
             videoFramesEnqueued: displayLinkEnqueueCount,

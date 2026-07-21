@@ -36,6 +36,7 @@ final class DiagnosticsViewModel {
     private let pendingStore: PendingReportStore
     private var statusSnapshot: DiagnosticsStatusSnapshot?
     private var generation = 0
+    private var isHandlingForeground = false
 
     init(
         coordinator: DiagnosticsCoordinator = .shared,
@@ -74,6 +75,14 @@ final class DiagnosticsViewModel {
 
     func handleForeground() async {
         guard prompt == nil else { return }
+        // Collapse overlapping triggers (auth-state, server/profile,
+        // notification, scene-phase) into a single refresh. The guard is set
+        // before the first suspension so concurrent callers on the main actor
+        // don't each repeat the work.
+        guard !isHandlingForeground else { return }
+        isHandlingForeground = true
+        defer { isHandlingForeground = false }
+
         let startingGeneration = generation
         guard let startingIdentity = await currentIdentity() else {
             reset()
@@ -103,6 +112,7 @@ final class DiagnosticsViewModel {
 
         let eligible = pendingReports.filter { report in
             report.binding.type != .manual
+                && !report.state.isPermanentFailure
                 && DiagnosticsPromptPolicy.isEligible(
                     reportBinding: report.binding.binding,
                     currentBinding: snapshot.binding,
@@ -278,7 +288,7 @@ final class DiagnosticsViewModel {
         isWorking = true
         defer { isWorking = false }
 
-        for report in pendingReports where pendingStore.canAutoUpload(
+        for report in pendingReports where !report.state.isPermanentFailure && pendingStore.canAutoUpload(
             fingerprint: report.binding.fingerprint,
             binding: binding
         ) {
@@ -317,6 +327,8 @@ final class DiagnosticsViewModel {
             return "Report kept; Silo will retry."
         case .keptNeedsServerUpdate:
             return "Report kept; your server needs an update."
+        case .keptTooLarge:
+            return "Report is too large to send and won't be retried."
         case .keptStaleConsent:
             consentMode = .ask
             return "Consent changed; Crash Reports was reset to Ask."

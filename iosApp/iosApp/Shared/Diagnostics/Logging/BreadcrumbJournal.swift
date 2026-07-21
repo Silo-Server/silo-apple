@@ -88,6 +88,12 @@ final class BreadcrumbJournal {
     }
 
     func readAll() -> [DiagnosticsLogLine] {
+        // Hold the same lock append/rotation take: segment discovery and file
+        // reads must not overlap a concurrent append that rotates (and removes)
+        // the active segment, which would otherwise yield truncated breadcrumbs.
+        lock.lock()
+        defer { lock.unlock() }
+
         let decoder = DiagnosticsJSONCoding.makeDecoder()
         return orderedSegmentURLs().flatMap { url in
             readCompleteLines(from: url, decoder: decoder)

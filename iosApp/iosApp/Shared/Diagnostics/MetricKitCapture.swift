@@ -44,12 +44,19 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
         periodEnd: Date
     ) {
         Task {
+            // Known limitation: MetricKit delivers crash/hang diagnostics
+            // later (often at the next launch), so this binds the report to
+            // the server/account active at delivery time via captureContext().
+            // If the user switched servers/accounts between the incident and
+            // delivery, the report binds to the current one. A crash-time
+            // binding timeline is out of scope for this slice.
             guard let context = await DiagnosticsCoordinator.shared.captureContext(
                 applicationVersionOverride: applicationVersion
             ) else {
                 return
             }
             let breadcrumbs = DiagnosticsCoordinator.shared.breadcrumbsData()
+            let logSnapshot = await DiagnosticsCoordinator.shared.logSnapshotArtifact(since: periodStart)
             let report = try? Self.captureFixtureDiagnostic(
                 rawJSON: rawJSON,
                 type: type,
@@ -58,7 +65,8 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
                 context: context,
                 store: PendingReportStore.shared,
                 deviceSnapshotBuilder: .live,
-                breadcrumbsData: breadcrumbs
+                breadcrumbsData: breadcrumbs,
+                logSnapshot: logSnapshot
             )
             if report != nil {
                 NotificationCenter.default.post(name: .diagnosticsPendingReportCreated, object: nil)
@@ -75,7 +83,8 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
         context: DiagnosticsCaptureContext,
         store: PendingReportStore,
         deviceSnapshotBuilder: DeviceSnapshotBuilder,
-        breadcrumbsData: Data? = nil
+        breadcrumbsData: Data? = nil,
+        logSnapshot: PendingReportArtifact? = nil
     ) throws -> PendingReport? {
         let fingerprint = MetricKitDiagnosticParser.fingerprint(for: rawJSON)
         guard !store.hasSeenFingerprint(fingerprint, now: periodEnd) else {
@@ -94,7 +103,7 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
             capturedAt: periodEnd,
             crash: crash,
             deviceSummary: deviceSnapshotBuilder.deviceSummary(from: device),
-            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs()
+            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(for: context.binding)
         )
 
         var artifacts = [
@@ -102,6 +111,12 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
         ]
         if let breadcrumbsData, !breadcrumbsData.isEmpty {
             artifacts.append(PendingReportArtifact(relativePath: "breadcrumbs.jsonl", data: breadcrumbsData))
+        }
+        // Logs snapshotted at delivery time (see logSnapshotArtifact) so the
+        // report carries the failure-time ring rather than the live one read
+        // whenever the bundle is finally uploaded.
+        if let logSnapshot, !logSnapshot.data.isEmpty {
+            artifacts.append(logSnapshot)
         }
 
         return try store.save(PendingReportCapture(
@@ -164,11 +179,14 @@ enum MetricKitDiagnosticParser {
         guard !frames.isEmpty else {
             return nil
         }
-        let excerpt = frames.prefix(12).joined(separator: "\n")
-        if excerpt.utf8.count <= 8192 {
-            return excerpt
+        var excerpt = frames.prefix(12).joined(separator: "\n")
+        // Truncate by UTF-8 bytes (the limit DiagnosticsCrashInfo.validate()
+        // enforces), never mid-character, so multibyte frames can't push the
+        // result over 8192 bytes and fail validation.
+        while excerpt.utf8.count > 8192 {
+            excerpt.removeLast()
         }
-        return String(excerpt.prefix(8192))
+        return excerpt
     }
 
     private static func summary(type: ReportType, stackExcerpt: String?) -> String {
@@ -187,11 +205,9 @@ enum MetricKitDiagnosticParser {
             if let rendered = renderFrame(dictionary) {
                 frames.append(rendered)
             }
-            for key in ["callStackRootFrames", "subFrames", "frames", "callStacks", "threadAttributedCallStack"] {
-                if let nested = dictionary[key] {
-                    collectFrames(from: nested, into: &frames)
-                }
-            }
+            // Recurse into every value once. A separate named-keys pass would
+            // revisit the same subtrees (callStackRootFrames, subFrames, …),
+            // appending each frame twice until the 12-frame cap.
             for nested in dictionary.values {
                 collectFrames(from: nested, into: &frames)
             }

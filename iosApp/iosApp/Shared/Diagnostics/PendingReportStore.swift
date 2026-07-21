@@ -1,5 +1,4 @@
 #if os(iOS) || os(tvOS)
-import CryptoKit
 import Foundation
 
 struct DiagnosticsManifestDraft: Codable, Equatable {
@@ -82,11 +81,34 @@ struct PendingReport: Identifiable, Equatable {
 
 struct PendingReportState: Codable, Equatable {
     var needsServerUpdate: Bool
+    /// The generated bundle exceeds the server's size limit. Like
+    /// `needsServerUpdate`, this is a permanent local failure: retrying the
+    /// same oversized payload will always be rejected, so it is excluded from
+    /// auto-upload and prompting.
+    var tooLarge: Bool
 
     static let empty = PendingReportState(needsServerUpdate: false)
 
+    /// A permanent failure the client cannot resolve by retrying. Such reports
+    /// are kept locally (for visibility) but never auto-uploaded or prompted.
+    var isPermanentFailure: Bool {
+        needsServerUpdate || tooLarge
+    }
+
     enum CodingKeys: String, CodingKey {
         case needsServerUpdate = "needs_server_update"
+        case tooLarge = "too_large"
+    }
+
+    init(needsServerUpdate: Bool, tooLarge: Bool = false) {
+        self.needsServerUpdate = needsServerUpdate
+        self.tooLarge = tooLarge
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        needsServerUpdate = try container.decodeIfPresent(Bool.self, forKey: .needsServerUpdate) ?? false
+        tooLarge = try container.decodeIfPresent(Bool.self, forKey: .tooLarge) ?? false
     }
 }
 
@@ -331,8 +353,50 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
-        let state = PendingReportState(needsServerUpdate: true)
+        var state = report.state
+        state.needsServerUpdate = true
         try? writeJSON(state, to: report.directoryURL.appendingPathComponent("state.json"))
+    }
+
+    func markTooLarge(_ report: PendingReport) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var state = report.state
+        state.tooLarge = true
+        try? writeJSON(state, to: report.directoryURL.appendingPathComponent("state.json"))
+    }
+
+    /// Rewrites only the stored manifest's `consent.notice_version` so an
+    /// upload built from this report reflects the current consent notice.
+    /// Everything else — crash evidence, logs, device summary — stays frozen
+    /// as captured. Returns the updated report, or the original if nothing
+    /// changed or the rewrite failed.
+    @discardableResult
+    func updatingConsentNoticeVersion(_ report: PendingReport, to noticeVersion: Int) -> PendingReport {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard report.manifest.consent.noticeVersion != noticeVersion else {
+            return report
+        }
+        var manifest = report.manifest
+        manifest.consent = DiagnosticsManifest.Consent(
+            mode: manifest.consent.mode,
+            noticeVersion: noticeVersion
+        )
+        do {
+            try writeJSON(manifest, to: report.directoryURL.appendingPathComponent("manifest.json"))
+        } catch {
+            return report
+        }
+        return PendingReport(
+            id: report.id,
+            directoryURL: report.directoryURL,
+            binding: report.binding,
+            manifest: manifest,
+            state: report.state
+        )
     }
 
     func resetForTests() {
@@ -481,13 +545,4 @@ enum DiagnosticsDates {
     }
 }
 
-enum DiagnosticsSHA256 {
-    static func hex(data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
-    static func shortHex(data: Data, count: Int = 16) -> String {
-        String(hex(data: data).prefix(count))
-    }
-}
 #endif

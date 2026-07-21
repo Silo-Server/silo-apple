@@ -42,6 +42,7 @@ struct DiagnosticsPromptSheet: View {
                     }
 
                     Button("Don't Send", role: .cancel, action: model.declinePrompt)
+                        .disabled(model.isWorking)
                 }
 
                 if model.isWorking {

@@ -21,13 +21,23 @@ final class ExitSentinel {
     // Consent gate, wired by DiagnosticsCoordinator to the same signal that
     // gates breadcrumb capture (mode != never for the active binding). While
     // disabled the sentinel neither arms nor reports, and any marker left on
-    // disk is removed.
-    var captureEnabled: () -> Bool = { true }
+    // disk is removed. Read under `lock` (see appDidEnterForeground) and
+    // replaced only through `setCaptureEnabled` so the closure storage is
+    // never accessed concurrently.
+    private var captureEnabledGate: () -> Bool = { true }
 
     private let markerURL: URL
     private let fileManager: FileManager
     private let lock = NSLock()
     private var leftoverMarker: ExitSentinelMarker?
+
+    /// Serializes replacing the consent gate with the lock that guards its
+    /// read, so the coordinator can update it off the main actor safely.
+    func setCaptureEnabled(_ isEnabled: @escaping () -> Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        captureEnabledGate = isEnabled
+    }
 
     init(markerURL: URL? = nil, fileManager: FileManager = .default) {
         self.fileManager = fileManager
@@ -42,7 +52,7 @@ final class ExitSentinel {
         lock.lock()
         defer { lock.unlock() }
 
-        guard captureEnabled() else {
+        guard captureEnabledGate() else {
             leftoverMarker = nil
             try? fileManager.removeItem(at: markerURL)
             return

@@ -31,6 +31,7 @@ struct DiagnosticsReportDetailView: View {
                         dismiss()
                     }
                 }
+                .disabled(model.isWorking)
             }
         }
         .continuumGroupedListStyle()

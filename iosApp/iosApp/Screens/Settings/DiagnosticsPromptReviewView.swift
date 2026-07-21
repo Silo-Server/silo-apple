@@ -37,6 +37,7 @@ struct DiagnosticsPromptReviewView: View {
                 }
 
                 Button("Don't Send", role: .cancel, action: model.declinePrompt)
+                    .disabled(model.isWorking)
             }
         }
         .continuumGroupedListStyle()
