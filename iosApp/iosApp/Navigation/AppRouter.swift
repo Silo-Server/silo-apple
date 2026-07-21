@@ -287,11 +287,12 @@ class AppRouter {
     /// login screen so the user can re-enter credentials. If no server
     /// is active at all (e.g. all removed), fall back to server setup.
     func expiredSession() {
-        recordScreenBreadcrumb(target: "login", action: "sessionExpired")
         path = NavigationPath()
         if ServerRegistry.shared.hasActiveServer {
+            recordScreenBreadcrumb(target: "login", action: "sessionExpired")
             authState = .needsLogin
         } else {
+            recordScreenBreadcrumb(target: "serverSetup", action: "sessionExpired")
             authState = .needsServerSetup
         }
     }

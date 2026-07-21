@@ -90,9 +90,13 @@ struct DiagnosticsBundleBuilder {
             }
             result.append(token)
         }
-        guard !uniqueTokens.isEmpty,
-              var text = String(data: data, encoding: .utf8) else {
+        guard !uniqueTokens.isEmpty else {
             return data
+        }
+        guard var text = String(data: data, encoding: .utf8) else {
+            // Fail closed: malformed textual evidence cannot be verified as
+            // token-free and must never be uploaded verbatim.
+            return Data("[redaction_failed: non-utf8 content dropped]".utf8)
         }
         for token in uniqueTokens {
             text = text.replacingOccurrences(of: token, with: "[redacted_token]")

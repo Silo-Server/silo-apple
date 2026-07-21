@@ -19,7 +19,7 @@ final class DiagnosticsBundleBuilderTests: XCTestCase {
         )
     }
 
-    func testExactTokenScrubLeavesBinaryDataUnchanged() {
+    func testExactTokenScrubFailsClosedForNonUTF8Data() {
         let data = Data([0xff, 0xfe, 0xfd, 0x00])
 
         let scrubbed = DiagnosticsBundleBuilder.scrubExactTokenMatches(
@@ -27,6 +27,10 @@ final class DiagnosticsBundleBuilderTests: XCTestCase {
             tokens: ["token"]
         )
 
-        XCTAssertEqual(scrubbed, data)
+        XCTAssertEqual(
+            String(data: scrubbed, encoding: .utf8),
+            "[redaction_failed: non-utf8 content dropped]"
+        )
+        XCTAssertNotEqual(scrubbed, data)
     }
 }

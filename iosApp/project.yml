@@ -200,21 +200,7 @@ targets:
       - path: TopShelf
       - path: iosApp/Shared
         excludes:
-          - "Diagnostics/Bundle/**"
-          - "Diagnostics/DeviceSnapshotBuilder.swift"
-          - "Diagnostics/DiagnosticsCapabilityProbe.swift"
-          - "Diagnostics/DiagnosticsConsentStore.swift"
-          - "Diagnostics/DiagnosticsCoordinator.swift"
-          - "Diagnostics/DiagnosticsFeatureState.swift"
-          - "Diagnostics/DiagnosticsNotice.swift"
-          - "Diagnostics/DiagnosticsPrompt.swift"
-          - "Diagnostics/DiagnosticsPromptPolicy.swift"
-          - "Diagnostics/DiagnosticsReportSummary.swift"
-          - "Diagnostics/DiagnosticsViewModel.swift"
-          - "Diagnostics/ExitSentinel.swift"
-          - "Diagnostics/MetricKitCapture.swift"
-          - "Diagnostics/PendingReportStore.swift"
-          - "Diagnostics/RecentSessionTracker.swift"
+          - "Diagnostics/**"
     # PRODUCT_BUNDLE_IDENTIFIER and CODE_SIGN_ENTITLEMENTS live in
     # Signing/SiloTVTopShelf.xcconfig so local contributors can
     # override them via Signing/Local.xcconfig without dirtying this
