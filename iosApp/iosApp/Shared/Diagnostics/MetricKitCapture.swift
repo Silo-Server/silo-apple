@@ -179,14 +179,8 @@ enum MetricKitDiagnosticParser {
         guard !frames.isEmpty else {
             return nil
         }
-        var excerpt = frames.prefix(12).joined(separator: "\n")
-        // Truncate by UTF-8 bytes (the limit DiagnosticsCrashInfo.validate()
-        // enforces), never mid-character, so multibyte frames can't push the
-        // result over 8192 bytes and fail validation.
-        while excerpt.utf8.count > 8192 {
-            excerpt.removeLast()
-        }
-        return excerpt
+        let excerpt = frames.prefix(12).joined(separator: "\n")
+        return truncatedToUTF8ByteLimit(excerpt, crashTextByteLimit)
     }
 
     private static func summary(type: ReportType, stackExcerpt: String?) -> String {
@@ -194,7 +188,26 @@ enum MetricKitDiagnosticParser {
         guard let firstFrame = stackExcerpt?.split(separator: "\n").first else {
             return prefix
         }
-        return "\(prefix): \(firstFrame)"
+        // The first frame is prefixed here without its own cap, and it can
+        // itself be near the limit. Trim the prefixed result the same
+        // byte-safe way stackExcerpt() does so the schema's crash.summary cap
+        // isn't exceeded (local validation only checks non-empty, so an
+        // over-cap summary would build locally and then fail upload).
+        return truncatedToUTF8ByteLimit("\(prefix): \(firstFrame)", crashTextByteLimit)
+    }
+
+    /// The byte cap DiagnosticsCrashInfo.validate() enforces on `stackExcerpt`
+    /// and `summary`.
+    private static let crashTextByteLimit = 8192
+
+    /// Trims `value` to at most `maxBytes` UTF-8 bytes without splitting a
+    /// character, so multibyte content can't push the result past the limit.
+    private static func truncatedToUTF8ByteLimit(_ value: String, _ maxBytes: Int) -> String {
+        var result = value
+        while result.utf8.count > maxBytes {
+            result.removeLast()
+        }
+        return result
     }
 
     private static func collectFrames(from value: Any, into frames: inout [String]) {

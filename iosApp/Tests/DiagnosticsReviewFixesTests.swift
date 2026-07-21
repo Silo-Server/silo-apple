@@ -23,26 +23,30 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(PendingReportState(needsServerUpdate: false, tooLarge: true).isPermanentFailure)
     }
 
-    // MARK: - Consent notice refresh before upload (#2)
+    // MARK: - Consent notice + mode refresh before upload (#2, round 3)
 
-    func testUpdatingConsentNoticeVersionRewritesOnlyThatField() throws {
+    func testUpdatingConsentRefreshesModeAndNoticeVersion() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("diag-tests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let store = PendingReportStore(rootDirectory: root)
 
-        let report = try store.save(makeCapture(noticeVersion: 1))
-        XCTAssertEqual(report.manifest.consent.noticeVersion, 1)
+        // Captured under Always; the server notice then advanced, demoting the
+        // account Always→Ask (prompt). The rewrite must not keep claiming
+        // always for the new notice.
+        let report = try store.save(makeCapture(noticeVersion: 1, consentMode: .always))
+        XCTAssertEqual(report.manifest.consent.mode, .always)
 
-        let updated = store.updatingConsentNoticeVersion(report, to: 5)
-        XCTAssertEqual(updated.manifest.consent.noticeVersion, 5)
-        // Evidence stays frozen: mode and captured timestamp are unchanged.
-        XCTAssertEqual(updated.manifest.consent.mode, report.manifest.consent.mode)
+        let updated = store.updatingConsent(report, mode: .prompt, noticeVersion: 2)
+        XCTAssertEqual(updated.manifest.consent.mode, .prompt)
+        XCTAssertEqual(updated.manifest.consent.noticeVersion, 2)
+        // Evidence stays frozen: the captured timestamp is unchanged.
         XCTAssertEqual(updated.binding.capturedAt, report.binding.capturedAt)
 
         // The change is persisted to disk, so a re-read report is not stale.
         let reloaded = store.report(id: report.id)
-        XCTAssertEqual(reloaded?.manifest.consent.noticeVersion, 5)
+        XCTAssertEqual(reloaded?.manifest.consent.mode, .prompt)
+        XCTAssertEqual(reloaded?.manifest.consent.noticeVersion, 2)
     }
 
     // MARK: - Binding-scoped playback sessions (#10)
@@ -174,6 +178,32 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(DiagnosticsCoordinator.breadcrumbCaptureEnabled(for: askContext, consentStore: store))
     }
 
+    // MARK: - Breadcrumbs disabled when status unavailable (round 3)
+
+    func testBreadcrumbCaptureDisabledWhenStatusUnavailable() {
+        let store = makeConsentStore()
+
+        // Consent allows capture (Ask), but the server reports diagnostics as
+        // unavailable — breadcrumb capture must stay off, matching the
+        // persistent-capture availability gate.
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-unavail", accountUserID: "acct")
+        store.setMode(.ask, for: binding, noticeVersion: 1)
+
+        let unavailable = DiagnosticsCoordinator.BreadcrumbConsentContext(
+            binding: binding,
+            noticeVersion: 1,
+            isAvailable: false
+        )
+        XCTAssertFalse(DiagnosticsCoordinator.breadcrumbCaptureEnabled(for: unavailable, consentStore: store))
+
+        let available = DiagnosticsCoordinator.BreadcrumbConsentContext(
+            binding: binding,
+            noticeVersion: 1,
+            isAvailable: true
+        )
+        XCTAssertTrue(DiagnosticsCoordinator.breadcrumbCaptureEnabled(for: available, consentStore: store))
+    }
+
     // MARK: - Helpers
 
     private func makeConsentStore() -> DiagnosticsConsentStore {
@@ -184,12 +214,12 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         )
     }
 
-    private func makeCapture(noticeVersion: Int) -> PendingReportCapture {
+    private func makeCapture(noticeVersion: Int, consentMode: ConsentMode = .manual) -> PendingReportCapture {
         let binding = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
         let context = DiagnosticsCaptureContext(
             binding: binding,
             profileID: nil,
-            consentMode: .manual,
+            consentMode: consentMode,
             noticeVersion: noticeVersion,
             appVersion: "1.0.0",
             appBuild: "1",
@@ -207,7 +237,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
                 formFactor: "phone"
             ),
             playbackSessionIDs: [],
-            consentMode: .manual
+            consentMode: consentMode
         )
         return PendingReportCapture(
             binding: binding,

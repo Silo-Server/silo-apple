@@ -55,4 +55,31 @@ final class DiagnosticsRedactionTests: XCTestCase {
         let line = try rendered("request sent Authorization: Bearer abcdefghijklmnop")
         XCTAssertFalse(line.contains("abcdefghijklmnop"))
     }
+
+    // Mirrors HTTPClient.attachAuthHeaders' public debug string, which OSLog
+    // harvesting can pull into logs.jsonl:
+    //   → GET /path headers=[auth(…suffix), profileId=..., profileToken(…suffix), device=...]
+    func testHTTPClientDebugHeaderProfileAndTokensAreRedacted() throws {
+        let line = try rendered(
+            "→ GET /api/v1/library headers=[auth(…9f8e7d), profileId=prof-abc-123, profileToken(…a1b2c3), device=tvos]"
+        )
+        // Token suffixes wrapped in parentheses are redacted.
+        XCTAssertFalse(line.contains("9f8e7d"))
+        XCTAssertFalse(line.contains("a1b2c3"))
+        XCTAssertTrue(line.contains("auth(…[redacted])"))
+        XCTAssertTrue(line.contains("profileToken(…[redacted])"))
+        // The camelCase profile id key=value is redacted.
+        XCTAssertFalse(line.contains("prof-abc-123"))
+        XCTAssertTrue(line.contains("profileId=[redacted]"))
+        // Non-secret header fields stay intact.
+        XCTAssertTrue(line.contains("device=tvos"))
+    }
+
+    func testCamelCaseTokenKeyValuesAreRedacted() throws {
+        let line = try rendered("refresh accessToken=aaa.bbb.ccc refreshToken: ddd-eee-fff done")
+        XCTAssertFalse(line.contains("aaa.bbb.ccc"))
+        XCTAssertFalse(line.contains("ddd-eee-fff"))
+        XCTAssertTrue(line.contains("accessToken=[redacted]"))
+        XCTAssertTrue(line.contains("refreshToken=[redacted]"))
+    }
 }

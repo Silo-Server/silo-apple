@@ -87,7 +87,11 @@ actor DiagnosticsCoordinator {
         cachedStatusServerRegistryID = requestServerRegistryID
         cachedStatusAccessTokenFingerprint = accessTokenFingerprint
         persistLastKnownSnapshot(snapshot, serverRegistryID: requestServerRegistryID)
-        updateBreadcrumbConsentContext(binding: binding, noticeVersion: status.consentNoticeVersion)
+        updateBreadcrumbConsentContext(
+            binding: binding,
+            noticeVersion: status.consentNoticeVersion,
+            statusAvailable: status.status == .available
+        )
         if let serverId = ServerRegistry.shared.activeServerId {
             Self.ServerBindingIndex.record(
                 serverId: serverId,
@@ -127,14 +131,25 @@ actor DiagnosticsCoordinator {
         Self.LastKnownStatusStore.record(snapshot, for: serverRegistryID)
     }
 
-    private func activeProfileIsChild() async -> Bool? {
-        guard let activeProfileID = AuthService.shared.profileId else {
-            return nil
-        }
+    /// Whether `profileID` is a child profile on the active account. Returns
+    /// nil when it cannot be determined — `getProfiles()` failed (e.g. offline)
+    /// or the id is not among the account's profiles — so callers can fail
+    /// closed rather than treat "unknown" as "not a child".
+    private func profileIsChild(_ profileID: String) async -> Bool? {
         guard let profiles = try? await AuthService.shared.getProfiles() else {
             return nil
         }
-        return profiles.first { $0.id == activeProfileID }?.isChild
+        return profiles.first { $0.id == profileID }?.isChild
+    }
+
+    /// Child status of the profile active right now. No profile selected means
+    /// no child session is in front of us, so it reports non-child (false); an
+    /// active profile whose child status can't be resolved reports nil.
+    private func activeProfileIsChild() async -> Bool? {
+        guard let activeProfileID = AuthService.shared.profileId else {
+            return false
+        }
+        return await profileIsChild(activeProfileID)
     }
 
     func pendingReportsForCurrentBinding() async -> [PendingReport] {
@@ -239,16 +254,26 @@ actor DiagnosticsCoordinator {
             return .keptDestinationMismatch
         }
 
-        // Refresh only the consent notice version from the current consent
-        // record before building the upload. If the server's notice advanced
-        // after capture, the frozen manifest would carry a stale
-        // notice_version and be rejected as stale_consent on every retry —
-        // even after the user re-consents. The report evidence stays frozen.
-        let currentNoticeVersion = consentStore.record(
+        // Refresh both the consent notice version and mode from the current
+        // consent record before building the upload. If the server's notice
+        // advanced after capture, the frozen manifest would carry a stale
+        // notice_version and be rejected as stale_consent on every retry — even
+        // after the user re-consents. And if that advance demoted the account
+        // Always→Ask, the manifest must not still claim mode=always for the new
+        // notice. A manual report stays manual regardless of the account's
+        // ask/always setting. The report evidence stays frozen.
+        let currentConsent = consentStore.record(
             for: report.binding.binding,
             currentNoticeVersion: context.noticeVersion
-        ).noticeVersion
-        let report = pendingStore.updatingConsentNoticeVersion(report, to: currentNoticeVersion)
+        )
+        let refreshedMode: ConsentMode = report.manifest.consent.mode == .manual
+            ? .manual
+            : currentConsent.mode.manifestMode
+        let report = pendingStore.updatingConsent(
+            report,
+            mode: refreshedMode,
+            noticeVersion: currentConsent.noticeVersion
+        )
 
         do {
             let bundle = try await buildBundle(for: report)
@@ -273,12 +298,17 @@ actor DiagnosticsCoordinator {
         do {
             snapshot = try await refreshStatus()
         } catch {
-            // The server is unreachable (or the identity is mid-change). For a
-            // persistent capture (crash/hang/abnormal-exit) we must not drop
-            // the report just because we are offline: fall back to the
-            // last-known-good status/binding so it is still queued locally.
-            // Only give up when there is genuinely no known binding to bind to.
-            guard requirePersistentCapture,
+            // A persistent capture (crash/hang/abnormal-exit) must survive being
+            // offline: fall back to the last-known-good status/binding so it is
+            // still queued locally. But an identity-level failure —
+            // identityChanged (signed out / no access token) or a missing
+            // account user id — means there is no authenticated identity to
+            // attribute a capture to. Falling back to the last-known binding
+            // would bind the report to a signed-out or previous account, so we
+            // skip entirely; only genuine offline/status failures use the
+            // fallback (and only for persistent captures).
+            guard !(error is DiagnosticsCoordinatorError),
+                  requirePersistentCapture,
                   let fallback = lastKnownSnapshotForActiveServer() else {
                 return nil
             }
@@ -304,11 +334,14 @@ actor DiagnosticsCoordinator {
             // Child profiles cannot manage diagnostics. A crash captured while
             // one is active must not be persisted as an account-bound report,
             // or an adult profile on the same account could later be prompted
-            // to upload the child's session. Mirror DiagnosticsPromptPolicy's
-            // isChildProfile gating; only skip when we positively know it is a
-            // child (an unknown profile stays capturable and is gated at the
-            // prompt/upload layer).
-            if await activeProfileIsChild() == true {
+            // to upload the child's session. Fail closed: persist only when the
+            // active profile is positively known to be non-child. An
+            // undeterminable child status (getProfiles() failed while offline,
+            // or an unknown profile) skips capture rather than risk saving a
+            // child session's crash — the prompt/upload gate looks at the
+            // current profile, not the report's captured profile, so an
+            // unknown-at-capture child could otherwise be uploaded by an adult.
+            guard await activeProfileIsChild() == false else {
                 return nil
             }
         }
@@ -374,6 +407,25 @@ actor DiagnosticsCoordinator {
         //   binding — the pre-existing best-effort behavior.
         if let markerBinding = marker.binding, markerBinding != context.binding {
             return true
+        }
+        // The marker records the profile active when the crashed run started. A
+        // child profile can't manage diagnostics, so an abnormal exit captured
+        // under one must never be re-attributed to (and later uploaded by) an
+        // adult profile on the same account. captureContext() above only gates
+        // the profile active *now*, so re-check the marker's own profile and
+        // drop child-run markers. A legacy marker without a profile id keeps the
+        // pre-existing behavior; an undeterminable status keeps the marker for a
+        // later retry (captureContext already resolved the account's profiles,
+        // so this is normally a cache hit) rather than losing or leaking it.
+        if let markerProfileID = marker.profileID {
+            switch await profileIsChild(markerProfileID) {
+            case true?:
+                return true
+            case nil:
+                return false
+            case false?:
+                break
+            }
         }
         let boundContext = marker.binding != nil
             ? context.overridingProfileID(marker.profileID)
@@ -622,15 +674,43 @@ actor DiagnosticsCoordinator {
     struct BreadcrumbConsentContext {
         let binding: DiagnosticsBinding
         let noticeVersion: Int
+        /// Whether the server reported diagnostics as `available`. Breadcrumb
+        /// capture stays off while the feature is disabled/storage-unavailable,
+        /// mirroring the persistent-capture gate.
+        let isAvailable: Bool
+
+        init(binding: DiagnosticsBinding, noticeVersion: Int, isAvailable: Bool = true) {
+            self.binding = binding
+            self.noticeVersion = noticeVersion
+            self.isAvailable = isAvailable
+        }
     }
 
-    private func updateBreadcrumbConsentContext(binding: DiagnosticsBinding, noticeVersion: Int) {
+    private func updateBreadcrumbConsentContext(
+        binding: DiagnosticsBinding,
+        noticeVersion: Int,
+        statusAvailable: Bool
+    ) {
         Self.breadcrumbContextLock.lock()
+        let previousBinding = Self.breadcrumbConsentContext?.binding
         Self.breadcrumbConsentContext = BreadcrumbConsentContext(
             binding: binding,
-            noticeVersion: noticeVersion
+            noticeVersion: noticeVersion,
+            isAvailable: statusAvailable
         )
         Self.breadcrumbContextLock.unlock()
+        // A server/account switch mid-run leaves the previous binding's trail in
+        // the on-disk breadcrumb journal. MetricKit (and the tvOS abnormal-exit
+        // path) can later bundle it into a report bound to the NEW account,
+        // leaking the old account's navigation/playback breadcrumbs (including
+        // session_ids). Rotate the journal when the active binding actually
+        // changes so the new binding starts clean. A plain refresh of the same
+        // binding keeps its trail, and the first establish of a launch
+        // (previousBinding == nil) keeps the prior run's breadcrumbs so the
+        // abnormal-exit capture can still read them.
+        if let previousBinding, previousBinding != binding {
+            Self.purgeBreadcrumbJournal()
+        }
         #if os(tvOS)
         ExitSentinel.shared.setCaptureEnabled {
             DiagnosticsCoordinator.breadcrumbCaptureEnabled()
@@ -663,7 +743,8 @@ actor DiagnosticsCoordinator {
         }
         return BreadcrumbConsentContext(
             binding: snapshot.binding,
-            noticeVersion: snapshot.status.consentNoticeVersion
+            noticeVersion: snapshot.status.consentNoticeVersion,
+            isAvailable: snapshot.status.status == .available
         )
     }
 
@@ -692,12 +773,16 @@ actor DiagnosticsCoordinator {
     /// context means no account has been established yet on this launch, so
     /// breadcrumb capture stays disabled rather than defaulting on — otherwise
     /// a Never account's fresh launch would write breadcrumbs until the first
-    /// status refresh.
+    /// status refresh. A context whose status is not `available`
+    /// (disabled/storage_unavailable) also stays disabled: the server-side
+    /// feature is off, so arming capture would only accumulate breadcrumbs that
+    /// could be bundled if diagnostics is later re-enabled — consistent with
+    /// the persistent-capture availability gate in captureContext().
     nonisolated static func breadcrumbCaptureEnabled(
         for context: BreadcrumbConsentContext?,
         consentStore: DiagnosticsConsentStore = .shared
     ) -> Bool {
-        guard let context else {
+        guard let context, context.isAvailable else {
             return false
         }
         return consentStore.persistentCaptureEnabled(

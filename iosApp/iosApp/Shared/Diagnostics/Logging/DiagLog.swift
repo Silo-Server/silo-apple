@@ -210,7 +210,17 @@ private enum DiagnosticsRedactor {
         options: []
     )
     private static let secretKeyValueRegex = try! NSRegularExpression(
-        pattern: #"(?i)\b(access_token|profile_token|refresh_token|token|jwt|signature|sig|api_key|apikey|key|username|user_name|login|email|user)\s*[:=]\s*[^\s&;,]+"#,
+        // Both snake_case and camelCase key spellings: HTTPClient's public
+        // debug header string logs `profileId=...` (harvested from OSLog), and
+        // token keys can appear in either casing across the app's logs.
+        pattern: #"(?i)\b(access_token|accessToken|profile_token|profileToken|refresh_token|refreshToken|profile_id|profileId|token|jwt|signature|sig|api_key|apikey|key|username|user_name|login|email|user)\s*[:=]\s*[^\s&;,]+"#,
+        options: []
+    )
+    // HTTPClient's debug header string wraps token suffixes in parentheses —
+    // `auth(…abc123)`, `profileToken(…xyz789)` — which the key=value form above
+    // does not match. Redact the wrapped suffix while keeping the label.
+    private static let tokenWrapperRegex = try! NSRegularExpression(
+        pattern: #"(?i)\b(auth|accessToken|access_token|profileToken|profile_token|refreshToken|refresh_token)\(…?[^)\r\n]*\)"#,
         options: []
     )
 
@@ -273,6 +283,7 @@ private enum DiagnosticsRedactor {
         result = replaceMatches(in: result, regex: jwtRegex, replacement: "[redacted_token]")
         result = replaceMatches(in: result, regex: emailRegex, replacement: "[redacted_email]")
         result = replaceSecretKeyValues(in: result)
+        result = replaceMatches(in: result, regex: tokenWrapperRegex, replacement: "$1(…[redacted])")
         result = replaceKnownHosts(in: result)
         return trim(result, maxLength: maxLength)
     }

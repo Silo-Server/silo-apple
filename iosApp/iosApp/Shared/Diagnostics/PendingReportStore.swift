@@ -406,22 +406,26 @@ final class PendingReportStore {
         try? writeJSON(state, to: report.directoryURL.appendingPathComponent("state.json"))
     }
 
-    /// Rewrites only the stored manifest's `consent.notice_version` so an
-    /// upload built from this report reflects the current consent notice.
-    /// Everything else — crash evidence, logs, device summary — stays frozen
-    /// as captured. Returns the updated report, or the original if nothing
-    /// changed or the rewrite failed.
+    /// Rewrites the stored manifest's consent `mode` and `notice_version` so an
+    /// upload built from this report reflects the current consent record. If
+    /// the server's notice advanced after capture and demoted the account
+    /// Always→Ask, refreshing only the notice version would leave the manifest
+    /// claiming `mode = always` for the new notice; refreshing the mode too
+    /// keeps it honest. Everything else — crash evidence, logs, device summary
+    /// — stays frozen as captured. Returns the updated report, or the original
+    /// if nothing changed or the rewrite failed.
     @discardableResult
-    func updatingConsentNoticeVersion(_ report: PendingReport, to noticeVersion: Int) -> PendingReport {
+    func updatingConsent(_ report: PendingReport, mode: ConsentMode, noticeVersion: Int) -> PendingReport {
         lock.lock()
         defer { lock.unlock() }
 
-        guard report.manifest.consent.noticeVersion != noticeVersion else {
+        guard report.manifest.consent.mode != mode
+            || report.manifest.consent.noticeVersion != noticeVersion else {
             return report
         }
         var manifest = report.manifest
         manifest.consent = DiagnosticsManifest.Consent(
-            mode: manifest.consent.mode,
+            mode: mode,
             noticeVersion: noticeVersion
         )
         do {
