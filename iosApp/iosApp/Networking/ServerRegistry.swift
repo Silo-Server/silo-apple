@@ -250,6 +250,9 @@ final class ServerRegistry {
         let removesActiveServer = activeServerId == serverId
         #if os(iOS) || os(tvOS)
         if removesActiveServer {
+            // Close the synchronous capture gate before any await or before
+            // publishing a fallback server/profile combination.
+            DiagnosticsCoordinator.activeProfileWillChange()
             await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
         }
         await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)

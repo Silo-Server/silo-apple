@@ -75,6 +75,43 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(tracker.recentSessionIDs(for: binding).isEmpty)
     }
 
+    func testPurgingRecentSessionsOnlyRemovesMatchingBinding() {
+        let suite = UserDefaults(suiteName: "diag-tests-\(UUID().uuidString)")!
+        let tracker = RecentSessionTracker(defaults: SharedDefaults(suite: suite, standard: suite))
+        let optedOut = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
+        let retained = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-b")
+
+        tracker.record(sessionID: "remove-me", binding: optedOut)
+        tracker.record(sessionID: "keep-me", binding: retained)
+        tracker.purge(binding: optedOut)
+
+        XCTAssertTrue(tracker.recentSessionIDs(for: optedOut).isEmpty)
+        XCTAssertEqual(tracker.recentSessionIDs(for: retained), ["keep-me"])
+    }
+
+    func testCMPLogCaptureRequiresDiagnosticsGateAndVerboseOptIn() {
+        XCTAssertFalse(shouldCaptureCMPLog(
+            verbose: false,
+            debugLoggingEnabled: true,
+            captureEnabled: false
+        ))
+        XCTAssertTrue(shouldCaptureCMPLog(
+            verbose: false,
+            debugLoggingEnabled: false,
+            captureEnabled: true
+        ))
+        XCTAssertFalse(shouldCaptureCMPLog(
+            verbose: true,
+            debugLoggingEnabled: false,
+            captureEnabled: true
+        ))
+        XCTAssertTrue(shouldCaptureCMPLog(
+            verbose: true,
+            debugLoggingEnabled: true,
+            captureEnabled: true
+        ))
+    }
+
     // MARK: - Byte-safe stack truncation (#11)
 
     func testStackExcerptTruncatesToUTF8ByteLimit() throws {
@@ -407,13 +444,47 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: report.directoryURL.appendingPathComponent("crash/metrickit.json").path
         ))
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: report.directoryURL.appendingPathComponent("logs.jsonl").path
-        ))
+        let logsURL = report.directoryURL.appendingPathComponent("logs.jsonl")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: logsURL.path))
+        XCTAssertEqual(try Data(contentsOf: logsURL), Data())
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: report.directoryURL.appendingPathComponent("breadcrumbs.jsonl").path
         ))
         XCTAssertTrue(report.manifest.playbackSessionIds.isEmpty)
+    }
+
+    func testProfileLookupDistinguishesMissingProfileFromUnavailableRequest() {
+        let adult = UserProfile(
+            id: "adult",
+            name: "Adult",
+            avatarEmoji: nil,
+            hasPin: false,
+            isChild: false
+        )
+        let child = UserProfile(
+            id: "child",
+            name: "Child",
+            avatarEmoji: nil,
+            hasPin: false,
+            isChild: true
+        )
+
+        XCTAssertEqual(
+            DiagnosticsCoordinator.profileLookupResult(profileID: "adult", profiles: [adult, child]),
+            .adult
+        )
+        XCTAssertEqual(
+            DiagnosticsCoordinator.profileLookupResult(profileID: "child", profiles: [adult, child]),
+            .child
+        )
+        XCTAssertEqual(
+            DiagnosticsCoordinator.profileLookupResult(profileID: "deleted", profiles: [adult, child]),
+            .missing
+        )
+        XCTAssertEqual(
+            DiagnosticsCoordinator.profileLookupResult(profileID: "adult", profiles: nil),
+            .unavailable
+        )
     }
 
     func testAbnormalExitLogsRequireFailedRunID() throws {

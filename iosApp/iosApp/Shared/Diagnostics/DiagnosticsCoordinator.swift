@@ -242,15 +242,35 @@ actor DiagnosticsCoordinator {
         Self.LastKnownStatusStore.record(snapshot, for: serverRegistryID)
     }
 
-    /// Whether `profileID` is a child profile on the active account. Returns
-    /// nil when it cannot be determined — `getProfiles()` failed (e.g. offline)
-    /// or the id is not among the account's profiles — so callers can fail
-    /// closed rather than treat "unknown" as "not a child".
-    private func profileIsChild(_ profileID: String) async -> Bool? {
-        guard let profiles = try? await AuthService.shared.getProfiles() else {
-            return nil
+    enum ProfileLookupResult: Equatable {
+        case adult
+        case child
+        case missing
+        case unavailable
+    }
+
+    static func profileLookupResult(
+        profileID: String,
+        profiles: [UserProfile]?
+    ) -> ProfileLookupResult {
+        guard let profiles else { return .unavailable }
+        guard let profile = profiles.first(where: { $0.id == profileID }) else {
+            return .missing
         }
-        return profiles.first(where: { $0.id == profileID })?.isChild
+        return profile.isChild ? .child : .adult
+    }
+
+    /// Resolve the marker/profile separately from transport failure so a
+    /// deleted profile can be dropped while an offline lookup remains retryable.
+    private func profileLookupResult(_ profileID: String) async -> ProfileLookupResult {
+        do {
+            return Self.profileLookupResult(
+                profileID: profileID,
+                profiles: try await AuthService.shared.getProfiles()
+            )
+        } catch {
+            return .unavailable
+        }
     }
 
     /// Child status of the profile active right now. No profile selected means
@@ -264,7 +284,16 @@ actor DiagnosticsCoordinator {
             return false
         }
         let serverRegistryID = ServerRegistry.shared.activeServerId
-        let isChild = await profileIsChild(activeProfileID)
+        let lookup = await profileLookupResult(activeProfileID)
+        let isChild: Bool?
+        switch lookup {
+        case .child:
+            isChild = true
+        case .adult:
+            isChild = false
+        case .missing, .unavailable:
+            isChild = nil
+        }
         // A profile/server switch can happen while `/profiles` is in flight.
         // Never publish the result into the new identity's synchronous gate.
         guard activeProfileID == AuthService.shared.profileId,
@@ -621,12 +650,12 @@ actor DiagnosticsCoordinator {
         // later retry (captureContext already resolved the account's profiles,
         // so this is normally a cache hit) rather than losing or leaking it.
         if let markerProfileID = marker.profileID {
-            switch await profileIsChild(markerProfileID) {
-            case true?:
+            switch await profileLookupResult(markerProfileID) {
+            case .child, .missing:
                 return true
-            case nil:
+            case .unavailable:
                 return false
-            case false?:
+            case .adult:
                 break
             }
         }

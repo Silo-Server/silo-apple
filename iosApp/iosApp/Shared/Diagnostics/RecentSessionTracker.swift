@@ -68,6 +68,15 @@ final class RecentSessionTracker {
             .map(\.sessionID)
     }
 
+    func purge(binding: DiagnosticsBinding) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var entries = load()
+        entries.removeAll { $0.binding == binding }
+        save(entries)
+    }
+
     func resetForTests() {
         lock.lock()
         defer { lock.unlock() }

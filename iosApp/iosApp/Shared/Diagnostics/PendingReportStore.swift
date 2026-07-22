@@ -287,12 +287,15 @@ final class PendingReportStore {
             throw error
         }
 
-        markFingerprintSeenLocked(capture.fingerprint, now: capture.capturedAt)
         try enforceCapLocked(for: capture.binding)
 
         guard let report = loadReport(from: reportDirectory) else {
             throw DiagnosticsStoreError.unreadableReport(capture.id)
         }
+        // A delayed capture can be older than every retained report and be
+        // evicted immediately by the cap. Only suppress future delivery after
+        // confirming this report actually survived retention.
+        markFingerprintSeenLocked(capture.fingerprint, now: capture.capturedAt)
         return report
     }
 

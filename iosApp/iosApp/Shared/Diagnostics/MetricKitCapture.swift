@@ -112,6 +112,10 @@ final class MetricKitCapture: NSObject, MXMetricManagerSubscriber {
 
         let artifacts = [
             PendingReportArtifact(relativePath: "crash/metrickit.json", data: rawJSON),
+            // Freeze the intentional absence of attributable logs. Without
+            // this sentinel, bundle construction falls back to the live ring
+            // and OSLog from the later launch that receives MetricKit data.
+            PendingReportArtifact(relativePath: "logs.jsonl", data: Data()),
         ]
 
         return try store.save(PendingReportCapture(

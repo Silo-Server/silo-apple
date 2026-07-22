@@ -29,8 +29,22 @@ func cmpLog(_ message: @autoclosure () -> String, verbose: Bool = false) {
     // Logging. Errors and lifecycle lines are always kept so crash bundles
     // retain the essential player context regardless of the toggle. stdout
     // always receives the line for live `devicectl --console` troubleshooting.
-    if !verbose || DiagnosticsConsentStore.shared.debugLoggingEnabled {
+    if shouldCaptureCMPLog(
+        verbose: verbose,
+        debugLoggingEnabled: DiagnosticsConsentStore.shared.debugLoggingEnabled,
+        captureEnabled: DiagnosticsCoordinator.isDiagnosticsCaptureEnabled
+    ) {
         DiagLog.i(.playback, "CMP", rendered)
     }
     #endif
 }
+
+#if os(iOS) || os(tvOS)
+func shouldCaptureCMPLog(
+    verbose: Bool,
+    debugLoggingEnabled: Bool,
+    captureEnabled: Bool
+) -> Bool {
+    captureEnabled && (!verbose || debugLoggingEnabled)
+}
+#endif

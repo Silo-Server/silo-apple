@@ -20,6 +20,31 @@ final class PendingReportStoreTests: XCTestCase {
         XCTAssertEqual(reports.map(\.binding.fingerprint), ["fp-1", "fp-2", "fp-3"])
     }
 
+    func testCapDoesNotMarkImmediatelyEvictedCaptureAsSeen() throws {
+        let store = try makeStore()
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+        let start = Date(timeIntervalSince1970: 1_000)
+
+        for index in 1...3 {
+            _ = try store.save(makeCapture(
+                binding: binding,
+                fingerprint: "new-\(index)",
+                capturedAt: start.addingTimeInterval(TimeInterval(index))
+            ))
+        }
+
+        XCTAssertThrowsError(try store.save(makeCapture(
+            binding: binding,
+            fingerprint: "delayed-old",
+            capturedAt: start
+        )))
+        XCTAssertFalse(store.hasSeenFingerprint("delayed-old", now: start.addingTimeInterval(10)))
+        XCTAssertEqual(
+            store.listReports(for: binding, now: start.addingTimeInterval(10)).map(\.binding.fingerprint),
+            ["new-1", "new-2", "new-3"]
+        )
+    }
+
     func testExpiredReportsAreDeletedOnScan() throws {
         let store = try makeStore()
         let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")

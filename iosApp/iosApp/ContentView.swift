@@ -121,6 +121,7 @@ struct ContentView: View {
         .task(id: router.authState) {
             #if os(iOS) || os(tvOS)
             if router.authState != .authenticated {
+                DiagnosticsCoordinator.activeProfileWillChange()
                 diagnosticsModel.reset()
             }
             #endif
