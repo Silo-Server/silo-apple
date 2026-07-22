@@ -85,7 +85,7 @@ struct LibrariesTabView: View {
         case .recommended:
             LibraryRecommendedView(libraryId: activeLibrary.id)
         case .library:
-            BrowseView(libraryId: activeLibrary.id, title: nil, showsSearchShortcut: false)
+            BrowseView(libraryId: activeLibrary.id, title: nil, showsSearchShortcut: false, libraryType: activeLibrary.type)
         case .collections:
             LibraryCollectionsView(libraryId: activeLibrary.id)
         }

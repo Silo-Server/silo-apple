@@ -25,8 +25,8 @@ enum WatchStatusFilter: String, Codable, CaseIterable, Hashable {
 /// `queryFieldDefs`); `decade`, `dynamicRange`, and `watchStatus` are
 /// client-side groupings that lower to one or more server rules.
 enum CatalogFacet: String, CaseIterable, Codable, Hashable {
-    /// Movie-vs-series scope, offered only in mixed libraries. Lowers to the
-    /// catalog `type` (media_scope) param rather than a rule group.
+    /// Movie-vs-series scope, offered only in mixed libraries. Lowers to a
+    /// catalog `type` rule so it participates in Match All / Match Any.
     case itemType = "item_type"
     case genre
     case decade
@@ -126,7 +126,7 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
     var matchAll: Bool = true
 
     /// Movie-vs-series scope for mixed libraries ("movie" / "series");
-    /// `nil` = both. Single-select; lowers to the catalog `type` param.
+    /// `nil` = both. Single-select; lowers to a catalog `type` rule.
     var mediaScope: String? = nil
     var genres: Set<String> = []
     var contentRatings: Set<String> = []

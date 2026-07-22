@@ -30,7 +30,7 @@ enum BrowseMediaType: String, Codable, Hashable {
     /// `library_id` already scopes the query, matching the existing browse
     /// paths which never send `type` for audiobook/music libraries. Mixed
     /// libraries omit it too so movies and series come back merged; the
-    /// Type facet supplies a scope when the user narrows.
+    /// Type facet supplies a grouped rule when the user narrows.
     var catalogTypeParam: String? {
         switch self {
         case .movie: return "movie"

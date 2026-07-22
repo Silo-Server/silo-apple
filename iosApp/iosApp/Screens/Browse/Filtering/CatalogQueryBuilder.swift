@@ -33,12 +33,9 @@ enum CatalogQueryBuilder {
             "match": state.matchAll ? "all" : "any",
         ]
         if let libraryId { q["library_id"] = String(libraryId) }
-        // A user-chosen Type facet (mixed libraries) always scopes the query;
-        // it is valid by construction, unlike the library-derived scope that
-        // `includeType` guards.
-        if let scope = state.mediaScope {
-            q["type"] = scope
-        } else if includeType, let type = mediaType.catalogTypeParam {
+        if state.mediaScope == nil,
+           includeType,
+           let type = mediaType.catalogTypeParam {
             q["type"] = type
         }
         if let prefix = state.namePrefix { q["name_prefix"] = prefix }
@@ -46,6 +43,12 @@ enum CatalogQueryBuilder {
         if !includeTotal { q["include_total"] = "false" }
 
         var groups = GroupAccumulator()
+        // A user-chosen Type facet (mixed libraries) is a filter facet, not an
+        // unconditional media_scope. Keep it inside the grouped filter logic so
+        // top-level Match All / Match Any applies consistently across facets.
+        if let scope = state.mediaScope {
+            groups.add(field: "type", op: "is", value: scope)
+        }
         // Array columns accept `contains`; scalar columns accept `is`.
         groups.add(field: "genre", op: "contains", values: state.genres)
         groups.add(field: "studio", op: "is", values: state.studios)
@@ -88,6 +91,10 @@ private struct GroupAccumulator {
 
     mutating func addBool(field: String, value: Bool) {
         groups.append((match: "all", rules: [Rule(field: field, op: "is", values: [value ? "true" : "false"])]))
+    }
+
+    mutating func add(field: String, op: String, value: String) {
+        groups.append((match: "all", rules: [Rule(field: field, op: op, values: [value])]))
     }
 
     mutating func addDynamicRange(hdr: Bool, dolbyVision: Bool) {

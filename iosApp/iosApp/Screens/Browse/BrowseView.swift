@@ -5,6 +5,7 @@ struct BrowseView: View {
     let libraryId: Int?
     var title: String? = "Browse"
     var showsSearchShortcut = true
+    var libraryType: String? = nil
 
     @State private var viewModel = BrowseViewModel()
     @State private var showFilters = false
@@ -47,8 +48,8 @@ struct BrowseView: View {
         .sheet(isPresented: $showFilters) {
             FilterView(viewModel: viewModel)
         }
-        .task {
-            viewModel.configure(libraryId: libraryId)
+        .task(id: BrowseConfigurationID(libraryId: libraryId, libraryType: libraryType)) {
+            guard await viewModel.configure(libraryId: libraryId, libraryType: libraryType) else { return }
             await viewModel.loadItems(reset: true)
             await viewModel.loadFacetsIfNeeded()
         }
@@ -243,6 +244,11 @@ struct BrowseView: View {
     }
 }
 
+private struct BrowseConfigurationID: Hashable {
+    let libraryId: Int?
+    let libraryType: String?
+}
+
 enum LibraryPageTab: String, CaseIterable, Identifiable {
     case recommended
     case library
@@ -300,16 +306,25 @@ struct LibraryPageTabSelector: View {
 struct LibraryDetailView: View {
     let libraryId: Int
     let initialTitle: String?
+    let initialLibraryType: String?
     let showsNavigationTitle: Bool
 
     @State private var selectedTab: LibraryPageTab = .recommended
     @State private var title: String
+    @State private var libraryType: String?
 
-    init(libraryId: Int, initialTitle: String?, showsNavigationTitle: Bool = true) {
+    init(
+        libraryId: Int,
+        initialTitle: String?,
+        initialLibraryType: String? = nil,
+        showsNavigationTitle: Bool = true
+    ) {
         self.libraryId = libraryId
         self.initialTitle = initialTitle
+        self.initialLibraryType = initialLibraryType
         self.showsNavigationTitle = showsNavigationTitle
         _title = State(initialValue: initialTitle ?? "Library")
+        _libraryType = State(initialValue: initialLibraryType)
     }
 
     var body: some View {
@@ -326,7 +341,7 @@ struct LibraryDetailView: View {
         }
         .continuumBackground()
         .task {
-            await loadLibraryTitleIfNeeded()
+            await loadLibraryMetadataIfNeeded()
         }
     }
 
@@ -336,19 +351,22 @@ struct LibraryDetailView: View {
         case .recommended:
             LibraryRecommendedView(libraryId: libraryId)
         case .library:
-            BrowseView(libraryId: libraryId, title: nil, showsSearchShortcut: false)
+            BrowseView(libraryId: libraryId, title: nil, showsSearchShortcut: false, libraryType: libraryType)
         case .collections:
             LibraryCollectionsView(libraryId: libraryId)
         }
     }
 
-    private func loadLibraryTitleIfNeeded() async {
-        guard initialTitle == nil else { return }
+    private func loadLibraryMetadataIfNeeded() async {
+        guard initialTitle == nil || libraryType == nil else { return }
 
         do {
             let response = try await StartupContentPrefetcher.fetchUserLibraries()
             if let matchedLibrary = response.libraries.first(where: { $0.id == libraryId }) {
-                title = matchedLibrary.name
+                if initialTitle == nil {
+                    title = matchedLibrary.name
+                }
+                libraryType = matchedLibrary.type
             }
         } catch {
             // Fall back to the generic title if library metadata is unavailable.
