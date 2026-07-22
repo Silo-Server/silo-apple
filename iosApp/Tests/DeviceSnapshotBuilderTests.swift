@@ -45,7 +45,7 @@ final class DeviceSnapshotBuilderTests: XCTestCase {
             audio: DiagnosticsCapabilityProbe.audioOutputSnapshot(outputs: [])
         ).build(provenance: .preFailure)
         let data = try DiagnosticsJSONCoding.makeEncoder().encode(snapshot)
-        let encoded = String(decoding: data, as: UTF8.self)
+        let encoded = try XCTUnwrap(String(data: data, encoding: .utf8))
 
         XCTAssertFalse(encoded.contains("Unit Test iPhone"))
         XCTAssertFalse(encoded.contains("device-id"))
