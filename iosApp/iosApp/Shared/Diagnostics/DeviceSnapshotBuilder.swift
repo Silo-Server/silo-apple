@@ -31,9 +31,7 @@ struct DeviceSnapshotBuilder {
             identity: .object([
                 "manufacturer": .string("Apple"),
                 "model": .string(hardwareModelProvider()),
-                "device": .string(identity.name),
                 "form_factor": .string(formFactorProvider()),
-                "device_id": .string(identity.id),
                 "platform": .string(identity.platform),
             ]),
             display: playback.display,

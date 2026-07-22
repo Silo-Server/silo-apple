@@ -344,7 +344,7 @@ actor PlaybackSessionBridge {
         )
         lastStartRequest = request
         logger.info(
-            "Session started: method=\(initialSession.playMethod, privacy: .public), streamUrl=\(initialSession.streamUrl, privacy: .public)"
+            "Session started: method=\(initialSession.playMethod, privacy: .public)"
         )
 
         var session = try await preparePlaybackSessionIfNeeded(

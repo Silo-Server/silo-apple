@@ -89,7 +89,7 @@ struct MediaRow: View {
         .onChange(of: focusedItemId) { _, newValue in
             guard let newValue,
                   let item = items.first(where: { $0.contentId == newValue }) else { return }
-            Self.focusLogger.debug("mediaRow.focus item=\(newValue, privacy: .public)")
+            Self.focusLogger.debug("mediaRow.focus changed")
             onItemFocus?(item)
         }
         #endif
@@ -109,7 +109,7 @@ struct MediaRow: View {
             proxy.scrollTo(firstItem.id, anchor: .leading)
         }
         DispatchQueue.main.async {
-            Self.focusLogger.debug("mediaRow.applyFocus request=\(request, privacy: .public) first=\(firstItem.contentId, privacy: .public)")
+            Self.focusLogger.debug("mediaRow.applyFocus request=\(request, privacy: .public)")
             claimFirstItemFocus(firstItem)
         }
     }
@@ -129,7 +129,7 @@ struct MediaRow: View {
         guard attempt < 8 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             guard focusedItemId != firstItem.contentId else { return }
-            Self.focusLogger.debug("mediaRow.reclaimFocus attempt=\(attempt + 1, privacy: .public) first=\(firstItem.contentId, privacy: .public)")
+            Self.focusLogger.debug("mediaRow.reclaimFocus attempt=\(attempt + 1, privacy: .public)")
             claimFirstItemFocus(firstItem, attempt: attempt + 1)
         }
     }

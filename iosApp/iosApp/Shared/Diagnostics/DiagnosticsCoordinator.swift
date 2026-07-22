@@ -1,6 +1,5 @@
 #if os(iOS) || os(tvOS)
 import Foundation
-import OSLog
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -355,10 +354,9 @@ actor DiagnosticsCoordinator {
         }
 
         let ringSnapshot = DiagLog.ring.snapshot()
-        let osLogLines = harvestOSLogLines(since: report.binding.capturedAtDate)
         return try bundleBuilder.build(
             report: report,
-            logLines: ringSnapshot.lines + osLogLines,
+            logLines: ringSnapshot.lines,
             droppedLogLines: ringSnapshot.droppedCount,
             redactionTokens: redactionTokens
         )
@@ -368,13 +366,12 @@ actor DiagnosticsCoordinator {
         report.directoryURL.appendingPathComponent("logs.jsonl")
     }
 
-    /// Freezes the current log ring plus this-process OSLog into a `logs.jsonl`
-    /// artifact so it can be stored with an abnormal-exit report at capture
-    /// time. The tvOS sentinel provides the concrete start of the failed run.
+    /// Freezes the typed, allowlisted diagnostics ring into a `logs.jsonl`
+    /// artifact at abnormal-exit capture time. General OSLog is deliberately
+    /// excluded because it has no Diagnostics PII admission boundary.
     func logSnapshotArtifact(since start: Date, runID: String) -> PendingReportArtifact? {
         let ringSnapshot = DiagLog.ring.snapshot()
-        let candidateLines = ringSnapshot.lines + harvestOSLogLines(since: start)
-        let lines = Self.logLines(candidateLines, forRunID: runID, since: start)
+        let lines = Self.logLines(ringSnapshot.lines, forRunID: runID, since: start)
         guard !lines.isEmpty else {
             return nil
         }
@@ -808,6 +805,9 @@ actor DiagnosticsCoordinator {
     private func purgeDiagnostics(for binding: DiagnosticsBinding) {
         pendingStore.purge(binding: binding)
         consentStore.remove(binding: binding)
+        RecentSessionTracker.shared.purge(binding: binding)
+        Self.purgeBreadcrumbJournal()
+        DiagLog.ring.clear()
         clearContext(for: binding)
         #if os(tvOS)
         ExitSentinel.shared.purge()
@@ -862,44 +862,6 @@ actor DiagnosticsCoordinator {
         }
     }
 
-    private func harvestOSLogLines(since: Date) -> [String] {
-        do {
-            let store = try OSLogStore(scope: .currentProcessIdentifier)
-            let position = store.position(date: since)
-            let subsystem = Bundle.main.bundleIdentifier ?? "com.continuum.app"
-            return try store.getEntries(at: position).compactMap { entry in
-                guard let log = entry as? OSLogEntryLog,
-                      log.subsystem == subsystem || log.subsystem == "com.continuum.app" else {
-                    return nil
-                }
-                let category = DiagnosticsLogCategory(rawValue: log.category.lowercased()) ?? .other
-                return DiagLog.renderedLine(
-                    level: Self.logLevel(from: log.level),
-                    category: category,
-                    tag: log.category.isEmpty ? "OSLog" : log.category,
-                    message: log.composedMessage,
-                    timestamp: log.date,
-                    captureSessionID: DiagLog.captureSessionID
-                )
-            }
-        } catch {
-            return []
-        }
-    }
-
-    private static func logLevel(from level: OSLogEntryLog.Level) -> DiagnosticsLogLevel {
-        switch level {
-        case .debug:
-            return .debug
-        case .info, .notice:
-            return .info
-        case .error, .fault:
-            return .error
-        default:
-            return .info
-        }
-    }
-
     private static func appVersion() -> String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
     }
@@ -924,6 +886,7 @@ actor DiagnosticsCoordinator {
         let values = [
             await TokenStore.shared.getAccessToken(),
             await TokenStore.shared.getProfileToken(),
+            await TokenStore.shared.getRefreshToken(),
         ]
         var seen = Set<String>()
         return values.compactMap { value in
@@ -1025,6 +988,7 @@ actor DiagnosticsCoordinator {
         // of a launch (previousBinding == nil) keeps the prior run's lines so
         // the abnormal-exit capture can still read them.
         if let previousBinding, previousBinding != binding {
+            RecentSessionTracker.shared.purge(binding: previousBinding)
             Self.purgeBreadcrumbJournal()
             DiagLog.ring.clear()
         }
@@ -1110,6 +1074,11 @@ actor DiagnosticsCoordinator {
     /// immediately, then confirms asynchronously so a switch into a child profile
     /// can't capture even one breadcrumb before the child lookup lands.
     nonisolated static func activeProfileWillChange() {
+        if let binding = currentDiagnosticsBinding {
+            RecentSessionTracker.shared.purge(binding: binding)
+        }
+        purgeBreadcrumbJournal()
+        DiagLog.ring.clear()
         _ = beginActiveProfileEligibilityResolution(invalidateCurrent: true)
     }
 

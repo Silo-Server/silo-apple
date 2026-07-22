@@ -3167,13 +3167,10 @@ class PlayerViewModel {
                 )
                 self.logExecutionPlan(plan)
 
-                Self.logger.info("Stream URL: \(streamRequest.url.absoluteString, privacy: .public)")
                 Self.logger.info("Play method: \(session.playMethod, privacy: .public)")
-                // Also print via stdout so `devicectl --console` captures it
-                // — OSLog doesn't reach that stream on tvOS. Useful when the
-                // player freezes mid-file and we need to reproduce the exact
-                // request with curl to isolate client vs server.
-                print("[CMP] streamURL=\(streamRequest.url.absoluteString) playMethod=\(session.playMethod) startTime=\(plan.startMode.seconds)")
+                // Keep the tvOS console breadcrumb useful without printing the
+                // signed stream URL or any server identity.
+                print("[CMP] streamPrepared playMethod=\(session.playMethod) startTime=\(plan.startMode.seconds)")
 
                 await self.loadStream(plan: plan)
             } catch let error {
@@ -4539,7 +4536,7 @@ class PlayerViewModel {
                 )
                 self.logExecutionPlan(restartedPlan)
                 Self.logger.info(
-                    "[CMP-SEEK] in-place transcode restart loaded target=\(target, privacy: .public) stream=\(streamRequest.url.absoluteString, privacy: .public)"
+                    "[CMP-SEEK] in-place transcode restart loaded target=\(target, privacy: .public)"
                 )
                 await self.loadStream(plan: restartedPlan)
             } catch {
@@ -6378,7 +6375,7 @@ class PlayerViewModel {
         descriptors.reserveCapacity(pending.count)
         for sub in pending {
             guard let url = resolveServerUrl(sub.url, serverUrl: resolvedServerUrl) else {
-                Self.logger.warning("Skipping external subtitle with unresolved URL: \(sub.url, privacy: .public)")
+                Self.logger.warning("Skipping external subtitle with unresolved URL")
                 continue
             }
             descriptors.append(SidecarSubtitleDescriptor(

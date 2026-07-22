@@ -40,6 +40,19 @@ final class DeviceSnapshotBuilderTests: XCTestCase {
         try snapshot.validate()
     }
 
+    func testSnapshotOmitsDeviceNameAndStableDeviceID() throws {
+        let snapshot = makeBuilder(
+            audio: DiagnosticsCapabilityProbe.audioOutputSnapshot(outputs: [])
+        ).build(provenance: .preFailure)
+        let data = try DiagnosticsJSONCoding.makeEncoder().encode(snapshot)
+        let encoded = String(decoding: data, as: UTF8.self)
+
+        XCTAssertFalse(encoded.contains("Unit Test iPhone"))
+        XCTAssertFalse(encoded.contains("device-id"))
+        XCTAssertFalse(encoded.contains(#""device""#))
+        XCTAssertFalse(encoded.contains(#""device_id""#))
+    }
+
     private func makeBuilder(
         audio: DiagnosticsCapabilityProbe.AudioOutputSnapshot,
         date: Date = Date(timeIntervalSince1970: 100)

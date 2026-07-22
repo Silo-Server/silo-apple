@@ -280,10 +280,10 @@ final class ReceiverPairingCoordinator {
             if Task.isCancelled {
                 // Peer cancelled, superseded this server, or the connection
                 // dropped. The attempt is void; whoever cancelled owns state.
-                Self.logger.notice("attempt for \(normalized, privacy: .public) cancelled")
+                Self.logger.notice("server pairing attempt cancelled")
                 return
             }
-            Self.logger.error("server \(normalized, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            Self.logger.error("server pairing failed: \(String(describing: error), privacy: .private)")
             state = .failed(displayName)
             try? await session.send(.serverResult(serverURL: normalized, status: .failed, error: "auth_failed"))
         }

@@ -142,7 +142,7 @@ final class SiloControlClient {
 
         await closeCurrentSession(sendClose: true)
 
-        Self.logger.info("control: connecting to \(target.name, privacy: .public) origin=\(String(describing: origin), privacy: .public)")
+        Self.logger.info("control: connecting origin=\(String(describing: origin), privacy: .public)")
         isConnecting = true
         errorMessage = nil
         activeTarget = target
@@ -482,7 +482,7 @@ final class SiloControlClient {
             }
             guard let self, let match else { return }
 
-            Self.logger.info("control: auto-resume probe found playing TV \(match.name, privacy: .public)")
+            Self.logger.info("control: auto-resume probe found playing TV")
             self.isAutoResuming = true
             guard await self.connect(to: match, origin: .autoResume) else {
                 self.isAutoResuming = false

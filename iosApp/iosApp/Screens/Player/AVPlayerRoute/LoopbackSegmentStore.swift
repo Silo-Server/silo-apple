@@ -183,9 +183,9 @@ final class LoopbackSegmentStore {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 resolvedSpillDirectory = dir
             } catch {
-                print("[CMP-HLS-STORE] spill directory create failed path=\(dir.path) error=\(error)")
+                print("[CMP-HLS-STORE] spill directory create failed")
                 Self.logger.error(
-                    "[CMP-HLS-STORE] spill directory create failed path=\(dir.path, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                    "[CMP-HLS-STORE] spill directory create failed error=\(String(describing: error), privacy: .private)"
                 )
             }
         }
@@ -293,9 +293,9 @@ final class LoopbackSegmentStore {
         }
         guard stored else {
             let description = String(describing: writeError)
-            print("[CMP-HLS-STORE] VOD disk write failed after retry name=\(name) path=\(destination.path) error=\(description); retaining active segment in memory")
+            print("[CMP-HLS-STORE] VOD disk write failed after retry; retaining active segment in memory")
             Self.logger.error(
-                "[CMP-HLS-STORE] VOD disk write failed after retry name=\(name, privacy: .public) path=\(destination.path, privacy: .public) error=\(description, privacy: .public); retaining active segment in memory"
+                "[CMP-HLS-STORE] VOD disk write failed after retry error=\(description, privacy: .private); retaining active segment in memory"
             )
             return putSegmentInMemoryWithoutEviction(name: name, data: data, duration: duration)
         }

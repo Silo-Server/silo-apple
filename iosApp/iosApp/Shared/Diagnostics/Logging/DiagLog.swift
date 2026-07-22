@@ -193,8 +193,8 @@ private extension DiagLogAttributeValue {
 
 private enum DiagnosticsRedactor {
     private static let urlRegex = try! NSRegularExpression(
-        pattern: #"(?:https?|wss?)://[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+"#,
-        options: []
+        pattern: #"(?:https?|wss?)://[A-Za-z0-9._~:/?#@!$&'()*+,;=%\[\]-]+"#,
+        options: [.caseInsensitive]
     )
     private static let emailRegex = try! NSRegularExpression(
         pattern: #"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"#,
@@ -217,15 +217,14 @@ private enum DiagnosticsRedactor {
         options: []
     )
     private static let secretKeyValueRegex = try! NSRegularExpression(
-        // Both snake_case and camelCase key spellings: HTTPClient's public
-        // debug header string logs `profileId=...` (harvested from OSLog), and
-        // token keys can appear in either casing across the app's logs.
-        pattern: #"(?i)\b(access_token|accessToken|profile_token|profileToken|refresh_token|refreshToken|profile_id|profileId|token|jwt|signature|sig|api_key|apikey|key|username|user_name|login|email|user)\s*[:=]\s*[^\s&;,]+"#,
+        // Accept plain key=value as well as raw or escaped JSON strings. Error
+        // descriptions often quote their associated response bodies, so a
+        // closing quote between the key and colon must not bypass redaction.
+        pattern: #"(?i)(?:\\?[\"'])?\b(access_token|accessToken|profile_token|profileToken|refresh_token|refreshToken|profile_id|profileId|token|jwt|signature|sig|api_key|apikey|key|username|user_name|login|email|user)\b(?:\\?[\"'])?\s*[:=]\s*(?:\"(?:\\.|[^\"\\\r\n])*\"|\\\"(?:\\.|[^\\\r\n])*\\\"|'[^'\r\n]*'|[^\s&;,}\]]+)"#,
         options: []
     )
-    // HTTPClient's debug header string wraps token suffixes in parentheses —
-    // `auth(…abc123)`, `profileToken(…xyz789)` — which the key=value form above
-    // does not match. Redact the wrapped suffix while keeping the label.
+    // Defense in depth for legacy or third-party messages that wrap token
+    // suffixes in parentheses instead of using key=value syntax.
     private static let tokenWrapperRegex = try! NSRegularExpression(
         pattern: #"(?i)\b(auth|accessToken|access_token|profileToken|profile_token|refreshToken|refresh_token)\(…?[^)\r\n]*\)"#,
         options: []
@@ -303,9 +302,17 @@ private enum DiagnosticsRedactor {
     }
 
     static func sanitizedError(_ error: any Error) -> String {
-        let message = (error as NSError).localizedDescription
-        let fallback = String(describing: error)
-        let rawMessage = message.isEmpty ? fallback : message
+        // HTTPError intentionally retains response bodies for typed callers,
+        // but those bodies are never safe diagnostic text. Its description is
+        // a body-free summary; UI-facing localizedDescription remains intact.
+        let rawMessage: String
+        if let httpError = error as? HTTPError {
+            rawMessage = httpError.description
+        } else {
+            let message = (error as NSError).localizedDescription
+            let fallback = String(describing: error)
+            rawMessage = message.isEmpty ? fallback : message
+        }
         let typedMessage = "\(String(reflecting: Swift.type(of: error))): \(rawMessage)"
         return sanitize(typedMessage, maxLength: 512)
     }

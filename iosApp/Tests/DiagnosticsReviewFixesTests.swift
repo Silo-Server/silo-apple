@@ -89,6 +89,22 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertEqual(tracker.recentSessionIDs(for: retained), ["keep-me"])
     }
 
+    func testRecentSessionsExpire() {
+        let suite = UserDefaults(suiteName: "diag-tests-\(UUID().uuidString)")!
+        let tracker = RecentSessionTracker(defaults: SharedDefaults(suite: suite, standard: suite))
+        let binding = DiagnosticsBinding(serverInstanceID: "server-a", accountUserID: "account-a")
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+
+        tracker.record(
+            sessionID: "expired",
+            binding: binding,
+            now: now.addingTimeInterval(-RecentSessionTracker.retentionInterval - 1)
+        )
+        tracker.record(sessionID: "current", binding: binding, now: now)
+
+        XCTAssertEqual(tracker.recentSessionIDs(for: binding, now: now), ["current"])
+    }
+
     func testCMPLogCaptureRequiresDiagnosticsGateAndVerboseOptIn() {
         XCTAssertFalse(shouldCaptureCMPLog(
             verbose: false,

@@ -165,7 +165,7 @@ final class ServerRegistry {
     /// consistent UserDefaults values.
     func switchTo(serverId: String) async {
         guard entries.contains(where: { $0.id == serverId }) else {
-            Self.logger.error("switchTo called with unknown serverId=\(serverId, privacy: .public)")
+            Self.logger.error("switchTo called with unknown server id")
             return
         }
         // Cancel before retargeting: a response from the old server must

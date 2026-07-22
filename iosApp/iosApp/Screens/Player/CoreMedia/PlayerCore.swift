@@ -1423,8 +1423,7 @@ final class PlayerCore: NSObject {
         loadSignpostID = OSSignpostID(log: Self.signpostLog)
         if #available(iOS 15.0, tvOS 15.0, *) {
             os_signpost(.begin, log: Self.signpostLog, name: "Load",
-                        signpostID: loadSignpostID,
-                        "url=%{public}s", url.absoluteString)
+                        signpostID: loadSignpostID)
         }
 
         // Bring the audio session up before touching media. Non-fatal if it

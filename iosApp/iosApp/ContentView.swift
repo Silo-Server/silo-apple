@@ -456,14 +456,14 @@ struct ContentView: View {
     private static func logTopShelfDiagnostics() async {
         let suite = SharedStorage.suite
         let keychain = SharedKeychain()
-        let serverUrl = suite.string(forKey: SharedStorage.serverUrlKey) ?? "<nil>"
-        let profileId = suite.string(forKey: SharedStorage.profileIdKey) ?? "<nil>"
+        let hasServerURL = suite.string(forKey: SharedStorage.serverUrlKey) != nil
+        let hasProfileID = suite.string(forKey: SharedStorage.profileIdKey) != nil
         let hasAccess = keychain.get(SharedStorage.mirroredAccessTokenAccount) != nil
         let hasProfile = keychain.get(SharedStorage.mirroredProfileTokenAccount) != nil
         let lastRun = suite.string(forKey: SharedStorage.topShelfLastRunAtKey) ?? "<never>"
-        let lastStatus = suite.string(forKey: SharedStorage.topShelfLastStatusKey) ?? "<none>"
-        print("[TopShelfDiag] suite.serverUrl=\(serverUrl) suite.profileId=\(profileId) mirroredAccess=\(hasAccess) mirroredProfile=\(hasProfile)")
-        print("[TopShelfDiag] lastRunAt=\(lastRun) lastStatus=\(lastStatus)")
+        let hasLastStatus = suite.string(forKey: SharedStorage.topShelfLastStatusKey) != nil
+        print("[TopShelfDiag] hasServerURL=\(hasServerURL) hasProfileID=\(hasProfileID) mirroredAccess=\(hasAccess) mirroredProfile=\(hasProfile)")
+        print("[TopShelfDiag] lastRunAt=\(lastRun) hasLastStatus=\(hasLastStatus)")
     }
     #endif
 
@@ -532,14 +532,14 @@ struct ContentView: View {
             let profiles = try await StartupContentPrefetcher.fetchProfiles()
             guard let profile = profiles.first(where: \.isPrimary)
                 ?? (profiles.count == 1 ? profiles.first : nil) else {
-                print("[DebugAutoLogin] no selectable profile for \(username)")
+                print("[DebugAutoLogin] no selectable profile")
                 return
             }
             try await AuthService.shared.selectProfile(profileId: profile.id)
             StartupContentPrefetcher.prefetchAuthenticatedContent()
             await PlayerSettings.shared.refreshFromServer()
             router.resetToHome()
-            print("[DebugAutoLogin] signed in as \(username), profile \(profile.name)")
+            print("[DebugAutoLogin] signed in and selected profile")
         } catch {
             print("[DebugAutoLogin] failed: \(error)")
         }

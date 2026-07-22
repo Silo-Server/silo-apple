@@ -459,15 +459,15 @@ actor HTTPClient {
         var attached: [String] = []
         if let token = accessToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            attached.append("auth(…\(token.suffix(6)))")
+            attached.append("auth")
         }
         if let profileId = await tokenStore.getProfileId() {
             request.setValue(profileId, forHTTPHeaderField: "X-Profile-Id")
-            attached.append("profileId=\(profileId)")
+            attached.append("profile")
         }
         if let profileToken = await tokenStore.getProfileToken() {
             request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token")
-            attached.append("profileToken(…\(profileToken.suffix(6)))")
+            attached.append("profileToken")
         }
         let device = AppleDeviceIdentity.current
         request.setValue(device.id, forHTTPHeaderField: "X-Silo-Device-Id")
@@ -512,15 +512,13 @@ actor HTTPClient {
     private func ensureSuccess(_ data: Data, _ response: HTTPURLResponse, method: String, quietStatuses: Set<Int> = []) throws {
         guard (200..<300).contains(response.statusCode) else {
             let bodyStr = String(data: data, encoding: .utf8)
-            let urlStr = response.url?.absoluteString ?? ""
-            let preview = (bodyStr ?? "").prefix(512)
             // A status the caller treats as an expected signal (e.g. a 404
             // existence probe) is demoted to debug so it doesn't read as a
             // failure in the log; everything else stays at error level.
             if quietStatuses.contains(response.statusCode) {
-                Self.logger.debug("HTTP \(response.statusCode, privacy: .public) \(method, privacy: .public) \(urlStr, privacy: .public) body=\(preview, privacy: .private)")
+                Self.logger.debug("HTTP \(response.statusCode, privacy: .public) \(method, privacy: .public)")
             } else {
-                Self.logger.error("HTTP \(response.statusCode, privacy: .public) \(method, privacy: .public) \(urlStr, privacy: .public) body=\(preview, privacy: .private)")
+                Self.logger.error("HTTP \(response.statusCode, privacy: .public) \(method, privacy: .public)")
             }
             throw HTTPError.http(
                 statusCode: response.statusCode,
@@ -595,7 +593,7 @@ actor HTTPClient {
         }
 
         guard let url = URL(string: serverUrl + "/api/v1/auth/refresh") else {
-            Self.logger.error("Refresh skipped: bad server URL \(serverUrl, privacy: .public)")
+            Self.logger.error("Refresh skipped: invalid server URL")
             return false
         }
 
@@ -686,7 +684,7 @@ struct HTTPMultipartPart {
 
 // MARK: - Error
 
-enum HTTPError: LocalizedError {
+enum HTTPError: LocalizedError, CustomStringConvertible {
     case serverUrlNotConfigured
     case invalidURL(String)
     case invalidResponse
@@ -714,6 +712,27 @@ enum HTTPError: LocalizedError {
                 return message
             }
             return "Server returned status \(statusCode)"
+        }
+    }
+
+    /// A log-safe representation that never includes request URLs, response
+    /// bodies, auth material, or the localized text of an underlying error.
+    var description: String {
+        switch self {
+        case .serverUrlNotConfigured:
+            return "server_url_not_configured"
+        case .invalidURL:
+            return "invalid_url"
+        case .invalidResponse:
+            return "invalid_response"
+        case .network:
+            return "network_error"
+        case .encodingFailed:
+            return "encoding_failed"
+        case .decodingFailed(let type, _):
+            return "decoding_failed(type: \(type))"
+        case .http(let statusCode, _):
+            return "http_error(status: \(statusCode))"
         }
     }
 

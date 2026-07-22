@@ -23,6 +23,7 @@ final class RecentSessionTracker {
 
     private static let defaultsKey = "diagnostics.recentPlaybackSessions.v1"
     private static let maxEntries = 10
+    static let retentionInterval = PendingReportStore.expiryInterval
 
     private let defaults: SharedDefaults
     private let lock = NSLock()
@@ -57,11 +58,27 @@ final class RecentSessionTracker {
     /// Recent session IDs recorded under `binding`, newest first. Sessions
     /// from other server/accounts are excluded so they cannot leak into a
     /// report bound elsewhere.
-    func recentSessionIDs(for binding: DiagnosticsBinding, limit: Int = 10) -> [String] {
+    func recentSessionIDs(
+        for binding: DiagnosticsBinding,
+        limit: Int = 10,
+        now: Date = Date()
+    ) -> [String] {
         lock.lock()
         defer { lock.unlock() }
 
-        return load()
+        let entries = load()
+        let cutoff = now.addingTimeInterval(-Self.retentionInterval)
+        let retained = entries.filter { entry in
+            guard let recordedAt = DiagnosticsDates.date(from: entry.recordedAt) else {
+                return false
+            }
+            return recordedAt >= cutoff
+        }
+        if retained != entries {
+            save(retained)
+        }
+
+        return retained
             .filter { $0.binding == binding }
             .suffix(max(0, limit))
             .reversed()
