@@ -907,6 +907,29 @@ actor ContinuumAPI {
         try await http.post("/api/v1/playback/start", body: request, timeout: .extended)
     }
 
+    func playbackV3Capability() async throws -> PlaybackV3CapabilityResponse {
+        try await http.get("/api/v1/playback/capability")
+    }
+
+    func startPlaybackV3(request: PlaybackV3StartRequest) async throws -> PlaybackV3DecisionResponse {
+        try await http.post("/api/v1/playback/start", body: request, timeout: .extended)
+    }
+
+    func replanPlaybackV3(
+        sessionId: String,
+        request: PlaybackV3ReplanRequest
+    ) async throws -> PlaybackV3DecisionResponse {
+        try await http.post(
+            "/api/v1/playback/\(sessionId)/replan",
+            body: request,
+            timeout: .extended
+        )
+    }
+
+    func reportPlaybackRouteEventV3(_ event: PlaybackV3RouteEvent) async throws {
+        try await http.postVoid("/api/v1/playback/route-events", body: event)
+    }
+
     func startTranscode(request: TranscodeStartRequest) async throws -> TranscodeStartResponse {
         try await http.post("/api/v1/playback/transcode/start", body: request, timeout: .extended)
     }

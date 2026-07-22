@@ -9,17 +9,20 @@ struct PreparedPlayback {
     let selectedVersion: FileVersion
     let session: PlaybackSessionResponse
     let activeQualityId: String
+    let protocolV3: PreparedPlaybackV3?
 
     init(
         watchDetail: WatchDetail,
         selectedVersion: FileVersion,
         session: PlaybackSessionResponse,
-        activeQualityId: String = ApplePlaybackQuality.autoId
+        activeQualityId: String = ApplePlaybackQuality.autoId,
+        protocolV3: PreparedPlaybackV3? = nil
     ) {
         self.watchDetail = watchDetail
         self.selectedVersion = selectedVersion
         self.session = session
         self.activeQualityId = activeQualityId
+        self.protocolV3 = protocolV3
     }
 
     var displayTitle: String {
@@ -81,6 +84,14 @@ enum PlaybackProgressReportResult: Equatable {
     case success
     case missingSession
     case transientFailure
+}
+
+struct PlaybackV3TerminalFailure: LocalizedError, Equatable {
+    let reason: String
+    let message: String
+    let retryable: Bool
+
+    var errorDescription: String? { message }
 }
 
 /// Secondary metadata shown in the tvOS player overlay's hero strip.
@@ -184,6 +195,22 @@ actor PlaybackSessionBridge {
     /// template for a silent same-plan renewal after the server loses the
     /// session (restart, idle reap, expired reconstruct token).
     private var lastStartRequest: StartPlaybackRequest?
+    private var protocolV3Available: Bool?
+
+    private struct ActiveProtocolV3 {
+        let playbackAttemptId: String
+        var planAttemptId: String
+        var planAttemptKey: String
+        var attemptedPlanKeys: [String]
+        var attemptCount: Int
+        var clientQualityId: String
+        var snapshot: ApplePlaybackV3CapabilitySnapshot
+        var serverFeatures: [String]
+        var plan: PlaybackV3Plan
+    }
+
+    private var activeProtocolV3: ActiveProtocolV3?
+    private var protocolV3FirstFramePlanIds: Set<String> = []
 
     private func adoptSession(_ session: PlaybackSessionResponse) {
         sessionId = session.sessionId
@@ -318,6 +345,19 @@ actor PlaybackSessionBridge {
                 hasManualSelection: preferredFileId != nil
             )
         let profileId = await TokenStore.shared.getProfileId()
+        if let profileId,
+           !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let prepared = try await startProtocolV3IfAvailable(
+               watchDetail: watchDetail,
+               selectedVersion: selectedVersion,
+               profileId: profileId,
+               qualityPreference: resolvedQualityPreference,
+               startPosition: effectiveStartPosition,
+               audioTrackIndex: preferredAudioTrackIndex ?? selectedVersion.effectiveAudioTrackIndex,
+               subtitleTrackIndex: preferredSubtitleTrackIndex
+           ) {
+            return prepared
+        }
         // Without an explicit pick, send the server's own detail-resolved
         // effective audio index. /playback/start only consults saved audio
         // prefs for episodes (its series-id lookup is empty for movies), so
@@ -365,6 +405,7 @@ actor PlaybackSessionBridge {
             session.position = effectiveStartPosition
         }
 
+        activeProtocolV3 = nil
         adoptSession(session)
         return PreparedPlayback(
             watchDetail: watchDetail,
@@ -375,6 +416,497 @@ actor PlaybackSessionBridge {
                 selectedVersion: selectedVersion,
                 delivery: PlaybackDeliveryStrategy(playMethod: session.playMethod)
             )
+        )
+    }
+
+    private func startProtocolV3IfAvailable(
+        watchDetail: WatchDetail,
+        selectedVersion: FileVersion,
+        profileId: String,
+        qualityPreference: String?,
+        startPosition: Double?,
+        audioTrackIndex: Int?,
+        subtitleTrackIndex: Int?
+    ) async throws -> PreparedPlayback? {
+        if protocolV3Available == nil {
+            do {
+                let capability = try await ContinuumAPI.shared.playbackV3Capability()
+                protocolV3Available = capability.enabled
+                    && capability.protocolVersions.contains(PlaybackProtocolV3.version)
+                    && capability.features.contains(PlaybackProtocolV3.planFeature)
+            } catch let error as HTTPError where error.statusCode == 404 || error.statusCode == 405 {
+                protocolV3Available = false
+            }
+        }
+        guard protocolV3Available == true else { return nil }
+
+        let snapshot = ApplePlaybackV3Capabilities.snapshot()
+        let playbackAttemptId = "apple:\(UUID().uuidString.lowercased())"
+        let protocolV3SubtitleTrackIndex = subtitleTrackIndex.flatMap {
+            ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                ffmpegStreamIndex: $0,
+                in: selectedVersion
+            )
+        }
+        let request = PlaybackV3StartRequest(
+            protocolVersion: PlaybackProtocolV3.version,
+            clientFeatures: ApplePlaybackV3Capabilities.features,
+            fileId: selectedVersion.fileId,
+            profileId: profileId,
+            playbackAttemptId: playbackAttemptId,
+            qualityPreference: protocolV3QualityPreference(qualityPreference),
+            subtitleFidelityPreference: "preserve",
+            startPosition: startPosition,
+            audioTrackId: audioTrackIndex.flatMap {
+                $0 >= 0 ? protocolV3TrackId(fileId: selectedVersion.fileId, kind: "audio", index: $0) : nil
+            },
+            audioTrackIndex: audioTrackIndex.flatMap { $0 >= 0 ? $0 : nil },
+            subtitleTrackId: protocolV3SubtitleTrackIndex.flatMap {
+                $0 >= 0 ? protocolV3TrackId(fileId: selectedVersion.fileId, kind: "subtitle", index: $0) : nil
+            },
+            subtitleTrackIndex: protocolV3SubtitleTrackIndex,
+            outputRouteGeneration: snapshot.outputRouteGeneration,
+            metered: false,
+            bandwidthEstimateKbps: nil,
+            bandwidthCapKbps: nil,
+            clientCapabilities: snapshot.capabilities,
+            clientPlaybackContext: snapshot.context
+        )
+
+        logger.info(
+            "Starting protocol V3 attempt=\(playbackAttemptId, privacy: .public) fileId=\(selectedVersion.fileId, privacy: .public)"
+        )
+        let response: PlaybackV3DecisionResponse
+        do {
+            response = try await ContinuumAPI.shared.startPlaybackV3(request: request)
+        } catch let error as HTTPError {
+            guard case .network = error else { throw error }
+            // Reuse the exact request and playback_attempt_id so an ambiguous
+            // first response cannot allocate a second logical attempt.
+            response = try await ContinuumAPI.shared.startPlaybackV3(request: request)
+        }
+
+        switch response.validatedForApple() {
+        case .terminal(let terminal):
+            throw PlaybackV3TerminalFailure(
+                reason: terminal.reason,
+                message: terminal.message,
+                retryable: terminal.retryable
+            )
+        case .incompatible(let allocatedSessionId):
+            if let allocatedSessionId {
+                try? await ContinuumAPI.shared.stopPlayback(sessionId: allocatedSessionId)
+            }
+            throw PlaybackV3TerminalFailure(
+                reason: "invalid_playback_plan",
+                message: "The server returned an incompatible protocol V3 playback plan.",
+                retryable: false
+            )
+        case .playable(let plan, let resolvedSessionId):
+            try ApplePlaybackV3PlanAdapter.validate(plan)
+            guard let effectiveVersion = watchDetail.versions.first(where: {
+                $0.fileId == plan.effectiveMediaFileId
+            }) else {
+                try? await ContinuumAPI.shared.stopPlayback(sessionId: resolvedSessionId)
+                throw PlaybackV3TerminalFailure(
+                    reason: "effective_file_unavailable",
+                    message: "The server selected a media version that is not present in the item response.",
+                    retryable: false
+                )
+            }
+            let session = ApplePlaybackV3PlanAdapter.playbackSession(
+                plan: plan,
+                sessionId: resolvedSessionId,
+                selectedVersion: effectiveVersion
+            )
+            let planAttemptId = "apple-plan:\(UUID().uuidString.lowercased())"
+            let planAttemptKey = plan.attemptKey(outputRouteGeneration: snapshot.outputRouteGeneration)
+            activeProtocolV3 = ActiveProtocolV3(
+                playbackAttemptId: playbackAttemptId,
+                planAttemptId: planAttemptId,
+                planAttemptKey: planAttemptKey,
+                attemptedPlanKeys: [planAttemptKey],
+                attemptCount: 1,
+                clientQualityId: ApplePlaybackQuality.normalizeStoredId(qualityPreference),
+                snapshot: snapshot,
+                serverFeatures: response.serverFeatures,
+                plan: plan
+            )
+            protocolV3FirstFramePlanIds.removeAll()
+            sessionId = resolvedSessionId
+            currentSession = session
+            lastStartRequest = nil
+            let preparedV3 = PreparedPlaybackV3(
+                playbackAttemptId: playbackAttemptId,
+                planAttemptId: planAttemptId,
+                planAttemptKey: planAttemptKey,
+                outputRouteGeneration: snapshot.outputRouteGeneration,
+                serverFeatures: response.serverFeatures,
+                plan: plan
+            )
+            logger.info(
+                "Protocol V3 plan selected id=\(plan.planId, privacy: .public) delivery=\(plan.delivery, privacy: .public)"
+            )
+            return PreparedPlayback(
+                watchDetail: watchDetail,
+                selectedVersion: effectiveVersion,
+                session: session,
+                activeQualityId: ApplePlaybackQuality.activeQualityId(
+                    requestedQualityId: qualityPreference,
+                    selectedVersion: effectiveVersion,
+                    delivery: PlaybackDeliveryStrategy(playMethod: session.playMethod)
+                ),
+                protocolV3: preparedV3
+            )
+        }
+    }
+
+    func replanProtocolV3(
+        watchDetail: WatchDetail,
+        position: Double,
+        classification: String,
+        message: String,
+        operation: String = "failure_recovery",
+        qualityPreference: String? = nil,
+        audioTrackIndex: Int? = nil,
+        subtitleTrackIndex: Int? = nil
+    ) async throws -> PreparedPlayback? {
+        guard var active = activeProtocolV3,
+              let currentSessionId = sessionId else {
+            return nil
+        }
+        guard active.attemptCount < 8 else {
+            await emitProtocolV3Terminal(
+                active: active,
+                sessionId: currentSessionId,
+                reason: "attempt_limit_reached",
+                message: "Playback recovery exhausted the protocol V3 route ladder."
+            )
+            throw PlaybackV3TerminalFailure(
+                reason: "attempt_limit_reached",
+                message: "Playback recovery exhausted the protocol V3 route ladder.",
+                retryable: false
+            )
+        }
+
+        if classification == "output_route_changed" {
+            active.snapshot = ApplePlaybackV3Capabilities.snapshot()
+        }
+
+        let invalidatesIntent = [
+            "audio_track_changed", "subtitle_track_changed", "quality_changed", "output_route_changed"
+        ].contains(classification)
+        let isSeekReanchor = operation == "seek_reanchor"
+        if isSeekReanchor,
+           !active.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature) {
+            return nil
+        }
+        let attemptedKeys = isSeekReanchor
+            ? active.attemptedPlanKeys
+            : invalidatesIntent
+            ? []
+            : Array(Set(active.attemptedPlanKeys + [active.planAttemptKey])).sorted()
+        let selectedFileId = active.plan.effectiveMediaFileId
+        let selectedAudio = (isSeekReanchor ? nil : audioTrackIndex).flatMap { index in
+            guard index >= 0 else { return nil }
+            return PlaybackV3TrackIdentity(
+                id: protocolV3TrackId(fileId: selectedFileId, kind: "audio", index: index),
+                index: index
+            )
+        } ?? active.plan.selectedTracks.audio
+        let selectedSubtitle: PlaybackV3TrackIdentity? = {
+            if isSeekReanchor { return active.plan.selectedTracks.subtitle }
+            if classification == "subtitle_track_changed" {
+                return subtitleTrackIndex.flatMap { index in
+                    guard index >= 0 else { return nil }
+                    return PlaybackV3TrackIdentity(
+                        id: protocolV3TrackId(fileId: selectedFileId, kind: "subtitle", index: index),
+                        index: index
+                    )
+                }
+            }
+            return active.plan.selectedTracks.subtitle
+        }()
+        let selectedTracks = PlaybackV3SelectedTracks(audio: selectedAudio, subtitle: selectedSubtitle)
+        let normalizedPosition = position.isFinite ? max(0, position) : 0
+        let requestedClientQualityId = qualityPreference.map {
+            ApplePlaybackQuality.normalizeStoredId($0)
+        } ?? active.clientQualityId
+        let eventName = isSeekReanchor
+            ? "seek_reanchor_requested"
+            : (invalidatesIntent ? "plan_invalidated" : "plan_failed")
+        await emitProtocolV3Event(
+            active: active,
+            sessionId: currentSessionId,
+            event: eventName,
+            classification: classification,
+            fallbackReason: nil,
+            diagnostics: ["message": String(message.prefix(512))]
+        )
+
+        let request = PlaybackV3ReplanRequest(
+            protocolVersion: PlaybackProtocolV3.version,
+            operation: operation,
+            playbackAttemptId: active.playbackAttemptId,
+            replanRequestId: "apple-replan:\(UUID().uuidString.lowercased())",
+            failedPlanId: active.plan.planId,
+            planAttemptId: active.planAttemptId,
+            planAttemptKey: active.planAttemptKey,
+            attemptedPlanKeys: attemptedKeys,
+            attemptCount: invalidatesIntent ? 1 : active.attemptCount,
+            qualityPreference: protocolV3QualityPreference(requestedClientQualityId),
+            positionSeconds: normalizedPosition,
+            outputRouteGeneration: active.snapshot.outputRouteGeneration,
+            metered: false,
+            bandwidthEstimateKbps: nil,
+            bandwidthCapKbps: nil,
+            selectedTracks: selectedTracks,
+            failure: PlaybackV3Failure(
+                classification: classification,
+                message: String(message.prefix(512)),
+                decoderName: nil
+            ),
+            clientCapabilities: active.snapshot.capabilities,
+            clientPlaybackContext: active.snapshot.context
+        )
+        let response = try await ContinuumAPI.shared.replanPlaybackV3(
+            sessionId: currentSessionId,
+            request: request
+        )
+        switch response.validatedForApple() {
+        case .terminal(let terminal):
+            await emitProtocolV3Terminal(
+                active: active,
+                sessionId: currentSessionId,
+                reason: terminal.reason,
+                message: terminal.message
+            )
+            throw PlaybackV3TerminalFailure(
+                reason: terminal.reason,
+                message: terminal.message,
+                retryable: terminal.retryable
+            )
+        case .incompatible(let allocatedSessionId):
+            if let allocatedSessionId, allocatedSessionId != currentSessionId {
+                try? await ContinuumAPI.shared.stopPlayback(sessionId: allocatedSessionId)
+            }
+            await emitProtocolV3Terminal(
+                active: active,
+                sessionId: currentSessionId,
+                reason: "invalid_replan",
+                message: "The server returned an incompatible protocol V3 replacement plan."
+            )
+            throw PlaybackV3TerminalFailure(
+                reason: "invalid_replan",
+                message: "The server returned an incompatible protocol V3 replacement plan.",
+                retryable: false
+            )
+        case .playable(let nextPlan, let nextSessionId):
+            do {
+                try ApplePlaybackV3PlanAdapter.validate(nextPlan)
+            } catch {
+                if nextSessionId != currentSessionId {
+                    try? await ContinuumAPI.shared.stopPlayback(sessionId: nextSessionId)
+                }
+                await emitProtocolV3Terminal(
+                    active: active,
+                    sessionId: currentSessionId,
+                    reason: "invalid_replan",
+                    message: error.localizedDescription
+                )
+                throw error
+            }
+            let nextKey = nextPlan.attemptKey(
+                outputRouteGeneration: active.snapshot.outputRouteGeneration
+            )
+            guard isSeekReanchor || !attemptedKeys.contains(nextKey) else {
+                if nextSessionId != currentSessionId {
+                    try? await ContinuumAPI.shared.stopPlayback(sessionId: nextSessionId)
+                }
+                await emitProtocolV3Terminal(
+                    active: active,
+                    sessionId: currentSessionId,
+                    reason: "replan_loop_detected",
+                    message: "The server returned a protocol V3 plan that already failed on this output route."
+                )
+                throw PlaybackV3TerminalFailure(
+                    reason: "replan_loop_detected",
+                    message: "The server returned a protocol V3 plan that already failed on this output route.",
+                    retryable: false
+                )
+            }
+            guard let selectedVersion = watchDetail.versions.first(where: {
+                $0.fileId == nextPlan.effectiveMediaFileId
+            }) else {
+                if nextSessionId != currentSessionId {
+                    try? await ContinuumAPI.shared.stopPlayback(sessionId: nextSessionId)
+                }
+                await emitProtocolV3Terminal(
+                    active: active,
+                    sessionId: currentSessionId,
+                    reason: "effective_file_unavailable",
+                    message: "The replacement plan selected an unavailable media version."
+                )
+                throw PlaybackV3TerminalFailure(
+                    reason: "effective_file_unavailable",
+                    message: "The replacement plan selected an unavailable media version.",
+                    retryable: false
+                )
+            }
+            let nextSession = ApplePlaybackV3PlanAdapter.playbackSession(
+                plan: nextPlan,
+                sessionId: nextSessionId,
+                selectedVersion: selectedVersion
+            )
+            if isSeekReanchor {
+                guard nextSessionId == currentSessionId,
+                      response.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature),
+                      nextKey == active.planAttemptKey,
+                      nextPlan.delivery == active.plan.delivery,
+                      nextPlan.engine == active.plan.engine,
+                      nextPlan.effectiveRecipe == active.plan.effectiveRecipe,
+                      nextPlan.selectedTracks == active.plan.selectedTracks,
+                      nextPlan.transformations == active.plan.transformations,
+                      nextPlan.appliedQuirks == active.plan.appliedQuirks,
+                      nextPlan.runtimeCorrections == active.plan.runtimeCorrections else {
+                    await emitProtocolV3Terminal(
+                        active: active,
+                        sessionId: currentSessionId,
+                        reason: "invalid_seek_reanchor_response",
+                        message: "The server changed the route or playback intent during a V3 seek re-anchor."
+                    )
+                    throw PlaybackV3TerminalFailure(
+                        reason: "invalid_seek_reanchor_response",
+                        message: "The server changed the route or playback intent during a V3 seek re-anchor.",
+                        retryable: false
+                    )
+                }
+            } else {
+                active.planAttemptId = "apple-plan:\(UUID().uuidString.lowercased())"
+                active.planAttemptKey = nextKey
+                active.attemptedPlanKeys = attemptedKeys + [nextKey]
+                active.attemptCount = invalidatesIntent ? 1 : active.attemptCount + 1
+            }
+            active.serverFeatures = response.serverFeatures
+            active.plan = nextPlan
+            active.clientQualityId = requestedClientQualityId
+            activeProtocolV3 = active
+            sessionId = nextSessionId
+            self.currentSession = nextSession
+            if isSeekReanchor {
+                await emitProtocolV3Event(
+                    active: active,
+                    sessionId: nextSessionId,
+                    event: "seek_reanchored",
+                    classification: nil,
+                    fallbackReason: nil,
+                    diagnostics: ["position_seconds": String(normalizedPosition)]
+                )
+            }
+            let preparedV3 = PreparedPlaybackV3(
+                playbackAttemptId: active.playbackAttemptId,
+                planAttemptId: active.planAttemptId,
+                planAttemptKey: active.planAttemptKey,
+                outputRouteGeneration: active.snapshot.outputRouteGeneration,
+                serverFeatures: active.serverFeatures,
+                plan: nextPlan
+            )
+            return PreparedPlayback(
+                watchDetail: watchDetail,
+                selectedVersion: selectedVersion,
+                session: nextSession,
+                activeQualityId: ApplePlaybackQuality.activeQualityId(
+                    requestedQualityId: requestedClientQualityId,
+                    selectedVersion: selectedVersion,
+                    delivery: PlaybackDeliveryStrategy(playMethod: nextSession.playMethod)
+                ),
+                protocolV3: preparedV3
+            )
+        }
+    }
+
+    func reportProtocolV3PlanExecutionStarted() async {
+        guard let active = activeProtocolV3, let sessionId else { return }
+        for correction in active.plan.runtimeCorrections {
+            await emitProtocolV3Event(
+                active: active,
+                sessionId: sessionId,
+                event: "runtime_correction_applied",
+                classification: nil,
+                fallbackReason: nil,
+                diagnostics: ["runtime_correction": correction]
+            )
+        }
+    }
+
+    func reportProtocolV3FirstFrame(milliseconds: Int?) async {
+        guard let active = activeProtocolV3, let sessionId else { return }
+        guard protocolV3FirstFramePlanIds.insert(active.plan.planId).inserted else { return }
+        var diagnostics: [String: String] = [:]
+        if let milliseconds { diagnostics["first_frame_ms"] = String(max(0, milliseconds)) }
+        await emitProtocolV3Event(
+            active: active,
+            sessionId: sessionId,
+            event: "first_frame",
+            classification: nil,
+            fallbackReason: nil,
+            diagnostics: diagnostics
+        )
+        for correction in active.plan.runtimeCorrections {
+            await emitProtocolV3Event(
+                active: active,
+                sessionId: sessionId,
+                event: "runtime_correction_succeeded",
+                classification: nil,
+                fallbackReason: nil,
+                diagnostics: ["runtime_correction": correction]
+            )
+        }
+    }
+
+    private func emitProtocolV3Event(
+        active: ActiveProtocolV3,
+        sessionId: String,
+        event: String,
+        classification: String?,
+        fallbackReason: String?,
+        diagnostics: [String: String]
+    ) async {
+        let event = PlaybackV3RouteEvent(
+            protocolVersion: PlaybackProtocolV3.version,
+            playbackAttemptId: active.playbackAttemptId,
+            sessionId: sessionId,
+            planId: active.plan.planId,
+            planAttemptId: active.planAttemptId,
+            planAttemptKey: active.planAttemptKey,
+            event: event,
+            failureClassification: classification,
+            fallbackReason: fallbackReason,
+            appliedQuirkIds: active.plan.appliedQuirks.map(\.id),
+            quirkRegistryRevision: active.plan.appliedQuirks.first?.registryRevision,
+            outputRouteGeneration: active.snapshot.outputRouteGeneration,
+            diagnostics: diagnostics
+        )
+        do {
+            try await ContinuumAPI.shared.reportPlaybackRouteEventV3(event)
+        } catch {
+            logger.warning("Protocol V3 route event \(event.event, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func emitProtocolV3Terminal(
+        active: ActiveProtocolV3,
+        sessionId: String,
+        reason: String,
+        message: String
+    ) async {
+        await emitProtocolV3Event(
+            active: active,
+            sessionId: sessionId,
+            event: "terminal",
+            classification: nil,
+            fallbackReason: reason,
+            diagnostics: ["message": String(message.prefix(512))]
         )
     }
 
@@ -658,6 +1190,17 @@ actor PlaybackSessionBridge {
         )
         #endif
 
+        if let active = activeProtocolV3 {
+            await emitProtocolV3Event(
+                active: active,
+                sessionId: sid,
+                event: "stopped",
+                classification: nil,
+                fallbackReason: nil,
+                diagnostics: ["position_seconds": String(position.isFinite ? max(0, position) : 0)]
+            )
+        }
+
         if position.isFinite, position >= 0 {
             let report = ProgressReport(position: position, isPaused: isPaused)
             do {
@@ -684,6 +1227,9 @@ actor PlaybackSessionBridge {
         }
         sessionId = nil
         currentSession = nil
+        activeProtocolV3 = nil
+        protocolV3FirstFramePlanIds.removeAll()
+        lastStartRequest = nil
         consecutiveProgressFailures = 0
         emittedOrphanedSessionWarning = false
 
@@ -993,6 +1539,20 @@ actor PlaybackSessionBridge {
     private func normalizedQualityPreference(_ quality: String?) -> String? {
         let normalized = ApplePlaybackQuality.normalizeStoredId(quality)
         return normalized == ApplePlaybackQuality.autoId ? nil : normalized
+    }
+
+    private func protocolV3QualityPreference(_ quality: String?) -> String {
+        let normalized = ApplePlaybackQuality.normalizeStoredId(quality)
+        if normalized.hasPrefix("1080p") { return "1080p" }
+        if normalized.hasPrefix("720p") { return "720p" }
+        if normalized.hasPrefix("480p") { return "480p" }
+        if normalized.hasPrefix("328p") { return "480p" }
+        if normalized == ApplePlaybackQuality.originalId { return "original" }
+        return "auto"
+    }
+
+    private func protocolV3TrackId(fileId: Int, kind: String, index: Int) -> String {
+        "file:\(fileId):\(kind):\(index)"
     }
 
     /// Pick the best version for the user's preferred quality. Compatibility

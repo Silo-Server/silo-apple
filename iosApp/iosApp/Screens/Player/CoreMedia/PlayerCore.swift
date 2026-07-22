@@ -73,6 +73,7 @@ final class PlayerCore: NSObject {
     var onTimeChange: ((Double) -> Void)?
     var onPauseChange: ((Bool) -> Void)?
     var onFileLoaded: (() -> Void)?
+    var onFirstFrame: ((Int) -> Void)?
     var onError: ((String) -> Void)?
     var onEndOfFile: (() -> Void)?
     var onBufferingChange: ((Bool) -> Void)?
@@ -5361,6 +5362,7 @@ final class PlayerCore: NSObject {
             // Milestone logs for debugging the "zero frames reach screen" bug.
             switch displayLinkEnqueueCount {
             case 1:
+                onFirstFrame?(max(0, Int((CFAbsoluteTimeGetCurrent() - ttffLoadAnchor) * 1000)))
                 Self.logger.info("displayLink: first frame enqueued pts=\(framePts.seconds)")
                 print(String(format:
                     "[CMP] firstFrameEnqueued pts=%.3f sync=%.3f rate=%.2f ac.cur=%.3f diff=%.3f frameDur=%.4f videoFPS=%.2f skipped=%llu",

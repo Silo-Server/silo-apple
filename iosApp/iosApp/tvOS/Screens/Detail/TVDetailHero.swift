@@ -26,8 +26,6 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     let ratingChip: String?
     /// Short description shown in the hero. Clamped to 3 lines.
     let overview: String?
-    /// Optional tagline shown above the overview when the synopsis is expanded.
-    let tagline: String?
     /// Inline facts row shown above the action buttons. Mixes plain text
     /// (year / runtime / maturity) and outlined quality chips
     /// (4K / HDR / ATMOS / CC).
@@ -136,7 +134,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 .padding(.top, eyebrow == nil ? 0 : 4)
             sourceRow
             if let overview, !overview.isEmpty {
-                TVExpandableSynopsis(overview: overview, tagline: tagline)
+                TVExpandableSynopsis(overview: overview)
             }
             belowSynopsis()
             factsRow
@@ -542,10 +540,6 @@ enum TVHeroMetadata {
                 return "New Season Coming"
             default: break
             }
-        }
-        if let tagline = detail.tagline?.trimmingCharacters(in: .whitespaces),
-           !tagline.isEmpty, tagline.count <= 44 {
-            return tagline
         }
         return nil
     }

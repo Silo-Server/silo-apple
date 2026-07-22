@@ -505,6 +505,7 @@ final class AVPlayerBackend {
     var onDurationChange: ((Double) -> Void)?
     var onPauseChange: ((Bool) -> Void)?
     var onFileLoaded: (() -> Void)?
+    var onFirstFrame: ((Int) -> Void)?
     var onError: ((String) -> Void)?
     var onEndOfFile: (() -> Void)?
     var onBufferingChange: ((Bool) -> Void)?
@@ -1427,10 +1428,12 @@ final class AVPlayerBackend {
               avPlayer.rate > 0,
               currentTime > ttffLastObservedTime + 0.02 else { return }
         ttffEmitted = true
+        let firstFrameMs = ttffElapsedMs()
+        onFirstFrame?(firstFrameMs)
         let route = currentSourceStrategy.map(Self.describe) ?? "unknown"
         let firstSegment = ttffFirstSegmentMs.map(String.init) ?? "-"
         let ready = ttffReadyMs.map(String.init) ?? "-"
-        cmpLog("[CMP-TTFF] route=\(route) first_segment_ms=\(firstSegment) ready_ms=\(ready) first_frame_ms=\(ttffElapsedMs())")
+        cmpLog("[CMP-TTFF] route=\(route) first_segment_ms=\(firstSegment) ready_ms=\(ready) first_frame_ms=\(firstFrameMs)")
     }
 
     private func load(strategy: SourceStrategy, startTime: Double) {
