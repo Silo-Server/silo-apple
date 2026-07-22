@@ -369,13 +369,16 @@ actor DiagnosticsCoordinator {
     /// Freezes the typed, allowlisted diagnostics ring into a `logs.jsonl`
     /// artifact at abnormal-exit capture time. General OSLog is deliberately
     /// excluded because it has no Diagnostics PII admission boundary.
-    func logSnapshotArtifact(since start: Date, runID: String) -> PendingReportArtifact? {
+    func logSnapshotArtifact(since start: Date, runID: String) -> PendingReportArtifact {
         let ringSnapshot = DiagLog.ring.snapshot()
         let lines = Self.logLines(ringSnapshot.lines, forRunID: runID, since: start)
-        guard !lines.isEmpty else {
-            return nil
-        }
-        let data = Data(lines.joined(separator: "\n").appending("\n").utf8)
+        // The ring is process-local, so an abnormal exit normally has no lines
+        // from the failed run after relaunch. Still persist an empty artifact:
+        // its presence freezes the failed run's known-empty log set and keeps
+        // `buildBundle` from falling back to the relaunch process's live ring.
+        let data = lines.isEmpty
+            ? Data()
+            : Data(lines.joined(separator: "\n").appending("\n").utf8)
         return PendingReportArtifact(relativePath: "logs.jsonl", data: data)
     }
 
@@ -706,9 +709,7 @@ actor DiagnosticsCoordinator {
         if !breadcrumbs.isEmpty {
             artifacts.append(PendingReportArtifact(relativePath: "breadcrumbs.jsonl", data: breadcrumbs))
         }
-        if let logSnapshot = logSnapshotArtifact(since: marker.startedAtDate, runID: marker.runID) {
-            artifacts.append(logSnapshot)
-        }
+        artifacts.append(logSnapshotArtifact(since: marker.startedAtDate, runID: marker.runID))
 
         do {
             _ = try pendingStore.save(PendingReportCapture(
@@ -1065,6 +1066,15 @@ actor DiagnosticsCoordinator {
     /// or after diagnostics is re-enabled for the same binding.
     nonisolated static var isDiagnosticsCaptureEnabled: Bool {
         breadcrumbCaptureEnabled()
+    }
+
+    /// Close the synchronous capture gate while authentication is unresolved
+    /// without treating that transient state as a server/profile boundary.
+    /// In particular, a cold launch begins in `.loading`; purging there would
+    /// erase the previous failed run's persisted evidence before tvOS consumes
+    /// its abnormal-exit marker after restored auth resolves.
+    nonisolated static func authenticationStateBecameUnavailable() {
+        _ = beginActiveProfileEligibilityResolution(invalidateCurrent: true)
     }
 
     /// Re-evaluate breadcrumb eligibility for the profile now active. Call on

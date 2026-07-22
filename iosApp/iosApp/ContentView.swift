@@ -121,7 +121,13 @@ struct ContentView: View {
         .task(id: router.authState) {
             #if os(iOS) || os(tvOS)
             if router.authState != .authenticated {
-                DiagnosticsCoordinator.activeProfileWillChange()
+                // The initial `.loading` state is not an identity boundary.
+                // Keep the previous run's persisted breadcrumbs and playback
+                // sessions intact until tvOS can capture any abnormal-exit
+                // leftover after restored authentication resolves. Explicit
+                // profile/server switches and sign-out own their destructive
+                // cleanup paths separately.
+                DiagnosticsCoordinator.authenticationStateBecameUnavailable()
                 diagnosticsModel.reset()
             }
             #endif
