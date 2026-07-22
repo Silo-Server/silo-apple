@@ -29,11 +29,13 @@ enum VideoColorMetadata {
     }
 
     /// Resolve FFmpeg's stream/frame value first and consult server metadata
-    /// only when libav reports AVCOL_RANGE_UNSPECIFIED (or another unknown
-    /// value). Explicit local signaling always wins over the API fallback.
+    /// only when libav reports AVCOL_RANGE_UNSPECIFIED. Explicit local
+    /// signaling always wins over the API fallback.
     static func isFullRange(_ range: AVColorRange, fallbackName: String?) -> Bool {
-        let resolved = colorRangeName(range) ?? normalizedColorRangeName(fallbackName)
-        return resolved == "pc"
+        if range == AVCOL_RANGE_UNSPECIFIED {
+            return normalizedColorRangeName(fallbackName) == "pc"
+        }
+        return colorRangeName(range) == "pc"
     }
 
     static func pickPixelFormat(

@@ -94,7 +94,9 @@ final class CompatibilityPlayerEngine: PlaybackEngine {
             url: plan.streamRequest.url,
             headers: plan.streamRequest.headers,
             startTime: plan.startMode.seconds,
-            colorRangeHint: plan.sourceMetadata.colorRange
+            colorRangeHint: plan.delivery.preservesSourceVideoMetadata
+                ? plan.sourceMetadata.colorRange
+                : nil
         )
     }
 

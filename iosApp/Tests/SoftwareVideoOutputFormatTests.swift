@@ -43,6 +43,7 @@ final class SoftwareVideoOutputFormatTests: XCTestCase {
     func testLocalColorRangeOverridesServerFallback() {
         XCTAssertTrue(VideoColorMetadata.isFullRange(AVCOL_RANGE_JPEG, fallbackName: "tv"))
         XCTAssertFalse(VideoColorMetadata.isFullRange(AVCOL_RANGE_MPEG, fallbackName: "pc"))
+        XCTAssertFalse(VideoColorMetadata.isFullRange(AVCOL_RANGE_NB, fallbackName: "pc"))
     }
 
     func testServerColorRangeFillsOnlyUnspecifiedLocalMetadata() {

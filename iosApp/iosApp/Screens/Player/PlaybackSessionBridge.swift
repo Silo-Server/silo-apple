@@ -152,6 +152,15 @@ enum PlaybackDeliveryStrategy {
             return "transcode"
         }
     }
+
+    var preservesSourceVideoMetadata: Bool {
+        switch self {
+        case .direct, .remux:
+            return true
+        case .transcode:
+            return false
+        }
+    }
 }
 
 /// Manages the lifecycle of a playback session with the Continuum API.
