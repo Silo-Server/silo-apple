@@ -567,11 +567,8 @@ enum TVHeroMetadata {
     private static func qualityTokens(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [TVHeroFactToken] {
         guard let version = selectedVersion ?? preferredVersion(from: detail) else { return [] }
         var tokens: [TVHeroFactToken] = []
-        if let res = resolutionLabel(version.resolution) {
-            tokens.append(.chip(res))
-        }
-        if let dynamicRange = DetailPlaybackFormatting.dynamicRangeBadgeLabel(version) {
-            tokens.append(.chip(dynamicRange))
+        if let video = DetailPlaybackFormatting.heroVideoBadgeLabel(version) {
+            tokens.append(.chip(video))
         }
         if let audio = primaryAudioLabel(version: version) {
             tokens.append(.chip(audio))
@@ -589,15 +586,6 @@ enum TVHeroMetadata {
             return lastVersion
         }
         return versions.first
-    }
-
-    private static func resolutionLabel(_ raw: String?) -> String? {
-        guard let raw = raw?.lowercased() else { return nil }
-        if raw.contains("2160") || raw.contains("4k") { return "4K" }
-        if raw.contains("1080") { return "HD" }
-        if raw.contains("720") { return "HD" }
-        if raw.contains("480") { return "SD" }
-        return nil
     }
 
     private static func primaryAudioLabel(version: FileVersion) -> String? {

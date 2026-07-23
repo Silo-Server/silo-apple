@@ -370,6 +370,43 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertEqual(DetailPlaybackFormatting.dynamicRangeBadgeLabel(versions[2]), "DV")
     }
 
+    func testHeroVideoBadgeCombinesResolutionAndDynamicRange() {
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "resolution": "2160p",
+            "hdr": true,
+            "video_tracks": [
+              { "codec": "hevc", "dv_profile": 8 }
+            ]
+          },
+          {
+            "file_id": 2,
+            "resolution": "2160p",
+            "hdr": true
+          },
+          {
+            "file_id": 3,
+            "resolution": "1080p"
+          },
+          {
+            "file_id": 4,
+            "hdr": true
+          },
+          {
+            "file_id": 5
+          }
+        ]
+        """)
+
+        XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[0]), "4K DV")
+        XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[1]), "4K HDR")
+        XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[2]), "HD")
+        XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[3]), "HDR")
+        XCTAssertNil(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[4]))
+    }
+
     func testEffectiveAudioLabelPrefersServerEffectiveTrack() {
         let versions = decodedVersions("""
         [

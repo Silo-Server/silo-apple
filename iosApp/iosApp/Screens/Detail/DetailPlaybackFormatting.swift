@@ -560,6 +560,25 @@ enum DetailPlaybackFormatting {
         return version.hdr == true ? "HDR" : nil
     }
 
+    static func heroVideoBadgeLabel(_ version: FileVersion) -> String? {
+        heroVideoBadgeLabel(
+            resolution: version.resolution,
+            dynamicRange: dynamicRangeBadgeLabel(version)
+        )
+    }
+
+    static func heroVideoBadgeLabel(resolution: String?, dynamicRange: String?) -> String? {
+        let normalizedResolution: String? = {
+            guard let raw = resolution?.lowercased() else { return nil }
+            if raw.contains("2160") || raw.contains("4k") { return "4K" }
+            if raw.contains("1080") || raw.contains("720") { return "HD" }
+            if raw.contains("480") { return "SD" }
+            return nil
+        }()
+        let parts = [normalizedResolution, nonEmpty(dynamicRange)].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
     static func normalizedAudioCodec(_ codec: String?) -> String? {
         guard let codec = codec?.lowercased(), !codec.isEmpty else { return nil }
         if codec.contains("eac3") || codec.contains("e-ac-3") || codec.contains("ec-3") {
