@@ -103,7 +103,7 @@ extension OverlayData {
     static let movieSample = OverlayData(
         resolution: "2160p",
         hdr: "DV HDR10",
-        audio: "DD+ Atmos",
+        audio: "Atmos",
         audioChannels: "7.1",
         videoCodec: "H.265",
         container: "MKV",
