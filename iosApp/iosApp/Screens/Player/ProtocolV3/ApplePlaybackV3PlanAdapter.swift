@@ -258,6 +258,8 @@ enum ApplePlaybackV3PlanAdapter {
             degradationWarnings: warnings + routeCapabilities.degradationNotes(for: routeRequirements),
             reason: "v3_\(plan.decisionReason)",
             playbackSessionId: plan.sessionId,
+            wireDelivery: plan.delivery,
+            serverFeatures: v3.serverFeatures,
             sourceMetadata: sourceMetadata,
             normalizationSummary: normalization
         )

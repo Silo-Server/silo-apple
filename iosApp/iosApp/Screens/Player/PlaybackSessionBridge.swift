@@ -196,6 +196,7 @@ actor PlaybackSessionBridge {
     /// session (restart, idle reap, expired reconstruct token).
     private var lastStartRequest: StartPlaybackRequest?
     private var protocolV3Available: Bool?
+    private var protocolV3CapabilityFeatures: [String] = []
 
     private struct ActiveProtocolV3 {
         let playbackAttemptId: String
@@ -431,10 +432,12 @@ actor PlaybackSessionBridge {
         if protocolV3Available == nil {
             do {
                 let capability = try await ContinuumAPI.shared.playbackV3Capability()
+                protocolV3CapabilityFeatures = capability.features
                 protocolV3Available = capability.enabled
                     && capability.protocolVersions.contains(PlaybackProtocolV3.version)
                     && capability.features.contains(PlaybackProtocolV3.planFeature)
             } catch let error as HTTPError where error.statusCode == 404 || error.statusCode == 405 {
+                protocolV3CapabilityFeatures = []
                 protocolV3Available = false
             }
         }
@@ -521,6 +524,7 @@ actor PlaybackSessionBridge {
             )
             let planAttemptId = "apple-plan:\(UUID().uuidString.lowercased())"
             let planAttemptKey = plan.attemptKey(outputRouteGeneration: snapshot.outputRouteGeneration)
+            let serverFeatures = mergedProtocolV3ServerFeatures(response.serverFeatures)
             activeProtocolV3 = ActiveProtocolV3(
                 playbackAttemptId: playbackAttemptId,
                 planAttemptId: planAttemptId,
@@ -529,7 +533,7 @@ actor PlaybackSessionBridge {
                 attemptCount: 1,
                 clientQualityId: ApplePlaybackQuality.normalizeStoredId(qualityPreference),
                 snapshot: snapshot,
-                serverFeatures: response.serverFeatures,
+                serverFeatures: serverFeatures,
                 plan: plan
             )
             protocolV3FirstFramePlanIds.removeAll()
@@ -541,7 +545,7 @@ actor PlaybackSessionBridge {
                 planAttemptId: planAttemptId,
                 planAttemptKey: planAttemptKey,
                 outputRouteGeneration: snapshot.outputRouteGeneration,
-                serverFeatures: response.serverFeatures,
+                serverFeatures: serverFeatures,
                 plan: plan
             )
             logger.info(
@@ -787,7 +791,7 @@ actor PlaybackSessionBridge {
                 active.attemptedPlanKeys = attemptedKeys + [nextKey]
                 active.attemptCount = invalidatesIntent ? 1 : active.attemptCount + 1
             }
-            active.serverFeatures = response.serverFeatures
+            active.serverFeatures = mergedProtocolV3ServerFeatures(response.serverFeatures)
             active.plan = nextPlan
             active.clientQualityId = requestedClientQualityId
             activeProtocolV3 = active
@@ -823,6 +827,10 @@ actor PlaybackSessionBridge {
                 protocolV3: preparedV3
             )
         }
+    }
+
+    private func mergedProtocolV3ServerFeatures(_ responseFeatures: [String]) -> [String] {
+        Array(Set(protocolV3CapabilityFeatures).union(responseFeatures)).sorted()
     }
 
     func reportProtocolV3PlanExecutionStarted() async {

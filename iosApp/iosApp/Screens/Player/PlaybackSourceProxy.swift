@@ -18,6 +18,8 @@ struct PlaybackSourceProxyStats: Equatable {
     let diskSpillBytes: Int64
     let diskBudgetBytes: Int64
     let diskBytesWritten: Int64
+    let resumeCapable: Bool
+    let serverAdvertisesDirectStreamResume: Bool
 }
 
 enum PlaybackSourceInterruptionReason: Equatable {
@@ -28,6 +30,9 @@ enum PlaybackSourceInterruptionReason: Equatable {
     /// proxy could not serve; `expectedEnd` is the last byte the response
     /// promised.
     case prematureEOF(offset: Int64, expectedEnd: Int64)
+    /// A validator-protected range reopen returned a full response, proving
+    /// the cached prefix belongs to a replaced source entity.
+    case sourceEntityChanged
 }
 
 /// How a proxied GET response loop ended. Pure decision so tests can pin the
@@ -64,6 +69,11 @@ enum PlaybackSourceResponseEnd: Equatable {
 }
 
 final class PlaybackSourceCache {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        category: "PlaybackSourceCache"
+    )
+
     static var defaultMemoryBudgetBytes: Int {
         isConstrainedMemoryDevice ? 96 * 1024 * 1024 : 128 * 1024 * 1024
     }
@@ -153,6 +163,7 @@ final class PlaybackSourceCache {
     private var diskSpillBytes: Int64 = 0
     private var diskBytesWritten: Int64 = 0
     private var loggedWriteBudgetExhausted = false
+    private var prefetchArmed = true
     private var recentTransfers: [(time: Date, bytes: Int)] = []
     private var lastReadEnd: Int64?
     /// Most recent read position (not a high-water mark). `lastReadEnd` is
@@ -226,15 +237,31 @@ final class PlaybackSourceCache {
     var downstreamHighWaterBytes: Int { highWaterBytes }
     var downstreamLowWaterBytes: Int { lowWaterBytes }
     var shouldPrefetch: Bool {
+        var didRearm = false
         lock.lock()
-        let value: Bool
-        if lastReadEnd == nil {
-            value = cachedBytes < highWaterBytes
-        } else {
-            value = forwardCachedBytesLocked() < highWaterBytes
+        let cachedAhead = lastReadEnd == nil
+            ? Int64(cachedBytes)
+            : forwardCachedBytesLocked()
+        if prefetchArmed, cachedAhead >= Int64(highWaterBytes) {
+            prefetchArmed = false
+        } else if !prefetchArmed, cachedAhead <= Int64(lowWaterBytes) {
+            prefetchArmed = true
+            didRearm = true
         }
+        let value = prefetchArmed
         lock.unlock()
+        if didRearm {
+            Self.logger.info(
+                "[CMP-SOURCE-CACHE] hysteresis re-arm cachedAheadBytes=\(cachedAhead, privacy: .public) lowWaterBytes=\(self.lowWaterBytes, privacy: .public)"
+            )
+        }
         return value
+    }
+
+    func forwardCachedByteCount() -> Int64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastReadEnd == nil ? Int64(cachedBytes) : forwardCachedBytesLocked()
     }
 
     func setTotalLength(_ length: Int64?) {
@@ -650,6 +677,9 @@ private final class PlaybackSourceResource {
     /// player rides its buffered runway.
     private let onOriginOutageChanged: ((Bool) -> Void)?
     private let outageRideThroughEnabled: Bool
+    private let resumeCapable: Bool
+    private let serverAdvertisesDirectStreamResume: Bool
+    private let originStreamClock: PlaybackOriginStreamClock
     private let stateLock = NSLock()
     private var cancelled = false
     /// Origin outage ride-through state (all under `stateLock`): parked
@@ -688,7 +718,10 @@ private final class PlaybackSourceResource {
         onPlaybackSessionMissing: (() -> Void)?,
         onPlaybackSourceInterrupted: ((PlaybackSourceInterruptionReason) -> Void)?,
         onOriginOutageChanged: ((Bool) -> Void)? = nil,
-        outageRideThroughEnabled: Bool = PlaybackOriginOutagePolicy.rideThroughEnabled()
+        outageRideThroughEnabled: Bool = PlaybackOriginOutagePolicy.rideThroughEnabled(),
+        resumeCapable: Bool,
+        serverAdvertisesDirectStreamResume: Bool,
+        originStreamClock: PlaybackOriginStreamClock
     ) {
         self.token = Self.makeToken()
         self.originURL = originURL
@@ -698,6 +731,9 @@ private final class PlaybackSourceResource {
         self.onPlaybackSourceInterrupted = onPlaybackSourceInterrupted
         self.onOriginOutageChanged = onOriginOutageChanged
         self.outageRideThroughEnabled = outageRideThroughEnabled
+        self.resumeCapable = resumeCapable
+        self.serverAdvertisesDirectStreamResume = serverAdvertisesDirectStreamResume
+        self.originStreamClock = originStreamClock
     }
 
     deinit {
@@ -882,8 +918,17 @@ private final class PlaybackSourceResource {
             activeOriginRequestCount: snapshot.activeOriginRequestCount,
             diskSpillBytes: snapshot.diskSpillBytes,
             diskBudgetBytes: snapshot.diskBudgetBytes,
-            diskBytesWritten: snapshot.diskBytesWritten
+            diskBytesWritten: snapshot.diskBytesWritten,
+            resumeCapable: resumeCapable,
+            serverAdvertisesDirectStreamResume: serverAdvertisesDirectStreamResume
         )
+    }
+
+    func originStreamDiagnostics() -> PlaybackOriginStream.DiagnosticsSnapshot? {
+        stateLock.lock()
+        let stream = windowStream
+        stateLock.unlock()
+        return stream?.diagnosticsSnapshot()
     }
 
     /// Births the streaming window at the initial playback offset. The
@@ -1382,6 +1427,9 @@ private final class PlaybackSourceResource {
                 mayContinueFilling: { [weak self] stream, cursor, demandMark in
                     self?.mayContinueFilling(stream, cursor: cursor, demandMark: demandMark) ?? false
                 },
+                cachedAheadBytes: { [weak self] in
+                    self?.cache.forwardCachedByteCount() ?? 0
+                },
                 nextMissingByte: { [weak self] cursor in
                     self?.cache.nextPrefetchStart(after: cursor)
                 },
@@ -1390,7 +1438,9 @@ private final class PlaybackSourceResource {
                     self.cache.recordOriginTransfer(byteCount: data.count)
                     self.cache.store(start: start, data: data, totalLength: total)
                 }
-            )
+            ),
+            resumeCapable: resumeCapable,
+            clock: originStreamClock
         )
     }
 
@@ -1504,6 +1554,14 @@ private final class PlaybackSourceResource {
             }
             return
         }
+        if cause == .entityChanged {
+            escalateInterruption(
+                cause: cause,
+                statusCode: statusCode,
+                failureOffset: stream.snapshot().writeCursor
+            )
+            return
+        }
         // Surface the interruption only when the give-up actually failed a
         // foreground waiter. The window dying while playback rides the
         // forward cache must stay silent — the next cache miss routes to a
@@ -1587,6 +1645,8 @@ private final class PlaybackSourceResource {
             } else {
                 reason = nil
             }
+        case .entityChanged:
+            reason = .sourceEntityChanged
         case .httpFatal, .rangeIgnored:
             reason = nil
         }
@@ -1669,7 +1729,10 @@ final class PlaybackSourceProxy {
         onPlaybackSessionMissing: (() -> Void)? = nil,
         onPlaybackSourceInterrupted: ((PlaybackSourceInterruptionReason) -> Void)? = nil,
         onOriginOutageChanged: ((Bool) -> Void)? = nil,
-        outageRideThroughEnabled: Bool = PlaybackOriginOutagePolicy.rideThroughEnabled()
+        outageRideThroughEnabled: Bool = PlaybackOriginOutagePolicy.rideThroughEnabled(),
+        resumeCapable: Bool = false,
+        serverAdvertisesDirectStreamResume: Bool = false,
+        originStreamClock: PlaybackOriginStreamClock = SystemPlaybackOriginStreamClock()
     ) {
         self.resource = PlaybackSourceResource(
             originURL: originURL,
@@ -1678,7 +1741,10 @@ final class PlaybackSourceProxy {
             onPlaybackSessionMissing: onPlaybackSessionMissing,
             onPlaybackSourceInterrupted: onPlaybackSourceInterrupted,
             onOriginOutageChanged: onOriginOutageChanged,
-            outageRideThroughEnabled: outageRideThroughEnabled
+            outageRideThroughEnabled: outageRideThroughEnabled,
+            resumeCapable: resumeCapable,
+            serverAdvertisesDirectStreamResume: serverAdvertisesDirectStreamResume,
+            originStreamClock: originStreamClock
         )
     }
 
@@ -1770,6 +1836,10 @@ final class PlaybackSourceProxy {
 
     func stats() -> PlaybackSourceProxyStats {
         resource.stats()
+    }
+
+    func originStreamDiagnostics() -> PlaybackOriginStream.DiagnosticsSnapshot? {
+        resource.originStreamDiagnostics()
     }
 
     func startPrefetch(at offset: Int64 = 0) {

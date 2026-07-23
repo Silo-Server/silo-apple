@@ -35,6 +35,7 @@ final class PlaybackOriginOutagePolicyTests: XCTestCase {
         XCTAssertFalse(park(cause: .httpFatal(403), sessionMissing: true))
         XCTAssertFalse(park(cause: .prematureEOF))
         XCTAssertFalse(park(cause: .rangeIgnored))
+        XCTAssertFalse(park(cause: .entityChanged))
     }
 }
 

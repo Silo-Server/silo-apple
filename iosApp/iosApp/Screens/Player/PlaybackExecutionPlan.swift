@@ -406,6 +406,10 @@ enum PlaybackStartMode: Equatable {
 /// call site.
 struct PlaybackExecutionPlan {
     let delivery: PlaybackDeliveryStrategy
+    /// Server wire delivery token. Legacy direct plans predate the V3 token
+    /// but are equivalent to `original_http`.
+    let wireDelivery: String?
+    let serverFeatures: [String]
     let engine: PlaybackEngineKind
     let routeFamily: PlaybackRouteFamily
     let implementationRoute: String
@@ -446,11 +450,15 @@ struct PlaybackExecutionPlan {
         degradationWarnings: [String],
         reason: String,
         playbackSessionId: String? = nil,
+        wireDelivery: String? = nil,
+        serverFeatures: [String] = [],
         sourceMetadata: PlaybackSourceMetadata = .unknown,
         normalizationSummary: PlaybackNormalizationSummary = .none,
         validationClaims: PlaybackValidationClaims? = nil
     ) {
         self.delivery = delivery
+        self.wireDelivery = wireDelivery ?? (delivery == .direct ? "original_http" : nil)
+        self.serverFeatures = serverFeatures
         self.engine = engine
         self.routeFamily = engine.routeFamily
         self.implementationRoute = engine.label

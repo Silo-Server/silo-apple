@@ -9,6 +9,7 @@ enum PlaybackProtocolV3 {
     static let routeDiagnosticsFeature = "playback_route_diagnostics"
     static let deviceQuirksFeature = "device_quirks_v1"
     static let seekReanchorFeature = "seek_reanchor_v1"
+    static let directStreamResumeFeature = "direct_stream_resume_v1"
 }
 
 struct PlaybackV3HDRCapabilities: Codable, Equatable {

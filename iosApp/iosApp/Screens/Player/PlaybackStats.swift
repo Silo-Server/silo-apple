@@ -49,6 +49,8 @@ struct PlaybackStats: Equatable {
     var sourceDiskBytesWritten: Int64?
     var sourceOriginBytesTransferred: Int64?
     var sourceOriginBitrateBps: Double?
+    var sourceResumeCapable: Bool?
+    var sourceResumeServerAdvertised: Bool?
     var generatedAheadSeconds: Double?
     var generatedVisibleAheadSeconds: Double?
     var generatedMediaBitrateBps: Double?
@@ -221,6 +223,12 @@ extension PlaybackStats {
         }
         if let sourceOriginBitrateBps {
             rows.append(("Source origin bitrate", formatBitsPerSecond(sourceOriginBitrateBps)))
+        }
+        if let sourceResumeCapable {
+            rows.append(("Direct stream resume", sourceResumeCapable ? "Enabled" : "Disabled"))
+        }
+        if let sourceResumeServerAdvertised {
+            rows.append(("Server resume feature", sourceResumeServerAdvertised ? "Advertised" : "Not advertised"))
         }
         if let generatedAheadSeconds {
             rows.append(("Generated ahead", String(format: "%.1f s", generatedAheadSeconds)))

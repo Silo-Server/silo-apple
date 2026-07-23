@@ -16,7 +16,8 @@ enum ApplePlaybackV3Capabilities {
         PlaybackProtocolV3.clientTransformFeature,
         PlaybackProtocolV3.routeDiagnosticsFeature,
         PlaybackProtocolV3.deviceQuirksFeature,
-        PlaybackProtocolV3.seekReanchorFeature
+        PlaybackProtocolV3.seekReanchorFeature,
+        PlaybackProtocolV3.directStreamResumeFeature
     ]
 
     static func snapshot() -> ApplePlaybackV3CapabilitySnapshot {

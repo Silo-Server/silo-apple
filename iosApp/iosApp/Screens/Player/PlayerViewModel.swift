@@ -2135,6 +2135,8 @@ class PlayerViewModel {
             degradationWarnings: fallbackCapabilities.degradationNotes(for: requirements),
             reason: reason,
             playbackSessionId: activeExecutionPlan.playbackSessionId,
+            wireDelivery: activeExecutionPlan.wireDelivery,
+            serverFeatures: activeExecutionPlan.serverFeatures,
             sourceMetadata: activeExecutionPlan.sourceMetadata,
             normalizationSummary: PlaybackNormalizationSummary(
                 containerMode: "none",
@@ -2208,7 +2210,8 @@ class PlayerViewModel {
         let playbackSessionId = plan.playbackSessionId ?? "unknown"
         let message =
             "[CMP-ROUTE] playbackSessionId=\(playbackSessionId) " +
-            "delivery=\(plan.delivery.name) routeFamily=\(plan.routeFamily.diagnosticsLabel) " +
+            "delivery=\(plan.delivery.name) wireDelivery=\(plan.wireDelivery ?? "unknown") " +
+            "routeFamily=\(plan.routeFamily.diagnosticsLabel) " +
             "implementationRoute=\(plan.implementationRoute) backend=\(plan.engine.label) " +
             "appLabel=\(plan.appPlaybackLabel) " +
             "flag=\(plan.featureFlagEnabled) requirements=\(requirements) " +
@@ -2393,6 +2396,11 @@ class PlayerViewModel {
             maxBytes: cacheBudget,
             diskSpillEnabled: diskSpillRequested
         )
+        let resumeCapable = plan.delivery == .direct
+            && plan.wireDelivery == "original_http"
+        let serverAdvertisesDirectStreamResume = plan.serverFeatures.contains(
+            PlaybackProtocolV3.directStreamResumeFeature
+        )
         let proxy = PlaybackSourceProxy(
             originURL: plan.sourceStreamRequest.url,
             originHeaders: plan.sourceStreamRequest.headers,
@@ -2425,7 +2433,9 @@ class PlayerViewModel {
                 Task { @MainActor [weak self] in
                     self?.handleOriginOutageChanged(active)
                 }
-            }
+            },
+            resumeCapable: resumeCapable,
+            serverAdvertisesDirectStreamResume: serverAdvertisesDirectStreamResume
         )
         do {
             try await proxy.start()
@@ -2441,7 +2451,9 @@ class PlayerViewModel {
             // TCP/TLS connect and slow-start ramp with demuxer spawn, which
             // is a full round trip saved on high-latency links.
             proxy.startPrefetch(at: initialSourcePrefetchOffset(for: plan))
-            Self.logger.info("[CMP-SOURCE-CACHE] enabled route=\(plan.engine.label, privacy: .public) budgetBytes=\(cacheBudget, privacy: .public)")
+            Self.logger.info(
+                "[CMP-SOURCE-CACHE] enabled route=\(plan.engine.label, privacy: .public) budgetBytes=\(cacheBudget, privacy: .public) resumeCapable=\(resumeCapable, privacy: .public) serverAdvertisesResume=\(serverAdvertisesDirectStreamResume, privacy: .public)"
+            )
             let streamRequest = StreamRequest(
                 url: localURL,
                 headers: [:],
@@ -2477,6 +2489,8 @@ class PlayerViewModel {
                 degradationWarnings: plan.degradationWarnings,
                 reason: plan.reason,
                 playbackSessionId: plan.playbackSessionId,
+                wireDelivery: plan.wireDelivery,
+                serverFeatures: plan.serverFeatures,
                 sourceMetadata: plan.sourceMetadata,
                 normalizationSummary: plan.normalizationSummary,
                 validationClaims: plan.validationClaims
@@ -3888,7 +3902,13 @@ class PlayerViewModel {
 
         progressTask?.cancel()
         progressTask = nil
-        stashSourceCacheHandoff()
+        if reason == .sourceEntityChanged {
+            // The validator proved the cached prefix belongs to the replaced
+            // entity, so it must not be adopted by the recovery plan.
+            discardSourceCacheHandoff()
+        } else {
+            stashSourceCacheHandoff()
+        }
         sourceProxy?.stop()
         sourceProxy = nil
         activePlayer.dispose()
@@ -4567,6 +4587,8 @@ class PlayerViewModel {
             degradationWarnings: plan.degradationWarnings,
             reason: plan.reason,
             playbackSessionId: plan.playbackSessionId,
+            wireDelivery: plan.wireDelivery,
+            serverFeatures: plan.serverFeatures,
             sourceMetadata: plan.sourceMetadata,
             normalizationSummary: plan.normalizationSummary,
             validationClaims: plan.validationClaims
@@ -6277,6 +6299,8 @@ class PlayerViewModel {
         stats.sourceDiskBytesWritten = sourceStats.diskBytesWritten
         stats.sourceOriginBytesTransferred = sourceStats.originBytesTransferred
         stats.sourceOriginBitrateBps = sourceStats.currentOriginBitrateBps
+        stats.sourceResumeCapable = sourceStats.resumeCapable
+        stats.sourceResumeServerAdvertised = sourceStats.serverAdvertisesDirectStreamResume
     }
 
     private func stablePlaybackFailureToken(for message: String) -> String {

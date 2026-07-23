@@ -121,7 +121,11 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                     planAttemptId: "apple-plan:attempt",
                     planAttemptKey: plan.attemptKey(outputRouteGeneration: 1),
                     outputRouteGeneration: 1,
-                    serverFeatures: ["playback_plan_v3", "seek_reanchor_v1"],
+                    serverFeatures: [
+                        "playback_plan_v3",
+                        "seek_reanchor_v1",
+                        "direct_stream_resume_v1"
+                    ],
                     plan: plan
                 ),
                 basePlan: base,
@@ -130,8 +134,17 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             )
             XCTAssertEqual(adapted.engine, expectedEngine, delivery)
             XCTAssertEqual(adapted.delivery.name, expectedDelivery.name, delivery)
+            XCTAssertEqual(adapted.wireDelivery, delivery)
+            XCTAssertTrue(
+                adapted.serverFeatures.contains(PlaybackProtocolV3.directStreamResumeFeature)
+            )
             XCTAssertEqual(adapted.startMode.seconds, 4.5, delivery)
         }
+        XCTAssertTrue(
+            ApplePlaybackV3Capabilities.features.contains(
+                PlaybackProtocolV3.directStreamResumeFeature
+            )
+        )
     }
 
     func testUnsupportedClientRequirementsAreRejected() {

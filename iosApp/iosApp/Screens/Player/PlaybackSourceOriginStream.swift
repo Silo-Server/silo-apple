@@ -58,6 +58,11 @@ enum PlaybackOriginRoutingPolicy {
 /// type. (Routing across multiple streams lived here before the
 /// window+chunk split — see `PlaybackOriginRoutingPolicy`.)
 enum PlaybackOriginStreamPolicy {
+    /// A budget-parked direct stream stays warm briefly, then deliberately
+    /// closes before ordinary reverse-proxy client-send timeouts can reap it.
+    /// `var` so tests can drive the lifecycle without wall-clock waits.
+    static var detachAfterSeconds: TimeInterval = 25
+
     /// The window's fetch region: where it started and how far it has
     /// filled. All the state the routing and hint paths need.
     struct StreamSnapshot: Equatable {
@@ -100,6 +105,7 @@ enum PlaybackOriginReconnectPolicy {
         case httpFatal(Int)
         case prematureEOF
         case rangeIgnored
+        case entityChanged
     }
 
     enum Decision: Equatable {
@@ -116,6 +122,8 @@ enum PlaybackOriginReconnectPolicy {
             cap = 4
         case .httpFatal, .rangeIgnored:
             cap = 1
+        case .entityChanged:
+            cap = 0
         case .prematureEOF:
             cap = 3
         }
@@ -167,18 +175,35 @@ enum PlaybackOriginOutagePolicy {
             return true
         case .httpFatal(let code):
             return code == 404 && sessionMissingObserved
-        case .prematureEOF, .rangeIgnored:
+        case .prematureEOF, .rangeIgnored, .entityChanged:
             return false
         }
     }
 }
 
+/// Time seam for the origin watchdog. Production uses wall time and a
+/// five-second cadence; tests advance both deterministically.
+protocol PlaybackOriginStreamClock: AnyObject {
+    func now() -> Date
+    func sleepUntilNextWatchdogTick() async
+}
+
+final class SystemPlaybackOriginStreamClock: PlaybackOriginStreamClock {
+    func now() -> Date {
+        .now
+    }
+
+    func sleepUntilNextWatchdogTick() async {
+        try? await Task.sleep(for: .seconds(5))
+    }
+}
+
 /// One long-lived streaming origin connection: an open-ended
 /// `Range: bytes=<cursor>-` GET whose body is stored into the span cache
-/// incrementally as each URLSession delivery arrives. Throttling is
-/// suspend-based: when the owner reports the readahead budget is full the
-/// data task is suspended, TCP flow control parks the connection server-side,
-/// and resume is instant — the connection is never closed and re-requested.
+/// incrementally as each URLSession delivery arrives. Byte-stable direct
+/// streams briefly suspend when the readahead budget is full, then detach and
+/// reopen at the exact write cursor when demand returns. Non-resumable
+/// deliveries retain the legacy indefinite suspension behavior.
 final class PlaybackOriginStream {
     struct Callbacks {
         /// Invoked on the session delegate queue after bytes are stored.
@@ -191,12 +216,29 @@ final class PlaybackOriginStream {
         /// Budget/park decision; called with the stream's current cursor and
         /// demand mark, outside the stream's internal lock.
         let mayContinueFilling: (PlaybackOriginStream, Int64, Int64) -> Bool
+        /// Current bytes cached ahead of playback, used only for park
+        /// diagnostics.
+        let cachedAheadBytes: () -> Int64
         /// First byte at or after the given offset that the cache does not
         /// already hold (nil when everything to the known EOF is cached);
         /// used to jump the connection over long already-cached runs instead
         /// of re-downloading them.
         let nextMissingByte: (Int64) -> Int64?
         let store: (Int64, Data, Int64?) -> Void
+    }
+
+    struct DiagnosticsSnapshot: Equatable {
+        let writeCursor: Int64
+        let parked: Bool
+        let detached: Bool
+        let unproductiveStreak: Int
+    }
+
+    private enum OpenReason: Equatable {
+        case initial
+        case reconnect
+        case retarget
+        case detachResume
     }
 
     /// While filling, every this many delivered bytes the stream checks
@@ -221,6 +263,8 @@ final class PlaybackOriginStream {
     private let originURL: URL
     private let originHeaders: [String: String]
     private let callbacks: Callbacks
+    private let resumeCapable: Bool
+    private let clock: PlaybackOriginStreamClock
 
     private let lock = NSLock()
     private var generation: UInt64 = 0
@@ -230,19 +274,26 @@ final class PlaybackOriginStream {
     private var demandOrder: UInt64
     private var skipCheckCursor: Int64
     private var parked = false
+    private var parkedAt: Date?
+    private var detached = false
     private var cancelled = false
     private var finished = false
     private var session: URLSession?
     private var task: URLSessionDataTask?
     private var currentTaskID: Int?
+    private var expectedCancellationTaskIDs: Set<Int> = []
     private var reconnectTask: Task<Void, Never>?
     private var watchdogTask: Task<Void, Never>?
-    private var lastDataAt = Date()
+    private var lastDataAt: Date
     private var bytesSinceConnect: Int64 = 0
     private var everProductive = false
     private var unproductiveStreak = 0
     private var knownTotalLength: Int64?
     private var responseValidatedForGeneration: UInt64?
+    private var entityETag: String?
+    private var ifRangeGeneration: UInt64?
+    private var sentIfRangeValue: String?
+    private var currentOpenReason: OpenReason = .initial
     private var errorBody = Data()
     private var errorStatusCode: Int?
 
@@ -251,7 +302,9 @@ final class PlaybackOriginStream {
         originHeaders: [String: String],
         startOffset: Int64,
         demandOrder: UInt64,
-        callbacks: Callbacks
+        callbacks: Callbacks,
+        resumeCapable: Bool = false,
+        clock: PlaybackOriginStreamClock = SystemPlaybackOriginStreamClock()
     ) {
         self.originURL = originURL
         self.originHeaders = originHeaders
@@ -261,6 +314,9 @@ final class PlaybackOriginStream {
         self.demandOrder = demandOrder
         self.skipCheckCursor = startOffset + Self.cachedRunCheckStrideBytes
         self.callbacks = callbacks
+        self.resumeCapable = resumeCapable
+        self.clock = clock
+        self.lastDataAt = clock.now()
     }
 
     deinit {
@@ -291,8 +347,19 @@ final class PlaybackOriginStream {
         return finished
     }
 
+    func diagnosticsSnapshot() -> DiagnosticsSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return DiagnosticsSnapshot(
+            writeCursor: writeCursor,
+            parked: parked,
+            detached: detached,
+            unproductiveStreak: unproductiveStreak
+        )
+    }
+
     func start() {
-        openConnection()
+        openConnection(reason: .initial)
         startWatchdog()
     }
 
@@ -304,6 +371,9 @@ final class PlaybackOriginStream {
         self.session = nil
         self.task = nil
         currentTaskID = nil
+        expectedCancellationTaskIDs.removeAll()
+        parkedAt = nil
+        detached = false
         let reconnect = reconnectTask
         reconnectTask = nil
         let watchdog = watchdogTask
@@ -322,29 +392,64 @@ final class PlaybackOriginStream {
     /// already in flight and a revived connection would leak.
     @discardableResult
     func retarget(to offset: Int64, order: UInt64) -> Bool {
+        reopenConnection(at: offset, order: order, reason: .retarget)
+    }
+
+    /// Shared ranged-reopen seam for seeks/retargets and detach-resume.
+    /// Retarget starts a new routing region and resets its failure streak;
+    /// detach-resume preserves the existing region and reconnect history.
+    @discardableResult
+    private func reopenConnection(at offset: Int64, order: UInt64, reason: OpenReason) -> Bool {
         lock.lock()
         guard !cancelled, !finished else {
             lock.unlock()
             return false
         }
-        generation &+= 1
-        let oldTask = task
-        task = nil
-        currentTaskID = nil
-        let reconnect = reconnectTask
-        reconnectTask = nil
-        startOffset = offset
-        writeCursor = offset
-        demandMark = offset
-        demandOrder = order
-        skipCheckCursor = offset + Self.cachedRunCheckStrideBytes
-        parked = false
-        bytesSinceConnect = 0
-        unproductiveStreak = 0
+        let oldTask: URLSessionDataTask?
+        let reconnect: Task<Void, Never>?
+        switch reason {
+        case .retarget:
+            generation &+= 1
+            oldTask = task
+            task = nil
+            currentTaskID = nil
+            reconnect = reconnectTask
+            reconnectTask = nil
+            startOffset = offset
+            writeCursor = offset
+            demandMark = offset
+            demandOrder = order
+            skipCheckCursor = offset + Self.cachedRunCheckStrideBytes
+            parked = false
+            parkedAt = nil
+            detached = false
+            bytesSinceConnect = 0
+            unproductiveStreak = 0
+        case .detachResume:
+            guard detached, task == nil, currentTaskID == nil, reconnectTask == nil else {
+                lock.unlock()
+                return false
+            }
+            oldTask = nil
+            reconnect = nil
+            writeCursor = offset
+            demandOrder = max(demandOrder, order)
+            parked = false
+            parkedAt = nil
+            detached = false
+        case .initial, .reconnect:
+            lock.unlock()
+            return false
+        }
         lock.unlock()
         oldTask?.cancel()
         reconnect?.cancel()
-        openConnection()
+        if reason == .detachResume {
+            Self.logger.info(
+                "[CMP-SOURCE-CACHE] origin stream detach-resume cursor=\(offset, privacy: .public) outcome=opening"
+            )
+        }
+        openConnection(reason: reason)
         return true
     }
 
@@ -360,23 +465,31 @@ final class PlaybackOriginStream {
 
     func resumeFillingIfNeeded() {
         lock.lock()
-        let shouldConsider = parked && !cancelled && !finished
+        let shouldConsider = (parked || detached) && !cancelled && !finished
         let cursor = writeCursor
         let mark = demandMark
+        let order = demandOrder
         lock.unlock()
         guard shouldConsider else { return }
         guard callbacks.mayContinueFilling(self, cursor, mark) else { return }
+        var reopenDetached = false
         lock.lock()
         if parked, !cancelled {
             parked = false
+            parkedAt = nil
             task?.resume()
+        } else if detached, !cancelled, !finished, reconnectTask == nil, task == nil {
+            reopenDetached = true
         }
         lock.unlock()
+        if reopenDetached {
+            _ = reopenConnection(at: cursor, order: order, reason: .detachResume)
+        }
     }
 
     // MARK: - Connection lifecycle
 
-    private func openConnection() {
+    private func openConnection(reason: OpenReason) {
         lock.lock()
         guard !cancelled, !finished else {
             lock.unlock()
@@ -387,9 +500,12 @@ final class PlaybackOriginStream {
         let cursor = writeCursor
         let oldTask = task
         parked = false
+        parkedAt = nil
+        detached = false
         bytesSinceConnect = 0
-        lastDataAt = Date()
+        lastDataAt = clock.now()
         responseValidatedForGeneration = nil
+        currentOpenReason = reason
         errorBody.removeAll(keepingCapacity: false)
         errorStatusCode = nil
 
@@ -404,10 +520,9 @@ final class PlaybackOriginStream {
             config.requestCachePolicy = .reloadIgnoringLocalCacheData
             config.urlCache = nil
             config.httpMaximumConnectionsPerHost = 2
-            // The long-lived request is paused via task suspension for
-            // arbitrarily long stretches; the idle-based request timeout must
-            // never fire underneath it. Wedged transfers are detected by the
-            // stall watchdog instead.
+            // Non-resumable deliveries can still be suspended indefinitely,
+            // so the idle-based request timeout must never fire underneath
+            // them. Wedged transfers are detected by the watchdog.
             config.timeoutIntervalForRequest = 3600
             let delegateQueue = OperationQueue()
             delegateQueue.maxConcurrentOperationCount = 1
@@ -426,6 +541,20 @@ final class PlaybackOriginStream {
             request.setValue(value, forHTTPHeaderField: key)
         }
         request.setValue("bytes=\(cursor)-", forHTTPHeaderField: "Range")
+        // Issue #94 deliberately does not require a validator to detach:
+        // direct `original_http` origins remain resume-capable without the
+        // new ETag feature, preserving the existing nonzero-200
+        // `.rangeIgnored` path. When a strong ETag is available, If-Range
+        // upgrades that reopen into positive entity validation.
+        let ifRange = cursor > 0 ? entityETag : nil
+        if let ifRange {
+            request.setValue(ifRange, forHTTPHeaderField: "If-Range")
+            ifRangeGeneration = gen
+            sentIfRangeValue = ifRange
+        } else {
+            ifRangeGeneration = nil
+            sentIfRangeValue = nil
+        }
         let newTask = session?.dataTask(with: request)
         task = newTask
         currentTaskID = newTask?.taskIdentifier
@@ -444,28 +573,62 @@ final class PlaybackOriginStream {
         }
         watchdogTask = Task.detached(priority: .utility) { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard let clock = self?.clock else { return }
+                await clock.sleepUntilNextWatchdogTick()
+                guard !Task.isCancelled else { return }
                 guard let self else { return }
+                self.detachIfParkedPastGrace()
+                guard !Task.isCancelled else { return }
                 self.reconnectIfStalled()
             }
         }
         lock.unlock()
     }
 
+    private func detachIfParkedPastGrace() {
+        let now = clock.now()
+        lock.lock()
+        guard resumeCapable,
+              parked,
+              !detached,
+              !cancelled,
+              !finished,
+              let parkedAt,
+              now.timeIntervalSince(parkedAt) >= PlaybackOriginStreamPolicy.detachAfterSeconds,
+              let oldTask = task,
+              let oldTaskID = currentTaskID else {
+            lock.unlock()
+            return
+        }
+        let cursor = writeCursor
+        generation &+= 1
+        expectedCancellationTaskIDs.insert(oldTaskID)
+        task = nil
+        currentTaskID = nil
+        parked = false
+        self.parkedAt = nil
+        detached = true
+        responseValidatedForGeneration = nil
+        ifRangeGeneration = nil
+        sentIfRangeValue = nil
+        lock.unlock()
+
+        oldTask.cancel()
+        Self.logger.info(
+            "[CMP-SOURCE-CACHE] origin stream detached cursor=\(cursor, privacy: .public)"
+        )
+    }
+
     private func reconnectIfStalled() {
+        let now = clock.now()
         lock.lock()
         let stalled = !cancelled && !finished && !parked && session != nil && task != nil
-            && Date().timeIntervalSince(lastDataAt) > PlaybackOriginReconnectPolicy.stallSeconds
+            && now.timeIntervalSince(lastDataAt) > PlaybackOriginReconnectPolicy.stallSeconds
+        let gen = generation
         lock.unlock()
         guard stalled else { return }
         Self.logger.warning("[CMP-SOURCE-CACHE] origin stream stalled; reconnecting cursor=\(self.snapshot().writeCursor, privacy: .public)")
-        connectionEnded(generation: currentGeneration(), cause: .stalled, statusCode: nil)
-    }
-
-    private func currentGeneration() -> UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        return generation
+        connectionEnded(generation: gen, cause: .stalled, statusCode: nil)
     }
 
     // MARK: - Delegate plumbing (called on the session delegate queue)
@@ -478,6 +641,8 @@ final class PlaybackOriginStream {
         }
         let gen = generation
         let cursor = writeCursor
+        let openReason = currentOpenReason
+        let sentIfRange = ifRangeGeneration == gen ? sentIfRangeValue : nil
         lock.unlock()
         guard let http = response as? HTTPURLResponse else {
             connectionEnded(generation: gen, cause: .network, statusCode: nil)
@@ -490,28 +655,54 @@ final class PlaybackOriginStream {
             if let rangeStart = Self.rangeStart(fromContentRange: http.value(forHTTPHeaderField: "Content-Range")),
                rangeStart != cursor {
                 Self.logger.warning("[CMP-SOURCE-CACHE] origin stream range mismatch expected=\(cursor, privacy: .public) got=\(rangeStart, privacy: .public)")
+                logDetachResumeOutcomeIfNeeded(openReason, cursor: cursor, outcome: "range_mismatch")
                 connectionEnded(generation: gen, cause: .rangeIgnored, statusCode: http.statusCode)
                 return false
             }
-            noteResponse(total: total, generation: gen)
+            noteResponse(
+                total: total,
+                etag: http.value(forHTTPHeaderField: "ETag"),
+                generation: gen
+            )
+            logDetachResumeOutcomeIfNeeded(openReason, cursor: cursor, outcome: "accepted_206")
             return true
         case 200 where cursor == 0:
             let total = http.expectedContentLength > 0 ? http.expectedContentLength : nil
-            noteResponse(total: total, generation: gen)
+            noteResponse(
+                total: total,
+                etag: http.value(forHTTPHeaderField: "ETag"),
+                generation: gen
+            )
+            logDetachResumeOutcomeIfNeeded(openReason, cursor: cursor, outcome: "accepted_200")
             return true
         case 200:
+            if let sentIfRange {
+                let responseETag = http.value(forHTTPHeaderField: "ETag") ?? "missing"
+                Self.logger.error(
+                    "[CMP-SOURCE-CACHE] origin stream entity-changed cursor=\(cursor, privacy: .public) ifRange=\(sentIfRange, privacy: .public) responseETag=\(responseETag, privacy: .public)"
+                )
+                logDetachResumeOutcomeIfNeeded(openReason, cursor: cursor, outcome: "entity_changed")
+                connectionEnded(generation: gen, cause: .entityChanged, statusCode: 200)
+                return false
+            }
             // The origin ignored the Range header; accepting the body would
             // silently corrupt the cache with head bytes at a nonzero offset.
+            logDetachResumeOutcomeIfNeeded(openReason, cursor: cursor, outcome: "range_ignored")
             connectionEnded(generation: gen, cause: .rangeIgnored, statusCode: 200)
             return false
         case 416:
             // Requested past the end. If the origin tells us the real total,
             // learn it and finish cleanly so waiters re-drive to EOF.
             if let total = Self.totalLength(fromContentRange: http.value(forHTTPHeaderField: "Content-Range")) {
-                noteResponse(total: total, generation: gen)
+                noteResponse(
+                    total: total,
+                    etag: http.value(forHTTPHeaderField: "ETag"),
+                    generation: gen
+                )
                 finishStream(expectedGeneration: gen)
                 return false
             }
+            logDetachResumeOutcomeIfNeeded(openReason, cursor: cursor, outcome: "http_416")
             connectionEnded(generation: gen, cause: .httpFatal(416), statusCode: 416)
             return false
         default:
@@ -520,11 +711,16 @@ final class PlaybackOriginStream {
             lock.lock()
             errorStatusCode = http.statusCode
             lock.unlock()
+            logDetachResumeOutcomeIfNeeded(
+                openReason,
+                cursor: cursor,
+                outcome: "http_\(http.statusCode)"
+            )
             return true
         }
     }
 
-    private func noteResponse(total: Int64?, generation gen: UInt64) {
+    private func noteResponse(total: Int64?, etag: String?, generation gen: UInt64) {
         lock.lock()
         guard gen == generation else {
             lock.unlock()
@@ -532,8 +728,35 @@ final class PlaybackOriginStream {
         }
         responseValidatedForGeneration = gen
         if let total { knownTotalLength = total }
+        if entityETag == nil, let etag = Self.strongETag(etag) {
+            entityETag = etag
+        }
         lock.unlock()
         callbacks.didReceiveResponse(self, total)
+    }
+
+    /// `If-Range` performs a strong validator comparison; a weak ETag would
+    /// force a compliant origin to return 200 even when the entity is
+    /// unchanged, which would look like a false replacement.
+    static func strongETag(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let candidate = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty,
+              !candidate.lowercased().hasPrefix("w/") else {
+            return nil
+        }
+        return candidate
+    }
+
+    private func logDetachResumeOutcomeIfNeeded(
+        _ reason: OpenReason,
+        cursor: Int64,
+        outcome: String
+    ) {
+        guard reason == .detachResume else { return }
+        Self.logger.info(
+            "[CMP-SOURCE-CACHE] origin stream detach-resume cursor=\(cursor, privacy: .public) outcome=\(outcome, privacy: .public)"
+        )
     }
 
     fileprivate func handleData(_ data: Data, taskID: Int) {
@@ -572,7 +795,7 @@ final class PlaybackOriginStream {
         writeCursor += Int64(data.count)
         let cursor = writeCursor
         let mark = demandMark
-        lastDataAt = Date()
+        lastDataAt = clock.now()
         bytesSinceConnect += Int64(data.count)
         if bytesSinceConnect >= PlaybackOriginReconnectPolicy.productiveBytesFloor {
             everProductive = true
@@ -613,10 +836,15 @@ final class PlaybackOriginStream {
                 // racing this park would otherwise fire against a
                 // still-running task (no-op) and be lost.
                 parked = true
+                parkedAt = clock.now()
                 task?.suspend()
             }
             lock.unlock()
             if didPark {
+                let cachedAhead = callbacks.cachedAheadBytes()
+                Self.logger.info(
+                    "[CMP-SOURCE-CACHE] origin stream parked cursor=\(cursor, privacy: .public) cachedAheadBytes=\(cachedAhead, privacy: .public)"
+                )
                 // A demand may have raised the mark between the decision
                 // above and the park; its unpark attempt saw parked ==
                 // false and did nothing. Re-run the decision with fresh
@@ -628,6 +856,10 @@ final class PlaybackOriginStream {
 
     fileprivate func handleCompletion(error: Error?, taskID: Int) {
         lock.lock()
+        if expectedCancellationTaskIDs.remove(taskID) != nil {
+            lock.unlock()
+            return
+        }
         guard taskID == currentTaskID, !cancelled, !finished else {
             lock.unlock()
             return
@@ -682,6 +914,9 @@ final class PlaybackOriginStream {
         self.session = nil
         self.task = nil
         currentTaskID = nil
+        expectedCancellationTaskIDs.removeAll()
+        parkedAt = nil
+        detached = false
         let reconnect = reconnectTask
         reconnectTask = nil
         let watchdog = watchdogTask
@@ -714,6 +949,8 @@ final class PlaybackOriginStream {
         task = nil
         currentTaskID = nil
         parked = false
+        parkedAt = nil
+        detached = false
         if bytesSinceConnect < PlaybackOriginReconnectPolicy.productiveBytesFloor {
             unproductiveStreak += 1
         } else {
@@ -738,12 +975,26 @@ final class PlaybackOriginStream {
             lock.lock()
             reconnectTask?.cancel()
             reconnectTask = Task.detached(priority: .userInitiated) { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled else { return }
-                self?.openConnection()
+                self?.openScheduledReconnect(expectedGeneration: newGeneration)
             }
             lock.unlock()
         }
+    }
+
+    private func openScheduledReconnect(expectedGeneration: UInt64) {
+        lock.lock()
+        guard generation == expectedGeneration,
+              !cancelled,
+              !finished,
+              task == nil else {
+            lock.unlock()
+            return
+        }
+        reconnectTask = nil
+        lock.unlock()
+        openConnection(reason: .reconnect)
     }
 
     private func giveUp(
