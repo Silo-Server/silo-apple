@@ -117,7 +117,7 @@ private extension OverlayRegistry {
         guard let value, !value.isEmpty else { return nil }
         let lowered = value.lowercased()
         return lowered.contains("dv") || lowered.contains("dolby vision")
-            ? "Dolby Vision"
+            ? "DV"
             : "HDR"
     }
 
@@ -183,7 +183,7 @@ private extension OverlayRegistry {
             id: .resolutionHdr,
             category: .tech,
             label: "Resolution + HDR",
-            description: "Single badge combining resolution and dynamic range (e.g. \"4K Dolby Vision\").",
+            description: "Single badge combining resolution and dynamic range (e.g. \"4K DV\").",
             defaultPosition: .topLeft,
             defaultEnabled: false,
             iconCapable: true,

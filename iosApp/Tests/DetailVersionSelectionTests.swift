@@ -475,9 +475,9 @@ final class DetailVersionSelectionTests: XCTestCase {
         var data = OverlayData()
         data.resolution = "2160p"
         data.hdr = "DV HDR10"
-        XCTAssertEqual(combined.getValue(data), "4K Dolby Vision")
+        XCTAssertEqual(combined.getValue(data), "4K DV")
         data.resolution = nil
-        XCTAssertEqual(combined.getValue(data), "Dolby Vision")
+        XCTAssertEqual(combined.getValue(data), "DV")
         data.resolution = "2160p"
         data.hdr = nil
         XCTAssertEqual(combined.getValue(data), "4K")
