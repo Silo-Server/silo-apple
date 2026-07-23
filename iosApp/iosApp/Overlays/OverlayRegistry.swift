@@ -144,8 +144,8 @@ private extension OverlayRegistry {
         guard let value, !value.isEmpty else { return nil }
         // `contains` instead of equality so "TrueHD Atmos" / "Dolby
         // TrueHD Atmos" (Blu-ray remux labelling) still picks the brand
-        // mark. The server normalizes most strings to plain "Atmos",
-        // but some passthrough surfaces preserve the upstream label.
+        // mark. The server preserves carrier-specific labels when it can,
+        // with plain "Atmos" retained as the conservative fallback.
         return value.lowercased().contains("atmos") ? .atmos : .volume
     }
 

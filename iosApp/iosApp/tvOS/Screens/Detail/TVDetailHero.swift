@@ -28,7 +28,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     let overview: String?
     /// Inline facts row shown above the action buttons. Mixes plain text
     /// (year / runtime / maturity) and outlined quality chips
-    /// (4K / HDR / ATMOS / CC).
+    /// (4K Dolby Vision / DD+ Atmos / CC).
     let factsLine: [TVHeroFactToken]
     /// Optional "Starring A, B, C" line floated on the right of the hero
     /// at mid-height. Hidden when nil.
@@ -420,7 +420,7 @@ private struct TVHeroEyebrow: View {
 
 /// A token in the combined facts row. `.text` items get pipe separators
 /// between them; `.rating` renders a green check + maturity label;
-/// `.chip` renders an outlined pill (e.g. 4K / HDR / ATMOS).
+/// `.chip` renders an outlined pill (e.g. 4K Dolby Vision / DD+ Atmos).
 enum TVHeroFactToken: Hashable {
     case text(String)
     case rating(String)

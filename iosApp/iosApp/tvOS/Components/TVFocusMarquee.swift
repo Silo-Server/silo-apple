@@ -23,7 +23,7 @@ struct TVMarqueeContent: Equatable {
     /// Optional server logo art that may replace the text title once
     /// cached — the title always renders as text first.
     let logoUrl: String?
-    /// Codec/HDR + content-rating chips (`4K · DOLBY VISION · ATMOS · TV-MA`).
+    /// Quality + content-rating chips (`4K DOLBY VISION · DD+ ATMOS · TV-MA`).
     let badges: [String]
     /// Dot-joined meta tokens after the badges: year · genre · runtime,
     /// or `S2 E7 · episode title · 45 min · 23 min left` for episodes.

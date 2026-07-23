@@ -113,6 +113,12 @@ final class DetailVersionSelectionTests: XCTestCase {
         return try! decoder.decode([FileVersion].self, from: Data(json.utf8))
     }
 
+    private func decodedWatchDetail(_ json: String) throws -> WatchDetail {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(WatchDetail.self, from: Data(json.utf8))
+    }
+
     func testEditionsGroupVersionsByEditionLabel() {
         let versions = decodedVersions("""
         [
@@ -405,6 +411,56 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[2]), "HD")
         XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[3]), "HDR")
         XCTAssertNil(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[4]))
+    }
+
+    func testPlayerMetadataUsesCombinedVideoAndSelectedAtmosCarrier() throws {
+        let detail = try decodedWatchDetail("""
+        {
+          "content_id": "episode-1",
+          "type": "episode",
+          "title": "The Episode",
+          "versions": [
+            {
+              "file_id": 1,
+              "resolution": "2160p",
+              "codec_video": "hevc",
+              "hdr": true,
+              "effective_audio_track_index": 0,
+              "video_tracks": [
+                { "codec": "hevc", "dv_profile": 8 }
+              ],
+              "audio_tracks": [
+                { "codec": "eac3", "profile": "Dolby Digital Plus + Dolby Atmos" },
+                { "codec": "truehd", "profile": "Dolby TrueHD + Dolby Atmos" }
+              ]
+            }
+          ]
+        }
+        """)
+        let session = PlaybackSessionResponse(
+            sessionId: "test-session",
+            userId: nil,
+            profileId: nil,
+            mediaFileId: 1,
+            playMethod: "direct",
+            position: 0,
+            isPaused: false,
+            streamUrl: "https://example.invalid/stream",
+            audioTrackIndex: 1,
+            durationSeconds: 60,
+            subtitleUrls: nil,
+            playbackInfo: nil
+        )
+        let prepared = PreparedPlayback(
+            watchDetail: detail,
+            selectedVersion: try XCTUnwrap(detail.versions.first),
+            session: session
+        )
+
+        XCTAssertEqual(
+            prepared.playerMetadata().badges,
+            ["4K Dolby Vision", "HEVC", "TrueHD Atmos"]
+        )
     }
 
     func testHomeVideoBadgesCombineWhenTheyShareACorner() throws {

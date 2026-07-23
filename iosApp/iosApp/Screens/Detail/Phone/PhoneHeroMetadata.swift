@@ -3,7 +3,7 @@ import Foundation
 
 /// A token in the hero's facts row. `.text` items get a middle-dot
 /// separator between them; `.rating` renders a green check + maturity
-/// label; `.chip` renders an outlined uppercase pill (4K / HDR / ATMOS / CC).
+/// label; `.chip` renders an outlined pill (4K Dolby Vision / DD+ Atmos / CC).
 enum PhoneHeroFactToken: Hashable {
     case text(String)
     case rating(String)
