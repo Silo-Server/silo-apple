@@ -49,7 +49,10 @@ enum OverlayRegistry {
     /// hand-edited or written by an older client — are tolerated: the
     /// first occurrence wins, later ones are dropped, no trap.
     static func enabled(at position: OverlayPosition, in prefs: CardOverlayPrefs) -> [OverlayDef] {
+        let implicitCombined = implicitlyCombinesVideoBadges(at: position, in: prefs)
         let candidates = all.enumerated().filter { _, def in
+            if implicitCombined && def.id == .resolutionHdr { return true }
+            if implicitCombined && (def.id == .resolution || def.id == .hdr) { return false }
             guard let cfg = prefs.items[def.id] else { return false }
             if isSuppressed(def.id, by: prefs) { return false }
             return cfg.enabled && cfg.position == position
@@ -62,16 +65,33 @@ enum OverlayRegistry {
             prefs.order.enumerated().map { ($1, $0) },
             uniquingKeysWith: { first, _ in first }
         )
+        let overlayRank: (OverlayId) -> Int = { id in
+            if implicitCombined && id == .resolutionHdr {
+                return min(rank[.resolution] ?? Int.max, rank[.hdr] ?? Int.max)
+            }
+            return rank[id] ?? Int.max
+        }
         return candidates
             .sorted { lhs, rhs in
-                let lhsRank = rank[lhs.element.id] ?? Int.max
-                let rhsRank = rank[rhs.element.id] ?? Int.max
+                let lhsRank = overlayRank(lhs.element.id)
+                let rhsRank = overlayRank(rhs.element.id)
                 if lhsRank != rhsRank { return lhsRank < rhsRank }
                 // Equal ranks (typically both unranked at Int.max) →
                 // fall back to registry order.
                 return lhs.offset < rhs.offset
             }
             .map(\.element)
+    }
+
+    private static func implicitlyCombinesVideoBadges(
+        at position: OverlayPosition,
+        in prefs: CardOverlayPrefs
+    ) -> Bool {
+        if prefs.items[.resolutionHdr]?.enabled == true { return false }
+        guard let resolution = prefs.items[.resolution],
+              let hdr = prefs.items[.hdr] else { return false }
+        return resolution.enabled && hdr.enabled &&
+            resolution.position == position && hdr.position == position
     }
 }
 
@@ -93,9 +113,12 @@ private extension OverlayRegistry {
         }
     }
 
-    static func compactHdrSuffix(_ value: String?) -> String? {
+    static func combinedDynamicRangeLabel(_ value: String?) -> String? {
         guard let value, !value.isEmpty else { return nil }
-        return value.contains("DV") ? "DV" : "HDR"
+        let lowered = value.lowercased()
+        return lowered.contains("dv") || lowered.contains("dolby vision")
+            ? "Dolby Vision"
+            : "HDR"
     }
 
     /// Mirrors web's `hdrIcon`: only exact wordmark matches get a brand
@@ -160,14 +183,16 @@ private extension OverlayRegistry {
             id: .resolutionHdr,
             category: .tech,
             label: "Resolution + HDR",
-            description: "Single badge combining resolution and dynamic range (e.g. \"4K DV\").",
+            description: "Single badge combining resolution and dynamic range (e.g. \"4K Dolby Vision\").",
             defaultPosition: .topLeft,
             defaultEnabled: false,
             iconCapable: true,
             getValue: { data in
-                guard let res = prettyResolution(data.resolution) else { return nil }
-                if let hdr = compactHdrSuffix(data.hdr) { return "\(res) \(hdr)" }
-                return res
+                let parts = [
+                    prettyResolution(data.resolution),
+                    combinedDynamicRangeLabel(data.hdr),
+                ].compactMap { $0 }
+                return parts.isEmpty ? nil : parts.joined(separator: " ")
             },
             getIcon: { resolutionHdrIcon($0.hdr) }
         ),

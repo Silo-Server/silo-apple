@@ -400,11 +400,43 @@ final class DetailVersionSelectionTests: XCTestCase {
         ]
         """)
 
-        XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[0]), "4K DV")
+        XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[0]), "4K Dolby Vision")
         XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[1]), "4K HDR")
         XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[2]), "HD")
         XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[3]), "HDR")
         XCTAssertNil(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[4]))
+    }
+
+    func testHomeVideoBadgesCombineWhenTheyShareACorner() throws {
+        let prefs = OverlaySchema.buildDefaults()
+        let ids = OverlayRegistry.enabled(at: .topLeft, in: prefs).map(\.id)
+
+        XCTAssertTrue(ids.contains(.resolutionHdr))
+        XCTAssertFalse(ids.contains(.resolution))
+        XCTAssertFalse(ids.contains(.hdr))
+
+        let combined = try XCTUnwrap(OverlayRegistry.def(for: .resolutionHdr))
+        var data = OverlayData()
+        data.resolution = "2160p"
+        data.hdr = "DV HDR10"
+        XCTAssertEqual(combined.getValue(data), "4K Dolby Vision")
+        data.resolution = nil
+        XCTAssertEqual(combined.getValue(data), "Dolby Vision")
+        data.resolution = "2160p"
+        data.hdr = nil
+        XCTAssertEqual(combined.getValue(data), "4K")
+    }
+
+    func testHomeVideoBadgesStaySeparateInDifferentCorners() {
+        var prefs = OverlaySchema.buildDefaults()
+        prefs.items[.hdr]?.position = .topRight
+
+        let topLeft = OverlayRegistry.enabled(at: .topLeft, in: prefs).map(\.id)
+        let topRight = OverlayRegistry.enabled(at: .topRight, in: prefs).map(\.id)
+        XCTAssertTrue(topLeft.contains(.resolution))
+        XCTAssertTrue(topRight.contains(.hdr))
+        XCTAssertFalse(topLeft.contains(.resolutionHdr))
+        XCTAssertFalse(topRight.contains(.resolutionHdr))
     }
 
     func testEffectiveAudioLabelPrefersServerEffectiveTrack() {
