@@ -151,6 +151,7 @@ final class SubtitleRenderer {
     // track swap (since overrides live on the renderer, not the track,
     // but native-ASS tracks need a different treatment).
     private var currentParams: SubtitleStylingOverride.Parameters = .default
+    private var systemFontRegistrationAttempted = false
 
     /// libass keys font scaling to the video area (frame minus letterbox
     /// margins), which makes Silo-styled text shrink on wide-aspect content.
@@ -502,6 +503,7 @@ final class SubtitleRenderer {
     /// compensation) to both slot renderers. Callable only from
     /// `sessionQueue`.
     private func reapplyStylingOnSessionQueue() {
+        registerSystemFontIfNeededOnSessionQueue()
         handleLock.lock()
         let primaryHandle = primary
         let secondaryHandle = secondary
@@ -522,6 +524,28 @@ final class SubtitleRenderer {
             fontScaleCompensation: fontScaleCompensation,
             preservesScriptSpecificFonts: secondaryHandle?.preservesScriptSpecificFonts ?? false
         )
+    }
+
+    private func registerSystemFontIfNeededOnSessionQueue() {
+        guard
+            currentParams.fontFamilyName == SubtitleSystemFont.assFontName,
+            !systemFontRegistrationAttempted
+        else {
+            return
+        }
+        systemFontRegistrationAttempted = true
+
+        guard let library, let resource = SubtitleSystemFont.loadResource() else {
+            Self.logger.warning("System subtitle font is unavailable; libass will use its fallback")
+            return
+        }
+
+        resource.data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
+            resource.fileName.withCString { fileName in
+                ass_add_font(library, fileName, base, Int32(resource.data.count))
+            }
+        }
     }
 
     // MARK: - Render + composite

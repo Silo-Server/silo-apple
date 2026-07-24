@@ -369,6 +369,23 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Silo.app/Silo"
         SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
 
+  # Focused tvOS unit-test bundle for behavior that must run against SiloTV.
+  SiloTVTests:
+    type: bundle.unit-test
+    platform: tvOS
+    sources:
+      - path: Tests/SubtitleSystemFontTests.swift
+    dependencies:
+      - target: SiloTV
+    settings:
+      base:
+        PRODUCT_NAME: SiloTVTests
+        GENERATE_INFOPLIST_FILE: "YES"
+        SDKROOT: appletvos
+        SUPPORTED_PLATFORMS: "appletvos appletvsimulator"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/SiloTV.app/SiloTV"
+
 schemes:
   Silo:
     build:
@@ -406,10 +423,13 @@ schemes:
     build:
       targets:
         SiloTV: all
+        SiloTVTests: [test]
     run:
       config: Debug
     test:
       config: Debug
+      targets:
+        - SiloTVTests
     archive:
       config: Release
     analyze:

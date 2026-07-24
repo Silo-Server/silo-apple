@@ -66,8 +66,38 @@ enum SubtitleFontSizePreset: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-// Future: add a "system" appearance source that maps Apple's Media
-// Accessibility caption preferences into this model before libass styling.
+enum SubtitleSystemFont {
+    struct Resource {
+        let assFontName: String
+        let fileName: String
+        let data: Data
+    }
+
+    // FreeType exposes Apple's SF collection under its OpenType family,
+    // not CoreText's private `.AppleSystemUIFont` family identifier.
+    static let assFontName = "System Font"
+
+    static func loadResource() -> Resource? {
+        guard
+            let font = CTFontCreateUIFontForLanguage(.system, 0, nil),
+            let url = CTFontDescriptorCopyAttribute(
+                CTFontCopyFontDescriptor(font),
+                kCTFontURLAttribute
+            ) as? URL,
+            let data = try? Data(contentsOf: url),
+            !data.isEmpty
+        else {
+            return nil
+        }
+
+        return Resource(
+            assFontName: assFontName,
+            fileName: url.lastPathComponent,
+            data: data
+        )
+    }
+}
+
 struct SubtitleFontFamilyPreset: RawRepresentable, Codable, CaseIterable, Hashable, Identifiable {
     let rawValue: String
 
@@ -89,26 +119,32 @@ struct SubtitleFontFamilyPreset: RawRepresentable, Codable, CaseIterable, Hashab
         try container.encode(rawValue)
     }
 
+    static let system = SubtitleFontFamilyPreset(rawValue: "system")!
     static let sansSerif = SubtitleFontFamilyPreset(rawValue: "sans-serif")!
     static let serif = SubtitleFontFamilyPreset(rawValue: "serif")!
     static let monospace = SubtitleFontFamilyPreset(rawValue: "monospace")!
 
     static var allCases: [SubtitleFontFamilyPreset] {
-        let legacy = [sansSerif, serif, monospace]
-        let legacyValues = Set(legacy.map(\.rawValue))
+        #if os(tvOS)
+        let presets = [system, sansSerif, serif, monospace]
+        #else
+        let presets = [sansSerif, serif, monospace]
+        #endif
+        let presetValues = Set(presets.map(\.rawValue))
         let systemFamilies = CTFontManagerCopyAvailableFontFamilyNames() as? [String] ?? []
         let systemPresets = systemFamilies
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .filter { !legacyValues.contains($0) }
+            .filter { !presetValues.contains($0) }
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             .compactMap(SubtitleFontFamilyPreset.init(rawValue:))
-        return legacy + systemPresets
+        return presets + systemPresets
     }
 
     var id: String { rawValue }
 
     var label: String {
         switch rawValue {
+        case Self.system.rawValue: return "System"
         case Self.sansSerif.rawValue: return "Sans-serif"
         case Self.serif.rawValue: return "Serif"
         case Self.monospace.rawValue: return "Monospace"
@@ -118,6 +154,7 @@ struct SubtitleFontFamilyPreset: RawRepresentable, Codable, CaseIterable, Hashab
 
     var assFontName: String {
         switch rawValue {
+        case Self.system.rawValue: return SubtitleSystemFont.assFontName
         case Self.sansSerif.rawValue: return "Arial"
         case Self.serif.rawValue: return "Times New Roman"
         case Self.monospace.rawValue: return "Menlo"

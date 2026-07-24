@@ -133,9 +133,10 @@ struct SubtitleAppearancePreview: View {
 
     private var sampleFont: Font {
         switch appearance.fontFamily {
+        case .system: return .system(size: sampleFontSize)
         case .serif: return .system(size: sampleFontSize, weight: .semibold, design: .serif)
         case .monospace: return .system(size: sampleFontSize, weight: .semibold, design: .monospaced)
-        case .sansSerif: return .system(size: sampleFontSize, weight: .semibold)
+        case .sansSerif: return .custom(appearance.fontFamily.assFontName, size: sampleFontSize)
         default: return .custom(appearance.fontFamily.assFontName, size: sampleFontSize)
         }
     }

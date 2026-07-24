@@ -786,6 +786,14 @@ private struct TVSettingsPickerOptionRow: View {
     @FocusState.Binding var focusedOptionID: String?
     let onSelect: () -> Void
 
+    private var previewFont: Font? {
+        guard let previewFontName = option.previewFontName else { return nil }
+        if option.id == SubtitleFontFamilyPreset.system.rawValue {
+            return .system(size: 22)
+        }
+        return .custom(previewFontName, size: 22)
+    }
+
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 16) {
@@ -801,9 +809,9 @@ private struct TVSettingsPickerOptionRow: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    if let previewFontName = option.previewFontName {
+                    if let previewFont {
                         Text("Subtitle sample")
-                            .font(.custom(previewFontName, size: 22))
+                            .font(previewFont)
                             .lineLimit(1)
                             .opacity(0.72)
                     }
