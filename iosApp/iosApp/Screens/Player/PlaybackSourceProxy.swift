@@ -1176,6 +1176,7 @@ private final class PlaybackSourceResource {
         var toNote: PlaybackOriginStream?
         var toRetarget: PlaybackOriginStream?
         var chunk = false
+        var deferChunkUntilEntityKnown = false
         var order: UInt64 = 0
         var total: Int64?
         stateLock.lock()
@@ -1213,11 +1214,19 @@ private final class PlaybackSourceResource {
             }
         case .chunk:
             chunk = true
+            // A resume-capable chunk must be bound to the streaming
+            // window's representation. If a startup probe wins the race
+            // with the window response, leave its registered data waiter
+            // parked instead of spending the chunk's short retry budget on
+            // requests that cannot yet carry If-Range. The first window
+            // response with a strong validator re-drives all waiting
+            // demands below.
+            deferChunkUntilEntityKnown = resumeCapable && sourceEntityETag == nil
         }
         stateLock.unlock()
         toNote?.noteDemand(offset: offset, order: order)
         toStart?.start()
-        if chunk {
+        if chunk && !deferChunkUntilEntityKnown {
             ensureChunkFetcher().ensureFetch(covering: offset, totalLength: total)
         }
         if let toRetarget {
@@ -1554,11 +1563,15 @@ private final class PlaybackSourceResource {
 
     private func streamReceivedResponse(total: Int64?, entityETag: String? = nil) {
         var resume: [CheckedContinuation<Int64?, Never>] = []
+        var shouldRedriveDataWaiters = false
         stateLock.lock()
         guard !sourceEntityInvalidated else {
             stateLock.unlock()
             return
         }
+        shouldRedriveDataWaiters = resumeCapable
+            && sourceEntityETag == nil
+            && entityETag != nil
         sawOriginResponse = true
         if sourceEntityETag == nil {
             sourceEntityETag = entityETag
@@ -1573,6 +1586,9 @@ private final class PlaybackSourceResource {
         cache.setTotalLength(value)
         for continuation in resume {
             continuation.resume(returning: value)
+        }
+        if shouldRedriveDataWaiters {
+            redriveAllDataWaiters()
         }
         clearOutageAfterOriginResponse()
     }

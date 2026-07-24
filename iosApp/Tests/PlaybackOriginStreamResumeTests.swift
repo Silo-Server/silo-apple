@@ -248,6 +248,7 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             case changedEntityChunkFirst
             case fullChangedEntityWithDelayedChunk
             case delayedInitialWindow
+            case delayedInitialWindowWithoutValidator
             case fullResponseAfterWeakETag
             case partialChangedAfterWeakETag
             case alwaysFullChangedEntity
@@ -359,7 +360,8 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
                     Int64(value[marker.upperBound...].split(separator: "-")[0])
                 } ?? 0
             } ?? 0
-            if behavior == .delayedInitialWindow {
+            if behavior == .delayedInitialWindow
+                || behavior == .delayedInitialWindowWithoutValidator {
                 let byteCount = 64 * 1024
                 let isWindow = requestNumber == 1
                 let end = isWindow
@@ -368,19 +370,19 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
                 let contentLength = isWindow
                     ? totalBytes - offset
                     : Int64(byteCount)
-                let responseETag = requestNumber == 2
-                    ? "\"entity-v1\""
-                    : "\"entity-v2\""
-                let responseHeader = [
+                var responseHeaderLines = [
                     "HTTP/1.1 206 Partial Content",
                     "Content-Range: bytes \(offset)-\(end)/\(totalBytes)",
                     "Content-Length: \(contentLength)",
-                    "ETag: \(responseETag)",
                     "Content-Type: application/octet-stream",
                     "Connection: close",
                     "",
                     ""
-                ].joined(separator: "\r\n")
+                ]
+                if behavior == .delayedInitialWindow || !isWindow {
+                    responseHeaderLines.insert("ETag: \"entity-v2\"", at: 3)
+                }
+                let responseHeader = responseHeaderLines.joined(separator: "\r\n")
                 let sendResponse = {
                     connection.send(
                         content: Data(responseHeader.utf8),
@@ -389,7 +391,7 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
                             let body = Data(repeating: 0xBC, count: byteCount)
                             if isWindow {
                                 // Keep the initial streaming response open so
-                                // only the early chunk exercises the retry.
+                                // the deferred chunk can complete separately.
                                 connection.send(content: body, completion: .idempotent)
                             } else {
                                 connection.send(
@@ -452,7 +454,8 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
                 fullResponse = true
             case .changedEntityChunkFirst,
                  .fullChangedEntityWithDelayedChunk,
-                 .delayedInitialWindow:
+                 .delayedInitialWindow,
+                 .delayedInitialWindowWithoutValidator:
                 fullResponse = requestNumber > 2
             case .partialSameEntity,
                  .partialChangedEntity,
@@ -924,32 +927,68 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
         XCTAssertTrue(windowStarted)
 
         let farOffset = PlaybackOriginRoutingPolicy.rideThroughBytes * 2
-        let reader = PendingReader()
+        let reader = ExactReader()
         reader.start(url: try XCTUnwrap(proxy.localURL), offset: farOffset)
         defer { reader.cancel() }
 
-        let firstChunkFinished = await waitUntil {
-            origin.observedRequests().count >= 2
-        }
-        XCTAssertTrue(firstChunkFinished)
         try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(origin.observedRequests().count, 1)
         XCTAssertFalse(cache.contains(offset: farOffset))
 
-        let retriedWithWindowEntity = await waitUntil {
+        let fetchedWithWindowEntity = await waitUntil {
             origin.observedRequests().contains {
                 $0.range?.hasPrefix("bytes=\(farOffset)-") == true
                     && $0.ifRange == "\"entity-v2\""
             }
         }
-        XCTAssertTrue(retriedWithWindowEntity)
+        XCTAssertTrue(fetchedWithWindowEntity)
         let chunkRequests = origin.observedRequests().filter {
             $0.range?.hasPrefix("bytes=\(farOffset)-") == true
         }
-        XCTAssertEqual(chunkRequests.count, 2)
-        XCTAssertNil(chunkRequests[0].ifRange)
-        XCTAssertEqual(chunkRequests[1].ifRange, "\"entity-v2\"")
-        let cached = await waitUntil { cache.contains(offset: farOffset) }
-        XCTAssertTrue(cached)
+        XCTAssertEqual(chunkRequests.count, 1)
+        XCTAssertEqual(chunkRequests[0].ifRange, "\"entity-v2\"")
+        let completed = await waitUntil { reader.result.completed }
+        XCTAssertTrue(completed)
+        XCTAssertNil(reader.result.error)
+        XCTAssertEqual(reader.result.data, Data([0xBC]))
+        XCTAssertTrue(cache.contains(offset: farOffset))
+        XCTAssertTrue(recorder.interruptions.isEmpty)
+    }
+
+    func testEarlyChunkRemainsDeferredWithoutWindowValidator() async throws {
+        let origin = try StubOrigin(behavior: .delayedInitialWindowWithoutValidator)
+        try await origin.start()
+        defer { origin.stop() }
+        let recorder = ProxyRecorder()
+        let cache = PlaybackSourceCache(maxBytes: 256 * 1024, diskSpillEnabled: false)
+        let pin = cache.pin(0...(64 * 1024 * 1024 - 1))
+        defer { cache.unpin(pin) }
+        let proxy = PlaybackSourceProxy(
+            originURL: origin.url,
+            originHeaders: [:],
+            cache: cache,
+            onPlaybackSourceInterrupted: { recorder.recordInterruption($0) },
+            resumeCapable: true
+        )
+        try await proxy.start()
+        defer { proxy.stop() }
+        proxy.startPrefetch(at: 0)
+        let windowStarted = await waitUntil { origin.observedRequests().count == 1 }
+        XCTAssertTrue(windowStarted)
+
+        let farOffset = PlaybackOriginRoutingPolicy.rideThroughBytes * 2
+        let reader = ExactReader()
+        reader.start(url: try XCTUnwrap(proxy.localURL), offset: farOffset)
+        defer { reader.cancel() }
+
+        let windowResponseProcessed = await waitUntil { cache.contains(offset: 0) }
+        XCTAssertTrue(windowResponseProcessed)
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(origin.observedRequests().count, 1)
+        XCTAssertFalse(cache.contains(offset: farOffset))
+        XCTAssertFalse(reader.result.completed)
+        XCTAssertTrue(reader.result.data.isEmpty)
+        XCTAssertNil(reader.result.error)
         XCTAssertTrue(recorder.interruptions.isEmpty)
     }
 
