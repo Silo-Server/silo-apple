@@ -3333,10 +3333,6 @@ final class PlayerCore: NSObject {
             if !setupAudioDecoder() {
                 Self.logger.warning("audio decoder setup failed; continuing video-only")
                 audioStreamIndex = -1
-            } else {
-                // Nudge the audio session into multichannel layout now that
-                // we know the source's channel count.
-                activateAudioSession(preferredChannels: audioOutputConfig?.channelCount)
             }
         }
         // Register any embedded font attachments with libass BEFORE we
@@ -4016,13 +4012,52 @@ final class PlayerCore: NSObject {
         }
         audioCodecCtx = ctx
 
-        // Output format: LPCM Float32 interleaved at source sample rate. Size
+        // TrueHD/MLP can leave codecpar and the opened decoder at
+        // AV_SAMPLE_FMT_NONE until the first major-sync unit has decoded.
+        // The output path is therefore configured lazily from that first
+        // authoritative AVFrame in ensureAudioOutputConfigured(from:).
+        return true
+    }
+
+    private func ensureAudioOutputConfigured(
+        from decodedFrame: UnsafeMutablePointer<AVFrame>
+    ) -> AudioDecodePipeline.ResamplingOutput? {
+        if let swrContext = audioSwrCtx, let config = audioOutputConfig {
+            return AudioDecodePipeline.ResamplingOutput(
+                swrContext: swrContext,
+                config: config
+            )
+        }
+        guard let codecContext = audioCodecCtx else { return nil }
+
+        let inputFormatRaw = decodedFrame.pointee.format
+        guard inputFormatRaw >= 0 else {
+            Self.logger.error("audio: decoded frame has unknown sample format")
+            return nil
+        }
+        let inputSampleRate = decodedFrame.pointee.sample_rate > 0
+            ? decodedFrame.pointee.sample_rate
+            : codecContext.pointee.sample_rate
+        guard inputSampleRate > 0 else {
+            Self.logger.error("audio: decoded frame has unknown sample rate")
+            return nil
+        }
+
+        var inputLayout = decodedFrame.pointee.ch_layout
+        if inputLayout.nb_channels <= 0 {
+            inputLayout = codecContext.pointee.ch_layout
+        }
+        if inputLayout.nb_channels <= 0 {
+            av_channel_layout_default(&inputLayout, 2)
+        }
+
+        // Output format: LPCM Float32 planar at the decoded sample rate. Size
         // the output layout to the active audio route instead of blindly
         // exposing the source channel count. This mirrors KSPlayer's pattern:
         // keep the selected stream, but let the resampler fold it down when
         // the Apple output path cannot safely render the full layout.
-        let inChannels = max(1, Int32(codecpar.ch_layout.nb_channels))
-        let outSampleRate = codecpar.sample_rate > 0 ? codecpar.sample_rate : 48000
+        let inChannels = max(1, Int32(inputLayout.nb_channels))
+        let outSampleRate = inputSampleRate
         #if os(macOS)
         let spatialAudioEnabled = false
         let routeMaxChannels = inChannels
@@ -4038,37 +4073,39 @@ final class PlayerCore: NSObject {
         #endif
         if outChannels != inChannels {
             print(
-                "[CMP] audio downmix sourceChannels=\(inChannels) outputChannels=\(outChannels) routeMaxChannels=\(routeMaxChannels) spatial=\(spatialAudioEnabled ? 1 : 0) codecId=\(Int(codecpar.codec_id.rawValue))"
+                "[CMP] audio downmix sourceChannels=\(inChannels) outputChannels=\(outChannels) routeMaxChannels=\(routeMaxChannels) spatial=\(spatialAudioEnabled ? 1 : 0) codecId=\(Int(codecContext.pointee.codec_id.rawValue))"
             )
         }
 
         // Default layout for the destination (stereo if unknown / weird).
         var outChannelLayout = AVChannelLayout()
         av_channel_layout_default(&outChannelLayout, outChannels)
-        var inLayout = codecpar.ch_layout
 
         var swr: OpaquePointer?
-        let r1 = swr_alloc_set_opts2(
+        let allocateResult = swr_alloc_set_opts2(
             &swr,
             &outChannelLayout,
             AV_SAMPLE_FMT_FLTP,
             outSampleRate,
-            &inLayout,
-            AVSampleFormat(rawValue: codecpar.format),
-            codecpar.sample_rate,
+            &inputLayout,
+            AVSampleFormat(rawValue: inputFormatRaw),
+            inputSampleRate,
             0,
             nil)
-        guard r1 == 0, swr != nil else {
-            Self.logger.error("swr_alloc_set_opts2 failed: \(r1)")
-            return false
+        guard allocateResult >= 0, swr != nil else {
+            Self.logger.error(
+                "swr_alloc_set_opts2 failed: \(Self.ffmpegError(allocateResult), privacy: .public)"
+            )
+            return nil
         }
-        let r2 = swr_init(swr)
-        guard r2 >= 0 else {
-            Self.logger.error("swr_init failed: \(r2)")
+        let initializeResult = swr_init(swr)
+        guard initializeResult >= 0 else {
+            Self.logger.error(
+                "swr_init failed: \(Self.ffmpegError(initializeResult), privacy: .public)"
+            )
             swr_free(&swr)
-            return false
+            return nil
         }
-        audioSwrCtx = swr
 
         // Build CMAudioFormatDescription matching our interleaved Float32 output.
         var asbd = AudioStreamBasicDescription(
@@ -4122,7 +4159,8 @@ final class PlayerCore: NSObject {
         }
         guard status == noErr, let afd else {
             Self.logger.error("CMAudioFormatDescriptionCreate failed: \(status)")
-            return false
+            swr_free(&swr)
+            return nil
         }
         let engineChannelLayout = AVAudioChannelLayout(layoutTag: layoutTag)
             ?? AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Stereo)!
@@ -4132,7 +4170,7 @@ final class PlayerCore: NSObject {
             interleaved: false,
             channelLayout: engineChannelLayout
         )
-        audioOutputConfig = NegotiatedAudioOutput(
+        let config = NegotiatedAudioOutput(
             sampleRate: outSampleRate,
             channelCount: outChannels,
             channelLayout: outChannelLayout,
@@ -4141,12 +4179,19 @@ final class PlayerCore: NSObject {
             bytesPerSample: 4,
             layoutTag: layoutTag
         )
+        guard let swr else { return nil }
+        audioSwrCtx = swr
+        audioOutputConfig = config
         audioOutput.prepare(audioFormat: audioFormat)
+        activateAudioSession(preferredChannels: outChannels)
         print(String(format:
             "[CMP] audio codecId=%d sampleRate=%d channels=%d srcFormat=%d srcChannels=%d layoutTag=0x%x",
-            Int(codecpar.codec_id.rawValue), Int(outSampleRate), Int(outChannels),
-            Int(codecpar.format), Int(inChannels), Int(layoutTag)))
-        return true
+            Int(codecContext.pointee.codec_id.rawValue), Int(outSampleRate), Int(outChannels),
+            Int(inputFormatRaw), Int(inChannels), Int(layoutTag)))
+        return AudioDecodePipeline.ResamplingOutput(
+            swrContext: swr,
+            config: config
+        )
     }
 
     private func runDemuxLoop() {
@@ -5401,17 +5446,15 @@ final class PlayerCore: NSObject {
     }
 
     private func decodeAudioPacket(_ pkt: UnsafeMutablePointer<AVPacket>) {
-        guard let ctx = audioCodecCtx,
-              let swr = audioSwrCtx,
-              let audioConfig = audioOutputConfig
-        else { return }
+        guard let ctx = audioCodecCtx else { return }
         audioDecodePipeline.decodePacket(
             pkt,
             codecContext: ctx,
-            swrContext: swr,
-            config: audioConfig,
             timeBase: audioTimeBase,
-            eagain: Self.ffmpegEAGAIN
+            eagain: Self.ffmpegEAGAIN,
+            outputForFrame: { [weak self] frame in
+                self?.ensureAudioOutputConfigured(from: frame)
+            }
         ) { [weak self] decoded in
             guard let self else { return }
             if self.pendingSkipBelowPTS > 0,
@@ -5433,8 +5476,8 @@ final class PlayerCore: NSObject {
                     "[CMP] firstAudioEnqueued pts=%.3f samples=%d outRate=%d channels=%d sync=%.3f rate=%.2f skipped=%llu",
                     decoded.ptsSeconds,
                     Int(decoded.convertedSamples),
-                    audioConfig.sampleRate,
-                    audioConfig.channelCount,
+                    decoded.chunk.sampleRate,
+                    decoded.chunk.channelCount,
                     self.currentPlaybackTimeSeconds(),
                     Double(self.playbackClock.rate),
                     self.skippedPreTargetAudioFrames))

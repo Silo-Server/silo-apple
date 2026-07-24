@@ -3907,35 +3907,12 @@ final class LoopbackSegmentWriter {
                 continue
             }
 
-            var inLayout = decoderCtx!.pointee.ch_layout
-            if inLayout.nb_channels == 0 {
-                av_channel_layout_default(&inLayout, sourceChannels)
-            }
-            var swr: OpaquePointer?
-            let swrR = swr_alloc_set_opts2(
-                &swr,
-                &encoderCtx!.pointee.ch_layout,
-                encoderCtx!.pointee.sample_fmt,
-                encoderCtx!.pointee.sample_rate,
-                &inLayout,
-                decoderCtx!.pointee.sample_fmt,
-                decoderCtx!.pointee.sample_rate,
-                0,
-                nil
-            )
-            if swrR < 0 || swr == nil || swr_init(swr) < 0 {
-                lastError = "swr init failed \(candidate.codecToken)"
-                if swr != nil {
-                    swr_free(&swr)
-                }
-                avcodec_free_context(&encoderCtx)
-                continue
-            }
-
+            // TrueHD/MLP may not expose a PCM format until a major-sync
+            // frame decodes. The resampler is populated lazily below.
+            let swr: OpaquePointer? = nil
             outputStream.pointee.time_base = encoderCtx!.pointee.time_base
             if avcodec_parameters_from_context(outputStream.pointee.codecpar, encoderCtx) < 0 {
                 lastError = "codecpar from encoder failed \(candidate.codecToken)"
-                swr_free(&swr)
                 avcodec_free_context(&encoderCtx)
                 continue
             }
@@ -3950,7 +3927,6 @@ final class LoopbackSegmentWriter {
             )
             if sampleFifo == nil {
                 lastError = "audio fifo alloc failed \(candidate.codecToken)"
-                swr_free(&swr)
                 avcodec_free_context(&encoderCtx)
                 continue
             }
@@ -4401,8 +4377,8 @@ final class LoopbackSegmentWriter {
     }
 
     private func sendConvertedFrameToEncoder(_ decodedFrame: UnsafeMutablePointer<AVFrame>) throws {
-        guard let encoderCtx = audioEncoderCtx,
-              let swr = audioSwrCtx else { return }
+        guard let encoderCtx = audioEncoderCtx else { return }
+        let swr = try audioResampler(for: decodedFrame, encoderCtx: encoderCtx)
         seedVODBridgedAudioPTSIfNeeded(from: decodedFrame, encoderCtx: encoderCtx)
         noteBridgedAudioDriftIfNeeded(from: decodedFrame, encoderCtx: encoderCtx, swr: swr)
 
@@ -4464,6 +4440,70 @@ final class LoopbackSegmentWriter {
             throw LoopbackWriterError.audioTranscodeSetup("audio encoder send failed rc=\(sendR)")
         }
         try drainEncodedPackets()
+    }
+
+    private func audioResampler(
+        for decodedFrame: UnsafeMutablePointer<AVFrame>,
+        encoderCtx: UnsafeMutablePointer<AVCodecContext>
+    ) throws -> OpaquePointer {
+        if let audioSwrCtx {
+            return audioSwrCtx
+        }
+
+        let inputFormatRaw = decodedFrame.pointee.format
+        guard inputFormatRaw >= 0 else {
+            throw LoopbackWriterError.audioTranscodeSetup(
+                "decoded audio frame has unknown sample format"
+            )
+        }
+        let inputSampleRate = decodedFrame.pointee.sample_rate > 0
+            ? decodedFrame.pointee.sample_rate
+            : audioDecoderCtx?.pointee.sample_rate ?? 0
+        guard inputSampleRate > 0 else {
+            throw LoopbackWriterError.audioTranscodeSetup(
+                "decoded audio frame has unknown sample rate"
+            )
+        }
+
+        var inputLayout = decodedFrame.pointee.ch_layout
+        if inputLayout.nb_channels <= 0, let decoderCtx = audioDecoderCtx {
+            inputLayout = decoderCtx.pointee.ch_layout
+        }
+        if inputLayout.nb_channels <= 0 {
+            let channelCount = Int32(sessionSpec.selectedAudio.sourceChannelCount ?? 2)
+            av_channel_layout_default(&inputLayout, max(1, channelCount))
+        }
+
+        var swr: OpaquePointer?
+        let allocateResult = swr_alloc_set_opts2(
+            &swr,
+            &encoderCtx.pointee.ch_layout,
+            encoderCtx.pointee.sample_fmt,
+            encoderCtx.pointee.sample_rate,
+            &inputLayout,
+            AVSampleFormat(rawValue: inputFormatRaw),
+            inputSampleRate,
+            0,
+            nil
+        )
+        guard allocateResult >= 0, swr != nil else {
+            throw LoopbackWriterError.audioTranscodeSetup(
+                "swr alloc failed \(outputAudioCodecToken ?? "audio") rc=\(allocateResult) \(Self.ffmpegError(allocateResult))"
+            )
+        }
+        let initializeResult = swr_init(swr)
+        guard initializeResult >= 0, let swr else {
+            swr_free(&swr)
+            throw LoopbackWriterError.audioTranscodeSetup(
+                "swr init failed \(outputAudioCodecToken ?? "audio") rc=\(initializeResult) \(Self.ffmpegError(initializeResult))"
+            )
+        }
+
+        audioSwrCtx = swr
+        print(
+            "[CMP-AVP] audio resampler configured sourceFormat=\(inputFormatRaw) sourceRate=\(inputSampleRate) sourceChannels=\(inputLayout.nb_channels) outputCodec=\(outputAudioCodecToken ?? "audio") outputRate=\(encoderCtx.pointee.sample_rate) outputChannels=\(encoderCtx.pointee.ch_layout.nb_channels)"
+        )
+        return swr
     }
 
     private func writeConvertedAudioToFifo(
