@@ -36,6 +36,9 @@ struct AVPlayerSurface: UIViewRepresentable {
 
     static func dismantleUIView(_ uiView: AVPlayerLayerView, coordinator: ()) {
         uiView.detachSubtitleOverlay()
+        #if os(iOS)
+        PictureInPictureCoordinator.shared.detach(playerLayer: uiView.playerLayer)
+        #endif
     }
 }
 
@@ -72,6 +75,11 @@ final class AVPlayerLayerView: UIView {
         let player = backend.avPlayer
         if playerLayer.player === player { return }
         playerLayer.player = player
+        #if os(iOS)
+        // PiP has to be bound to the live layer, and the layer is only useful
+        // once it actually has a player attached.
+        PictureInPictureCoordinator.shared.attach(playerLayer: playerLayer)
+        #endif
     }
 
     func setVideoGravity(_ gravity: AVLayerVideoGravity) {

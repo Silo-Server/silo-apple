@@ -24,6 +24,7 @@ struct MobilePlayerControls: View {
     /// Trailing time label mode: remaining ("−12:34") when true, total
     /// duration otherwise. Tap the label to flip — the native player idiom.
     @State private var showsRemainingTime = true
+    @State private var pictureInPicture = PictureInPictureCoordinator.shared
 
 
     var body: some View {
@@ -126,8 +127,31 @@ struct MobilePlayerControls: View {
             Spacer(minLength: 12)
 
             if viewModel.avPlayerBackend != nil {
-                AirPlayRoutePicker()
-                    .frame(width: 44, height: 44)
+                if pictureInPicture.isSupported {
+                    controlButton(
+                        systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter"
+                    ) {
+                        pictureInPicture.toggle()
+                    }
+                    .disabled(!pictureInPicture.isPossible)
+                    .accessibilityLabel(
+                        pictureInPicture.isActive
+                            ? "Stop Picture in Picture"
+                            : "Start Picture in Picture"
+                    )
+                }
+
+                AirPlayRoutePicker { isPresentingRoutes in
+                    // The route sheet is a UIKit presentation the auto-hide
+                    // timer knows nothing about; pin the controls so it can't
+                    // dismantle the picker mid-selection.
+                    if isPresentingRoutes {
+                        viewModel.pinControlsVisible()
+                    } else {
+                        viewModel.resumeAutoHide()
+                    }
+                }
+                .frame(width: 44, height: 44)
             }
         }
     }

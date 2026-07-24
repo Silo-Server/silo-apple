@@ -30,7 +30,21 @@ final class LoopbackSegmentServerRangeTests: XCTestCase {
         XCTAssertTrue(LoopbackSegmentServer.isPrivateIPv4Address("192.168.1.10"))
         XCTAssertTrue(LoopbackSegmentServer.isPrivateIPv4Address("169.254.2.3"))
         XCTAssertFalse(LoopbackSegmentServer.isPrivateIPv4Address("8.8.8.8"))
+        XCTAssertFalse(LoopbackSegmentServer.isPrivateIPv4Address("10.0.0.999"))
+        XCTAssertFalse(LoopbackSegmentServer.isPrivateIPv4Address("10.-1.0.1"))
         XCTAssertFalse(LoopbackSegmentServer.isPrivateIPv4Address("not-an-address"))
+    }
+
+    func testLANExposureUsesLoopbackURLBeforeExternalHandoff() throws {
+        let server = LoopbackSegmentServer(
+            segmentStore: LoopbackSegmentStore(generation: 1),
+            exposure: .localNetwork
+        )
+
+        let url = try XCTUnwrap(server.resourceURL(for: "master.m3u8"))
+        XCTAssertEqual(url.host, "127.0.0.1")
+        XCTAssertTrue(url.path.hasSuffix("/master.m3u8"))
+        XCTAssertNotEqual(url.path, "/master.m3u8")
     }
 
     func testAdvertisedVODSegmentMissRetriesInsteadOf404() {

@@ -1,7 +1,56 @@
+import AVFoundation
 import XCTest
 @testable import Silo
 
 final class LoopbackStartupRecoveryPolicyTests: XCTestCase {
+    func testSystemTransportChangesReconcileOnlyWhenIntentDiffers() {
+        XCTAssertEqual(
+            AVPlayerSystemTransportIntent.resolve(
+                timeControlStatus: .paused,
+                isUserPaused: false,
+                systemControlsAreActive: true
+            ),
+            .pause
+        )
+        XCTAssertEqual(
+            AVPlayerSystemTransportIntent.resolve(
+                timeControlStatus: .playing,
+                isUserPaused: true,
+                systemControlsAreActive: true
+            ),
+            .play
+        )
+        XCTAssertEqual(
+            AVPlayerSystemTransportIntent.resolve(
+                timeControlStatus: .waitingToPlayAtSpecifiedRate,
+                isUserPaused: true,
+                systemControlsAreActive: true
+            ),
+            .play
+        )
+        XCTAssertNil(
+            AVPlayerSystemTransportIntent.resolve(
+                timeControlStatus: .paused,
+                isUserPaused: true,
+                systemControlsAreActive: true
+            )
+        )
+        XCTAssertNil(
+            AVPlayerSystemTransportIntent.resolve(
+                timeControlStatus: .waitingToPlayAtSpecifiedRate,
+                isUserPaused: false,
+                systemControlsAreActive: true
+            )
+        )
+        XCTAssertNil(
+            AVPlayerSystemTransportIntent.resolve(
+                timeControlStatus: .paused,
+                isUserPaused: false,
+                systemControlsAreActive: false
+            )
+        )
+    }
+
     func testAudioSessionActivationStateRejectsStaleCompletionAndDeactivates() {
         var state = AVPlayerAudioSessionActivationState()
         let first = state.beginActivation()

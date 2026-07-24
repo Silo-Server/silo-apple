@@ -251,7 +251,7 @@ extension ApplePlaybackRouteCapabilities {
         ),
         pictureInPicture: .init(
             state: .unsupported,
-            note: "PiP stays off on the compatibility route."
+            note: "PiP stays off on the compatibility route: it renders into an AVSampleBufferDisplayLayer and needs a sample-buffer PiP content source."
         ),
         externalPlayback: .init(
             state: .unsupported,
@@ -322,7 +322,7 @@ extension ApplePlaybackRouteCapabilities {
         ),
         pictureInPicture: .init(
             state: .validationRequired,
-            note: "PiP is not re-enabled until route-specific lifecycle validation lands."
+            note: "PiP is enabled on iOS Native Player HLS; Silo-rendered subtitles do not appear in the PiP window."
         ),
         externalPlayback: .init(
             state: .validationRequired,
@@ -393,7 +393,7 @@ extension ApplePlaybackRouteCapabilities {
         ),
         pictureInPicture: .init(
             state: .validationRequired,
-            note: "PiP stays disabled until native-direct lifecycle validation exists."
+            note: "PiP is enabled on iOS Native Player Direct assets; Silo-rendered subtitles do not appear in the PiP window."
         ),
         externalPlayback: .init(
             state: .validationRequired,
@@ -464,7 +464,7 @@ extension ApplePlaybackRouteCapabilities {
         ),
         pictureInPicture: .init(
             state: .validationRequired,
-            note: "PiP is not re-enabled on SiloPlayer output."
+            note: "PiP is enabled on iOS SiloPlayer output; Silo-rendered subtitles do not appear in the PiP window."
         ),
         externalPlayback: .init(
             state: .repoVerified,

@@ -612,6 +612,16 @@ class PlayerViewModel {
     /// on this so a late-landing handoff signal can't spin up a fresh
     /// pipeline on a view that's already gone.
     private var isDisposed = false
+    #if os(iOS)
+    /// Mirrors the last `ScenePhase` handed to `handleScenePhase`. Lets the
+    /// AirPlay route observer tell "receiver disconnected while we're in the
+    /// background" (pause) from a normal foreground disconnect (keep playing
+    /// on the phone).
+    private var isSceneBackgrounded = false
+    /// Gives automatic PiP a bounded window to publish `willStart` after the
+    /// scene backgrounds. If no transition arrives, normal pause policy wins.
+    private var pictureInPictureBackgroundGraceTask: Task<Void, Never>?
+    #endif
     /// True after the active backend reports natural EOF. Used to keep the
     /// UI in a terminal paused state without letting tail-drain callbacks
     /// overwrite it or surface a false decode error.
@@ -1356,6 +1366,19 @@ class PlayerViewModel {
             guard let self, !self.isDisposed, offset.isFinite else { return }
             self.playbackTimelineOffset = max(0, offset)
         }
+        #if os(iOS)
+        backend.isPictureInPictureActiveProvider = {
+            PictureInPictureCoordinator.shared.isActive
+        }
+        backend.onExternalPlaybackActiveChange = { [weak self] active in
+            guard let self, !self.isDisposed else { return }
+            self.handleExternalPlaybackActiveChange(active)
+        }
+        PictureInPictureCoordinator.shared.bindLifecycle(owner: self) { [weak self] in
+            guard let self, !self.isDisposed else { return }
+            self.handlePictureInPictureEngagementEnded()
+        }
+        #endif
     }
 
     private func handleFileLoaded() {
@@ -4213,21 +4236,79 @@ class PlayerViewModel {
             break
         }
         #else
+        isSceneBackgrounded = phase == .background
         switch phase {
         case .background:
+            // AirPlay is playing on the receiver, not the phone; pausing here
+            // would stop the TV. `handleExternalPlaybackActiveChange` covers
+            // the route going away while we stay backgrounded.
             if avPlayerBackend?.isExternalPlaybackActive == true {
                 break
             }
-            if isPlaying {
-                activePlayer.pause()
+            // PiP keeps playing in the floating window after the app is
+            // backgrounded; pausing here would defeat it.
+            if PictureInPictureCoordinator.shared.isEngaged {
+                break
             }
-        case .inactive, .active:
+            // Automatic PiP can publish `willStart` just after ScenePhase
+            // reaches background. Give it one bounded window; failure/stop
+            // callbacks re-run the same pause policy immediately.
+            if PictureInPictureCoordinator.shared.isPossible {
+                schedulePictureInPictureBackgroundGrace()
+                break
+            }
+            pauseBackgroundPlaybackIfUnrouted()
+        case .active:
+            pictureInPictureBackgroundGraceTask?.cancel()
+            pictureInPictureBackgroundGraceTask = nil
+        case .inactive:
             break
         @unknown default:
             break
         }
         #endif
     }
+
+    #if os(iOS)
+    /// AirPlay and PiP are the only two reasons the iOS player keeps running
+    /// while the app is backgrounded. When the receiver goes away mid-session
+    /// — the user picks "iPhone" in Control Center, or the Apple TV drops off
+    /// the network — nothing else notices, and playback would carry on as
+    /// invisible background audio. Pause instead, matching what `.background`
+    /// would have done had the route already been gone.
+    private func handleExternalPlaybackActiveChange(_ active: Bool) {
+        if active {
+            pictureInPictureBackgroundGraceTask?.cancel()
+            pictureInPictureBackgroundGraceTask = nil
+            return
+        }
+        pauseBackgroundPlaybackIfUnrouted()
+    }
+
+    private func schedulePictureInPictureBackgroundGrace() {
+        pictureInPictureBackgroundGraceTask?.cancel()
+        pictureInPictureBackgroundGraceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled, let self else { return }
+            self.pictureInPictureBackgroundGraceTask = nil
+            self.pauseBackgroundPlaybackIfUnrouted()
+        }
+    }
+
+    private func handlePictureInPictureEngagementEnded() {
+        pictureInPictureBackgroundGraceTask?.cancel()
+        pictureInPictureBackgroundGraceTask = nil
+        pauseBackgroundPlaybackIfUnrouted()
+    }
+
+    private func pauseBackgroundPlaybackIfUnrouted() {
+        guard isSceneBackgrounded, isPlaying else { return }
+        guard avPlayerBackend?.isExternalPlaybackActive != true else { return }
+        guard !PictureInPictureCoordinator.shared.isEngaged else { return }
+        Self.logger.info("Background playback has no active AirPlay or PiP route; pausing")
+        activePlayer.pause()
+    }
+    #endif
 
     /// Skip by ±`seconds` relative to the current preview position. By
     /// default this summons the transport overlay so the scrubber's preview
@@ -5638,6 +5719,18 @@ class PlayerViewModel {
         guard !isDisposed else { return }
         Self.logger.info("PlayerViewModel.cleanup()")
         isDisposed = true
+        #if os(iOS)
+        pictureInPictureBackgroundGraceTask?.cancel()
+        pictureInPictureBackgroundGraceTask = nil
+        PictureInPictureCoordinator.shared.unbindLifecycle(owner: self)
+        // The PiP coordinator is a singleton and its controller strongly
+        // retains the AVPlayerLayer, the AVPlayer, and everything hanging off
+        // it. SwiftUI's `dismantleUIView` normally releases it, but ordering
+        // there is not guaranteed relative to this teardown, so drop it here
+        // too rather than risk stranding the whole playback graph.
+        PictureInPictureCoordinator.shared.release()
+        isSceneBackgrounded = false
+        #endif
         activeExecutionPlan = nil
         hasAttemptedNativeDirectRouteRecovery = false
         hasAttemptedSiloRouteCompatibilityFallback = false

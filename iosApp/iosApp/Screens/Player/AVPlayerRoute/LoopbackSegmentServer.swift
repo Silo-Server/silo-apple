@@ -179,14 +179,24 @@ final class LoopbackSegmentServer {
 
     }
 
-    func resourceURL(for resourceName: String) -> URL? {
+    /// Returns the URL AVPlayer should use for a resource. LAN-exposed
+    /// servers still use loopback for inline playback; only an active AirPlay
+    /// handoff needs an address reachable from another device.
+    func resourceURL(
+        for resourceName: String,
+        reachableFromExternalDevice: Bool = false
+    ) -> URL? {
         let host: String
         switch exposure {
         case .loopbackOnly:
             host = "127.0.0.1"
         case .localNetwork:
-            guard let address = Self.localNetworkIPv4Address() else { return nil }
-            host = address
+            if reachableFromExternalDevice {
+                guard let address = Self.localNetworkIPv4Address() else { return nil }
+                host = address
+            } else {
+                host = "127.0.0.1"
+            }
         }
         let path = [accessToken, resourceName]
             .compactMap { $0 }
@@ -387,7 +397,8 @@ final class LoopbackSegmentServer {
 
     static func isPrivateIPv4Address(_ address: String) -> Bool {
         let octets = address.split(separator: ".").compactMap { Int($0) }
-        guard octets.count == 4 else { return false }
+        guard octets.count == 4,
+              octets.allSatisfy({ (0...255).contains($0) }) else { return false }
         return octets[0] == 10
             || (octets[0] == 172 && (16...31).contains(octets[1]))
             || (octets[0] == 192 && octets[1] == 168)
