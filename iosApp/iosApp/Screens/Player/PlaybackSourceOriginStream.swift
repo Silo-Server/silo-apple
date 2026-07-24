@@ -208,8 +208,9 @@ final class PlaybackOriginStream {
     struct Callbacks {
         /// Invoked on the session delegate queue after bytes are stored.
         let didStore: (PlaybackOriginStream, ClosedRange<Int64>) -> Void
-        /// First response headers for a connection (total length if known).
-        let didReceiveResponse: (PlaybackOriginStream, Int64?) -> Void
+        /// First response headers for a connection (total length and captured
+        /// strong entity validator, when known).
+        let didReceiveResponse: (PlaybackOriginStream, Int64?, String?) -> Void
         let didDetectSessionMissing: (PlaybackOriginStream) -> Void
         let didFinish: (PlaybackOriginStream) -> Void
         let didGiveUp: (PlaybackOriginStream, PlaybackOriginReconnectPolicy.EndCause, Int?) -> Void
@@ -290,6 +291,13 @@ final class PlaybackOriginStream {
     private var unproductiveStreak = 0
     private var knownTotalLength: Int64?
     private var responseValidatedForGeneration: UInt64?
+    /// Whether this stream has already accepted any response body. A first
+    /// response may establish the resource validator; every later connection
+    /// in resume-capable mode must already have that strong validator.
+    private var hasAcceptedResponse = false
+    /// A replacement window shares the resource cache with an earlier window,
+    /// so even its first response must prove that it is the same entity.
+    private let initialResponseRequiresEntityValidation: Bool
     private var entityETag: String?
     private var ifRangeGeneration: UInt64?
     private var sentIfRangeValue: String?
@@ -304,6 +312,8 @@ final class PlaybackOriginStream {
         demandOrder: UInt64,
         callbacks: Callbacks,
         resumeCapable: Bool = false,
+        initialEntityETag: String? = nil,
+        initialResponseRequiresEntityValidation: Bool = false,
         clock: PlaybackOriginStreamClock = SystemPlaybackOriginStreamClock()
     ) {
         self.originURL = originURL
@@ -315,6 +325,8 @@ final class PlaybackOriginStream {
         self.skipCheckCursor = startOffset + Self.cachedRunCheckStrideBytes
         self.callbacks = callbacks
         self.resumeCapable = resumeCapable
+        self.entityETag = initialEntityETag
+        self.initialResponseRequiresEntityValidation = initialResponseRequiresEntityValidation
         self.clock = clock
         self.lastDataAt = clock.now()
     }
@@ -541,11 +553,9 @@ final class PlaybackOriginStream {
             request.setValue(value, forHTTPHeaderField: key)
         }
         request.setValue("bytes=\(cursor)-", forHTTPHeaderField: "Range")
-        // Issue #94 deliberately does not require a validator to detach:
-        // direct `original_http` origins remain resume-capable without the
-        // new ETag feature, preserving the existing nonzero-200
-        // `.rangeIgnored` path. When a strong ETag is available, If-Range
-        // upgrades that reopen into positive entity validation.
+        // The first response may establish the strong validator. Reopens send
+        // it with If-Range; a resume-capable reopen without one is rejected
+        // before any response bytes can be appended.
         let ifRange = cursor > 0 ? entityETag : nil
         if let ifRange {
             request.setValue(ifRange, forHTTPHeaderField: "If-Range")
@@ -643,6 +653,13 @@ final class PlaybackOriginStream {
         let cursor = writeCursor
         let openReason = currentOpenReason
         let sentIfRange = ifRangeGeneration == gen ? sentIfRangeValue : nil
+        let expectedETag = resumeCapable ? entityETag : nil
+        let requiresEntityValidation = resumeCapable
+            && (
+                expectedETag != nil
+                    || hasAcceptedResponse
+                    || initialResponseRequiresEntityValidation
+            )
         lock.unlock()
         guard let http = response as? HTTPURLResponse else {
             connectionEnded(generation: gen, cause: .network, statusCode: nil)
@@ -652,12 +669,67 @@ final class PlaybackOriginStream {
         switch http.statusCode {
         case 206:
             let total = Self.totalLength(fromContentRange: http.value(forHTTPHeaderField: "Content-Range"))
-            if let rangeStart = Self.rangeStart(fromContentRange: http.value(forHTTPHeaderField: "Content-Range")),
-               rangeStart != cursor {
-                Self.logger.warning("[CMP-SOURCE-CACHE] origin stream range mismatch expected=\(cursor, privacy: .public) got=\(rangeStart, privacy: .public)")
+            guard let rangeStart = Self.rangeStart(
+                fromContentRange: http.value(forHTTPHeaderField: "Content-Range")
+            ), rangeStart == cursor else {
+                let receivedRange = http.value(forHTTPHeaderField: "Content-Range") ?? "missing"
+                Self.logger.warning(
+                    "[CMP-SOURCE-CACHE] origin stream invalid content-range expectedStart=\(cursor, privacy: .public) received=\(receivedRange, privacy: .public)"
+                )
                 logDetachResumeOutcomeIfNeeded(openReason, cursor: cursor, outcome: "range_mismatch")
                 connectionEnded(generation: gen, cause: .rangeIgnored, statusCode: http.statusCode)
                 return false
+            }
+            if requiresEntityValidation {
+                guard let expectedETag else {
+                    Self.logger.warning(
+                        "[CMP-SOURCE-CACHE] origin stream entity-unverifiable cursor=\(cursor, privacy: .public) expectedETag=missing"
+                    )
+                    logDetachResumeOutcomeIfNeeded(
+                        openReason,
+                        cursor: cursor,
+                        outcome: "entity_unverifiable"
+                    )
+                    connectionEnded(
+                        generation: gen,
+                        cause: .rangeIgnored,
+                        statusCode: http.statusCode
+                    )
+                    return false
+                }
+                let responseETagHeader = http.value(forHTTPHeaderField: "ETag")
+                guard let responseETag = Self.strongETag(responseETagHeader) else {
+                    Self.logger.warning(
+                        "[CMP-SOURCE-CACHE] origin stream entity-unverifiable cursor=\(cursor, privacy: .public) expectedETag=\(expectedETag, privacy: .public) responseETag=\(responseETagHeader ?? "missing", privacy: .public)"
+                    )
+                    logDetachResumeOutcomeIfNeeded(
+                        openReason,
+                        cursor: cursor,
+                        outcome: "entity_unverifiable"
+                    )
+                    connectionEnded(
+                        generation: gen,
+                        cause: .rangeIgnored,
+                        statusCode: http.statusCode
+                    )
+                    return false
+                }
+                guard responseETag == expectedETag else {
+                    Self.logger.error(
+                        "[CMP-SOURCE-CACHE] origin stream entity-changed cursor=\(cursor, privacy: .public) expectedETag=\(expectedETag, privacy: .public) responseETag=\(responseETagHeader ?? "missing", privacy: .public)"
+                    )
+                    logDetachResumeOutcomeIfNeeded(
+                        openReason,
+                        cursor: cursor,
+                        outcome: "entity_changed"
+                    )
+                    connectionEnded(
+                        generation: gen,
+                        cause: .entityChanged,
+                        statusCode: http.statusCode
+                    )
+                    return false
+                }
             }
             noteResponse(
                 total: total,
@@ -667,6 +739,42 @@ final class PlaybackOriginStream {
             logDetachResumeOutcomeIfNeeded(openReason, cursor: cursor, outcome: "accepted_206")
             return true
         case 200 where cursor == 0:
+            if requiresEntityValidation {
+                guard let expectedETag else {
+                    Self.logger.warning(
+                        "[CMP-SOURCE-CACHE] origin stream entity-unverifiable cursor=0 expectedETag=missing"
+                    )
+                    connectionEnded(
+                        generation: gen,
+                        cause: .rangeIgnored,
+                        statusCode: http.statusCode
+                    )
+                    return false
+                }
+                let responseETagHeader = http.value(forHTTPHeaderField: "ETag")
+                guard let responseETag = Self.strongETag(responseETagHeader) else {
+                    Self.logger.warning(
+                        "[CMP-SOURCE-CACHE] origin stream entity-unverifiable cursor=0 expectedETag=\(expectedETag, privacy: .public) responseETag=\(responseETagHeader ?? "missing", privacy: .public)"
+                    )
+                    connectionEnded(
+                        generation: gen,
+                        cause: .rangeIgnored,
+                        statusCode: http.statusCode
+                    )
+                    return false
+                }
+                guard responseETag == expectedETag else {
+                    Self.logger.error(
+                        "[CMP-SOURCE-CACHE] origin stream entity-changed cursor=0 expectedETag=\(expectedETag, privacy: .public) responseETag=\(responseETagHeader ?? "missing", privacy: .public)"
+                    )
+                    connectionEnded(
+                        generation: gen,
+                        cause: .entityChanged,
+                        statusCode: http.statusCode
+                    )
+                    return false
+                }
+            }
             let total = http.expectedContentLength > 0 ? http.expectedContentLength : nil
             noteResponse(
                 total: total,
@@ -677,13 +785,16 @@ final class PlaybackOriginStream {
             return true
         case 200:
             if let sentIfRange {
-                let responseETag = http.value(forHTTPHeaderField: "ETag") ?? "missing"
-                Self.logger.error(
-                    "[CMP-SOURCE-CACHE] origin stream entity-changed cursor=\(cursor, privacy: .public) ifRange=\(sentIfRange, privacy: .public) responseETag=\(responseETag, privacy: .public)"
-                )
-                logDetachResumeOutcomeIfNeeded(openReason, cursor: cursor, outcome: "entity_changed")
-                connectionEnded(generation: gen, cause: .entityChanged, statusCode: 200)
-                return false
+                let responseETagHeader = http.value(forHTTPHeaderField: "ETag")
+                if let responseETag = Self.strongETag(responseETagHeader),
+                   responseETag != sentIfRange {
+                    Self.logger.error(
+                        "[CMP-SOURCE-CACHE] origin stream entity-changed cursor=\(cursor, privacy: .public) ifRange=\(sentIfRange, privacy: .public) responseETag=\(responseETagHeader ?? "missing", privacy: .public)"
+                    )
+                    logDetachResumeOutcomeIfNeeded(openReason, cursor: cursor, outcome: "entity_changed")
+                    connectionEnded(generation: gen, cause: .entityChanged, statusCode: 200)
+                    return false
+                }
             }
             // The origin ignored the Range header; accepting the body would
             // silently corrupt the cache with head bytes at a nonzero offset.
@@ -727,12 +838,14 @@ final class PlaybackOriginStream {
             return
         }
         responseValidatedForGeneration = gen
+        hasAcceptedResponse = true
         if let total { knownTotalLength = total }
         if entityETag == nil, let etag = Self.strongETag(etag) {
             entityETag = etag
         }
+        let validator = entityETag
         lock.unlock()
-        callbacks.didReceiveResponse(self, total)
+        callbacks.didReceiveResponse(self, total, validator)
     }
 
     /// `If-Range` performs a strong validator comparison; a weak ETag would

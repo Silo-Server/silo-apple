@@ -434,6 +434,12 @@ struct PlaybackExecutionPlan {
     let reason: String
     let playbackSessionId: String?
 
+    var supportsDirectStreamResume: Bool {
+        delivery == .direct
+            && wireDelivery == "original_http"
+            && serverFeatures.contains(PlaybackProtocolV3.directStreamResumeFeature)
+    }
+
     init(
         delivery: PlaybackDeliveryStrategy,
         engine: PlaybackEngineKind,

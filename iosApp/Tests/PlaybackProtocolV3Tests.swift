@@ -138,6 +138,11 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             XCTAssertTrue(
                 adapted.serverFeatures.contains(PlaybackProtocolV3.directStreamResumeFeature)
             )
+            XCTAssertEqual(
+                adapted.supportsDirectStreamResume,
+                delivery == "original_http",
+                delivery
+            )
             XCTAssertEqual(adapted.startMode.seconds, 4.5, delivery)
         }
         XCTAssertTrue(
@@ -145,6 +150,35 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 PlaybackProtocolV3.directStreamResumeFeature
             )
         )
+    }
+
+    func testDirectStreamResumeRequiresResponseFeature() throws {
+        let streamRequest = StreamRequest(
+            url: URL(string: "https://example.test/video")!,
+            headers: ["Authorization": "Bearer test"],
+            serverUrl: "https://example.test"
+        )
+        let plan = makePlan(
+            delivery: "original_http",
+            engine: "media3_direct",
+            streamProtocol: "http_progressive",
+            container: "mp4"
+        )
+        let adapted = try ApplePlaybackV3PlanAdapter.makeExecutionPlan(
+            v3: PreparedPlaybackV3(
+                playbackAttemptId: "apple:attempt",
+                planAttemptId: "apple-plan:attempt",
+                planAttemptKey: plan.attemptKey(outputRouteGeneration: 1),
+                outputRouteGeneration: 1,
+                serverFeatures: ["playback_plan_v3"],
+                plan: plan
+            ),
+            basePlan: makeBaseExecutionPlan(streamRequest: streamRequest),
+            streamRequest: streamRequest,
+            routeRequirements: .baseline
+        )
+
+        XCTAssertFalse(adapted.supportsDirectStreamResume)
     }
 
     func testUnsupportedClientRequirementsAreRejected() {

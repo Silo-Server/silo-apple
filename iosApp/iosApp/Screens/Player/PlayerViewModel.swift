@@ -2396,11 +2396,10 @@ class PlayerViewModel {
             maxBytes: cacheBudget,
             diskSpillEnabled: diskSpillRequested
         )
-        let resumeCapable = plan.delivery == .direct
-            && plan.wireDelivery == "original_http"
         let serverAdvertisesDirectStreamResume = plan.serverFeatures.contains(
             PlaybackProtocolV3.directStreamResumeFeature
         )
+        let resumeCapable = plan.supportsDirectStreamResume
         let proxy = PlaybackSourceProxy(
             originURL: plan.sourceStreamRequest.url,
             originHeaders: plan.sourceStreamRequest.headers,
