@@ -77,6 +77,43 @@ xcodebuild build \
   CODE_SIGN_IDENTITY='' CODE_SIGNING_ALLOWED=NO
 ```
 
+## VS Code
+
+The checked-in `.vscode` configuration provides recommended extensions,
+unsigned build and test tasks, and SweetPad integration for building, running,
+debugging, simulator management, and Swift code intelligence without using the
+Xcode UI.
+
+1. Install Xcode and select its command-line toolchain:
+
+   ```sh
+   sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+   sudo xcodebuild -runFirstLaunch
+   ```
+
+2. Install XcodeGen:
+
+   ```sh
+   brew install xcodegen
+   ```
+
+3. Open the repository root in VS Code and accept its extension
+   recommendations.
+4. Run `Tasks: Run Task` → `Silo: Generate Xcode project`.
+5. In the SweetPad sidebar, select a scheme and an installed destination.
+6. Run `SweetPad: Set up Swift code intelligence (BSP)` once from the command
+   palette, then open a Swift file. The generated `buildServer.json` is
+   machine-specific and intentionally ignored.
+
+Use `Cmd+Shift+B` for the default unsigned iOS build. Use the Testing sidebar
+or `Tasks: Run Test Task` for XCTest. The test task prompts for a simulator
+destination so each developer can use an installed device without committing
+machine-specific configuration.
+
+SweetPad uses Xcode's compiler, SDKs, signing tools, and simulators under the
+hood, so the full Xcode application remains required even when its UI is not
+part of the daily workflow.
+
 ## Signing
 
 Local signing overrides are intentionally ignored.

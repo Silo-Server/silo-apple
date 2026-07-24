@@ -1,0 +1,35 @@
+{
+  "files.exclude": {
+    "**/.deriveddata": true,
+    "**/DerivedData": true
+  },
+  "search.exclude": {
+    "**/.deriveddata": true,
+    "**/DerivedData": true,
+    "**/Silo.xcodeproj": true
+  },
+  "sweetpad.build.configuration": "Debug",
+  "sweetpad.testing.configuration": "Debug",
+  "sweetpad.build.derivedDataPath": "iosApp/.deriveddata",
+  "sweetpad.build.schemes.include": [
+    "Silo",
+    "SiloNoDebugger",
+    "SiloTV",
+    "SiloMac"
+  ],
+  "sweetpad.build.xcbeautifyEnabled": true,
+  "sweetpad.buildServer.provider": "sweetpad",
+  "sweetpad.build.autoGenerateBuildServerConfig": true,
+  "sweetpad.build.autoRestartSwiftLSP": true,
+  "sweetpad.xcodegen.autogenerate": true,
+  "[swift]": {
+    "editor.defaultFormatter": "sweetpad.sweetpad",
+    "editor.formatOnSave": false,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    }
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml"
+  }
+}

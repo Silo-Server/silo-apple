@@ -254,8 +254,8 @@ extension ApplePlaybackRouteCapabilities {
             note: "PiP stays off on the compatibility route."
         ),
         externalPlayback: .init(
-            state: .unclaimed,
-            note: "Silo does not expose external-playback UI on the compatibility route."
+            state: .unsupported,
+            note: "The compatibility player does not use AVPlayer and cannot provide AirPlay video playback."
         ),
         nowPlayingIntegration: .init(
             state: .repoVerified,
@@ -325,8 +325,8 @@ extension ApplePlaybackRouteCapabilities {
             note: "PiP is not re-enabled until route-specific lifecycle validation lands."
         ),
         externalPlayback: .init(
-            state: .unclaimed,
-            note: "External playback stays unclaimed until UI and receiver validation exist."
+            state: .validationRequired,
+            note: "AirPlay UI and AVPlayer external playback are enabled; receiver playback still needs device validation."
         ),
         nowPlayingIntegration: .init(
             state: .repoVerified,
@@ -396,8 +396,8 @@ extension ApplePlaybackRouteCapabilities {
             note: "PiP stays disabled until native-direct lifecycle validation exists."
         ),
         externalPlayback: .init(
-            state: .unclaimed,
-            note: "External playback stays unclaimed until explicit native-route UI and validation land."
+            state: .validationRequired,
+            note: "AirPlay UI and AVPlayer external playback are enabled; receiver playback still needs device validation."
         ),
         nowPlayingIntegration: .init(
             state: .repoVerified,
@@ -467,8 +467,8 @@ extension ApplePlaybackRouteCapabilities {
             note: "PiP is not re-enabled on SiloPlayer output."
         ),
         externalPlayback: .init(
-            state: .unclaimed,
-            note: "External playback remains unclaimed on SiloPlayer output."
+            state: .repoVerified,
+            note: "AirPlay from iPhone to Apple TV is hardware-validated for SiloPlayer loopback delivery."
         ),
         nowPlayingIntegration: .init(
             state: .repoVerified,

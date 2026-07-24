@@ -2,6 +2,37 @@ import XCTest
 @testable import Silo
 
 final class LoopbackSegmentServerRangeTests: XCTestCase {
+    func testLANAccessTokenAuthorizesOnlyItsResourcePrefix() {
+        XCTAssertEqual(
+            LoopbackSegmentServer.authorizedResourcePath(
+                "/session-secret/master.m3u8",
+                accessToken: "session-secret"
+            ),
+            "master.m3u8"
+        )
+        XCTAssertNil(
+            LoopbackSegmentServer.authorizedResourcePath(
+                "/other-session/master.m3u8",
+                accessToken: "session-secret"
+            )
+        )
+        XCTAssertNil(
+            LoopbackSegmentServer.authorizedResourcePath(
+                "/master.m3u8",
+                accessToken: "session-secret"
+            )
+        )
+    }
+
+    func testPrivateIPv4AddressSelectionExcludesPublicAddresses() {
+        XCTAssertTrue(LoopbackSegmentServer.isPrivateIPv4Address("10.0.0.4"))
+        XCTAssertTrue(LoopbackSegmentServer.isPrivateIPv4Address("172.20.1.2"))
+        XCTAssertTrue(LoopbackSegmentServer.isPrivateIPv4Address("192.168.1.10"))
+        XCTAssertTrue(LoopbackSegmentServer.isPrivateIPv4Address("169.254.2.3"))
+        XCTAssertFalse(LoopbackSegmentServer.isPrivateIPv4Address("8.8.8.8"))
+        XCTAssertFalse(LoopbackSegmentServer.isPrivateIPv4Address("not-an-address"))
+    }
+
     func testAdvertisedVODSegmentMissRetriesInsteadOf404() {
         XCTAssertEqual(
             LoopbackSegmentServer.vodMissingResponseKind(index: 5, segmentCount: 10),

@@ -1,6 +1,7 @@
 # Apple Route Capability Matrix
 
-Snapshot date: 2026-07-03 (SiloPlayer loopback-primary Stages 0–4;
+Snapshot date: 2026-07-24 (SiloPlayer AirPlay hardware validation;
+SiloPlayer loopback-primary Stages 0–4 validated 2026-07-03;
 previous snapshot 2026-04-29 at `6c2b4af`)
 
 This matrix is the implementation-facing truth source for the current Apple
@@ -39,7 +40,7 @@ player routes in `silo-apple`. It separates:
 | tvOS custom shell / Siri Remote ownership | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
 | Now Playing / remote commands | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
 | PiP | Unsupported | Validation required | Validation required | Validation required |
-| AirPlay / external playback | Unclaimed | Unclaimed | Unclaimed | Unclaimed |
+| AirPlay / external playback | Unsupported | Validation required | Validation required | Repo-verified |
 | Premium HDR / DV / Atmos claims | Validation required | Validation required | Validation required | Validation required |
 
 ## Notes
@@ -61,7 +62,13 @@ player routes in `silo-apple`. It separates:
   delay/styling. The capability rows above describe what Silo can
   promise on each route; they are not a claim about every embedded subtitle
   on a NativePlayer or SiloPlayer asset.
-- PiP and external playback stay intentionally conservative until Silo has
-  route-specific lifecycle handling, UI, and device/output validation.
+- PiP stays intentionally conservative until Silo has route-specific lifecycle
+  handling and device/output validation. AirPlay UI and AVPlayer external
+  playback are enabled on NativePlayer and SiloPlayer routes. On iOS,
+  SiloPlayer publishes its generated HLS through a session-secret LAN URL so
+  the selected receiver can fetch the playlist and segments. SiloPlayer AirPlay
+  was hardware-validated 2026-07-24 from an iPhone 16 Pro to Apple TV with a
+  Dolby Vision source. This validates external playback for that route, not a
+  generalized Dolby Vision output-mode or premium-format claim.
 - Premium-media claims stay validation-gated even when playback itself uses a
   NativePlayer or SiloPlayer route.

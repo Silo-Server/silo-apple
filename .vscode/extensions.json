@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "swiftlang.swift-vscode",
+    "sweetpad.sweetpad",
+    "vadimcn.vscode-lldb",
+    "redhat.vscode-yaml"
+  ]
+}

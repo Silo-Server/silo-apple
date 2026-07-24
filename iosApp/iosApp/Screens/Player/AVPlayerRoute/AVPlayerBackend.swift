@@ -752,6 +752,9 @@ final class AVPlayerBackend {
     private var endObserver: NSObjectProtocol?
 
     init() {
+        avPlayer.allowsExternalPlayback = true
+        avPlayer.usesExternalPlaybackWhileExternalScreenIsActive = true
+
         let session = SubtitleSession()
         session.onSidecarTracksRegistered = { [weak self] descriptors in
             self?.onSidecarTracksRegistered?(descriptors)
@@ -835,6 +838,10 @@ final class AVPlayerBackend {
 
     func prepareToBackground() {
         pause()
+    }
+
+    var isExternalPlaybackActive: Bool {
+        avPlayer.isExternalPlaybackActive
     }
 
     func videoSurfaceBecameReadyForDisplay() {
@@ -1710,7 +1717,11 @@ final class AVPlayerBackend {
             print("[CMP-AVP] preserving local DV artifacts due to SILO_KEEP_DV_HLS=1 dir=\(sessionDir.path)")
         }
 
+        #if os(iOS)
+        let server = LoopbackSegmentServer(segmentStore: store, exposure: .localNetwork)
+        #else
         let server = LoopbackSegmentServer(segmentStore: store)
+        #endif
         if sessionSpec.servingMode == .vodPlan {
             // A miss under the static VOD playlist means "not produced (yet)
             // or pruned": request a coalesced producer restart on main, then
@@ -1962,8 +1973,11 @@ final class AVPlayerBackend {
     private func handleFirstSegmentReady(playlistName: String, sessionID: String) {
         guard activeLoopbackSessionID == sessionID else { return }
         guard !isDisposed, currentItem == nil, let server = segmentServer else { return }
-        let url = URL(string: "http://127.0.0.1:\(server.port)/\(playlistName)")!
-        cmpLog("[CMP-AVP] local playlist ready \(url.absoluteString)")
+        guard let url = server.resourceURL(for: playlistName) else {
+            reportError("AirPlay-ready HLS server could not determine the phone's local network address.")
+            return
+        }
+        cmpLog("[CMP-AVP] local playlist ready host=\(url.host ?? "unknown")")
         if ttffFirstSegmentMs == nil { ttffFirstSegmentMs = ttffElapsedMs() }
         logTVDisplayManagerState(context: "before_prepare_\(playlistName)")
         // The criteria write always happens synchronously before the item is

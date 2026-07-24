@@ -124,6 +124,11 @@ struct MobilePlayerControls: View {
             titleBlock
 
             Spacer(minLength: 12)
+
+            if viewModel.avPlayerBackend != nil {
+                AirPlayRoutePicker()
+                    .frame(width: 44, height: 44)
+            }
         }
     }
 

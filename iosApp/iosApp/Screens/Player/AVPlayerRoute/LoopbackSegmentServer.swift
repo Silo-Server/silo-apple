@@ -2,9 +2,10 @@
 //  LoopbackSegmentServer.swift
 //  Continuum (iOS + tvOS) — Dolby Vision Profile 5 AVPlayer route
 //
-//  Tiny HTTP server bound to 127.0.0.1:<random port>. Serves the HLS playlist
-//  and fMP4 segments that `LoopbackSegmentWriter` writes to a session-scoped temp
-//  directory, so AVPlayer can consume them via a URL it accepts natively.
+//  Tiny HTTP server serving the HLS playlist and fMP4 segments that
+//  `LoopbackSegmentWriter` writes to a session-scoped store. It normally binds
+//  to 127.0.0.1; iOS AirPlay sessions bind to the LAN and require a per-session
+//  secret in every resource URL so the receiver can fetch the presentation.
 //
 //  Uses `Network.framework`'s `NWListener` so we pull in zero dependencies.
 //  Rendered on a dedicated `.userInitiated` dispatch queue — the HLS manifest
@@ -25,8 +26,16 @@
 import Foundation
 import Network
 import OSLog
+#if os(iOS)
+import Darwin
+#endif
 
 final class LoopbackSegmentServer {
+    enum Exposure: Equatable {
+        case loopbackOnly
+        case localNetwork
+    }
+
     // Temporary [CMP-LIFE]: session-pool leak attribution.
     deinit { print("[CMP-LIFE] deinit LoopbackSegmentServer") }
     private static let startupRequestLogLimit = 80
@@ -39,6 +48,8 @@ final class LoopbackSegmentServer {
 
     let rootDirectory: URL?
     private let segmentStore: LoopbackSegmentStore?
+    private let exposure: Exposure
+    private let accessToken: String?
 
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "com.continuum.dv.hlsserver", qos: .userInitiated)
@@ -73,14 +84,22 @@ final class LoopbackSegmentServer {
     /// successfully (the listener is bound and in `.ready` state).
     private(set) var port: UInt16 = 0
 
-    init(rootDirectory: URL) {
+    init(rootDirectory: URL, exposure: Exposure = .loopbackOnly) {
         self.rootDirectory = rootDirectory
         self.segmentStore = nil
+        self.exposure = exposure
+        self.accessToken = exposure == .localNetwork
+            ? UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            : nil
     }
 
-    init(segmentStore: LoopbackSegmentStore) {
+    init(segmentStore: LoopbackSegmentStore, exposure: Exposure = .loopbackOnly) {
         self.rootDirectory = nil
         self.segmentStore = segmentStore
+        self.exposure = exposure
+        self.accessToken = exposure == .localNetwork
+            ? UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            : nil
     }
 
     /// Starts the listener on a random high port and suspends until the
@@ -93,10 +112,14 @@ final class LoopbackSegmentServer {
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
-            params.requiredLocalEndpoint = NWEndpoint.hostPort(
-                host: .ipv4(.loopback),
-                port: .any
-            )
+            if exposure == .loopbackOnly {
+                params.requiredLocalEndpoint = NWEndpoint.hostPort(
+                    host: .ipv4(.loopback),
+                    port: .any
+                )
+            } else {
+                params.includePeerToPeer = true
+            }
             listener = try NWListener(using: params)
         } catch {
             throw LoopbackSegmentServerError.listenerInitFailed(error)
@@ -146,12 +169,29 @@ final class LoopbackSegmentServer {
                 }
             }
             let serving = self.rootDirectory?.path ?? "memory-store-\(self.segmentStore?.generation ?? 0)"
-            Self.logger.info("LoopbackSegmentServer listening on 127.0.0.1:\(port) serving \(serving, privacy: .public)")
+            let host = exposure == .localNetwork ? "local-network" : "127.0.0.1"
+            Self.logger.info("LoopbackSegmentServer listening on \(host, privacy: .public):\(port) serving \(serving, privacy: .public)")
         } catch {
             listener.cancel()
             self.listener = nil
             throw error
         }
+
+    }
+
+    func resourceURL(for resourceName: String) -> URL? {
+        let host: String
+        switch exposure {
+        case .loopbackOnly:
+            host = "127.0.0.1"
+        case .localNetwork:
+            guard let address = Self.localNetworkIPv4Address() else { return nil }
+            host = address
+        }
+        let path = [accessToken, resourceName]
+            .compactMap { $0 }
+            .joined(separator: "/")
+        return URL(string: "http://\(host):\(port)/\(path)")
     }
 
     /// Single-shot, thread-safe resume gate for `start()`'s continuation.
@@ -280,13 +320,82 @@ final class LoopbackSegmentServer {
 
         switch method {
         case "GET":
-            respondWithFile(at: path, method: .get, range: rangeHeader, on: connection)
+            guard let authorizedPath = authorizedResourcePath(path) else {
+                respondError(404, "Not Found", on: connection)
+                return
+            }
+            respondWithFile(at: authorizedPath, method: .get, range: rangeHeader, on: connection)
         case "HEAD":
-            respondWithFile(at: path, method: .head, range: nil, on: connection)
+            guard let authorizedPath = authorizedResourcePath(path) else {
+                respondError(404, "Not Found", on: connection)
+                return
+            }
+            respondWithFile(at: authorizedPath, method: .head, range: nil, on: connection)
         default:
             respondError(405, "Method Not Allowed", on: connection)
         }
     }
+
+    private func authorizedResourcePath(_ requestPath: String) -> String? {
+        Self.authorizedResourcePath(requestPath, accessToken: accessToken)
+    }
+
+    static func authorizedResourcePath(_ requestPath: String, accessToken: String?) -> String? {
+        guard let accessToken else { return requestPath }
+        let trimmed = requestPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let prefix = "\(accessToken)/"
+        guard trimmed.hasPrefix(prefix) else { return nil }
+        return String(trimmed.dropFirst(prefix.count))
+    }
+
+    #if os(iOS)
+    private static func localNetworkIPv4Address() -> String? {
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0, let first = interfaces else { return nil }
+        defer { freeifaddrs(interfaces) }
+
+        var candidates: [(name: String, address: String)] = []
+        var current: UnsafeMutablePointer<ifaddrs>? = first
+        while let interface = current {
+            defer { current = interface.pointee.ifa_next }
+            let flags = Int32(interface.pointee.ifa_flags)
+            guard flags & IFF_UP != 0,
+                  flags & IFF_LOOPBACK == 0,
+                  let socketAddress = interface.pointee.ifa_addr,
+                  socketAddress.pointee.sa_family == UInt8(AF_INET) else {
+                continue
+            }
+
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let result = getnameinfo(
+                socketAddress,
+                socklen_t(socketAddress.pointee.sa_len),
+                &host,
+                socklen_t(host.count),
+                nil,
+                0,
+                NI_NUMERICHOST
+            )
+            guard result == 0 else { continue }
+            let address = String(cString: host)
+            guard isPrivateIPv4Address(address) else { continue }
+            candidates.append((String(cString: interface.pointee.ifa_name), address))
+        }
+        return candidates.first(where: { $0.name == "en0" })?.address
+            ?? candidates.first?.address
+    }
+
+    static func isPrivateIPv4Address(_ address: String) -> Bool {
+        let octets = address.split(separator: ".").compactMap { Int($0) }
+        guard octets.count == 4 else { return false }
+        return octets[0] == 10
+            || (octets[0] == 172 && (16...31).contains(octets[1]))
+            || (octets[0] == 192 && octets[1] == 168)
+            || (octets[0] == 169 && octets[1] == 254)
+    }
+    #else
+    private static func localNetworkIPv4Address() -> String? { nil }
+    #endif
 
     private enum HTTPMethod {
         case get

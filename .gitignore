@@ -36,10 +36,12 @@ fastlane/test_output/
 .claude/
 .codex/
 .cursor/
+.sweetpad/
 .worktrees/
 .playwright-mcp/
 .playwright-cli/
 .superpowers/
+buildServer.json
 
 # Logs and OS files
 *.log

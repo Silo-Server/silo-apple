@@ -4214,11 +4214,14 @@ class PlayerViewModel {
         }
         #else
         switch phase {
-        case .background, .inactive:
+        case .background:
+            if avPlayerBackend?.isExternalPlaybackActive == true {
+                break
+            }
             if isPlaying {
                 activePlayer.pause()
             }
-        case .active:
+        case .inactive, .active:
             break
         @unknown default:
             break
