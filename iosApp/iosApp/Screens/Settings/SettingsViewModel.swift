@@ -3,10 +3,11 @@ import Foundation
 /// State container for the iOS settings screen.
 ///
 /// Local-only fields (preferred quality, auto-play, skip intros, subtitle
-/// size) live in `UserDefaults`. The subtitle-language / behavior /
-/// forced-subs trio is profile-wide on the server and persisted via
-/// `PUT /profiles/{id}` — same model as the tvOS settings screen, so
-/// edits made on either platform cascade into playback the same way.
+/// size) live in `UserDefaults`. The spoken-language choice and the
+/// subtitle-language / behavior / forced-subs trio are profile-wide on
+/// the server and persisted via `PUT /profiles/{id}` — same model as the
+/// tvOS settings screen, so edits made on either platform cascade into
+/// playback the same way.
 @Observable
 class SettingsViewModel {
     var userInfo: UserInfo?
@@ -27,7 +28,6 @@ class SettingsViewModel {
 
     // Playback preferences (server-backed for this device/profile).
     var preferredQuality: String = PlayerSettings.shared.preferredQuality
-    var preferredAudioLanguage: String = PlayerSettings.shared.audioLanguage
     var autoPlayNext: Bool = PlayerSettings.shared.autoPlayNextEpisode
     var nextUpPromptSeconds: Int = PlayerSettings.shared.nextUpPromptSeconds
     var skipIntros: Bool = PlayerSettings.shared.autoSkipIntro
@@ -52,6 +52,12 @@ class SettingsViewModel {
     // Server-backed profile prefs editor. Each editor field is either
     // a sentinel ("__none__") or a concrete value. We persist directly
     // to the active profile via PUT /profiles/{id}.
+    /// Preferred spoken (audio) language. Profile-wide, not per-device:
+    /// the server resolves the initial audio track from the profile's
+    /// `language` field, so this is the only value that actually reaches
+    /// playback. `PlaybackPrefSentinel.none` maps to the empty string
+    /// ("no preference") on the wire.
+    var editorAudioLanguage: String = PlaybackPrefSentinel.none
     var editorSubtitleLanguage: String = PlaybackPrefSentinel.none
     var editorSubtitleMode: String = SubtitleMode.auto.rawValue
     /// Tri-state stored as "on" / "off". The server treats nil and
@@ -78,7 +84,6 @@ class SettingsViewModel {
     func loadSettings() async {
         await PlayerSettings.shared.refreshFromServer()
         preferredQuality = PlayerSettings.shared.preferredQuality
-        preferredAudioLanguage = PlayerSettings.shared.audioLanguage
         autoPlayNext = PlayerSettings.shared.autoPlayNextEpisode
         nextUpPromptSeconds = PlayerSettings.shared.nextUpPromptSeconds
         skipIntros = PlayerSettings.shared.autoSkipIntro
@@ -114,12 +119,6 @@ class SettingsViewModel {
     func setPreferredQuality(_ value: String) async {
         PlayerSettings.shared.setPreferredQuality(value)
         preferredQuality = PlayerSettings.shared.preferredQuality
-    }
-
-    @MainActor
-    func setPreferredAudioLanguage(_ value: String) async {
-        PlayerSettings.shared.setAudioLanguage(value)
-        preferredAudioLanguage = PlayerSettings.shared.audioLanguage
     }
 
     @MainActor
@@ -168,7 +167,6 @@ class SettingsViewModel {
     func resetPlaybackDeviceSettings() async {
         await PlayerSettings.shared.resetAllDeviceSettings()
         preferredQuality = PlayerSettings.shared.preferredQuality
-        preferredAudioLanguage = PlayerSettings.shared.audioLanguage
         autoPlayNext = PlayerSettings.shared.autoPlayNextEpisode
         nextUpPromptSeconds = PlayerSettings.shared.nextUpPromptSeconds
         skipIntros = PlayerSettings.shared.autoSkipIntro
@@ -210,7 +208,7 @@ class SettingsViewModel {
         prefSaveState = .saving
 
         let body = UpdateProfileBody(
-            subtitleLanguage: outboundSubtitleLanguage(editorSubtitleLanguage),
+            subtitleLanguage: outboundProfileLanguage(editorSubtitleLanguage),
             subtitleMode: editorSubtitleMode,
             showForcedSubtitles: editorShowForcedSubtitles == "on"
         )
@@ -226,6 +224,7 @@ class SettingsViewModel {
                     avatarEmoji: prof.avatarEmoji,
                     hasPin: prof.hasPin,
                     isChild: prof.isChild,
+                    language: prof.language,
                     subtitleLanguage: body.subtitleLanguage,
                     subtitleMode: body.subtitleMode,
                     showForcedSubtitles: body.showForcedSubtitles,
@@ -249,7 +248,7 @@ class SettingsViewModel {
     @MainActor
     func saveMetadataLanguage() async {
         guard activeProfile?.id.isEmpty == false else { return }
-        pendingMetadataLanguageValue = outboundSubtitleLanguage(editorPreferredMetadataLanguage)
+        pendingMetadataLanguageValue = outboundProfileLanguage(editorPreferredMetadataLanguage)
         guard !isSavingMetadataLanguage else { return }
 
         isSavingMetadataLanguage = true
@@ -273,7 +272,7 @@ class SettingsViewModel {
         do {
             try await ContinuumAPI.shared.updateProfile(profileId: profileId, body: body)
             guard activeProfile?.id == profileId,
-                  outboundSubtitleLanguage(editorPreferredMetadataLanguage) == newValue else {
+                  outboundProfileLanguage(editorPreferredMetadataLanguage) == newValue else {
                 return
             }
             prefSaveState = .saved
@@ -284,6 +283,7 @@ class SettingsViewModel {
                     avatarEmoji: prof.avatarEmoji,
                     hasPin: prof.hasPin,
                     isChild: prof.isChild,
+                    language: prof.language,
                     subtitleLanguage: prof.subtitleLanguage,
                     subtitleMode: prof.subtitleMode,
                     showForcedSubtitles: prof.showForcedSubtitles,
@@ -296,7 +296,67 @@ class SettingsViewModel {
             #endif
         } catch {
             guard activeProfile?.id == profileId,
-                  outboundSubtitleLanguage(editorPreferredMetadataLanguage) == newValue else {
+                  outboundProfileLanguage(editorPreferredMetadataLanguage) == newValue else {
+                return
+            }
+            prefSaveState = .failed(
+                (error as? LocalizedError)?.errorDescription
+                    ?? String(describing: error)
+            )
+        }
+    }
+
+    /// Persist the preferred spoken (audio) language as a profile patch.
+    ///
+    /// This is deliberately a profile field rather than a per-device one:
+    /// the server picks the initial audio track from `profile.language`
+    /// and reports the result as `effective_audio_track_index`, which the
+    /// player forwards at session start. A device-scoped value would
+    /// never be read by anything.
+    @MainActor
+    func saveAudioLanguage() async {
+        guard let profileId = activeProfile?.id, !profileId.isEmpty else { return }
+        let newValue = outboundProfileLanguage(editorAudioLanguage)
+        guard newValue != (activeProfile?.language ?? "") else { return }
+
+        prefSaveState = .saving
+
+        do {
+            try await ContinuumAPI.shared.updateProfile(
+                profileId: profileId,
+                body: UpdateProfileBody(language: newValue)
+            )
+            guard activeProfile?.id == profileId,
+                  outboundProfileLanguage(editorAudioLanguage) == newValue else {
+                return
+            }
+            prefSaveState = .saved
+            if let prof = activeProfile {
+                activeProfile = UserProfile(
+                    id: prof.id,
+                    name: prof.name,
+                    avatarEmoji: prof.avatarEmoji,
+                    hasPin: prof.hasPin,
+                    isChild: prof.isChild,
+                    language: newValue,
+                    subtitleLanguage: prof.subtitleLanguage,
+                    subtitleMode: prof.subtitleMode,
+                    showForcedSubtitles: prof.showForcedSubtitles,
+                    preferredMetadataLanguage: prof.preferredMetadataLanguage
+                )
+            }
+            // Detail screens render the server-resolved audio track out of
+            // the cached item payloads, which have no TTL. Drop them so the
+            // new selection shows up without a relaunch. Playback itself
+            // always refetches `/watch`, so this is display consistency
+            // only — it is not what makes the setting take effect.
+            ResponseCache.shared.invalidateAllItemMetadata()
+            #if os(tvOS)
+            ItemDetailCache.shared.clearAll()
+            #endif
+        } catch {
+            guard activeProfile?.id == profileId,
+                  outboundProfileLanguage(editorAudioLanguage) == newValue else {
                 return
             }
             prefSaveState = .failed(
@@ -309,6 +369,9 @@ class SettingsViewModel {
     // MARK: - Editor projection helpers
 
     private func projectActiveProfileIntoEditor() {
+        let audioLang = activeProfile?.language ?? ""
+        editorAudioLanguage = audioLang.isEmpty ? PlaybackPrefSentinel.none : audioLang
+
         let raw = activeProfile?.subtitleLanguage ?? ""
         editorSubtitleLanguage = raw.isEmpty ? PlaybackPrefSentinel.none : raw
 
@@ -322,8 +385,9 @@ class SettingsViewModel {
     }
 
     /// `__none__` sentinel maps to the empty string the server expects
-    /// to mean "no subtitle preference / no subs".
-    private func outboundSubtitleLanguage(_ value: String) -> String {
+    /// to mean "no preference" for any of the profile language fields
+    /// (spoken, subtitle, metadata).
+    private func outboundProfileLanguage(_ value: String) -> String {
         value == PlaybackPrefSentinel.none ? "" : value
     }
 }

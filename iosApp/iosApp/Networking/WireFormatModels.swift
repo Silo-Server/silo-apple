@@ -42,6 +42,7 @@ struct Profile: Codable {
             hasPin: hasPin ?? false,
             isChild: isChild ?? false,
             isPrimary: isPrimary ?? false,
+            language: language,
             subtitleLanguage: subtitleLanguage,
             subtitleMode: subtitleMode,
             showForcedSubtitles: showForcedSubtitles,
@@ -54,6 +55,11 @@ struct Profile: Codable {
 /// caller can patch one or many at a time. Wire format mirrors the
 /// server's `updateProfileRequest`.
 struct UpdateProfileBody: Encodable {
+    /// Preferred spoken/audio language (ISO 639-1; `""` = no preference).
+    /// The server resolves the initial audio track from this field, so it
+    /// is what makes an audio-language choice actually reach playback.
+    /// Encodes as `language`.
+    var language: String?
     var subtitleLanguage: String?
     var subtitleMode: String?
     var showForcedSubtitles: Bool?

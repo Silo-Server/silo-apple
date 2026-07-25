@@ -39,6 +39,11 @@ enum VideoGravity: String, CaseIterable {
 
 private enum PlayerDeviceSettingKey: String, CaseIterable {
     case preferredQuality = "playback.preferred_quality"
+    /// Legacy device-scoped audio language. The spoken-language choice now
+    /// lives on the profile (`PUT /profiles/{id}` → `language`), which is
+    /// what the server actually reads when it resolves the initial audio
+    /// track. The case is kept so `resetAllDeviceSettings()` still deletes
+    /// rows written by older builds.
     case audioLanguage = "playback.audio_language"
     case autoSkipIntro = "playback.auto_skip_intro"
     case autoSkipCredits = "playback.auto_skip_credits"
@@ -67,10 +72,6 @@ final class PlayerSettings {
 
     var preferredQuality: String {
         didSet { defaults.set(preferredQuality, forKey: Self.cacheKey(Keys.preferredQuality)) }
-    }
-
-    var audioLanguage: String {
-        didSet { defaults.set(audioLanguage, forKey: Self.cacheKey(Keys.audioLanguage)) }
     }
 
     var autoSkipIntro: Bool {
@@ -232,7 +233,6 @@ final class PlayerSettings {
         self.defaults = defaults
         defaults.register(defaults: [
             Keys.preferredQuality: "auto",
-            Keys.audioLanguage: "",
             Keys.autoSkipIntro: false,
             Keys.autoSkipCredits: false,
             Keys.hdrEnabled: true,
@@ -262,7 +262,6 @@ final class PlayerSettings {
         preferredQuality = ApplePlaybackQuality.normalizeStoredId(
             defaults.string(forKey: Self.cacheKey(Keys.preferredQuality))
         )
-        audioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage)) ?? ""
         autoSkipIntro = Self.cachedBool(defaults, key: Keys.autoSkipIntro, defaultValue: false)
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
         hdrEnabled = Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
@@ -386,11 +385,6 @@ final class PlayerSettings {
         let normalized = ApplePlaybackQuality.normalizeStoredId(value)
         preferredQuality = normalized
         enqueueDeviceSetting(.preferredQuality, operation: .set(normalized))
-    }
-
-    func setAudioLanguage(_ value: String) {
-        audioLanguage = value
-        enqueueDeviceSetting(.audioLanguage, operation: .set(value))
     }
 
     func setAutoSkipIntro(_ enabled: Bool) {
@@ -554,7 +548,6 @@ final class PlayerSettings {
         preferredQuality = ApplePlaybackQuality.normalizeStoredId(
             effectiveString(for: .preferredQuality, in: effectiveByKey, fallback: "auto")
         )
-        audioLanguage = effectiveString(for: .audioLanguage, in: effectiveByKey, fallback: "")
         autoSkipIntro = effectiveBool(for: .autoSkipIntro, in: effectiveByKey, fallback: false)
         autoSkipCredits = effectiveBool(for: .autoSkipCredits, in: effectiveByKey, fallback: false)
         autoPlayNextEpisode = effectiveBool(for: .autoPlayNext, in: effectiveByKey, fallback: true)
@@ -607,9 +600,6 @@ final class PlayerSettings {
                 defaults.string(forKey: Self.cacheKey(Keys.preferredQuality))
                     ?? defaults.string(forKey: Keys.preferredQuality)
             ),
-            .audioLanguage: defaults.string(forKey: Self.cacheKey(Keys.audioLanguage))
-                ?? defaults.string(forKey: Keys.audioLanguage)
-                ?? "",
             .autoSkipIntro: boolString(
                 Self.cachedBool(defaults, key: Keys.autoSkipIntro, defaultValue: false)
             ),
@@ -650,7 +640,6 @@ final class PlayerSettings {
         preferredQuality = ApplePlaybackQuality.normalizeStoredId(
             defaults.string(forKey: Self.cacheKey(Keys.preferredQuality))
         )
-        audioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage)) ?? ""
         autoSkipIntro = Self.cachedBool(defaults, key: Keys.autoSkipIntro, defaultValue: false)
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
         autoPlayNextEpisode = Self.cachedBool(
@@ -876,7 +865,6 @@ final class PlayerSettings {
 
     private enum Keys {
         static let preferredQuality = "preferredQuality"
-        static let audioLanguage = "preferredAudioLanguage"
         static let autoSkipIntro = "skipIntros"
         static let autoSkipCredits = "skipCredits"
         static let hdrEnabled = "player.hdrEnabled"

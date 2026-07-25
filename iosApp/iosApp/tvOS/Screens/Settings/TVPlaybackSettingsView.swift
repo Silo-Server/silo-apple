@@ -34,7 +34,7 @@ struct TVPlaybackSettingsPane: View {
 
         TVSettingsPickerRow(
             title: "Audio Language",
-            value: TVSettingsOptions.label(for: viewModel.preferredAudioLanguage, in: TVSettingsOptions.audioLanguage)
+            value: TVSettingsOptions.label(for: viewModel.editorAudioLanguage, in: TVSettingsOptions.audioLanguage)
         ) { activePicker = .audioLanguage }
 
         TVSettingsToggleRow(
@@ -70,7 +70,8 @@ struct TVPlaybackSettingsPane: View {
     }
 
     private var streamingFooterText: String {
-        var text = "Turn off Dolby Vision to play Dolby Vision titles as HDR10 instead. Profile 5 titles have no HDR10-compatible layer and always play in Dolby Vision."
+        var text = "Audio Language picks which spoken track starts first; it applies to your profile on every device, not just this Apple TV."
+        text += " Turn off Dolby Vision to play Dolby Vision titles as HDR10 instead. Profile 5 titles have no HDR10-compatible layer and always play in Dolby Vision."
         if viewModel.dolbyVisionEnabled {
             text += " The fallback plays Dolby Vision Profile 7 as HDR10 on this Apple TV."
         }
@@ -157,10 +158,10 @@ struct TVPlaybackSettingsPane: View {
                 title: "Audio Language",
                 options: TVSettingsOptions.audioLanguage,
                 selection: Binding(
-                    get: { viewModel.preferredAudioLanguage },
+                    get: { viewModel.editorAudioLanguage },
                     set: { value in
-                        viewModel.preferredAudioLanguage = value
-                        Task { await viewModel.setPreferredAudioLanguage(value) }
+                        viewModel.editorAudioLanguage = value
+                        Task { await viewModel.saveAudioLanguage() }
                     }
                 )
             )

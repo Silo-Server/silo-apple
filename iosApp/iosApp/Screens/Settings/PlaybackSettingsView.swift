@@ -44,14 +44,15 @@ struct PlaybackSettingsView: View {
             #endif
 
             Picker("Audio Language", selection: Binding(
-                get: { viewModel.preferredAudioLanguage },
+                get: { viewModel.editorAudioLanguage },
                 set: { newValue in
-                    viewModel.preferredAudioLanguage = newValue
-                    Task { await viewModel.setPreferredAudioLanguage(newValue) }
+                    viewModel.editorAudioLanguage = newValue
+                    Task { await viewModel.saveAudioLanguage() }
                 }
             )) {
-                ForEach(audioLanguageOptions, id: \.0) { tag, label in
-                    Text(label).tag(tag)
+                Text("No Preference").tag(PlaybackPrefSentinel.none)
+                ForEach(PlaybackLanguageOption.all) { option in
+                    Text(option.label).tag(option.code)
                 }
             }
             .foregroundStyle(Color.continuumOnSurface)
@@ -103,7 +104,8 @@ struct PlaybackSettingsView: View {
     }
 
     private var streamingFooterText: String {
-        var text = "Turn off Dolby Vision to play Dolby Vision titles as HDR10 instead. Profile 5 titles have no HDR10-compatible layer and always play in Dolby Vision."
+        var text = "Audio Language picks which spoken track starts first; it applies to your profile on every device, not just this one."
+        text += " Turn off Dolby Vision to play Dolby Vision titles as HDR10 instead. Profile 5 titles have no HDR10-compatible layer and always play in Dolby Vision."
         if viewModel.dolbyVisionEnabled {
             text += " The fallback plays Dolby Vision Profile 7 as HDR10 on this device."
         }
@@ -187,20 +189,6 @@ struct PlaybackSettingsView: View {
 
     private var qualityOptions: [(String, String)] {
         ApplePlaybackQuality.settingsOptions.map { ($0.id, $0.labelWithBitrate) }
-    }
-
-    private var audioLanguageOptions: [(String, String)] {
-        [
-            ("", "Default"),
-            ("en", "English"),
-            ("es", "Spanish"),
-            ("fr", "French"),
-            ("de", "German"),
-            ("it", "Italian"),
-            ("pt", "Portuguese"),
-            ("ja", "Japanese"),
-            ("ko", "Korean"),
-        ]
     }
 
     private var nextUpPromptOptions: [(Int, String)] {

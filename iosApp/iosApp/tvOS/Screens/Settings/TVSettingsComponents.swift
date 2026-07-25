@@ -17,17 +17,9 @@ enum TVSettingsOptions {
             .init(id: option.id, label: option.labelWithBitrate)
         }
 
-    static let audioLanguage: [TVSettingsOption] = [
-        .init(id: "", label: "Default"),
-        .init(id: "en", label: "English"),
-        .init(id: "es", label: "Spanish"),
-        .init(id: "fr", label: "French"),
-        .init(id: "de", label: "German"),
-        .init(id: "it", label: "Italian"),
-        .init(id: "pt", label: "Portuguese"),
-        .init(id: "ja", label: "Japanese"),
-        .init(id: "ko", label: "Korean"),
-    ]
+    static let audioLanguage: [TVSettingsOption] =
+        [.init(id: PlaybackPrefSentinel.none, label: "No Preference")]
+            + PlaybackLanguageOption.all.map { .init(id: $0.code, label: $0.label) }
 
     static let nextUpPrompt: [TVSettingsOption] = [
         .init(id: "0", label: "At end"),
