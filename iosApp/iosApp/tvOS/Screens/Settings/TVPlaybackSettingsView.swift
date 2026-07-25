@@ -34,7 +34,7 @@ struct TVPlaybackSettingsPane: View {
 
         TVSettingsPickerRow(
             title: "Audio Language",
-            value: TVSettingsOptions.label(for: viewModel.editorAudioLanguage, in: TVSettingsOptions.audioLanguage)
+            value: TVSettingsOptions.label(for: viewModel.editorAudioLanguage, in: TVSettingsOptions.audioLanguage(including: viewModel.editorAudioLanguage))
         ) { activePicker = .audioLanguage }
 
         TVSettingsToggleRow(
@@ -67,6 +67,9 @@ struct TVPlaybackSettingsPane: View {
         }
 
         TVSettingsFooter(streamingFooterText)
+        // Audio Language writes to the server from this pane, so the result has
+        // to show here rather than only on the Subtitles pane.
+        TVPrefSaveFooter(state: viewModel.prefSaveState)
     }
 
     private var streamingFooterText: String {
@@ -133,7 +136,9 @@ struct TVPlaybackSettingsPane: View {
         }
         .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
 
-        TVSettingsFooter("Resets playback choices for this Apple TV and profile back to the server fallback.")
+        // Scoped to this device on purpose: the reset clears device-scoped
+        // rows, and Audio Language is a profile field it does not touch.
+        TVSettingsFooter("Resets this Apple TV's playback choices back to the server fallback. Audio Language applies to your whole profile and is not affected.")
     }
 
     // MARK: - Pickers
@@ -156,7 +161,7 @@ struct TVPlaybackSettingsPane: View {
         case .audioLanguage:
             TVSettingsPickerSheet(
                 title: "Audio Language",
-                options: TVSettingsOptions.audioLanguage,
+                options: TVSettingsOptions.audioLanguage(including: viewModel.editorAudioLanguage),
                 selection: Binding(
                     get: { viewModel.editorAudioLanguage },
                     set: { value in

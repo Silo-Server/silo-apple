@@ -40,7 +40,7 @@ struct TVSubtitleSettingsPane: View {
 
         TVSettingsPickerRow(
             title: "Language",
-            value: TVSettingsOptions.label(for: viewModel.editorSubtitleLanguage, in: TVSettingsOptions.subtitleLanguage)
+            value: TVSettingsOptions.label(for: viewModel.editorSubtitleLanguage, in: TVSettingsOptions.subtitleLanguage(including: viewModel.editorSubtitleLanguage))
         ) { activePicker = .language }
         .focused(detailFocus, equals: .top)
 
@@ -58,7 +58,7 @@ struct TVSubtitleSettingsPane: View {
         }
 
         TVSettingsFooter("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
-        prefSaveFooter
+        TVPrefSaveFooter(state: viewModel.prefSaveState)
     }
 
     @ViewBuilder
@@ -67,7 +67,7 @@ struct TVSubtitleSettingsPane: View {
 
         TVSettingsPickerRow(
             title: "Metadata Language",
-            value: TVSettingsOptions.label(for: viewModel.editorPreferredMetadataLanguage, in: TVSettingsOptions.metadataLanguage)
+            value: TVSettingsOptions.label(for: viewModel.editorPreferredMetadataLanguage, in: TVSettingsOptions.metadataLanguage(including: viewModel.editorPreferredMetadataLanguage))
         ) { activePicker = .metadataLanguage }
 
         TVSettingsFooter("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
@@ -185,23 +185,6 @@ struct TVSubtitleSettingsPane: View {
         return source + " Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings."
     }
 
-    @ViewBuilder
-    private var prefSaveFooter: some View {
-        if let state = viewModel.prefSaveState {
-            switch state {
-            case .saving:
-                TVSettingsFooter("Saving…")
-            case .saved:
-                TVSettingsFooter("Saved")
-            case .failed(let err):
-                Text("Couldn't save: \(err)")
-                    .font(.system(size: 19))
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 24)
-                    .padding(.top, 4)
-            }
-        }
-    }
 
     // MARK: - Rows
 
@@ -228,7 +211,7 @@ struct TVSubtitleSettingsPane: View {
         case .language:
             TVSettingsPickerSheet(
                 title: "Language",
-                options: TVSettingsOptions.subtitleLanguage,
+                options: TVSettingsOptions.subtitleLanguage(including: viewModel.editorSubtitleLanguage),
                 selection: $viewModel.editorSubtitleLanguage
             )
         case .mode:
@@ -240,7 +223,7 @@ struct TVSubtitleSettingsPane: View {
         case .metadataLanguage:
             TVSettingsPickerSheet(
                 title: "Metadata Language",
-                options: TVSettingsOptions.metadataLanguage,
+                options: TVSettingsOptions.metadataLanguage(including: viewModel.editorPreferredMetadataLanguage),
                 selection: $viewModel.editorPreferredMetadataLanguage
             )
         case .fontSize:

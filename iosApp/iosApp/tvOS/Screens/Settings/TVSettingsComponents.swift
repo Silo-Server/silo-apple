@@ -17,9 +17,17 @@ enum TVSettingsOptions {
             .init(id: option.id, label: option.labelWithBitrate)
         }
 
-    static let audioLanguage: [TVSettingsOption] =
+    /// Audio-language options for a row currently holding `code`.
+    ///
+    /// A function rather than a stored list because the value is a server-owned
+    /// profile field: the web client can set it to a language outside the
+    /// twelve below, and a row that cannot represent its own value renders a
+    /// literal "—" and is overwritten by the first selection the user makes.
+    static func audioLanguage(including code: String) -> [TVSettingsOption] {
         [.init(id: PlaybackPrefSentinel.none, label: "No Preference")]
-            + PlaybackLanguageOption.all.map { .init(id: $0.code, label: $0.label) }
+            + PlaybackLanguageOption.options(including: code)
+                .map { .init(id: $0.code, label: $0.label) }
+    }
 
     static let nextUpPrompt: [TVSettingsOption] = [
         .init(id: "0", label: "At end"),
@@ -29,13 +37,17 @@ enum TVSettingsOptions {
         .init(id: "120", label: "2 minutes before end"),
     ]
 
-    static let subtitleLanguage: [TVSettingsOption] =
+    static func subtitleLanguage(including code: String) -> [TVSettingsOption] {
         [.init(id: PlaybackPrefSentinel.none, label: "None")]
-            + PlaybackLanguageOption.all.map { .init(id: $0.code, label: $0.label) }
+            + PlaybackLanguageOption.options(including: code)
+                .map { .init(id: $0.code, label: $0.label) }
+    }
 
-    static let metadataLanguage: [TVSettingsOption] =
+    static func metadataLanguage(including code: String) -> [TVSettingsOption] {
         [.init(id: PlaybackPrefSentinel.none, label: "Library Default")]
-            + PlaybackLanguageOption.all.map { .init(id: $0.code, label: $0.label) }
+            + PlaybackLanguageOption.options(including: code)
+                .map { .init(id: $0.code, label: $0.label) }
+    }
 
     static let subtitleMode: [TVSettingsOption] =
         SubtitleMode.allCases.map { .init(id: $0.rawValue, label: $0.displayLabel) }

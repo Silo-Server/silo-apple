@@ -74,6 +74,8 @@ class SettingsViewModel {
     var prefSaveState: PrefSaveState?
     private var isSavingMetadataLanguage = false
     private var pendingMetadataLanguageValue: String?
+    private var isSavingAudioLanguage = false
+    private var pendingAudioLanguageValue: String?
 
     enum PrefSaveState: Equatable {
         case saving
@@ -218,18 +220,7 @@ class SettingsViewModel {
             // Keep the detail-page track-ordering preference in sync.
             ProfilePrefsStore.shared.setPreferredSubtitleLanguage(body.subtitleLanguage)
             if let prof = activeProfile {
-                activeProfile = UserProfile(
-                    id: prof.id,
-                    name: prof.name,
-                    avatarEmoji: prof.avatarEmoji,
-                    hasPin: prof.hasPin,
-                    isChild: prof.isChild,
-                    language: prof.language,
-                    subtitleLanguage: body.subtitleLanguage,
-                    subtitleMode: body.subtitleMode,
-                    showForcedSubtitles: body.showForcedSubtitles,
-                    preferredMetadataLanguage: prof.preferredMetadataLanguage
-                )
+                activeProfile = prof.with(subtitleLanguage: body.subtitleLanguage, subtitleMode: body.subtitleMode, showForcedSubtitles: body.showForcedSubtitles)
             }
         } catch {
             prefSaveState = .failed(
@@ -277,18 +268,7 @@ class SettingsViewModel {
             }
             prefSaveState = .saved
             if let prof = activeProfile {
-                activeProfile = UserProfile(
-                    id: prof.id,
-                    name: prof.name,
-                    avatarEmoji: prof.avatarEmoji,
-                    hasPin: prof.hasPin,
-                    isChild: prof.isChild,
-                    language: prof.language,
-                    subtitleLanguage: prof.subtitleLanguage,
-                    subtitleMode: prof.subtitleMode,
-                    showForcedSubtitles: prof.showForcedSubtitles,
-                    preferredMetadataLanguage: newValue
-                )
+                activeProfile = prof.with(preferredMetadataLanguage: newValue)
             }
             ResponseCache.shared.invalidateAllItemMetadata()
             #if os(tvOS)
@@ -315,8 +295,33 @@ class SettingsViewModel {
     /// never be read by anything.
     @MainActor
     func saveAudioLanguage() async {
+        // The picker fires this on every change, so two quick selections race
+        // across the `await` below. Serialize them the way
+        // `saveMetadataLanguage` does: record the latest value, let the
+        // in-flight save drain it, and never put two PUTs for the same field on
+        // the wire at once. Without this the second task reads a stale
+        // `activeProfile.language`, decides nothing changed, and returns —
+        // leaving the server holding the first value while the picker shows the
+        // second.
+        guard activeProfile?.id.isEmpty == false else {
+            prefSaveState = .failed("No active profile to save to.")
+            return
+        }
+        pendingAudioLanguageValue = outboundProfileLanguage(editorAudioLanguage)
+        guard !isSavingAudioLanguage else { return }
+
+        isSavingAudioLanguage = true
+        defer { isSavingAudioLanguage = false }
+
+        while let newValue = pendingAudioLanguageValue {
+            pendingAudioLanguageValue = nil
+            await saveAudioLanguageValue(newValue)
+        }
+    }
+
+    @MainActor
+    private func saveAudioLanguageValue(_ newValue: String) async {
         guard let profileId = activeProfile?.id, !profileId.isEmpty else { return }
-        let newValue = outboundProfileLanguage(editorAudioLanguage)
         guard newValue != (activeProfile?.language ?? "") else { return }
 
         prefSaveState = .saving
@@ -326,25 +331,18 @@ class SettingsViewModel {
                 profileId: profileId,
                 body: UpdateProfileBody(language: newValue)
             )
+            // The write landed. Record it even if the user has since moved on
+            // to another value: the queue above will save that one next, and
+            // leaving `activeProfile` stale would make the follow-up save
+            // compare against the wrong baseline and skip itself.
+            if let prof = activeProfile, prof.id == profileId {
+                activeProfile = prof.with(language: newValue)
+            }
             guard activeProfile?.id == profileId,
-                  outboundProfileLanguage(editorAudioLanguage) == newValue else {
+                  pendingAudioLanguageValue == nil else {
                 return
             }
             prefSaveState = .saved
-            if let prof = activeProfile {
-                activeProfile = UserProfile(
-                    id: prof.id,
-                    name: prof.name,
-                    avatarEmoji: prof.avatarEmoji,
-                    hasPin: prof.hasPin,
-                    isChild: prof.isChild,
-                    language: newValue,
-                    subtitleLanguage: prof.subtitleLanguage,
-                    subtitleMode: prof.subtitleMode,
-                    showForcedSubtitles: prof.showForcedSubtitles,
-                    preferredMetadataLanguage: prof.preferredMetadataLanguage
-                )
-            }
             // Detail screens render the server-resolved audio track out of
             // the cached item payloads, which have no TTL. Drop them so the
             // new selection shows up without a relaunch. Playback itself
@@ -355,10 +353,10 @@ class SettingsViewModel {
             ItemDetailCache.shared.clearAll()
             #endif
         } catch {
-            guard activeProfile?.id == profileId,
-                  outboundProfileLanguage(editorAudioLanguage) == newValue else {
-                return
-            }
+            guard activeProfile?.id == profileId else { return }
+            // Reported even when a newer value is already queued: the user needs
+            // to know this save failed, and the queued one will overwrite the
+            // message if it succeeds.
             prefSaveState = .failed(
                 (error as? LocalizedError)?.errorDescription
                     ?? String(describing: error)

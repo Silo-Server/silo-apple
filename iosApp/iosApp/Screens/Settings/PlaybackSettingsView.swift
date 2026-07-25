@@ -51,7 +51,7 @@ struct PlaybackSettingsView: View {
                 }
             )) {
                 Text("No Preference").tag(PlaybackPrefSentinel.none)
-                ForEach(PlaybackLanguageOption.all) { option in
+                ForEach(PlaybackLanguageOption.options(including: viewModel.editorAudioLanguage)) { option in
                     Text(option.label).tag(option.code)
                 }
             }
@@ -97,8 +97,16 @@ struct PlaybackSettingsView: View {
             Text("Streaming")
                 .foregroundStyle(Color.continuumSecondaryText)
         } footer: {
-            Text(streamingFooterText)
-                .foregroundStyle(Color.continuumSecondaryText)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(streamingFooterText)
+                // Audio Language saves to the server from this section, so its
+                // result has to be visible here rather than only on the
+                // Subtitles screen.
+                if let state = viewModel.prefSaveState {
+                    PrefSaveStateLabel(state: state)
+                }
+            }
+            .foregroundStyle(Color.continuumSecondaryText)
         }
         .listRowBackground(Color.continuumSurfaceElevated)
     }
@@ -179,7 +187,10 @@ struct PlaybackSettingsView: View {
                 Task { await viewModel.resetPlaybackDeviceSettings() }
             }
         } footer: {
-            Text("Resets playback choices for this device and profile back to the server fallback.")
+            // Deliberately scoped to "this device": the reset clears the
+            // device-scoped rows, and Audio Language is a profile field that it
+            // does not touch. The previous wording promised the profile too.
+            Text("Resets this device's playback choices back to the server fallback. Audio Language applies to your whole profile and is not affected.")
                 .foregroundStyle(Color.continuumSecondaryText)
         }
         .listRowBackground(Color.continuumSurfaceElevated)

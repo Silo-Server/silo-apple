@@ -46,7 +46,7 @@ struct SubtitleSettingsView: View {
         Section {
             Picker("Metadata Language", selection: $viewModel.editorPreferredMetadataLanguage) {
                 Text("Library Default").tag(PlaybackPrefSentinel.none)
-                ForEach(PlaybackLanguageOption.all) { option in
+                ForEach(PlaybackLanguageOption.options(including: viewModel.editorPreferredMetadataLanguage)) { option in
                     Text(option.label).tag(option.code)
                 }
             }
@@ -73,7 +73,7 @@ struct SubtitleSettingsView: View {
         Section {
             Picker("Language", selection: $viewModel.editorSubtitleLanguage) {
                 Text("None").tag(PlaybackPrefSentinel.none)
-                ForEach(PlaybackLanguageOption.all) { option in
+                ForEach(PlaybackLanguageOption.options(including: viewModel.editorSubtitleLanguage)) { option in
                     Text(option.label).tag(option.code)
                 }
             }
@@ -112,7 +112,7 @@ struct SubtitleSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
                 if let state = viewModel.prefSaveState {
-                    saveStateView(state)
+                    PrefSaveStateLabel(state: state)
                 }
             }
             .foregroundStyle(Color.continuumSecondaryText)
@@ -348,18 +348,6 @@ struct SubtitleSettingsView: View {
         )
     }
 
-    @ViewBuilder
-    private func saveStateView(_ state: SettingsViewModel.PrefSaveState) -> some View {
-        switch state {
-        case .saving:
-            Text("Saving…")
-        case .saved:
-            Text("Saved")
-        case .failed(let message):
-            Text("Couldn't save: \(message)")
-                .foregroundStyle(Color.continuumError)
-        }
-    }
 }
 
 // MARK: - Color choice row

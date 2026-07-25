@@ -49,6 +49,39 @@ struct UserProfile: Codable, Identifiable, Hashable {
         self.showForcedSubtitles = showForcedSubtitles
         self.preferredMetadataLanguage = preferredMetadataLanguage
     }
+
+    /// Returns a copy with the named fields replaced and everything else
+    /// carried over.
+    ///
+    /// Use this instead of re-invoking the initializer by hand. Every
+    /// hand-written reconstruction dropped `isPrimary` — Swift fills an
+    /// omitted defaulted parameter without a word, so the household parent
+    /// quietly demoted themselves on every profile-preference save — and the
+    /// same trap catches the next field anyone adds. Nothing can be forgotten
+    /// here, because omitting a parameter means "keep it".
+    ///
+    /// The double optionals distinguish "not supplied" from "set to nil".
+    func with(
+        language: String?? = nil,
+        subtitleLanguage: String?? = nil,
+        subtitleMode: String?? = nil,
+        showForcedSubtitles: Bool?? = nil,
+        preferredMetadataLanguage: String?? = nil
+    ) -> UserProfile {
+        UserProfile(
+            id: id,
+            name: name,
+            avatarEmoji: avatarEmoji,
+            hasPin: hasPin,
+            isChild: isChild,
+            isPrimary: isPrimary,
+            language: language ?? self.language,
+            subtitleLanguage: subtitleLanguage ?? self.subtitleLanguage,
+            subtitleMode: subtitleMode ?? self.subtitleMode,
+            showForcedSubtitles: showForcedSubtitles ?? self.showForcedSubtitles,
+            preferredMetadataLanguage: preferredMetadataLanguage ?? self.preferredMetadataLanguage
+        )
+    }
 }
 
 /// Request body for selecting a profile.

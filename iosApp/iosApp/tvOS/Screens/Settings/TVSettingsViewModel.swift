@@ -76,6 +76,8 @@ final class TVSettingsViewModel {
     var prefSaveState: PrefSaveState?
     private var isSavingMetadataLanguage = false
     private var pendingMetadataLanguageValue: String?
+    private var isSavingAudioLanguage = false
+    private var pendingAudioLanguageValue: String?
 
     enum PrefSaveState: Equatable {
         case saving
@@ -255,18 +257,7 @@ final class TVSettingsViewModel {
             // Refresh the local profile snapshot so a re-load reflects
             // what we just wrote.
             if let prof = activeProfile {
-                activeProfile = UserProfile(
-                    id: prof.id,
-                    name: prof.name,
-                    avatarEmoji: prof.avatarEmoji,
-                    hasPin: prof.hasPin,
-                    isChild: prof.isChild,
-                    language: prof.language,
-                    subtitleLanguage: body.subtitleLanguage,
-                    subtitleMode: body.subtitleMode,
-                    showForcedSubtitles: body.showForcedSubtitles,
-                    preferredMetadataLanguage: prof.preferredMetadataLanguage
-                )
+                activeProfile = prof.with(subtitleLanguage: body.subtitleLanguage, subtitleMode: body.subtitleMode, showForcedSubtitles: body.showForcedSubtitles)
             }
         } catch {
             prefSaveState = .failed(
@@ -313,18 +304,7 @@ final class TVSettingsViewModel {
             }
             prefSaveState = .saved
             if let prof = activeProfile {
-                activeProfile = UserProfile(
-                    id: prof.id,
-                    name: prof.name,
-                    avatarEmoji: prof.avatarEmoji,
-                    hasPin: prof.hasPin,
-                    isChild: prof.isChild,
-                    language: prof.language,
-                    subtitleLanguage: prof.subtitleLanguage,
-                    subtitleMode: prof.subtitleMode,
-                    showForcedSubtitles: prof.showForcedSubtitles,
-                    preferredMetadataLanguage: newValue
-                )
+                activeProfile = prof.with(preferredMetadataLanguage: newValue)
             }
             ResponseCache.shared.invalidateAllItemMetadata()
             #if os(tvOS)
@@ -351,8 +331,29 @@ final class TVSettingsViewModel {
     /// never be read by anything.
     @MainActor
     func saveAudioLanguage() async {
+        // Serialized the same way as saveMetadataLanguage: the picker fires on
+        // every change, so two quick selections would otherwise race across the
+        // await and leave the server holding the first value while the row
+        // shows the second.
+        guard activeProfile?.id.isEmpty == false else {
+            prefSaveState = .failed("No active profile to save to.")
+            return
+        }
+        pendingAudioLanguageValue = outboundProfileLanguage(editorAudioLanguage)
+        guard !isSavingAudioLanguage else { return }
+
+        isSavingAudioLanguage = true
+        defer { isSavingAudioLanguage = false }
+
+        while let newValue = pendingAudioLanguageValue {
+            pendingAudioLanguageValue = nil
+            await saveAudioLanguageValue(newValue)
+        }
+    }
+
+    @MainActor
+    private func saveAudioLanguageValue(_ newValue: String) async {
         guard let profileId = activeProfile?.id, !profileId.isEmpty else { return }
-        let newValue = outboundProfileLanguage(editorAudioLanguage)
         guard newValue != (activeProfile?.language ?? "") else { return }
 
         prefSaveState = .saving
@@ -362,25 +363,14 @@ final class TVSettingsViewModel {
                 profileId: profileId,
                 body: UpdateProfileBody(language: newValue)
             )
+            if let prof = activeProfile, prof.id == profileId {
+                activeProfile = prof.with(language: newValue)
+            }
             guard activeProfile?.id == profileId,
-                  outboundProfileLanguage(editorAudioLanguage) == newValue else {
+                  pendingAudioLanguageValue == nil else {
                 return
             }
             prefSaveState = .saved
-            if let prof = activeProfile {
-                activeProfile = UserProfile(
-                    id: prof.id,
-                    name: prof.name,
-                    avatarEmoji: prof.avatarEmoji,
-                    hasPin: prof.hasPin,
-                    isChild: prof.isChild,
-                    language: newValue,
-                    subtitleLanguage: prof.subtitleLanguage,
-                    subtitleMode: prof.subtitleMode,
-                    showForcedSubtitles: prof.showForcedSubtitles,
-                    preferredMetadataLanguage: prof.preferredMetadataLanguage
-                )
-            }
             // Detail screens render the server-resolved audio track out of
             // the cached item payloads, which have no TTL. Drop them so the
             // new selection shows up without a relaunch. Playback itself
@@ -389,8 +379,7 @@ final class TVSettingsViewModel {
             ResponseCache.shared.invalidateAllItemMetadata()
             ItemDetailCache.shared.clearAll()
         } catch {
-            guard activeProfile?.id == profileId,
-                  outboundProfileLanguage(editorAudioLanguage) == newValue else {
+            guard activeProfile?.id == profileId else {
                 return
             }
             prefSaveState = .failed(

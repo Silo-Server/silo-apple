@@ -158,7 +158,29 @@ struct PlaybackLanguageOption: Identifiable, Hashable {
 
     static func label(forCode code: String) -> String {
         if code == PlaybackPrefSentinel.originalLanguage { return "Original Language" }
-        return all.first { $0.code == code }?.label ?? code.uppercased()
+        if let known = all.first(where: { $0.code == code })?.label { return known }
+        // A code from outside the twelve still deserves a name rather than a
+        // bare "NL".
+        return Locale.current.localizedString(forLanguageCode: code)?.capitalized
+            ?? code.uppercased()
+    }
+
+    /// The options a picker should show while it holds `code`.
+    ///
+    /// Audio and subtitle language are server-owned profile fields, and the web
+    /// client offers far more languages than the twelve above — as does the
+    /// `original` sentinel, which the server honours at profile scope. A stored
+    /// value outside this list is therefore normal, not corrupt. Without it in
+    /// the list the picker renders an empty selection on iOS and a literal "—"
+    /// on tvOS, and the first tap silently replaces a language this client
+    /// cannot name.
+    static func options(including code: String) -> [PlaybackLanguageOption] {
+        guard !code.isEmpty,
+              code != PlaybackPrefSentinel.none,
+              code != PlaybackPrefSentinel.inherit,
+              !all.contains(where: { $0.code == code })
+        else { return all }
+        return [PlaybackLanguageOption(code: code, label: label(forCode: code))] + all
     }
 }
 
