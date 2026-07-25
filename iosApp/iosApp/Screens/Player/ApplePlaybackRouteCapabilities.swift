@@ -325,8 +325,8 @@ extension ApplePlaybackRouteCapabilities {
             note: "PiP is enabled on iOS Native Player HLS; Silo-rendered subtitles do not appear in the PiP window."
         ),
         externalPlayback: .init(
-            state: .unsupported,
-            note: "AirPlay video hands the receiver the stream URL and nothing else. Server-hosted direct assets are either header-authenticated (401 on the receiver) or rewritten to the on-device source proxy at 127.0.0.1, so external playback stays off for them; offline downloads keep it."
+            state: .validationRequired,
+            note: "Asset-conditional. AirPlay video hands the receiver the stream URL and nothing else: server-hosted direct assets are either header-authenticated (401 on the receiver) or rewritten to the on-device source proxy at 127.0.0.1, so external playback stays off for them. Offline downloads are fetchable and keep it, pending receiver validation."
         ),
         nowPlayingIntegration: .init(
             state: .repoVerified,

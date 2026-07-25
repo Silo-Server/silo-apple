@@ -40,7 +40,7 @@ player routes in `silo-apple`. It separates:
 | tvOS custom shell / Siri Remote ownership | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
 | Now Playing / remote commands | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
 | PiP | Unsupported | Validation required | Validation required | Validation required |
-| AirPlay / external playback | Unsupported | Unsupported | Unsupported for server-hosted assets | Repo-verified |
+| AirPlay / external playback | Unsupported | Unsupported | Validation required, downloads only | Repo-verified |
 | Premium HDR / DV / Atmos claims | Validation required | Validation required | Validation required | Validation required |
 
 ## Notes
