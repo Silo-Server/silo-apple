@@ -326,7 +326,7 @@ extension ApplePlaybackRouteCapabilities {
         ),
         externalPlayback: .init(
             state: .unsupported,
-            note: "AirPlay video hands the receiver the stream URL, which it fetches without the route's Authorization header, so the server answers 401. External playback stays off for server-hosted assets; header-less local downloads keep it."
+            note: "AirPlay video hands the receiver the stream URL and nothing else. Server-hosted direct assets are either header-authenticated (401 on the receiver) or rewritten to the on-device source proxy at 127.0.0.1, so external playback stays off for them; offline downloads keep it."
         ),
         nowPlayingIntegration: .init(
             state: .repoVerified,

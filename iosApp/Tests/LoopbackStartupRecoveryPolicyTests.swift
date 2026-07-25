@@ -96,6 +96,45 @@ final class LoopbackStartupRecoveryPolicyTests: XCTestCase {
         )
     }
 
+    func testExternalPlaybackIsOfferedOnlyForAssetsAReceiverCanFetch() {
+        // Server-hosted stream: authenticated by a header the receiver cannot
+        // send.
+        XCTAssertFalse(
+            AVPlayerBackend.isReceiverFetchableAsset(
+                url: URL(string: "https://silo.example.com/api/v1/stream/abc?st=xyz")!,
+                headers: ["Authorization": "Bearer token"]
+            )
+        )
+        // The same session behind the on-device source proxy: no headers, but
+        // 127.0.0.1 means nothing to an Apple TV.
+        XCTAssertFalse(
+            AVPlayerBackend.isReceiverFetchableAsset(
+                url: URL(string: "http://127.0.0.1:52341/source/abc")!,
+                headers: [:]
+            )
+        )
+        XCTAssertFalse(
+            AVPlayerBackend.isReceiverFetchableAsset(
+                url: URL(string: "http://localhost:52341/source/abc")!,
+                headers: [:]
+            )
+        )
+        // Offline download.
+        XCTAssertTrue(
+            AVPlayerBackend.isReceiverFetchableAsset(
+                url: URL(fileURLWithPath: "/var/mobile/Containers/Data/download.mp4"),
+                headers: [:]
+            )
+        )
+        // Unauthenticated origin URL.
+        XCTAssertTrue(
+            AVPlayerBackend.isReceiverFetchableAsset(
+                url: URL(string: "https://cdn.example.com/clip.mp4")!,
+                headers: [:]
+            )
+        )
+    }
+
     func testResumeFromTheReceiverStillReconcilesAfterAStall() {
         XCTAssertEqual(
             AVPlayerSystemTransportIntent.resolve(

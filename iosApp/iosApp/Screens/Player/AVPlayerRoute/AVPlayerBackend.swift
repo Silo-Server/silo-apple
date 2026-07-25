@@ -978,13 +978,6 @@ final class AVPlayerBackend {
         avPlayer.allowsExternalPlayback
     }
 
-    /// AirPlay video hands the receiver a *URL*, which it fetches itself with
-    /// none of the asset's HTTP headers. Any route whose stream URL is
-    /// authenticated by an `Authorization` header therefore 401s on the
-    /// receiver, so external playback is only offered where the receiver can
-    /// genuinely fetch the media: the loopback route on iOS (LAN server, token
-    /// in the path) and header-less assets such as offline `file://`
-    /// downloads.
     private func applyExternalPlaybackPolicy(for strategy: SourceStrategy) {
         let allowed: Bool
         switch strategy {
@@ -996,10 +989,37 @@ final class AVPlayerBackend {
             #else
             allowed = false
             #endif
-        case .remoteHLS(_, let headers), .remoteDirect(_, let headers):
-            allowed = headers.isEmpty
+        case .remoteHLS(let url, let headers), .remoteDirect(let url, let headers):
+            allowed = Self.isReceiverFetchableAsset(url: url, headers: headers)
         }
         setExternalPlaybackAllowed(allowed)
+    }
+
+    /// Can an AirPlay receiver fetch this asset itself? It gets the URL and
+    /// nothing else — none of the asset's HTTP headers, and its own network
+    /// stack. Two disqualifiers, both of which occur on direct-play routes:
+    ///
+    /// - Header authentication. Silo's `/api/v1/...` stream URLs carry a
+    ///   bearer token in `Authorization`, and the receiver's fetch gets a 401.
+    /// - A loopback host. `PlayerViewModel.prepareSourceProxy` rewrites
+    ///   direct-play URLs to the on-device caching proxy at 127.0.0.1 *and
+    ///   drops the headers*, so "no headers" on its own is not evidence that
+    ///   anything off-device can reach it.
+    ///
+    /// Local files pass: AVPlayer streams a `file://` asset to the receiver
+    /// itself instead of handing over a URL that means nothing there.
+    static func isReceiverFetchableAsset(url: URL, headers: [String: String]) -> Bool {
+        if url.isFileURL { return true }
+        guard headers.isEmpty,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return false }
+        return !isLoopbackHost(url.host)
+    }
+
+    static func isLoopbackHost(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        if host == "localhost" || host == "::1" || host == "[::1]" { return true }
+        return host.hasPrefix("127.")
     }
 
     private func setExternalPlaybackAllowed(_ allowed: Bool) {

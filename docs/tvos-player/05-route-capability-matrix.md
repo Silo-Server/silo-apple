@@ -67,11 +67,14 @@ player routes in `silo-apple`. It separates:
   AVPlayer-backed routes.
 - AirPlay video hands the receiver a URL and nothing else: the receiver opens
   its own HTTP connection, without the asset's `AVURLAssetHTTPHeaderFieldsKey`
-  headers. NativePlayer stream URLs are authenticated by an `Authorization`
-  header (`/api/v1/...` sits behind `RequireAuth` on the server), so a receiver
-  fetch answers 401. External playback and the route picker are therefore
-  disabled on those routes; header-less assets — offline `file://` downloads —
-  keep AirPlay.
+  headers. Two things make a NativePlayer URL unfetchable from a receiver, and
+  a direct-play session can hit either: the URL is authenticated by an
+  `Authorization` header (`/api/v1/...` sits behind `RequireAuth` on the
+  server, so the fetch answers 401), or `prepareSourceProxy` has rewritten it
+  to the on-device caching proxy at 127.0.0.1, which drops the headers but is
+  unreachable off-device. External playback and the route picker are enabled
+  only for assets that survive both checks — offline `file://` downloads, and
+  unauthenticated origin URLs.
 - On iOS, SiloPlayer publishes its generated HLS through a LAN URL carrying a
   per-session access token, so the selected receiver can fetch the playlist and
   segments. The server binds to the LAN but refuses off-device connections
