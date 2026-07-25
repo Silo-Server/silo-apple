@@ -141,17 +141,22 @@ struct MobilePlayerControls: View {
                     )
                 }
 
-                AirPlayRoutePicker { isPresentingRoutes in
-                    // The route sheet is a UIKit presentation the auto-hide
-                    // timer knows nothing about; pin the controls so it can't
-                    // dismantle the picker mid-selection.
-                    if isPresentingRoutes {
-                        viewModel.pinControlsVisible()
-                    } else {
-                        viewModel.resumeAutoHide()
+                // Only shown where the receiver could actually fetch the
+                // media. On routes whose URL is authenticated by a request
+                // header, AirPlay video would leave the TV on a 401.
+                if viewModel.supportsExternalPlayback {
+                    AirPlayRoutePicker { isPresentingRoutes in
+                        // The route sheet is a UIKit presentation the auto-hide
+                        // timer knows nothing about; pin the controls so it can't
+                        // dismantle the picker mid-selection.
+                        if isPresentingRoutes {
+                            viewModel.pinControlsVisible()
+                        } else {
+                            viewModel.resumeAutoHide()
+                        }
                     }
+                    .frame(width: 44, height: 44)
                 }
-                .frame(width: 44, height: 44)
             }
         }
     }

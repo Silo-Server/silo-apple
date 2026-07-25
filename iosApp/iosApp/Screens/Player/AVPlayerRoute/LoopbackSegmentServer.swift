@@ -55,6 +55,8 @@ final class LoopbackSegmentServer {
     private let queue = DispatchQueue(label: "com.continuum.dv.hlsserver", qos: .userInitiated)
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private let lock = NSLock()
+    /// Guarded by `lock`. Only true while an AirPlay handoff is live.
+    private var acceptsExternalClients = false
     private var requestLogCount = 0
     /// Method/path/status/bytes/range tuples already emitted to the access
     /// log. Suppresses AVPlayer's identical retry probes — the first request
@@ -204,6 +206,25 @@ final class LoopbackSegmentServer {
         return URL(string: "http://\(host):\(port)/\(path)")
     }
 
+    /// Replaces the access token wherever it appears in a log line. The
+    /// diagnostics redactor normalizes URLs but keeps their path, so a raw
+    /// resource URL would carry this session's secret into a support bundle.
+    func redactingAccessToken(in value: String) -> String {
+        guard let accessToken, !accessToken.isEmpty else { return value }
+        return value.replacingOccurrences(of: accessToken, with: "[session_token]")
+    }
+
+    /// Opens the listener to off-device clients. The listener has to be bound
+    /// to the LAN from the start — rebinding mid-session would change the port
+    /// under a playing item — but nothing outside this device has any business
+    /// reaching it until an AirPlay handoff is actually live, so connections
+    /// from non-loopback peers are refused until then.
+    func setAcceptsExternalClients(_ accepts: Bool) {
+        lock.lock()
+        acceptsExternalClients = accepts
+        lock.unlock()
+    }
+
     /// Single-shot, thread-safe resume gate for `start()`'s continuation.
     /// `markResumed` returns `true` only the first time it is called.
     private final class ResumeBox: @unchecked Sendable {
@@ -246,6 +267,17 @@ final class LoopbackSegmentServer {
     // MARK: - Connection handling
 
     private func accept(_ connection: NWConnection) {
+        if Self.isOffDevicePeer(connection.endpoint) {
+            lock.lock()
+            let allowed = acceptsExternalClients
+            lock.unlock()
+            guard allowed else {
+                Self.logger.info("Refused off-device connection; no AirPlay handoff is active")
+                connection.cancel()
+                return
+            }
+        }
+
         let id = ObjectIdentifier(connection)
         lock.lock()
         connections[id] = connection
@@ -346,6 +378,26 @@ final class LoopbackSegmentServer {
         }
     }
 
+    /// True only when the peer is positively identifiable as another device.
+    /// Anything unrecognized counts as local: misreading AVPlayer's own
+    /// loopback connection would break playback outright, while misreading a
+    /// stranger's costs nothing — the access-token check still stands in front
+    /// of every resource.
+    static func isOffDevicePeer(_ endpoint: NWEndpoint) -> Bool {
+        guard case let .hostPort(host, _) = endpoint else { return false }
+        switch host {
+        case let .ipv4(address):
+            return !address.isLoopback
+        case let .ipv6(address):
+            if let mapped = address.asIPv4 { return !mapped.isLoopback }
+            return !address.isLoopback
+        case .name:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
     private func authorizedResourcePath(_ requestPath: String) -> String? {
         Self.authorizedResourcePath(requestPath, accessToken: accessToken)
     }
@@ -388,21 +440,35 @@ final class LoopbackSegmentServer {
             )
             guard result == 0 else { continue }
             let address = String(cString: host)
-            guard isPrivateIPv4Address(address) else { continue }
-            candidates.append((String(cString: interface.pointee.ifa_name), address))
+            let name = String(cString: interface.pointee.ifa_name)
+            guard isReceiverReachableInterface(name),
+                  isPrivateIPv4Address(address) else { continue }
+            candidates.append((name, address))
         }
+        // en0 is Wi-Fi on every iPhone; the sorted fallback keeps selection
+        // deterministic when a second Ethernet-class interface exists.
         return candidates.first(where: { $0.name == "en0" })?.address
-            ?? candidates.first?.address
+            ?? candidates.sorted(by: { $0.name < $1.name }).first?.address
+    }
+
+    /// AirPlay receivers live on the Wi-Fi/Ethernet LAN. Cellular (`pdp_ip*`),
+    /// VPN tunnels (`utun*`, `ipsec*`, `ppp*`), and AWDL/peer links (`awdl*`,
+    /// `llw*`) can all carry an RFC1918 address the Apple TV cannot route to,
+    /// so advertising one produces a receiver that silently never connects.
+    static func isReceiverReachableInterface(_ name: String) -> Bool {
+        guard name.hasPrefix("en") || name.hasPrefix("bridge") else { return false }
+        return true
     }
 
     static func isPrivateIPv4Address(_ address: String) -> Bool {
         let octets = address.split(separator: ".").compactMap { Int($0) }
         guard octets.count == 4,
               octets.allSatisfy({ (0...255).contains($0) }) else { return false }
+        // Deliberately excludes 169.254/16: a link-local address means DHCP
+        // never completed, and a receiver on the real subnet cannot reach it.
         return octets[0] == 10
             || (octets[0] == 172 && (16...31).contains(octets[1]))
             || (octets[0] == 192 && octets[1] == 168)
-            || (octets[0] == 169 && octets[1] == 254)
     }
     #else
     private static func localNetworkIPv4Address() -> String? { nil }

@@ -40,7 +40,7 @@ player routes in `silo-apple`. It separates:
 | tvOS custom shell / Siri Remote ownership | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
 | Now Playing / remote commands | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
 | PiP | Unsupported | Validation required | Validation required | Validation required |
-| AirPlay / external playback | Unsupported | Validation required | Validation required | Repo-verified |
+| AirPlay / external playback | Unsupported | Unsupported | Unsupported for server-hosted assets | Repo-verified |
 | Premium HDR / DV / Atmos claims | Validation required | Validation required | Validation required | Validation required |
 
 ## Notes
@@ -63,12 +63,23 @@ player routes in `silo-apple`. It separates:
   promise on each route; they are not a claim about every embedded subtitle
   on a NativePlayer or SiloPlayer asset.
 - PiP stays intentionally conservative until Silo has route-specific lifecycle
-  handling and device/output validation. AirPlay UI and AVPlayer external
-  playback are enabled on NativePlayer and SiloPlayer routes. On iOS,
-  SiloPlayer publishes its generated HLS through a session-secret LAN URL so
-  the selected receiver can fetch the playlist and segments. SiloPlayer AirPlay
-  was hardware-validated 2026-07-24 from an iPhone 16 Pro to Apple TV with a
-  Dolby Vision source. This validates external playback for that route, not a
+  handling and device/output validation. PiP itself is enabled on the iOS
+  AVPlayer-backed routes.
+- AirPlay video hands the receiver a URL and nothing else: the receiver opens
+  its own HTTP connection, without the asset's `AVURLAssetHTTPHeaderFieldsKey`
+  headers. NativePlayer stream URLs are authenticated by an `Authorization`
+  header (`/api/v1/...` sits behind `RequireAuth` on the server), so a receiver
+  fetch answers 401. External playback and the route picker are therefore
+  disabled on those routes; header-less assets — offline `file://` downloads —
+  keep AirPlay.
+- On iOS, SiloPlayer publishes its generated HLS through a LAN URL carrying a
+  per-session access token, so the selected receiver can fetch the playlist and
+  segments. The server binds to the LAN but refuses off-device connections
+  until a handoff is actually live, and advertises only a Wi-Fi/Ethernet
+  RFC1918 address. If no such address exists, playback stays on the device with
+  a notice instead of stranding the receiver. SiloPlayer AirPlay was
+  hardware-validated 2026-07-24 from an iPhone 16 Pro to Apple TV with a Dolby
+  Vision source. This validates external playback for that route, not a
   generalized Dolby Vision output-mode or premium-format claim.
 - Premium-media claims stay validation-gated even when playback itself uses a
   NativePlayer or SiloPlayer route.

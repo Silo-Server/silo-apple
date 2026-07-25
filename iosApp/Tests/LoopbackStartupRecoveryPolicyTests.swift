@@ -3,51 +3,105 @@ import XCTest
 @testable import Silo
 
 final class LoopbackStartupRecoveryPolicyTests: XCTestCase {
+    private func transportContext(
+        _ status: AVPlayer.TimeControlStatus,
+        isUserPaused: Bool = false,
+        systemControlsAreActive: Bool = true,
+        isInitialObservation: Bool = false,
+        hasStartedPlayback: Bool = true,
+        isSeekInFlight: Bool = false,
+        isBufferStarved: Bool = false,
+        hasReachedEnd: Bool = false
+    ) -> AVPlayerSystemTransportIntent.Context {
+        .init(
+            timeControlStatus: status,
+            isUserPaused: isUserPaused,
+            systemControlsAreActive: systemControlsAreActive,
+            isInitialObservation: isInitialObservation,
+            hasStartedPlayback: hasStartedPlayback,
+            isSeekInFlight: isSeekInFlight,
+            isBufferStarved: isBufferStarved,
+            hasReachedEnd: hasReachedEnd
+        )
+    }
+
     func testSystemTransportChangesReconcileOnlyWhenIntentDiffers() {
         XCTAssertEqual(
-            AVPlayerSystemTransportIntent.resolve(
-                timeControlStatus: .paused,
-                isUserPaused: false,
-                systemControlsAreActive: true
-            ),
+            AVPlayerSystemTransportIntent.resolve(transportContext(.paused)),
             .pause
         )
         XCTAssertEqual(
             AVPlayerSystemTransportIntent.resolve(
-                timeControlStatus: .playing,
-                isUserPaused: true,
-                systemControlsAreActive: true
+                transportContext(.playing, isUserPaused: true)
             ),
             .play
         )
         XCTAssertEqual(
             AVPlayerSystemTransportIntent.resolve(
-                timeControlStatus: .waitingToPlayAtSpecifiedRate,
-                isUserPaused: true,
-                systemControlsAreActive: true
+                transportContext(.waitingToPlayAtSpecifiedRate, isUserPaused: true)
             ),
             .play
         )
         XCTAssertNil(
             AVPlayerSystemTransportIntent.resolve(
-                timeControlStatus: .paused,
-                isUserPaused: true,
-                systemControlsAreActive: true
+                transportContext(.paused, isUserPaused: true)
             )
         )
         XCTAssertNil(
             AVPlayerSystemTransportIntent.resolve(
-                timeControlStatus: .waitingToPlayAtSpecifiedRate,
-                isUserPaused: false,
-                systemControlsAreActive: true
+                transportContext(.waitingToPlayAtSpecifiedRate)
             )
         )
         XCTAssertNil(
             AVPlayerSystemTransportIntent.resolve(
-                timeControlStatus: .paused,
-                isUserPaused: false,
-                systemControlsAreActive: false
+                transportContext(.paused, systemControlsAreActive: false)
             )
+        )
+    }
+
+    /// The player is paused at every one of these moments for reasons that
+    /// have nothing to do with the receiver or the PiP window. Reading any of
+    /// them as a pause command latches `isUserPaused`, and every loopback
+    /// stall-recovery path is gated on `!isUserPaused`.
+    func testPlayerOwnPauseTransitionsAreNotTransportCommands() {
+        // `.initial` KVO delivery on a freshly attached item.
+        XCTAssertNil(
+            AVPlayerSystemTransportIntent.resolve(
+                transportContext(.paused, isInitialObservation: true, hasStartedPlayback: false)
+            )
+        )
+        // Pre-roll: item attached, initial resume seek not issued yet.
+        XCTAssertNil(
+            AVPlayerSystemTransportIntent.resolve(
+                transportContext(.paused, hasStartedPlayback: false)
+            )
+        )
+        // Mid-scrub.
+        XCTAssertNil(
+            AVPlayerSystemTransportIntent.resolve(
+                transportContext(.paused, isSeekInFlight: true)
+            )
+        )
+        // Buffer underrun on the loopback route.
+        XCTAssertNil(
+            AVPlayerSystemTransportIntent.resolve(
+                transportContext(.paused, isBufferStarved: true)
+            )
+        )
+        // End of file.
+        XCTAssertNil(
+            AVPlayerSystemTransportIntent.resolve(
+                transportContext(.paused, hasReachedEnd: true)
+            )
+        )
+    }
+
+    func testResumeFromTheReceiverStillReconcilesAfterAStall() {
+        XCTAssertEqual(
+            AVPlayerSystemTransportIntent.resolve(
+                transportContext(.playing, isUserPaused: true, isBufferStarved: true)
+            ),
+            .play
         )
     }
 

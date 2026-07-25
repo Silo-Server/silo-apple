@@ -621,6 +621,11 @@ class PlayerViewModel {
     /// Gives automatic PiP a bounded window to publish `willStart` after the
     /// scene backgrounds. If no transition arrives, normal pause policy wins.
     private var pictureInPictureBackgroundGraceTask: Task<Void, Never>?
+    /// Whether the active route can hand video to an AirPlay receiver. False
+    /// on routes whose stream URL is authenticated by a request header the
+    /// receiver cannot send — the picker is hidden there rather than offering
+    /// a handoff that would 401 on the TV.
+    private(set) var supportsExternalPlayback = false
     #endif
     /// True after the active backend reports natural EOF. Used to keep the
     /// UI in a terminal paused state without letting tail-drain callbacks
@@ -1374,6 +1379,24 @@ class PlayerViewModel {
             guard let self, !self.isDisposed else { return }
             self.handleExternalPlaybackActiveChange(active)
         }
+        backend.onExternalPlaybackAllowedChange = { [weak self] allowed in
+            guard let self, !self.isDisposed else { return }
+            self.supportsExternalPlayback = allowed
+        }
+        backend.onExternalPlaybackUnavailable = { [weak self] in
+            // `showNotice` is `@MainActor`; this callback may not be, so
+            // dispatch onto the main actor explicitly.
+            Task { @MainActor [weak self] in
+                guard let self, !self.isDisposed else { return }
+                self.showNotice(
+                    title: "AirPlay Unavailable",
+                    message: "This device has no Wi-Fi address the receiver can reach. Playback stayed on this device.",
+                    tone: .warning,
+                    duration: 6
+                )
+            }
+        }
+        supportsExternalPlayback = backend.isExternalPlaybackAllowed
         PictureInPictureCoordinator.shared.bindLifecycle(owner: self) { [weak self] in
             guard let self, !self.isDisposed else { return }
             self.handlePictureInPictureEngagementEnded()
@@ -5722,13 +5745,13 @@ class PlayerViewModel {
         #if os(iOS)
         pictureInPictureBackgroundGraceTask?.cancel()
         pictureInPictureBackgroundGraceTask = nil
-        PictureInPictureCoordinator.shared.unbindLifecycle(owner: self)
         // The PiP coordinator is a singleton and its controller strongly
         // retains the AVPlayerLayer, the AVPlayer, and everything hanging off
         // it. SwiftUI's `dismantleUIView` normally releases it, but ordering
         // there is not guaranteed relative to this teardown, so drop it here
-        // too rather than risk stranding the whole playback graph.
-        PictureInPictureCoordinator.shared.release()
+        // too rather than risk stranding the whole playback graph. Owner-keyed
+        // so a late teardown cannot unbind a newer session's PiP.
+        PictureInPictureCoordinator.shared.endSession(owner: self)
         isSceneBackgrounded = false
         #endif
         activeExecutionPlan = nil

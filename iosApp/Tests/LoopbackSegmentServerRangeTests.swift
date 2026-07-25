@@ -1,3 +1,4 @@
+import Network
 import XCTest
 @testable import Silo
 
@@ -24,15 +25,28 @@ final class LoopbackSegmentServerRangeTests: XCTestCase {
         )
     }
 
-    func testPrivateIPv4AddressSelectionExcludesPublicAddresses() {
+    func testPrivateIPv4AddressSelectionExcludesPublicAndLinkLocalAddresses() {
         XCTAssertTrue(LoopbackSegmentServer.isPrivateIPv4Address("10.0.0.4"))
         XCTAssertTrue(LoopbackSegmentServer.isPrivateIPv4Address("172.20.1.2"))
         XCTAssertTrue(LoopbackSegmentServer.isPrivateIPv4Address("192.168.1.10"))
-        XCTAssertTrue(LoopbackSegmentServer.isPrivateIPv4Address("169.254.2.3"))
+        // Link-local means DHCP never completed; a receiver on the real subnet
+        // cannot route to it.
+        XCTAssertFalse(LoopbackSegmentServer.isPrivateIPv4Address("169.254.2.3"))
         XCTAssertFalse(LoopbackSegmentServer.isPrivateIPv4Address("8.8.8.8"))
         XCTAssertFalse(LoopbackSegmentServer.isPrivateIPv4Address("10.0.0.999"))
         XCTAssertFalse(LoopbackSegmentServer.isPrivateIPv4Address("10.-1.0.1"))
         XCTAssertFalse(LoopbackSegmentServer.isPrivateIPv4Address("not-an-address"))
+    }
+
+    func testAdvertisedInterfaceExcludesCellularAndTunnels() {
+        XCTAssertTrue(LoopbackSegmentServer.isReceiverReachableInterface("en0"))
+        XCTAssertTrue(LoopbackSegmentServer.isReceiverReachableInterface("en1"))
+        XCTAssertTrue(LoopbackSegmentServer.isReceiverReachableInterface("bridge100"))
+        XCTAssertFalse(LoopbackSegmentServer.isReceiverReachableInterface("pdp_ip0"))
+        XCTAssertFalse(LoopbackSegmentServer.isReceiverReachableInterface("utun3"))
+        XCTAssertFalse(LoopbackSegmentServer.isReceiverReachableInterface("ipsec0"))
+        XCTAssertFalse(LoopbackSegmentServer.isReceiverReachableInterface("awdl0"))
+        XCTAssertFalse(LoopbackSegmentServer.isReceiverReachableInterface("llw0"))
     }
 
     func testLANExposureUsesLoopbackURLBeforeExternalHandoff() throws {
@@ -45,6 +59,31 @@ final class LoopbackSegmentServerRangeTests: XCTestCase {
         XCTAssertEqual(url.host, "127.0.0.1")
         XCTAssertTrue(url.path.hasSuffix("/master.m3u8"))
         XCTAssertNotEqual(url.path, "/master.m3u8")
+    }
+
+    func testResourceURLLogRedactionHidesTheSessionToken() throws {
+        let server = LoopbackSegmentServer(
+            segmentStore: LoopbackSegmentStore(generation: 2),
+            exposure: .localNetwork
+        )
+
+        let url = try XCTUnwrap(server.resourceURL(for: "master.m3u8"))
+        let token = try XCTUnwrap(url.pathComponents.dropFirst().first)
+        let redacted = server.redactingAccessToken(in: url.absoluteString)
+
+        XCTAssertFalse(redacted.contains(token))
+        XCTAssertTrue(redacted.contains("master.m3u8"))
+    }
+
+    func testOffDevicePeerClassificationTreatsUnknownEndpointsAsLocal() {
+        XCTAssertFalse(LoopbackSegmentServer.isOffDevicePeer(.hostPort(host: .ipv4(.loopback), port: 8080)))
+        XCTAssertFalse(LoopbackSegmentServer.isOffDevicePeer(.hostPort(host: .ipv6(.loopback), port: 8080)))
+        XCTAssertFalse(LoopbackSegmentServer.isOffDevicePeer(.hostPort(host: .name("localhost", nil), port: 8080)))
+        XCTAssertTrue(
+            LoopbackSegmentServer.isOffDevicePeer(
+                .hostPort(host: .ipv4(IPv4Address("192.168.1.42")!), port: 8080)
+            )
+        )
     }
 
     func testAdvertisedVODSegmentMissRetriesInsteadOf404() {

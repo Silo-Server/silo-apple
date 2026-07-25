@@ -48,6 +48,11 @@ final class PictureInPictureCoordinator {
     @ObservationIgnored private var delegateProxy: DelegateProxy?
     @ObservationIgnored private weak var lifecycleOwner: AnyObject?
     @ObservationIgnored private var onEngagementEnded: (() -> Void)?
+    /// Set when the system asks us to restore the full-screen UI, i.e. the user
+    /// tapped the PiP window's restore button. The `didStop` that follows is
+    /// not "playback lost its route" — the user is on their way back into the
+    /// app — and the scene may still read as backgrounded when it lands.
+    @ObservationIgnored private var isRestoringUserInterface = false
 
     private init() {}
 
@@ -104,14 +109,26 @@ final class PictureInPictureCoordinator {
         releaseController()
     }
 
-    /// Unconditional teardown for the player-close path. `detach` is keyed on
-    /// layer identity, which is the right guard for SwiftUI's dismantle but is
-    /// a no-op if the surface was never mounted or was replaced out of order.
-    /// The coordinator is a singleton and the controller strongly retains its
-    /// `AVPlayerLayer` — and through it the `AVPlayer`, its item, and the
-    /// loopback server — so `PlayerViewModel.cleanup()` calls this to
-    /// guarantee the graph is released with the session.
-    func release() {
+    /// Teardown for the player-close path. `detach` is keyed on layer identity,
+    /// which is the right guard for SwiftUI's dismantle but is a no-op if the
+    /// surface was never mounted or was replaced out of order. The coordinator
+    /// is a singleton and the controller strongly retains its `AVPlayerLayer` —
+    /// and through it the `AVPlayer`, its item, and the loopback server — so
+    /// `PlayerViewModel.cleanup()` calls this to guarantee the graph is
+    /// released with the session.
+    ///
+    /// Owner-guarded, because "close the old player, open the next" runs the
+    /// two sessions' lifecycles concurrently: a late cleanup from the outgoing
+    /// session must not tear down the controller the incoming one just bound.
+    /// The incoming session's `attach` already released the old controller
+    /// when the layer swapped, so nothing leaks by skipping.
+    func endSession(owner: AnyObject) {
+        guard lifecycleOwner === owner else {
+            Self.logger.info("Skipping PiP teardown; another session owns the controller")
+            return
+        }
+        lifecycleOwner = nil
+        onEngagementEnded = nil
         releaseController()
     }
 
@@ -120,12 +137,6 @@ final class PictureInPictureCoordinator {
     func bindLifecycle(owner: AnyObject, onEngagementEnded: @escaping () -> Void) {
         lifecycleOwner = owner
         self.onEngagementEnded = onEngagementEnded
-    }
-
-    func unbindLifecycle(owner: AnyObject) {
-        guard lifecycleOwner === owner else { return }
-        lifecycleOwner = nil
-        onEngagementEnded = nil
     }
 
     func toggle() {
@@ -166,12 +177,14 @@ final class PictureInPictureCoordinator {
         isPossible = false
         isActive = false
         isTransitioning = false
+        isRestoringUserInterface = false
     }
 
     // MARK: - Delegate callbacks
 
     fileprivate func handleWillStart() {
         isTransitioning = true
+        isRestoringUserInterface = false
     }
 
     fileprivate func handleDidStart() {
@@ -180,10 +193,19 @@ final class PictureInPictureCoordinator {
         Self.logger.info("PiP started")
     }
 
+    fileprivate func handleRestoreRequested() {
+        isRestoringUserInterface = true
+    }
+
     fileprivate func handleDidStop() {
         isTransitioning = false
         isActive = false
-        Self.logger.info("PiP stopped")
+        let wasRestoring = isRestoringUserInterface
+        isRestoringUserInterface = false
+        Self.logger.info("PiP stopped restoring=\(wasRestoring ? 1 : 0, privacy: .public)")
+        // Returning to the full-screen player keeps playing; only PiP genuinely
+        // going away while the app stays in the background is a reason to stop.
+        guard !wasRestoring else { return }
         onEngagementEnded?()
     }
 
@@ -236,6 +258,7 @@ final class PictureInPictureCoordinator {
             restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler:
                 @escaping (Bool) -> Void
         ) {
+            coordinator?.handleRestoreRequested()
             completionHandler(true)
         }
     }

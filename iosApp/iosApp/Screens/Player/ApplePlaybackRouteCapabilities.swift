@@ -325,8 +325,8 @@ extension ApplePlaybackRouteCapabilities {
             note: "PiP is enabled on iOS Native Player HLS; Silo-rendered subtitles do not appear in the PiP window."
         ),
         externalPlayback: .init(
-            state: .validationRequired,
-            note: "AirPlay UI and AVPlayer external playback are enabled; receiver playback still needs device validation."
+            state: .unsupported,
+            note: "AirPlay video hands the receiver the stream URL, which it fetches without the route's Authorization header, so the server answers 401. External playback stays off for server-hosted assets; header-less local downloads keep it."
         ),
         nowPlayingIntegration: .init(
             state: .repoVerified,
@@ -396,8 +396,8 @@ extension ApplePlaybackRouteCapabilities {
             note: "PiP is enabled on iOS Native Player Direct assets; Silo-rendered subtitles do not appear in the PiP window."
         ),
         externalPlayback: .init(
-            state: .validationRequired,
-            note: "AirPlay UI and AVPlayer external playback are enabled; receiver playback still needs device validation."
+            state: .unsupported,
+            note: "AirPlay video hands the receiver the stream URL, which it fetches without the route's Authorization header, so the server answers 401. External playback and the route picker stay off here."
         ),
         nowPlayingIntegration: .init(
             state: .repoVerified,
