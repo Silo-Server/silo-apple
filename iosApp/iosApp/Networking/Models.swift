@@ -941,6 +941,15 @@ struct PlaybackSessionResponse: Codable {
     var timelineOffsetSeconds: Double
     let subtitleUrls: [SubtitleUrl]?
     let playbackInfo: PlaybackInfo?
+    /// Black bars BAKED INTO the picture, as a fraction of the frame height.
+    ///
+    /// A 2.39:1 image encoded inside a 1080p frame reports 16:9 everywhere, so
+    /// `AVPlayerLayer.videoRect` covers the full height and anything anchored
+    /// to its bottom edge — subtitles — lands in the black bar. Only the server
+    /// has looked at the pixels. Zero means "no bars", which is also what an
+    /// older server that never sends these reports.
+    let letterboxTopFraction: Double
+    let letterboxBottomFraction: Double
 
     init(
         sessionId: String,
@@ -955,7 +964,9 @@ struct PlaybackSessionResponse: Codable {
         durationSeconds: Double?,
         timelineOffsetSeconds: Double = 0,
         subtitleUrls: [SubtitleUrl]?,
-        playbackInfo: PlaybackInfo?
+        playbackInfo: PlaybackInfo?,
+        letterboxTopFraction: Double = 0,
+        letterboxBottomFraction: Double = 0
     ) {
         self.sessionId = sessionId
         self.userId = userId
@@ -970,6 +981,8 @@ struct PlaybackSessionResponse: Codable {
         self.timelineOffsetSeconds = timelineOffsetSeconds
         self.subtitleUrls = subtitleUrls
         self.playbackInfo = playbackInfo
+        self.letterboxTopFraction = letterboxTopFraction
+        self.letterboxBottomFraction = letterboxBottomFraction
     }
 
     init(from decoder: Decoder) throws {
@@ -987,6 +1000,8 @@ struct PlaybackSessionResponse: Codable {
         timelineOffsetSeconds = try c.decodeIfPresent(Double.self, forKey: .timelineOffsetSeconds) ?? 0
         subtitleUrls = try c.decodeIfPresent([SubtitleUrl].self, forKey: .subtitleUrls)
         playbackInfo = try c.decodeIfPresent(PlaybackInfo.self, forKey: .playbackInfo)
+        letterboxTopFraction = try c.decodeIfPresent(Double.self, forKey: .letterboxTopFraction) ?? 0
+        letterboxBottomFraction = try c.decodeIfPresent(Double.self, forKey: .letterboxBottomFraction) ?? 0
     }
 }
 

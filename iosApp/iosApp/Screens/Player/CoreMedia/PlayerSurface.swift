@@ -25,17 +25,20 @@ import UIKit
 struct PlayerSurface: UIViewRepresentable {
     let player: PlayerCore
     let videoGravity: AVLayerVideoGravity
+    var bakedLetterbox: BakedLetterbox = .none
 
     func makeUIView(context: Context) -> PlayerSurfaceHostView {
         let view = PlayerSurfaceHostView()
         view.attach(player: player)
         view.setVideoGravity(videoGravity)
+        view.bakedLetterbox = bakedLetterbox
         return view
     }
 
     func updateUIView(_ uiView: PlayerSurfaceHostView, context: Context) {
         uiView.attach(player: player)
         uiView.setVideoGravity(videoGravity)
+        uiView.bakedLetterbox = bakedLetterbox
     }
 }
 
@@ -116,12 +119,26 @@ final class PlayerSurfaceHostView: UIView {
         setNeedsLayout()
     }
 
+    /// Bars baked into the picture, from the playback session. The subtitle
+    /// overlay is keyed to the image rather than the frame so cues sit over
+    /// the picture instead of inside a black bar.
+    var bakedLetterbox: BakedLetterbox = .none {
+        didSet {
+            guard bakedLetterbox != oldValue else { return }
+            setNeedsLayout()
+        }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         displayLayer.frame = bounds
-        let videoRect = VideoDisplayRect.compute(
-            videoSize: videoPresentationSize,
-            bounds: bounds,
+        let videoRect = VideoDisplayRect.pictureRect(
+            in: VideoDisplayRect.compute(
+                videoSize: videoPresentationSize,
+                bounds: bounds,
+                gravity: displayLayer.videoGravity
+            ),
+            letterbox: bakedLetterbox,
             gravity: displayLayer.videoGravity
         )
         #if os(tvOS)

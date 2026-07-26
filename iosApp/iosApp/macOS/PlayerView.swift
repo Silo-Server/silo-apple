@@ -136,10 +136,10 @@ struct PlayerView: View {
         case .none:
             Color.black.ignoresSafeArea()
         case .avPlayer(let backend):
-            AVPlayerSurface(backend: backend)
+            AVPlayerSurface(backend: backend, bakedLetterbox: viewModel.bakedLetterbox)
                 .ignoresSafeArea()
         case .coreMedia(let core):
-            PlayerSurface(player: core)
+            PlayerSurface(player: core, bakedLetterbox: viewModel.bakedLetterbox)
                 .ignoresSafeArea()
         }
     }

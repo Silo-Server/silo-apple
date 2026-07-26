@@ -298,7 +298,8 @@ struct PlayerView: View {
         case .avPlayer(let backend):
             let surface = AVPlayerSurface(
                 backend: backend,
-                videoGravity: viewModel.settings.videoGravity.avGravity
+                videoGravity: viewModel.settings.videoGravity.avGravity,
+                bakedLetterbox: viewModel.bakedLetterbox
             )
             if ignoresSafeArea {
                 surface.ignoresSafeArea()
@@ -308,7 +309,8 @@ struct PlayerView: View {
         case .coreMedia(let core):
             let surface = PlayerSurface(
                 player: core,
-                videoGravity: viewModel.settings.videoGravity.avGravity
+                videoGravity: viewModel.settings.videoGravity.avGravity,
+                bakedLetterbox: viewModel.bakedLetterbox
             )
             if ignoresSafeArea {
                 surface.ignoresSafeArea()

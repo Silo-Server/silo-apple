@@ -776,6 +776,14 @@ class PlayerViewModel {
     /// offset here so UI/progress reporting remain full-runtime based.
     private var playbackTimelineOffset: Double = 0
 
+    /// Black bars baked into the picture of the playing source, measured
+    /// server-side (nothing in the container reveals them). Published so the
+    /// render surface can key the subtitle overlay to the image instead of
+    /// the frame — otherwise a bottom-anchored cue on a 2.39:1 source sits in
+    /// the black bar rather than over the picture. Zero for normal sources
+    /// and for servers old enough not to send the measurement.
+    private(set) var bakedLetterbox: BakedLetterbox = .none
+
     /// Identity of the active offline download when playback was prepared
     /// locally (no server session). While set, watch progress is routed to
     /// `DownloadManager.recordOfflineProgress` — which queues it for the
@@ -2984,6 +2992,10 @@ class PlayerViewModel {
                     session: session,
                     requestedStart: resumePositionOverride
                 )
+                self.bakedLetterbox = BakedLetterbox(
+                    topFraction: session.letterboxTopFraction,
+                    bottomFraction: session.letterboxBottomFraction
+                )
                 self.logExecutionPlan(plan)
 
                 Self.logger.info("Stream URL: \(streamRequest.url.absoluteString, privacy: .public)")
@@ -4072,6 +4084,10 @@ class PlayerViewModel {
                     for: restartedPlan,
                     session: session,
                     requestedStart: target
+                )
+                self.bakedLetterbox = BakedLetterbox(
+                    topFraction: session.letterboxTopFraction,
+                    bottomFraction: session.letterboxBottomFraction
                 )
                 self.logExecutionPlan(restartedPlan)
                 Self.logger.info(

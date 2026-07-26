@@ -5,15 +5,18 @@ import SwiftUI
 
 struct PlayerSurface: NSViewRepresentable {
     let player: PlayerCore
+    var bakedLetterbox: BakedLetterbox = .none
 
     func makeNSView(context: Context) -> PlayerSurfaceHostView {
         let view = PlayerSurfaceHostView()
         view.attach(player: player)
+        view.bakedLetterbox = bakedLetterbox
         return view
     }
 
     func updateNSView(_ nsView: PlayerSurfaceHostView, context: Context) {
         nsView.attach(player: player)
+        nsView.bakedLetterbox = bakedLetterbox
     }
 }
 
@@ -60,12 +63,25 @@ final class PlayerSurfaceHostView: NSView {
         }
     }
 
+    /// Bars baked into the picture, from the playback session; see
+    /// `BakedLetterbox`.
+    var bakedLetterbox: BakedLetterbox = .none {
+        didSet {
+            guard bakedLetterbox != oldValue else { return }
+            needsLayout = true
+        }
+    }
+
     override func layout() {
         super.layout()
         displayLayer.frame = bounds
-        subtitleOverlay.frame = VideoDisplayRect.compute(
-            videoSize: videoPresentationSize,
-            bounds: bounds,
+        subtitleOverlay.frame = VideoDisplayRect.pictureRect(
+            in: VideoDisplayRect.compute(
+                videoSize: videoPresentationSize,
+                bounds: bounds,
+                gravity: displayLayer.videoGravity
+            ),
+            letterbox: bakedLetterbox,
             gravity: displayLayer.videoGravity
         )
     }

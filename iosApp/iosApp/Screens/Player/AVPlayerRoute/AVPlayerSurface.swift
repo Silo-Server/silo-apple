@@ -17,11 +17,13 @@ import UIKit
 struct AVPlayerSurface: UIViewRepresentable {
     let backend: AVPlayerBackend
     let videoGravity: AVLayerVideoGravity
+    var bakedLetterbox: BakedLetterbox = .none
 
     func makeUIView(context: Context) -> AVPlayerLayerView {
         let view = AVPlayerLayerView()
         view.attach(backend: backend)
         view.setVideoGravity(videoGravity)
+        view.bakedLetterbox = bakedLetterbox
         view.attachSubtitleRenderer(backend.subtitleRendererForOverlay)
         backend.subtitleOverlay = view.subtitleOverlay
         return view
@@ -30,6 +32,7 @@ struct AVPlayerSurface: UIViewRepresentable {
     func updateUIView(_ uiView: AVPlayerLayerView, context: Context) {
         uiView.attach(backend: backend)
         uiView.setVideoGravity(videoGravity)
+        uiView.bakedLetterbox = bakedLetterbox
         uiView.attachSubtitleRenderer(backend.subtitleRendererForOverlay)
         backend.subtitleOverlay = uiView.subtitleOverlay
     }
@@ -79,10 +82,24 @@ final class AVPlayerLayerView: UIView {
         subtitleOverlay.renderer = renderer
     }
 
+    /// Bars baked into the picture, from the playback session. The subtitle
+    /// overlay is keyed to the image rather than the frame so cues sit over
+    /// the picture instead of inside a black bar.
+    var bakedLetterbox: BakedLetterbox = .none {
+        didSet {
+            guard bakedLetterbox != oldValue else { return }
+            setNeedsLayout()
+        }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         playerLayer.frame = bounds
-        let videoRect = playerLayer.videoRect
+        let videoRect = VideoDisplayRect.pictureRect(
+            in: playerLayer.videoRect,
+            letterbox: bakedLetterbox,
+            gravity: playerLayer.videoGravity
+        )
         #if os(tvOS)
         // Full-frame overlay with libass margins marking the video area:
         // fonts keep scaling with the video rect, and the "Bottom" position

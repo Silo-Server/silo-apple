@@ -4,11 +4,13 @@ import SwiftUI
 
 struct AVPlayerSurface: NSViewRepresentable {
     let backend: AVPlayerBackend
+    var bakedLetterbox: BakedLetterbox = .none
 
     func makeNSView(context: Context) -> ContinuumMacPlayerView {
         let view = ContinuumMacPlayerView()
         view.attach(player: backend.avPlayer)
         view.attachSubtitleRenderer(backend.subtitleRendererForOverlay)
+        view.bakedLetterbox = bakedLetterbox
         backend.subtitleOverlay = view.subtitleOverlay
         return view
     }
@@ -16,6 +18,7 @@ struct AVPlayerSurface: NSViewRepresentable {
     func updateNSView(_ nsView: ContinuumMacPlayerView, context: Context) {
         nsView.attach(player: backend.avPlayer)
         nsView.attachSubtitleRenderer(backend.subtitleRendererForOverlay)
+        nsView.bakedLetterbox = bakedLetterbox
         backend.subtitleOverlay = nsView.subtitleOverlay
     }
 }
@@ -58,10 +61,23 @@ final class ContinuumMacPlayerView: AVPlayerView {
         overlayParent.addSubview(subtitleOverlay, positioned: .above, relativeTo: nil)
     }
 
+    /// Bars baked into the picture, from the playback session; see
+    /// `BakedLetterbox`.
+    var bakedLetterbox: BakedLetterbox = .none {
+        didSet {
+            guard bakedLetterbox != oldValue else { return }
+            needsLayout = true
+        }
+    }
+
     override func layout() {
         super.layout()
         let frame = videoBounds.isEmpty ? bounds : videoBounds
-        subtitleOverlay.frame = frame
+        subtitleOverlay.frame = VideoDisplayRect.pictureRect(
+            in: frame,
+            letterbox: bakedLetterbox,
+            gravity: videoGravity
+        )
     }
 
     private var overlayParent: NSView {
