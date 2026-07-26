@@ -132,7 +132,11 @@ enum ApplePlaybackV3PlanAdapter {
             isPaused: false,
             streamUrl: plan.stream.url,
             audioTrackIndex: plan.selectedTracks.audio?.index,
-            durationSeconds: selectedVersion.duration,
+            // The plan's runtime is authoritative and describes the effective
+            // file the server actually chose. Fall back to the catalog version
+            // only for servers that predate the field; substituting it when
+            // the server reports an unknown runtime would reintroduce a guess.
+            durationSeconds: plan.source.durationSeconds ?? selectedVersion.duration,
             timelineOffsetSeconds: max(0, plan.timeline.timelineOffsetSeconds),
             subtitleUrls: subtitleUrls,
             playbackInfo: PlaybackInfo(

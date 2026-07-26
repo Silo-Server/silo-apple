@@ -234,6 +234,17 @@ struct PlaybackV3EffectiveRecipe: Codable, Equatable {
 
 struct PlaybackV3SourceDescriptor: Codable, Equatable {
     let mediaFileId: Int
+    /// Full runtime of the source, or nil when the server does not know it.
+    ///
+    /// Optional so a server predating the field still decodes: every
+    /// non-Optional property here is a required key, and a `keyNotFound`
+    /// would fail the whole plan.
+    ///
+    /// This is the whole file, never `total - sourceStartSeconds` and never
+    /// adjusted by `timelineOffsetSeconds`. Do not substitute the player's
+    /// reported duration: on an HLS copy remux that is the window produced so
+    /// far, not the runtime.
+    let durationSeconds: Double?
     let container: String?
     let videoCodec: String?
     let videoProfile: String?
