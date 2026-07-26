@@ -166,6 +166,7 @@ struct HomeView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(2)
             }
+
         }
         .animation(.easeInOut(duration: 0.18), value: isRefreshing)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
@@ -202,26 +203,19 @@ struct HomeView: View {
     private var scrollContent: some View {
         GeometryReader { geometry in
             ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: sectionSpacing, pinnedViews: []) {
+                LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
                     // No hero — reserve runway for the floating Home header so
                     // the first row doesn't slide under the status-bar chrome.
                     Color.clear
                         .frame(height: topRunwaySpacing(topSafeAreaInset: geometry.safeAreaInsets.top))
                         .id(HomeFocusTarget.topSpacer)
 
-                    ForEach(Array(displayedSections.enumerated()), id: \.element.id) { index, section in
-                        SectionRow(
-                            section: section,
-                            onItemTap: { navigateToDetail($0) },
-                            onRemoveFromContinueWatching: dismissContinueWatching,
-                            onSetWatched: setWatched,
-                            prefersDefaultFocusOnFirstItem: index == 0,
-                            onMoveUp: index == 0 ? onTopMenuFocusRequest : nil
-                        )
-                        .id(HomeFocusTarget.row(section.id))
+                    ForEach(displayedSections) { section in
+                        HomeFeedRow(section: section)
+                            .id(HomeFocusTarget.row(section.id))
                     }
                 }
-                .padding(.bottom, ContinuumTheme.largePadding)
+                .padding(.bottom, HomeFeedMetrics.bottomRunway)
             }
             .continuumScrollEdgeEffect()
         }

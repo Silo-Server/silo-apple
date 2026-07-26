@@ -240,10 +240,37 @@ mid-test; if you do, you caused the `App terminated due to signal 15` and must r
 - [ ] Destination matches the claim (simulator build ≠ device verification)
 - [ ] Nothing committed or edited on the Mac
 
+## When the simulator misbehaves, check the disk first
+
+A near-full boot volume on the Mac does not announce itself. It presents as CoreSimulator
+corruption, and every symptom points somewhere else:
+
+- `xcrun simctl install` hangs forever on a ~100 MB app.
+- A booted device shuts itself down between two commands.
+- `simctl boot` reports "delete the device properly or erase contents and settings".
+- `ps` / `pgrep` block, because simulator processes are wedged in kernel wait.
+- A stray `simctl diagnose` sits holding a device lock — a downstream symptom, not the cause.
+
+```bash
+ssh mac-builder 'df -h /System/Volumes/Data'
+```
+
+Below ~15 GiB free, expect trouble. `~/Library/Developer/CoreSimulator/Devices` runs to tens
+of GB on its own. Reclaim with `xcrun simctl erase <udid>` for devices you aren't using (this
+wipes their app data and any signed-in session) and `xcrun simctl delete unavailable`.
+
+`~/silo-build-ios` and `~/silo-build-tvos` are **symlinks** to `/Volumes/NVMe/...`, which has
+far more room than the boot volume. The documented paths above still work unchanged — don't
+convert them back into real directories on `/`.
+
 ## Gotchas
 
 - SourceKit "No such module" errors are IDE index artifacts. If `xcodebuild` says
   `BUILD SUCCEEDED`, the code is fine.
+- `mac-builder`'s Tailscale direct path sometimes drops and falls back to a lossy DERP relay.
+  SSH then times out while `tailscale ping mac-builder` still answers (via DERP, ~300ms). The
+  machine is not down; it recovers on its own. Connecting by raw Tailscale IP may work while
+  the hostname does not.
 - Device install can fail on a Developer Disk Image mismatch when the device OS is newer than the
   Mac's Xcode. Updating Xcode is the fix; the build isn't wrong.
 - Homebrew is not on the non-interactive SSH `PATH`. Use absolute paths:

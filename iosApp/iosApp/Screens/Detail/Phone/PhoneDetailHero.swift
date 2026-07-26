@@ -146,11 +146,13 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         return trimmed
     }
 
-    /// Hero logo height — sized so wordmarks match the visual weight of
-    /// Apple TV's hero treatment (large and dominant, but leaves room
-    /// for the source row and CTA stack below).
+    /// Hero logo height. Deliberately smaller than Apple TV's treatment:
+    /// title art already arrives with generous internal padding, so at 160 a
+    /// wordmark like "SCARY MOVIE" claimed a third of the editorial column
+    /// and pushed Play toward the fold. This keeps the logo dominant without
+    /// crowding out the actions it exists to introduce.
     private var logoHeight: CGFloat {
-        horizontalSizeClass == .regular ? 200 : 160
+        horizontalSizeClass == .regular ? 168 : 132
     }
 
     @ViewBuilder

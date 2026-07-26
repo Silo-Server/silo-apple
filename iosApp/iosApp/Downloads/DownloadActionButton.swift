@@ -22,6 +22,11 @@ struct DownloadActionButton: View {
     enum Style {
         case regular
         case compact
+        /// Bare glyph over a state-derived caption, matching the refined
+        /// detail page's named action row. Carries no circular chrome, so it
+        /// sits beside Favorite / Watchlist / Mark Seen without looking like
+        /// a different species of control.
+        case labeled
     }
 
     /// Card layouts position the compact control over the still's corner,
@@ -64,9 +69,10 @@ struct DownloadActionButton: View {
         detail: ItemDetail,
         versions: [FileVersion],
         selectedVersionFileId: Int?,
-        showOptions: Binding<Bool>
+        showOptions: Binding<Bool>,
+        style: Style = .regular
     ) {
-        style = .regular
+        self.style = style
         contentId = detail.contentId
         isEpisode = detail.type == "episode"
         seriesId = detail.seriesId
@@ -140,7 +146,7 @@ struct DownloadActionButton: View {
                 titleVisibility: .visible
             ) {
                 Button("Download Anyway", action: startWithDefaults)
-                if style == .regular {
+                if style != .compact {
                     Button("Choose Options…") { showOptions = true }
                 }
                 Button("Cancel", role: .cancel) {}
@@ -156,7 +162,7 @@ struct DownloadActionButton: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Download")
-            if style == .regular {
+            if style != .compact {
                 button.contextMenu {
                     Button { showOptions = true } label: {
                         Label("Download Options…", systemImage: "slider.horizontal.3")
@@ -224,7 +230,7 @@ struct DownloadActionButton: View {
 
         case .failed:
             Menu {
-                if style == .regular {
+                if style != .compact {
                     Button { showOptions = true } label: {
                         Label("Retry With Options", systemImage: "arrow.clockwise")
                     }
@@ -291,7 +297,7 @@ struct DownloadActionButton: View {
     }
 
     private func showNotice(_ text: String) {
-        guard style == .regular else { return }
+        guard style != .compact else { return }
         withAnimation(.easeOut(duration: 0.2)) { startNotice = text }
         Task {
             try? await Task.sleep(for: .seconds(2))
@@ -390,6 +396,48 @@ struct DownloadActionButton: View {
         }
     }
 
+    /// Glyph over caption, sized to match `PhoneLabeledAction` exactly so
+    /// the two sit on one baseline in the refined action row.
+    private func labeledGlyph<Glyph: View>(
+        tint: Color,
+        @ViewBuilder glyph: () -> Glyph
+    ) -> some View {
+        VStack(spacing: 6) {
+            glyph()
+                .frame(height: 22)
+            Text(captionText)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(captionTint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+    }
+
+    /// A static "Download" caption under a green tick would misreport the
+    /// state, so the caption tracks the record like the glyph does.
+    private var captionText: String {
+        switch record?.localStatus {
+        case .none: return "Download"
+        case .downloading: return "Downloading"
+        case .paused: return "Paused"
+        case .registering, .preparing, .queued, .fetchingAssets: return "Preparing"
+        case .completed, .revoked: return "Downloaded"
+        case .failed: return "Failed"
+        default: return "Download"
+        }
+    }
+
+    private var captionTint: Color {
+        switch record?.localStatus {
+        case .completed, .revoked: return .green.opacity(0.9)
+        case .failed: return .orange.opacity(0.9)
+        case .none: return Color.white.opacity(0.6)
+        default: return Color.white.opacity(0.85)
+        }
+    }
+
     private var diameter: CGFloat {
         style == .regular ? 44 : Self.compactDiameter
     }
@@ -405,14 +453,38 @@ struct DownloadActionButton: View {
         switch style {
         case .regular: return Color.white.opacity(active ? 0.18 : 0.10)
         case .compact: return Color.black.opacity(active ? 0.65 : 0.55)
+        case .labeled: return .clear
         }
     }
 
+    @ViewBuilder
     private func circleLabel(
         icon: String,
         active: Bool,
         tint: Color = .white,
         showSpinner: Bool = false
+    ) -> some View {
+        if style == .labeled {
+            labeledGlyph(tint: tint) {
+                if showSpinner {
+                    ProgressView().controlSize(.small).tint(.white)
+                } else {
+                    Image(systemName: icon)
+                        .font(.system(size: 19, weight: .regular))
+                        .foregroundColor(tint)
+                        .contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
+                }
+            }
+        } else {
+            circleChrome(icon: icon, active: active, tint: tint, showSpinner: showSpinner)
+        }
+    }
+
+    private func circleChrome(
+        icon: String,
+        active: Bool,
+        tint: Color,
+        showSpinner: Bool
     ) -> some View {
         ZStack {
             Circle()
@@ -434,7 +506,32 @@ struct DownloadActionButton: View {
         .frame(width: diameter, height: diameter)
     }
 
+    @ViewBuilder
     private func progressLabel(fraction: Double, paused: Bool) -> some View {
+        if style == .labeled {
+            labeledGlyph(tint: .white) {
+                ZStack {
+                    Circle()
+                        .stroke(Color.white.opacity(0.22), lineWidth: 2)
+                    Circle()
+                        .trim(from: 0, to: max(0.02, fraction))
+                        .stroke(
+                            Color.white.opacity(paused ? 0.55 : 1),
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(-90))
+                    Image(systemName: paused ? "play.fill" : "pause.fill")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.white)
+                }
+                .frame(width: 21, height: 21)
+            }
+        } else {
+            progressChrome(fraction: fraction, paused: paused)
+        }
+    }
+
+    private func progressChrome(fraction: Double, paused: Bool) -> some View {
         ZStack {
             Circle()
                 .fill(circleFill(active: false))

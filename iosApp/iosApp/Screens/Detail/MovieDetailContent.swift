@@ -80,30 +80,76 @@ struct MovieDetailContent<BelowOverview: View>: View {
         )
     }
 
+    /// Play, then the named secondary actions, then the playback
+    /// selectors. See `PhoneDetailActionRow` for why the circles went away.
     @ViewBuilder
     private var actionStack: some View {
-        VStack(spacing: 12) {
-            PhonePrimaryPillButton(
+        VStack(spacing: 16) {
+            PhoneRefinedPlayButton(
                 icon: "play.fill",
                 title: primaryPlayLabel,
-                action: handlePlayTap,
-                fullWidth: true
+                action: handlePlayTap
             )
-            circleRow
-            if let effectiveVersion {
-                PhonePlaybackSelectorRow(
-                    versions: availableVersions,
-                    currentVersion: effectiveVersion,
-                    selectedVersionFileId: selectedVersionFileId,
-                    selectedAudioTrackIndex: selectedAudioTrackIndex,
-                    selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
-                    onSelectVersion: onSelectVersion,
-                    onSelectAudioTrack: onSelectAudioTrack,
-                    onSelectSubtitleTrack: onSelectSubtitleTrack
+
+            PhoneLabeledActionRow {
+                PhoneLabeledAction(
+                    icon: "heart",
+                    iconActive: "heart.fill",
+                    isActive: isFavorite,
+                    label: "Favorite",
+                    action: onToggleFavorite
                 )
+                PhoneLabeledAction(
+                    icon: "bookmark",
+                    iconActive: "bookmark.fill",
+                    isActive: inWatchlist,
+                    label: "Watchlist",
+                    action: onToggleWatchlist
+                )
+                PhoneLabeledAction(
+                    icon: "checkmark.circle",
+                    iconActive: "checkmark.circle.fill",
+                    isActive: isWatched,
+                    label: isWatched ? "Watched" : "Mark Seen",
+                    action: onToggleWatched
+                )
+                if showsDownloadButton {
+                    // Captioned style, so it reads as a peer of the actions
+                    // beside it rather than the odd circle out. It still owns
+                    // its own progress ring and state-derived caption.
+                    DownloadActionButton(
+                        detail: detail,
+                        versions: availableVersions,
+                        selectedVersionFileId: selectedVersionFileId,
+                        showOptions: $showDownloadOptions,
+                        style: .labeled
+                    )
+                }
+                if hasOverflowMenu {
+                    PhoneLabeledMenu(label: "More") {
+                        overflowMenuItems
+                    }
+                }
+            }
+
+            if let effectiveVersion {
+                playbackSelectors(for: effectiveVersion)
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func playbackSelectors(for version: FileVersion) -> some View {
+        PhonePlaybackSelectorRow(
+            versions: availableVersions,
+            currentVersion: version,
+            selectedVersionFileId: selectedVersionFileId,
+            selectedAudioTrackIndex: selectedAudioTrackIndex,
+            selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+            onSelectVersion: onSelectVersion,
+            onSelectAudioTrack: onSelectAudioTrack,
+            onSelectSubtitleTrack: onSelectSubtitleTrack
+        )
     }
 
     private func handlePlayTap() {
@@ -113,50 +159,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
             onPlay(false)
         }
     }
-
-    /// Centered cluster of secondary toggles. The full-width Play sits
-    /// above; circle toggles balance under it horizontally.
-    private var circleRow: some View {
-        HStack(spacing: 14) {
-            PhoneCircleActionButton(
-                icon: "heart",
-                iconActive: "heart.fill",
-                isActive: isFavorite,
-                accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
-                action: onToggleFavorite
-            )
-
-            PhoneCircleActionButton(
-                icon: "bookmark",
-                iconActive: "bookmark.fill",
-                isActive: inWatchlist,
-                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
-                action: onToggleWatchlist
-            )
-
-            PhoneCircleActionButton(
-                icon: "checkmark.circle",
-                iconActive: "checkmark.circle.fill",
-                isActive: isWatched,
-                accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
-                action: onToggleWatched
-            )
-
-            if showsDownloadButton {
-                DownloadActionButton(
-                    detail: detail,
-                    versions: availableVersions,
-                    selectedVersionFileId: selectedVersionFileId,
-                    showOptions: $showDownloadOptions
-                )
-            }
-
-            if hasOverflowMenu {
-                overflowMenu
-            }
-        }
-    }
-
     /// Download is offered for movies and individual episodes once the
     /// server advertises the capability for this profile.
     private var showsDownloadButton: Bool {
@@ -168,36 +170,34 @@ struct MovieDetailContent<BelowOverview: View>: View {
         detail.type == "episode" && detail.seriesId != nil
     }
 
-    /// Downloads also earn the overflow menu: the one-tap download button no
-    /// longer opens the options sheet, so the menu keeps it discoverable.
+    /// Downloads also earn the overflow menu: a plain tap on Download starts
+    /// it, so the menu is what keeps the options sheet discoverable.
     private var hasOverflowMenu: Bool {
         hasOverflowNavigation || showsDownloadButton
     }
-
+    /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
-    private var overflowMenu: some View {
-        PhoneCircleMenuButton(accessibilityLabel: "More options") {
-            if let seriesId = detail.seriesId,
-               let seasonNumber = detail.seasonNumber, seasonNumber > 0 {
-                Button {
-                    onNavigateToItem("\(seriesId)-S\(seasonNumber)")
-                } label: {
-                    Label("Go to Season", systemImage: "square.stack")
-                }
+    private var overflowMenuItems: some View {
+        if let seriesId = detail.seriesId,
+           let seasonNumber = detail.seasonNumber, seasonNumber > 0 {
+            Button {
+                onNavigateToItem("\(seriesId)-S\(seasonNumber)")
+            } label: {
+                Label("Go to Season", systemImage: "square.stack")
             }
-            if let seriesId = detail.seriesId {
-                Button {
-                    onNavigateToItem(seriesId)
-                } label: {
-                    Label("Go to Series", systemImage: "tv")
-                }
+        }
+        if let seriesId = detail.seriesId {
+            Button {
+                onNavigateToItem(seriesId)
+            } label: {
+                Label("Go to Series", systemImage: "tv")
             }
-            if showsDownloadButton {
-                Button {
-                    showDownloadOptions = true
-                } label: {
-                    Label("Download Options…", systemImage: "slider.horizontal.3")
-                }
+        }
+        if showsDownloadButton {
+            Button {
+                showDownloadOptions = true
+            } label: {
+                Label("Download Options…", systemImage: "slider.horizontal.3")
             }
         }
     }
