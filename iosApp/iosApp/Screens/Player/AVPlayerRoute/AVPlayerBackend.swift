@@ -4488,9 +4488,10 @@ final class AVPlayerBackend {
         switch selection {
         case .dolbyVision:
             // `handleFirstSegmentReady` (the only caller) is dispatched onto
-            // the main queue by the writer callback.
+            // the main queue by the writer callback. `setCriteria` uses the
+            // public format-description initializer with the `dvh1` fourcc.
             let outcome = MainActor.assumeIsolated {
-                TVDisplayCriteria.setRangeCriteria(.dolbyVision, refreshRate: refreshRate)
+                TVDisplayCriteria.setCriteria(.dolbyVision, refreshRate: refreshRate)
             }
             switch outcome {
             case .noDisplayManager:
@@ -4512,8 +4513,8 @@ final class AVPlayerBackend {
         case .hdr10, .hlg:
             let range = selection == .hlg ? "HLG" : "PQ"
             let outcome = MainActor.assumeIsolated {
-                TVDisplayCriteria.setHDRFormatCriteria(
-                    hlg: selection == .hlg,
+                TVDisplayCriteria.setCriteria(
+                    selection == .hlg ? .hlg : .hdr10,
                     refreshRate: refreshRate
                 )
             }
@@ -4521,7 +4522,7 @@ final class AVPlayerBackend {
             // A reload that preserved criteria left the panel in the right
             // mode already; rewriting identical criteria triggers no new
             // negotiation, so only a fresh apply needs the settle wait.
-            return outcome == .applied && !preservedForReload
+            return outcome.didWrite && !preservedForReload
         case .none:
             return false
         }

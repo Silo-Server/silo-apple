@@ -5843,15 +5843,28 @@ final class PlayerCore: NSObject {
             return
         }
         let profile5Hint = "Dolby Vision Profile 5 requires a Dolby Vision display connected via HDMI with 'Match Content: Dynamic Range' enabled (Settings → Video and Audio → Match Content)."
-        guard dm.isDisplayCriteriaMatchingEnabled else {
+        // Shares `TVDisplayCriteria`'s public format-description write rather
+        // than constructing criteria here, so the `dvh1` request this gate
+        // makes is identical to every other Dolby Vision path.
+        switch TVDisplayCriteria.setCriteria(.dolbyVision, refreshRate: refreshRate) {
+        case .matchingDisabled:
             print("[CMP] dv gate REFUSE: isDisplayCriteriaMatchingEnabled=false")
             reportError(profile5Hint)
             return
+        case .formatUnavailable:
+            // No DV request could be made, so a non-DV panel would render the
+            // Profile 5 base layer as wrong colors. Refuse like the gate does
+            // for disabled matching.
+            print("[CMP] dv gate REFUSE: format description unavailable")
+            reportError(profile5Hint)
+            return
+        case .noDisplayManager:
+            // Raced the guard above; matches its silent bail.
+            print("[CMP] dv gate: avDisplayManager disappeared")
+            return
+        case .applied:
+            break
         }
-        let criteria = AVDisplayCriteria(
-            refreshRate: refreshRate,
-            videoDynamicRange: SpikeDynamicRange.dolbyVision.rawValue)
-        dm.preferredDisplayCriteria = criteria
         print(String(format:
             "[CMP] dv gate applyCriteria fps=%.3f dr=%d (profile-5)",
             Double(refreshRate), Int(SpikeDynamicRange.dolbyVision.rawValue)))
