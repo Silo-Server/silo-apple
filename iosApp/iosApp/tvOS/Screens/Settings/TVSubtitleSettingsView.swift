@@ -58,7 +58,7 @@ struct TVSubtitleSettingsPane: View {
         }
 
         TVSettingsFooter("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
-        TVPrefSaveFooter(state: viewModel.prefSaveState)
+        TVPrefSaveFooter(state: viewModel.subtitleSaveState)
     }
 
     @ViewBuilder
@@ -71,6 +71,9 @@ struct TVSubtitleSettingsPane: View {
         ) { activePicker = .metadataLanguage }
 
         TVSettingsFooter("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
+        // Metadata Language is its own profile write, so it reports here
+        // instead of under the subtitle trio's footer.
+        TVPrefSaveFooter(state: viewModel.metadataSaveState)
     }
 
     @ViewBuilder

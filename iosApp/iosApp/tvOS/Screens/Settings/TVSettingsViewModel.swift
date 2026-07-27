@@ -71,9 +71,14 @@ final class TVSettingsViewModel {
     /// Gated on `AICapabilities.shared.metadataEnabled` at the row.
     var editorPreferredMetadataLanguage: String = PlaybackPrefSentinel.none
 
-    /// Surfaces the most recent server save state. Settings UI shows a
-    /// transient message when prefSaveState != nil.
-    var prefSaveState: PrefSaveState?
+    /// Save state for the three profile-backed writes, kept apart by which
+    /// row produced them. A single shared field misattributes results, and
+    /// worse here than on iOS: the rail switches panes live on focus, with no
+    /// navigation, so a failed subtitle save would show under Audio Language
+    /// the instant focus moved to Playback.
+    var audioSaveState: PrefSaveState?
+    var subtitleSaveState: PrefSaveState?
+    var metadataSaveState: PrefSaveState?
     private var isSavingMetadataLanguage = false
     private var pendingMetadataLanguageValue: String?
     private var isSavingAudioLanguage = false
@@ -242,7 +247,7 @@ final class TVSettingsViewModel {
     func saveProfilePrefs() async {
         guard let profileId = activeProfile?.id, !profileId.isEmpty else { return }
 
-        prefSaveState = .saving
+        subtitleSaveState = .saving
 
         let body = UpdateProfileBody(
             subtitleLanguage: outboundProfileLanguage(editorSubtitleLanguage),
@@ -251,7 +256,7 @@ final class TVSettingsViewModel {
         )
         do {
             try await ContinuumAPI.shared.updateProfile(profileId: profileId, body: body)
-            prefSaveState = .saved
+            subtitleSaveState = .saved
             // Keep the detail-page track-ordering preference in sync.
             ProfilePrefsStore.shared.setPreferredSubtitleLanguage(body.subtitleLanguage)
             // Refresh the local profile snapshot so a re-load reflects
@@ -260,7 +265,7 @@ final class TVSettingsViewModel {
                 activeProfile = prof.with(subtitleLanguage: body.subtitleLanguage, subtitleMode: body.subtitleMode, showForcedSubtitles: body.showForcedSubtitles)
             }
         } catch {
-            prefSaveState = .failed(
+            subtitleSaveState = .failed(
                 (error as? LocalizedError)?.errorDescription
                     ?? String(describing: error)
             )
@@ -293,29 +298,28 @@ final class TVSettingsViewModel {
         let oldValue = activeProfile?.preferredMetadataLanguage ?? ""
         guard newValue != oldValue else { return }
 
-        prefSaveState = .saving
+        metadataSaveState = .saving
 
         let body = UpdateProfileBody(preferredMetadataLanguage: newValue)
         do {
             try await ContinuumAPI.shared.updateProfile(profileId: profileId, body: body)
-            guard activeProfile?.id == profileId,
-                  outboundProfileLanguage(editorPreferredMetadataLanguage) == newValue else {
-                return
-            }
-            prefSaveState = .saved
+            guard activeProfile?.id == profileId else { return }
+            // Record the write before deciding whether to report, so a queued
+            // follow-up compares against the value the server now holds.
             if let prof = activeProfile {
                 activeProfile = prof.with(preferredMetadataLanguage: newValue)
             }
+            // Reported unconditionally: the write landed, and a still-queued
+            // value will overwrite this message when it lands in turn. Gating
+            // on "no newer value pending" strands the footer on "Saving…"
+            // whenever the user re-picks the value already being written,
+            // because the queued pass then no-ops on the equality guard above.
+            metadataSaveState = .saved
             ResponseCache.shared.invalidateAllItemMetadata()
-            #if os(tvOS)
             ItemDetailCache.shared.clearAll()
-            #endif
         } catch {
-            guard activeProfile?.id == profileId,
-                  outboundProfileLanguage(editorPreferredMetadataLanguage) == newValue else {
-                return
-            }
-            prefSaveState = .failed(
+            guard activeProfile?.id == profileId else { return }
+            metadataSaveState = .failed(
                 (error as? LocalizedError)?.errorDescription
                     ?? String(describing: error)
             )
@@ -336,7 +340,7 @@ final class TVSettingsViewModel {
         // await and leave the server holding the first value while the row
         // shows the second.
         guard activeProfile?.id.isEmpty == false else {
-            prefSaveState = .failed("No active profile to save to.")
+            audioSaveState = .failed("No active profile to save to.")
             return
         }
         pendingAudioLanguageValue = outboundProfileLanguage(editorAudioLanguage)
@@ -356,21 +360,29 @@ final class TVSettingsViewModel {
         guard let profileId = activeProfile?.id, !profileId.isEmpty else { return }
         guard newValue != (activeProfile?.language ?? "") else { return }
 
-        prefSaveState = .saving
+        audioSaveState = .saving
 
         do {
             try await ContinuumAPI.shared.updateProfile(
                 profileId: profileId,
                 body: UpdateProfileBody(language: newValue)
             )
-            if let prof = activeProfile, prof.id == profileId {
+            guard activeProfile?.id == profileId else { return }
+            // The write landed. Record it even if the user has since moved on
+            // to another value: the queue above will save that one next, and
+            // leaving `activeProfile` stale would make the follow-up save
+            // compare against the wrong baseline and skip itself.
+            if let prof = activeProfile {
                 activeProfile = prof.with(language: newValue)
             }
-            guard activeProfile?.id == profileId,
-                  pendingAudioLanguageValue == nil else {
-                return
-            }
-            prefSaveState = .saved
+            // Reported unconditionally rather than only when nothing is queued.
+            // Suppressing it stranded the footer on "Saving…" forever when the
+            // user re-selected the value already in flight: the queued pass then
+            // matches `activeProfile.language` and returns at the guard above,
+            // so nothing ever reached `.saved` — and the caches never flushed,
+            // leaving detail screens on the old track. A queued value that
+            // differs will overwrite this message when it lands.
+            audioSaveState = .saved
             // Detail screens render the server-resolved audio track out of
             // the cached item payloads, which have no TTL. Drop them so the
             // new selection shows up without a relaunch. Playback itself
@@ -379,10 +391,11 @@ final class TVSettingsViewModel {
             ResponseCache.shared.invalidateAllItemMetadata()
             ItemDetailCache.shared.clearAll()
         } catch {
-            guard activeProfile?.id == profileId else {
-                return
-            }
-            prefSaveState = .failed(
+            guard activeProfile?.id == profileId else { return }
+            // Reported even when a newer value is already queued: the user needs
+            // to know this save failed, and the queued one will overwrite the
+            // message if it succeeds.
+            audioSaveState = .failed(
                 (error as? LocalizedError)?.errorDescription
                     ?? String(describing: error)
             )

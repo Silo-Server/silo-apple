@@ -101,8 +101,9 @@ struct PlaybackSettingsView: View {
                 Text(streamingFooterText)
                 // Audio Language saves to the server from this section, so its
                 // result has to be visible here rather than only on the
-                // Subtitles screen.
-                if let state = viewModel.prefSaveState {
+                // Subtitles screen. Scoped to the audio write specifically: a
+                // subtitle or metadata failure belongs under its own row.
+                if let state = viewModel.audioSaveState {
                     PrefSaveStateLabel(state: state)
                 }
             }

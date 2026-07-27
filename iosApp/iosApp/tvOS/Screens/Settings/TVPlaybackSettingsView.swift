@@ -68,8 +68,10 @@ struct TVPlaybackSettingsPane: View {
 
         TVSettingsFooter(streamingFooterText)
         // Audio Language writes to the server from this pane, so the result has
-        // to show here rather than only on the Subtitles pane.
-        TVPrefSaveFooter(state: viewModel.prefSaveState)
+        // to show here rather than only on the Subtitles pane. Scoped to the
+        // audio write specifically: the rail switches panes on focus alone, so
+        // a shared field would show a subtitle failure under this footer.
+        TVPrefSaveFooter(state: viewModel.audioSaveState)
     }
 
     private var streamingFooterText: String {

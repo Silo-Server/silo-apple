@@ -60,8 +60,15 @@ struct SubtitleSettingsView: View {
             Text("Metadata")
                 .foregroundStyle(Color.continuumSecondaryText)
         } footer: {
-            Text("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
-                .foregroundStyle(Color.continuumSecondaryText)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
+                // Metadata Language is its own profile write, so it reports
+                // here instead of under the subtitle trio's footer.
+                if let state = viewModel.metadataSaveState {
+                    PrefSaveStateLabel(state: state)
+                }
+            }
+            .foregroundStyle(Color.continuumSecondaryText)
         }
         .listRowBackground(Color.continuumSurfaceElevated)
     }
@@ -111,7 +118,7 @@ struct SubtitleSettingsView: View {
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
-                if let state = viewModel.prefSaveState {
+                if let state = viewModel.subtitleSaveState {
                     PrefSaveStateLabel(state: state)
                 }
             }

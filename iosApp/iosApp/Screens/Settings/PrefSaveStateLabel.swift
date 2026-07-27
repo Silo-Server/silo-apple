@@ -9,6 +9,10 @@ import SwiftUI
 /// a flaky connection, or the 403 a PIN-gated primary profile gets — left the
 /// picker showing the value the server had just rejected, with no indication
 /// anything had gone wrong, and surfaced the error on a different screen.
+///
+/// Each view model holds one of these per profile-backed write (audio,
+/// subtitle, metadata) rather than one shared field, so a result always
+/// renders under the row that produced it.
 protocol PrefSaveStateRepresentable {
     var saveStateMessage: String { get }
     var saveStateIsError: Bool { get }
