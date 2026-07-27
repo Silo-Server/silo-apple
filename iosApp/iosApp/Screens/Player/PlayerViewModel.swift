@@ -1412,7 +1412,7 @@ class PlayerViewModel {
             self.applySourceCacheStats(&enrichedStats)
             self.applyFileBitrateStats(&enrichedStats)
             self.applySourceOriginLabel(&enrichedStats)
-            self.applyRuntimeDynamicRangeBadge(&enrichedStats)
+            self.applyRuntimeDynamicRangeBadge(enrichedStats)
             self.playbackStats = enrichedStats
         }
         cb.onEndOfFile = { [weak self] in
@@ -6574,13 +6574,22 @@ class PlayerViewModel {
     /// format description, and may only say "HDR". Once AVPlayer identifies
     /// the delivered stream as Dolby Vision, make the visible player badge
     /// precise rather than retaining that generic source label.
-    private func applyRuntimeDynamicRangeBadge(_ stats: inout PlaybackStats) {
-        guard stats.dynamicRange?.localizedCaseInsensitiveContains("dolby vision") == true else { return }
-        metadata.badges.removeAll { badge in
+    private func applyRuntimeDynamicRangeBadge(_ stats: PlaybackStats) {
+        let isDynamicRangeBadge: (String) -> Bool = { badge in
             let normalized = badge.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
             return normalized == "HDR" || normalized == "DV" || normalized == "DOLBY VISION"
         }
-        metadata.badges.insert("Dolby Vision", at: min(1, metadata.badges.count))
+        guard stats.dynamicRange?.localizedCaseInsensitiveContains("dolby vision") == true else {
+            if metadata.badges.contains(where: isDynamicRangeBadge) {
+                metadata.badges.removeAll(where: isDynamicRangeBadge)
+            }
+            return
+        }
+
+        var expectedBadges = metadata.badges.filter { !isDynamicRangeBadge($0) }
+        expectedBadges.insert("Dolby Vision", at: min(1, expectedBadges.count))
+        guard metadata.badges != expectedBadges else { return }
+        metadata.badges = expectedBadges
     }
 
     private func applySourceCacheStats(_ stats: inout PlaybackStats) {
