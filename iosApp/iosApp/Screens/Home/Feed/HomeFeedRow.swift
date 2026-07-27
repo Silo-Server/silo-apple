@@ -23,11 +23,14 @@ struct HomeFeedRow: View {
         section.items.contains { $0.type.lowercased() == "episode" }
     }
 
-    /// Resume rows always render as 16:9 stills — showing where you are
-    /// inside a runtime is the entire job of the row, and a 2:3 poster can't
-    /// do it. "Next Up" is episode-shaped for the same reason.
+    /// Resume rows render as 16:9 stills — showing where you are inside a
+    /// runtime is the entire job of the row, and a 2:3 poster can't do it.
+    /// "Next Up" is episode-shaped for the same reason. Audiobook rows are
+    /// the exception: their art is square with no backdrop, so a still would
+    /// crop the cover — they keep the square poster card, which carries its
+    /// own progress rail on resume rows.
     private var usesStills: Bool {
-        guard !forcesPosters else { return false }
+        guard !forcesPosters, !isAudiobookRow else { return false }
         if isResume { return true }
         return section.sectionType.lowercased().contains("next") && hasEpisodes
     }
@@ -112,8 +115,14 @@ struct HomeFeedRow: View {
     /// "in <library>" tail leaves a curated-sounding label without needing
     /// a server change, and the library context is already implied by the
     /// artwork in the row.
+    ///
+    /// Only generated titles are trimmed: an admin-named custom section
+    /// ("Made in Britain") is someone's deliberate choice, and cutting at
+    /// the *last* " in " keeps a generated title whose label itself contains
+    /// "in" from losing more than the library tail.
     private var displayTitle: String {
-        guard let range = section.title.range(of: " in ", options: [.caseInsensitive]) else {
+        guard section.isCustom != true, section.customized != true,
+              let range = section.title.range(of: " in ", options: [.caseInsensitive, .backwards]) else {
             return section.title
         }
         return String(section.title[..<range.lowerBound])

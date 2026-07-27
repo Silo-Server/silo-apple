@@ -156,8 +156,9 @@ enum HomeFeedMeta {
             }
         }
 
-        if let audio = summary.audio?.uppercased(),
-           audio.contains("ATMOS") || audio.contains("TRUEHD") {
+        // Only explicit Atmos — TrueHD is merely the usual carrier and says
+        // nothing about object-based audio, so badging it would lie.
+        if let audio = summary.audio?.uppercased(), audio.contains("ATMOS") {
             badges.append("ATMOS")
         }
 
@@ -426,6 +427,9 @@ struct HomePosterCard: View {
                     .padding(.bottom, 6)
             }
         }
+        .overlay {
+            DownloadedBadgeOverlay(contentId: item.contentId, padding: 6)
+        }
     }
 
     private var caption: some View {
@@ -464,6 +468,17 @@ struct HomeStillCard: View {
 
     private var height: CGFloat { (width * 9.0 / 16.0).rounded() }
 
+    /// Backdrop when the payload actually has one — some send `""` rather
+    /// than omitting the field — otherwise the poster, with the thumbhash
+    /// kept in lockstep so the blur placeholder previews the image that
+    /// will actually load.
+    private var art: (url: String, thumbhash: String?) {
+        if let backdrop = item.backdropUrl, !backdrop.isEmpty {
+            return (backdrop, item.backdropThumbhash)
+        }
+        return (item.posterUrl ?? "", item.posterThumbhash)
+    }
+
     var body: some View {
         HomeCardTap(contentId: item.contentId) {
             VStack(alignment: .leading, spacing: 8) {
@@ -482,8 +497,8 @@ struct HomeStillCard: View {
     private var artwork: some View {
         ZStack(alignment: .bottom) {
             AsyncImageView(
-                url: item.backdropUrl ?? item.posterUrl ?? "",
-                thumbhash: item.backdropThumbhash,
+                url: art.url,
+                thumbhash: art.thumbhash,
                 targetSize: CGSize(width: width, height: height),
                 contentMode: .fill
             )
@@ -521,6 +536,12 @@ struct HomeStillCard: View {
                 .background(Circle().fill(.black.opacity(0.32)))
                 .overlay(Circle().stroke(.white.opacity(0.38), lineWidth: 0.75))
                 .allowsHitTesting(false)
+        }
+        // Above the progress rail rather than on it — the rail owns the
+        // bottom edge of a resume still.
+        .overlay {
+            DownloadedBadgeOverlay(contentId: item.contentId, padding: 6)
+                .padding(.bottom, 10)
         }
     }
 

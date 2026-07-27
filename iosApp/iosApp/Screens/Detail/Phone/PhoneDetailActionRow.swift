@@ -77,7 +77,10 @@ struct PhoneLabeledAction: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
-            .frame(maxWidth: .infinity)
+            // The glyph-plus-caption stack is only ~38pt tall; the frame
+            // keeps the tap target at the 44pt the old circles gave these
+            // actions. `contentShape` must follow so the padding is tappable.
+            .frame(maxWidth: .infinity, minHeight: 44)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -107,7 +110,7 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
                     .foregroundStyle(Color.continuumOnSurface.opacity(0.6))
                     .lineLimit(1)
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 44)
             .contentShape(Rectangle())
         }
         .accessibilityLabel(label)
