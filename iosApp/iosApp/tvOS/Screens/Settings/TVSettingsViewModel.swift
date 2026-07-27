@@ -76,6 +76,12 @@ final class TVSettingsViewModel {
     /// worse here than on iOS: the rail switches panes live on focus, with no
     /// navigation, so a failed subtitle save would show under Audio Language
     /// the instant focus moved to Playback.
+    ///
+    /// `nil` means "nothing to report" and hides the row's footer line. A
+    /// save that finishes against a profile the user has since switched away
+    /// from resets to `nil` rather than returning early, which would leave
+    /// the footer reading "Saving…" for a write that is no longer this
+    /// screen's to report.
     var audioSaveState: PrefSaveState?
     var subtitleSaveState: PrefSaveState?
     var metadataSaveState: PrefSaveState?
@@ -303,7 +309,16 @@ final class TVSettingsViewModel {
         let body = UpdateProfileBody(preferredMetadataLanguage: newValue)
         do {
             try await ContinuumAPI.shared.updateProfile(profileId: profileId, body: body)
-            guard activeProfile?.id == profileId else { return }
+            // The write landed, so the cached payloads are stale no matter
+            // which profile is active now. Flushed before the guard below:
+            // both caches are pure drops that refetch on demand, and a
+            // profile switch is if anything a stronger reason to drop them.
+            ResponseCache.shared.invalidateAllItemMetadata()
+            ItemDetailCache.shared.clearAll()
+            guard activeProfile?.id == profileId else {
+                metadataSaveState = nil
+                return
+            }
             // Record the write before deciding whether to report, so a queued
             // follow-up compares against the value the server now holds.
             if let prof = activeProfile {
@@ -315,10 +330,11 @@ final class TVSettingsViewModel {
             // whenever the user re-picks the value already being written,
             // because the queued pass then no-ops on the equality guard above.
             metadataSaveState = .saved
-            ResponseCache.shared.invalidateAllItemMetadata()
-            ItemDetailCache.shared.clearAll()
         } catch {
-            guard activeProfile?.id == profileId else { return }
+            guard activeProfile?.id == profileId else {
+                metadataSaveState = nil
+                return
+            }
             metadataSaveState = .failed(
                 (error as? LocalizedError)?.errorDescription
                     ?? String(describing: error)
@@ -367,7 +383,19 @@ final class TVSettingsViewModel {
                 profileId: profileId,
                 body: UpdateProfileBody(language: newValue)
             )
-            guard activeProfile?.id == profileId else { return }
+            // Detail screens render the server-resolved audio track out of
+            // the cached item payloads, which have no TTL. Drop them so the
+            // new selection shows up without a relaunch. Playback itself
+            // always refetches `/watch`, so this is display consistency
+            // only — it is not what makes the setting take effect. Flushed
+            // before the guard below for the same reason as the metadata
+            // save: the write landed either way.
+            ResponseCache.shared.invalidateAllItemMetadata()
+            ItemDetailCache.shared.clearAll()
+            guard activeProfile?.id == profileId else {
+                audioSaveState = nil
+                return
+            }
             // The write landed. Record it even if the user has since moved on
             // to another value: the queue above will save that one next, and
             // leaving `activeProfile` stale would make the follow-up save
@@ -383,15 +411,11 @@ final class TVSettingsViewModel {
             // leaving detail screens on the old track. A queued value that
             // differs will overwrite this message when it lands.
             audioSaveState = .saved
-            // Detail screens render the server-resolved audio track out of
-            // the cached item payloads, which have no TTL. Drop them so the
-            // new selection shows up without a relaunch. Playback itself
-            // always refetches `/watch`, so this is display consistency
-            // only — it is not what makes the setting take effect.
-            ResponseCache.shared.invalidateAllItemMetadata()
-            ItemDetailCache.shared.clearAll()
         } catch {
-            guard activeProfile?.id == profileId else { return }
+            guard activeProfile?.id == profileId else {
+                audioSaveState = nil
+                return
+            }
             // Reported even when a newer value is already queued: the user needs
             // to know this save failed, and the queued one will overwrite the
             // message if it succeeds.
