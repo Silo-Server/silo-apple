@@ -13,6 +13,9 @@ enum PlaybackProtocolV3 {
 }
 
 struct PlaybackV3HDRCapabilities: Codable, Equatable {
+    /// Whether the active output can present HDR. Unlike the format flags
+    /// below, this does not assert support for any specific HDR format.
+    let hdrPlaybackEligible: Bool
     let hdr10: Bool
     let hdr10Plus: Bool
     let hlg: Bool

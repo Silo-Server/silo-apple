@@ -43,7 +43,7 @@ enum ApplePlaybackV3Capabilities {
             : ["mp4", "mov", "m4v", "mkv", "matroska", "webm", "avi", "ts", "m2ts", "mpegts"]
         let maxWidth = isSimulator ? 1_920 : 3_840
         let maxHeight = isSimulator ? 1_080 : 2_160
-        let hdr = output.hdrDetails.map { $0.hdr10 || $0.hlg || !$0.dolbyVisionProfiles.isEmpty } ?? false
+        let hdr = output.hdrDetails?.hdrPlaybackEligible ?? false
 
         let capabilities = PlaybackV3CodecCapabilities(
             codecsVideo: videoCodecs,
@@ -126,7 +126,12 @@ enum ApplePlaybackV3Capabilities {
                 maxChannels: 8,
                 hdrDetails: output.hdrDetails,
                 subtitles: directSubtitles,
-                features: ["apple_native_direct", "apple_local_loopback", "apple_playercore"],
+                features: [
+                    "apple_native_direct",
+                    "apple_local_loopback",
+                    "apple_playercore",
+                    "delegated_hdr_format_negotiation_v1"
+                ],
                 authHeaderRefresh: true,
                 validatedClaims: commonClaims + ["client_subtitle_overlay"],
                 transformations: directTransformations
@@ -179,26 +184,9 @@ enum ApplePlaybackV3Capabilities {
     }
 
     private static func outputSnapshot() -> PlaybackV3OutputContext {
-        let hdrDetails: PlaybackV3HDRCapabilities? = {
-            #if targetEnvironment(simulator)
-            return PlaybackV3HDRCapabilities(hdr10: false, hdr10Plus: false, hlg: false, dolbyVisionProfiles: [])
-            #elseif os(macOS)
-            // macOS does not expose AVPlayer.availableHDRModes. Avoid
-            // advertising display-specific HDR claims that we cannot verify.
-            return PlaybackV3HDRCapabilities(hdr10: false, hdr10Plus: false, hlg: false, dolbyVisionProfiles: [])
-            #else
-            if #available(iOS 14.0, tvOS 14.0, *) {
-                let modes = AVPlayer.availableHDRModes
-                return PlaybackV3HDRCapabilities(
-                    hdr10: modes.contains(.hdr10),
-                    hdr10Plus: false,
-                    hlg: modes.contains(.hlg),
-                    dolbyVisionProfiles: modes.contains(.dolbyVision) ? [5, 8] : []
-                )
-            }
-            return nil
-            #endif
-        }()
+        // Every platform's HDR claim — and the simulator's lack of one —
+        // resolves in `AppleDisplayHDRProbe`.
+        let hdrDetails: PlaybackV3HDRCapabilities? = AppleDisplayHDRProbe.capabilities()
 
         let sink: String
         let sinkType: String
