@@ -207,6 +207,16 @@ struct DownloadCaps: Encodable, Sendable {
     /// Reasonable decode caps for the current Apple platform. Matches the
     /// truthful direct-play surface the playback bootstrap reports.
     static func current() -> DownloadCaps {
+        #if targetEnvironment(simulator)
+        return DownloadCaps(
+            codecsVideo: ["h264"],
+            codecsAudio: ["aac", "ac3", "eac3", "mp3", "opus", "flac"],
+            audioPassthroughCodecs: [],
+            containers: ["mp4", "mov", "m4v", "mkv"],
+            maxResolution: "1080p",
+            hdr: false
+        )
+        #else
         // Every Apple client decodes through the same PlayerCore/FFmpeg stack,
         // so the container and codec surface is shared. The HDR claim is
         // display-dependent — see `AppleDisplayHDRProbe`.
@@ -219,6 +229,7 @@ struct DownloadCaps: Encodable, Sendable {
             maxResolution: nil,
             hdr: hdr
         )
+        #endif
     }
 }
 
