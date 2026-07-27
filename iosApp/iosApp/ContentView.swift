@@ -318,8 +318,10 @@ struct ContentView: View {
         case .authenticated:
             #if os(tvOS)
             TVMainTabView(router: router)
+                .onboardingTourGate(router: router)
             #else
             MainTabView(router: router)
+                .onboardingTourGate(router: router)
             #endif
         }
     }
@@ -344,6 +346,19 @@ struct ContentView: View {
     /// transition.
     private func handleDeepLink(_ url: URL) {
         guard let host = url.host else { return }
+
+        if host == "invite" {
+            // Pre-auth by design: the link carries the server and the
+            // single-use claim token, so no session or queueing is needed.
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            let server = components?.queryItems?.first(where: { $0.name == "server" })?.value ?? ""
+            let claimToken = components?.queryItems?.first(where: { $0.name == "token" })?.value ?? ""
+            guard !server.isEmpty, !claimToken.isEmpty else { return }
+            router.path = NavigationPath()
+            router.authState = .needsLogin
+            router.navigate(to: .inviteClaim(serverUrl: server, token: claimToken))
+            return
+        }
 
         if host == "downloads" {
             guard router.authState == .authenticated else {
@@ -615,6 +630,20 @@ struct ContentView: View {
                 .continuumBackground()
             #else
             SignupView(router: router)
+            #endif
+        case .inviteClaim(let serverUrl, let token):
+            #if os(tvOS)
+            EmptyStateView(icon: "envelope.badge.person.crop", title: "Open your invite on a phone or the web", subtitle: nil)
+                .continuumBackground()
+            #else
+            InviteClaimView(router: router, serverUrl: serverUrl, token: token)
+            #endif
+        case .onboardingTour:
+            #if os(tvOS)
+            EmptyStateView(icon: "sparkles", title: "Take the tour on your phone or the web", subtitle: nil)
+                .continuumBackground()
+            #else
+            OnboardingTourView(router: router)
             #endif
         case .login:
             loginRoot

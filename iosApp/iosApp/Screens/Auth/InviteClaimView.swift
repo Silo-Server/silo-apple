@@ -1,0 +1,135 @@
+import SwiftUI
+
+#if !os(tvOS)
+/// Emailed-invitation claim. The deep link carried the server and token, so
+/// this screen asks for a password and nothing else. Mirrors SignupView's
+/// Aurora treatment; the invite journey reads Invite → Password → Profile.
+struct InviteClaimView: View {
+    var router: AppRouter
+    let serverUrl: String
+    let token: String
+
+    @State private var viewModel = InviteClaimViewModel()
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable { case password, confirm }
+
+    var body: some View {
+        AuroraScreen(variant: .signIn, scrim: .soft) {
+            SiloWordmarkView(width: 112)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 26)
+
+            AuroraJourneyProgress(currentStep: 2)
+                .frame(maxWidth: 330)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 30)
+
+            if viewModel.isLoadingInvitation {
+                ProgressView()
+                    .tint(Color.auroraInk)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 60)
+            } else if viewModel.invitationInvalid {
+                expiredCard
+            } else if let invitation = viewModel.invitation {
+                claimCard(invitation)
+            }
+        }
+        .navigationBarBackButtonHidden()
+        .task(id: token) {
+            await viewModel.load(serverUrl: serverUrl, token: token)
+        }
+    }
+
+    private var expiredCard: some View {
+        VStack(spacing: 12) {
+            AuroraEyebrow(text: "Invitation", centered: true)
+            Text("This invite has expired")
+                .font(.continuumTitle)
+                .foregroundStyle(Color.auroraInk)
+                .multilineTextAlignment(.center)
+            Text("The link may have been used already, revoked, or simply expired. Ask whoever invited you to send a fresh one.")
+                .font(.continuumBody)
+                .foregroundStyle(Color.auroraInkSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button("Back to sign in") { router.resetToLogin() }
+                .buttonStyle(AuroraGhostButtonStyle())
+                .frame(maxWidth: .infinity)
+                .padding(.top, 12)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func claimCard(_ invitation: InvitationLookupResponse) -> some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 10) {
+                if let inviter = invitation.inviterName, !inviter.isEmpty {
+                    AuroraEyebrow(text: "Invited by \(inviter)", centered: true)
+                }
+                Text("Welcome to \(invitation.serverName)")
+                    .font(.continuumTitle)
+                    .foregroundStyle(Color.auroraInk)
+                    .multilineTextAlignment(.center)
+                Text("Choose a password and you're in. You'll sign in with your email address.")
+                    .font(.continuumBody)
+                    .foregroundStyle(Color.auroraInkSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 24)
+
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("EMAIL")
+                        .font(.continuumCaption.weight(.semibold))
+                        .foregroundStyle(Color.auroraInkTertiary)
+                    Text(invitation.email)
+                        .font(.continuumBody)
+                        .foregroundStyle(Color.auroraInkSecondary)
+                }
+
+                AuroraTextField(
+                    label: "Password", text: $viewModel.password, placeholder: "••••••",
+                    focus: $focusedField, equals: .password,
+                    isSecure: true, showsRevealToggle: true,
+                    contentType: .password, onSubmit: { focusedField = .confirm }
+                )
+                Text("Use at least 8 characters.")
+                    .font(.continuumCaption)
+                    .foregroundStyle(Color.auroraInkSecondary)
+                AuroraTextField(
+                    label: "Confirm password", text: $viewModel.confirmPassword, placeholder: "••••••",
+                    focus: $focusedField, equals: .confirm,
+                    isSecure: true, contentType: .password,
+                    submitLabel: .go, onSubmit: { createAccount() }
+                )
+
+                if let error = viewModel.error {
+                    AuroraErrorLabel(error)
+                }
+
+                Button {
+                    createAccount()
+                } label: {
+                    Text(viewModel.isSubmitting ? "Creating…" : "Create account")
+                }
+                .buttonStyle(AuroraPrimaryButtonStyle(isLoading: viewModel.isSubmitting))
+                .disabled(viewModel.isSubmitting)
+                .padding(.top, 4)
+            }
+            .padding(22)
+            .auroraGlass(cornerRadius: 24, emphasized: true)
+            .animation(.easeInOut(duration: 0.2), value: viewModel.error)
+        }
+    }
+
+    private func createAccount() {
+        guard !viewModel.isSubmitting else { return }
+        Task { await viewModel.claim(router: router) }
+    }
+}
+#endif

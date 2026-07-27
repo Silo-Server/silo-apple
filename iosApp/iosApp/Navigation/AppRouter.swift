@@ -323,6 +323,10 @@ private extension Route {
             return "serverNeedsSetup"
         case .signup:
             return "signup"
+        case .inviteClaim:
+            return "inviteClaim"
+        case .onboardingTour:
+            return "onboardingTour"
         case .profileSelection:
             return "profileSelection"
         case .home:

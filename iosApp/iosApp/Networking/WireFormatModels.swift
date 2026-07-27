@@ -54,6 +54,9 @@ struct Profile: Codable {
 /// caller can patch one or many at a time. Wire format mirrors the
 /// server's `updateProfileRequest`.
 struct UpdateProfileBody: Encodable {
+    /// Streaming quality ceiling preset ("auto", "1080p", "4k"). Encodes as
+    /// `quality_preference`. Written by the onboarding tour's quality step.
+    var qualityPreference: String?
     var subtitleLanguage: String?
     var subtitleMode: String?
     var showForcedSubtitles: Bool?

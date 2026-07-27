@@ -157,6 +157,46 @@ final class AuthService: @unchecked Sendable {
         await startSession(accessToken: response.accessToken, refreshToken: response.refreshToken)
     }
 
+    // MARK: - Emailed invitations
+
+    /// Resolves an invitation claim token against the server named in the
+    /// deep link. Points HTTPClient at that server first (same sequencing as
+    /// `checkServer`): the claim flow starts before any session exists.
+    func lookupInvitation(serverUrl: String, token: String) async throws -> InvitationLookupResponse {
+        let normalized = ServerRegistry.normalize(url: serverUrl)
+        let id = ServerRegistry.serverId(for: normalized)
+        await TokenStore.shared.setServerUrl(normalized)
+        await TokenStore.shared.switchActiveServer(serverId: id)
+        return try await HTTPClient.shared.get("/api/v1/invitations/\(token)")
+    }
+
+    /// Accepts an invitation: the account is created server-side with the
+    /// invitation's email as username, and a normal session begins. The
+    /// server entry is registered so the session survives restarts.
+    func acceptInvitation(serverUrl: String, token: String, password: String) async throws {
+        let normalized = ServerRegistry.normalize(url: serverUrl)
+        let id = ServerRegistry.serverId(for: normalized)
+        var fetchedName: String?
+        if let health: HealthStatus = try? await HTTPClient.shared.get("/api/v1/health") {
+            fetchedName = health.serverName
+        }
+        let response: LoginResponse = try await HTTPClient.shared.post(
+            "/api/v1/invitations/\(token)/accept",
+            body: AcceptInvitationRequest(password: password)
+        )
+        ServerRegistry.shared.addOrUpdate(ServerEntry(
+            id: id,
+            url: normalized,
+            fetchedName: fetchedName,
+            profileId: nil,
+            lastUsedAt: Date()
+        ))
+        if ServerRegistry.shared.activeServerId != id {
+            await ServerRegistry.shared.switchTo(serverId: id)
+        }
+        await startSession(accessToken: response.accessToken, refreshToken: response.refreshToken)
+    }
+
     /// A login response establishes a brand-new session. Wipe every piece of
     /// prior auth state before persisting the new tokens — no need to carry
     /// `profileId` or `profileToken` across the boundary, and keeping them
