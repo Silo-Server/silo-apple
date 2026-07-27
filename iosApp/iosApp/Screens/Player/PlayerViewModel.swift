@@ -1412,6 +1412,7 @@ class PlayerViewModel {
             self.applySourceCacheStats(&enrichedStats)
             self.applyFileBitrateStats(&enrichedStats)
             self.applySourceOriginLabel(&enrichedStats)
+            self.applyRuntimeDynamicRangeBadge(&enrichedStats)
             self.playbackStats = enrichedStats
         }
         cb.onEndOfFile = { [weak self] in
@@ -6567,6 +6568,19 @@ class PlayerViewModel {
         if let origin {
             stats.source = origin
         }
+    }
+
+    /// The session metadata is available before AVPlayer has inspected its
+    /// format description, and may only say "HDR". Once AVPlayer identifies
+    /// the delivered stream as Dolby Vision, make the visible player badge
+    /// precise rather than retaining that generic source label.
+    private func applyRuntimeDynamicRangeBadge(_ stats: inout PlaybackStats) {
+        guard stats.dynamicRange?.localizedCaseInsensitiveContains("dolby vision") == true else { return }
+        metadata.badges.removeAll { badge in
+            let normalized = badge.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            return normalized == "HDR" || normalized == "DV" || normalized == "DOLBY VISION"
+        }
+        metadata.badges.insert("Dolby Vision", at: min(1, metadata.badges.count))
     }
 
     private func applySourceCacheStats(_ stats: inout PlaybackStats) {
