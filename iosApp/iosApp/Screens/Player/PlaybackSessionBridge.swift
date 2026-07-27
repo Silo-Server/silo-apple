@@ -1587,6 +1587,9 @@ actor PlaybackSessionBridge {
             hdr: false
         )
         #else
+        // Keep the direct-play claim aligned with the current output instead
+        // of treating HDR as a device-wide capability.
+        let supportsHDR = !avoidDirectHDRPlayback && AppleDisplayHDRProbe.isEligible
         return (
             codecsVideo: avoidDirectHDRPlayback ? ["h264"] : ["h264", "hevc"],
             codecsAudio: [
@@ -1595,25 +1598,9 @@ actor PlaybackSessionBridge {
             ],
             containers: ["mkv", "mp4", "mov", "m4v", "webm", "avi", "ts", "m2ts"],
             maxResolution: avoidDirectHDRPlayback ? "1080p" : nil,
-            hdr: !avoidDirectHDRPlayback
+            hdr: supportsHDR
         )
         #endif
-    }
-
-    private func makeMacClientCaps() -> (
-        codecsVideo: [String],
-        codecsAudio: [String],
-        containers: [String],
-        maxResolution: String?,
-        hdr: Bool
-    ) {
-        (
-            codecsVideo: ["h264", "hevc"],
-            codecsAudio: ["aac", "ac3", "eac3", "alac", "mp3"],
-            containers: ["mp4", "mov", "m4v"],
-            maxResolution: nil,
-            hdr: true
-        )
     }
 
     private func makeMPEG2DirectClientCaps() -> (
@@ -1641,16 +1628,6 @@ actor PlaybackSessionBridge {
             selectedVersion: initiallySelectedVersion,
             capKbps: bandwidthCapKbps
         )
-        #if os(macOS)
-        return ClientPlaybackPlan(
-            selectedVersion: initiallySelectedVersion,
-            playMethod: requestedTranscode
-                ? PlaybackDeliveryStrategy.transcode.name
-                : PlaybackDeliveryStrategy.direct.name,
-            prefersSDRTranscode: false,
-            capabilities: makeMacClientCaps()
-        )
-        #else
         return ClientPlaybackPlan(
             selectedVersion: initiallySelectedVersion,
             playMethod: requestedTranscode
@@ -1661,7 +1638,6 @@ actor PlaybackSessionBridge {
                 ? makeMPEG2DirectClientCaps()
                 : makeClientCaps(avoidDirectHDRPlayback: false)
         )
-        #endif
     }
 
     private func isMPEG2Video(_ version: FileVersion) -> Bool {
