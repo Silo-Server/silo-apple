@@ -1176,20 +1176,20 @@ class PlayerViewModel {
             self.settings.refreshSubtitleSystemAppearance()
             self.applySubtitleAppearanceToPlayer()
         }
-        // The HDR capability the plan was built against can change under a
-        // running session on every platform — an external display connected
-        // on iOS, a TV renegotiating on tvOS, a window moved to another Mac
-        // display. AVFoundation posts only on a genuine flip, so this does
-        // not churn on incidental screen events.
+        // Losing HDR presentation mid-session does not invalidate the plan: the
+        // client keeps decoding and tone maps, so a replan would tear down the
+        // session to reach the same route. Profile 5 is the exception — it has
+        // no base layer to fall back to.
         hdrCapabilityObserverToken = NotificationCenter.default.addObserver(
             forName: AppleDisplayHDRProbe.didChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             guard let self,
-                  self.activePreparedProtocolV3 != nil,
                   !self.isDisposed,
-                  !self.isLoading else { return }
+                  !self.isLoading,
+                  let prepared = self.activePreparedProtocolV3,
+                  prepared.plan.source.dolbyVisionProfile == 5 else { return }
             self.attemptProtocolV3Replan(
                 position: self.currentTime,
                 classification: "output_route_changed",

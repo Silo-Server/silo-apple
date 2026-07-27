@@ -1587,9 +1587,6 @@ actor PlaybackSessionBridge {
             hdr: false
         )
         #else
-        // Keep the direct-play claim aligned with the current output instead
-        // of treating HDR as a device-wide capability.
-        let supportsHDR = !avoidDirectHDRPlayback && AppleDisplayHDRProbe.isEligible
         return (
             codecsVideo: avoidDirectHDRPlayback ? ["h264"] : ["h264", "hevc"],
             codecsAudio: [
@@ -1598,7 +1595,7 @@ actor PlaybackSessionBridge {
             ],
             containers: ["mkv", "mp4", "mov", "m4v", "webm", "avi", "ts", "m2ts"],
             maxResolution: avoidDirectHDRPlayback ? "1080p" : nil,
-            hdr: supportsHDR
+            hdr: !avoidDirectHDRPlayback
         )
         #endif
     }

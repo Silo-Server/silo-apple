@@ -43,7 +43,6 @@ enum ApplePlaybackV3Capabilities {
             : ["mp4", "mov", "m4v", "mkv", "matroska", "webm", "avi", "ts", "m2ts", "mpegts"]
         let maxWidth = isSimulator ? 1_920 : 3_840
         let maxHeight = isSimulator ? 1_080 : 2_160
-        let hdr = output.hdrDetails?.hdrPlaybackEligible ?? false
 
         let capabilities = PlaybackV3CodecCapabilities(
             codecsVideo: videoCodecs,
@@ -51,7 +50,7 @@ enum ApplePlaybackV3Capabilities {
             codecsAudio: audioCodecs,
             containers: containers,
             maxResolution: isSimulator ? "1080p" : "2160p",
-            hdr: hdr,
+            hdr: true,
             hdrDetails: output.hdrDetails,
             audioPassthrough: output.audioPassthrough,
             videoDecode: videoCodecs.map { codec in
@@ -126,12 +125,7 @@ enum ApplePlaybackV3Capabilities {
                 maxChannels: 8,
                 hdrDetails: output.hdrDetails,
                 subtitles: directSubtitles,
-                features: [
-                    "apple_native_direct",
-                    "apple_local_loopback",
-                    "apple_playercore",
-                    "delegated_hdr_format_negotiation_v1"
-                ],
+                features: ["apple_native_direct", "apple_local_loopback", "apple_playercore"],
                 authHeaderRefresh: true,
                 validatedClaims: commonClaims + ["client_subtitle_overlay"],
                 transformations: directTransformations
