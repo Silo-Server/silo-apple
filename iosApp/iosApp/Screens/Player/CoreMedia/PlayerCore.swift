@@ -16,7 +16,7 @@
 //    - tvOS: HDMI mode is driven by AVDisplayManager. `onSigPeakChange` is a
 //      no-op; the display layer's EDR flag is irrelevant because the compositor
 //      negotiates HDR directly with the TV.
-    //    - iOS: no HDMI to negotiate. HDR is driven by setting
+    //    - iOS / macOS: no HDMI to negotiate. HDR is driven by setting
     //      `preferredDynamicRange` on the AVSampleBufferDisplayLayer
 //      when the stream's transfer function is HDR and the user has HDR
 //      enabled. `onSigPeakChange` fires so the hosting view can toggle EDR.
@@ -1930,8 +1930,8 @@ final class PlayerCore: NSObject {
         #endif
     }
 
-    /// iOS HDR path: derives a sig peak from the current stream's dynamic
-    /// range and the user's `hdrEnabled` preference, then fires
+    /// iOS/macOS HDR path: derives a sig peak from the current stream's
+    /// dynamic range and the user's `hdrEnabled` preference, then fires
     /// `onSigPeakChange` so the hosting view can toggle
     /// `preferredDynamicRange` on the display layer. Called once
     /// per load (after dynamicRange is known) and whenever `setHDREnabled`
@@ -1963,7 +1963,7 @@ final class PlayerCore: NSObject {
     }
 
     private func publishSigPeakIfNeeded() {
-        #if os(iOS)
+        #if os(iOS) || os(macOS)
         // 1.1 is a sentinel "HDR content present" value; the actual peak
         // nit target is handled by the OS when EDR is enabled. Real per-frame
         // MaxCLL propagation happens via the VT session's

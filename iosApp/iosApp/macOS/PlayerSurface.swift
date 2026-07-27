@@ -30,6 +30,10 @@ final class PlayerSurfaceHostView: NSView {
     /// video format is known (overlay falls back to full bounds).
     private var videoPresentationSize: CGSize = .zero
 
+    /// Observes the hosting window moving between displays; re-registered
+    /// whenever the view changes window, released in `deinit`.
+    private var screenChangeToken: NSObjectProtocol?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -45,6 +49,12 @@ final class PlayerSurfaceHostView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        if let screenChangeToken {
+            NotificationCenter.default.removeObserver(screenChangeToken)
+        }
     }
 
     func attach(player: PlayerCore) {
@@ -63,6 +73,14 @@ final class PlayerSurfaceHostView: NSView {
             self?.videoPresentationSize = size
             self?.needsLayout = true
         }
+
+        // macOS EDR: sig-peak > 1 means the stream is HDR and the user has
+        // HDR enabled. Combine with the screen's available EDR headroom
+        // before flipping the flag, same as iOS.
+        player.onSigPeakChange = { [weak self] peak in
+            self?.updateEDR(sigPeak: peak)
+        }
+        updateEDR(sigPeak: player.lastSigPeak)
     }
 
     func detachSubtitleOverlay() {
@@ -82,6 +100,47 @@ final class PlayerSurfaceHostView: NSView {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         updateDisplayLayerScale()
+        // Backing changes accompany a move to another display, which can
+        // change available EDR headroom.
+        updateEDR(sigPeak: attachedPlayer?.lastSigPeak ?? 0)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Dragging the window between an HDR and an SDR display changes the
+        // headroom without changing backing scale, so neither
+        // `viewDidChangeBackingProperties` nor this override alone covers it.
+        if let screenChangeToken {
+            NotificationCenter.default.removeObserver(screenChangeToken)
+            self.screenChangeToken = nil
+        }
+        if let window {
+            screenChangeToken = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeScreenNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.updateEDR(sigPeak: self.attachedPlayer?.lastSigPeak ?? 0)
+            }
+        }
+        updateEDR(sigPeak: attachedPlayer?.lastSigPeak ?? 0)
+    }
+
+    /// Toggle EDR on the display layer based on stream peak + current screen
+    /// headroom, mirroring iOS.
+    ///
+    /// Per-screen headroom rather than `AppleDisplayHDRProbe`: that flag answers
+    /// "can this Mac present HDR at all" for the server's plan, while this
+    /// needs "does the screen this window currently sits on have headroom to
+    /// spend". On a multi-display setup those differ.
+    private func updateEDR(sigPeak: Double) {
+        let headroom = window?.screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1.0
+        let enable = sigPeak > 1.0 && headroom > 1.0
+        let dynamicRange: CALayer.DynamicRange = enable ? .high : .standard
+        if displayLayer.preferredDynamicRange != dynamicRange {
+            displayLayer.preferredDynamicRange = dynamicRange
+        }
     }
 
     private func updateDisplayLayerScale() {
