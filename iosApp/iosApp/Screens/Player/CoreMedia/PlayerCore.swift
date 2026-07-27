@@ -5888,8 +5888,8 @@ final class PlayerCore: NSObject {
             break
         }
         print(String(format:
-            "[CMP] dv gate applyCriteria fps=%.3f dr=%d (profile-5)",
-            Double(refreshRate), Int(SpikeDynamicRange.dolbyVision.rawValue)))
+            "[CMP] dv gate applyCriteria fps=%.3f format=dolbyVision(hdr10) (profile-5)",
+            Double(refreshRate)))
 
         dvGateObservation?.invalidate()
         dvGateObservation = dm.observe(

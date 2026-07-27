@@ -4502,7 +4502,7 @@ final class AVPlayerBackend {
             case .matchingDisabled:
                 print("[CMP-AVP] tv display apply context=\(context) matching=0 skipped=matching_disabled")
             case .applied:
-                print(String(format: "[CMP-AVP] tv display apply context=%@ fps=%.3f dr=%d matching=1 preservedReload=%d", context, Double(refreshRate), Int(SpikeDynamicRange.dolbyVision.rawValue), preservedForReload ? 1 : 0))
+                print(String(format: "[CMP-AVP] tv display apply context=%@ fps=%.3f format=dolbyVision(%@) matching=1 preservedReload=%d", context, Double(refreshRate), baseLayer == .hlg ? "hlg" : "hdr10", preservedForReload ? 1 : 0))
                 // A reload that preserved criteria left the panel in the
                 // right mode already; only a fresh apply can start an HDMI
                 // negotiation the item creation must not race. The settle
