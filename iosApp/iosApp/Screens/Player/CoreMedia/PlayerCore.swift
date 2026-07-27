@@ -1919,9 +1919,11 @@ final class PlayerCore: NSObject {
         guard formatCtx != nil else { return }
         #if os(tvOS)
         let rate = refreshRate
-        let range = enabled ? dynamicRange : .sdr
+        let contentFormat: TVDisplayCriteria.ContentFormat = enabled
+            ? tvDisplayContentFormat
+            : .sdr
         DispatchQueue.main.async {
-            TVDisplayCriteria.apply(refreshRate: rate, dynamicRange: range)
+            TVDisplayCriteria.apply(refreshRate: rate, contentFormat: contentFormat)
         }
         #else
         // iOS: re-publish sig peak so the hosting view can toggle EDR on the
@@ -1930,13 +1932,6 @@ final class PlayerCore: NSObject {
         #endif
     }
 
-    /// iOS/macOS HDR path: derives a sig peak from the current stream's
-    /// dynamic range and the user's `hdrEnabled` preference, then fires
-    /// `onSigPeakChange` so the hosting view can toggle
-    /// `preferredDynamicRange` on the display layer. Called once
-    /// per load (after dynamicRange is known) and whenever `setHDREnabled`
-    /// changes the preference. No-op on tvOS — HDR is handled via
-    /// AVDisplayManager there, not EDR.
     /// Recomputes `videoPresentationSize` from the current
     /// `videoFormatDescription` and notifies the hosting view on main when
     /// it changes. Called wherever `videoFormatDescription` is assigned or
@@ -1962,6 +1957,13 @@ final class PlayerCore: NSObject {
         }
     }
 
+    /// iOS/macOS HDR path: derives a sig peak from the current stream's
+    /// dynamic range and the user's `hdrEnabled` preference, then fires
+    /// `onSigPeakChange` so the hosting view can toggle
+    /// `preferredDynamicRange` on the display layer. Called once
+    /// per load (after dynamicRange is known) and whenever `setHDREnabled`
+    /// changes the preference. No-op on tvOS — HDR is handled via
+    /// AVDisplayManager there, not EDR.
     private func publishSigPeakIfNeeded() {
         #if os(iOS) || os(macOS)
         // 1.1 is a sentinel "HDR content present" value; the actual peak
@@ -1975,6 +1977,21 @@ final class PlayerCore: NSObject {
         }
         #endif
     }
+
+    #if os(tvOS)
+    /// Preserves the Dolby Vision base-layer transfer for HDMI negotiation.
+    /// Compatibility ID 4 identifies Profile 8.4's HLG base; all other
+    /// native Dolby Vision routes reaching PlayerCore use a PQ base.
+    private var tvDisplayContentFormat: TVDisplayCriteria.ContentFormat {
+        switch dynamicRange {
+        case .sdr: return .sdr
+        case .hdr10: return .hdr10
+        case .hlg: return .hlg
+        case .dolbyVision:
+            return .dolbyVision(baseLayer: doviConfig?.compatId == 4 ? .hlg : .hdr10)
+        }
+    }
+    #endif
 
     func dispose() {
         dispose(deferringFrees: true)
@@ -3381,13 +3398,15 @@ final class PlayerCore: NSObject {
         // the display layer via a sig-peak event.
         #if os(tvOS)
         let fps = refreshRate
-        let range = hdrEnabled ? dynamicRange : .sdr
+        let contentFormat: TVDisplayCriteria.ContentFormat = hdrEnabled
+            ? tvDisplayContentFormat
+            : .sdr
         let needsDvGate = requiresDolbyVisionDisplay && hdrEnabled
         DispatchQueue.main.async { [weak self] in
             if needsDvGate {
                 self?.applyDvGatedDisplayCriteria(refreshRate: fps)
             } else {
-                TVDisplayCriteria.apply(refreshRate: fps, dynamicRange: range)
+                TVDisplayCriteria.apply(refreshRate: fps, contentFormat: contentFormat)
             }
         }
         #else
@@ -5846,7 +5865,10 @@ final class PlayerCore: NSObject {
         // Shares `TVDisplayCriteria`'s public format-description write rather
         // than constructing criteria here, so the `dvh1` request this gate
         // makes is identical to every other Dolby Vision path.
-        switch TVDisplayCriteria.setCriteria(.dolbyVision, refreshRate: refreshRate) {
+        switch TVDisplayCriteria.setCriteria(
+            .dolbyVision(baseLayer: .hdr10),
+            refreshRate: refreshRate
+        ) {
         case .matchingDisabled:
             print("[CMP] dv gate REFUSE: isDisplayCriteriaMatchingEnabled=false")
             reportError(profile5Hint)

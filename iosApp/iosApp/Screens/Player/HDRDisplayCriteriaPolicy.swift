@@ -25,7 +25,9 @@ enum HDRDisplayCriteriaPolicy {
     /// Which display criteria the loopback route should request before
     /// creating the AVPlayerItem.
     enum CriteriaSelection: Equatable {
-        case dolbyVision
+        /// The Dolby Vision base-layer transfer selects the corresponding
+        /// public format description for the HDMI mode request.
+        case dolbyVision(LoopbackSessionSpec.DVProfile8BaseLayer)
         case hdr10
         case hlg
         case none
@@ -43,8 +45,10 @@ enum HDRDisplayCriteriaPolicy {
         hdrGateEnabled: Bool
     ) -> CriteriaSelection {
         switch videoMode {
-        case .passthroughProfile5, .convertProfile7To81, .passthroughProfile8:
-            return .dolbyVision
+        case .passthroughProfile5, .convertProfile7To81:
+            return .dolbyVision(.hdr10)
+        case .passthroughProfile8(let baseLayer):
+            return .dolbyVision(baseLayer)
         case .passthroughHEVC:
             guard hdrGateEnabled else { return .none }
             switch manifestVideoRange {

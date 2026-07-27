@@ -15,6 +15,17 @@ import UIKit
 /// mode). The Profile-5 gate stays on PlayerCore because it owns the
 /// observation lifetime.
 enum TVDisplayCriteria {
+    /// The color signaling the TV compositor needs to choose an HDMI mode.
+    /// Dolby Vision keeps its base-layer transfer because Profile 8.1 is PQ
+    /// while Profile 8.4 is HLG.
+    enum ContentFormat {
+        case sdr
+        case hdr10
+        case hlg
+        case dolbyVision(baseLayer: LoopbackSessionSpec.DVProfile8BaseLayer)
+
+    }
+
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app.tvos",
         category: "TVDisplayCriteria"
@@ -51,16 +62,14 @@ enum TVDisplayCriteria {
     /// signaling; the 4K raster size is nominal.
     @MainActor
     @discardableResult
-    static func setCriteria(
-        _ dynamicRange: SpikeDynamicRange, refreshRate: Float
-    ) -> ApplyOutcome {
+    static func setCriteria(_ contentFormat: ContentFormat, refreshRate: Float) -> ApplyOutcome {
         guard let dm = activeTVWindow()?.avDisplayManager else {
             return .noDisplayManager
         }
         guard dm.isDisplayCriteriaMatchingEnabled else {
             return .matchingDisabled
         }
-        guard let formatDescription = makeFormatDescription(for: dynamicRange) else {
+        guard let formatDescription = makeFormatDescription(for: contentFormat) else {
             return .formatUnavailable
         }
         dm.preferredDisplayCriteria = AVDisplayCriteria(
@@ -70,17 +79,17 @@ enum TVDisplayCriteria {
         return .applied
     }
 
-    /// The nominal 4K description the compositor negotiates from. Total over
-    /// `SpikeDynamicRange`: every range the player can signal has one, so a
-    /// nil here means `CMVideoFormatDescriptionCreate` itself failed.
+    /// The nominal 4K description the compositor negotiates from. Each
+    /// supported content format has a complete mapping; nil means the Core
+    /// Media allocation itself failed.
     private static func makeFormatDescription(
-        for dynamicRange: SpikeDynamicRange
+        for contentFormat: ContentFormat
     ) -> CMVideoFormatDescription? {
         let codecType: CMVideoCodecType
         let colorPrimaries: CFString
         let transferFunction: CFString
         let yCbCrMatrix: CFString
-        switch dynamicRange {
+        switch contentFormat {
         case .sdr:
             // Rec.709 throughout: the SDR counterpart of the BT.2020
             // signaling below, so the compositor is asked for an SDR mode at
@@ -100,16 +109,15 @@ enum TVDisplayCriteria {
             colorPrimaries = kCVImageBufferColorPrimaries_ITU_R_2020
             transferFunction = kCVImageBufferTransferFunction_ITU_R_2100_HLG
             yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_2020
-        case .dolbyVision:
-            // `dvh1` is the fourcc the loopback writer already emits for
-            // Profile 5, Profile 7→8.1 and Profile 8, so the criteria
-            // describe the same format the item will carry. The PQ transfer
-            // function matches those bases; Profile 8.4's HLG base is not
-            // distinguished by `HDRDisplayCriteriaPolicy.selection` today,
-            // and was not distinguished by the private range write either.
+        case .dolbyVision(let baseLayer):
+            // `dvh1` is the loopback writer's Dolby Vision sample entry.
+            // Its base-layer transfer must match the actual Profile 8 stream:
+            // 8.1 is PQ and 8.4 is HLG.
             codecType = kCMVideoCodecType_DolbyVisionHEVC
             colorPrimaries = kCVImageBufferColorPrimaries_ITU_R_2020
-            transferFunction = kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
+            transferFunction = baseLayer == .hlg
+                ? kCVImageBufferTransferFunction_ITU_R_2100_HLG
+                : kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
             yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_2020
         }
         let colorExtensions: NSDictionary = [
@@ -205,8 +213,8 @@ enum TVDisplayCriteria {
     }
 
     @MainActor
-    static func apply(refreshRate: Float, dynamicRange: SpikeDynamicRange) {
-        let outcome = setCriteria(dynamicRange, refreshRate: refreshRate)
+    static func apply(refreshRate: Float, contentFormat: ContentFormat) {
+        let outcome = setCriteria(contentFormat, refreshRate: refreshRate)
         switch outcome {
         case .noDisplayManager:
             logger.warning("apply: no avDisplayManager")
@@ -215,14 +223,13 @@ enum TVDisplayCriteria {
             logger.info("apply: matching disabled")
             print("[CMP] applyDisplayCriteria: isDisplayCriteriaMatchingEnabled=false (user has 'Match Content' off)")
         case .applied:
-            logger.info("apply: fps=\(refreshRate) dr=\(dynamicRange.rawValue)")
+            logger.info("apply: fps=\(refreshRate) format=\(String(describing: contentFormat))")
             print(String(format:
-                "[CMP] applyDisplayCriteria APPLIED fps=%.3f dr=%d matching=true",
-                Double(refreshRate), Int(dynamicRange.rawValue)))
+                "[CMP] applyDisplayCriteria APPLIED fps=%.3f format=%@ matching=true",
+                Double(refreshRate), String(describing: contentFormat)))
         case .formatUnavailable:
-            // Both initializers declined — nothing was written.
-            logger.warning("apply: no criteria written dr=\(dynamicRange.rawValue)")
-            print("[CMP] applyDisplayCriteria: no criteria written dr=\(dynamicRange.rawValue)")
+            logger.warning("apply: no criteria written format=\(String(describing: contentFormat))")
+            print("[CMP] applyDisplayCriteria: no criteria written format=\(contentFormat)")
         }
     }
 

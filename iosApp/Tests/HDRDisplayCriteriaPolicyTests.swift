@@ -37,14 +37,14 @@ final class HDRDisplayCriteriaPolicyTests: XCTestCase {
 
     // MARK: - Selection
 
-    func testDolbyVisionModesSelectDolbyVisionRegardlessOfGate() {
-        let modes: [LoopbackSessionSpec.VideoMode] = [
-            .passthroughProfile5,
-            .convertProfile7To81,
-            .passthroughProfile8(.hdr10),
-            .passthroughProfile8(.hlg),
+    func testDolbyVisionModesPreserveBaseLayerRegardlessOfGate() {
+        let modes: [(LoopbackSessionSpec.VideoMode, HDRDisplayCriteriaPolicy.CriteriaSelection)] = [
+            (.passthroughProfile5, .dolbyVision(.hdr10)),
+            (.convertProfile7To81, .dolbyVision(.hdr10)),
+            (.passthroughProfile8(.hdr10), .dolbyVision(.hdr10)),
+            (.passthroughProfile8(.hlg), .dolbyVision(.hlg)),
         ]
-        for mode in modes {
+        for (mode, expected) in modes {
             for gate in [false, true] {
                 XCTAssertEqual(
                     HDRDisplayCriteriaPolicy.selection(
@@ -52,7 +52,7 @@ final class HDRDisplayCriteriaPolicyTests: XCTestCase {
                         manifestVideoRange: "PQ",
                         hdrGateEnabled: gate
                     ),
-                    .dolbyVision,
+                    expected,
                     "\(mode) gate=\(gate)"
                 )
             }
@@ -211,7 +211,7 @@ final class HDRDisplayCriteriaPolicyTests: XCTestCase {
     // MARK: - Preserve across reload
 
     func testPreservesCriteriaForSameSelectionAndRate() {
-        for selection: HDRDisplayCriteriaPolicy.CriteriaSelection in [.dolbyVision, .hdr10, .hlg] {
+        for selection: HDRDisplayCriteriaPolicy.CriteriaSelection in [.dolbyVision(.hdr10), .dolbyVision(.hlg), .hdr10, .hlg] {
             XCTAssertTrue(
                 HDRDisplayCriteriaPolicy.shouldPreserveCriteriaAcrossReload(
                     current: selection,
@@ -239,8 +239,14 @@ final class HDRDisplayCriteriaPolicyTests: XCTestCase {
         )
         XCTAssertFalse(
             HDRDisplayCriteriaPolicy.shouldPreserveCriteriaAcrossReload(
-                current: .dolbyVision, next: .dolbyVision,
+                current: .dolbyVision(.hdr10), next: .dolbyVision(.hdr10),
                 currentRate: 23.976, nextRate: 25.0
+            )
+        )
+        XCTAssertFalse(
+            HDRDisplayCriteriaPolicy.shouldPreserveCriteriaAcrossReload(
+                current: .dolbyVision(.hdr10), next: .dolbyVision(.hlg),
+                currentRate: 23.976, nextRate: 23.976
             )
         )
     }

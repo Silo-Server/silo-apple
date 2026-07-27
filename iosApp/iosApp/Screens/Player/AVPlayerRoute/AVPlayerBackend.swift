@@ -4486,12 +4486,15 @@ final class AVPlayerBackend {
         isPreservingTVDisplayCriteriaForReload = false
         let refreshRate = spec.sourceVideoFrameRate ?? 24.0
         switch selection {
-        case .dolbyVision:
+        case .dolbyVision(let baseLayer):
             // `handleFirstSegmentReady` (the only caller) is dispatched onto
             // the main queue by the writer callback. `setCriteria` uses the
             // public format-description initializer with the `dvh1` fourcc.
             let outcome = MainActor.assumeIsolated {
-                TVDisplayCriteria.setCriteria(.dolbyVision, refreshRate: refreshRate)
+                TVDisplayCriteria.setCriteria(
+                    .dolbyVision(baseLayer: baseLayer),
+                    refreshRate: refreshRate
+                )
             }
             switch outcome {
             case .noDisplayManager:
