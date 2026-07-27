@@ -119,9 +119,11 @@ struct HomeFeedRow: View {
     /// Only generated titles are trimmed: an admin-named custom section
     /// ("Made in Britain") is someone's deliberate choice, and cutting at
     /// the *last* " in " keeps a generated title whose label itself contains
-    /// "in" from losing more than the library tail.
+    /// "in" from losing more than the library tail. `customized` is not a
+    /// useful guard here — the server sets it for any profile override
+    /// (position, item limit), not just a renamed title.
     private var displayTitle: String {
-        guard section.isCustom != true, section.customized != true,
+        guard section.isCustom != true,
               let range = section.title.range(of: " in ", options: [.caseInsensitive, .backwards]) else {
             return section.title
         }

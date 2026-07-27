@@ -234,7 +234,10 @@ private struct HomeCardMenu: ViewModifier {
     let onRemoveFromContinueWatching: (() -> Void)?
     let onSetWatched: ((Bool) async -> Bool)?
 
-    @State private var playedOverride: Bool?
+    /// Owned by the card, not the menu, so the artwork's watched check flips
+    /// with the menu label instead of waiting on the Home refresh —
+    /// `MediaCard` drives its badge from the same effective state.
+    @Binding var playedOverride: Bool?
     @State private var favoriteOverride: Bool?
     @State private var watchlistOverride: Bool?
 
@@ -326,6 +329,19 @@ private struct HomeCardMenu: ViewModifier {
     }
 }
 
+// MARK: - Watched check
+
+/// Top-trailing watched indicator shared by both Home cards.
+private struct HomeWatchedCheck: View {
+    var body: some View {
+        Image(systemName: "checkmark")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(Color.continuumBackground)
+            .frame(width: 18, height: 18)
+            .background(Circle().fill(Color.continuumOnSurface))
+    }
+}
+
 // MARK: - Poster card
 
 /// Poster card with the shipping card's flaws corrected: true 2:3 artwork,
@@ -350,6 +366,11 @@ struct HomePosterCard: View {
     var onSetWatched: ((Bool) async -> Bool)? = nil
 
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
+    /// Optimistic watched state, shared with the menu so the badge flips the
+    /// moment "Mark as Watched" is tapped rather than after the Home refresh.
+    @State private var playedOverride: Bool?
+
+    private var isPlayed: Bool { playedOverride ?? (item.userState?.played == true) }
 
     private var height: CGFloat {
         switch aspect {
@@ -369,7 +390,8 @@ struct HomePosterCard: View {
         .modifier(HomeCardMenu(
             item: item,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-            onSetWatched: onSetWatched
+            onSetWatched: onSetWatched,
+            playedOverride: $playedOverride
         ))
     }
 
@@ -411,12 +433,8 @@ struct HomePosterCard: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if item.userState?.played == true {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(Color.continuumBackground)
-                    .frame(width: 18, height: 18)
-                    .background(Circle().fill(Color.continuumOnSurface))
+            if isPlayed {
+                HomeWatchedCheck()
                     .padding(6)
             }
         }
@@ -466,6 +484,11 @@ struct HomeStillCard: View {
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
 
+    /// Optimistic watched state, shared with the menu — see `HomePosterCard`.
+    @State private var playedOverride: Bool?
+
+    private var isPlayed: Bool { playedOverride ?? (item.userState?.played == true) }
+
     private var height: CGFloat { (width * 9.0 / 16.0).rounded() }
 
     /// Backdrop when the payload actually has one — some send `""` rather
@@ -490,7 +513,8 @@ struct HomeStillCard: View {
         .modifier(HomeCardMenu(
             item: item,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-            onSetWatched: onSetWatched
+            onSetWatched: onSetWatched,
+            playedOverride: $playedOverride
         ))
     }
 
@@ -536,6 +560,15 @@ struct HomeStillCard: View {
                 .background(Circle().fill(.black.opacity(0.32)))
                 .overlay(Circle().stroke(.white.opacity(0.38), lineWidth: 0.75))
                 .allowsHitTesting(false)
+        }
+        // A watched item can sit in Continue Watching again on a rewatch —
+        // the check says "you've finished this before" alongside the rail's
+        // "here's where you are now", same as the replaced EpisodeThumbCard.
+        .overlay(alignment: .topTrailing) {
+            if isPlayed {
+                HomeWatchedCheck()
+                    .padding(6)
+            }
         }
         // Above the progress rail rather than on it — the rail owns the
         // bottom edge of a resume still.
