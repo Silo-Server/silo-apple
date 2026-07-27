@@ -211,8 +211,12 @@ struct HomeView: View {
                         .id(HomeFocusTarget.topSpacer)
 
                     ForEach(displayedSections) { section in
-                        HomeFeedRow(section: section)
-                            .id(HomeFocusTarget.row(section.id))
+                        HomeFeedRow(
+                            section: section,
+                            onRemoveFromContinueWatching: dismissContinueWatching,
+                            onSetWatched: setWatched
+                        )
+                        .id(HomeFocusTarget.row(section.id))
                     }
                 }
                 .padding(.bottom, HomeFeedMetrics.bottomRunway)

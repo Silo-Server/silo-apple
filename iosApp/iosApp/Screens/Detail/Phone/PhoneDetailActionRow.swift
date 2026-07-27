@@ -48,6 +48,11 @@ struct PhoneLabeledAction: View {
     var iconActive: String? = nil
     var isActive: Bool = false
     let label: String
+    /// Spoken instead of `label` when set, so VoiceOver can say "Remove from
+    /// Favorites" where the visual only changes tint and fill. A caption that
+    /// reads the same in both states tells a VoiceOver user neither what is
+    /// true now nor what activating will do.
+    var accessibilityLabelOverride: String? = nil
     let action: () -> Void
 
     private var resolvedIcon: String {
@@ -76,7 +81,9 @@ struct PhoneLabeledAction: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(label)
+        .accessibilityLabel(accessibilityLabelOverride ?? label)
+        .accessibilityValue(isActive ? "On" : "Off")
+        .accessibilityAddTraits(isActive ? [.isSelected] : [])
     }
 }
 

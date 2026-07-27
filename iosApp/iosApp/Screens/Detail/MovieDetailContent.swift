@@ -97,6 +97,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
                     iconActive: "heart.fill",
                     isActive: isFavorite,
                     label: "Favorite",
+                    accessibilityLabelOverride: isFavorite
+                        ? "Remove from Favorites" : "Add to Favorites",
                     action: onToggleFavorite
                 )
                 PhoneLabeledAction(
@@ -104,6 +106,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
                     iconActive: "bookmark.fill",
                     isActive: inWatchlist,
                     label: "Watchlist",
+                    accessibilityLabelOverride: inWatchlist
+                        ? "Remove from Watchlist" : "Add to Watchlist",
                     action: onToggleWatchlist
                 )
                 PhoneLabeledAction(
@@ -111,6 +115,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
                     iconActive: "checkmark.circle.fill",
                     isActive: isWatched,
                     label: isWatched ? "Watched" : "Mark Seen",
+                    accessibilityLabelOverride: isWatched
+                        ? watchedLabelUnmark : watchedLabelMark,
                     action: onToggleWatched
                 )
                 if showsDownloadButton {

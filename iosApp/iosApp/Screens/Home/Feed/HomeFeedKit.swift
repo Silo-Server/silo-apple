@@ -219,6 +219,112 @@ private struct HomeCardTap<Label: View>: View {
     }
 }
 
+// MARK: - Card context menu
+
+/// Long-press menu for a Home card.
+///
+/// `MediaCard` carries these actions on Browse and For You, so a card that
+/// loses them on Home behaves differently depending on which tab you found it
+/// in — and `HomeViewModel`'s dismiss/watched mutations become unreachable.
+/// Same action set and ordering as `MediaCard`: watched toggle, personal
+/// lists, then the destructive removal.
+private struct HomeCardMenu: ViewModifier {
+    let item: SectionItem
+    let onRemoveFromContinueWatching: (() -> Void)?
+    let onSetWatched: ((Bool) async -> Bool)?
+
+    @State private var playedOverride: Bool?
+    @State private var favoriteOverride: Bool?
+    @State private var watchlistOverride: Bool?
+
+    private var isPlayed: Bool { playedOverride ?? (item.userState?.played == true) }
+    private var isFavorite: Bool { favoriteOverride ?? (item.userState?.isFavorite == true) }
+    private var inWatchlist: Bool { watchlistOverride ?? (item.userState?.inWatchlist == true) }
+
+    /// Only cards backed by server user state get the personal-list entries,
+    /// matching `MediaCard`.
+    private var hasPersonalActions: Bool { item.userState != nil }
+
+    private var hasAnyAction: Bool {
+        hasPersonalActions || onSetWatched != nil || onRemoveFromContinueWatching != nil
+    }
+
+    func body(content: Content) -> some View {
+        if hasAnyAction {
+            content
+                .contextMenu { menuItems }
+                .onChange(of: item.userState) { _, _ in
+                    playedOverride = nil
+                    favoriteOverride = nil
+                    watchlistOverride = nil
+                }
+        } else {
+            content
+        }
+    }
+
+    @ViewBuilder
+    private var menuItems: some View {
+        if let onSetWatched {
+            Button {
+                let played = !isPlayed
+                Task { @MainActor in
+                    playedOverride = played
+                    if await onSetWatched(played) == false {
+                        playedOverride = nil
+                    }
+                }
+            } label: {
+                Label(
+                    isPlayed ? "Mark as Unwatched" : "Mark as Watched",
+                    systemImage: isPlayed ? "circle" : "checkmark.circle"
+                )
+            }
+        }
+
+        if hasPersonalActions {
+            PersonalListMenuItems(
+                isFavorite: isFavorite,
+                inWatchlist: inWatchlist,
+                onToggleFavorite: toggleFavorite,
+                onToggleWatchlist: toggleWatchlist
+            )
+        }
+
+        if let onRemoveFromContinueWatching {
+            Button(role: .destructive, action: onRemoveFromContinueWatching) {
+                Label("Remove from Continue Watching", systemImage: "xmark.circle")
+            }
+        }
+    }
+
+    private func toggleFavorite() {
+        let newValue = !isFavorite
+        let watchlist = inWatchlist
+        favoriteOverride = newValue
+        Task {
+            if await PersonalListSync.setFavorite(
+                contentId: item.contentId, isFavorite: newValue, inWatchlist: watchlist
+            ) == false {
+                favoriteOverride = !newValue
+            }
+        }
+    }
+
+    private func toggleWatchlist() {
+        let newValue = !inWatchlist
+        let favorite = isFavorite
+        watchlistOverride = newValue
+        Task {
+            if await PersonalListSync.setWatchlist(
+                contentId: item.contentId, isFavorite: favorite, inWatchlist: newValue
+            ) == false {
+                watchlistOverride = !newValue
+            }
+        }
+    }
+}
+
 // MARK: - Poster card
 
 /// Poster card with the shipping card's flaws corrected: true 2:3 artwork,
@@ -231,8 +337,25 @@ struct HomePosterCard: View {
     var showsBadges: Bool = true
     /// Draws the resume rail across the bottom of the artwork.
     var showsProgress: Bool = false
+    /// Audiobook covers are square; stretching one into a 2:3 poster crops
+    /// its edges off.
+    var aspect: MediaCardAspect = .poster
+    /// "S2 · E10" for an episode rendered as a poster. Without it, several
+    /// episodes of one series are captioned identically (they caption with
+    /// the series name) and become indistinguishable cards.
+    var episodeBadge: String? = nil
+    /// Long-press actions, matching what `MediaCard` offers elsewhere.
+    var onRemoveFromContinueWatching: (() -> Void)? = nil
+    var onSetWatched: ((Bool) async -> Bool)? = nil
 
-    private var height: CGFloat { (width * HomeFeedMetrics.posterAspect).rounded() }
+    @EnvironmentObject private var overlayStore: OverlayPrefsStore
+
+    private var height: CGFloat {
+        switch aspect {
+        case .poster: (width * HomeFeedMetrics.posterAspect).rounded()
+        case .square: width
+        }
+    }
 
     var body: some View {
         HomeCardTap(contentId: item.contentId) {
@@ -242,6 +365,11 @@ struct HomePosterCard: View {
             }
             .frame(width: width, alignment: .leading)
         }
+        .modifier(HomeCardMenu(
+            item: item,
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+            onSetWatched: onSetWatched
+        ))
     }
 
     private var artwork: some View {
@@ -261,8 +389,23 @@ struct HomePosterCard: View {
                 .stroke(.white.opacity(0.08), lineWidth: 0.5)
         )
         .overlay(alignment: .topLeading) {
-            if showsBadges {
+            // `overlayStore.enabled` is the server/admin kill switch for card
+            // overlays. These badges are a curated subset rather than the full
+            // configured overlay set, but they are still overlays — honouring
+            // the switch keeps "turn overlays off" meaning what it says.
+            if showsBadges, overlayStore.enabled {
                 QualityBadges(badges: HomeFeedMeta.notableBadges(for: item))
+                    .padding(6)
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if let episodeBadge {
+                Text(episodeBadge)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(.black.opacity(0.65)))
                     .padding(6)
             }
         }
@@ -316,6 +459,8 @@ struct HomePosterCard: View {
 struct HomeStillCard: View {
     let item: SectionItem
     var width: CGFloat = HomeFeedMetrics.stillWidth
+    var onRemoveFromContinueWatching: (() -> Void)? = nil
+    var onSetWatched: ((Bool) async -> Bool)? = nil
 
     private var height: CGFloat { (width * 9.0 / 16.0).rounded() }
 
@@ -327,6 +472,11 @@ struct HomeStillCard: View {
             }
             .frame(width: width, alignment: .leading)
         }
+        .modifier(HomeCardMenu(
+            item: item,
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+            onSetWatched: onSetWatched
+        ))
     }
 
     private var artwork: some View {

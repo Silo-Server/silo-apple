@@ -95,6 +95,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     iconActive: "heart.fill",
                     isActive: isFavorite,
                     label: "Favorite",
+                    accessibilityLabelOverride: isFavorite
+                        ? "Remove from Favorites" : "Add to Favorites",
                     action: onToggleFavorite
                 )
                 PhoneLabeledAction(
@@ -102,6 +104,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     iconActive: "bookmark.fill",
                     isActive: inWatchlist,
                     label: "Watchlist",
+                    accessibilityLabelOverride: inWatchlist
+                        ? "Remove from Watchlist" : "Add to Watchlist",
                     action: onToggleWatchlist
                 )
                 PhoneLabeledAction(
@@ -109,8 +113,21 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     iconActive: "checkmark.circle.fill",
                     isActive: isWatched,
                     label: isWatched ? "Watched" : "Mark Seen",
+                    accessibilityLabelOverride: isWatched
+                        ? "Mark Series Unwatched" : "Mark Series Watched",
                     action: onToggleWatched
                 )
+                if DownloadManager.shared.downloadsEnabled {
+                    // Season downloads and future-episode monitoring live
+                    // behind this control; without it the series page has no
+                    // download entry point at all.
+                    SeriesDownloadMenuButton(
+                        detail: detail,
+                        seasons: seasons,
+                        selectedSeason: selectedSeason,
+                        style: .labeled
+                    )
+                }
             }
 
             if nextUpEpisode != nil, let effectiveNextUpVersion {

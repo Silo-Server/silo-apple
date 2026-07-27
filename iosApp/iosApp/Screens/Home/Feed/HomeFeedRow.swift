@@ -13,6 +13,9 @@ struct HomeFeedRow: View {
     /// Quality badges. Off for dense rows, where a badge covers a third of
     /// the artwork and density is the whole point.
     var showsBadges: Bool = true
+    /// Long-press actions, forwarded to every card in the row.
+    var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
+    var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
 
     private var isResume: Bool { HomeFeed.isResume(section) }
 
@@ -57,13 +60,21 @@ struct HomeFeedRow: View {
                 LazyHStack(spacing: cardSpacing) {
                     ForEach(section.items) { item in
                         if usesStills {
-                            HomeStillCard(item: item)
+                            HomeStillCard(
+                                item: item,
+                                onRemoveFromContinueWatching: removalAction(for: item),
+                                onSetWatched: watchedAction(for: item)
+                            )
                         } else {
                             HomePosterCard(
                                 item: item,
                                 width: posterWidth,
                                 showsBadges: badgesAreInformative,
-                                showsProgress: isResume
+                                showsProgress: isResume,
+                                aspect: isAudiobookRow ? .square : .poster,
+                                episodeBadge: episodeBadge(for: item),
+                                onRemoveFromContinueWatching: removalAction(for: item),
+                                onSetWatched: watchedAction(for: item)
                             )
                         }
                     }
@@ -73,6 +84,27 @@ struct HomeFeedRow: View {
             .contentMargins(.horizontal, HomeFeedMetrics.gutter, for: .scrollContent)
             .scrollClipDisabled()
         }
+    }
+
+    /// "S2 · E10" for an episode drawn as a poster. Episode-discovery rows
+    /// caption with the series name, so without this several episodes of one
+    /// series render as identical cards.
+    private func episodeBadge(for item: SectionItem) -> String? {
+        guard item.type.lowercased() == "episode",
+              let season = item.seasonNumber,
+              let episode = item.episodeNumber else { return nil }
+        return "S\(season) · E\(episode)"
+    }
+
+    /// Removal is only offered where it means something — a resume row.
+    private func removalAction(for item: SectionItem) -> (() -> Void)? {
+        guard isResume, let onRemoveFromContinueWatching else { return nil }
+        return { onRemoveFromContinueWatching(item) }
+    }
+
+    private func watchedAction(for item: SectionItem) -> ((Bool) async -> Bool)? {
+        guard let onSetWatched else { return nil }
+        return { played in await onSetWatched(item, played) }
     }
 
     /// Server section titles read like query descriptions — "Recently

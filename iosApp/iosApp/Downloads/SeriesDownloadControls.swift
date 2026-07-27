@@ -14,24 +14,60 @@ struct SeriesDownloadMenuButton: View {
     @State private var activeSheet: SeriesDownloadSheet?
     @State private var pendingMonitorSheet = false
 
+    /// Presentation of the trigger. `labeled` matches the detail page's named
+    /// action row; `circle` is the original chrome, still used elsewhere.
+    enum Style {
+        case circle
+        case labeled
+    }
+
+    var style: Style = .circle
+
     private var seriesId: String { detail.seriesId ?? detail.contentId }
     private var isMonitored: Bool { manager.subscription(forSeriesId: seriesId) != nil }
+
+    private var circleLabel: some View {
+        Image(systemName: isMonitored ? "arrow.down.circle.fill" : "arrow.down.circle")
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundColor(.white)
+            .frame(width: 44, height: 44)
+            .background(
+                Circle()
+                    .fill(Color.white.opacity(isMonitored ? 0.18 : 0.10))
+                    .overlay(Circle().stroke(Color.white.opacity(isMonitored ? 0.55 : 0.25), lineWidth: 1))
+            )
+    }
+
+    /// Glyph over caption, matching `PhoneLabeledAction`'s metrics.
+    private var labeledLabel: some View {
+        VStack(spacing: 6) {
+            Image(systemName: isMonitored ? "arrow.down.circle.fill" : "arrow.down.to.line")
+                .font(.system(size: 19, weight: .regular))
+                .foregroundColor(isMonitored ? Color.continuumAccent : Color.continuumOnSurface)
+                .frame(height: 22)
+            Text(isMonitored ? "Monitored" : "Download")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(isMonitored
+                                 ? Color.continuumAccent
+                                 : Color.continuumOnSurface.opacity(0.6))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+    }
 
     var body: some View {
         Button {
             activeSheet = .downloadOptions
         } label: {
-            Image(systemName: isMonitored ? "arrow.down.circle.fill" : "arrow.down.circle")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.white)
-                .frame(width: 44, height: 44)
-                .background(
-                    Circle()
-                        .fill(Color.white.opacity(isMonitored ? 0.18 : 0.10))
-                        .overlay(Circle().stroke(Color.white.opacity(isMonitored ? 0.55 : 0.25), lineWidth: 1))
-                )
+            switch style {
+            case .circle: circleLabel
+            case .labeled: labeledLabel
+            }
         }
         .accessibilityLabel("Download or monitor series")
+        .accessibilityValue(isMonitored ? "Monitored" : "Not monitored")
         // Chaining sheets from `onDismiss` waits out the real dismiss
         // animation instead of guessing a delay — a fixed sleep silently
         // fails to present when teardown runs long (slow device,
