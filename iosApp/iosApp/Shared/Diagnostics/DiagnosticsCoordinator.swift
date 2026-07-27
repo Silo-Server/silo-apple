@@ -541,10 +541,25 @@ actor DiagnosticsCoordinator {
         guard cachedStatus?.status.supportsChunkedUpload == true else {
             throw DiagnosticsUploadError.unsupportedSchema
         }
+        // Pin the destination identity for the whole multi-request sequence.
+        // HTTPClient resolves the active server URL and auth per request, so
+        // without this a server/account/profile switch between chunk PUTs
+        // would send the remaining bundle bytes to the newly active
+        // destination. Same stable identity as the single-shot pre-POST check:
+        // server registry id + profile, token presence only (a transparent
+        // token refresh mid-upload must not abort the sequence).
+        let destinationServerRegistryID = ServerRegistry.shared.activeServerId
+        let destinationProfileID = await TokenStore.shared.getProfileId()
         do {
             return try await api.uploadChunked(
                 manifestData: bundle.manifestData,
-                bundleData: bundle.bundleData
+                bundleData: bundle.bundleData,
+                destinationUnchanged: {
+                    guard await Self.currentAccessTokenFingerprint() != nil else { return false }
+                    guard ServerRegistry.shared.activeServerId == destinationServerRegistryID else { return false }
+                    let activeProfileID = await TokenStore.shared.getProfileId()
+                    return activeProfileID == destinationProfileID
+                }
             )
         } catch DiagnosticsUploadError.requestBlockedByProxy {
             // Even individual chunk-sized requests are blocked: the proxy cap

@@ -164,6 +164,65 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
         XCTAssertFalse(state.completed)
         XCTAssertTrue(state.aborted, "a failed upload must best-effort abort its session")
     }
+
+    func testUploadChunkedFailsFastOnNonPositiveChunkBytes() async throws {
+        // A zero/negative advertised chunk size must fail fast, not degrade
+        // to 1-byte chunks (millions of PUTs for a real bundle).
+        ChunkedUploadStubProtocol.reset(chunkBytes: 0, failChunkIndex: nil)
+        let api = await makeStubbedAPI()
+
+        do {
+            _ = try await api.uploadChunked(
+                manifestData: Data(#"{"schema_version":1}"#.utf8),
+                bundleData: Data("0123456789".utf8)
+            )
+            XCTFail("uploadChunked should reject chunk_bytes = 0")
+        } catch let error as DiagnosticsUploadError {
+            guard case .underlying = error else {
+                return XCTFail("expected underlying for invalid chunk_bytes, got \(error)")
+            }
+        }
+
+        let state = ChunkedUploadStubProtocol.state()
+        XCTAssertTrue(state.chunkIndexes.isEmpty, "no chunk PUTs may be issued")
+        XCTAssertFalse(state.completed)
+        XCTAssertTrue(state.aborted, "the opened session should still be reclaimed")
+    }
+
+    func testUploadChunkedStopsWithoutAbortWhenDestinationChanges() async throws {
+        // Simulate a server/profile switch after the first chunk: the check
+        // fires before every post-init request, the remaining bundle bytes
+        // must not be sent, and no abort may be issued (it would target the
+        // newly active destination).
+        ChunkedUploadStubProtocol.reset(chunkBytes: 4, failChunkIndex: nil)
+        let api = await makeStubbedAPI()
+
+        let checkCount = ChunkCheckCounter()
+        do {
+            _ = try await api.uploadChunked(
+                manifestData: Data(#"{"schema_version":1}"#.utf8),
+                bundleData: Data("0123456789".utf8),
+                destinationUnchanged: { await checkCount.next() <= 1 }
+            )
+            XCTFail("uploadChunked should stop on a destination change")
+        } catch let error as DiagnosticsUploadError {
+            XCTAssertEqual(error, .retryable("destination_changed"))
+        }
+
+        let state = ChunkedUploadStubProtocol.state()
+        XCTAssertEqual(state.chunkIndexes, [0], "upload must stop after the destination changed")
+        XCTAssertFalse(state.completed)
+        XCTAssertFalse(state.aborted, "abort would target the new destination and must be skipped")
+    }
+}
+
+/// Serializes destination-check counting across the async upload loop.
+private actor ChunkCheckCounter {
+    private var count = 0
+    func next() -> Int {
+        count += 1
+        return count
+    }
 }
 
 /// In-process stub for the chunked upload endpoints. State is static because
@@ -200,11 +259,11 @@ final class ChunkedUploadStubProtocol: URLProtocol {
         lock.unlock()
     }
 
-    override class func canInit(with request: URLRequest) -> Bool {
+    override static func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "chunk-test.invalid"
     }
 
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+    override static func canonicalRequest(for request: URLRequest) -> URLRequest {
         request
     }
 

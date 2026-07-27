@@ -117,10 +117,23 @@ actor DiagnosticsAPI {
     /// here stays under the server-advertised `upload_chunk_bytes` (768 KiB),
     /// which clears nginx's default 1 MiB `client_max_body_size`.
     ///
+    /// `destinationUnchanged` re-validates the upload's destination identity
+    /// before every request after init. HTTPClient resolves the active server
+    /// URL and auth per request, so a server/profile switch mid-sequence
+    /// would otherwise send the remaining chunk bodies to whatever
+    /// destination became active. When the check fails the upload stops with
+    /// a retryable error and no abort is attempted — the DELETE would target
+    /// the *new* destination; the original server's session TTL reclaims the
+    /// spool.
+    ///
     /// On failure after init, the session is aborted best-effort so the
     /// server can reclaim its spool immediately instead of waiting out the
     /// session TTL.
-    func uploadChunked(manifestData: Data, bundleData: Data) async throws -> DiagnosticsUploadResponse {
+    func uploadChunked(
+        manifestData: Data,
+        bundleData: Data,
+        destinationUnchanged: (() async -> Bool)? = nil
+    ) async throws -> DiagnosticsUploadResponse {
         let session: DiagnosticsChunkedUploadSession
         do {
             // The manifest bytes are embedded verbatim into the init JSON
@@ -141,6 +154,13 @@ actor DiagnosticsAPI {
             throw DiagnosticsUploadError.underlying(String(describing: error))
         }
 
+        func ensureDestinationUnchanged() async throws {
+            guard let destinationUnchanged else { return }
+            guard await destinationUnchanged() else {
+                throw DiagnosticsUploadError.retryable("destination_changed")
+            }
+        }
+
         do {
             // Fail fast on a nonsensical chunk size rather than degrade: a
             // zero/negative value coerced to something tiny would turn one
@@ -152,6 +172,7 @@ actor DiagnosticsAPI {
             var index = 0
             var offset = 0
             while offset < bundleData.count {
+                try await ensureDestinationUnchanged()
                 let end = min(offset + chunkBytes, bundleData.count)
                 let _: EmptyDiagnosticsResponse = try await http.putRaw(
                     "/api/v1/diagnostics/reports/uploads/\(session.uploadId)/chunks/\(index)",
@@ -161,12 +182,17 @@ actor DiagnosticsAPI {
                 offset = end
                 index += 1
             }
+            try await ensureDestinationUnchanged()
             return try await http.postRaw(
                 "/api/v1/diagnostics/reports/uploads/\(session.uploadId)/complete",
                 body: Data(),
                 contentType: "application/json",
                 timeout: .extended
             )
+        } catch DiagnosticsUploadError.retryable(let code) where code == "destination_changed" {
+            // Deliberately no abort: HTTPClient now points at a different
+            // server/account, so the DELETE would go to the wrong place.
+            throw DiagnosticsUploadError.retryable(code)
         } catch {
             // Free the server-side spool now rather than at TTL expiry. Errors
             // are swallowed: the abort is a courtesy and must not mask the
