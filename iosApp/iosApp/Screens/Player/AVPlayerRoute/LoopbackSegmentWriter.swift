@@ -3645,8 +3645,26 @@ final class LoopbackSegmentWriter {
         if videoMode == .passthroughH264 {
             return h264RFC6381CodecString(avccHeader: inputAvccHeader) ?? sampleEntry
         }
+        // Profile 5 advertises Dolby Vision in CODECS itself, so it needs the
+        // Dolby form. Running it through the HEVC builder produces a `dvh1`
+        // fourcc glued to HEVC profile/level fields, which AVPlayer rejects.
+        if videoMode == .passthroughProfile5, let dolbyVision = dolbyVisionRFC6381CodecString() {
+            return dolbyVision
+        }
         return hevcRFC6381CodecString(sampleEntry: sampleEntry, hvccHeader: inputHvccHeader)
             ?? sampleEntry
+    }
+
+    /// Dolby Vision RFC 6381 form, `dvh1.<profile>.<level>` with both fields
+    /// zero-padded to two digits. Profiles 7 and 8 carry the same string in
+    /// SUPPLEMENTAL-CODECS with a compatibility brand appended.
+    private func dolbyVisionRFC6381CodecString() -> String? {
+        guard let record = doviRecord else {
+            // No dvcC/dvvC parsed; the manifest profile is a weaker fallback
+            // and carries no level, so leave the caller to its HEVC path.
+            return nil
+        }
+        return String(format: "dvh1.%02d.%02d", Int(record.profile), Int(record.level))
     }
 
     private func masterManifestSampleEntryCodec() -> String {
