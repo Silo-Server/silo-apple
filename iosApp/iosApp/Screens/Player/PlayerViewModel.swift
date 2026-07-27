@@ -1095,9 +1095,6 @@ class PlayerViewModel {
     /// Triggers a V3 replan when the audio route the session was planned
     /// against changes. iOS/tvOS only — macOS has no `AVAudioSession`.
     private var outputRouteObserverToken: NSObjectProtocol?
-    /// Triggers a V3 replan when display HDR eligibility flips. All
-    /// platforms; feeds `outputRouteGeneration` in the capability snapshot.
-    private var hdrCapabilityObserverToken: NSObjectProtocol?
 
     init() {
         activePlayer = .none
@@ -1175,26 +1172,6 @@ class PlayerViewModel {
             guard let self, self.settings.subtitleMatchesSystemAppearance else { return }
             self.settings.refreshSubtitleSystemAppearance()
             self.applySubtitleAppearanceToPlayer()
-        }
-        // Losing HDR presentation mid-session does not invalidate the plan: the
-        // client keeps decoding and tone maps, so a replan would tear down the
-        // session to reach the same route. Profile 5 is the exception — it has
-        // no base layer to fall back to.
-        hdrCapabilityObserverToken = NotificationCenter.default.addObserver(
-            forName: AppleDisplayHDRProbe.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self,
-                  !self.isDisposed,
-                  !self.isLoading,
-                  let prepared = self.activePreparedProtocolV3,
-                  prepared.plan.source.dolbyVisionProfile == 5 else { return }
-            self.attemptProtocolV3Replan(
-                position: self.currentTime,
-                classification: "output_route_changed",
-                message: "The display's HDR capability changed."
-            )
         }
         #if !os(macOS)
         outputRouteObserverToken = NotificationCenter.default.addObserver(
@@ -5981,10 +5958,6 @@ class PlayerViewModel {
             NotificationCenter.default.removeObserver(outputRouteObserverToken)
             self.outputRouteObserverToken = nil
         }
-        if let hdrCapabilityObserverToken {
-            NotificationCenter.default.removeObserver(hdrCapabilityObserverToken)
-            self.hdrCapabilityObserverToken = nil
-        }
         nextUpLookupTask?.cancel()
         nextUpOnDeckTask?.cancel()
         nextUpCountdownTask?.cancel()
@@ -6087,9 +6060,6 @@ class PlayerViewModel {
         }
         if let outputRouteObserverToken {
             NotificationCenter.default.removeObserver(outputRouteObserverToken)
-        }
-        if let hdrCapabilityObserverToken {
-            NotificationCenter.default.removeObserver(hdrCapabilityObserverToken)
         }
         freshLoadTask?.cancel()
         protocolV3ReplanTask?.cancel()

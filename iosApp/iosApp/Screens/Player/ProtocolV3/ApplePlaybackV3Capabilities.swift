@@ -178,9 +178,17 @@ enum ApplePlaybackV3Capabilities {
     }
 
     private static func outputSnapshot() -> PlaybackV3OutputContext {
-        // Every platform's HDR claim — and the simulator's lack of one —
-        // resolves in `AppleDisplayHDRProbe`.
-        let hdrDetails: PlaybackV3HDRCapabilities? = AppleDisplayHDRProbe.capabilities()
+        // Per format: can this client be handed such a source and render it
+        // correctly? That is what the server plans against, and it does not
+        // depend on the display — PQ, HLG and the HDR10 base of HDR10+ all tone
+        // map on the display layer, and Dolby Vision is resolved during decode.
+        // Listing profile 7 also says this client converts it to 8.1 itself.
+        let hdrDetails: PlaybackV3HDRCapabilities? = PlaybackV3HDRCapabilities(
+            hdr10: true,
+            hdr10Plus: true,
+            hlg: true,
+            dolbyVisionProfiles: [5, 7, 8]
+        )
 
         let sink: String
         let sinkType: String

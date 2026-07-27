@@ -134,10 +134,8 @@ final class PlayerSurfaceHostView: NSView {
     /// Toggle EDR on the display layer based on stream peak + current screen
     /// headroom, mirroring iOS.
     ///
-    /// Per-screen headroom rather than `AppleDisplayHDRProbe`: that flag answers
-    /// "can this Mac present HDR at all" for the server's plan, while this
-    /// needs "does the screen this window currently sits on have headroom to
-    /// spend". On a multi-display setup those differ.
+    /// Headroom is per screen rather than per Mac: on a multi-display setup the
+    /// window may sit on a display with none to spend.
     private func updateEDR(sigPeak: Double) {
         let headroom = window?.screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1.0
         let enable = sigPeak > 1.0 && headroom > 1.0
