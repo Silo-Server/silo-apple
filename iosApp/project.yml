@@ -127,8 +127,8 @@ targets:
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
         SDKROOT: appletvos
         SUPPORTED_PLATFORMS: "appletvos appletvsimulator"
-        # Bridging header exposes the Obj-C audio graph exception catcher on
-        # Apple targets and the private AVDisplayCriteria initializer on tvOS.
+        # Bridging header exposes the Obj-C audio graph exception catcher
+        # and the FFmpeg log filter on Apple targets.
         SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
     dependencies:
       - package: FFmpeg
