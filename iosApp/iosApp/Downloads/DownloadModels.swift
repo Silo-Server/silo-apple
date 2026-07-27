@@ -217,17 +217,16 @@ struct DownloadCaps: Encodable, Sendable {
             hdr: false
         )
         #else
-        // Every Apple client decodes through the same PlayerCore/FFmpeg stack,
-        // so the container and codec surface is shared. The HDR claim is
-        // display-dependent — see `AppleDisplayHDRProbe`.
-        let hdr = AppleDisplayHDRProbe.isEligible
+        // Downloads are persistent artifacts, so advertise the device's
+        // maximum decode capability rather than the active display route.
+        // Output-dependent HDR eligibility belongs to playback negotiation.
         return DownloadCaps(
             codecsVideo: ["h264", "hevc"],
             codecsAudio: ["aac", "ac3", "eac3", "dts", "truehd", "flac", "mp3", "opus"],
             audioPassthroughCodecs: ["ac3", "eac3"],
             containers: ["mkv", "mp4", "mov", "m4v", "webm", "avi", "ts", "m2ts"],
             maxResolution: nil,
-            hdr: hdr
+            hdr: true
         )
         #endif
     }
