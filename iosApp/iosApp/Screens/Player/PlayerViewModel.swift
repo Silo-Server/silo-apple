@@ -1092,7 +1092,12 @@ class PlayerViewModel {
     /// Re-applies subtitle styling when the user edits the system's
     /// Subtitles & Captioning preferences mid-playback.
     private var systemCaptionObserverToken: NSObjectProtocol?
-    private var audioRouteObserverToken: NSObjectProtocol?
+    /// Triggers a V3 replan when the audio route the session was planned
+    /// against changes. iOS/tvOS only — macOS has no `AVAudioSession`.
+    private var outputRouteObserverToken: NSObjectProtocol?
+    /// Triggers a V3 replan when display HDR eligibility flips. All
+    /// platforms; feeds `outputRouteGeneration` in the capability snapshot.
+    private var hdrCapabilityObserverToken: NSObjectProtocol?
 
     init() {
         activePlayer = .none
@@ -1171,8 +1176,28 @@ class PlayerViewModel {
             self.settings.refreshSubtitleSystemAppearance()
             self.applySubtitleAppearanceToPlayer()
         }
+        // The HDR capability the plan was built against can change under a
+        // running session on every platform — an external display connected
+        // on iOS, a TV renegotiating on tvOS, a window moved to another Mac
+        // display. AVFoundation posts only on a genuine flip, so this does
+        // not churn on incidental screen events.
+        hdrCapabilityObserverToken = NotificationCenter.default.addObserver(
+            forName: AppleDisplayHDRProbe.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self,
+                  self.activePreparedProtocolV3 != nil,
+                  !self.isDisposed,
+                  !self.isLoading else { return }
+            self.attemptProtocolV3Replan(
+                position: self.currentTime,
+                classification: "output_route_changed",
+                message: "The display's HDR capability changed."
+            )
+        }
         #if !os(macOS)
-        audioRouteObserverToken = NotificationCenter.default.addObserver(
+        outputRouteObserverToken = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
             queue: .main
@@ -5951,9 +5976,13 @@ class PlayerViewModel {
         freshLoadTask?.cancel()
         protocolV3ReplanTask?.cancel()
         protocolV3ReplanTask = nil
-        if let audioRouteObserverToken {
-            NotificationCenter.default.removeObserver(audioRouteObserverToken)
-            self.audioRouteObserverToken = nil
+        if let outputRouteObserverToken {
+            NotificationCenter.default.removeObserver(outputRouteObserverToken)
+            self.outputRouteObserverToken = nil
+        }
+        if let hdrCapabilityObserverToken {
+            NotificationCenter.default.removeObserver(hdrCapabilityObserverToken)
+            self.hdrCapabilityObserverToken = nil
         }
         nextUpLookupTask?.cancel()
         nextUpOnDeckTask?.cancel()
@@ -6055,8 +6084,11 @@ class PlayerViewModel {
         if let systemCaptionObserverToken {
             NotificationCenter.default.removeObserver(systemCaptionObserverToken)
         }
-        if let audioRouteObserverToken {
-            NotificationCenter.default.removeObserver(audioRouteObserverToken)
+        if let outputRouteObserverToken {
+            NotificationCenter.default.removeObserver(outputRouteObserverToken)
+        }
+        if let hdrCapabilityObserverToken {
+            NotificationCenter.default.removeObserver(hdrCapabilityObserverToken)
         }
         freshLoadTask?.cancel()
         protocolV3ReplanTask?.cancel()
