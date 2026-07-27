@@ -503,16 +503,54 @@ actor DiagnosticsCoordinator {
                   ) else {
                 return .keptRetryable
             }
-            let response = try await api.upload(
-                manifestData: bundle.manifestData,
-                bundleData: bundle.bundleData
-            )
+            let response: DiagnosticsUploadResponse
+            do {
+                response = try await api.upload(
+                    manifestData: bundle.manifestData,
+                    bundleData: bundle.bundleData
+                )
+            } catch DiagnosticsUploadError.requestBlockedByProxy {
+                // A proxy in front of the server capped the request body below
+                // the bundle size (nginx defaults to 1 MiB; bundles may be
+                // 10 MiB). Retrying the same request can never succeed, so
+                // fall back to the chunked upload, whose per-request size
+                // stays under such caps.
+                response = try await uploadChunkedFallback(report: report, bundle: bundle)
+            }
             pendingStore.delete(report)
             return .uploaded(response)
         } catch let error as DiagnosticsUploadError {
             return handleUploadError(error, report: report)
         } catch {
             return .keptRetryable
+        }
+    }
+
+    /// Chunked-upload fallback for a single-shot upload the fronting proxy
+    /// refused. Throws `DiagnosticsUploadError` for the caller's shared
+    /// error mapping.
+    private func uploadChunkedFallback(
+        report: PendingReport,
+        bundle: DiagnosticsBundleBuildResult
+    ) async throws -> DiagnosticsUploadResponse {
+        // Chunking needs server support (upload_chunk_bytes in status). An
+        // older server behind a capping proxy can't take this bundle by any
+        // route until it updates — the same terminal state as an unsupported
+        // schema, so reuse that classification (kept, visible, manually
+        // retryable after the deployment is fixed; never auto-retried).
+        guard cachedStatus?.status.supportsChunkedUpload == true else {
+            throw DiagnosticsUploadError.unsupportedSchema
+        }
+        do {
+            return try await api.uploadChunked(
+                manifestData: bundle.manifestData,
+                bundleData: bundle.bundleData
+            )
+        } catch DiagnosticsUploadError.requestBlockedByProxy {
+            // Even individual chunk-sized requests are blocked: the proxy cap
+            // is below the chunk size. No retry of this fixed payload can
+            // succeed — the same permanence as a server-side size rejection.
+            throw DiagnosticsUploadError.tooLarge
         }
     }
 
@@ -858,6 +896,11 @@ actor DiagnosticsCoordinator {
             // forever. Mark it a permanent local failure instead.
             pendingStore.markTooLarge(report)
             return .keptTooLarge
+        case .requestBlockedByProxy:
+            // Normally consumed by the chunked-upload fallback before reaching
+            // here; if it does surface (fallback path itself unavailable),
+            // the report is kept — a proxy config fix makes it sendable again.
+            return .keptRetryable
         case .disabled, .storageUnavailable, .quotaExceeded, .busy, .retryable, .underlying:
             return .keptRetryable
         }

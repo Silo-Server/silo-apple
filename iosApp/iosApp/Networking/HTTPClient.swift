@@ -136,16 +136,37 @@ actor HTTPClient {
         parts: [HTTPMultipartPart],
         timeout: HTTPTimeout = .extended
     ) async throws -> T {
-        let data = try await sendMultipartRaw(method: "POST", path: path, parts: parts, timeout: timeout)
-        if data.isEmpty, let empty = EmptyResponse.empty as? T {
-            return empty
-        }
-        do {
-            return try decoder.decode(T.self, from: data)
-        } catch {
-            Self.logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
-            throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
-        }
+        let boundary = "SiloDiagnostics-\(UUID().uuidString)"
+        return try await sendRawBody(
+            method: "POST",
+            path: path,
+            body: Self.multipartBody(parts: parts, boundary: boundary),
+            contentType: "multipart/form-data; boundary=\(boundary)",
+            timeout: timeout
+        )
+    }
+
+    /// POST a pre-encoded body verbatim. Exists for callers whose payload
+    /// cannot go through `JSONEncoder` — e.g. diagnostics chunked-upload init,
+    /// which embeds an already-serialized manifest byte-for-byte (re-encoding
+    /// could reorder keys and break the server's manifest equality check).
+    func postRaw<T: Decodable>(
+        _ path: String,
+        body: Data,
+        contentType: String,
+        timeout: HTTPTimeout = .standard
+    ) async throws -> T {
+        try await sendRawBody(method: "POST", path: path, body: body, contentType: contentType, timeout: timeout)
+    }
+
+    /// PUT a raw binary body (e.g. one diagnostics bundle chunk).
+    func putRaw<T: Decodable>(
+        _ path: String,
+        body: Data,
+        contentType: String,
+        timeout: HTTPTimeout = .extended
+    ) async throws -> T {
+        try await sendRawBody(method: "PUT", path: path, body: body, contentType: contentType, timeout: timeout)
     }
 
     func put<T: Decodable>(
@@ -337,11 +358,37 @@ actor HTTPClient {
         return data
     }
 
-    private func sendMultipartRaw(
+    private func sendRawBody<T: Decodable>(
         method: String,
         path: String,
-        parts: [HTTPMultipartPart],
-        timeout: HTTPTimeout = .extended
+        body: Data,
+        contentType: String,
+        timeout: HTTPTimeout
+    ) async throws -> T {
+        let data = try await sendRawBodyData(
+            method: method,
+            path: path,
+            body: body,
+            contentType: contentType,
+            timeout: timeout
+        )
+        if data.isEmpty, let empty = EmptyResponse.empty as? T {
+            return empty
+        }
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            Self.logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
+            throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
+        }
+    }
+
+    private func sendRawBodyData(
+        method: String,
+        path: String,
+        body: Data,
+        contentType: String,
+        timeout: HTTPTimeout
     ) async throws -> Data {
         let serverUrl = await tokenStore.getServerUrl()
         guard !serverUrl.isEmpty else {
@@ -349,8 +396,6 @@ actor HTTPClient {
         }
 
         let authStateBeforeRequest = await tokenStore.getAccessToken()
-        let boundary = "SiloDiagnostics-\(UUID().uuidString)"
-        let body = Self.multipartBody(parts: parts, boundary: boundary)
         var request = try buildRequest(
             serverUrl: serverUrl,
             method: method,
@@ -358,7 +403,7 @@ actor HTTPClient {
             query: [:],
             body: Optional<String>.none
         )
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         request.httpBody = body
         await attachAuthHeaders(&request, accessToken: authStateBeforeRequest)
 
@@ -375,7 +420,7 @@ actor HTTPClient {
                     query: [:],
                     body: Optional<String>.none
                 )
-                retry.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+                retry.setValue(contentType, forHTTPHeaderField: "Content-Type")
                 retry.httpBody = body
                 await attachAuthHeaders(&retry, accessToken: refreshedAuthState)
                 let (retryData, retryResponse) = try await perform(request: retry, timeout: timeout)
