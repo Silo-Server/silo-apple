@@ -318,19 +318,41 @@ actor HTTPClient {
         quietStatuses: Set<Int> = [],
         timeout: HTTPTimeout = .standard
     ) async throws -> Data {
+        try await performWithAuthRetry(
+            method: method,
+            path: path,
+            quietStatuses: quietStatuses,
+            timeout: timeout
+        ) { serverUrl in
+            try self.buildRequest(
+                serverUrl: serverUrl,
+                method: method,
+                path: path,
+                query: query,
+                body: body
+            )
+        }
+    }
+
+    /// Shared server-URL/auth/401-refresh/success skeleton for every request
+    /// shape. `makeRequest` builds a fresh, unauthenticated request per
+    /// attempt; auth headers are attached here so the retry after a token
+    /// refresh carries the new token while keeping the caller's body and
+    /// Content-Type intact.
+    private func performWithAuthRetry(
+        method: String,
+        path: String,
+        quietStatuses: Set<Int> = [],
+        timeout: HTTPTimeout,
+        makeRequest: (String) throws -> URLRequest
+    ) async throws -> Data {
         let serverUrl = await tokenStore.getServerUrl()
         guard !serverUrl.isEmpty else {
             throw HTTPError.serverUrlNotConfigured
         }
 
         let tokenBeforeRequest = await tokenStore.getAccessToken()
-        var request = try buildRequest(
-            serverUrl: serverUrl,
-            method: method,
-            path: path,
-            query: query,
-            body: body
-        )
+        var request = try makeRequest(serverUrl)
         await attachAuthHeaders(&request, accessToken: tokenBeforeRequest)
 
         let (data, response) = try await perform(request: request, timeout: timeout)
@@ -340,13 +362,7 @@ actor HTTPClient {
             if refreshed {
                 // Rebuild the request so headers reflect the new access token.
                 let refreshedToken = await tokenStore.getAccessToken()
-                var retry = try buildRequest(
-                    serverUrl: serverUrl,
-                    method: method,
-                    path: path,
-                    query: query,
-                    body: body
-                )
+                var retry = try makeRequest(serverUrl)
                 await attachAuthHeaders(&retry, accessToken: refreshedToken)
                 let (retryData, retryResponse) = try await perform(request: retry, timeout: timeout)
                 try ensureSuccess(retryData, retryResponse, method: method, quietStatuses: quietStatuses)
@@ -390,47 +406,18 @@ actor HTTPClient {
         contentType: String,
         timeout: HTTPTimeout
     ) async throws -> Data {
-        let serverUrl = await tokenStore.getServerUrl()
-        guard !serverUrl.isEmpty else {
-            throw HTTPError.serverUrlNotConfigured
+        try await performWithAuthRetry(method: method, path: path, timeout: timeout) { serverUrl in
+            var request = try self.buildRequest(
+                serverUrl: serverUrl,
+                method: method,
+                path: path,
+                query: [:],
+                body: Optional<String>.none
+            )
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+            return request
         }
-
-        let authStateBeforeRequest = await tokenStore.getAccessToken()
-        var request = try buildRequest(
-            serverUrl: serverUrl,
-            method: method,
-            path: path,
-            query: [:],
-            body: Optional<String>.none
-        )
-        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
-        request.httpBody = body
-        await attachAuthHeaders(&request, accessToken: authStateBeforeRequest)
-
-        let (data, response) = try await perform(request: request, timeout: timeout)
-
-        if response.statusCode == 401, shouldAttemptRefresh(path: path) {
-            let refreshed = await refreshTokens(tokenAtRequestTime: authStateBeforeRequest)
-            if refreshed {
-                let refreshedAuthState = await tokenStore.getAccessToken()
-                var retry = try buildRequest(
-                    serverUrl: serverUrl,
-                    method: method,
-                    path: path,
-                    query: [:],
-                    body: Optional<String>.none
-                )
-                retry.setValue(contentType, forHTTPHeaderField: "Content-Type")
-                retry.httpBody = body
-                await attachAuthHeaders(&retry, accessToken: refreshedAuthState)
-                let (retryData, retryResponse) = try await perform(request: retry, timeout: timeout)
-                try ensureSuccess(retryData, retryResponse, method: method)
-                return retryData
-            }
-        }
-
-        try ensureSuccess(data, response, method: method)
-        return data
     }
 
     // MARK: - Request building

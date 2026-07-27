@@ -142,7 +142,13 @@ actor DiagnosticsAPI {
         }
 
         do {
-            let chunkBytes = max(session.chunkBytes, 1)
+            // Fail fast on a nonsensical chunk size rather than degrade: a
+            // zero/negative value coerced to something tiny would turn one
+            // bundle into millions of sequential PUTs.
+            guard session.chunkBytes > 0 else {
+                throw DiagnosticsUploadError.underlying("invalid chunk_bytes \(session.chunkBytes)")
+            }
+            let chunkBytes = session.chunkBytes
             var index = 0
             var offset = 0
             while offset < bundleData.count {
@@ -168,6 +174,9 @@ actor DiagnosticsAPI {
             try? await http.delete("/api/v1/diagnostics/reports/uploads/\(session.uploadId)")
             if let httpError = error as? HTTPError {
                 throw Self.mapUploadError(httpError)
+            }
+            if let uploadError = error as? DiagnosticsUploadError {
+                throw uploadError
             }
             throw DiagnosticsUploadError.underlying(String(describing: error))
         }
@@ -196,6 +205,13 @@ actor DiagnosticsAPI {
         case "invalid_bundle":
             return .invalidBundle
         case let code?:
+            // A 413 whose error code is not Silo's own `too_large` (handled
+            // above) came from an intermediary — some proxies emit JSON error
+            // envelopes rather than nginx's default HTML page. Same fallback
+            // as the envelope-less case below.
+            if error.statusCode == 413 {
+                return .requestBlockedByProxy
+            }
             if error.statusCode.map({ $0 >= 500 || $0 == 429 }) == true {
                 return .retryable(code)
             }
