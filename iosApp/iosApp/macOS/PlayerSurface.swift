@@ -59,7 +59,10 @@ final class PlayerSurfaceHostView: NSView {
 
     func attach(player: PlayerCore) {
         if attachedPlayer === player { return }
-        attachedPlayer?.detachSubtitleOverlay(owner: self)
+        if let attachedPlayer {
+            attachedPlayer.detachSubtitleOverlay(owner: self)
+            attachedPlayer.onSigPeakChange = nil
+        }
         attachedPlayer = player
         player.attach(to: displayLayer)
         subtitleOverlay.renderer = player.subtitleRendererForOverlay
@@ -77,8 +80,9 @@ final class PlayerSurfaceHostView: NSView {
         // macOS EDR: sig-peak > 1 means the stream is HDR and the user has
         // HDR enabled. Combine with the screen's available EDR headroom
         // before flipping the flag, same as iOS.
-        player.onSigPeakChange = { [weak self] peak in
-            self?.updateEDR(sigPeak: peak)
+        player.onSigPeakChange = { [weak self, weak player] peak in
+            guard let self, let player, self.attachedPlayer === player else { return }
+            self.updateEDR(sigPeak: peak)
         }
         updateEDR(sigPeak: player.lastSigPeak)
     }
