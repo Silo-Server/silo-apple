@@ -23,7 +23,7 @@ struct TVPlayerTransportCluster: View {
     @FocusState.Binding var focusedButton: FocusTarget?
 
     enum FocusTarget: Hashable {
-        case skipBack, playPause, skipForward, options, dismiss
+        case skipBack, playPause, skipForward, nextUp, options, dismiss
     }
 
     var body: some View {
@@ -68,6 +68,14 @@ struct TVPlayerTransportCluster: View {
 
     private var secondaryRow: some View {
         HStack(spacing: 10) {
+            if viewModel.canShowNextUpScreen {
+                iconButton(
+                    systemName: "rectangle.stack.fill",
+                    focus: .nextUp,
+                    accessibilityLabel: "Show Up Next",
+                    action: viewModel.showNextUpNow
+                )
+            }
             iconButton(
                 systemName: "slider.horizontal.3",
                 focus: .options,

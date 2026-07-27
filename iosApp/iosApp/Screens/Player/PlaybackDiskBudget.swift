@@ -28,24 +28,33 @@ enum PlaybackDiskBudget {
         return min(cap, max(floor, availableBytes / 4))
     }
 
-    /// One-shot per process: delete spill directories left behind by a
+    /// One-shot per process: delete stale spill directories left behind by a
     /// force-killed predecessor (their deinit cleanup never ran, and a
-    /// stranded directory can hold up to the full retention budget).
-    /// Enumeration happens synchronously on first access — before the first
-    /// spilling cache of this process creates its own directory, so
-    /// everything captured here is orphaned — but the deletions (the slow
-    /// part for a multi-GiB tree) run on a utility queue so session startup
-    /// is never blocked on reclaiming a predecessor's space. `static let`
-    /// initialization makes the sweep thread-safe and exactly-once.
+    /// stranded directory can hold up to the full retention budget). Only
+    /// directories older than an hour qualify. That age guard plus UUID
+    /// session names means cleanup can never race a newly-created active
+    /// session, and also avoids disturbing a cache owned by another process.
+    /// Deletions run on a utility queue so startup is not blocked.
     static let sweepOrphanedSpillDirectories: Void = {
         let fm = FileManager.default
+        let staleBefore = Date().addingTimeInterval(-60 * 60)
         var parents: [URL] = []
         if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
             parents.append(caches.appendingPathComponent("continuum-source-cache", isDirectory: true))
         }
         parents.append(fm.temporaryDirectory.appendingPathComponent("continuum-dv-hls", isDirectory: true))
         let orphans = parents.flatMap { parent in
-            (try? fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)) ?? []
+            let urls = (try? fm.contentsOfDirectory(
+                at: parent,
+                includingPropertiesForKeys: [.creationDateKey, .contentModificationDateKey]
+            )) ?? []
+            return urls.filter { url in
+                guard let values = try? url.resourceValues(
+                    forKeys: [.creationDateKey, .contentModificationDateKey]
+                ) else { return false }
+                let timestamp = values.creationDate ?? values.contentModificationDate
+                return timestamp.map { $0 < staleBefore } ?? false
+            }
         }
         guard !orphans.isEmpty else { return }
         DispatchQueue.global(qos: .utility).async {

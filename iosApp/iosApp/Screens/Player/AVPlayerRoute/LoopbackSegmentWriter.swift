@@ -59,6 +59,123 @@ enum DVPreVideoAudioTailPolicy {
     }
 }
 
+/// Resolves the duration written for a look-behind video packet. Matroska
+/// commonly supplies a constant `DefaultDuration` even when its millisecond
+/// block timestamps produce a 41/42 ms DTS cadence. Prefer the forward DTS
+/// delta whenever it is usable so movenc's accumulated track duration cannot
+/// drift past the next real DTS at a fragment boundary.
+enum LoopbackVideoSampleDurationPolicy {
+    static func resolve(
+        existingDuration: Int64,
+        dts: Int64,
+        nextDTS: Int64?,
+        fallback: Int64
+    ) -> Int64 {
+        if let nextDTS, dts != Int64.min, nextDTS != Int64.min {
+            let (delta, overflow) = nextDTS.subtractingReportingOverflow(dts)
+            if !overflow, delta > 0 {
+                return delta
+            }
+        }
+        if existingDuration > 0 {
+            return existingDuration
+        }
+        return max(fallback, 1)
+    }
+}
+
+enum LoopbackLengthPrefixedHEVCValidator {
+    static func isValid(bytes: [UInt8], nalLengthSize: Int) -> Bool {
+        bytes.withUnsafeBufferPointer {
+            isValid(packetBytes: $0, nalLengthSize: nalLengthSize)
+        }
+    }
+
+    static func isValid(
+        packetBytes: UnsafeBufferPointer<UInt8>,
+        nalLengthSize: Int
+    ) -> Bool {
+        guard (1...4).contains(nalLengthSize), !packetBytes.isEmpty else { return false }
+        var cursor = 0
+        var nalCount = 0
+        while cursor < packetBytes.count {
+            guard cursor + nalLengthSize <= packetBytes.count else { return false }
+            var nalSize = 0
+            for index in 0..<nalLengthSize {
+                nalSize = (nalSize << 8) | Int(packetBytes[cursor + index])
+            }
+            let nalStart = cursor + nalLengthSize
+            guard nalSize >= 2, nalStart + nalSize <= packetBytes.count else { return false }
+
+            // HEVC forbidden_zero_bit must be zero and nuh_temporal_id_plus1
+            // must never be zero. Checking both catches damaged access units
+            // whose length prefixes happen to remain in range.
+            let byte0 = packetBytes[nalStart]
+            let byte1 = packetBytes[nalStart + 1]
+            guard byte0 & 0x80 == 0, byte1 & 0x07 != 0 else { return false }
+
+            nalCount += 1
+            cursor = nalStart + nalSize
+        }
+        return nalCount > 0 && cursor == packetBytes.count
+    }
+}
+
+struct LoopbackCorruptVideoRecoveryState {
+    enum Action: Equatable {
+        case keep
+        case drop(startedRecovery: Bool)
+        case resumeAtRandomAccess
+    }
+
+    private var waitingForRandomAccess = false
+
+    mutating func evaluate(structurallyValid: Bool, isRandomAccess: Bool) -> Action {
+        guard structurallyValid else {
+            let startedRecovery = !waitingForRandomAccess
+            waitingForRandomAccess = true
+            return .drop(startedRecovery: startedRecovery)
+        }
+        guard waitingForRandomAccess else { return .keep }
+        guard isRandomAccess else { return .drop(startedRecovery: false) }
+        waitingForRandomAccess = false
+        return .resumeAtRandomAccess
+    }
+}
+
+enum LoopbackVODPreGateAudioBufferPolicy {
+    static let maxPackets = 512
+    static let maxBytes = 8 * 1024 * 1024
+
+    static func canBuffer(
+        isRestart: Bool,
+        isSelectedAudio: Bool,
+        isWaitingForVideoGate: Bool,
+        bufferedPackets: Int,
+        bufferedBytes: Int,
+        packetBytes: Int,
+        maxPackets: Int = Self.maxPackets,
+        maxBytes: Int = Self.maxBytes
+    ) -> Bool {
+        guard isRestart, isSelectedAudio, isWaitingForVideoGate else { return false }
+        let bytes = max(packetBytes, 0)
+        return bufferedPackets < maxPackets && bufferedBytes + bytes <= maxBytes
+    }
+
+    static func shouldDropReplayedPacket(
+        dts: Int64,
+        duration: Int64,
+        gateDTS: Int64
+    ) -> Bool {
+        let span = max(duration, 0)
+        if span > 0 {
+            let (end, overflow) = dts.addingReportingOverflow(span)
+            return !overflow && end <= gateDTS
+        }
+        return dts < gateDTS
+    }
+}
+
 enum DVTrueHDMajorSyncScanner {
     private static let syncWord: [UInt8] = [0xF8, 0x72, 0x6F, 0xBA]
 
@@ -600,6 +717,14 @@ final class LoopbackSegmentWriter {
     /// duplicate audio DTS before handing packets to the MP4 muxer.
     private var lastMuxedDTSByStream: [Int32: Int64] = [:]
     private var lastMuxedPTSByStream: [Int32: Int64] = [:]
+    /// One-packet look-behind for video duration telescoping. The next
+    /// normalized video DTS supplies the pending packet's real duration.
+    private var pendingMuxVideoPacket: UnsafeMutablePointer<AVPacket>?
+    /// Audio packets encountered while a video packet is held. Deferring
+    /// them preserves the original video-before-audio submission order; the
+    /// queue is drained immediately after the held video is finalized.
+    private var pendingMuxAudioPackets: [UnsafeMutablePointer<AVPacket>] = []
+    private var lastResolvedVideoDurationByStream: [Int32: Int64] = [:]
     /// When the loopback starts from a resume point, FFmpeg seeks the source
     /// but source packet timestamps remain absolute. Subtract the first video
     /// timestamp so the generated localhost playlist begins at player time 0.
@@ -626,6 +751,12 @@ final class LoopbackSegmentWriter {
     /// Length prefix size for HEVC NAL units (from HVCC header byte 21's low
     /// 2 bits, +1). Typically 4; defensively handled.
     private var nalLengthSize: Int = 4
+    /// A malformed Matroska block can leave libavformat returning a damaged
+    /// HEVC access unit followed by pictures whose references were lost.
+    /// AVPlayer treats that sequence as terminal; keep it out of the fMP4 and
+    /// resume only at the next self-contained random-access picture.
+    private var corruptVideoRecoveryState = LoopbackCorruptVideoRecoveryState()
+    private var corruptVideoPacketsDropped = 0
     /// Raw bytes of the input's H.264 avcC record. Used for the HLS CODECS
     /// string when the loopback path remuxes AVC without touching the video.
     private var inputAvccHeader: Data?
@@ -963,6 +1094,13 @@ final class LoopbackSegmentWriter {
     /// can size the decode-ramp seam. Mux thread only.
     private var vodPrerollDroppedVideo = 0
     private var vodPrerollDroppedAudio = 0
+    /// Selected-audio packets encountered while a restarted VOD producer is
+    /// still scanning forward to its accepted video keyframe. Wide-interleave
+    /// sources can put the matching audio earlier in file order; replaying it
+    /// after the gate opens prevents a persistent post-recovery A/V offset.
+    private var vodPreGateAudioPackets: [UnsafeMutablePointer<AVPacket>] = []
+    private var vodPreGateAudioBytes = 0
+    private var vodPreGateAudioOverflowLogged = false
 
     /// FFmpeg's mp4 muxer can only build the AC-3/E-AC-3/TrueHD sample-entry
     /// box (dac3/dec3/dmlp) after it has PARSED an audio packet, so under
@@ -1064,15 +1202,108 @@ final class LoopbackSegmentWriter {
         // continuous run's interleaver assigns that same overlapping frame
         // forward. Dropping it would lose exactly one frame per restart
         // (and break restart byte-identity with the continuous run).
-        let duration = max(0, pkt.pointee.duration)
-        let drops: Bool
-        if duration > 0 {
-            drops = pkt.pointee.dts + duration <= threshold
-        } else {
-            drops = pkt.pointee.dts < threshold
-        }
+        let drops = LoopbackVODPreGateAudioBufferPolicy.shouldDropReplayedPacket(
+            dts: pkt.pointee.dts,
+            duration: pkt.pointee.duration,
+            gateDTS: threshold
+        )
         if drops { vodPrerollDroppedAudio += 1 }
         return drops
+    }
+
+    private func bufferVODPreGateAudioIfNeeded(
+        pkt: UnsafeMutablePointer<AVPacket>,
+        inputIdx: Int
+    ) -> Bool {
+        let isRestart = vodActive && vodEffectiveBaseIndex > 0
+        let isSelectedAudio = inputIdx == selectedAudioStreamIndex
+        let waiting = vodAwaitingRestartKeyframe && vodFirstRoutedVideoDts == nil
+        let packetBytes = max(0, Int(pkt.pointee.size))
+        let canBuffer = LoopbackVODPreGateAudioBufferPolicy.canBuffer(
+            isRestart: isRestart,
+            isSelectedAudio: isSelectedAudio,
+            isWaitingForVideoGate: waiting,
+            bufferedPackets: vodPreGateAudioPackets.count,
+            bufferedBytes: vodPreGateAudioBytes,
+            packetBytes: packetBytes
+        )
+        guard canBuffer else {
+            if isRestart, isSelectedAudio, waiting,
+               !vodPreGateAudioOverflowLogged {
+                vodPreGateAudioOverflowLogged = true
+                print(
+                    "[CMP-AVP] vod pre-gate audio buffer full "
+                    + "packets=\(vodPreGateAudioPackets.count) "
+                    + "bytes=\(vodPreGateAudioBytes); dropping further preroll"
+                )
+            }
+            return false
+        }
+        guard let held = av_packet_clone(pkt) else { return false }
+        vodPreGateAudioPackets.append(held)
+        vodPreGateAudioBytes += packetBytes
+        return true
+    }
+
+    private func replayVODPreGateAudioPacketsIfNeeded() throws {
+        guard !vodAwaitingRestartKeyframe,
+              vodFirstRoutedVideoDts != nil,
+              !vodPreGateAudioPackets.isEmpty,
+              let outIdx = streamMap[selectedAudioStreamIndex] else { return }
+
+        var packets = vodPreGateAudioPackets.sorted {
+            Self.packetOrderingTimestamp($0) < Self.packetOrderingTimestamp($1)
+        }
+        let bufferedBytes = vodPreGateAudioBytes
+        vodPreGateAudioPackets.removeAll()
+        vodPreGateAudioBytes = 0
+
+        var replayed = 0
+        var dropped = 0
+        defer {
+            for packet in packets {
+                var free: UnsafeMutablePointer<AVPacket>? = packet
+                av_packet_free(&free)
+            }
+            packets.removeAll()
+        }
+
+        for packet in packets {
+            if vodShouldDropPacket(pkt: packet, inputIdx: selectedAudioStreamIndex) {
+                dropped += 1
+                continue
+            }
+            if let prefedMax = vodPrefedAudioMaxDts {
+                let dts = Self.packetOrderingTimestamp(packet)
+                if dts != Int64.min, dts <= prefedMax {
+                    dropped += 1
+                    continue
+                }
+                vodPrefedAudioMaxDts = nil
+            }
+
+            if selectedAudioOutputMode != .copy {
+                try transcodeAudioPacket(packet)
+            } else {
+                rewritePacketForOutput(
+                    pkt: packet,
+                    outStreamIndex: Int32(outIdx),
+                    inputStreamIndex: selectedAudioStreamIndex
+                )
+                try writePacketToMux(packet)
+            }
+            replayed += 1
+        }
+        print(
+            "[CMP-AVP] vod pre-gate audio replay buffered=\(packets.count) "
+            + "bytes=\(bufferedBytes) replayed=\(replayed) dropped=\(dropped)"
+        )
+    }
+
+    private static func packetOrderingTimestamp(
+        _ packet: UnsafeMutablePointer<AVPacket>
+    ) -> Int64 {
+        packet.pointee.dts != Int64.min ? packet.pointee.dts : packet.pointee.pts
     }
 
     private func prewarmVODCueIndexAndReseek() {
@@ -1193,7 +1424,7 @@ final class LoopbackSegmentWriter {
         var firstAudioSeconds: Double?
         while !isCancelled, scannedPackets < 50_000, stashed == nil {
             guard let pkt = packet else { break }
-            guard av_read_frame(inCtx, pkt) >= 0 else { break }
+            guard deadlineBoundedReadFrame(inCtx, pkt) >= 0 else { break }
             consumedAny = true
             scannedPackets += 1
             defer { av_packet_unref(pkt) }
@@ -1369,7 +1600,7 @@ final class LoopbackSegmentWriter {
         var packetsRead = 0
         while packetsRead < 600 {
             let readPkt = av_packet_alloc()
-            let rc = av_read_frame(inCtx, readPkt)
+            let rc = deadlineBoundedReadFrame(inCtx, readPkt)
             guard rc >= 0, let pkt = readPkt else {
                 var free = readPkt
                 av_packet_free(&free)
@@ -1418,22 +1649,21 @@ final class LoopbackSegmentWriter {
 
     /// Routes a video packet through the plan cutter and flushes the open
     /// fragment when the packet opens a new segment. Runs BEFORE
-    /// `rewritePacketForOutput` so the packet's PTS is still on the source
-    /// video time base — the same axis as the plan boundaries.
-    private func vodCutBeforeVideoPacketIfNeeded(pkt: UnsafeMutablePointer<AVPacket>) throws {
+    /// `rewritePacketForOutput` changes the packet to the output axis, so the
+    /// caller captures source PTS/keyframe state first and passes them here.
+    private func vodCutBeforeVideoPacketIfNeeded(sourcePTS: Int64, isKeyframe: Bool) throws {
         guard vodActive, vodCutter != nil else { return }
-        let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
-        let target = vodCutter!.index(pts: pkt.pointee.pts, isKeyframe: isKeyframe)
+        let target = vodCutter!.index(pts: sourcePTS, isKeyframe: isKeyframe)
         // Progressive anchor: request an interim fragment flush roughly
-        // every 1.5 s of routed video. The flush runs after this packet is
-        // written (main loop), so the fragment includes it.
-        if vodProgressiveAccumulating, pkt.pointee.pts != Int64.min {
+        // every 1.5 s of routed video. The look-behind path performs the
+        // flush after this sample is actually written, so it is included.
+        if vodProgressiveAccumulating, sourcePTS != Int64.min {
             if vodLastInterimFlushPts == Int64.min {
-                vodLastInterimFlushPts = pkt.pointee.pts
-            } else if pkt.pointee.pts - vodLastInterimFlushPts
+                vodLastInterimFlushPts = sourcePTS
+            } else if sourcePTS - vodLastInterimFlushPts
                         >= ticks(forSeconds: 1.5, timeBase: vodVideoTimeBase) {
                 vodInterimFlushRequested = true
-                vodLastInterimFlushPts = pkt.pointee.pts
+                vodLastInterimFlushPts = sourcePTS
             }
         }
         if !vodHasRoutedVideo {
@@ -1645,19 +1875,20 @@ final class LoopbackSegmentWriter {
                 let rc: Int32
                 if LoopbackSegmentWriter.traceThroughput {
                     let started = CFAbsoluteTimeGetCurrent()
-                    rc = av_read_frame(inputCtx, packet)
+                    rc = deadlineBoundedReadFrame(inputCtx, packet)
                     throughputTiming.readMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
                     throughputTiming.readCalls += 1
                 } else {
-                    rc = av_read_frame(inputCtx, packet)
+                    rc = deadlineBoundedReadFrame(inputCtx, packet)
                 }
                 if isCancelled {
                     break
                 }
                 if rc < 0 {
-                    // AVERROR_EOF or any other negative code — treat as
-                    // end-of-input. Fine-grained error handling isn't
-                    // worth the noise for a v1 spike.
+                    // Genuine end-of-content finalizes below; a source that
+                    // died clearly short of the known bytes/plan throws so
+                    // the truncation is never published as a complete VOD.
+                    try throwIfPrematureSourceEnd(readRC: rc)
                     break
                 }
                 emitSourceDownloadStatsIfNeeded()
@@ -1691,7 +1922,16 @@ final class LoopbackSegmentWriter {
                     continue
                 }
 
+                if bufferVODPreGateAudioIfNeeded(pkt: pkt, inputIdx: inputIdx) {
+                    continue
+                }
+
                 if vodActive, vodShouldDropPacket(pkt: pkt, inputIdx: inputIdx) {
+                    continue
+                }
+
+                if inputIdx == videoInputStreamIndex,
+                   shouldDropCorruptHEVCVideoPacket(pkt) {
                     continue
                 }
 
@@ -1730,35 +1970,31 @@ final class LoopbackSegmentWriter {
                     } else {
                         try transformVideoPacketIfNeeded(pkt)
                     }
-                    try vodCutBeforeVideoPacketIfNeeded(pkt: pkt)
                 }
 
                 if isCancelled {
                     continue
                 }
-                rewritePacketForOutput(pkt: pkt, outStreamIndex: Int32(outIdx),
-                                       inputStreamIndex: inputIdx)
-                let wr: Int32
-                if LoopbackSegmentWriter.traceThroughput {
-                    let started = CFAbsoluteTimeGetCurrent()
-                    wr = av_interleaved_write_frame(outputCtx, pkt)
-                    throughputTiming.muxMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
-                    throughputTiming.muxPackets += 1
+                if inputIdx == videoInputStreamIndex {
+                    try routeVideoPacketToMux(
+                        pkt,
+                        outStreamIndex: Int32(outIdx),
+                        inputStreamIndex: inputIdx
+                    )
+                    try replayVODPreGateAudioPacketsIfNeeded()
                 } else {
-                    wr = av_interleaved_write_frame(outputCtx, pkt)
-                }
-                try evaluateMuxWriteResult(wr)
-                if vodActive, !initSegmentWritten {
-                    try primeVODMoovAfterFirstAudioIfNeeded()
-                }
-                if vodInterimFlushRequested {
-                    vodInterimFlushRequested = false
-                    performVODInterimFragmentFlush()
+                    rewritePacketForOutput(
+                        pkt: pkt,
+                        outStreamIndex: Int32(outIdx),
+                        inputStreamIndex: inputIdx
+                    )
+                    try writePacketToMux(pkt)
                 }
             }
 
             if !isCancelled {
                 try finishTranscodedAudio()
+                try flushPendingMuxVideoPacket(nextDTS: nil)
                 if vodActive {
                     // The trailer flushes the final open fragment; name it.
                     vodClosingSegmentIndex = vodOpenSegmentIndex
@@ -1787,6 +2023,52 @@ final class LoopbackSegmentWriter {
             teardown()
             onFinished?(error)
         }
+    }
+
+    /// Classifies a negative `av_read_frame` result and throws when the
+    /// source clearly ended short of the known content. Both completeness
+    /// signals ride state that is valid whether this producer started at
+    /// byte 0 or was restarted mid-plan: the input IO position is measured
+    /// against the transport's known size, and the plan-axis position uses
+    /// the segment index (plan-absolute) rather than this instance's
+    /// appended-duration counter.
+    private func throwIfPrematureSourceEnd(readRC rc: Int32) throws {
+        var bytePosition: Int64?
+        var fileSizeBytes: Int64?
+        if let pb = inputCtx?.pointee.pb {
+            let position = avio_seek(pb, 0, SEEK_CUR)
+            if position >= 0 { bytePosition = position }
+            let size = avio_size(pb)
+            if size > 0 { fileSizeBytes = size }
+        }
+        var reachedPlanSeconds: Double?
+        var plannedTotalSeconds: Double?
+        if vodActive, let plan = vodPlan, plan.segmentCount > 0 {
+            plannedTotalSeconds = plan.totalDurationSeconds
+            reachedPlanSeconds = plan.startSeconds[min(currentSegmentIndex, plan.segmentCount - 1)]
+        }
+        cancelLock.lock()
+        let deadlineAborted = interruptToken.didAbortOnDeadline
+        cancelLock.unlock()
+        let verdict = LoopbackIngestEndPolicy.classify(
+            readResult: rc,
+            bytePosition: bytePosition,
+            fileSizeBytes: fileSizeBytes,
+            reachedPlanSeconds: reachedPlanSeconds,
+            plannedTotalSeconds: plannedTotalSeconds,
+            deadlineAborted: deadlineAborted
+        )
+        guard case let .prematureSourceEnd(shortfallBytes, shortfallSeconds) = verdict else {
+            return
+        }
+        Self.logger.error(
+            "[CMP-AVP] premature source end rc=\(rc) (\(Self.ffmpegError(rc), privacy: .public)) pos=\(bytePosition ?? -1) size=\(fileSizeBytes ?? -1) reached=\(reachedPlanSeconds ?? -1, format: .fixed(precision: 1))s planned=\(plannedTotalSeconds ?? -1, format: .fixed(precision: 1))s"
+        )
+        throw LoopbackWriterError.prematureSourceEnd(
+            readRC: rc,
+            shortfallBytes: shortfallBytes,
+            shortfallSeconds: shortfallSeconds
+        )
     }
 
     /// Throws any fatal disk-write error captured by the AVIO write callback
@@ -1883,6 +2165,37 @@ final class LoopbackSegmentWriter {
         )
     }
 
+    /// Normal blocking-read allowance — the semantic successor of the old
+    /// 10 s avio `rw_timeout`, enforced by the interrupt-callback span
+    /// deadline so it can stretch to the outage park allowance while the
+    /// source proxy reports an origin outage.
+    static let readDeadlineSeconds: Double = 10
+    /// Span allowance for the whole `avformat_open_input` +
+    /// `find_stream_info` bootstrap (multi-second legitimate on cold-cache
+    /// 4K WAN opens; wedged opens must still fail well before the consumer
+    /// watchdogs give up on the session).
+    static let openDeadlineSeconds: Double = 60
+
+    /// Live query into the source proxy's outage state, installed on the
+    /// interrupt token at open so a blocking read can park through a flagged
+    /// outage instead of timing out. Set by the backend before start.
+    var isSourceOutageActive: (() -> Bool)?
+
+    /// `av_read_frame` with the span deadline armed. Every read in this
+    /// writer goes through here — with `rw_timeout` raised to a backstop,
+    /// the token's deadline is the only thing bounding a wedged read.
+    private func deadlineBoundedReadFrame(
+        _ ctx: UnsafeMutablePointer<AVFormatContext>?,
+        _ pkt: UnsafeMutablePointer<AVPacket>?
+    ) -> Int32 {
+        cancelLock.lock()
+        let token = interruptToken
+        cancelLock.unlock()
+        token.beginBlockingSpan(allowanceSeconds: Self.readDeadlineSeconds)
+        defer { token.endBlockingSpan() }
+        return av_read_frame(ctx, pkt)
+    }
+
     /// Installs the cancellation poll on a context. FFmpeg polls it
     /// between / during I/O ops; returning 1 bails `av_read_frame` (or
     /// open/probe) with AVERROR_EXIT. The opaque target is the writer's
@@ -1900,7 +2213,7 @@ final class LoopbackSegmentWriter {
             callback: { opaque in
                 guard let opaque else { return 0 }
                 let token = Unmanaged<LoopbackInterruptToken>.fromOpaque(opaque).takeUnretainedValue()
-                return token.isCancelled ? 1 : 0
+                return token.shouldInterrupt() ? 1 : 0
             },
             opaque: tokenPtr
         )
@@ -1920,6 +2233,7 @@ final class LoopbackSegmentWriter {
             interruptToken = recycled.token
             cancelLock.unlock()
             recycled.token.reset()
+            recycled.token.setSourceOutageProvider(isSourceOutageActive)
             if isCancelled {
                 // This writer was stopped between init and claim; re-cancel
                 // so the context's reads abort instead of riding rw_timeout.
@@ -1958,7 +2272,14 @@ final class LoopbackSegmentWriter {
         cancelLock.lock()
         let token = interruptToken
         cancelLock.unlock()
+        token.setSourceOutageProvider(isSourceOutageActive)
         installInterruptCallback(on: ctx!, token: token)
+        // Bracket the whole open + stream-info probe: individual IO ops are
+        // no longer bounded by rw_timeout (raised to a far backstop), so the
+        // span deadline is what stops a wedged-at-open source from holding
+        // the mux thread.
+        token.beginBlockingSpan(allowanceSeconds: Self.openDeadlineSeconds)
+        defer { token.endBlockingSpan() }
 
         var options: OpaquePointer?
         if !sourceHeaders.isEmpty {
@@ -1967,9 +2288,13 @@ final class LoopbackSegmentWriter {
                 .joined(separator: "\r\n") + "\r\n"
             av_dict_set(&options, "headers", headerString, 0)
         }
-        // Reasonable network timeout — 10 s — so a broken source doesn't
-        // hang the mux loop forever.
-        av_dict_set(&options, "rw_timeout", "10000000", 0)
+        // Wedge protection lives in the interrupt-callback span deadline
+        // (`deadlineBoundedReadFrame` / the open bracket below): the token
+        // enforces the normal 10 s read allowance but can park a read through
+        // a flagged origin outage — a fixed avio `rw_timeout` cannot. This
+        // avio-level timeout stays only as a far backstop above the token's
+        // outage park allowance.
+        av_dict_set(&options, "rw_timeout", "300000000", 0)
         // Cap probe cost. We only mux video + the selected audio stream
         // (subtitles, fonts, attachments, extra audio are dropped at mux
         // time — see filtering below and at packet copy in the main loop).
@@ -2853,22 +3178,129 @@ final class LoopbackSegmentWriter {
             }
             guard let outIdx = streamMap[inIdx] else { continue }
             if vodActive, vodShouldDropPacket(pkt: pending, inputIdx: inIdx) { continue }
-            if inIdx == videoInputStreamIndex {
-                try vodCutBeforeVideoPacketIfNeeded(pkt: pending)
-            }
-            rewritePacketForOutput(pkt: pending,
-                                   outStreamIndex: Int32(outIdx),
-                                   inputStreamIndex: inIdx)
-            let wr = av_interleaved_write_frame(outCtx, pending)
             do {
-                try evaluateMuxWriteResult(wr)
+                if inIdx == videoInputStreamIndex {
+                    try routeVideoPacketToMux(
+                        pending,
+                        outStreamIndex: Int32(outIdx),
+                        inputStreamIndex: inIdx
+                    )
+                    try replayVODPreGateAudioPacketsIfNeeded()
+                } else {
+                    rewritePacketForOutput(
+                        pkt: pending,
+                        outStreamIndex: Int32(outIdx),
+                        inputStreamIndex: inIdx
+                    )
+                    try writePacketToMux(pending)
+                }
             } catch {
                 Self.logger.error("pending \(label, privacy: .public) write failed")
                 throw error
             }
-            if vodActive, !initSegmentWritten {
-                try primeVODMoovAfterFirstAudioIfNeeded()
+        }
+    }
+
+    /// Rewrites and holds one video packet until the next normalized video
+    /// DTS is known. The previous packet is written before the current
+    /// sample's keyframe cut, keeping it in its original segment.
+    private func routeVideoPacketToMux(
+        _ pkt: UnsafeMutablePointer<AVPacket>,
+        outStreamIndex: Int32,
+        inputStreamIndex: Int
+    ) throws {
+        let sourcePTS = pkt.pointee.pts
+        let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
+        rewritePacketForOutput(
+            pkt: pkt,
+            outStreamIndex: outStreamIndex,
+            inputStreamIndex: inputStreamIndex
+        )
+
+        try flushPendingMuxVideoPacket(nextDTS: pkt.pointee.dts)
+        try vodCutBeforeVideoPacketIfNeeded(sourcePTS: sourcePTS, isKeyframe: isKeyframe)
+
+        guard let held = av_packet_clone(pkt) else {
+            throw LoopbackWriterError.allocPacket
+        }
+        pendingMuxVideoPacket = held
+    }
+
+    private func flushPendingMuxVideoPacket(nextDTS: Int64?) throws {
+        guard let pending = pendingMuxVideoPacket else { return }
+        pendingMuxVideoPacket = nil
+        defer {
+            var free: UnsafeMutablePointer<AVPacket>? = pending
+            av_packet_free(&free)
+        }
+
+        let streamIndex = pending.pointee.stream_index
+        let fallback = lastResolvedVideoDurationByStream[streamIndex] ?? 1
+        let resolved = LoopbackVideoSampleDurationPolicy.resolve(
+            existingDuration: pending.pointee.duration,
+            dts: pending.pointee.dts,
+            nextDTS: nextDTS,
+            fallback: fallback
+        )
+        pending.pointee.duration = resolved
+        lastResolvedVideoDurationByStream[streamIndex] = resolved
+        try writePacketToMuxImmediately(pending, performPostWriteActions: false)
+        try flushPendingMuxAudioPackets(performPostWriteActions: false)
+        try performMuxPostWriteActions()
+    }
+
+    private func writePacketToMux(_ pkt: UnsafeMutablePointer<AVPacket>) throws {
+        if pendingMuxVideoPacket != nil {
+            guard let held = av_packet_clone(pkt) else {
+                throw LoopbackWriterError.allocPacket
             }
+            pendingMuxAudioPackets.append(held)
+            return
+        }
+        try writePacketToMuxImmediately(pkt)
+    }
+
+    private func flushPendingMuxAudioPackets(performPostWriteActions: Bool) throws {
+        while !pendingMuxAudioPackets.isEmpty {
+            let pending = pendingMuxAudioPackets.removeFirst()
+            defer {
+                var free: UnsafeMutablePointer<AVPacket>? = pending
+                av_packet_free(&free)
+            }
+            try writePacketToMuxImmediately(
+                pending,
+                performPostWriteActions: performPostWriteActions
+            )
+        }
+    }
+
+    private func writePacketToMuxImmediately(
+        _ pkt: UnsafeMutablePointer<AVPacket>,
+        performPostWriteActions: Bool = true
+    ) throws {
+        guard let outputCtx else { return }
+        let wr: Int32
+        if Self.traceThroughput {
+            let started = CFAbsoluteTimeGetCurrent()
+            wr = av_interleaved_write_frame(outputCtx, pkt)
+            throughputTiming.muxMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
+            throughputTiming.muxPackets += 1
+        } else {
+            wr = av_interleaved_write_frame(outputCtx, pkt)
+        }
+        try evaluateMuxWriteResult(wr)
+        if performPostWriteActions {
+            try performMuxPostWriteActions()
+        }
+    }
+
+    private func performMuxPostWriteActions() throws {
+        if vodActive, !initSegmentWritten {
+            try primeVODMoovAfterFirstAudioIfNeeded()
+        }
+        if vodInterimFlushRequested {
+            vodInterimFlushRequested = false
+            performVODInterimFragmentFlush()
         }
     }
 
@@ -2922,7 +3354,7 @@ final class LoopbackSegmentWriter {
 
         while totalPacketsRead < maxPackets, videoPacketsRead < maxVideoPackets {
             let readPkt = av_packet_alloc()
-            let rc = av_read_frame(inCtx, readPkt)
+            let rc = deadlineBoundedReadFrame(inCtx, readPkt)
             if rc < 0 {
                 var free = readPkt
                 av_packet_free(&free)
@@ -2985,6 +3417,13 @@ final class LoopbackSegmentWriter {
                     av_packet_free(&free)
                     droppedPreVideoPackets += 1
                 }
+                continue
+            }
+
+            if shouldDropCorruptHEVCVideoPacket(pkt) {
+                var free = readPkt
+                av_packet_free(&free)
+                droppedPreVideoPackets += 1
                 continue
             }
 
@@ -3468,35 +3907,12 @@ final class LoopbackSegmentWriter {
                 continue
             }
 
-            var inLayout = decoderCtx!.pointee.ch_layout
-            if inLayout.nb_channels == 0 {
-                av_channel_layout_default(&inLayout, sourceChannels)
-            }
-            var swr: OpaquePointer?
-            let swrR = swr_alloc_set_opts2(
-                &swr,
-                &encoderCtx!.pointee.ch_layout,
-                encoderCtx!.pointee.sample_fmt,
-                encoderCtx!.pointee.sample_rate,
-                &inLayout,
-                decoderCtx!.pointee.sample_fmt,
-                decoderCtx!.pointee.sample_rate,
-                0,
-                nil
-            )
-            if swrR < 0 || swr == nil || swr_init(swr) < 0 {
-                lastError = "swr init failed \(candidate.codecToken)"
-                if swr != nil {
-                    swr_free(&swr)
-                }
-                avcodec_free_context(&encoderCtx)
-                continue
-            }
-
+            // TrueHD/MLP may not expose a PCM format until a major-sync
+            // frame decodes. The resampler is populated lazily below.
+            let swr: OpaquePointer? = nil
             outputStream.pointee.time_base = encoderCtx!.pointee.time_base
             if avcodec_parameters_from_context(outputStream.pointee.codecpar, encoderCtx) < 0 {
                 lastError = "codecpar from encoder failed \(candidate.codecToken)"
-                swr_free(&swr)
                 avcodec_free_context(&encoderCtx)
                 continue
             }
@@ -3511,7 +3927,6 @@ final class LoopbackSegmentWriter {
             )
             if sampleFifo == nil {
                 lastError = "audio fifo alloc failed \(candidate.codecToken)"
-                swr_free(&swr)
                 avcodec_free_context(&encoderCtx)
                 continue
             }
@@ -3962,8 +4377,8 @@ final class LoopbackSegmentWriter {
     }
 
     private func sendConvertedFrameToEncoder(_ decodedFrame: UnsafeMutablePointer<AVFrame>) throws {
-        guard let encoderCtx = audioEncoderCtx,
-              let swr = audioSwrCtx else { return }
+        guard let encoderCtx = audioEncoderCtx else { return }
+        let swr = try audioResampler(for: decodedFrame, encoderCtx: encoderCtx)
         seedVODBridgedAudioPTSIfNeeded(from: decodedFrame, encoderCtx: encoderCtx)
         noteBridgedAudioDriftIfNeeded(from: decodedFrame, encoderCtx: encoderCtx, swr: swr)
 
@@ -4025,6 +4440,70 @@ final class LoopbackSegmentWriter {
             throw LoopbackWriterError.audioTranscodeSetup("audio encoder send failed rc=\(sendR)")
         }
         try drainEncodedPackets()
+    }
+
+    private func audioResampler(
+        for decodedFrame: UnsafeMutablePointer<AVFrame>,
+        encoderCtx: UnsafeMutablePointer<AVCodecContext>
+    ) throws -> OpaquePointer {
+        if let audioSwrCtx {
+            return audioSwrCtx
+        }
+
+        let inputFormatRaw = decodedFrame.pointee.format
+        guard inputFormatRaw >= 0 else {
+            throw LoopbackWriterError.audioTranscodeSetup(
+                "decoded audio frame has unknown sample format"
+            )
+        }
+        let inputSampleRate = decodedFrame.pointee.sample_rate > 0
+            ? decodedFrame.pointee.sample_rate
+            : audioDecoderCtx?.pointee.sample_rate ?? 0
+        guard inputSampleRate > 0 else {
+            throw LoopbackWriterError.audioTranscodeSetup(
+                "decoded audio frame has unknown sample rate"
+            )
+        }
+
+        var inputLayout = decodedFrame.pointee.ch_layout
+        if inputLayout.nb_channels <= 0, let decoderCtx = audioDecoderCtx {
+            inputLayout = decoderCtx.pointee.ch_layout
+        }
+        if inputLayout.nb_channels <= 0 {
+            let channelCount = Int32(sessionSpec.selectedAudio.sourceChannelCount ?? 2)
+            av_channel_layout_default(&inputLayout, max(1, channelCount))
+        }
+
+        var swr: OpaquePointer?
+        let allocateResult = swr_alloc_set_opts2(
+            &swr,
+            &encoderCtx.pointee.ch_layout,
+            encoderCtx.pointee.sample_fmt,
+            encoderCtx.pointee.sample_rate,
+            &inputLayout,
+            AVSampleFormat(rawValue: inputFormatRaw),
+            inputSampleRate,
+            0,
+            nil
+        )
+        guard allocateResult >= 0, swr != nil else {
+            throw LoopbackWriterError.audioTranscodeSetup(
+                "swr alloc failed \(outputAudioCodecToken ?? "audio") rc=\(allocateResult) \(Self.ffmpegError(allocateResult))"
+            )
+        }
+        let initializeResult = swr_init(swr)
+        guard initializeResult >= 0, let swr else {
+            swr_free(&swr)
+            throw LoopbackWriterError.audioTranscodeSetup(
+                "swr init failed \(outputAudioCodecToken ?? "audio") rc=\(initializeResult) \(Self.ffmpegError(initializeResult))"
+            )
+        }
+
+        audioSwrCtx = swr
+        print(
+            "[CMP-AVP] audio resampler configured sourceFormat=\(inputFormatRaw) sourceRate=\(inputSampleRate) sourceChannels=\(inputLayout.nb_channels) outputCodec=\(outputAudioCodecToken ?? "audio") outputRate=\(encoderCtx.pointee.sample_rate) outputChannels=\(encoderCtx.pointee.ch_layout.nb_channels)"
+        )
+        return swr
     }
 
     private func writeConvertedAudioToFifo(
@@ -4183,9 +4662,8 @@ final class LoopbackSegmentWriter {
             encodedPacket.pointee.stream_index = Int32(audioOutputStreamIndex)
             av_packet_rescale_ts(encodedPacket, encoderCtx.pointee.time_base, outStream.pointee.time_base)
             normalizeMuxerTimestampsIfNeeded(pkt: encodedPacket, outStream: outStream)
-            let wr = av_interleaved_write_frame(outCtx, encodedPacket)
             do {
-                try evaluateMuxWriteResult(wr)
+                try writePacketToMux(encodedPacket)
             } catch {
                 av_packet_free(&packet)
                 throw error
@@ -4307,6 +4785,63 @@ final class LoopbackSegmentWriter {
             return
         }
         av_shrink_packet(pkt, Int32(write))
+    }
+
+    /// Structural corruption concealment for length-prefixed HEVC. FFmpeg's
+    /// Matroska demuxer can recover after a damaged EBML block without marking
+    /// the returned packet `AV_PKT_FLAG_CORRUPT`; the first recovered packet
+    /// may nevertheless contain an impossible NAL length and the dependent
+    /// pictures after it reference frames that were lost in the block. Passing
+    /// those samples into fMP4 makes AVPlayer park the item permanently.
+    ///
+    /// Drop the malformed access unit and every dependent picture until a
+    /// structurally valid IRAP arrives. Audio continues on its source clock,
+    /// while the last good video picture naturally holds across the damaged
+    /// span. This is the same decoder-resynchronization boundary used by the
+    /// Compatibility path, but it keeps playback in SiloPlayer.
+    private func shouldDropCorruptHEVCVideoPacket(
+        _ pkt: UnsafeMutablePointer<AVPacket>
+    ) -> Bool {
+        guard videoMode != .passthroughH264,
+              let data = pkt.pointee.data,
+              pkt.pointee.size > 0 else { return false }
+        let packetBytes = UnsafeBufferPointer(
+            start: data,
+            count: Int(pkt.pointee.size)
+        )
+        let structurallyValid = LoopbackLengthPrefixedHEVCValidator.isValid(
+            packetBytes: packetBytes,
+            nalLengthSize: nalLengthSize
+        )
+        let irapType = structurallyValid
+            ? ISOBoxSurgery.firstIRAPNALType(
+                packetBytes: packetBytes,
+                nalLengthSize: nalLengthSize
+            )
+            : nil
+        let action = corruptVideoRecoveryState.evaluate(
+            structurallyValid: structurallyValid,
+            isRandomAccess: irapType != nil
+        )
+        switch action {
+        case .keep:
+            return false
+        case .drop(let startedRecovery):
+            corruptVideoPacketsDropped += 1
+            if startedRecovery {
+                cmpLog(
+                    "[CMP-AVP] malformed HEVC access unit dropped; suppressing dependent video until IRAP pts=\(pkt.pointee.pts) dts=\(pkt.pointee.dts) bytes=\(pkt.pointee.size)"
+                )
+            }
+            return true
+        case .resumeAtRandomAccess:
+            pkt.pointee.flags |= AV_PKT_FLAG_KEY
+            cmpLog(
+                "[CMP-AVP] HEVC corruption recovery resumed at IRAP type=\(irapType ?? -1) pts=\(pkt.pointee.pts) dts=\(pkt.pointee.dts) dropped=\(corruptVideoPacketsDropped)"
+            )
+            corruptVideoPacketsDropped = 0
+            return false
+        }
     }
 
     /// Rare fallback for the in-place compaction: rebuild the packet into a
@@ -5410,11 +5945,9 @@ final class LoopbackSegmentWriter {
         while !isCancelled {
             retireSegmentsBehindPlaybackIfNeeded()
             if vodActive {
-                // VOD reclamation lives in the store. Prune around the
-                // consumer's target, force-evicting far-from-target
-                // segments if the budget alone can't absorb the append —
-                // a spill-blocked producer starves AVPlayer into a
-                // permanent freeze (living-room spill-exhaustion deadlock).
+                // VOD reclamation lives in the disk-first store. The coupled
+                // segment-count window bounds production; byte retention may
+                // prune history but never blocks the active forward window.
                 _ = segmentStore.makeRoomForAppend(byteCount: nextSegmentBytes)
             }
             guard !segmentStore.canAppendSegment(byteCount: nextSegmentBytes) else { return }
@@ -5907,6 +6440,22 @@ final class LoopbackSegmentWriter {
     // MARK: - Teardown
 
     private func teardown() {
+        if let pendingMuxVideoPacket {
+            var free: UnsafeMutablePointer<AVPacket>? = pendingMuxVideoPacket
+            av_packet_free(&free)
+            self.pendingMuxVideoPacket = nil
+        }
+        for pending in pendingMuxAudioPackets {
+            var free: UnsafeMutablePointer<AVPacket>? = pending
+            av_packet_free(&free)
+        }
+        pendingMuxAudioPackets.removeAll()
+        for pending in vodPreGateAudioPackets {
+            var free: UnsafeMutablePointer<AVPacket>? = pending
+            av_packet_free(&free)
+        }
+        vodPreGateAudioPackets.removeAll()
+        vodPreGateAudioBytes = 0
         for pending in pendingVideoPackets {
             var free: UnsafeMutablePointer<AVPacket>? = pending
             av_packet_free(&free)
@@ -5971,6 +6520,7 @@ final class LoopbackSegmentWriter {
         }
         lastMuxedDTSByStream.removeAll()
         lastMuxedPTSByStream.removeAll()
+        lastResolvedVideoDurationByStream.removeAll()
     }
 
 }
@@ -6013,6 +6563,7 @@ private func ensureAudioFrameSize(codecpar: UnsafeMutablePointer<AVCodecParamete
 enum LoopbackWriterError: Error {
     case allocInput
     case allocOutput
+    case allocPacket
     case openInput(Int32)
     case seekInput(Int32)
     case findStreamInfo
@@ -6044,4 +6595,10 @@ enum LoopbackWriterError: Error {
     /// fetched a single media segment — nothing can ever advance the target,
     /// so the park would deadlock the session silently.
     case vodStartupConsumerWedge(parkedSeconds: Int, segment: Int)
+    /// `av_read_frame` ended clearly short of the known content (origin
+    /// outage truncating the proxied body, `rw_timeout` expiry). Finalizing
+    /// would publish a truncated movie as a complete VOD; failing routes the
+    /// session into server-outage recovery instead. The name is matched by
+    /// PlayerViewModel's error routing — keep it stable.
+    case prematureSourceEnd(readRC: Int32, shortfallBytes: Int64?, shortfallSeconds: Double?)
 }

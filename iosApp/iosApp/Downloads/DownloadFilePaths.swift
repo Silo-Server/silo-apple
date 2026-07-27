@@ -135,7 +135,7 @@ enum DownloadFilePaths {
             do {
                 try fm.createDirectory(at: url, withIntermediateDirectories: true)
             } catch {
-                logger.error("Failed to create download dir \(url.path, privacy: .public): \(String(describing: error), privacy: .public)")
+                logger.error("Failed to create download directory: \(String(describing: error), privacy: .private)")
             }
         }
         if excludeFromBackup {

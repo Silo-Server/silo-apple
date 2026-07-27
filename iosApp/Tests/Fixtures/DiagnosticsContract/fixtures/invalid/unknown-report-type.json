@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "report": {
+    "type": "kernel_panic",
+    "captured_at": "2026-07-19T18:22:31Z",
+    "capture_session_id": "run_bad_type",
+    "app_version": "1.4.2",
+    "app_build": "20841",
+    "platform": "android-tv",
+    "os_version": "11 (API 30)",
+    "profile_id": "prof_living_room"
+  },
+  "destination": {
+    "server_instance_id": "srv_home_01"
+  },
+  "consent": {
+    "mode": "prompt",
+    "notice_version": 1
+  },
+  "device_summary": {
+    "manufacturer": "NVIDIA",
+    "model": "SHIELD Android TV",
+    "os": "11",
+    "form_factor": "tv"
+  },
+  "playback_session_ids": [],
+  "log_summary": {
+    "lines": 1,
+    "bytes_gz": 100,
+    "dropped_lines": 0,
+    "categories": [
+      "crash"
+    ],
+    "debug_logging": false
+  },
+  "archive": {
+    "entries": [
+      "manifest.json"
+    ],
+    "bytes": 100,
+    "uncompressed_bytes": 200,
+    "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  }
+}

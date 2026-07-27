@@ -28,6 +28,15 @@ repo.
 - Use scheme `SiloTV` with a tvOS simulator destination for tvOS builds.
 - Use scheme `SiloMac` with `platform=macOS` for macOS builds.
 
+Those commands assume a local Xcode. When developing from a Linux host, every Apple toolchain
+operation runs on the remote `mac-builder` Mac instead — read the `mac-builder` skill first, and
+`docs/mac-builder.md` for setup and background.
+
+## Skills
+
+Task-specific guides live in `.claude/skills/`, also reachable as `.agents/skills/` for agents
+that look there. Read the one that matches the task instead of working from this file alone.
+
 ## Coding Style & Naming Conventions
 
 Use Swift 5 and SwiftUI naming conventions. Types use `PascalCase`; functions and properties use `camelCase`. Keep platform-specific code under the existing `iOS`, `tvOS`, or `macOS` folders and update `project.yml` instead of hand-editing generated `.xcodeproj` files. Preserve existing Apple bundle IDs and keychain groups during this migration for TestFlight continuity.

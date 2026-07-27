@@ -12,7 +12,8 @@ final class LibraryVisibilityTests: XCTestCase {
           { "id": 4, "name": "Music", "type": "music" },
           { "id": 5, "name": "Ebooks", "type": "ebooks" },
           { "id": 6, "name": "Comics", "type": "comics" },
-          { "id": 7, "name": "Podcasts", "type": "podcasts" }
+          { "id": 7, "name": "Podcasts", "type": "podcasts" },
+          { "id": 8, "name": "Mixed Media", "type": "mixed" }
         ]
         """
         let decoder = JSONDecoder()
@@ -20,7 +21,7 @@ final class LibraryVisibilityTests: XCTestCase {
 
         let response = try! decoder.decode(LibrariesResponse.self, from: Data(json.utf8))
 
-        XCTAssertEqual(response.libraries.map(\.id), [1, 2, 3])
+        XCTAssertEqual(response.libraries.map(\.id), [1, 2, 3, 8])
     }
 
     func testLibraryVisibilityUsesExplicitAudiobookLibraryTypesOnly() {

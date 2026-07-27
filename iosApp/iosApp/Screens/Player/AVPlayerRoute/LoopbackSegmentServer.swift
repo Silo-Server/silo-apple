@@ -2,9 +2,10 @@
 //  LoopbackSegmentServer.swift
 //  Continuum (iOS + tvOS) — Dolby Vision Profile 5 AVPlayer route
 //
-//  Tiny HTTP server bound to 127.0.0.1:<random port>. Serves the HLS playlist
-//  and fMP4 segments that `LoopbackSegmentWriter` writes to a session-scoped temp
-//  directory, so AVPlayer can consume them via a URL it accepts natively.
+//  Tiny HTTP server serving the HLS playlist and fMP4 segments that
+//  `LoopbackSegmentWriter` writes to a session-scoped store. It normally binds
+//  to 127.0.0.1; iOS AirPlay sessions bind to the LAN and require a per-session
+//  secret in every resource URL so the receiver can fetch the presentation.
 //
 //  Uses `Network.framework`'s `NWListener` so we pull in zero dependencies.
 //  Rendered on a dedicated `.userInitiated` dispatch queue — the HLS manifest
@@ -25,12 +26,21 @@
 import Foundation
 import Network
 import OSLog
+#if os(iOS)
+import Darwin
+#endif
 
 final class LoopbackSegmentServer {
+    enum Exposure: Equatable {
+        case loopbackOnly
+        case localNetwork
+    }
+
     // Temporary [CMP-LIFE]: session-pool leak attribution.
     deinit { print("[CMP-LIFE] deinit LoopbackSegmentServer") }
     private static let startupRequestLogLimit = 80
     private static let responseChunkBytes = 256 * 1024
+    static let vodEarlyResponseDelaySeconds: TimeInterval = 2.0
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "LoopbackSegmentServer"
@@ -38,11 +48,15 @@ final class LoopbackSegmentServer {
 
     let rootDirectory: URL?
     private let segmentStore: LoopbackSegmentStore?
+    private let exposure: Exposure
+    private let accessToken: String?
 
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "com.continuum.dv.hlsserver", qos: .userInitiated)
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private let lock = NSLock()
+    /// Guarded by `lock`. Only true while an AirPlay handoff is live.
+    private var acceptsExternalClients = false
     private var requestLogCount = 0
     /// Method/path/status/bytes/range tuples already emitted to the access
     /// log. Suppresses AVPlayer's identical retry probes — the first request
@@ -54,6 +68,7 @@ final class LoopbackSegmentServer {
     /// to distinguish a slow-but-fetching AVPlayer from one whose loader
     /// pipeline died and stopped requesting entirely.
     private var totalRequestCount: UInt64 = 0
+    private var vodSegmentCount: Int?
 
     var servedRequestCount: UInt64 {
         lock.lock()
@@ -61,18 +76,32 @@ final class LoopbackSegmentServer {
         return totalRequestCount
     }
 
+    func setVODSegmentCount(_ count: Int) {
+        lock.lock()
+        vodSegmentCount = max(0, count)
+        lock.unlock()
+    }
+
     /// Port the OS assigned us. Only valid once `start()` has returned
     /// successfully (the listener is bound and in `.ready` state).
     private(set) var port: UInt16 = 0
 
-    init(rootDirectory: URL) {
+    init(rootDirectory: URL, exposure: Exposure = .loopbackOnly) {
         self.rootDirectory = rootDirectory
         self.segmentStore = nil
+        self.exposure = exposure
+        self.accessToken = exposure == .localNetwork
+            ? UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            : nil
     }
 
-    init(segmentStore: LoopbackSegmentStore) {
+    init(segmentStore: LoopbackSegmentStore, exposure: Exposure = .loopbackOnly) {
         self.rootDirectory = nil
         self.segmentStore = segmentStore
+        self.exposure = exposure
+        self.accessToken = exposure == .localNetwork
+            ? UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            : nil
     }
 
     /// Starts the listener on a random high port and suspends until the
@@ -85,10 +114,14 @@ final class LoopbackSegmentServer {
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
-            params.requiredLocalEndpoint = NWEndpoint.hostPort(
-                host: .ipv4(.loopback),
-                port: .any
-            )
+            if exposure == .loopbackOnly {
+                params.requiredLocalEndpoint = NWEndpoint.hostPort(
+                    host: .ipv4(.loopback),
+                    port: .any
+                )
+            } else {
+                params.includePeerToPeer = true
+            }
             listener = try NWListener(using: params)
         } catch {
             throw LoopbackSegmentServerError.listenerInitFailed(error)
@@ -138,12 +171,58 @@ final class LoopbackSegmentServer {
                 }
             }
             let serving = self.rootDirectory?.path ?? "memory-store-\(self.segmentStore?.generation ?? 0)"
-            Self.logger.info("LoopbackSegmentServer listening on 127.0.0.1:\(port) serving \(serving, privacy: .public)")
+            let host = exposure == .localNetwork ? "local-network" : "127.0.0.1"
+            Self.logger.info("LoopbackSegmentServer listening on \(host, privacy: .public):\(port) serving \(serving, privacy: .public)")
         } catch {
             listener.cancel()
             self.listener = nil
             throw error
         }
+
+    }
+
+    /// Returns the URL AVPlayer should use for a resource. LAN-exposed
+    /// servers still use loopback for inline playback; only an active AirPlay
+    /// handoff needs an address reachable from another device.
+    func resourceURL(
+        for resourceName: String,
+        reachableFromExternalDevice: Bool = false
+    ) -> URL? {
+        let host: String
+        switch exposure {
+        case .loopbackOnly:
+            host = "127.0.0.1"
+        case .localNetwork:
+            if reachableFromExternalDevice {
+                guard let address = Self.localNetworkIPv4Address() else { return nil }
+                host = address
+            } else {
+                host = "127.0.0.1"
+            }
+        }
+        let path = [accessToken, resourceName]
+            .compactMap { $0 }
+            .joined(separator: "/")
+        return URL(string: "http://\(host):\(port)/\(path)")
+    }
+
+    /// Replaces the access token wherever it appears in a log line. The
+    /// diagnostics redactor normalizes URLs but keeps their path, so a raw
+    /// resource URL would carry this session's secret into a support bundle.
+    func redactingAccessToken(in value: String) -> String {
+        guard let accessToken, !accessToken.isEmpty else { return value }
+        return value.replacingOccurrences(of: accessToken, with: "[session_token]")
+    }
+
+    /// Opens the listener to off-device clients. The listener has to be bound
+    /// to the LAN from the start — rebinding mid-session would change the port
+    /// under a playing item — but nothing outside this device has any business
+    /// reaching it until an AirPlay handoff is actually live, so connections
+    /// from non-loopback peers are refused until then.
+    func setAcceptsExternalClients(_ accepts: Bool) {
+        lock.lock()
+        acceptsExternalClients = accepts
+        lock.unlock()
     }
 
     /// Single-shot, thread-safe resume gate for `start()`'s continuation.
@@ -156,6 +235,19 @@ final class LoopbackSegmentServer {
             defer { lock.unlock() }
             if resumed { return false }
             resumed = true
+            return true
+        }
+    }
+
+    private final class ResponseClaim: @unchecked Sendable {
+        private let lock = NSLock()
+        private var claimed = false
+
+        func claim() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !claimed else { return false }
+            claimed = true
             return true
         }
     }
@@ -175,6 +267,17 @@ final class LoopbackSegmentServer {
     // MARK: - Connection handling
 
     private func accept(_ connection: NWConnection) {
+        if Self.isOffDevicePeer(connection.endpoint) {
+            lock.lock()
+            let allowed = acceptsExternalClients
+            lock.unlock()
+            guard allowed else {
+                Self.logger.info("Refused off-device connection; no AirPlay handoff is active")
+                connection.cancel()
+                return
+            }
+        }
+
         let id = ObjectIdentifier(connection)
         lock.lock()
         connections[id] = connection
@@ -259,13 +362,117 @@ final class LoopbackSegmentServer {
 
         switch method {
         case "GET":
-            respondWithFile(at: path, method: .get, range: rangeHeader, on: connection)
+            guard let authorizedPath = authorizedResourcePath(path) else {
+                respondError(404, "Not Found", on: connection)
+                return
+            }
+            respondWithFile(at: authorizedPath, method: .get, range: rangeHeader, on: connection)
         case "HEAD":
-            respondWithFile(at: path, method: .head, range: nil, on: connection)
+            guard let authorizedPath = authorizedResourcePath(path) else {
+                respondError(404, "Not Found", on: connection)
+                return
+            }
+            respondWithFile(at: authorizedPath, method: .head, range: nil, on: connection)
         default:
             respondError(405, "Method Not Allowed", on: connection)
         }
     }
+
+    /// True only when the peer is positively identifiable as another device.
+    /// Anything unrecognized counts as local: misreading AVPlayer's own
+    /// loopback connection would break playback outright, while misreading a
+    /// stranger's costs nothing — the access-token check still stands in front
+    /// of every resource.
+    static func isOffDevicePeer(_ endpoint: NWEndpoint) -> Bool {
+        guard case let .hostPort(host, _) = endpoint else { return false }
+        switch host {
+        case let .ipv4(address):
+            return !address.isLoopback
+        case let .ipv6(address):
+            if let mapped = address.asIPv4 { return !mapped.isLoopback }
+            return !address.isLoopback
+        case .name:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    private func authorizedResourcePath(_ requestPath: String) -> String? {
+        Self.authorizedResourcePath(requestPath, accessToken: accessToken)
+    }
+
+    static func authorizedResourcePath(_ requestPath: String, accessToken: String?) -> String? {
+        guard let accessToken else { return requestPath }
+        let trimmed = requestPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let prefix = "\(accessToken)/"
+        guard trimmed.hasPrefix(prefix) else { return nil }
+        return String(trimmed.dropFirst(prefix.count))
+    }
+
+    #if os(iOS)
+    private static func localNetworkIPv4Address() -> String? {
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0, let first = interfaces else { return nil }
+        defer { freeifaddrs(interfaces) }
+
+        var candidates: [(name: String, address: String)] = []
+        var current: UnsafeMutablePointer<ifaddrs>? = first
+        while let interface = current {
+            defer { current = interface.pointee.ifa_next }
+            let flags = Int32(interface.pointee.ifa_flags)
+            guard flags & IFF_UP != 0,
+                  flags & IFF_LOOPBACK == 0,
+                  let socketAddress = interface.pointee.ifa_addr,
+                  socketAddress.pointee.sa_family == UInt8(AF_INET) else {
+                continue
+            }
+
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let result = getnameinfo(
+                socketAddress,
+                socklen_t(socketAddress.pointee.sa_len),
+                &host,
+                socklen_t(host.count),
+                nil,
+                0,
+                NI_NUMERICHOST
+            )
+            guard result == 0 else { continue }
+            let address = String(cString: host)
+            let name = String(cString: interface.pointee.ifa_name)
+            guard isReceiverReachableInterface(name),
+                  isPrivateIPv4Address(address) else { continue }
+            candidates.append((name, address))
+        }
+        // en0 is Wi-Fi on every iPhone; the sorted fallback keeps selection
+        // deterministic when a second Ethernet-class interface exists.
+        return candidates.first(where: { $0.name == "en0" })?.address
+            ?? candidates.sorted(by: { $0.name < $1.name }).first?.address
+    }
+
+    /// AirPlay receivers live on the Wi-Fi/Ethernet LAN. Cellular (`pdp_ip*`),
+    /// VPN tunnels (`utun*`, `ipsec*`, `ppp*`), and AWDL/peer links (`awdl*`,
+    /// `llw*`) can all carry an RFC1918 address the Apple TV cannot route to,
+    /// so advertising one produces a receiver that silently never connects.
+    static func isReceiverReachableInterface(_ name: String) -> Bool {
+        guard name.hasPrefix("en") || name.hasPrefix("bridge") else { return false }
+        return true
+    }
+
+    static func isPrivateIPv4Address(_ address: String) -> Bool {
+        let octets = address.split(separator: ".").compactMap { Int($0) }
+        guard octets.count == 4,
+              octets.allSatisfy({ (0...255).contains($0) }) else { return false }
+        // Deliberately excludes 169.254/16: a link-local address means DHCP
+        // never completed, and a receiver on the real subnet cannot reach it.
+        return octets[0] == 10
+            || (octets[0] == 172 && (16...31).contains(octets[1]))
+            || (octets[0] == 192 && octets[1] == 168)
+    }
+    #else
+    private static func localNetworkIPv4Address() -> String? { nil }
+    #endif
 
     private enum HTTPMethod {
         case get
@@ -332,6 +539,9 @@ final class LoopbackSegmentServer {
     /// and waits, bounded, for the bytes. Runs off the server's queue so a
     /// slow resolution never stalls playlist/init requests.
     var vodSegmentMissResolver: ((Int) -> LoopbackSegmentStore.ResourceResult)?
+    /// Test/diagnostic hook fired when the early read-until-close response is
+    /// committed, before the producer has necessarily published body bytes.
+    var onEarlyVODResponseHeaders: ((String) -> Void)?
 
     private func respondWithStoreResource(
         path: String,
@@ -348,9 +558,37 @@ final class LoopbackSegmentServer {
         case .missing, .gone:
             if let resolver = vodSegmentMissResolver,
                let index = LoopbackSegmentStore.segmentIndex(fromName: path) {
+                let responseClaim = ResponseClaim()
+                if method == .get {
+                    queue.asyncAfter(deadline: .now() + Self.vodEarlyResponseDelaySeconds) { [weak self] in
+                        guard let self, responseClaim.claim() else { return }
+                        cmpLog("[CMP-HLS] early VOD response headers path=\(path)")
+                        self.onEarlyVODResponseHeaders?(path)
+                        self.respondWithProgressiveStream(
+                            name: path,
+                            mime: self.mimeType(for: "m4s"),
+                            requestPath: path,
+                            method: method,
+                            range: rangeHeader,
+                            started: started,
+                            on: connection
+                        )
+                    }
+                }
                 DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                     guard let self else { return }
-                    switch resolver(index) {
+                    let result = resolver(index)
+                    guard responseClaim.claim() else {
+                        // Headers already went out. A found resource is picked
+                        // up by the progressive pump; a terminal miss must
+                        // abort the read-until-close response so AVPlayer can
+                        // retry instead of accepting a false successful EOF.
+                        if case .found = result { return }
+                        cmpLog("[CMP-HLS] early VOD response aborted on terminal miss path=\(path)")
+                        connection.cancel()
+                        return
+                    }
+                    switch result {
                     case .found(let resource):
                         self.respondWithResource(
                             resource,
@@ -361,14 +599,31 @@ final class LoopbackSegmentServer {
                             on: connection
                         )
                     case .missing, .gone:
-                        self.logRequest(method: method, path: path, status: 404, bytes: 0, range: rangeHeader, started: started)
-                        self.respondError(404, "Not Found", on: connection)
+                        self.respondToMissingVODSegment(
+                            index: index,
+                            path: path,
+                            method: method,
+                            range: rangeHeader,
+                            started: started,
+                            on: connection
+                        )
                     }
                 }
                 return
             }
-            logRequest(method: method, path: path, status: 404, bytes: 0, range: rangeHeader, started: started)
-            respondError(404, "Not Found", on: connection)
+            if let index = LoopbackSegmentStore.segmentIndex(fromName: path) {
+                respondToMissingVODSegment(
+                    index: index,
+                    path: path,
+                    method: method,
+                    range: rangeHeader,
+                    started: started,
+                    on: connection
+                )
+            } else {
+                logRequest(method: method, path: path, status: 404, bytes: 0, range: rangeHeader, started: started)
+                respondError(404, "Not Found", on: connection)
+            }
         case .found(let resource):
             respondWithResource(
                 resource,
@@ -378,6 +633,42 @@ final class LoopbackSegmentServer {
                 started: started,
                 on: connection
             )
+        }
+    }
+
+    enum VODMissingResponseKind: Equatable {
+        case retryLater
+        case notFound
+    }
+
+    static func vodMissingResponseKind(index: Int, segmentCount: Int?) -> VODMissingResponseKind {
+        guard index >= 0,
+              let segmentCount,
+              segmentCount > 0,
+              index < segmentCount else {
+            return .notFound
+        }
+        return .retryLater
+    }
+
+    private func respondToMissingVODSegment(
+        index: Int,
+        path: String,
+        method: HTTPMethod,
+        range: String?,
+        started: CFAbsoluteTime,
+        on connection: NWConnection
+    ) {
+        lock.lock()
+        let segmentCount = vodSegmentCount
+        lock.unlock()
+        switch Self.vodMissingResponseKind(index: index, segmentCount: segmentCount) {
+        case .retryLater:
+            logRequest(method: method, path: path, status: 503, bytes: 0, range: range, started: started)
+            respondRetryLater(on: connection)
+        case .notFound:
+            logRequest(method: method, path: path, status: 404, bytes: 0, range: range, started: started)
+            respondError(404, "Not Found", on: connection)
         }
     }
 
@@ -487,7 +778,8 @@ final class LoopbackSegmentServer {
             let (delta, complete) = store.readProgressiveSegment(
                 named: name,
                 from: offset,
-                deadline: min(overallDeadline, Date().addingTimeInterval(0.25))
+                deadline: min(overallDeadline, Date().addingTimeInterval(0.25)),
+                waitForStart: offset == 0
             )
             let nextOffset = offset + delta.count
             let finish: () -> Void = { [weak self] in
@@ -599,8 +891,10 @@ final class LoopbackSegmentServer {
         on connection: NWConnection
     ) {
         guard totalLength > 0 else {
-            logRequest(method: method, path: requestPath, status: 404, bytes: 0, range: rangeHeader, started: started)
-            respondError(404, "Not Found", on: connection)
+            respondToMissingDiskResource(
+                path: requestPath, method: method, range: rangeHeader,
+                started: started, on: connection
+            )
             return
         }
 
@@ -641,16 +935,20 @@ final class LoopbackSegmentServer {
         }
 
         guard let handle = try? FileHandle(forReadingFrom: url) else {
-            logRequest(method: method, path: requestPath, status: 404, bytes: 0, range: rangeHeader, started: started)
-            respondError(404, "Not Found", on: connection)
+            respondToMissingDiskResource(
+                path: requestPath, method: method, range: rangeHeader,
+                started: started, on: connection
+            )
             return
         }
         do {
             try handle.seek(toOffset: UInt64(lower))
         } catch {
             handle.closeFile()
-            logRequest(method: method, path: requestPath, status: 404, bytes: 0, range: rangeHeader, started: started)
-            respondError(404, "Not Found", on: connection)
+            respondToMissingDiskResource(
+                path: requestPath, method: method, range: rangeHeader,
+                started: started, on: connection
+            )
             return
         }
 
@@ -667,6 +965,24 @@ final class LoopbackSegmentServer {
         logRequest(method: method, path: requestPath, status: status, bytes: bodyBytes, range: rangeHeader, started: started)
         send(Data(header.utf8), on: connection, andClose: false) { [weak self] in
             self?.sendFileChunks(handle: handle, remaining: bodyBytes, on: connection)
+        }
+    }
+
+    private func respondToMissingDiskResource(
+        path: String,
+        method: HTTPMethod,
+        range: String?,
+        started: CFAbsoluteTime,
+        on connection: NWConnection
+    ) {
+        if let index = LoopbackSegmentStore.segmentIndex(fromName: path) {
+            respondToMissingVODSegment(
+                index: index, path: path, method: method, range: range,
+                started: started, on: connection
+            )
+        } else {
+            logRequest(method: method, path: path, status: 404, bytes: 0, range: range, started: started)
+            respondError(404, "Not Found", on: connection)
         }
     }
 
@@ -764,6 +1080,19 @@ final class LoopbackSegmentServer {
         var data = Data(header.utf8)
         data.append(body.data(using: .utf8) ?? Data())
         send(data, on: connection, andClose: true)
+    }
+
+    /// AVPlayer treats a missing static-VOD segment as terminal when it gets
+    /// a 404. An advertised but not-yet-produced segment is transient, so
+    /// mirror AetherEngine's contract: 503 + Retry-After keeps the item alive
+    /// while the coalesced producer restart fills the cache.
+    private func respondRetryLater(on connection: NWConnection) {
+        var header = "HTTP/1.1 503 Service Unavailable\r\n"
+        header += "Content-Length: 0\r\n"
+        header += "Retry-After: 1\r\n"
+        header += "Cache-Control: no-store\r\n"
+        header += "Connection: close\r\n\r\n"
+        send(Data(header.utf8), on: connection, andClose: true)
     }
 
     private func sendHeaderAndBody(_ header: String, body: Data, on connection: NWConnection) {

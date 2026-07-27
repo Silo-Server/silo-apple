@@ -12,17 +12,39 @@
 //  often with subtly different formatting (e.g. `startTime=0.0` vs
 //  `startTime=0.000000`) which doubled the log volume during a session.
 //
-//  `cmpLog` collapses that to a single `print` call. `print` already
-//  reaches both surfaces — stdout is captured by tvOS device console, and
-//  the iOS process log mirrors stdout into the system log — so we lose
-//  nothing by going through one path. Genuine errors that need
-//  filterable subsystem/category routing keep their `Logger.error` call;
-//  this helper only replaces the diagnostic-trace pairs.
+//  `cmpLog` keeps stdout as the live troubleshooting surface and also feeds
+//  the diagnostics ring through `DiagLog`, so crash bundles carry the same
+//  curated player trace without relying only on OSLog harvesting.
 //
 
 import Foundation
 
 @inline(__always)
-func cmpLog(_ message: @autoclosure () -> String) {
-    print(message())
+func cmpLog(_ message: @autoclosure () -> String, verbose: Bool = false) {
+    let rendered = message()
+    print(rendered)
+    #if os(iOS) || os(tvOS)
+    // Verbose, high-frequency traces (e.g. the 1 Hz `[CMP-DIAG]` telemetry)
+    // only enter the diagnostics ring when the user has opted into Debug
+    // Logging. Errors and lifecycle lines are always kept so crash bundles
+    // retain the essential player context regardless of the toggle. stdout
+    // always receives the line for live `devicectl --console` troubleshooting.
+    if shouldCaptureCMPLog(
+        verbose: verbose,
+        debugLoggingEnabled: DiagnosticsConsentStore.shared.debugLoggingEnabled,
+        captureEnabled: DiagnosticsCoordinator.isDiagnosticsCaptureEnabled
+    ) {
+        DiagLog.i(.playback, "CMP", rendered)
+    }
+    #endif
 }
+
+#if os(iOS) || os(tvOS)
+func shouldCaptureCMPLog(
+    verbose: Bool,
+    debugLoggingEnabled: Bool,
+    captureEnabled: Bool
+) -> Bool {
+    captureEnabled && (!verbose || debugLoggingEnabled)
+}
+#endif

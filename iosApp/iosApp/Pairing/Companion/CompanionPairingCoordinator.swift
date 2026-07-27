@@ -170,7 +170,7 @@ final class CompanionPairingCoordinator {
             guard let serverCode = lookup.matchCode, !serverCode.isEmpty else {
                 // The match code is the flow's one trust anchor; a missing code
                 // is a hard failure, never an empty prompt.
-                Self.logger.error("server \(server.url, privacy: .public) returned no match code")
+                Self.logger.error("pairing server returned no match code")
                 await failCurrentAndAdvance(server)
                 return
             }
@@ -181,7 +181,7 @@ final class CompanionPairingCoordinator {
                 // the code the TV displayed doesn't match the server's
                 // authoritative one, someone is splicing the session; refuse.
                 guard serverCode == channelCode else {
-                    Self.logger.error("match code mismatch for \(server.url, privacy: .public); refusing auto-approve")
+                    Self.logger.error("pairing match code mismatch; refusing auto-approve")
                     await failCurrentAndAdvance(server)
                     return
                 }

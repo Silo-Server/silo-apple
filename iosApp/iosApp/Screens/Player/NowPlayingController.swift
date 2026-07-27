@@ -183,13 +183,13 @@ final class NowPlayingController {
             try Task.checkCancellation()
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 Self.logger.warning(
-                    "Artwork fetch HTTP \(http.statusCode) for \(url.absoluteString, privacy: .public)"
+                    "Artwork fetch HTTP \(http.statusCode)"
                 )
                 return
             }
             #if canImport(UIKit)
             guard let image = UIImage(data: data) else {
-                Self.logger.warning("Artwork decode failed for \(url.absoluteString, privacy: .public)")
+                Self.logger.warning("Artwork decode failed")
                 return
             }
             await MainActor.run { [weak self] in
@@ -206,7 +206,7 @@ final class NowPlayingController {
             return
         } catch {
             Self.logger.warning(
-                "Artwork fetch failed for \(url.absoluteString, privacy: .public): \(String(describing: error), privacy: .public)"
+                "Artwork fetch failed: \(String(describing: error), privacy: .private)"
             )
         }
     }

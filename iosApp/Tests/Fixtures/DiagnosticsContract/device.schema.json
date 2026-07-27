@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://silo-server.dev/schemas/client-diagnostics/v1/device.schema.json",
+  "title": "Silo Client Diagnostics Device Snapshot v1",
+  "type": "object",
+  "required": [
+    "captured_at",
+    "provenance",
+    "identity",
+    "display",
+    "audio",
+    "video_codecs",
+    "network"
+  ],
+  "properties": {
+    "captured_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 64
+    },
+    "provenance": {
+      "type": "string",
+      "enum": [
+        "pre_failure",
+        "post_restart"
+      ],
+      "maxLength": 32
+    },
+    "identity": {
+      "$ref": "#/$defs/tri_state_object"
+    },
+    "display": {
+      "$ref": "#/$defs/tri_state_object"
+    },
+    "audio": {
+      "$ref": "#/$defs/tri_state_object"
+    },
+    "video_codecs": {
+      "anyOf": [
+        {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/open_object"
+          }
+        },
+        {
+          "$ref": "#/$defs/sentinel"
+        }
+      ]
+    },
+    "network": {
+      "$ref": "#/$defs/tri_state_object"
+    }
+  },
+  "$defs": {
+    "sentinel": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "not_collected"
+      ]
+    },
+    "tri_state_object": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/open_object"
+        },
+        {
+          "$ref": "#/$defs/sentinel"
+        }
+      ]
+    },
+    "open_object": {
+      "type": "object",
+      "maxProperties": 64,
+      "additionalProperties": {
+        "$ref": "#/$defs/tri_state_value"
+      }
+    },
+    "tri_state_value": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 512
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/tri_state_value"
+          }
+        },
+        {
+          "$ref": "#/$defs/open_object"
+        }
+      ]
+    }
+  },
+  "additionalProperties": true
+}

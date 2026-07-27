@@ -11,17 +11,24 @@ import AppKit
 /// a retry that re-probes the server.
 struct ServerNeedsSetupView: View {
     var router: AppRouter
+    @Environment(\.openURL) private var openURL
     @State private var isChecking = false
+    @State private var didCopy = false
     @State private var error: String?
 
     var body: some View {
         AuroraScreen(variant: .server, scrim: .soft) {
-            SiloWordmarkView(width: 132)
+            SiloWordmarkView(width: 112)
                 .frame(maxWidth: .infinity)
-                .padding(.bottom, 26)
+                .padding(.bottom, 24)
 
-            AuroraEyebrow(text: "Setup needed", centered: true)
-                .padding(.bottom, 18)
+            AuroraJourneyProgress(currentStep: 1)
+                .frame(maxWidth: 330)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 28)
+
+            AuroraEyebrow(text: "Server setup", centered: true)
+                .padding(.bottom, 16)
 
             ZStack {
                 Circle().fill(Color.auroraAccent.opacity(0.14))
@@ -35,11 +42,11 @@ struct ServerNeedsSetupView: View {
             .padding(.bottom, 18)
 
             VStack(spacing: 12) {
-                Text("Finish setup in your browser")
+                Text("Your server needs one last step")
                     .font(.continuumTitle)
                     .foregroundStyle(Color.auroraInk)
                     .multilineTextAlignment(.center)
-                Text("This server doesn't have an account yet. Open it in a browser to create the first one, then come back here to sign in.")
+                Text("Open the server in a browser and create its first account. When you're done, return here and check again.")
                     .font(.continuumBody)
                     .foregroundStyle(Color.auroraInkSecondary)
                     .multilineTextAlignment(.center)
@@ -50,39 +57,46 @@ struct ServerNeedsSetupView: View {
 
             VStack(spacing: 16) {
                 if let setupURL {
-                    HStack(spacing: 10) {
-                        Text(setupURL)
-                            .font(.system(size: 15, weight: .regular, design: .monospaced))
-                            .foregroundStyle(Color.auroraInk)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: 0)
-                        Image(systemName: "doc.on.doc")
-                            .foregroundStyle(Color.auroraInkTertiary)
+                    Button(action: copyURL) {
+                        HStack(spacing: 10) {
+                            Text(setupURL)
+                                .font(.system(size: 15, weight: .regular, design: .monospaced))
+                                .foregroundStyle(Color.auroraInk)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 0)
+                            Label(didCopy ? "Copied" : "Copy", systemImage: didCopy ? "checkmark" : "doc.on.doc")
+                                .font(.continuumCaption)
+                                .foregroundStyle(didCopy ? Color.continuumSuccess : Color.auroraInkSecondary)
+                        }
+                        .padding(.horizontal, 16)
+                        .frame(height: AuroraControl.height)
+                        .background(
+                            RoundedRectangle(cornerRadius: AuroraControl.corner)
+                                .fill(Color.continuumSurfaceElevated.opacity(0.82))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: AuroraControl.corner)
+                                .stroke(Color.continuumOutline, lineWidth: 1)
+                        )
                     }
-                    .padding(.horizontal, 16)
-                    .frame(height: AuroraControl.height)
-                    .background(
-                        RoundedRectangle(cornerRadius: AuroraControl.corner, style: .continuous)
-                            .fill(Color.white.opacity(0.06))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: AuroraControl.corner, style: .continuous)
-                            .stroke(Color.white.opacity(0.16), lineWidth: 1.5)
-                    )
-                    .onTapGesture { copyURL() }
+                    .buttonStyle(.plain)
                 }
 
                 if let error {
                     AuroraErrorLabel(error)
                 }
 
-                Button {
-                    retry()
-                } label: {
-                    Text(isChecking ? "Checking…" : "I've done that — retry")
+                Button(action: openSetup) {
+                    Label("Open in browser", systemImage: "safari")
                 }
-                .buttonStyle(AuroraPrimaryButtonStyle(isLoading: isChecking))
+                .buttonStyle(AuroraPrimaryButtonStyle())
+                .disabled(setupURL == nil)
+
+                Button(action: retry) {
+                    Text(isChecking ? "Checking…" : "Check again")
+                }
+                .buttonStyle(AuroraGhostButtonStyle())
                 .disabled(isChecking)
 
                 Button("Change server") { router.resetToServerSetup() }
@@ -109,6 +123,13 @@ struct ServerNeedsSetupView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(setupURL, forType: .string)
         #endif
+        didCopy = true
+    }
+
+    private func openSetup() {
+        guard let setupURL,
+              let url = URL(string: setupURL) else { return }
+        openURL(url)
     }
 
     /// Re-probe the current server. If it's now set up, pop back to the login

@@ -1,8 +1,8 @@
 import SwiftUI
 
 #if !os(tvOS)
-/// First screen when no server is configured (Aurora). A single centered glass
-/// form over the plum backdrop — no phone-pairing card, because on iPhone the
+/// First screen when no server is configured. A single centered glass form —
+/// no phone-pairing card, because on iPhone the
 /// phone *is* the companion (the pairing card auto-overlays from `ContentView`
 /// when a TV is nearby). Protocol + port stay tucked under "Advanced options".
 struct ServerSetupView: View {
@@ -14,15 +14,26 @@ struct ServerSetupView: View {
 
     var body: some View {
         AuroraScreen(variant: .server, scrim: .soft) {
-            SiloWordmarkView(width: 132)
+            SiloWordmarkView(width: 112)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 26)
+
+            AuroraJourneyProgress(currentStep: 1)
+                .frame(maxWidth: 330)
                 .frame(maxWidth: .infinity)
                 .padding(.bottom, 30)
 
-            VStack(spacing: 12) {
-                AuroraEyebrow(text: "Step 01 — Connect", centered: true)
-                Text("Add your server")
+            VStack(spacing: 10) {
+                AuroraEyebrow(text: "Connect", centered: true)
+                Text("Where is your Silo server?")
                     .font(.continuumTitle)
                     .foregroundStyle(Color.auroraInk)
+                    .multilineTextAlignment(.center)
+                Text("Enter the address you use to open Silo in a browser.")
+                    .font(.continuumBody)
+                    .foregroundStyle(Color.auroraInkSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity)
             .padding(.bottom, 24)
@@ -31,7 +42,7 @@ struct ServerSetupView: View {
                 AuroraTextField(
                     label: "Server address",
                     text: $viewModel.host,
-                    placeholder: "media.example.com",
+                    placeholder: "silo.example.com",
                     focus: $focusedField,
                     equals: .host,
                     contentType: .url,
@@ -39,6 +50,10 @@ struct ServerSetupView: View {
                     submitLabel: .go,
                     onSubmit: { connect() }
                 )
+
+                Label("Silo tries secure HTTPS automatically.", systemImage: "lock.shield")
+                    .font(.continuumCaption)
+                    .foregroundStyle(Color.auroraInkSecondary)
 
                 advancedDisclosure
 
@@ -74,7 +89,7 @@ struct ServerSetupView: View {
             }
         } label: {
             HStack(spacing: 7) {
-                Text("Advanced options")
+                Text("Protocol and port")
                 Image(systemName: "chevron.down")
                     .font(.system(size: 13, weight: .semibold))
                     .rotationEffect(.degrees(viewModel.showsAdvancedOptions ? 180 : 0))

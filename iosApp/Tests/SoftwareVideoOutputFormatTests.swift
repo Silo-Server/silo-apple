@@ -39,4 +39,17 @@ final class SoftwareVideoOutputFormatTests: XCTestCase {
             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
         )
     }
+
+    func testLocalColorRangeOverridesServerFallback() {
+        XCTAssertTrue(VideoColorMetadata.isFullRange(AVCOL_RANGE_JPEG, fallbackName: "tv"))
+        XCTAssertFalse(VideoColorMetadata.isFullRange(AVCOL_RANGE_MPEG, fallbackName: "pc"))
+        XCTAssertFalse(VideoColorMetadata.isFullRange(AVCOL_RANGE_NB, fallbackName: "pc"))
+    }
+
+    func testServerColorRangeFillsOnlyUnspecifiedLocalMetadata() {
+        XCTAssertTrue(VideoColorMetadata.isFullRange(AVCOL_RANGE_UNSPECIFIED, fallbackName: "pc"))
+        XCTAssertFalse(VideoColorMetadata.isFullRange(AVCOL_RANGE_UNSPECIFIED, fallbackName: "tv"))
+        XCTAssertFalse(VideoColorMetadata.isFullRange(AVCOL_RANGE_UNSPECIFIED, fallbackName: "unknown"))
+        XCTAssertFalse(VideoColorMetadata.isFullRange(AVCOL_RANGE_UNSPECIFIED, fallbackName: nil))
+    }
 }

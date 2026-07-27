@@ -15,8 +15,12 @@ enum BrowseMediaType: String, Codable, Hashable {
     case movie
     case series
     case audiobook
+    /// Movies + series in one library. Browses merged; the user narrows via
+    /// the Type facet (`CatalogFacet.itemType`), not navigation.
+    case mixed
 
     static func from(libraryType: String) -> BrowseMediaType {
+        if SiloMediaType.isMixedLibrary(libraryType) { return .mixed }
         if SiloMediaType.isAudiobook(libraryType) { return .audiobook }
         if SiloMediaType.isSeries(libraryType) { return .series }
         return .movie
@@ -24,12 +28,14 @@ enum BrowseMediaType: String, Codable, Hashable {
 
     /// The catalog `type` (media_scope) param. Audiobooks omit it — the
     /// `library_id` already scopes the query, matching the existing browse
-    /// paths which never send `type` for audiobook/music libraries.
+    /// paths which never send `type` for audiobook/music libraries. Mixed
+    /// libraries omit it too so movies and series come back merged; the
+    /// Type facet supplies a grouped rule when the user narrows.
     var catalogTypeParam: String? {
         switch self {
         case .movie: return "movie"
         case .series: return "series"
-        case .audiobook: return nil
+        case .audiobook, .mixed: return nil
         }
     }
 }
@@ -97,7 +103,7 @@ enum CatalogSortKey: String, CaseIterable, Codable, Hashable {
         switch mediaType {
         case .audiobook:
             return [.title, .author, .narrator, .series, .addedAt, .runtime]
-        case .movie, .series:
+        case .movie, .series, .mixed:
             return [.title, .addedAt, .year, .ratingImdb, .runtime, .resolution]
         }
     }

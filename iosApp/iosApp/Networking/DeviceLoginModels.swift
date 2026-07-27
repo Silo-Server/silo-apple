@@ -3,6 +3,8 @@ import Foundation
 struct DeviceLoginStartRequest: Codable {
     let deviceName: String?
     let devicePlatform: String?
+    var clientPurpose: String? = nil
+    var temporary: Bool? = nil
 }
 
 /// `deviceCode` is the TV-only secret used for polling; it must never be
@@ -19,6 +21,8 @@ struct DeviceLoginStartResponse: Codable, Equatable {
     let interval: Int
     let deviceName: String
     let devicePlatform: String
+    var clientPurpose: String? = nil
+    var temporary: Bool? = nil
 }
 
 struct DeviceLoginPollRequest: Codable {
@@ -35,6 +39,10 @@ struct DeviceLoginPollResponse: Codable {
     let refreshToken: String?
     let expiresIn: Int64?
     let user: AuthUser?
+    var profileId: String? = nil
+    var profileToken: String? = nil
+    var temporary: Bool? = nil
+    var sessionExpiresAt: String? = nil
 }
 
 enum DeviceLoginStatus: String {
@@ -63,4 +71,11 @@ struct DeviceLookupResponse: Codable {
     let deviceName: String?
     let devicePlatform: String?
     let status: String?
+    var clientPurpose: String? = nil
+    var temporary: Bool? = nil
+}
+
+struct DeviceLoginCapabilityResponse: Codable {
+    let remotePlaybackHandoff: Bool
+    let protocolVersions: [Int]
 }

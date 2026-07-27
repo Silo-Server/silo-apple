@@ -19,12 +19,70 @@
 //
 
 import CoreGraphics
+import Foundation
 import QuartzCore
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
 import AppKit
 #endif
+
+/// Tracks every live SwiftUI player surface for one playback backend.
+///
+/// The Next Up transition briefly keeps its mini-player and the returning
+/// full-screen player alive together. A single weak overlay property is racy:
+/// the outgoing surface can be the last writer and then deallocate, leaving the
+/// subtitle pump with `nil`. Keeping weak registrations lets detach restore the
+/// newest remaining surface instead.
+final class SubtitleOverlayAttachmentRegistry {
+    private final class Entry {
+        weak var owner: AnyObject?
+        weak var overlay: SubtitleOverlayView?
+        var sequence: UInt64
+
+        init(owner: AnyObject, overlay: SubtitleOverlayView, sequence: UInt64) {
+            self.owner = owner
+            self.overlay = overlay
+            self.sequence = sequence
+        }
+    }
+
+    private let lock = NSLock()
+    private var entries: [ObjectIdentifier: Entry] = [:]
+    private var sequence: UInt64 = 0
+
+    func attach(owner: AnyObject, overlay: SubtitleOverlayView) {
+        lock.lock()
+        defer { lock.unlock() }
+        pruneReleasedEntries()
+        sequence &+= 1
+        entries[ObjectIdentifier(owner)] = Entry(
+            owner: owner,
+            overlay: overlay,
+            sequence: sequence
+        )
+    }
+
+    func detach(owner: AnyObject) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.removeValue(forKey: ObjectIdentifier(owner))
+        pruneReleasedEntries()
+    }
+
+    var currentOverlay: SubtitleOverlayView? {
+        lock.lock()
+        defer { lock.unlock() }
+        pruneReleasedEntries()
+        return entries.values.max(by: { $0.sequence < $1.sequence })?.overlay
+    }
+
+    private func pruneReleasedEntries() {
+        entries = entries.filter { _, entry in
+            entry.owner != nil && entry.overlay != nil
+        }
+    }
+}
 
 private func withoutImplicitLayerAnimation(_ updates: () -> Void) {
     CATransaction.begin()
@@ -34,22 +92,17 @@ private func withoutImplicitLayerAnimation(_ updates: () -> Void) {
 }
 
 /// One positioned bitmap subtitle cue. `frame` is the image rect in
-/// overlay points (top-left origin). `backgroundFrame` is the
-/// preference-driven backing box around it — equal to `frame` when no
-/// box is drawn. All layout math lives with the caller; the overlay
-/// only assigns layer geometry.
+/// overlay points (top-left origin). Bitmap cues render exactly as
+/// authored — no preference-driven restyling. All layout math lives
+/// with the caller; the overlay only assigns layer geometry.
 struct BitmapCuePlacement {
     let image: CGImage
     let frame: CGRect
-    let backgroundFrame: CGRect
-    let backgroundColor: CGColor?
-    let cornerRadius: CGFloat
 }
 
-/// Grow/shrink the host's sublayer list to exactly `count` cue layer
-/// pairs: a container (the preference-driven backing box) holding one
-/// image sublayer. Cue images are pre-cropped to their frames, so
-/// `.resize` maps the image 1:1 onto its layer. Callers wrap this in a
+/// Grow/shrink the host's sublayer list to exactly `count` cue image
+/// layers. Cue images are pre-cropped to their frames, so `.resize`
+/// maps the image 1:1 onto its layer. Callers wrap this in a
 /// no-animation transaction.
 private func syncBitmapCueLayerCount(_ count: Int, host: CALayer) {
     var current = host.sublayers?.count ?? 0
@@ -58,32 +111,18 @@ private func syncBitmapCueLayerCount(_ count: Int, host: CALayer) {
         current -= 1
     }
     while current < count {
-        let container = CALayer()
-        container.isOpaque = false
-        container.masksToBounds = false
         let image = CALayer()
         image.contentsGravity = .resize
         image.isOpaque = false
-        container.addSublayer(image)
-        host.addSublayer(container)
+        host.addSublayer(image)
         current += 1
     }
 }
 
-/// Assign one placement to its container/image layer pair. The image
-/// frame is expressed in the container's coordinate space.
-private func applyBitmapCuePlacement(_ placement: BitmapCuePlacement, to container: CALayer) {
-    container.frame = placement.backgroundFrame
-    container.backgroundColor = placement.backgroundColor
-    container.cornerRadius = placement.cornerRadius
-    guard let imageLayer = container.sublayers?.first else { return }
+/// Assign one placement to its image layer.
+private func applyBitmapCuePlacement(_ placement: BitmapCuePlacement, to imageLayer: CALayer) {
     imageLayer.contents = placement.image
-    imageLayer.frame = CGRect(
-        x: placement.frame.minX - placement.backgroundFrame.minX,
-        y: placement.frame.minY - placement.backgroundFrame.minY,
-        width: placement.frame.width,
-        height: placement.frame.height
-    )
+    imageLayer.frame = placement.frame
 }
 
 private func removeBitmapCueLayers(host: CALayer) {
@@ -153,7 +192,7 @@ final class SubtitleOverlayView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         withoutImplicitLayerAnimation {
-            contentsLayer.frame = contentsFrameOverride ?? bounds
+            contentsLayer.frame = resolvedContentsFrame
             bitmapCueHost.frame = bounds
         }
         pushFrameGeometry()
@@ -187,11 +226,40 @@ final class SubtitleOverlayView: UIView {
             } else {
                 contentsFrameOverride = nil
             }
-            contentsLayer.frame = contentsFrameOverride ?? bounds
+            contentsLayer.frame = resolvedContentsFrame
             // CALayer.contents takes `Any?` — pass `image` directly to avoid
             // the ARC/CFType dance of an explicit `as CGImage`.
             contentsLayer.contents = image
         }
+    }
+
+    /// tvOS can crop the outer portion of the full-screen render surface for
+    /// overscan. The Bottom preset intentionally uses the letterbox bar, but
+    /// its final composited image still has to remain inside the title-safe
+    /// region. Translate the already-rendered image as one unit so multi-line
+    /// cues preserve their spacing and alignment.
+    private var resolvedContentsFrame: CGRect {
+        guard var frame = contentsFrameOverride else { return bounds }
+        #if os(tvOS)
+        let safeFrame = bounds.inset(by: safeAreaInsets)
+        guard !safeFrame.isEmpty else { return frame }
+
+        if frame.width <= safeFrame.width {
+            if frame.minX < safeFrame.minX {
+                frame.origin.x += safeFrame.minX - frame.minX
+            } else if frame.maxX > safeFrame.maxX {
+                frame.origin.x -= frame.maxX - safeFrame.maxX
+            }
+        }
+        if frame.height <= safeFrame.height {
+            if frame.minY < safeFrame.minY {
+                frame.origin.y += safeFrame.minY - frame.minY
+            } else if frame.maxY > safeFrame.maxY {
+                frame.origin.y -= frame.maxY - safeFrame.maxY
+            }
+        }
+        #endif
+        return frame
     }
 
     /// Replace the bitmap cue layers with the given placements. Frames

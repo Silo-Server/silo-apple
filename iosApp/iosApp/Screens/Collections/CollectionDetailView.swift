@@ -55,6 +55,7 @@ struct CollectionDetailView: View {
                         action: {
                             router.navigate(to: .itemDetail(contentId: item.contentId))
                         },
+                        playAction: playAction(for: item),
                         contentId: item.contentId
                     )
                     .frame(maxWidth: .infinity)
@@ -62,6 +63,21 @@ struct CollectionDetailView: View {
             }
             .padding(ContinuumTheme.padding)
         }
+    }
+
+    private func playAction(for item: BrowseItem) -> (() -> Void)? {
+        #if os(tvOS)
+        guard SiloMediaType.isDirectlyPlayable(item.type) else { return nil }
+        return {
+            router.presentPlayer(
+                contentId: item.contentId,
+                posterURL: item.posterUrl,
+                backdropURL: item.backdropUrl
+            )
+        }
+        #else
+        return nil
+        #endif
     }
 
     private func loadItems() async {

@@ -9,7 +9,11 @@ struct ProfileSelectionView: View {
     @State private var viewModel = ProfileSelectionViewModel()
     @State private var pinEntryContext: PINEntryContext?
     @State private var showCreateProfile: Bool = false
+    @State private var showSignOutConfirm: Bool = false
     @Namespace private var profileFocusNamespace
+    #if os(tvOS)
+    @FocusState private var isSignOutFocused: Bool
+    #endif
 
     private enum PINEntryPurpose: String {
         case profileSelection
@@ -35,8 +39,8 @@ struct ProfileSelectionView: View {
 
             pickerContent
                 #if os(tvOS)
-                .disabled(isPINEntryPresented)
-                .accessibilityHidden(isPINEntryPresented)
+                .disabled(isPINEntryPresented || showSignOutConfirm)
+                .accessibilityHidden(isPINEntryPresented || showSignOutConfirm)
                 #endif
         }
         .task {
@@ -44,7 +48,7 @@ struct ProfileSelectionView: View {
         }
         #if os(tvOS)
         .overlay {
-            pinEntryOverlay
+            profileOverlay
         }
         #endif
         #if os(tvOS)
@@ -170,6 +174,10 @@ struct ProfileSelectionView: View {
 
     private var titleBlock: some View {
         VStack(spacing: 6) {
+            AuroraJourneyProgress(currentStep: 3)
+                .frame(maxWidth: journeyWidth)
+                .padding(.bottom, journeyBottomPadding)
+
             #if os(tvOS)
             Text("Who's watching?")
                 .font(.system(size: titleSize, weight: .semibold))
@@ -202,7 +210,11 @@ struct ProfileSelectionView: View {
     /// for the identity moment.
     private var signOutChip: some View {
         Button {
+            #if os(tvOS)
+            showSignOutConfirm = true
+            #else
             router.signOutAndReset()
+            #endif
         } label: {
             HStack(spacing: 6) {
                 Text("Sign Out")
@@ -212,6 +224,9 @@ struct ProfileSelectionView: View {
             }
         }
         .buttonStyle(GhostChipButtonStyle())
+        #if os(tvOS)
+        .focused($isSignOutFocused)
+        #endif
     }
 
     /// Companion to `signOutChip`. Routes to the server picker so the
@@ -301,14 +316,36 @@ struct ProfileSelectionView: View {
         Task { await viewModel.clearTemporaryManagementContextIfNeeded() }
     }
 
+    #if os(tvOS)
     @ViewBuilder
-    private var pinEntryOverlay: some View {
-        if let context = pinEntryContext {
+    private var profileOverlay: some View {
+        if showSignOutConfirm {
+            TVSettingsConfirmationOverlay(
+                title: "Sign Out",
+                message: "Choose whether to keep or remove this server from this Apple TV.",
+                confirmTitle: "Sign Out",
+                additionalDestructiveTitle: "Sign Out & Remove Server",
+                cancel: dismissSignOutConfirmation,
+                confirm: router.signOutAndReset,
+                additionalDestructiveAction: router.signOutRemoveServerAndReset
+            )
+            .transition(.opacity)
+            .zIndex(10)
+        } else if let context = pinEntryContext {
             pinEntryContent(for: context)
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 .zIndex(10)
         }
     }
+
+    private func dismissSignOutConfirmation() {
+        showSignOutConfirm = false
+        Task { @MainActor in
+            await Task.yield()
+            isSignOutFocused = true
+        }
+    }
+    #endif
 
     private func pinEntryContent(for context: PINEntryContext) -> some View {
         PINEntryView(
@@ -346,6 +383,8 @@ struct ProfileSelectionView: View {
     private let subtitleSize: CGFloat = 22
     private let chipSize: CGFloat = 18
     private let headerTopPadding: CGFloat = 100
+    private let journeyWidth: CGFloat = 430
+    private let journeyBottomPadding: CGFloat = 18
     private let tileMinWidth: CGFloat = 300
     private let tileMaxWidth: CGFloat = 340
     private let tileSpacing: CGFloat = 56
@@ -355,6 +394,8 @@ struct ProfileSelectionView: View {
     private let subtitleSize: CGFloat = 15
     private let chipSize: CGFloat = 13
     private let headerTopPadding: CGFloat = 24
+    private let journeyWidth: CGFloat = 330
+    private let journeyBottomPadding: CGFloat = 14
     private let tileMinWidth: CGFloat = 140
     private let tileMaxWidth: CGFloat = 180
     private let tileSpacing: CGFloat = 16

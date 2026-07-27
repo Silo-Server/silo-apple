@@ -2,12 +2,11 @@
 import SwiftUI
 
 /// The hero's overview as an expand-in-place control. Clamped to 3 lines;
-/// Select expands to the full overview (with the tagline above it) and back.
+/// Select expands to the full overview and back.
 /// This is the detail page's only text focus stop — reachable by pressing Up
 /// from the action row — and it is actionable, so it never feels "stuck".
 struct TVExpandableSynopsis: View {
     let overview: String
-    let tagline: String?
 
     @State private var expanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -16,12 +15,6 @@ struct TVExpandableSynopsis: View {
     var body: some View {
         Button { expanded.toggle() } label: {
             VStack(alignment: .leading, spacing: 12) {
-                if expanded, let tagline, !tagline.isEmpty {
-                    Text(tagline)
-                        .font(.system(size: 28, weight: .regular, design: .serif))
-                        .italic()
-                        .foregroundColor(.white.opacity(0.85))
-                }
                 Text(overview)
                     .font(.system(size: 26, weight: .regular))
                     .foregroundColor(.white.opacity(0.82))

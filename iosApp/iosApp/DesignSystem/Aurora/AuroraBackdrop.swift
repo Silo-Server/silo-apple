@@ -2,25 +2,20 @@ import SwiftUI
 
 // MARK: - Variants
 //
-// Each first-run screen gets its own aurora composition — where the light
-// band sits, how warm/cool it is, and how bright — so the flow feels related
-// but never identical, while staying within one plum-night palette.
+// Each first-run screen gets a slightly different placement of Silo's cool
+// signal glow. The canvas stays mostly black so authentication transitions
+// naturally into the signed-in media experience.
 
 struct AuroraVariant {
-    /// Band rotation, degrees.
-    var rotation: Double
-    /// Vertical center of the light band, as a fraction of screen height.
-    var centerY: CGFloat
-    /// Hue rotation applied to the ribbons (warm 0 → cooler negative).
-    var hue: Angle
-    /// Overall brightness multiplier for the light.
+    var glowCenter: UnitPoint
+    var lineHeight: CGFloat
     var intensity: Double
 
-    static let welcome = AuroraVariant(rotation: -12, centerY: 0.24, hue: .degrees(0), intensity: 0.92)
-    static let server = AuroraVariant(rotation: -9, centerY: 0.32, hue: .degrees(-22), intensity: 0.55)
-    static let connecting = AuroraVariant(rotation: -6, centerY: 0.30, hue: .degrees(-6), intensity: 0.70)
-    static let signIn = AuroraVariant(rotation: -14, centerY: 0.22, hue: .degrees(8), intensity: 0.86)
-    static let profile = AuroraVariant(rotation: -10, centerY: 0.27, hue: .degrees(-16), intensity: 0.66)
+    static let welcome = AuroraVariant(glowCenter: UnitPoint(x: 0.72, y: 0.14), lineHeight: 0.38, intensity: 0.95)
+    static let server = AuroraVariant(glowCenter: UnitPoint(x: 0.18, y: 0.30), lineHeight: 0.56, intensity: 0.72)
+    static let connecting = AuroraVariant(glowCenter: UnitPoint(x: 0.50, y: 0.20), lineHeight: 0.46, intensity: 0.82)
+    static let signIn = AuroraVariant(glowCenter: UnitPoint(x: 0.78, y: 0.25), lineHeight: 0.47, intensity: 0.86)
+    static let profile = AuroraVariant(glowCenter: UnitPoint(x: 0.50, y: 0.42), lineHeight: 0.58, intensity: 0.72)
 }
 
 enum AuroraScrim {
@@ -42,40 +37,35 @@ struct AuroraBackdrop: View {
             let w = geo.size.width
             let h = geo.size.height
             ZStack {
-                LinearGradient(
-                    colors: [.auroraNightTop, .auroraNightMid, .auroraNightBottom],
-                    startPoint: .top, endPoint: .bottom)
+                Color.auroraNightBottom
 
-                AuroraStarfield()
-                    .opacity(0.7)
-                    .frame(height: h * 0.62)
-                    .frame(maxHeight: .infinity, alignment: .top)
-
-                // warm key-light bloom
                 RadialGradient(
-                    colors: [Color(hex: "#FFDCA6").opacity(0.42 * variant.intensity), .clear],
-                    center: UnitPoint(x: 0.7, y: variant.centerY - 0.03),
-                    startRadius: 0, endRadius: max(w, h) * 0.55)
-                    .blendMode(.screen)
+                    colors: [
+                        Color.auroraAccent.opacity(0.08 * variant.intensity),
+                        Color(hex: "#18212A").opacity(0.08 * variant.intensity),
+                        .clear,
+                    ],
+                    center: variant.glowCenter,
+                    startRadius: 0,
+                    endRadius: max(w, h) * 0.72
+                )
 
-                ribbons(w: w, h: h)
-                    .blur(radius: 72)
-                    .hueRotation(variant.hue)
-                    .blendMode(.screen)
+                AuroraSignalField(lineHeight: variant.lineHeight)
                     .opacity(variant.intensity)
 
-                // vignette
                 RadialGradient(
-                    colors: [.clear, Color.black.opacity(0.6)],
-                    center: .center, startRadius: h * 0.22, endRadius: h * 0.9)
+                    colors: [.clear, Color.black.opacity(0.72)],
+                    center: variant.glowCenter,
+                    startRadius: h * 0.16,
+                    endRadius: h * 0.92
+                )
 
                 scrimView(w: w, h: h)
 
-                // top scrim keeps the wordmark + step chrome legible over light
                 LinearGradient(
-                    colors: [Color.auroraNightBottom.opacity(0.66), .clear],
+                    colors: [Color.black.opacity(0.54), .clear],
                     startPoint: .top, endPoint: .bottom)
-                    .frame(height: 240)
+                    .frame(height: 220)
                     .frame(maxHeight: .infinity, alignment: .top)
             }
             .frame(width: w, height: h)
@@ -84,48 +74,18 @@ struct AuroraBackdrop: View {
         .ignoresSafeArea()
     }
 
-    // Three soft, wide light bands stacked around the band center, rotated as
-    // one group. Heavy blur (applied by the caller) turns these into flowing
-    // aurora light rather than hard capsules.
-    private func ribbons(w: CGFloat, h: CGFloat) -> some View {
-        let cy = h * variant.centerY
-        return ZStack {
-            ribbon(colors: [Color(hex: "#FFD9A4"), Color(hex: "#FF90A8"), Color(hex: "#C490FF")],
-                   width: w * 1.7, height: 150)
-                .offset(y: 0)
-            ribbon(colors: [Color(hex: "#FFADC6"), Color(hex: "#9B8BFF")],
-                   width: w * 1.7, height: 116)
-                .offset(y: 96)
-            ribbon(colors: [Color(hex: "#C6F0E2"), Color(hex: "#8FE7CF")],
-                   width: w * 1.5, height: 92)
-                .offset(y: -120)
-                .opacity(0.7)
-        }
-        .rotationEffect(.degrees(variant.rotation))
-        .frame(width: w, height: h)
-        .offset(y: cy - h / 2)
-    }
-
-    private func ribbon(colors: [Color], width: CGFloat, height: CGFloat) -> some View {
-        Capsule()
-            .fill(LinearGradient(
-                colors: [.clear] + colors + [.clear],
-                startPoint: .leading, endPoint: .trailing))
-            .frame(width: width, height: height)
-    }
-
     @ViewBuilder
-    private func scrimView(w: CGFloat, h: CGFloat) -> some View {
+    private func scrimView(w _: CGFloat, h: CGFloat) -> some View {
         switch scrim {
         case .left:
             LinearGradient(stops: [
-                .init(color: Color.auroraNightBottom.opacity(0.9), location: 0),
-                .init(color: Color.auroraNightBottom.opacity(0.55), location: 0.3),
+                .init(color: Color.black.opacity(0.94), location: 0),
+                .init(color: Color.black.opacity(0.58), location: 0.34),
                 .init(color: .clear, location: 0.72),
             ], startPoint: .leading, endPoint: .trailing)
         case .soft:
             RadialGradient(
-                colors: [.clear, Color.auroraNightBottom.opacity(0.72)],
+                colors: [.clear, Color.black.opacity(0.76)],
                 center: .center, startRadius: h * 0.18, endRadius: h * 0.95)
         case .none:
             Color.clear
@@ -133,31 +93,38 @@ struct AuroraBackdrop: View {
     }
 }
 
-// MARK: - Starfield
+// MARK: - Signal field
 
-private struct AuroraStarfield: View {
+private struct AuroraSignalField: View {
+    let lineHeight: CGFloat
+
     var body: some View {
         Canvas { ctx, size in
-            var rng = SeededRNG(seed: 9_123_457)
-            for _ in 0..<64 {
-                let x = CGFloat(rng.next()) * size.width
-                let y = CGFloat(rng.next()) * size.height
-                let r = CGFloat(rng.next()) * 1.6 + 0.4
-                let o = rng.next() * 0.5 + 0.12
-                ctx.fill(
-                    Path(ellipseIn: CGRect(x: x, y: y, width: r * 2, height: r * 2)),
-                    with: .color(.white.opacity(o)))
+            let y = size.height * lineHeight
+            var path = Path()
+            path.move(to: CGPoint(x: -size.width * 0.05, y: y + 80))
+            path.addCurve(
+                to: CGPoint(x: size.width * 1.05, y: y - 30),
+                control1: CGPoint(x: size.width * 0.28, y: y - 120),
+                control2: CGPoint(x: size.width * 0.68, y: y + 100)
+            )
+            ctx.stroke(
+                path,
+                with: .linearGradient(
+                    Gradient(colors: [.clear, Color.auroraAccent.opacity(0.18), .clear]),
+                    startPoint: CGPoint(x: 0, y: y),
+                    endPoint: CGPoint(x: size.width, y: y)
+                ),
+                lineWidth: 1
+            )
+
+            for index in 0..<7 {
+                let x = size.width * (0.08 + CGFloat(index) * 0.15)
+                let dotY = y + sin(CGFloat(index) * 1.55) * 28
+                let rect = CGRect(x: x - 2, y: dotY - 2, width: 4, height: 4)
+                ctx.fill(Path(ellipseIn: rect), with: .color(Color.white.opacity(index == 4 ? 0.24 : 0.10)))
             }
         }
         .allowsHitTesting(false)
-    }
-}
-
-private struct SeededRNG {
-    var state: UInt64
-    init(seed: UInt64) { state = seed }
-    mutating func next() -> Double {
-        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
-        return Double(state >> 11) / Double(1 << 53)
     }
 }

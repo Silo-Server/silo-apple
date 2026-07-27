@@ -174,15 +174,22 @@ final class LoopbackSegmentStore {
         self.debugDirectory = debugDirectory
         self.spillPolicy = spillPolicy
         _ = PlaybackDiskBudget.sweepOrphanedSpillDirectories
+        var resolvedSpillDirectory: URL?
         if spillPolicy.isEnabled {
             let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("continuum-dv-hls", isDirectory: true)
-                .appendingPathComponent("\(generation)", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            self.spillDirectory = dir
-        } else {
-            self.spillDirectory = nil
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                resolvedSpillDirectory = dir
+            } catch {
+                print("[CMP-HLS-STORE] spill directory create failed")
+                Self.logger.error(
+                    "[CMP-HLS-STORE] spill directory create failed error=\(String(describing: error), privacy: .private)"
+                )
+            }
         }
+        self.spillDirectory = resolvedSpillDirectory
         if let debugDirectory {
             try? FileManager.default.createDirectory(at: debugDirectory, withIntermediateDirectories: true)
         }
@@ -215,6 +222,13 @@ final class LoopbackSegmentStore {
 
     func putSegment(name: String, data: Data, duration: Double) -> SegmentAppendResult {
         lock.lock()
+        let isVOD = vodRetentionBudgetBytes > 0
+        lock.unlock()
+        if isVOD {
+            return putVODSegmentOnDisk(name: name, data: data, duration: duration)
+        }
+
+        lock.lock()
         if let old = segments[name] {
             memoryBytes -= old.data.count
         } else {
@@ -244,25 +258,124 @@ final class LoopbackSegmentStore {
         return SegmentAppendResult(evictedSegmentNames: evicted)
     }
 
+    /// Static VOD segments are disk-first, matching the producer/cache model
+    /// AVPlayer is consuming. Keeping only file URLs in the store avoids a
+    /// second full encoded-media copy in the tvOS heap and makes the VOD
+    /// forward window a disk/demux policy rather than a resident-memory
+    /// budget. If an asynchronous stale-session cleanup or filesystem race
+    /// removes the UUID directory, recreate it and retry once before falling
+    /// back to memory for this active segment.
+    private func putVODSegmentOnDisk(
+        name: String,
+        data: Data,
+        duration: Double
+    ) -> SegmentAppendResult {
+        guard let spillDirectory else {
+            return putSegmentInMemoryWithoutEviction(name: name, data: data, duration: duration)
+        }
+        let destination = spillDirectory.appendingPathComponent(name)
+        var writeError: Error?
+        var stored = false
+        for attempt in 1...2 {
+            do {
+                if attempt > 1 {
+                    try FileManager.default.createDirectory(
+                        at: spillDirectory,
+                        withIntermediateDirectories: true
+                    )
+                }
+                try data.write(to: destination, options: .atomic)
+                stored = true
+                break
+            } catch {
+                writeError = error
+            }
+        }
+        guard stored else {
+            let description = String(describing: writeError)
+            print("[CMP-HLS-STORE] VOD disk write failed after retry; retaining active segment in memory")
+            Self.logger.error(
+                "[CMP-HLS-STORE] VOD disk write failed after retry error=\(description, privacy: .private); retaining active segment in memory"
+            )
+            return putSegmentInMemoryWithoutEviction(name: name, data: data, duration: duration)
+        }
+
+        lock.lock()
+        var doomed: [URL] = []
+        if let old = segments.removeValue(forKey: name) {
+            memoryBytes -= old.data.count
+        }
+        if let old = spillingSegments.removeValue(forKey: name) {
+            tempSpillBytes -= Int64(old.data.count)
+        }
+        if let oldURL = spilledSegments.removeValue(forKey: name) {
+            tempSpillBytes -= Int64(spilledSegmentSizes.removeValue(forKey: name) ?? 0)
+            if oldURL != destination { doomed.append(oldURL) }
+        }
+        segmentOrder.removeAll { $0 == name }
+        spilledSegments[name] = destination
+        spilledSegmentSizes[name] = data.count
+        tempSpillBytes += Int64(data.count)
+        generatedMediaSeconds += duration
+        evictedResources.remove(name)
+        progressiveSegments.removeValue(forKey: name)
+        if let index = Self.segmentIndex(fromName: name) {
+            vodHighWaterIndex = max(vodHighWaterIndex, index)
+        }
+        doomed.append(contentsOf: vodPruneLocked())
+        tempSpillBytes = max(0, tempSpillBytes)
+        lock.broadcast()
+        lock.unlock()
+
+        for url in doomed {
+            try? FileManager.default.removeItem(at: url)
+        }
+        mirror(data, name: name)
+        return SegmentAppendResult(evictedSegmentNames: [])
+    }
+
+    /// A filesystem failure must not turn an active VOD segment into a
+    /// permanent `.gone` response. Retain the segment in RAM so AVPlayer can
+    /// keep moving; the producer's segment-count window bounds additional
+    /// work while diagnostics expose the underlying storage failure.
+    private func putSegmentInMemoryWithoutEviction(
+        name: String,
+        data: Data,
+        duration: Double
+    ) -> SegmentAppendResult {
+        lock.lock()
+        if let old = segments[name] {
+            memoryBytes -= old.data.count
+        } else {
+            segmentOrder.append(name)
+        }
+        segments[name] = Segment(name: name, data: data, duration: duration, createdAt: Date())
+        memoryBytes += data.count
+        generatedMediaSeconds += duration
+        evictedResources.remove(name)
+        progressiveSegments.removeValue(forKey: name)
+        if let index = Self.segmentIndex(fromName: name) {
+            vodHighWaterIndex = max(vodHighWaterIndex, index)
+        }
+        let doomed = vodPruneLocked()
+        lock.broadcast()
+        lock.unlock()
+        for url in doomed {
+            try? FileManager.default.removeItem(at: url)
+        }
+        mirror(data, name: name)
+        return SegmentAppendResult(evictedSegmentNames: [])
+    }
+
+    #if DEBUG
+    var spillDirectoryForTesting: URL? { spillDirectory }
+    #endif
+
     // MARK: - VOD retention (loopback-primary plan, 1e)
 
     private var vodRetentionBudgetBytes: Int64 = 0
     private var vodForwardWindow = 10
     private var vodBackwardWindow = 20
-    /// Byte cap on produce-ahead past the consumer target. The segment-count
-    /// window alone is blind to segment size: at ~30 MB Blu-ray-remux
-    /// segments, `target + 10` authorizes ~300 MB of produced-ahead media,
-    /// which the producer races through at wire speed (measured ~300 Mbps /
-    /// 460 MiB in 14 s on a 3 GB Apple TV — jetsam). The byte gate parks the
-    /// producer once forward bytes (memory + spill) reach the budget, so
-    /// produce-ahead scales down as bitrate scales up. Low-bitrate sources
-    /// never hit it; the count window stays their binding constraint.
-    private var vodForwardByteBudget: Int64 = 192 << 20
-    /// Forward segments always allowed past the target regardless of bytes,
-    /// so a pathological byte state (e.g. stale forward segments retained
-    /// across a backward seek exhausting the budget) can never starve the
-    /// consumer of its next segments.
-    private static let vodForwardMinSegments = 3
     private var vodTargetIndex = 0
     private var vodHighWaterIndex = -1
     /// Counts `declareVODTarget` calls so waiters can tell "a real consumer
@@ -286,8 +399,7 @@ final class LoopbackSegmentStore {
     func configureVODRetention(
         budgetBytes: Int64,
         forwardWindow: Int = 10,
-        backwardWindow: Int = 20,
-        forwardByteBudget: Int64 = 192 << 20
+        backwardWindow: Int = 20
     ) {
         lock.lock()
         vodRetentionBudgetBytes = budgetBytes > 0
@@ -295,7 +407,6 @@ final class LoopbackSegmentStore {
             : Self.vodRetentionBudgetFloorBytes
         vodForwardWindow = max(1, forwardWindow)
         vodBackwardWindow = max(0, backwardWindow)
-        vodForwardByteBudget = max(1 << 20, forwardByteBudget)
         lock.unlock()
     }
 
@@ -329,47 +440,16 @@ final class LoopbackSegmentStore {
         return vodTargetDeclarationCount > 0
     }
 
-    /// Producer window backpressure: appends past `target + forwardWindow`
-    /// wait, so the producer paces on consumption instead of racing to EOF.
-    /// The byte budget bounds backward history; this bounds the forward span
-    /// (and by construction it also parks the producer when the playhead
-    /// wedges, replacing the EVENT generated-ahead throttle).
+    /// Producer/cache coupling: appends past `target + forwardWindow` wait,
+    /// and the same window is protected by VOD pruning. One segment-count
+    /// policy therefore controls both how far the producer may race and what
+    /// AVPlayer is guaranteed to be able to fetch, matching AetherEngine's
+    /// disk-backed SegmentCache model.
     func vodProducerMayAppend(segmentIndex: Int) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         guard vodRetentionBudgetBytes > 0 else { return true }
-        guard segmentIndex <= vodTargetIndex + vodForwardWindow else { return false }
-        // Byte-aware clamp on top of the count window (see
-        // `vodForwardByteBudget`). The min-segments floor guarantees the
-        // consumer's next segments are always producible.
-        if segmentIndex <= vodTargetIndex + Self.vodForwardMinSegments { return true }
-        return vodForwardBytesLocked() < vodForwardByteBudget
-    }
-
-    /// Bytes of produced segments ahead of the consumer target, across
-    /// memory-resident, in-flight-spill, and spilled storage. Counting the
-    /// spilled bytes too is deliberate: the gate exists to bound the
-    /// producer's read race (network + transient mux/spill allocations),
-    /// not just resident store bytes — a spill-exempt gate would let the
-    /// count window keep authorizing wire-speed reads straight to disk.
-    private func vodForwardBytesLocked() -> Int64 {
-        var total: Int64 = 0
-        for (name, segment) in segments {
-            if let index = Self.segmentIndex(fromName: name), index > vodTargetIndex {
-                total += Int64(segment.data.count)
-            }
-        }
-        for (name, segment) in spillingSegments {
-            if let index = Self.segmentIndex(fromName: name), index > vodTargetIndex {
-                total += Int64(segment.data.count)
-            }
-        }
-        for (name, size) in spilledSegmentSizes {
-            if let index = Self.segmentIndex(fromName: name), index > vodTargetIndex {
-                total += Int64(size)
-            }
-        }
-        return total
+        return segmentIndex <= vodTargetIndex + vodForwardWindow
     }
 
     // MARK: - Progressive anchor segments
@@ -403,7 +483,8 @@ final class LoopbackSegmentStore {
     func readProgressiveSegment(
         named name: String,
         from offset: Int,
-        deadline: Date
+        deadline: Date,
+        waitForStart: Bool = false
     ) -> (Data, Bool) {
         lock.lock()
         defer { lock.unlock() }
@@ -420,6 +501,13 @@ final class LoopbackSegmentStore {
                 return (data.subdata(in: offset..<data.count), true)
             }
             guard let partial = progressiveSegments[name] else {
+                if waitForStart, !evictedResources.contains(name) {
+                    guard Date() < deadline else {
+                        return (Data(), false)
+                    }
+                    lock.wait(until: deadline)
+                    continue
+                }
                 return (Data(), true)
             }
             if offset > partial.count {
@@ -531,11 +619,9 @@ final class LoopbackSegmentStore {
     /// Must run under `lock`. Returns spill URLs to delete outside the lock.
     ///
     /// The inventory unions all three residency states rather than reading
-    /// `segmentOrder`: the memory-eviction loop removes a name from
-    /// `segmentOrder` when it spills it to disk, so an order-based
-    /// inventory is blind to every spilled segment — retention then never
-    /// evicts a spilled byte and the spill gate eventually deadlocks the
-    /// producer (living-room spill-exhaustion freeze).
+    /// `segmentOrder`: VOD is disk-first, and the legacy memory-eviction loop
+    /// also removes a name from `segmentOrder` when it spills it. An
+    /// order-only inventory would therefore be blind to cached disk bytes.
     private func vodPruneLocked() -> [URL] {
         var names = Set(segments.keys)
         names.formUnion(spillingSegments.keys)
@@ -589,67 +675,25 @@ final class LoopbackSegmentStore {
         return doomed
     }
 
-    /// Emergency relief for the writer's append gate: runs the normal
-    /// target-anchored prune, then — if the projected append still exceeds
-    /// the spill budget — force-evicts segments farthest from the current
-    /// VOD target until the append fits, sparing only the immediate
-    /// `[target − backward, target + forward]` neighborhood (unlike the
-    /// prune's hard window this ignores the produced high-water: anything
-    /// outside the playhead's neighborhood is regenerable via a producer
-    /// restart, and a wedged producer is strictly worse). Fit is judged by
-    /// the writer's own append criterion (`appendWouldFitLocked`) — spill
-    /// bytes plus the projected spill demand of the append — and the return
-    /// value reports whether that gate would now pass.
+    /// VOD writes are disk-first and bounded by the coupled segment-count
+    /// window, so they do not participate in the legacy memory-to-spill
+    /// append gate. Run retention pruning opportunistically and admit the
+    /// append; correctness wins when the protected window temporarily
+    /// exceeds its byte budget.
     func makeRoomForAppend(byteCount: Int) -> Bool {
         guard byteCount > 0 else { return true }
         lock.lock()
-        guard spillPolicy.isEnabled, vodRetentionBudgetBytes > 0 else {
+        guard vodRetentionBudgetBytes > 0 else {
             lock.unlock()
             return true
         }
-        var doomed = vodPruneLocked()
-        var forceEvicted = 0
-        if !appendWouldFitLocked(byteCount: byteCount) {
-            let lo = vodTargetIndex - vodBackwardWindow
-            let hi = vodTargetIndex + vodForwardWindow
-            // Only segments that actually occupy spill budget qualify —
-            // evicting memory-resident segments frees no spill bytes and
-            // would just destroy good cache. (Not `segmentOrder`: spilled
-            // names have already left it — see vodPruneLocked.)
-            var spillNames = Set(spilledSegments.keys)
-            spillNames.formUnion(spillingSegments.keys)
-            var candidates: [(index: Int, name: String)] = spillNames.compactMap { name in
-                guard let index = Self.segmentIndex(fromName: name),
-                      index < lo || index > hi else { return nil }
-                return (index, name)
-            }
-            candidates.sort { abs($0.index - vodTargetIndex) > abs($1.index - vodTargetIndex) }
-            for candidate in candidates {
-                if appendWouldFitLocked(byteCount: byteCount) { break }
-                let name = candidate.name
-                if let segment = spillingSegments.removeValue(forKey: name) {
-                    tempSpillBytes -= Int64(segment.data.count)
-                }
-                if let url = spilledSegments.removeValue(forKey: name) {
-                    tempSpillBytes -= Int64(spilledSegmentSizes.removeValue(forKey: name) ?? 0)
-                    doomed.append(url)
-                }
-                segmentOrder.removeAll { $0 == name }
-                forceEvicted += 1
-                // Same as vodPruneLocked: regenerable, so not `.gone`.
-            }
-            tempSpillBytes = max(0, tempSpillBytes)
-        }
-        let fits = appendWouldFitLocked(byteCount: byteCount)
+        let doomed = vodPruneLocked()
         lock.broadcast()
         lock.unlock()
         for url in doomed {
             try? FileManager.default.removeItem(at: url)
         }
-        if forceEvicted > 0 {
-            Self.logger.info("[CMP-HLS-STORE] generation=\(self.generation, privacy: .public) force-evicted=\(forceEvicted, privacy: .public) for append tempSpillBytes=\(self.stats().tempSpillBytes, privacy: .public)")
-        }
-        return fits
+        return true
     }
 
     func retireSegments(names: [String]) -> [String] {
@@ -699,6 +743,7 @@ final class LoopbackSegmentStore {
         guard byteCount > 0 else { return true }
         lock.lock()
         defer { lock.unlock() }
+        if vodRetentionBudgetBytes > 0 { return true }
         return appendWouldFitLocked(byteCount: byteCount)
     }
 

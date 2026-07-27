@@ -52,7 +52,7 @@ struct CatalogFacets {
         case .author: return authors
         case .narrator: return narrators
         case .seriesName: return series
-        case .decade, .dynamicRange, .watchStatus: return []
+        case .itemType, .decade, .dynamicRange, .watchStatus: return []
         }
     }
 
@@ -63,6 +63,8 @@ struct CatalogFacets {
     /// server vocab otherwise. `watchStatus` is hidden without a profile.
     func optionPairs(for facet: CatalogFacet, hasProfile: Bool) -> [(value: String, label: String)] {
         switch facet {
+        case .itemType:
+            return [("movie", "Movies"), ("series", "Series")]
         case .decade:
             return Self.decadeLadder.map { (String($0), "\($0)s") }
         case .dynamicRange:

@@ -3,8 +3,8 @@ import SwiftUI
 /// Picker + management UI for the set of saved Silo servers.
 ///
 /// Shared between iOS and tvOS with minor platform-specific tweaks:
-/// - iOS: Navigation `List` with swipe-to-delete and long-press rename.
-/// - tvOS: focus-aware tile row; rename via an on-screen alert.
+/// - iOS: Navigation `List` with swipe-to-delete.
+/// - tvOS: focusable read-only server summary with a separate remove action.
 ///
 /// Switching a server asks the `AppRouter` to re-evaluate auth state so
 /// the user lands on login or profile-select for the new server (or on
@@ -12,43 +12,37 @@ import SwiftUI
 struct ServerListView: View {
     @Environment(AppRouter.self) private var router
     @State private var registry = ServerRegistry.shared
-    @State private var renameTarget: ServerEntry?
-    @State private var renameInput: String = ""
     @State private var removeTarget: ServerEntry?
+    #if os(tvOS)
+    @FocusState private var focusedRow: TVRow?
+    #endif
 
     var body: some View {
+        #if os(tvOS)
+        ZStack {
+            tvOSContent
+                .disabled(removeTarget != nil)
+
+            if let entry = removeTarget {
+                TVSettingsConfirmationOverlay(
+                    title: "Remove this server?",
+                    message: "Sign-in credentials for \(entry.displayName) will be forgotten on this device.",
+                    confirmTitle: "Remove",
+                    cancel: { dismissRemoveConfirmation(for: entry) },
+                    confirm: { remove(entry) }
+                )
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                .zIndex(1)
+            }
+        }
+        .continuumBackground()
+        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: removeTarget)
+        #else
         contentList
             .navigationTitle("Servers")
-            #if !os(tvOS)
             .continuumNavigationTitleDisplayMode(.inline)
-            #endif
             .continuumBackground()
             .continuumScrollContentBackgroundHidden()
-            .alert(
-                "Rename server",
-                isPresented: Binding(
-                    get: { renameTarget != nil },
-                    set: { if !$0 { renameTarget = nil } }
-                ),
-                presenting: renameTarget
-            ) { entry in
-                #if !os(tvOS)
-                TextField("Name", text: $renameInput)
-                #endif
-                Button("Save") {
-                    registry.rename(serverId: entry.id, userOverrideName: renameInput)
-                    renameTarget = nil
-                }
-                if entry.userOverrideName != nil {
-                    Button("Reset to server-provided name", role: .destructive) {
-                        registry.rename(serverId: entry.id, userOverrideName: nil)
-                        renameTarget = nil
-                    }
-                }
-                Button("Cancel", role: .cancel) { renameTarget = nil }
-            } message: { _ in
-                Text("Override the server-provided name with a label just for this device.")
-            }
             .alert(
                 "Remove this server?",
                 isPresented: Binding(
@@ -58,25 +52,126 @@ struct ServerListView: View {
                 presenting: removeTarget
             ) { entry in
                 Button("Remove", role: .destructive) {
-                    let wasActive = entry.id == registry.activeServerId
-                    Task {
-                        await registry.remove(serverId: entry.id)
-                        await MainActor.run {
-                            removeTarget = nil
-                            // Removing the active server leaves the app
-                            // pointed at a fallback (or none). Re-enter
-                            // the auth state machine so the user lands
-                            // in the right place instead of on a stale
-                            // main-app screen.
-                            if wasActive { refreshAuthState() }
-                        }
-                    }
+                    remove(entry)
                 }
                 Button("Cancel", role: .cancel) { removeTarget = nil }
             } message: { entry in
                 Text("Sign-in credentials for \(entry.displayName) will be forgotten on this device.")
             }
+        #endif
     }
+
+    #if os(tvOS)
+    private var tvOSContent: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("CONNECTION")
+                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                        .tracking(2)
+                        .foregroundColor(.continuumSecondaryText)
+                    Text("Manage Servers")
+                        .font(.system(size: 38, weight: .semibold))
+                        .foregroundColor(.continuumOnSurface)
+                    Text("Manage saved Silo servers or add another connection.")
+                        .font(.system(size: 20))
+                        .foregroundColor(.continuumSecondaryText)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 18)
+
+                TVSettingsSectionHeader("SAVED SERVERS")
+
+                if registry.sortedEntries.isEmpty {
+                    TVSettingsFooter("No servers have been saved on this Apple TV.")
+                } else {
+                    ForEach(registry.sortedEntries) { entry in
+                        tvOSRow(for: entry)
+                    }
+                }
+
+                TVSettingsSectionHeader("CONNECTIONS")
+
+                Button {
+                    router.navigate(to: .serverSetup)
+                } label: {
+                    HStack(spacing: 16) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 22, weight: .semibold))
+                            .frame(width: 28)
+                        Text("Add Server")
+                            .font(.system(size: 26))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 18, weight: .semibold))
+                            .opacity(0.55)
+                    }
+                }
+                .buttonStyle(TVSettingsPaneRowStyle())
+                .focused($focusedRow, equals: .add)
+
+                TVSettingsFooter("Select the trash icon to remove a saved server.")
+            }
+            .frame(maxWidth: 1080, alignment: .leading)
+            .padding(.bottom, 64)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .safeAreaPadding(.horizontal, ContinuumTheme.Skyline.safeAreaX)
+        .safeAreaPadding(.top, 64)
+        .defaultFocus($focusedRow, defaultTVRow)
+    }
+
+    private var defaultTVRow: TVRow {
+        registry.sortedEntries.first.map { .server($0.id) } ?? .add
+    }
+
+    private func tvOSRow(for entry: ServerEntry) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                guard entry.id != registry.activeServerId else { return }
+                switchTo(entry)
+            } label: {
+                TVServerSummaryLabel(
+                    entry: entry,
+                    isActive: entry.id == registry.activeServerId
+                )
+            }
+            .buttonStyle(TVSettingsPaneRowStyle())
+            .focused($focusedRow, equals: .server(entry.id))
+            .accessibilityHint(
+                entry.id == registry.activeServerId
+                    ? "Current server. Server names are managed by the server administrator"
+                    : "Switch to this server. Server names are managed by the server administrator"
+            )
+
+            Button {
+                removeTarget = entry
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 24, weight: .semibold))
+                    .frame(maxWidth: .infinity, minHeight: 49)
+            }
+            .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
+            .frame(width: 92)
+            .focused($focusedRow, equals: .remove(entry.id))
+            .accessibilityLabel("Remove \(entry.displayName)")
+        }
+    }
+
+    private enum TVRow: Hashable {
+        case server(String)
+        case remove(String)
+        case add
+    }
+
+    private func dismissRemoveConfirmation(for entry: ServerEntry) {
+        removeTarget = nil
+        Task { @MainActor in
+            await Task.yield()
+            focusedRow = .remove(entry.id)
+        }
+    }
+    #endif
 
     private var contentList: some View {
         List {
@@ -131,19 +226,6 @@ struct ServerListView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            Button {
-                renameInput = entry.userOverrideName ?? entry.fetchedName ?? ""
-                renameTarget = entry
-            } label: {
-                Label("Rename", systemImage: "pencil")
-            }
-            Button(role: .destructive) {
-                removeTarget = entry
-            } label: {
-                Label("Remove Server", systemImage: "trash")
-            }
-        }
         #if !os(tvOS)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
@@ -151,13 +233,6 @@ struct ServerListView: View {
             } label: {
                 Label("Remove", systemImage: "trash")
             }
-            Button {
-                renameInput = entry.userOverrideName ?? entry.fetchedName ?? ""
-                renameTarget = entry
-            } label: {
-                Label("Rename", systemImage: "pencil")
-            }
-            .tint(.continuumOnSurface)
         }
         #endif
     }
@@ -172,6 +247,17 @@ struct ServerListView: View {
         Task {
             await registry.switchTo(serverId: entry.id)
             await MainActor.run { refreshAuthState() }
+        }
+    }
+
+    private func remove(_ entry: ServerEntry) {
+        let wasActive = entry.id == registry.activeServerId
+        Task {
+            await registry.remove(serverId: entry.id)
+            await MainActor.run {
+                removeTarget = nil
+                if wasActive { refreshAuthState() }
+            }
         }
     }
 
@@ -191,3 +277,39 @@ struct ServerListView: View {
         }
     }
 }
+
+#if os(tvOS)
+private struct TVServerSummaryLabel: View {
+    let entry: ServerEntry
+    let isActive: Bool
+
+    var body: some View {
+        HStack(spacing: 18) {
+            Image(systemName: isActive ? "checkmark.circle.fill" : "server.rack")
+                .font(.system(size: 24, weight: .medium))
+                .frame(width: 34)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.displayName)
+                    .font(.system(size: 26, weight: .medium))
+                    .lineLimit(1)
+                Text(entry.url)
+                    .font(.system(size: 19))
+                    .opacity(0.62)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 16)
+
+            if isActive {
+                Text("Active")
+                    .font(.system(size: 19, weight: .semibold))
+                    .opacity(0.72)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(isActive ? "Active" : "Saved")
+    }
+}
+#endif

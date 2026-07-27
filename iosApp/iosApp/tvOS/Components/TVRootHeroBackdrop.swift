@@ -24,6 +24,11 @@ struct TVRootHeroBackdrop: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// False until the first artwork has painted. The very first backdrop
+    /// (cold entry, seeded before focus settles) should be there on frame
+    /// one — only artwork→artwork swaps get the ambient crossfade.
+    @State private var hasDisplayedArtwork = false
+
     /// Crisp art occupies the upper-right corner; the corner mask fades it
     /// out toward the leading edge and the bottom into the sampled wash.
     private let artWidthFraction: CGFloat = 0.64
@@ -48,6 +53,12 @@ struct TVRootHeroBackdrop: View {
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
+        .onAppear {
+            if artworkURL?.isEmpty == false { hasDisplayedArtwork = true }
+        }
+        .onChange(of: artworkURL) { _, url in
+            if url?.isEmpty == false { hasDisplayedArtwork = true }
+        }
     }
 
     /// Sampled-color wash: richest in the top-right behind the art, carried
@@ -65,8 +76,18 @@ struct TVRootHeroBackdrop: View {
             startPoint: .topTrailing,
             endPoint: .bottomLeading
         )
-        .animation(reduceMotion ? nil : .easeInOut(duration: crossfadeDuration), value: tintColor)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: isVisible)
+        // The first tint (cold-entry seed with a prefetch-warmed sample)
+        // snaps in with the artwork; only tint→tint changes crossfade.
+        .animation(
+            reduceMotion || !hasDisplayedArtwork
+                ? nil
+                : .easeInOut(duration: crossfadeDuration),
+            value: tintColor
+        )
+        .animation(
+            reduceMotion || !hasDisplayedArtwork ? nil : .easeInOut(duration: 0.24),
+            value: isVisible
+        )
     }
 
     @ViewBuilder
@@ -96,7 +117,7 @@ struct TVRootHeroBackdrop: View {
                     alignment: .topTrailing
                 )
                 .transition(
-                    reduceMotion
+                    reduceMotion || !hasDisplayedArtwork
                         ? .identity
                         : .opacity.animation(.easeInOut(duration: crossfadeDuration))
                 )

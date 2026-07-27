@@ -22,6 +22,58 @@ final class SiloControlTests: XCTestCase {
         XCTAssertEqual(try roundTrip(.control(mute)), .control(mute))
         XCTAssertEqual(try roundTrip(.control(.playNext)), .control(.playNext))
     }
+
+    func testProtocolNegotiatesHighestCommonVersion() {
+        XCTAssertEqual(SiloControlProtocol.negotiatedVersion(with: [1]), 1)
+        XCTAssertEqual(SiloControlProtocol.negotiatedVersion(with: [1, 2]), 2)
+        XCTAssertNil(SiloControlProtocol.negotiatedVersion(with: [3]))
+    }
+
+    func testRemoteIdentityHandoffMessagesRoundTrip() throws {
+        let offer = SiloControlHandoffOffer(
+            requestId: "request-1",
+            serverId: "server-1",
+            serverURL: "https://silo.example",
+            serverName: "Home",
+            profileId: "profile-1",
+            profileName: "Alex"
+        )
+        let challenge = SiloControlHandoffChallenge(
+            requestId: "request-1",
+            userCode: "ABCD-EFGH",
+            matchCode: "WXYZ",
+            expiresAt: "2026-07-09T20:00:00Z"
+        )
+        let ready = SiloControlHandoffReady(
+            requestId: "request-1",
+            serverId: "server-1",
+            profileId: "profile-1",
+            sessionExpiresAt: "2026-07-10T20:00:00Z",
+            reused: false
+        )
+        let cancel = SiloControlHandoffCancel(
+            requestId: "request-1",
+            reason: "denied",
+            message: "The handoff was denied."
+        )
+
+        XCTAssertEqual(try roundTrip(.handoffOffer(offer)), .handoffOffer(offer))
+        XCTAssertEqual(try roundTrip(.handoffChallenge(challenge)), .handoffChallenge(challenge))
+        XCTAssertEqual(try roundTrip(.handoffReady(ready)), .handoffReady(ready))
+        XCTAssertEqual(try roundTrip(.handoffCancel(cancel)), .handoffCancel(cancel))
+    }
+
+    func testHandoffOfferDecodesWithoutDisplayMetadata() throws {
+        let data = Data(
+            #"{"type":"handoff_offer","v":2,"handoffOffer":{"requestId":"request-1","serverId":"server-1","serverURL":"https://silo.example","profileId":"profile-1"}}"#
+                .utf8
+        )
+        guard case .handoffOffer(let offer) = try JSONDecoder().decode(SiloControlMessage.self, from: data) else {
+            return XCTFail("Expected a handoff offer")
+        }
+        XCTAssertNil(offer.serverName)
+        XCTAssertNil(offer.profileName)
+    }
 }
 
 extension SiloControlTests {

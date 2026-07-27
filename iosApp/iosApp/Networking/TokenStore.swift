@@ -1,5 +1,16 @@
 import Foundation
 
+struct TemporaryAuthScope: Equatable, Sendable {
+    let serverId: String
+    let serverURL: String
+    var accessToken: String
+    var refreshToken: String
+    var profileId: String
+    var profileToken: String
+    let controllerDeviceId: String
+    let expiresAt: Date
+}
+
 /// Persistent, thread-safe store for Continuum session state.
 ///
 /// Mirrors the surface of the shared Kotlin `TokenManager`, but persists
@@ -60,6 +71,9 @@ actor TokenStore {
     private var cachedAccessToken: String?
     private var cachedRefreshToken: String?
     private var cachedProfileToken: String?
+    /// Playback-scoped credentials received by a TV through remote handoff.
+    /// They are process-only and never written into normal per-server slots.
+    private var temporaryScope: TemporaryAuthScope?
     /// Server the current cache was loaded for. Nil means the cache is
     /// invalid and must be re-read on next access.
     private var loadedForServerId: String?
@@ -107,16 +121,32 @@ actor TokenStore {
     }
 
     /// The current active server ID. Empty string if none.
-    func getActiveServerId() -> String { activeServerId }
+    func getActiveServerId() -> String { temporaryScope?.serverId ?? activeServerId }
+
+    func beginTemporaryScope(_ scope: TemporaryAuthScope) {
+        temporaryScope = scope
+    }
+
+    @discardableResult
+    func endTemporaryScope() -> TemporaryAuthScope? {
+        defer { temporaryScope = nil }
+        return temporaryScope
+    }
+
+    func getTemporaryScope() -> TemporaryAuthScope? { temporaryScope }
+
+    func hasTemporaryScope() -> Bool { temporaryScope != nil }
 
     // MARK: - Tokens
 
     func getAccessToken() -> String? {
+        if let temporaryScope { return temporaryScope.accessToken }
         ensureLoaded()
         return cachedAccessToken
     }
 
     func getRefreshToken() -> String? {
+        if let temporaryScope { return temporaryScope.refreshToken }
         ensureLoaded()
         return cachedRefreshToken
     }
@@ -146,6 +176,11 @@ actor TokenStore {
     }
 
     func saveTokens(accessToken: String, refreshToken: String) {
+        if temporaryScope != nil {
+            temporaryScope?.accessToken = accessToken
+            temporaryScope?.refreshToken = refreshToken
+            return
+        }
         guard !activeServerId.isEmpty else { return }
         ensureLoaded()
         cachedAccessToken = accessToken
@@ -159,6 +194,10 @@ actor TokenStore {
     /// stored tokens intact and leaves the active-server registry entry
     /// in place (sign-out keeps the URL / name).
     func clearTokens() {
+        if temporaryScope != nil {
+            temporaryScope = nil
+            return
+        }
         ensureLoaded()
         cachedAccessToken = nil
         cachedRefreshToken = nil
@@ -190,19 +229,29 @@ actor TokenStore {
     // MARK: - Profile
 
     func getProfileId() -> String? {
-        defaults.string(forKey: profileIdDefaultsKey)
+        if let temporaryScope { return temporaryScope.profileId }
+        return defaults.string(forKey: profileIdDefaultsKey)
     }
 
     func setProfileId(_ profileId: String?) {
+        if temporaryScope != nil {
+            if let profileId { temporaryScope?.profileId = profileId }
+            return
+        }
         defaults.set(profileId, forKey: profileIdDefaultsKey)
     }
 
     func getProfileToken() -> String? {
+        if let temporaryScope { return temporaryScope.profileToken }
         ensureLoaded()
         return cachedProfileToken
     }
 
     func setProfileToken(_ token: String?) {
+        if temporaryScope != nil {
+            if let token { temporaryScope?.profileToken = token }
+            return
+        }
         guard !activeServerId.isEmpty else { return }
         ensureLoaded()
         cachedProfileToken = token
@@ -217,7 +266,8 @@ actor TokenStore {
     // MARK: - Server URL
 
     func getServerUrl() -> String {
-        defaults.string(forKey: serverUrlDefaultsKey) ?? ""
+        if let temporaryScope { return temporaryScope.serverURL }
+        return defaults.string(forKey: serverUrlDefaultsKey) ?? ""
     }
 
     func setServerUrl(_ url: String) {

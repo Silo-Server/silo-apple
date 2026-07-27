@@ -43,13 +43,10 @@ class SettingsViewModel {
     var subtitleUsesDeviceAppearanceOverride: Bool = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
     var subtitleMatchesSystemAppearance: Bool = PlayerSettings.shared.subtitleMatchesSystemAppearance
 
-    /// What the player will actually render with — the system caption
-    /// style while Match Device Settings is on, otherwise the edited
-    /// appearance. Drives the preview.
+    /// What the player will actually render with: system captions, the
+    /// device override, or the inherited server appearance.
     var effectiveSubtitleAppearance: SubtitleAppearance {
-        subtitleMatchesSystemAppearance
-            ? PlayerSettings.shared.subtitleSystemAppearance
-            : subtitleAppearance
+        PlayerSettings.shared.effectiveSubtitleAppearance
     }
 
     // Server-backed profile prefs editor. Each editor field is either

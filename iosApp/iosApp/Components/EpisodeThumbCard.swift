@@ -11,11 +11,14 @@ struct EpisodeThumbCard: View {
     let item: SectionItem
     var showProgress: Bool = false
     let action: () -> Void
+    /// tvOS-only shortcut invoked by the remote's Play/Pause button while
+    /// this card owns focus. Select continues to invoke `action`.
+    var playAction: (() -> Void)? = nil
     /// tvOS-only: parent row's focus tracking binding. See
     /// `MediaCard.focusedItemId` for the contract.
     var focusedItemId: FocusState<String?>.Binding? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
-    var onSetWatched: ((Bool) -> Void)? = nil
+    var onSetWatched: ((Bool) async -> Bool)? = nil
 
     @State private var playedOverride: Bool?
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
@@ -290,6 +293,7 @@ struct EpisodeThumbCard: View {
         .buttonStyle(.card)
         .focused($isFocused)
         .applyRowFocus(focusedItemId, itemId: item.contentId)
+        .applyEpisodePlayPauseAction(playAction)
 
         thumbnailButtonWithContext(button)
     }
@@ -315,8 +319,13 @@ struct EpisodeThumbCard: View {
         if let onSetWatched {
             Button {
                 let played = !isPlayed
-                playedOverride = played
-                onSetWatched(played)
+                Task { @MainActor in
+                    playedOverride = played
+                    let succeeded = await onSetWatched(played)
+                    if !succeeded {
+                        playedOverride = nil
+                    }
+                }
             } label: {
                 Label(
                     isPlayed ? "Mark as Unwatched" : "Mark as Watched",
@@ -337,6 +346,15 @@ struct EpisodeThumbCard: View {
 
 #if os(tvOS)
 private extension View {
+    @ViewBuilder
+    func applyEpisodePlayPauseAction(_ action: (() -> Void)?) -> some View {
+        if let action {
+            self.onPlayPauseCommand(perform: action)
+        } else {
+            self
+        }
+    }
+
     /// Mirrors `MediaCard.applyRowFocus` so episode thumbs participate
     /// in the row's `defaultFocus(... priority: .userInitiated)` mechanism.
     @ViewBuilder

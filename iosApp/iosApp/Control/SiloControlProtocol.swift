@@ -1,8 +1,13 @@
 import Foundation
 
 enum SiloControlProtocol {
-    static let version = 1
+    static let version = 2
+    static let supportedVersions = [1, 2]
     static let serviceType = "_silocast._tcp"
+
+    static func negotiatedVersion(with peer: [Int]) -> Int? {
+        supportedVersions.filter(peer.contains).max()
+    }
 }
 
 enum SiloControlPeerRole: String, Codable, Equatable, Sendable {
@@ -31,6 +36,37 @@ struct SiloControlPlaybackRequest: Codable, Equatable, Sendable {
 struct SiloControlLaunchRequest: Codable, Equatable, Sendable {
     let serverId: String
     let playback: SiloControlPlaybackRequest
+}
+
+struct SiloControlHandoffOffer: Codable, Equatable, Sendable {
+    let requestId: String
+    let serverId: String
+    let serverURL: String
+    let serverName: String?
+    let profileId: String
+    /// Display-only label for the verified profile ID. Older peers omit it.
+    let profileName: String?
+}
+
+struct SiloControlHandoffChallenge: Codable, Equatable, Sendable {
+    let requestId: String
+    let userCode: String
+    let matchCode: String
+    let expiresAt: String
+}
+
+struct SiloControlHandoffReady: Codable, Equatable, Sendable {
+    let requestId: String
+    let serverId: String
+    let profileId: String
+    let sessionExpiresAt: String
+    let reused: Bool
+}
+
+struct SiloControlHandoffCancel: Codable, Equatable, Sendable {
+    let requestId: String
+    let reason: String
+    let message: String?
 }
 
 struct SiloControlTrack: Codable, Equatable, Identifiable, Sendable {
@@ -189,6 +225,10 @@ struct SiloControlErrorMessage: Codable, Equatable, Sendable {
 
 enum SiloControlMessage: Equatable, Sendable {
     case hello(SiloControlHello)
+    case handoffOffer(SiloControlHandoffOffer)
+    case handoffChallenge(SiloControlHandoffChallenge)
+    case handoffReady(SiloControlHandoffReady)
+    case handoffCancel(SiloControlHandoffCancel)
     case launch(SiloControlLaunchRequest)
     case control(SiloControlCommand)
     case state(SiloControlPlaybackState)
@@ -202,10 +242,15 @@ extension SiloControlMessage: Codable {
     private enum CodingKeys: String, CodingKey {
         case type, v
         case hello, launch, control, state, error
+        case handoffOffer, handoffChallenge, handoffReady, handoffCancel
     }
 
     private enum Kind: String, Codable {
         case hello
+        case handoffOffer = "handoff_offer"
+        case handoffChallenge = "handoff_challenge"
+        case handoffReady = "handoff_ready"
+        case handoffCancel = "handoff_cancel"
         case launch
         case control
         case state
@@ -222,6 +267,18 @@ extension SiloControlMessage: Codable {
         case .hello(let hello):
             try c.encode(Kind.hello, forKey: .type)
             try c.encode(hello, forKey: .hello)
+        case .handoffOffer(let offer):
+            try c.encode(Kind.handoffOffer, forKey: .type)
+            try c.encode(offer, forKey: .handoffOffer)
+        case .handoffChallenge(let challenge):
+            try c.encode(Kind.handoffChallenge, forKey: .type)
+            try c.encode(challenge, forKey: .handoffChallenge)
+        case .handoffReady(let ready):
+            try c.encode(Kind.handoffReady, forKey: .type)
+            try c.encode(ready, forKey: .handoffReady)
+        case .handoffCancel(let cancel):
+            try c.encode(Kind.handoffCancel, forKey: .type)
+            try c.encode(cancel, forKey: .handoffCancel)
         case .launch(let launch):
             try c.encode(Kind.launch, forKey: .type)
             try c.encode(launch, forKey: .launch)
@@ -249,6 +306,14 @@ extension SiloControlMessage: Codable {
         switch kind {
         case .hello:
             self = .hello(try c.decode(SiloControlHello.self, forKey: .hello))
+        case .handoffOffer:
+            self = .handoffOffer(try c.decode(SiloControlHandoffOffer.self, forKey: .handoffOffer))
+        case .handoffChallenge:
+            self = .handoffChallenge(try c.decode(SiloControlHandoffChallenge.self, forKey: .handoffChallenge))
+        case .handoffReady:
+            self = .handoffReady(try c.decode(SiloControlHandoffReady.self, forKey: .handoffReady))
+        case .handoffCancel:
+            self = .handoffCancel(try c.decode(SiloControlHandoffCancel.self, forKey: .handoffCancel))
         case .launch:
             self = .launch(try c.decode(SiloControlLaunchRequest.self, forKey: .launch))
         case .control:

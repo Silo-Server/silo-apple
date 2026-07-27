@@ -2,7 +2,7 @@
 import SwiftUI
 import UIKit
 
-/// Phone-first sign-in for tvOS (Aurora). The screen leads with the QR
+/// Phone-first sign-in for tvOS. The screen leads with the QR
 /// device-login pairing so the viewer never types on the remote: a bold
 /// hero + numbered steps on the left, a glass panel with the live QR and
 /// match code on the right. An on-screen username/password form is one
@@ -20,6 +20,7 @@ struct TVLoginView: View {
 
     private enum Field: Hashable {
         case usePassword
+        case retryPhone
         case changeServer
         case username
         case password
@@ -49,6 +50,8 @@ struct TVLoginView: View {
             if case .approved = newValue {
                 StartupContentPrefetcher.prefetchProfiles()
                 router.showProfileSelection()
+            } else if case .error = newValue {
+                focusedField = .retryPhone
             }
         }
         .onDisappear { qrVM.cancel() }
@@ -61,11 +64,13 @@ struct TVLoginView: View {
         HStack(spacing: 18) {
             SiloWordmarkView(width: 132)
             if let host = hostLabel {
-                Text(host)
+                Label(host, systemImage: "server.rack")
                     .font(.continuumCaption)
-                    .foregroundStyle(Color.auroraInkTertiary)
+                    .foregroundStyle(Color.auroraInkSecondary)
             }
             Spacer(minLength: 0)
+            AuroraJourneyProgress(currentStep: 2)
+                .frame(width: 430)
         }
     }
 
@@ -89,14 +94,14 @@ struct TVLoginView: View {
 
     private var heroColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
-            AuroraEyebrow(text: "Step 02 — Sign in")
-            Text("Sign in with\nyour \(Text("phone").italic()).")
+            AuroraEyebrow(text: "Account")
+            Text("Scan. Confirm.\nStart watching.")
                 .font(.continuumHeroTitle)
                 .foregroundStyle(Color.auroraInk)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 24)
-            Text("Point your phone at the code, confirm the number, then approve. Nothing to type on the remote.")
+            Text("Open your phone’s Camera and point it at the code. You won’t need to type a password on your TV.")
                 .font(.continuumBody)
                 .foregroundStyle(Color.auroraInkSecondary)
                 .lineSpacing(4)
@@ -105,9 +110,9 @@ struct TVLoginView: View {
                 .padding(.top, 22)
 
             VStack(alignment: .leading, spacing: 22) {
-                AuroraStepRow(number: 1, text: "Scan with your phone’s camera")
-                AuroraStepRow(number: 2, text: "Confirm the matching number")
-                AuroraStepRow(number: 3, text: "Approve on your phone — you’re in")
+                AuroraStepRow(number: 1, text: "Scan the QR code")
+                AuroraStepRow(number: 2, text: "Confirm the code matches")
+                AuroraStepRow(number: 3, text: "Approve this Apple TV")
             }
             .padding(.top, 42)
 
@@ -135,6 +140,10 @@ struct TVLoginView: View {
 
     private var qrPanel: some View {
         VStack(spacing: 28) {
+            Label("Scan with Camera", systemImage: "camera")
+                .font(.continuumSubheadline)
+                .foregroundStyle(Color.auroraInk)
+
             qrCodeArea
 
             if case .awaiting(let session) = qrVM.state {
@@ -152,13 +161,21 @@ struct TVLoginView: View {
                 .frame(width: 300, height: 1)
 
             VStack(spacing: 14) {
+                if case .error = qrVM.state {
+                    Button(action: restartPhoneSignIn) {
+                        Label("Try again", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(AuroraPrimaryButtonStyle())
+                    .focused($focusedField, equals: .retryPhone)
+                }
+
                 Button {
                     showPasswordForm = true
                     focusedField = .username
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "lock.fill").font(.system(size: 20, weight: .medium))
-                        Text("Use a password instead")
+                        Text("Sign in with a password")
                     }
                 }
                 .buttonStyle(AuroraGhostButtonStyle())
@@ -167,7 +184,7 @@ struct TVLoginView: View {
                 Button {
                     router.resetToServerSetup()
                 } label: {
-                    Text("Change server")
+                    Text("Use another server")
                 }
                 .buttonStyle(AuroraGhostButtonStyle())
                 .focused($focusedField, equals: .changeServer)
@@ -206,7 +223,7 @@ struct TVLoginView: View {
             VStack(spacing: 18) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 40, weight: .semibold))
-                    .foregroundStyle(Color.continuumError)
+                    .foregroundStyle(Color.requestRose)
                 Text("Pairing code unavailable")
                     .font(.continuumSubheadline)
                     .foregroundStyle(Color.auroraInk)
@@ -224,8 +241,8 @@ struct TVLoginView: View {
         content()
             .frame(width: Self.qrSize, height: Self.qrSize)
             .padding(18)
-            .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Color.white))
-            .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
+            .background(RoundedRectangle(cornerRadius: 18).fill(Color.white))
+            .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
     }
 
     private func matchCodeTiles(_ code: String) -> some View {
@@ -252,13 +269,13 @@ struct TVLoginView: View {
                     .frame(width: isSep ? sepWidth : tileWidth, height: tileHeight)
                     .background {
                         if !isSep {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            RoundedRectangle(cornerRadius: 10)
                                 .fill(Color.white.opacity(0.06))
                         }
                     }
                     .overlay {
                         if !isSep {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            RoundedRectangle(cornerRadius: 10)
                                 .stroke(Color.white.opacity(0.16), lineWidth: 1)
                         }
                     }
@@ -273,21 +290,28 @@ struct TVLoginView: View {
             topBar
             Spacer(minLength: 28)
             VStack(alignment: .leading, spacing: 24) {
-                AuroraEyebrow(text: "Step 02 — Sign in")
-                Text("Sign in")
+                AuroraEyebrow(text: "Account")
+                Text("Sign in with a password")
                     .font(.continuumTitle)
                     .foregroundStyle(Color.auroraInk)
+                if let host = hostLabel {
+                    Text("Use the account credentials for \(host).")
+                        .font(.continuumBody)
+                        .foregroundStyle(Color.auroraInkSecondary)
+                }
 
                 fieldGroup(label: "Username") {
                     AuroraInputField(
                         text: $loginVM.username,
                         placeholder: "yourname",
+                        inputTitle: "Username",
                         focus: $focusedField,
                         equals: .username,
                         contentType: .username
                     )
                     // Advance to the password field once the username is entered.
-                    .onSubmit { focusedField = .password }
+                    .submitLabel(.next)
+                    .onSubmit { moveFocusAfterTextEntry(to: .password) }
                 }
 
                 fieldGroup(label: "Password") {
@@ -295,13 +319,15 @@ struct TVLoginView: View {
                         AuroraInputField(
                             text: $loginVM.password,
                             placeholder: "••••••",
+                            inputTitle: "Password",
                             focus: $focusedField,
                             equals: .password,
                             isSecure: !showPassword,
                             contentType: .password
                         )
                         // Hand focus to the Sign In button once the password is entered.
-                        .onSubmit { focusedField = .signIn }
+                        .submitLabel(.done)
+                        .onSubmit { moveFocusAfterTextEntry(to: .signIn) }
 
                         Button {
                             showPassword.toggle()
@@ -311,6 +337,7 @@ struct TVLoginView: View {
                         }
                         .buttonStyle(TVAuthIconButtonStyle())
                         .focused($focusedField, equals: .togglePassword)
+                        .disabled(!canFocusPasswordToggle)
                         .accessibilityLabel(showPassword ? "Hide password" : "Show password")
                     }
                 }
@@ -318,10 +345,10 @@ struct TVLoginView: View {
                 if let error = loginVM.error {
                     HStack(spacing: 10) {
                         Image(systemName: "exclamationmark.circle.fill")
-                            .foregroundStyle(Color.continuumError)
+                            .foregroundStyle(Color.requestRose)
                         Text(error)
                             .font(.continuumCaption)
-                            .foregroundStyle(Color.continuumError)
+                            .foregroundStyle(Color.requestRose)
                     }
                     .transition(.opacity)
                 }
@@ -330,7 +357,7 @@ struct TVLoginView: View {
                     guard !loginVM.isLoading else { return }
                     Task { await loginVM.login(router: router) }
                 } label: {
-                    Text(loginVM.isLoading ? "Signing in…" : "Sign In")
+                    Text(loginVM.isLoading ? "Signing in…" : "Sign in")
                 }
                 .buttonStyle(AuroraPrimaryButtonStyle(isLoading: loginVM.isLoading))
                 .focused($focusedField, equals: .signIn)
@@ -343,7 +370,7 @@ struct TVLoginView: View {
                     } label: {
                         HStack(spacing: 10) {
                             Image(systemName: "qrcode").font(.system(size: 20, weight: .medium))
-                            Text("Back to phone sign-in")
+                            Text("Use phone sign-in")
                         }
                     }
                     .buttonStyle(AuroraGhostButtonStyle())
@@ -352,7 +379,7 @@ struct TVLoginView: View {
                     Button {
                         router.resetToServerSetup()
                     } label: {
-                        Text("Change server")
+                        Text("Use another server")
                     }
                     .buttonStyle(AuroraGhostButtonStyle())
                     .focused($focusedField, equals: .changeServer)
@@ -399,6 +426,24 @@ struct TVLoginView: View {
         let minutes = remaining / 60
         let seconds = remaining % 60
         return String(format: "Waiting for approval · %d:%02d", minutes, seconds)
+    }
+
+    private func restartPhoneSignIn() {
+        qrVM.cancel()
+        Task {
+            await qrVM.begin(deviceName: Self.deviceName, devicePlatform: "tvOS")
+        }
+    }
+
+    private var canFocusPasswordToggle: Bool {
+        focusedField == .password || focusedField == .togglePassword
+    }
+
+    private func moveFocusAfterTextEntry(to field: Field) {
+        Task { @MainActor in
+            await Task.yield()
+            focusedField = field
+        }
     }
 
     // MARK: - Constants

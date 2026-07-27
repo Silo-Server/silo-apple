@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "report": {
+    "type": "manual",
+    "captured_at": "2026-07-19T23:45:00Z",
+    "capture_session_id": "run_android_manual_preprofile_006",
+    "app_version": "1.4.2",
+    "app_build": "20841",
+    "platform": "android",
+    "os_version": "15 (API 35)"
+  },
+  "destination": {
+    "server_instance_id": "srv_home_01"
+  },
+  "consent": {
+    "mode": "manual",
+    "notice_version": 1
+  },
+  "device_summary": {
+    "manufacturer": "Google",
+    "model": "Pixel Tablet",
+    "os": "15",
+    "form_factor": "tablet"
+  },
+  "playback_session_ids": [],
+  "log_summary": {
+    "lines": 12,
+    "bytes_gz": 2048,
+    "dropped_lines": 0,
+    "categories": [
+      "lifecycle",
+      "network"
+    ],
+    "debug_logging": false
+  },
+  "archive": {
+    "entries": [
+      "manifest.json",
+      "device.json",
+      "logs.jsonl"
+    ],
+    "bytes": 4096,
+    "uncompressed_bytes": 16384,
+    "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  }
+}

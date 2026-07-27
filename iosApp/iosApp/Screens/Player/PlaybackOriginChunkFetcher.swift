@@ -8,9 +8,20 @@ import OSLog
 /// window connection. Each chunk is stored (and its waiters woken) when the
 /// response body completes — at most one chunk of latency for a probe read.
 final class PlaybackOriginChunkFetcher {
+    /// Interactive detour/probe fetches must fail fast enough for the source
+    /// window or outage coordinator to recover. Long outage survival is owned
+    /// by `PlaybackOriginReconnectPolicy`, not by one blocked range request.
+    static let interactiveRequestTimeoutSeconds: TimeInterval = 4.0
+
     struct Callbacks {
-        /// Store delivered bytes (invoked on the session delegate queue).
-        let store: (Int64, Data, Int64?) -> Void
+        /// Atomically validate and store delivered bytes (invoked on the
+        /// session callback queue). A returned cause rejects the response.
+        let store: (
+            Int64,
+            Data,
+            Int64?,
+            String?
+        ) -> PlaybackOriginReconnectPolicy.EndCause?
         /// Bytes for this range are now cached; wake matching waiters.
         let didStore: (ClosedRange<Int64>) -> Void
         /// First response headers (total length if known).
@@ -30,6 +41,13 @@ final class PlaybackOriginChunkFetcher {
 
     private let originURL: URL
     private let originHeaders: [String: String]
+    /// Resolved for every request and response rather than captured at
+    /// construction: an early seek can create this long-lived fetcher before
+    /// the streaming window publishes its first response validator.
+    private let entityETagProvider: () -> String?
+    /// Resume-capable resources cannot combine independently fetched chunks
+    /// unless the streaming window has established a strong validator.
+    private let requiresEntityValidation: Bool
     private let callbacks: Callbacks
 
     private let lock = NSLock()
@@ -37,9 +55,17 @@ final class PlaybackOriginChunkFetcher {
     private var inFlight: [UUID: Range<Int64>] = [:]
     private var session: URLSession?
 
-    init(originURL: URL, originHeaders: [String: String], callbacks: Callbacks) {
+    init(
+        originURL: URL,
+        originHeaders: [String: String],
+        entityETagProvider: @escaping () -> String? = { nil },
+        requiresEntityValidation: Bool = false,
+        callbacks: Callbacks
+    ) {
         self.originURL = originURL
         self.originHeaders = originHeaders
+        self.entityETagProvider = entityETagProvider
+        self.requiresEntityValidation = requiresEntityValidation
         self.callbacks = callbacks
     }
 
@@ -98,14 +124,19 @@ final class PlaybackOriginChunkFetcher {
         // One keep-alive session for every chunk: per-request sessions pay a
         // fresh TCP+TLS handshake per probe, which is the cost this class
         // exists to avoid.
+        let config = Self.makeSessionConfiguration()
+        let created = URLSession(configuration: config)
+        session = created
+        return created
+    }
+
+    static func makeSessionConfiguration() -> URLSessionConfiguration {
         let config = URLSessionConfiguration.ephemeral
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.urlCache = nil
         config.httpMaximumConnectionsPerHost = 2
-        config.timeoutIntervalForRequest = 30
-        let created = URLSession(configuration: config)
-        session = created
-        return created
+        config.timeoutIntervalForRequest = interactiveRequestTimeoutSeconds
+        return config
     }
 
     private func run(id: UUID, range: Range<Int64>, attempt: Int) {
@@ -123,6 +154,9 @@ final class PlaybackOriginChunkFetcher {
             request.setValue(value, forHTTPHeaderField: key)
         }
         request.setValue("bytes=\(range.lowerBound)-\(range.upperBound - 1)", forHTTPHeaderField: "Range")
+        if range.lowerBound > 0, let entityETag = entityETagProvider() {
+            request.setValue(entityETag, forHTTPHeaderField: "If-Range")
+        }
 
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             self?.handleResult(id: id, range: range, attempt: attempt, data: data, response: response, error: error)
@@ -161,25 +195,65 @@ final class PlaybackOriginChunkFetcher {
         case 206:
             let contentRange = http.value(forHTTPHeaderField: "Content-Range")
             let total = PlaybackOriginStream.totalLength(fromContentRange: contentRange)
-            if let rangeStart = PlaybackOriginStream.rangeStart(fromContentRange: contentRange),
-               rangeStart != range.lowerBound {
-                Self.logger.warning("[CMP-SOURCE-CACHE] chunk range mismatch expected=\(range.lowerBound, privacy: .public) got=\(rangeStart, privacy: .public)")
+            guard let rangeStart = PlaybackOriginStream.rangeStart(fromContentRange: contentRange),
+                  rangeStart == range.lowerBound else {
+                let receivedRange = contentRange ?? "missing"
+                Self.logger.warning(
+                    "[CMP-SOURCE-CACHE] chunk invalid content-range expectedStart=\(range.lowerBound, privacy: .public) received=\(receivedRange, privacy: .public)"
+                )
                 fail(id: id, range: range, cause: .rangeIgnored, statusCode: 206)
                 return
             }
-            callbacks.didReceiveResponse(total)
-            storeAndFinish(id: id, range: range, body: data ?? Data(), total: total)
+            if let cause = entityValidationFailure(for: http) {
+                retryOrFail(
+                    id: id,
+                    range: range,
+                    attempt: attempt,
+                    cause: cause,
+                    statusCode: 206
+                )
+                return
+            }
+            storeAndFinish(
+                id: id,
+                range: range,
+                attempt: attempt,
+                body: data ?? Data(),
+                total: total,
+                responseETag: PlaybackOriginStream.strongETag(
+                    http.value(forHTTPHeaderField: "ETag")
+                )
+            )
         case 200 where range.lowerBound == 0:
+            if let cause = entityValidationFailure(for: http) {
+                retryOrFail(
+                    id: id,
+                    range: range,
+                    attempt: attempt,
+                    cause: cause,
+                    statusCode: 200
+                )
+                return
+            }
             // Origin ignored the Range but the chunk starts at 0, so a
             // truncated prefix of the body is exactly the requested bytes
             // (Data's prefix is a no-copy slice).
             let total = http.expectedContentLength > 0 ? http.expectedContentLength : nil
-            callbacks.didReceiveResponse(total)
             let body = (data ?? Data()).prefix(Int(range.upperBound - range.lowerBound))
-            storeAndFinish(id: id, range: range, body: body, total: total)
+            storeAndFinish(
+                id: id,
+                range: range,
+                attempt: attempt,
+                body: body,
+                total: total,
+                responseETag: PlaybackOriginStream.strongETag(
+                    http.value(forHTTPHeaderField: "ETag")
+                )
+            )
         case 200:
             // Accepting head bytes at a nonzero offset would corrupt the cache.
-            fail(id: id, range: range, cause: .rangeIgnored, statusCode: 200)
+            let cause = entityValidationFailure(for: http) ?? .rangeIgnored
+            fail(id: id, range: range, cause: cause, statusCode: 200)
         case 404:
             let body = data.flatMap { String(data: $0.prefix(4096), encoding: .utf8) }
             if PlaybackOriginStream.isPlaybackSessionMissing(statusCode: 404, body: body) {
@@ -198,14 +272,58 @@ final class PlaybackOriginChunkFetcher {
         }
     }
 
-    private func storeAndFinish(id: UUID, range: Range<Int64>, body: Data, total: Int64?) {
+    private func entityValidationFailure(
+        for response: HTTPURLResponse
+    ) -> PlaybackOriginReconnectPolicy.EndCause? {
+        guard let entityETag = entityETagProvider() else {
+            return requiresEntityValidation ? .rangeIgnored : nil
+        }
+        let responseETagHeader = response.value(forHTTPHeaderField: "ETag")
+        guard let responseETag = PlaybackOriginStream.strongETag(responseETagHeader) else {
+            Self.logger.warning(
+                "[CMP-SOURCE-CACHE] chunk entity-unverifiable expectedETag=\(entityETag, privacy: .public) responseETag=\(responseETagHeader ?? "missing", privacy: .public)"
+            )
+            return .rangeIgnored
+        }
+        guard responseETag == entityETag else {
+            Self.logger.error(
+                "[CMP-SOURCE-CACHE] chunk entity-changed expectedETag=\(entityETag, privacy: .public) responseETag=\(responseETagHeader ?? "missing", privacy: .public)"
+            )
+            return .entityChanged
+        }
+        return nil
+    }
+
+    private func storeAndFinish(
+        id: UUID,
+        range: Range<Int64>,
+        attempt: Int,
+        body: Data,
+        total: Int64?,
+        responseETag: String?
+    ) {
         guard !body.isEmpty else {
             // A 206 with an empty body is an origin bug; a repeat request
             // will not do better.
             fail(id: id, range: range, cause: .prematureEOF, statusCode: nil)
             return
         }
-        callbacks.store(range.lowerBound, body, total)
+        if let cause = callbacks.store(
+            range.lowerBound,
+            body,
+            total,
+            responseETag
+        ) {
+            retryOrFail(
+                id: id,
+                range: range,
+                attempt: attempt,
+                cause: cause,
+                statusCode: nil
+            )
+            return
+        }
+        callbacks.didReceiveResponse(total)
         finish(id: id)
         callbacks.didStore(range.lowerBound...(range.lowerBound + Int64(body.count) - 1))
     }

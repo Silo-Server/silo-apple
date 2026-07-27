@@ -6,6 +6,11 @@ import Libavutil
 import Libswresample
 
 final class AudioDecodePipeline {
+    struct ResamplingOutput {
+        let swrContext: OpaquePointer
+        let config: NegotiatedAudioOutput
+    }
+
     struct DecodedChunk {
         let chunk: DecodedAudioChunk
         let ptsSeconds: Double
@@ -15,10 +20,9 @@ final class AudioDecodePipeline {
     func decodePacket(
         _ packet: UnsafeMutablePointer<AVPacket>,
         codecContext: UnsafeMutablePointer<AVCodecContext>,
-        swrContext: OpaquePointer,
-        config: NegotiatedAudioOutput,
         timeBase: AVRational,
         eagain: Int32,
+        outputForFrame: (UnsafeMutablePointer<AVFrame>) -> ResamplingOutput?,
         onChunk: (DecodedChunk) -> Void
     ) {
         let sendResult = avcodec_send_packet(codecContext, packet)
@@ -35,7 +39,13 @@ final class AudioDecodePipeline {
                 return
             }
             autoreleasepool {
-                if let decoded = resample(frame: frame, swrContext: swrContext, config: config, timeBase: timeBase) {
+                if let output = outputForFrame(frame),
+                   let decoded = resample(
+                       frame: frame,
+                       swrContext: output.swrContext,
+                       config: output.config,
+                       timeBase: timeBase
+                   ) {
                     onChunk(decoded)
                 }
             }

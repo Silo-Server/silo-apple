@@ -2,7 +2,14 @@ import Foundation
 
 @MainActor
 enum StartupContentPrefetcher {
+    // tvOS paints a full-width first row plus the focus marquee's logo and
+    // backdrop on entry, so it needs a deeper artwork warmup than the
+    // phone-sized first screen.
+    #if os(tvOS)
+    private static let maxHomeArtworkURLs = 28
+    #else
     private static let maxHomeArtworkURLs = 12
+    #endif
     private static let maxSectionArtworkURLs = 12
     private static let maxBrowseArtworkURLs = 12
     private static let maxProfileArtworkURLs = 8
@@ -21,6 +28,7 @@ enum StartupContentPrefetcher {
     private static var librarySectionsTasks: [Int: Task<SectionsResponse, Error>] = [:]
     private static var browseFirstPageTasks: [String: Task<CatalogResponse, Error>] = [:]
     private static var profileScopedGeneration = 0
+    private static var homeSectionsGeneration = 0
     private static var profilesGeneration = 0
 
     static func resetProfileScopedPrefetches() {
@@ -87,8 +95,18 @@ enum StartupContentPrefetcher {
         }
     }
 
+    /// Cancels only Home's current single-flight request and prevents any
+    /// waiter on that generation from applying its stale response. The shared
+    /// response cache is intentionally left intact for the caller to update.
+    static func invalidateHomeSectionsInFlight() {
+        homeSectionsGeneration += 1
+        homeSectionsTask?.cancel()
+        homeSectionsTask = nil
+    }
+
     static func fetchHomeSections() async throws -> SectionsResponse {
-        let generation = profileScopedGeneration
+        let profileGeneration = profileScopedGeneration
+        let homeGeneration = homeSectionsGeneration
         let task: Task<SectionsResponse, Error>
         if let homeSectionsTask {
             task = homeSectionsTask
@@ -101,15 +119,18 @@ enum StartupContentPrefetcher {
 
         do {
             let response = try await task.value
-            try validateProfileScopedGeneration(generation)
-            if profileScopedGeneration == generation {
+            try validateProfileScopedGeneration(profileGeneration)
+            try validateHomeSectionsGeneration(homeGeneration)
+            if profileScopedGeneration == profileGeneration,
+               homeSectionsGeneration == homeGeneration {
                 homeSectionsTask = nil
             }
             ResponseCache.shared.set(response, for: CacheKey.homeSections)
             prefetchHomeArtwork(for: response)
             return response
         } catch {
-            if profileScopedGeneration == generation {
+            if profileScopedGeneration == profileGeneration,
+               homeSectionsGeneration == homeGeneration {
                 homeSectionsTask = nil
             }
             throw error
@@ -288,6 +309,11 @@ enum StartupContentPrefetcher {
         switch state {
         case .authenticated:
             prefetchAuthenticatedContent()
+            // The root top bar renders the active profile's avatar right
+            // after launch. Warm the list here (cold launch only) so it
+            // doesn't fill in late; sign-in / profile-selection flows have
+            // just fetched profiles, so they don't need this.
+            prefetchProfiles()
         case .needsProfile:
             prefetchProfiles()
         case .loading, .needsServerSetup, .needsLogin:
@@ -372,6 +398,17 @@ enum StartupContentPrefetcher {
 
         guard !urls.isEmpty else { return }
         PosterImageCache.prefetcher.startPrefetching(with: urls)
+
+        // Warm the marquee's initial tint: tvOS seeds the marquee with the
+        // first row's first item on cold entry, and a cached sample lets the
+        // tint wash paint on the same frame as the backdrop instead of
+        // fading up from the black background once sampling finishes. Other
+        // platforms render no marquee, so skip the fetch + sampling there.
+        #if os(tvOS)
+        if let firstBackdrop = normalizedURL(from: contentSections.first?.items.first?.backdropUrl) {
+            Task { _ = await HeroBackdropPalette.tintColor(for: firstBackdrop) }
+        }
+        #endif
     }
 
     private static func prefetchSectionArtwork(for response: SectionsResponse, maxCount: Int) {
@@ -446,6 +483,12 @@ enum StartupContentPrefetcher {
 
     private static func validateProfileScopedGeneration(_ generation: Int) throws {
         guard profileScopedGeneration == generation else {
+            throw CancellationError()
+        }
+    }
+
+    private static func validateHomeSectionsGeneration(_ generation: Int) throws {
+        guard homeSectionsGeneration == generation else {
             throw CancellationError()
         }
     }

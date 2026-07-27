@@ -24,6 +24,7 @@ struct MobilePlayerControls: View {
     /// Trailing time label mode: remaining ("−12:34") when true, total
     /// duration otherwise. Tap the label to flip — the native player idiom.
     @State private var showsRemainingTime = true
+    @State private var pictureInPicture = PictureInPictureCoordinator.shared
 
 
     var body: some View {
@@ -124,6 +125,39 @@ struct MobilePlayerControls: View {
             titleBlock
 
             Spacer(minLength: 12)
+
+            if viewModel.avPlayerBackend != nil {
+                if pictureInPicture.isSupported {
+                    controlButton(
+                        systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter"
+                    ) {
+                        pictureInPicture.toggle()
+                    }
+                    .disabled(!pictureInPicture.isPossible)
+                    .accessibilityLabel(
+                        pictureInPicture.isActive
+                            ? "Stop Picture in Picture"
+                            : "Start Picture in Picture"
+                    )
+                }
+
+                // Only shown where the receiver could actually fetch the
+                // media. On routes whose URL is authenticated by a request
+                // header, AirPlay video would leave the TV on a 401.
+                if viewModel.supportsExternalPlayback {
+                    AirPlayRoutePicker { isPresentingRoutes in
+                        // The route sheet is a UIKit presentation the auto-hide
+                        // timer knows nothing about; pin the controls so it can't
+                        // dismantle the picker mid-selection.
+                        if isPresentingRoutes {
+                            viewModel.pinControlsVisible()
+                        } else {
+                            viewModel.resumeAutoHide()
+                        }
+                    }
+                    .frame(width: 44, height: 44)
+                }
+            }
         }
     }
 

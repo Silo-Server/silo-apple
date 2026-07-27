@@ -8,6 +8,375 @@ import UIKit
 import AppKit
 #endif
 
+struct AVPlayerSeekDeadlineState {
+    private var nextID: UInt64 = 0
+    private(set) var activeID: UInt64?
+
+    mutating func begin() -> UInt64 {
+        nextID &+= 1
+        if nextID == 0 { nextID = 1 }
+        activeID = nextID
+        return nextID
+    }
+
+    mutating func complete(_ id: UInt64) -> Bool {
+        guard activeID == id else { return false }
+        activeID = nil
+        return true
+    }
+
+    mutating func cancel() {
+        activeID = nil
+    }
+}
+
+struct LoopbackItemDeathRecoveryState {
+    enum Action: Equatable {
+        case waitForConfirmation
+        case reload(attempt: Int)
+        case escalate
+    }
+
+    static let matchingPositionToleranceSeconds = 2.0
+    static let evidenceRequired = 2
+    static let maximumReloads = 1
+
+    private var anchorPosition: Double?
+    private var evidence = 0
+    private var reloads = 0
+
+    static func isItemDeath(statusCode: Int?, errorDescription: String) -> Bool {
+        statusCode == -12889
+            || statusCode == -15628
+            || errorDescription.contains("-12889")
+            || errorDescription.contains("No response for media file")
+    }
+
+    mutating func record(
+        position: Double,
+        evidenceWeight: Int,
+        userPaused: Bool
+    ) -> Action {
+        guard !userPaused else { return .waitForConfirmation }
+        let normalized = position.isFinite ? max(0, position) : 0
+        if let anchorPosition,
+           abs(anchorPosition - normalized) > Self.matchingPositionToleranceSeconds {
+            evidence = 0
+            reloads = 0
+        }
+        anchorPosition = normalized
+        evidence += max(evidenceWeight, 1)
+        guard evidence >= Self.evidenceRequired else { return .waitForConfirmation }
+        evidence = 0
+        return confirm(position: normalized, userPaused: userPaused)
+    }
+
+    mutating func confirm(position: Double, userPaused: Bool) -> Action {
+        guard !userPaused else { return .waitForConfirmation }
+        let normalized = position.isFinite ? max(0, position) : 0
+        if let anchorPosition,
+           abs(anchorPosition - normalized) > Self.matchingPositionToleranceSeconds {
+            reloads = 0
+        }
+        anchorPosition = normalized
+        evidence = 0
+        guard reloads < Self.maximumReloads else { return .escalate }
+        reloads += 1
+        return .reload(attempt: reloads)
+    }
+
+    mutating func reset() {
+        anchorPosition = nil
+        evidence = 0
+        reloads = 0
+    }
+}
+
+/// Confirms AVFoundation's terminal-item failure mode without mistaking an
+/// intentional pause for a dead item. A failed item can remain `.readyToPlay`
+/// while AVPlayer parks at rate 0 / `.paused`, so item status alone is not a
+/// useful health signal. The explicit play-intent latch is authoritative.
+struct LoopbackItemDeathConfirmationState {
+    enum Trigger: String, Equatable {
+        case failedToEnd = "failed_to_end"
+        case unexpectedPause = "unexpected_pause"
+    }
+
+    enum TransportState: Equatable {
+        case paused
+        case waiting
+        case playing
+        case unknown
+    }
+
+    enum Action: Equatable {
+        case none
+        case reassertPlay
+        case confirmed(trigger: Trigger)
+    }
+
+    static let confirmationSeconds = 3.0
+    static let progressCancellationThresholdSeconds = 0.5
+
+    private struct Candidate {
+        let trigger: Trigger
+        let position: Double
+        let startedAt: Double
+    }
+
+    private var candidate: Candidate?
+
+    mutating func noteExplicitFailure(
+        position: Double,
+        now: Double,
+        playbackEstablished: Bool,
+        userPaused: Bool
+    ) {
+        guard playbackEstablished, !userPaused else {
+            candidate = nil
+            return
+        }
+        candidate = Candidate(
+            trigger: .failedToEnd,
+            position: normalized(position),
+            startedAt: now
+        )
+    }
+
+    mutating func evaluate(
+        now: Double,
+        position: Double,
+        playbackEstablished: Bool,
+        userPaused: Bool,
+        transportState: TransportState,
+        recoverySuppressed: Bool,
+        mediaAvailableAhead: Bool
+    ) -> Action {
+        guard playbackEstablished, !userPaused, !recoverySuppressed else {
+            candidate = nil
+            return .none
+        }
+
+        let currentPosition = normalized(position)
+        if let candidate {
+            if abs(currentPosition - candidate.position)
+                > Self.progressCancellationThresholdSeconds {
+                self.candidate = nil
+                return .none
+            }
+            if candidate.trigger == .unexpectedPause, transportState != .paused {
+                self.candidate = nil
+                return .none
+            }
+            guard now - candidate.startedAt >= Self.confirmationSeconds else {
+                return .none
+            }
+            self.candidate = nil
+            if candidate.trigger == .failedToEnd, transportState == .playing {
+                return .none
+            }
+            return .confirmed(trigger: candidate.trigger)
+        }
+
+        guard transportState == .paused, mediaAvailableAhead else { return .none }
+        candidate = Candidate(
+            trigger: .unexpectedPause,
+            position: currentPosition,
+            startedAt: now
+        )
+        return .reassertPlay
+    }
+
+    mutating func resetCandidate() {
+        candidate = nil
+    }
+
+    mutating func reset() {
+        candidate = nil
+    }
+
+    private func normalized(_ position: Double) -> Double {
+        position.isFinite ? max(0, position) : 0
+    }
+}
+
+/// Transport commands issued outside the app: the AirPlay receiver's remote,
+/// or the PiP window's play/pause button. Both mutate `AVPlayer` directly
+/// instead of calling the backend, so the only evidence is a
+/// `timeControlStatus` transition.
+///
+/// That signal is noisy — the player also stops and starts on its own during
+/// startup, seeks, stalls, and at end of file — so a transition only counts as
+/// a command when nothing else explains it. Reading a stall as a receiver
+/// pause is the expensive mistake: it latches `isUserPaused`, and every
+/// loopback stall-recovery path is gated on `!isUserPaused`, so the session
+/// would wedge with no way back.
+enum AVPlayerSystemTransportIntent: Equatable {
+    case play
+    case pause
+
+    /// Everything the backend knows about why the transport state may have
+    /// moved without us asking.
+    struct Context {
+        let timeControlStatus: AVPlayer.TimeControlStatus
+        let isUserPaused: Bool
+        /// AirPlay handoff or PiP owns the transport UI right now.
+        let systemControlsAreActive: Bool
+        /// The first KVO delivery reports the state the player was already in
+        /// (`.paused`, pre-roll) rather than a transition, so it carries no
+        /// intent.
+        let isInitialObservation: Bool
+        /// False until the initial start/resume seek has been issued; before
+        /// that the player is legitimately parked at rate 0.
+        let hasStartedPlayback: Bool
+        let isSeekInFlight: Bool
+        /// The loopback route runs with `automaticallyWaitsToMinimizeStalling`
+        /// off, so a drained buffer stops the player outright.
+        let isBufferStarved: Bool
+        let hasReachedEnd: Bool
+    }
+
+    static func resolve(_ context: Context) -> Self? {
+        guard context.systemControlsAreActive,
+              !context.isInitialObservation,
+              context.hasStartedPlayback,
+              !context.isSeekInFlight,
+              !context.hasReachedEnd else { return nil }
+        switch context.timeControlStatus {
+        case .paused:
+            guard !context.isBufferStarved else { return nil }
+            return context.isUserPaused ? nil : .pause
+        case .waitingToPlayAtSpecifiedRate, .playing:
+            return context.isUserPaused ? .play : nil
+        default:
+            return nil
+        }
+    }
+}
+
+struct AVPlayerAudioSessionActivationState {
+    struct Request: Equatable {
+        let id: UInt64
+        let needsActivation: Bool
+    }
+
+    private var nextID: UInt64 = 0
+    private var active = false
+    private var activationPending = false
+
+    mutating func beginActivation() -> Request {
+        nextID &+= 1
+        if nextID == 0 { nextID = 1 }
+        let request = Request(id: nextID, needsActivation: !active)
+        activationPending = request.needsActivation
+        return request
+    }
+
+    mutating func finishActivation(id: UInt64, succeeded: Bool) -> Bool {
+        guard nextID == id else { return false }
+        activationPending = false
+        if succeeded { active = true }
+        return true
+    }
+
+    mutating func cancelAndDeactivate() -> Bool {
+        nextID &+= 1
+        if nextID == 0 { nextID = 1 }
+        let shouldDeactivate = active || activationPending
+        active = false
+        activationPending = false
+        return shouldDeactivate
+    }
+
+    func isCurrent(id: UInt64) -> Bool {
+        nextID == id
+    }
+}
+
+/// Serializes the blocking AVAudioSession category/activation calls away
+/// from the main thread. Generation tracking prevents an activation that
+/// finishes after teardown or source replacement from attaching a stale item.
+final class AVPlayerAudioSessionCoordinator: @unchecked Sendable {
+    typealias Operation = () throws -> Void
+
+    private let workQueue: DispatchQueue
+    private let callbackQueue: DispatchQueue
+    private let activation: Operation
+    private let deactivation: Operation
+    private let lock = NSLock()
+    private var state = AVPlayerAudioSessionActivationState()
+
+    /// One serial queue shared by every coordinator: AVAudioSession is a
+    /// process-wide singleton, so an old backend's teardown deactivation and
+    /// a new backend's activation must keep their submission order. Separate
+    /// per-instance queues would let a stale deactivation land after the next
+    /// playback's activation and silently kill its audio route.
+    private static let sharedWorkQueue = DispatchQueue(
+        label: "org.siloserver.silo.avplayer-audio-session",
+        qos: .userInitiated
+    )
+
+    init(
+        workQueue: DispatchQueue = AVPlayerAudioSessionCoordinator.sharedWorkQueue,
+        callbackQueue: DispatchQueue = .main,
+        activation: @escaping Operation,
+        deactivation: @escaping Operation
+    ) {
+        self.workQueue = workQueue
+        self.callbackQueue = callbackQueue
+        self.activation = activation
+        self.deactivation = deactivation
+    }
+
+    func activate(completion: @escaping (Error?) -> Void) {
+        let request = locked { state.beginActivation() }
+        guard request.needsActivation else {
+            callbackQueue.async { [weak self] in
+                guard self?.isCurrent(id: request.id) == true else { return }
+                completion(nil)
+            }
+            return
+        }
+
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            let error: Error?
+            do {
+                try self.activation()
+                error = nil
+            } catch let activationError {
+                error = activationError
+            }
+            let shouldDeliver = self.locked {
+                self.state.finishActivation(id: request.id, succeeded: error == nil)
+            }
+            guard shouldDeliver else { return }
+            callbackQueue.async { [weak self] in
+                guard self?.isCurrent(id: request.id) == true else { return }
+                completion(error)
+            }
+        }
+    }
+
+    func deactivate() {
+        let shouldDeactivate = locked { state.cancelAndDeactivate() }
+        guard shouldDeactivate else { return }
+        workQueue.async { [deactivation] in
+            try? deactivation()
+        }
+    }
+
+    private func isCurrent(id: UInt64) -> Bool {
+        locked { state.isCurrent(id: id) }
+    }
+
+    private func locked<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+}
+
 final class AVPlayerBackend {
     enum SourceStrategy {
         case remoteHLS(url: URL, headers: [String: String])
@@ -45,6 +414,7 @@ final class AVPlayerBackend {
     private static let loopbackStartupStallWindowSeconds: TimeInterval = 6.0
     private static let loopbackStartupAbsoluteBackstopSeconds: TimeInterval = 60.0
     private static let loopbackSeekWindowTolerance: Double = 0.25
+    private static let seekCompletionDeadlineSeconds: TimeInterval = 15.0
 
     /// Default forward buffer applied once the initial-video-display gate
     /// releases. Used when the source bitrate is unknown. Keep this modest on
@@ -57,8 +427,8 @@ final class AVPlayerBackend {
     /// AVPlayer believes it is playing but the playhead has not advanced for
     /// `playheadWatchdogStallSeconds` while generated media is available ahead,
     /// reanchor the loopback. After `playheadWatchdogMaxReanchors` failed
-    /// attempts inside `playheadWatchdogReanchorWindowSeconds`, escalate to a
-    /// route fallback instead of reanchoring forever.
+    /// attempts inside `playheadWatchdogReanchorWindowSeconds`, rebuild the
+    /// complete Silo loopback pipeline at the rendered clock.
     private static let playheadWatchdogTickSeconds: TimeInterval = 1.0
     private static let playheadWatchdogStallSeconds: Double = 10.0
     /// Kept above the reanchor path's own steady-state `generatedAhead`
@@ -70,9 +440,9 @@ final class AVPlayerBackend {
     /// ahead of the playhead, so a *producer-dead* stall (e.g. the spill
     /// gate deadlock) never qualified and the session froze forever. If
     /// AVPlayer has been waiting on an empty buffer this long while the
-    /// store served nothing, the loopback session is unrecoverable — fall
-    /// back to the Compatibility route instead. The serve-quiet guard keeps
-    /// ordinary slow-WAN rebuffers (segments still flowing) from tripping it.
+    /// store served nothing, rebuild the local pipeline at the rendered
+    /// clock. The serve-quiet guard keeps ordinary slow-WAN rebuffers
+    /// (segments still flowing) from tripping it.
     private static let playheadWatchdogStarvationEscalateSeconds: Double = 30.0
     private static let playheadWatchdogStarvationServeQuietSeconds: Double = 15.0
     private static let generatedHLSSpillBudgetBytes: Int64 = 4 * 1024 * 1024 * 1024
@@ -117,17 +487,21 @@ final class AVPlayerBackend {
         )
     }
 
-    /// Adaptive forward-buffer target for the local DV loopback. Aims for
-    /// a fixed resident-memory target while clamping the duration into a
-    /// sensible window so very high-bitrate sources don't blow tvOS RAM and
-    /// very low-bitrate sources still keep enough cushion for transient WAN
-    /// dips.
+    /// Forward-buffer target for the local DV loopback. EVENT playlists need
+    /// a bitrate-aware live-edge cushion. Static VOD uses a small explicit
+    /// AVPlayer target and gets resilience from its larger disk-backed
+    /// producer/cache window.
     static func loopbackSteadyStateForwardBufferTarget(
         forBitsPerSecond bitrateBps: Double?,
         targetDuration: Double? = nil,
         longestSegmentDuration: Double? = nil,
+        servingMode: LoopbackServingMode = .event,
         constrainedMemoryDevice: Bool? = nil
     ) -> Double {
+        if servingMode == .vodPlan {
+            return loopbackVODForwardBufferTarget(targetDuration: targetDuration)
+        }
+
         let constrainedMemoryDevice = constrainedMemoryDevice ?? Self.isConstrainedMemoryDevice
         let liveEdgeFloor = loopbackLiveEdgeForwardBufferFloor(
             targetDuration: targetDuration,
@@ -146,6 +520,14 @@ final class AVPlayerBackend {
         // Clamp: avoid underrun on jitter while capping memory and seek-back
         // churn. Lower-memory Apple TVs get a tighter window.
         return min(maxSeconds, max(minSeconds, max(computed, liveEdgeFloor)))
+    }
+
+    /// Static VOD keeps AVPlayer's explicit target at one nominal segment.
+    /// Resilience comes from the disk-backed producer/cache window instead:
+    /// AVPlayer stays paced while ten forward segments remain immediately
+    /// fetchable. This mirrors AetherEngine's proven loopback-HLS policy.
+    private static func loopbackVODForwardBufferTarget(targetDuration: Double?) -> Double {
+        loopbackStartupForwardBuffer
     }
 
     private static func loopbackLiveEdgeForwardBufferFloor(
@@ -177,6 +559,7 @@ final class AVPlayerBackend {
     var onDurationChange: ((Double) -> Void)?
     var onPauseChange: ((Bool) -> Void)?
     var onFileLoaded: (() -> Void)?
+    var onFirstFrame: ((Int) -> Void)?
     var onError: ((String) -> Void)?
     var onEndOfFile: (() -> Void)?
     var onBufferingChange: ((Bool) -> Void)?
@@ -185,20 +568,81 @@ final class AVPlayerBackend {
     var onTracksChange: (([PlayerTrack]) -> Void)?
     var onChaptersChange: (([PlayerChapterInfo]) -> Void)?
     var onTimelineOffsetChange: ((Double) -> Void)?
+    /// AirPlay video handoff started (`true`) or ended (`false`). Bound for
+    /// the player's whole lifetime rather than per item, because the route can
+    /// change while the app is backgrounded and no item-scoped event reports
+    /// it.
+    var onExternalPlaybackActiveChange: ((Bool) -> Void)?
+    /// Whether the current route can hand video to an AirPlay receiver at all.
+    /// Drives the visibility of the route picker: offering it on a route the
+    /// receiver cannot fetch just produces a dead TV screen.
+    var onExternalPlaybackAllowedChange: ((Bool) -> Void)?
+    /// An AirPlay handoff was attempted but no LAN address the receiver could
+    /// reach exists. Playback stays on this device; the shell tells the user.
+    var onExternalPlaybackUnavailable: (() -> Void)?
+    /// PiP controls mutate `AVPlayer` directly instead of calling this
+    /// backend's `play()` / `pause()` methods. The shell supplies PiP ownership
+    /// here so transport KVO can reconcile those changes into Silo's intent.
+    var isPictureInPictureActiveProvider: (() -> Bool)?
     var onSidecarTracksRegistered: (([SidecarSubtitleDescriptor]) -> Void)?
     var onSubtitleLoadStatusChange: ((SubtitleSlot, SubtitleLoadStatus) -> Void)?
-    /// Raised when the local DV loopback playhead watchdog has exhausted its
-    /// reanchor attempts and the route should be degraded (e.g. to the
-    /// Compatibility route) rather than left frozen. The argument is a short
-    /// reason token for logging/telemetry.
-    var onLoopbackStallUnrecoverable: ((String) -> Void)?
     /// Temporary [CMP-MEM]: source-proxy cache stats for the periodic
     /// footprint log line. The proxy is owned by PlayerViewModel, so it is
     /// injected as a closure rather than held here.
     var proxyStatsProvider: (() -> PlaybackSourceProxyStats?)?
+    /// Live query into the source proxy's outage state; handed to writers so
+    /// their blocking source reads can park through a flagged outage. Owned
+    /// by PlayerViewModel like `proxyStatsProvider`.
+    var sourceOutageStateProvider: (() -> Bool)?
+    /// While true (view-model-flagged origin outage ride-through), the
+    /// playhead watchdog must not rebuild the pipeline for starvation or
+    /// reanchor exhaustion: the route isn't broken, the network is, and the
+    /// outage budget owns the terminal decision.
+    private var externalStallSuppressionActive = false
+
+    func setExternalStallSuppression(_ active: Bool) {
+        guard externalStallSuppressionActive != active else { return }
+        externalStallSuppressionActive = active
+        cmpLog("[CMP-OUTAGE] watchdog suppression \(active ? "on" : "off")")
+    }
+
+    /// Proactive recovery when the view model reports an origin outage has
+    /// ended. An item whose segment requests died during the outage does not
+    /// retry them on its own: the transport and producer recover, but the
+    /// playhead sits waiting on an empty buffer until the (no longer
+    /// suppressed) starvation watchdog degrades the route — even though
+    /// nothing is broken anymore (sim-validated 2026-07-07). Run the same
+    /// stall recovery the playhead watchdog would, immediately.
+    @MainActor
+    func kickPlaybackAfterExternalStallCleared() {
+        guard !isDisposed,
+              let item = currentItem,
+              case .some(.siloLoopback(let spec)) = currentSourceStrategy,
+              !isUserPaused,
+              avPlayer.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
+        let bufferedAhead = bufferedAheadSeconds(for: item, referenceTime: currentTime()) ?? 0
+        guard bufferedAhead < 2.0 else { return }
+        cmpLog("[CMP-OUTAGE] post-outage playback kick pos=\(currentTime()) bufAhead=\(bufferedAhead)")
+        if spec.servingMode == .vodPlan {
+            performVODStallRecovery(attempt: 1, frozenPosition: currentTime())
+        } else {
+            recoverLocalLoopbackStallIfNeeded(item: item, requireBufferedEdge: false, reason: "post_outage_kick")
+        }
+    }
 
     let avPlayer = AVPlayer()
-    weak var subtitleOverlay: SubtitleOverlayView?
+    private let subtitleOverlayAttachments = SubtitleOverlayAttachmentRegistry()
+    var subtitleOverlay: SubtitleOverlayView? {
+        subtitleOverlayAttachments.currentOverlay
+    }
+
+    func attachSubtitleOverlay(_ overlay: SubtitleOverlayView, owner: AnyObject) {
+        subtitleOverlayAttachments.attach(owner: owner, overlay: overlay)
+    }
+
+    func detachSubtitleOverlay(owner: AnyObject) {
+        subtitleOverlayAttachments.detach(owner: owner)
+    }
     var subtitleRendererForOverlay: SubtitleRenderer? {
         subtitleSession?.underlyingRenderer
     }
@@ -221,68 +665,37 @@ final class AVPlayerBackend {
     private var hasSeekedToStart = false
     private var isDisposed = false
     private var isSeekPending = false
+    private var seekDeadlineState = AVPlayerSeekDeadlineState()
+    private var seekDeadlineWorkItem: DispatchWorkItem?
+    private enum SeekDeadlineKind {
+        case interactive(mediaTarget: Double)
+        case initial(mediaTarget: Double)
+    }
+    /// Kind of the seek behind the active deadline generation. When a new
+    /// deadline supersedes an in-flight `.initial` seek, its AVPlayer
+    /// completion arrives against a stale generation and is ignored, so the
+    /// supersede/cancel paths must release `isInitialSeekInFlight` here —
+    /// nothing else will, and `attemptInitialPlaybackStart` gates on it.
+    private var activeSeekDeadlineKind: SeekDeadlineKind?
+    private var loopbackItemDeathRecoveryState = LoopbackItemDeathRecoveryState()
+    private var loopbackItemDeathConfirmationState = LoopbackItemDeathConfirmationState()
     private var isInitialSeekInFlight = false
     private var initialSeekRetryCount = 0
     private var subtitleSession: SubtitleSession?
     private var embeddedSubtitleExtractor: AVPlayerEmbeddedSubtitleExtractor?
     /// Change-detection key for the overlay's bitmap cue layers: overlay
-    /// size, the identity of each active cue image, and the
-    /// appearance-derived style. The display link pumps at vsync rate but
-    /// bitmap cues change on the order of seconds, so all layer work is
-    /// skipped while the key is unchanged.
+    /// size and the identity of each active cue image. The display link
+    /// pumps at vsync rate but bitmap cues change on the order of
+    /// seconds, so all layer work is skipped while the key is unchanged.
+    ///
+    /// Bitmap cues (PGS/DVD) render exactly as authored — position, size,
+    /// and background are part of the source pixels, so the user's text
+    /// appearance preferences deliberately do not apply here.
     private struct BitmapCueRenderKey: Equatable {
         let videoRect: CGRect
         let images: [ObjectIdentifier]
-        let style: BitmapCueStyle
     }
     private var lastBitmapCueRenderKey: BitmapCueRenderKey?
-    /// The subset of the user's subtitle appearance that applies to
-    /// pre-rendered bitmap cues (PGS/DVD). Font, text color, and outline
-    /// are baked into the source pixels and cannot be restyled without
-    /// OCR; size, vertical placement, and a backing box can be honored —
-    /// matching what the styled-text path gives the same preferences.
-    private struct BitmapCueStyle: Equatable {
-        /// Scale relative to authored size, from the font-size ladder
-        /// (user preset / default preset).
-        let scale: CGFloat
-        /// Vertical placement preset (bottom keeps authored positions).
-        let position: SubtitlePositionPreset
-        /// Backing-box color hex + opacity when the background style is
-        /// `.box`; nil leaves the authored transparent background.
-        let boxColorHex: String?
-        let boxOpacity: Int
-
-        /// Authored-size calibration: Blu-ray PGS is typically rendered a
-        /// notch larger than the text ladder's default rung, so authored
-        /// size (ladder ratio 1.0) read bigger than SRT at the same
-        /// preset. Shrink the whole bitmap ladder so the default preset
-        /// visually matches the text render.
-        private static let authoredSizeCompensation: CGFloat = 0.85
-
-        static func from(_ appearance: SubtitleAppearance?) -> BitmapCueStyle {
-            guard let sanitized = appearance?.sanitized() else {
-                return BitmapCueStyle(
-                    scale: authoredSizeCompensation,
-                    position: .bottom,
-                    boxColorHex: nil,
-                    boxOpacity: 0
-                )
-            }
-            let defaultPoints = SubtitleAppearance.default.fontSize.pointSize
-            let scale = authoredSizeCompensation * (defaultPoints > 0
-                ? CGFloat(sanitized.fontSize.pointSize / defaultPoints)
-                : 1)
-            let box = sanitized.backgroundStyle == .box
-            return BitmapCueStyle(
-                scale: scale,
-                position: sanitized.position,
-                boxColorHex: box ? sanitized.backgroundColor : nil,
-                boxOpacity: box ? sanitized.backgroundOpacity : 0
-            )
-        }
-    }
-    /// Last appearance pushed by the view model; feeds `BitmapCueStyle`.
-    private var bitmapCueAppearance: SubtitleAppearance?
     /// Whether a libass-composited frame may still be on the text layer.
     /// Lets the pump clear the layer exactly once on a text → bitmap
     /// transition instead of dispatching a no-op clear to main every vsync
@@ -353,6 +766,8 @@ final class AVPlayerBackend {
     private var segmentWriter: LoopbackSegmentWriter?
     private var segmentServer: LoopbackSegmentServer?
     private var segmentStore: LoopbackSegmentStore?
+    private var loopbackPlaylistName: String?
+    private var loopbackPlaybackUsesExternalURL = false
     private var sessionDirectory: URL?
     private var activeLoopbackSessionID: String?
     private var loopbackGeneration: UInt64 = 0
@@ -368,9 +783,38 @@ final class AVPlayerBackend {
     private var watchdogReanchorWindowStartWall: CFTimeInterval = 0
     private var didEscalateLoopbackStall = false
     private var isUserPaused = false
+    /// Guards `reconcileSystemTransportIntent` against the `.initial` KVO
+    /// delivery, which reports pre-roll state rather than a transport command.
+    private var hasObservedTimeControlStatus = false
+    /// True between `AVPlayerItemDidPlayToEndTime` and the next load or seek.
+    /// The player parks at rate 0 there, which is not a receiver pause.
+    private var hasReachedItemEnd = false
     private var preserveSessionDirectory = false
-    private var audioSessionActive = false
     private var isPreservingTVDisplayCriteriaForReload = false
+
+    private let audioSessionCoordinator: AVPlayerAudioSessionCoordinator = {
+        #if os(macOS)
+        AVPlayerAudioSessionCoordinator(activation: {}, deactivation: {})
+        #else
+        AVPlayerAudioSessionCoordinator(
+            activation: {
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.playback, mode: .moviePlayback, options: [])
+                // Routing preference, not a claim: tells the system this app
+                // plays multichannel content so route negotiation (HDMI/AirPlay)
+                // prefers a multichannel-capable path. AetherEngine sets the
+                // same before its Atmos passthrough; PlayerCore already does.
+                try? session.setSupportsMultichannelContent(true)
+                try session.setActive(true, options: [])
+            },
+            deactivation: {
+                try AVAudioSession.sharedInstance().setActive(
+                    false, options: [.notifyOthersOnDeactivation]
+                )
+            }
+        )
+        #endif
+    }()
 
     private var statusObs: NSKeyValueObservation?
     private var rateObs: NSKeyValueObservation?
@@ -383,9 +827,33 @@ final class AVPlayerBackend {
     private var durationObs: NSKeyValueObservation?
     private var loadedRangesObs: NSKeyValueObservation?
     private var seekableRangesObs: NSKeyValueObservation?
+    private var externalPlaybackObs: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
 
     init() {
+        // Stays off until a route that the receiver can actually fetch is
+        // loaded; `applyExternalPlaybackPolicy(for:)` opens it per strategy.
+        avPlayer.allowsExternalPlayback = false
+        #if !os(macOS)
+        // Mirrored-display handoff is an iOS/tvOS concept; macOS has no
+        // equivalent and the property is unavailable there.
+        avPlayer.usesExternalPlaybackWhileExternalScreenIsActive = false
+        #endif
+        // Player-scoped, not item-scoped: `detachPerItemObservers()` runs on
+        // every reanchor/quality switch and would otherwise blind us to route
+        // changes mid-session. Invalidated in `dispose()`.
+        externalPlaybackObs = avPlayer.observe(
+            \.isExternalPlaybackActive,
+            options: [.new]
+        ) { [weak self] player, _ in
+            let active = player.isExternalPlaybackActive
+            Task { @MainActor [weak self] in
+                guard let self, !self.isDisposed else { return }
+                self.updateLoopbackURLForExternalPlayback(active)
+                self.onExternalPlaybackActiveChange?(active)
+            }
+        }
+
         let session = SubtitleSession()
         session.onSidecarTracksRegistered = { [weak self] descriptors in
             self?.onSidecarTracksRegistered?(descriptors)
@@ -462,12 +930,146 @@ final class AVPlayerBackend {
 
     func pause() {
         isUserPaused = true
+        loopbackItemDeathConfirmationState.resetCandidate()
         onPauseChange?(true)
         avPlayer.pause()
     }
 
+    @discardableResult
+    private func reconcileSystemTransportIntent(
+        from player: AVPlayer,
+        isInitialObservation: Bool
+    ) -> Bool {
+        let systemControlsAreActive = player.isExternalPlaybackActive
+            || isPictureInPictureActiveProvider?() == true
+        guard let intent = AVPlayerSystemTransportIntent.resolve(
+            .init(
+                timeControlStatus: player.timeControlStatus,
+                isUserPaused: isUserPaused,
+                systemControlsAreActive: systemControlsAreActive,
+                isInitialObservation: isInitialObservation,
+                hasStartedPlayback: hasSeekedToStart,
+                isSeekInFlight: isSeekPending || isInitialSeekInFlight,
+                isBufferStarved: currentItem?.isPlaybackBufferEmpty == true,
+                hasReachedEnd: hasReachedItemEnd
+            )
+        ) else { return false }
+
+        switch intent {
+        case .play:
+            Self.logger.info("System transport requested play")
+            play()
+        case .pause:
+            Self.logger.info("System transport requested pause")
+            pause()
+        }
+        return true
+    }
+
     func prepareToBackground() {
         pause()
+    }
+
+    var isExternalPlaybackActive: Bool {
+        avPlayer.isExternalPlaybackActive
+    }
+
+    var isExternalPlaybackAllowed: Bool {
+        avPlayer.allowsExternalPlayback
+    }
+
+    private func applyExternalPlaybackPolicy(for strategy: SourceStrategy) {
+        let allowed: Bool
+        switch strategy {
+        case .siloLoopback:
+            // Only the iOS loopback server is LAN-reachable; elsewhere it
+            // binds to 127.0.0.1 and no receiver could ever fetch it.
+            #if os(iOS)
+            allowed = true
+            #else
+            allowed = false
+            #endif
+        case .remoteHLS(let url, let headers), .remoteDirect(let url, let headers):
+            allowed = Self.isReceiverFetchableAsset(url: url, headers: headers)
+        }
+        setExternalPlaybackAllowed(allowed)
+    }
+
+    /// Can an AirPlay receiver fetch this asset itself? It gets the URL and
+    /// nothing else — none of the asset's HTTP headers, and its own network
+    /// stack. Two disqualifiers, both of which occur on direct-play routes:
+    ///
+    /// - Header authentication. Silo's `/api/v1/...` stream URLs carry a
+    ///   bearer token in `Authorization`, and the receiver's fetch gets a 401.
+    /// - A loopback host. `PlayerViewModel.prepareSourceProxy` rewrites
+    ///   direct-play URLs to the on-device caching proxy at 127.0.0.1 *and
+    ///   drops the headers*, so "no headers" on its own is not evidence that
+    ///   anything off-device can reach it.
+    ///
+    /// Local files pass: AVPlayer streams a `file://` asset to the receiver
+    /// itself instead of handing over a URL that means nothing there.
+    static func isReceiverFetchableAsset(url: URL, headers: [String: String]) -> Bool {
+        if url.isFileURL { return true }
+        guard headers.isEmpty,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return false }
+        return !isLoopbackHost(url.host)
+    }
+
+    static func isLoopbackHost(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        if host == "localhost" || host == "::1" || host == "[::1]" { return true }
+        return host.hasPrefix("127.")
+    }
+
+    private func setExternalPlaybackAllowed(_ allowed: Bool) {
+        avPlayer.allowsExternalPlayback = allowed
+        #if !os(macOS)
+        // Mirrored-display handoff is an iOS/tvOS concept; macOS has no
+        // equivalent and the property is unavailable there.
+        avPlayer.usesExternalPlaybackWhileExternalScreenIsActive = allowed
+        #endif
+        onExternalPlaybackAllowedChange?(allowed)
+    }
+
+    @MainActor
+    private func updateLoopbackURLForExternalPlayback(_ active: Bool) {
+        guard active != loopbackPlaybackUsesExternalURL,
+              case .some(.siloLoopback) = currentSourceStrategy,
+              let item = currentItem,
+              let server = segmentServer,
+              let playlistName = loopbackPlaylistName else { return }
+        guard let url = server.resourceURL(
+            for: playlistName,
+            reachableFromExternalDevice: active
+        ) else {
+            // The item is still pointed at 127.0.0.1, which the receiver
+            // cannot fetch: leaving it there would strand the TV on a spinner
+            // with nothing on screen here either.
+            abandonExternalPlaybackHandoff()
+            return
+        }
+
+        let position = currentTime()
+        loopbackPlaybackUsesExternalURL = active
+        server.setAcceptsExternalClients(active)
+        reloadEstablishedLoopbackItem(
+            item,
+            at: position.isFinite ? max(0, position) : 0,
+            reason: active ? "airplay_started" : "airplay_ended",
+            replacementURL: url
+        )
+    }
+
+    /// No LAN address the receiver could reach (Wi-Fi off, cellular-only, an
+    /// isolated guest network). Bring playback back to this device and say so
+    /// — `allowsExternalPlayback = false` makes AVPlayer render locally again,
+    /// and the `isExternalPlaybackActive` KVO that follows leaves the item on
+    /// the loopback URL it already has.
+    private func abandonExternalPlaybackHandoff() {
+        cmpLog("[CMP-AVP] airplay handoff unavailable: no reachable local network address")
+        setExternalPlaybackAllowed(false)
+        onExternalPlaybackUnavailable?()
     }
 
     func videoSurfaceBecameReadyForDisplay() {
@@ -487,6 +1089,7 @@ final class AVPlayerBackend {
     func seek(to seconds: Double) {
         let mediaSeconds = seconds.isFinite ? max(0, seconds) : 0
         let playerSeconds = playerTime(forMediaTime: mediaSeconds)
+        hasReachedItemEnd = false
         if case .some(.siloLoopback(let spec)) = currentSourceStrategy {
             // VOD serving mode: every seek is in-item. The static playlist
             // covers the whole title; a fetch into never-produced content
@@ -516,12 +1119,22 @@ final class AVPlayerBackend {
         let time = CMTime(seconds: playerSeconds, preferredTimescale: 600)
         isSeekPending = true
         let seekItem = currentItem
+        let seekID = beginSeekDeadline(
+            kind: .interactive(mediaTarget: mediaSeconds),
+            item: seekItem
+        )
         Self.logger.info(
             "[CMP-SEEK] AVPlayer seek request media=\(mediaSeconds, privacy: .public) player=\(playerSeconds, privacy: .public) offset=\(self.mediaTimelineOffsetSeconds, privacy: .public)"
         )
         subtitleSession?.flushOnSeek()
         avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             guard let self, !self.isDisposed else { return }
+            guard self.completeSeekDeadline(seekID) else {
+                Self.logger.info(
+                    "[CMP-SEEK] ignoring late/superseded AVPlayer seek completion id=\(seekID, privacy: .public)"
+                )
+                return
+            }
             guard seekItem === self.currentItem else { return }
             self.isSeekPending = false
             self.vodPendingSeekMediaTarget = nil
@@ -534,6 +1147,109 @@ final class AVPlayerBackend {
             self.resyncControlledSubtitlesAfterSeek(mediaSeconds: mediaTime)
             self.onTimeChange?(landed)
             self.pumpSubtitleOverlay(referenceTime: mediaTime)
+        }
+    }
+
+    @discardableResult
+    private func beginSeekDeadline(
+        kind: SeekDeadlineKind,
+        item: AVPlayerItem?
+    ) -> UInt64 {
+        seekDeadlineWorkItem?.cancel()
+        releaseSupersededInitialSeekGateIfNeeded()
+        activeSeekDeadlineKind = kind
+        let id = seekDeadlineState.begin()
+        let work = DispatchWorkItem { [weak self, weak item] in
+            guard let self, !self.isDisposed else { return }
+            self.handleSeekDeadline(id: id, kind: kind, item: item)
+        }
+        seekDeadlineWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.seekCompletionDeadlineSeconds,
+            execute: work
+        )
+        return id
+    }
+
+    private func completeSeekDeadline(_ id: UInt64) -> Bool {
+        guard seekDeadlineState.complete(id) else { return false }
+        seekDeadlineWorkItem?.cancel()
+        seekDeadlineWorkItem = nil
+        activeSeekDeadlineKind = nil
+        return true
+    }
+
+    private func cancelSeekDeadline() {
+        seekDeadlineWorkItem?.cancel()
+        seekDeadlineWorkItem = nil
+        releaseSupersededInitialSeekGateIfNeeded()
+        activeSeekDeadlineKind = nil
+        seekDeadlineState.cancel()
+        isSeekPending = false
+        vodPendingSeekMediaTarget = nil
+    }
+
+    private func releaseSupersededInitialSeekGateIfNeeded() {
+        guard seekDeadlineState.activeID != nil,
+              case .some(.initial) = activeSeekDeadlineKind else { return }
+        isInitialSeekInFlight = false
+    }
+
+    private func handleSeekDeadline(
+        id: UInt64,
+        kind: SeekDeadlineKind,
+        item: AVPlayerItem?
+    ) {
+        guard completeSeekDeadline(id), item === currentItem else { return }
+        isSeekPending = false
+        item?.cancelPendingSeeks()
+
+        switch kind {
+        case .interactive(let mediaTarget):
+            Self.logger.error(
+                "[CMP-SEEK] AVPlayer seek deadline mediaTarget=\(mediaTarget, privacy: .public) id=\(id, privacy: .public); re-enabling recovery"
+            )
+            if case .some(.siloLoopback(let spec)) = currentSourceStrategy {
+                if spec.servingMode == .vodPlan {
+                    Task { @MainActor [weak self] in
+                        guard let self, !self.isDisposed else { return }
+                        // Keep the target latched until the recovery helper
+                        // reads it; the frozen clock is still pre-seek.
+                        self.vodPendingSeekMediaTarget = mediaTarget
+                        self.performVODStallRecovery(
+                            attempt: 1,
+                            frozenPosition: self.playerTime(forMediaTime: mediaTarget)
+                        )
+                        self.vodPendingSeekMediaTarget = nil
+                    }
+                    return
+                } else if let item = currentItem {
+                    recoverLocalLoopbackStallIfNeeded(
+                        item: item,
+                        requireBufferedEdge: false,
+                        reason: "seek_deadline"
+                    )
+                }
+            } else if !isUserPaused {
+                avPlayer.play()
+            }
+            vodPendingSeekMediaTarget = nil
+
+        case .initial(let mediaTarget):
+            isInitialSeekInFlight = false
+            initialSeekRetryCount += 1
+            let retry = initialSeekRetryCount
+            Self.logger.error(
+                "[CMP-SEEK] initial AVPlayer seek deadline mediaTarget=\(mediaTarget, privacy: .public) retry=\(retry, privacy: .public)"
+            )
+            if retry <= 8, let item = currentItem {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self, weak item] in
+                    guard let self, let item, !self.isDisposed, item === self.currentItem else { return }
+                    self.attemptInitialPlaybackStart(for: item, trigger: "deadline-retry-\(retry)")
+                }
+            } else if let item = currentItem {
+                startPlaybackIfNeeded(for: item)
+            }
         }
     }
 
@@ -609,6 +1325,10 @@ final class AVPlayerBackend {
         guard !isDisposed else { return }
         isDisposed = true
         Self.logger.info("[CMP-AVP] dispose")
+        externalPlaybackObs?.invalidate()
+        externalPlaybackObs = nil
+        onExternalPlaybackActiveChange = nil
+        isPictureInPictureActiveProvider = nil
         teardownMediaPipeline()
     }
 
@@ -653,9 +1373,6 @@ final class AVPlayerBackend {
 
     func applySubtitleAppearance(_ appearance: SubtitleAppearance) {
         print("[CMP-SUB] applySubtitleAppearance size=\(appearance.fontSize.rawValue) session=\(subtitleSession == nil ? "nil" : "live")")
-        // Bitmap cues re-lay-out on the next pump tick: the appearance is
-        // part of the render key, so the change invalidates it naturally.
-        bitmapCueAppearance = appearance
         let syncOffset = subtitleSession?.currentParams.syncOffsetMs ?? 0
         let params = SubtitleStylingOverride.Parameters.from(
             appearance: appearance,
@@ -951,10 +1668,12 @@ final class AVPlayerBackend {
               avPlayer.rate > 0,
               currentTime > ttffLastObservedTime + 0.02 else { return }
         ttffEmitted = true
+        let firstFrameMs = ttffElapsedMs()
+        onFirstFrame?(firstFrameMs)
         let route = currentSourceStrategy.map(Self.describe) ?? "unknown"
         let firstSegment = ttffFirstSegmentMs.map(String.init) ?? "-"
         let ready = ttffReadyMs.map(String.init) ?? "-"
-        cmpLog("[CMP-TTFF] route=\(route) first_segment_ms=\(firstSegment) ready_ms=\(ready) first_frame_ms=\(ttffElapsedMs())")
+        cmpLog("[CMP-TTFF] route=\(route) first_segment_ms=\(firstSegment) ready_ms=\(ready) first_frame_ms=\(firstFrameMs)")
     }
 
     private func load(strategy: SourceStrategy, startTime: Double) {
@@ -969,6 +1688,7 @@ final class AVPlayerBackend {
         teardownMediaPipeline(clearDisplayCriteria: !preserveDisplayCriteria)
         isPreservingTVDisplayCriteriaForReload = preserveDisplayCriteria
         currentSourceStrategy = strategy
+        applyExternalPlaybackPolicy(for: strategy)
         currentLoopbackAudioTracks = Self.normalizedLoopbackAudioTracks(for: strategy)
         configureEmbeddedSubtitleExtraction(for: strategy)
         setLoopbackPlaybackClock(0)
@@ -991,6 +1711,7 @@ final class AVPlayerBackend {
         watchdogLastStateLogWall = 0
         didFireFileLoaded = false
         hasSeekedToStart = false
+        hasReachedItemEnd = false
         pendingStartTime = startTime
         initialSeekRetryCount = 0
         isInitialSeekInFlight = false
@@ -1140,8 +1861,8 @@ final class AVPlayerBackend {
     /// later attempts swap the item in place (same URL, no pre-pause, the
     /// old item keeps rendering until the swap lands). Both ride alongside
     /// an authoritative producer restart at the anchor segment. The
-    /// existing watchdog budget still escalates to a route fallback when
-    /// the ladder doesn't take.
+    /// exhausted watchdog rebuilds the loopback session at the rendered
+    /// clock; recovery never switches playback engines.
     @MainActor
     private func performVODStallRecovery(attempt: Int, frozenPosition: Double) {
         let anchorPlayer = vodPendingSeekMediaTarget.map(playerTime(forMediaTime:))
@@ -1159,12 +1880,47 @@ final class AVPlayerBackend {
             avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
             avPlayer.play()
         } else {
-            guard let urlAsset = currentItem?.asset as? AVURLAsset else { return }
             cmpLog("[CMP-AVP] vod stall recovery in-place item reload anchorPlayer=\(anchorPlayer)")
-            prepareAssetPlayback(url: urlAsset.url, headers: [:])
-            avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+            guard let item = currentItem else { return }
+            reloadEstablishedLoopbackItem(item, at: anchorPlayer, reason: "vod_stall")
+        }
+    }
+
+    /// Rebuild only AVFoundation's item/loader state while preserving the
+    /// loopback producer, segment plan/store/server, display criteria, audio
+    /// session, selected tracks, and recovery budgets.
+    @MainActor
+    private func reloadEstablishedLoopbackItem(
+        _ oldItem: AVPlayerItem,
+        at playerSeconds: Double,
+        reason: String,
+        replacementURL: URL? = nil
+    ) {
+        guard oldItem === currentItem,
+              let asset = oldItem.asset as? AVURLAsset else { return }
+        cancelSeekDeadline()
+        oldItem.cancelPendingSeeks()
+        detachPerItemObservers()
+
+        let itemURL = replacementURL ?? asset.url
+        let item = AVPlayerItem(asset: AVURLAsset(url: itemURL))
+        item.preferredForwardBufferDuration = max(
+            oldItem.preferredForwardBufferDuration,
+            Self.loopbackStartupForwardBuffer
+        )
+        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        currentItem = item
+        attachItemObservers(item)
+        avPlayer.replaceCurrentItem(with: item)
+
+        let target = CMTime(seconds: max(0, playerSeconds), preferredTimescale: 600)
+        avPlayer.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        if !isUserPaused {
             avPlayer.play()
         }
+        cmpLog(
+            "[CMP-AVP] established loopback item reloaded reason=\(reason) player=\(playerSeconds) url=\(loggableURLDescription(itemURL))"
+        )
     }
 
     private func startSiloLoopback(
@@ -1191,20 +1947,18 @@ final class AVPlayerBackend {
         if sessionSpec.servingMode == .vodPlan {
             let retentionBudget = Self.vodRetentionBudgetBytes()
             cmpLog("[CMP-HLS-STORE] vod retention budgetBytes=\(retentionBudget)")
-            // Forward byte budget: bounds the producer's produce-ahead race
-            // on high-bitrate sources (the segment-count window alone
-            // authorizes hundreds of MB at Blu-ray-remux segment sizes).
-            store.configureVODRetention(
-                budgetBytes: retentionBudget,
-                forwardByteBudget: Self.isConstrainedMemoryDevice ? 96 << 20 : 192 << 20
-            )
+            store.configureVODRetention(budgetBytes: retentionBudget)
         }
         segmentStore = store
         if preserveSessionDirectory {
             print("[CMP-AVP] preserving local DV artifacts due to SILO_KEEP_DV_HLS=1 dir=\(sessionDir.path)")
         }
 
+        #if os(iOS)
+        let server = LoopbackSegmentServer(segmentStore: store, exposure: .localNetwork)
+        #else
         let server = LoopbackSegmentServer(segmentStore: store)
+        #endif
         if sessionSpec.servingMode == .vodPlan {
             // A miss under the static VOD playlist means "not produced (yet)
             // or pruned": request a coalesced producer restart on main, then
@@ -1283,6 +2037,9 @@ final class AVPlayerBackend {
             recycledInputHandoff: recycledInput
         )
         let tap = ensureLoopbackSubtitleTap(for: sessionSpec.sourceURL)
+        writer.isSourceOutageActive = { [weak self] in
+            self?.sourceOutageStateProvider?() ?? false
+        }
         writer.onSubtitleTapTracks = { [weak tap] infos in
             tap?.registerTracks(infos)
         }
@@ -1358,6 +2115,7 @@ final class AVPlayerBackend {
                 guard self.activeLoopbackSessionID == sessionID else { return }
                 self.loopbackVODPlan = plan
                 self.loopbackVODPlanSourceURL = sessionSpec.sourceURL
+                self.segmentServer?.setVODSegmentCount(plan.segmentCount)
                 // The item timeline's origin is the plan anchor; the initial
                 // media-time seek (pendingStartTime) converts through this
                 // offset, and plan resolution always precedes item creation.
@@ -1452,8 +2210,25 @@ final class AVPlayerBackend {
     private func handleFirstSegmentReady(playlistName: String, sessionID: String) {
         guard activeLoopbackSessionID == sessionID else { return }
         guard !isDisposed, currentItem == nil, let server = segmentServer else { return }
-        let url = URL(string: "http://127.0.0.1:\(server.port)/\(playlistName)")!
-        cmpLog("[CMP-AVP] local playlist ready \(url.absoluteString)")
+        // Starting up with AirPlay already engaged: prefer the LAN address, but
+        // a session that cannot reach one still plays here rather than failing.
+        var useExternalURL = avPlayer.isExternalPlaybackActive
+        var externalURL: URL?
+        if useExternalURL {
+            externalURL = server.resourceURL(for: playlistName, reachableFromExternalDevice: true)
+            if externalURL == nil {
+                useExternalURL = false
+                abandonExternalPlaybackHandoff()
+            }
+        }
+        guard let url = externalURL ?? server.resourceURL(for: playlistName) else {
+            reportError("Local playback server could not produce a playable URL.")
+            return
+        }
+        loopbackPlaylistName = playlistName
+        loopbackPlaybackUsesExternalURL = useExternalURL
+        server.setAcceptsExternalClients(useExternalURL)
+        cmpLog("[CMP-AVP] local playlist ready host=\(url.host ?? "unknown") external=\(useExternalURL ? 1 : 0)")
         if ttffFirstSegmentMs == nil { ttffFirstSegmentMs = ttffElapsedMs() }
         logTVDisplayManagerState(context: "before_prepare_\(playlistName)")
         // The criteria write always happens synchronously before the item is
@@ -1496,8 +2271,9 @@ final class AVPlayerBackend {
         // The local loopback server is an in-app HTTP surface. Remote auth
         // headers are only for libavformat's source fetch and should not be
         // propagated into AVPlayer's localhost HLS requests.
-        prepareAssetPlayback(url: url, headers: [:])
-        issueVODResumePreSeekIfNeeded(context: "first_segment")
+        prepareAssetPlayback(url: url, headers: [:]) { [weak self] in
+            self?.issueVODResumePreSeekIfNeeded(context: "first_segment")
+        }
     }
 
     /// Resume: aim AVPlayer's very first media fetches at the resume
@@ -1517,8 +2293,23 @@ final class AVPlayerBackend {
         cmpLog("[CMP-AVP] vod resume pre-seek player=\(target) media=\(pendingStartTime) context=\(context)")
     }
 
-    private func prepareAssetPlayback(url: URL, headers: [String: String]) {
-        activateAudioSession()
+    private func prepareAssetPlayback(
+        url: URL,
+        headers: [String: String],
+        completion: (() -> Void)? = nil
+    ) {
+        activateAudioSession { [weak self] error in
+            guard let self, !self.isDisposed else { return }
+            if let error {
+                let message = "AVPlayer audio session setup failed: \(error.localizedDescription)"
+                cmpLog("[CMP-AVP] ERROR: \(message)")
+            }
+            self.finishPreparingAssetPlayback(url: url, headers: headers)
+            completion?()
+        }
+    }
+
+    private func finishPreparingAssetPlayback(url: URL, headers: [String: String]) {
         var options: [String: Any] = [:]
         if !headers.isEmpty {
             options["AVURLAssetHTTPHeaderFieldsKey"] = headers
@@ -1560,38 +2351,12 @@ final class AVPlayerBackend {
         installSubtitleDisplayLink()
     }
 
-    private func activateAudioSession() {
-        #if os(macOS)
-        return
-        #else
-        guard !audioSessionActive else { return }
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .moviePlayback, options: [])
-            // Routing preference, not a claim: tells the system this app
-            // plays multichannel content so route negotiation (HDMI/AirPlay)
-            // prefers a multichannel-capable path. AetherEngine sets the
-            // same before its Atmos passthrough; PlayerCore already does.
-            try? session.setSupportsMultichannelContent(true)
-            try session.setActive(true, options: [])
-            audioSessionActive = true
-        } catch {
-            let message = "AVPlayer audio session setup failed: \(error.localizedDescription)"
-            cmpLog("[CMP-AVP] ERROR: \(message)")
-        }
-        #endif
+    private func activateAudioSession(completion: @escaping (Error?) -> Void) {
+        audioSessionCoordinator.activate(completion: completion)
     }
 
     private func deactivateAudioSession() {
-        #if os(macOS)
-        return
-        #else
-        guard audioSessionActive else { return }
-        audioSessionActive = false
-        try? AVAudioSession.sharedInstance().setActive(
-            false, options: [.notifyOthersOnDeactivation]
-        )
-        #endif
+        audioSessionCoordinator.deactivate()
     }
 
     private func configureEmbeddedSubtitleExtraction(for strategy: SourceStrategy) {
@@ -2147,8 +2912,8 @@ final class AVPlayerBackend {
     /// recovery hooks miss: `.AVPlayerItemPlaybackStalled` only fires on buffer
     /// starvation, the edge watchdog requires the buffered edge to sit at the
     /// playhead, and the periodic time observer stops firing the moment the
-    /// playhead freezes. `timeControlStatus` distinguishes a genuine wedge from
-    /// a user pause, so a paused player is never reanchored.
+    /// playhead freezes. Silo's explicit play-intent latch distinguishes a
+    /// terminal AVPlayer pause from an intentional user pause.
     private func loopbackPlayheadWatchdogTick() {
         guard !isDisposed,
               case .siloLoopback = currentSourceStrategy,
@@ -2181,11 +2946,20 @@ final class AVPlayerBackend {
         let generatedAhead = max(0, generatedEnd - position)
 
         let statusLabel: String
+        let transportState: LoopbackItemDeathConfirmationState.TransportState
         switch timeControlStatus {
-        case .paused: statusLabel = "paused"
-        case .waitingToPlayAtSpecifiedRate: statusLabel = "waiting"
-        case .playing: statusLabel = "playing"
-        @unknown default: statusLabel = "unknown"
+        case .paused:
+            statusLabel = "paused"
+            transportState = .paused
+        case .waitingToPlayAtSpecifiedRate:
+            statusLabel = "waiting"
+            transportState = .waiting
+        case .playing:
+            statusLabel = "playing"
+            transportState = .playing
+        @unknown default:
+            statusLabel = "unknown"
+            transportState = .unknown
         }
 
         // Periodic transport-state telemetry so a captured stall can be
@@ -2219,7 +2993,7 @@ final class AVPlayerBackend {
                 // OSLog is invisible to the devicectl console; mirror the
                 // transport state so on-device render stalls (frozen picture,
                 // advancing audio clock) are diagnosable from the capture.
-                print("[CMP-AVP] vod state pos=\(String(format: "%.2f", position)) tc=\(statusLabel) rate=\(avPlayer.rate) bufAhead=\(String(format: "%.1f", bufferedAhead)) stationaryFor=\(String(format: "%.1f", stationaryFor))\(memSuffix)")
+                print("[CMP-AVP] vod state pos=\(String(format: "%.2f", position)) tc=\(statusLabel) rate=\(avPlayer.rate) userPaused=\(isUserPaused ? 1 : 0) bufAhead=\(String(format: "%.1f", bufferedAhead)) generatedAhead=\(String(format: "%.1f", generatedAhead)) stationaryFor=\(String(format: "%.1f", stationaryFor))\(memSuffix)")
                 // Temporary [CMP-CPU]: per-thread attribution + device core
                 // load at the same cadence, so a pegged-CPU capture names the
                 // hot queue instead of just showing the total.
@@ -2229,10 +3003,44 @@ final class AVPlayerBackend {
             }
         }
 
+        let itemDeathAction = loopbackItemDeathConfirmationState.evaluate(
+            now: now,
+            position: position,
+            playbackEstablished: didFireFileLoaded,
+            userPaused: isUserPaused,
+            transportState: transportState,
+            recoverySuppressed: externalStallSuppressionActive
+                || isWaitingForInitialVideoDisplay,
+            mediaAvailableAhead: bufferedAhead >= 0.5 || generatedAhead >= 2.0
+        )
+        switch itemDeathAction {
+        case .none:
+            break
+        case .reassertPlay:
+            cmpLog(
+                "[CMP-AVP] unexpected AVPlayer pause; reasserting play pos=\(position) bufAhead=\(bufferedAhead) generatedAhead=\(generatedAhead)"
+            )
+            avPlayer.play()
+        case .confirmed(let trigger):
+            let action = loopbackItemDeathRecoveryState.confirm(
+                position: position,
+                userPaused: isUserPaused
+            )
+            performLoopbackItemDeathRecoveryAction(
+                action,
+                item: item,
+                position: position,
+                trigger: trigger.rawValue,
+                statusCode: nil,
+                errorDescription: "confirmed terminal AVPlayer transport state"
+            )
+            return
+        }
+
         // Producer-dead starvation: waiting on an empty buffer with no
-        // successful segment serves for a sustained stretch. The reanchor
-        // path below can't help (it needs generated media ahead), so
-        // escalate straight to the route fallback rather than freezing.
+        // successful segment serves for a sustained stretch. Rebuild the
+        // Silo loopback session at the rendered clock; changing playback
+        // engines would hide the fault and lose SiloPlayer capabilities.
         if !isUserPaused,
            timeControlStatus == .waitingToPlayAtSpecifiedRate,
            bufferedAhead < 2.0,
@@ -2240,11 +3048,19 @@ final class AVPlayerBackend {
            (segmentStore?.secondsSinceLastSegmentServe() ?? .infinity)
                >= Self.playheadWatchdogStarvationServeQuietSeconds,
            !didEscalateLoopbackStall {
+            if externalStallSuppressionActive {
+                // Starved because the origin is down, not because the route
+                // wedged. The outage budget owns the terminal decision.
+                cmpLog(
+                    "[CMP-OUTAGE] loopback starvation suppressed during origin outage (frozen \(Int(stationaryFor))s)"
+                )
+                return
+            }
             didEscalateLoopbackStall = true
             cmpLog(
-                "[CMP-AVP] loopback starvation: playhead frozen \(Int(stationaryFor))s with empty buffer and no segment serves; escalating to route fallback"
+                "[CMP-AVP] loopback starvation: playhead frozen \(Int(stationaryFor))s with empty buffer and no segment serves; rebuilding Silo loopback"
             )
-            onLoopbackStallUnrecoverable?("loopback_starvation")
+            rebuildSiloLoopbackSession(at: position, reason: "loopback_starvation")
             return
         }
 
@@ -2260,8 +3076,9 @@ final class AVPlayerBackend {
             return
         }
 
-        // Bound reanchors within a rolling window; escalate to a route fallback
-        // rather than reanchoring a route that will not recover.
+        // Bound lightweight reanchors within a rolling window. Once exhausted,
+        // rebuild the Silo loopback session (producer, cache, server, item) at
+        // the rendered clock instead of changing playback engines.
         if watchdogReanchorWindowStartWall == 0
             || now - watchdogReanchorWindowStartWall > Self.playheadWatchdogReanchorWindowSeconds {
             watchdogReanchorWindowStartWall = now
@@ -2271,11 +3088,17 @@ final class AVPlayerBackend {
 
         if watchdogReanchorCount >= Self.playheadWatchdogMaxReanchors {
             guard !didEscalateLoopbackStall else { return }
+            if externalStallSuppressionActive {
+                cmpLog(
+                    "[CMP-OUTAGE] playhead_watchdog exhaustion suppressed during origin outage (reanchors=\(watchdogReanchorCount))"
+                )
+                return
+            }
             didEscalateLoopbackStall = true
             Self.logger.error(
-                "[CMP-AVP] local loopback playhead_watchdog exhausted reanchors=\(self.watchdogReanchorCount, privacy: .public) pos=\(position, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public); escalating to route fallback"
+                "[CMP-AVP] local loopback playhead_watchdog exhausted reanchors=\(self.watchdogReanchorCount, privacy: .public) pos=\(position, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public); rebuilding Silo loopback"
             )
-            onLoopbackStallUnrecoverable?("playhead_watchdog")
+            rebuildSiloLoopbackSession(at: position, reason: "playhead_watchdog")
             return
         }
 
@@ -2422,9 +3245,18 @@ final class AVPlayerBackend {
             }
         }
 
+        hasObservedTimeControlStatus = false
         timeControlObs = avPlayer.observe(\.timeControlStatus, options: [.new, .initial]) { [weak self] player, _ in
             DispatchQueue.main.async { [weak self] in
                 guard let self, !self.isDisposed else { return }
+                // Deliveries arrive in order on main, so the first one to land
+                // for this observation is `.initial`.
+                let isInitialObservation = !self.hasObservedTimeControlStatus
+                self.hasObservedTimeControlStatus = true
+                if self.reconcileSystemTransportIntent(
+                    from: player,
+                    isInitialObservation: isInitialObservation
+                ) { return }
                 guard case .siloLoopback = self.currentSourceStrategy else { return }
                 let status: String
                 switch player.timeControlStatus {
@@ -2439,7 +3271,10 @@ final class AVPlayerBackend {
                 }
                 let reason = player.reasonForWaitingToPlay?.rawValue ?? "-"
                 Self.logger.info(
-                    "[CMP-AVP] timeControlStatus=\(status, privacy: .public) reason=\(reason, privacy: .public) rate=\(player.rate, privacy: .public) current=\(player.currentTime().seconds, privacy: .public)"
+                    "[CMP-AVP] timeControlStatus=\(status, privacy: .public) reason=\(reason, privacy: .public) rate=\(player.rate, privacy: .public) current=\(player.currentTime().seconds, privacy: .public) userPaused=\(self.isUserPaused ? 1 : 0, privacy: .public) itemStatus=\(self.currentItem?.status.rawValue ?? -1, privacy: .public)"
+                )
+                cmpLog(
+                    "[CMP-AVP] timeControlStatus=\(status) reason=\(reason) rate=\(player.rate) current=\(player.currentTime().seconds) userPaused=\(self.isUserPaused ? 1 : 0) itemStatus=\(self.currentItem?.status.rawValue ?? -1)"
                 )
             }
         }
@@ -2502,6 +3337,7 @@ final class AVPlayerBackend {
             queue: .main
         ) { [weak self] _ in
             guard let self, !self.isDisposed else { return }
+            self.hasReachedItemEnd = true
             self.onEndOfFile?()
         }
 
@@ -2524,9 +3360,24 @@ final class AVPlayerBackend {
         ) { [weak self] note in
             guard let self, !self.isDisposed else { return }
             let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+            guard item === self.currentItem else { return }
+            let position = self.currentTime()
             Self.logger.info(
-                "[CMP-AVP] item failed to play to end current=\(self.currentTime(), privacy: .public) error=\(String(describing: error), privacy: .public)"
+                "[CMP-AVP] item failed to play to end current=\(position, privacy: .public) userPaused=\(self.isUserPaused ? 1 : 0, privacy: .public) itemStatus=\(item.status.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)"
             )
+            cmpLog(
+                "[CMP-AVP] item failedToEnd current=\(position) userPaused=\(self.isUserPaused ? 1 : 0) itemStatus=\(item.status.rawValue) error=\(String(describing: error))"
+            )
+            if case .siloLoopback = self.currentSourceStrategy,
+               self.didFireFileLoaded {
+                self.loopbackItemDeathConfirmationState.noteExplicitFailure(
+                    position: position,
+                    now: CACurrentMediaTime(),
+                    playbackEstablished: true,
+                    userPaused: self.isUserPaused
+                )
+                return
+            }
             self.recoverLocalLoopbackFailureIfNeeded(item: item, error: error)
         }
 
@@ -2548,6 +3399,20 @@ final class AVPlayerBackend {
             cmpLog(
                 "[CMP-AVP] item errorLog status=\(event.errorStatusCode) domain=\(event.errorDomain) uri=\(event.uri ?? "-") comment=\(event.errorComment ?? "-")"
             )
+            if self.didFireFileLoaded,
+               LoopbackItemDeathRecoveryState.isItemDeath(
+                    statusCode: event.errorStatusCode,
+                    errorDescription: event.errorComment ?? ""
+               ) {
+                self.handleLoopbackItemDeathEvidence(
+                    item: item,
+                    statusCode: event.errorStatusCode,
+                    errorDescription: event.errorComment ?? "",
+                    evidenceWeight: event.errorStatusCode == -15628 ? 2 : 1,
+                    trigger: "error_log"
+                )
+                return
+            }
             if event.errorStatusCode == -15628,
                !self.didFireFileLoaded,
                case .siloLoopback = self.currentSourceStrategy {
@@ -2588,6 +3453,21 @@ final class AVPlayerBackend {
 
     private func recoverLocalLoopbackFailureIfNeeded(item: AVPlayerItem, error: Error?) {
         let description = String(describing: error)
+        let statusCode = item.errorLog()?.events.last?.errorStatusCode
+        if didFireFileLoaded,
+           LoopbackItemDeathRecoveryState.isItemDeath(
+                statusCode: statusCode,
+                errorDescription: description
+           ) {
+            handleLoopbackItemDeathEvidence(
+                item: item,
+                statusCode: statusCode,
+                errorDescription: description,
+                evidenceWeight: 2,
+                trigger: "failed_to_end"
+            )
+            return
+        }
         guard description.contains("Playlist File unchanged") || description.contains("-12888") else {
             return
         }
@@ -2602,6 +3482,92 @@ final class AVPlayerBackend {
             return
         }
         recoverLocalLoopbackStallIfNeeded(item: item, requireBufferedEdge: false, reason: "playlist_unchanged")
+    }
+
+    private func handleLoopbackItemDeathEvidence(
+        item: AVPlayerItem,
+        statusCode: Int?,
+        errorDescription: String,
+        evidenceWeight: Int,
+        trigger: String
+    ) {
+        guard case .some(.siloLoopback) = currentSourceStrategy,
+              item === currentItem,
+              didFireFileLoaded else { return }
+        let position = currentTime()
+        let action = loopbackItemDeathRecoveryState.record(
+            position: position,
+            evidenceWeight: evidenceWeight,
+            userPaused: isUserPaused
+        )
+        performLoopbackItemDeathRecoveryAction(
+            action,
+            item: item,
+            position: position,
+            trigger: trigger,
+            statusCode: statusCode,
+            errorDescription: errorDescription
+        )
+    }
+
+    private func performLoopbackItemDeathRecoveryAction(
+        _ action: LoopbackItemDeathRecoveryState.Action,
+        item: AVPlayerItem,
+        position: Double,
+        trigger: String,
+        statusCode: Int?,
+        errorDescription: String
+    ) {
+        switch action {
+        case .waitForConfirmation:
+            cmpLog(
+                "[CMP-AVP] loopback item-death evidence waiting trigger=\(trigger) status=\(statusCode ?? 0) userPaused=\(isUserPaused ? 1 : 0) pos=\(position) error=\(errorDescription)"
+            )
+        case .reload(let attempt):
+            loopbackItemDeathConfirmationState.resetCandidate()
+            cmpLog(
+                "[CMP-AVP] loopback item-death confirmed; reloading item trigger=\(trigger) status=\(statusCode ?? 0) attempt=\(attempt) pos=\(position)"
+            )
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item, item === self.currentItem, !self.isDisposed else { return }
+                self.reloadEstablishedLoopbackItem(
+                    item,
+                    at: position,
+                    reason: "item_death_\(trigger)_\(attempt)"
+                )
+            }
+        case .escalate:
+            loopbackItemDeathConfirmationState.resetCandidate()
+            cmpLog(
+                "[CMP-AVP] loopback item-death repeated at same position; rebuilding Silo loopback trigger=\(trigger) status=\(statusCode ?? 0) pos=\(position)"
+            )
+            rebuildSiloLoopbackSession(at: position, reason: "loopback_item_death")
+        }
+    }
+
+    /// Last-resort recovery for a poisoned AVPlayer item or dead producer.
+    /// Recreate the complete local-HLS pipeline at the rendered media clock,
+    /// but keep the selected route in SiloPlayer. The new UUID-backed cache
+    /// cannot collide with cleanup from the retired session.
+    private func rebuildSiloLoopbackSession(at playerSeconds: Double, reason: String) {
+        guard case .some(.siloLoopback(let spec)) = currentSourceStrategy,
+              playerSeconds.isFinite,
+              !isUserPaused else { return }
+        let mediaSeconds = max(0, mediaTime(for: playerSeconds))
+        loopbackItemDeathRecoveryState.reset()
+        loopbackItemDeathConfirmationState.resetCandidate()
+        watchdogReanchorCount = 0
+        watchdogReanchorWindowStartWall = CACurrentMediaTime()
+        didEscalateLoopbackStall = false
+        Self.logger.error(
+            "[CMP-AVP] rebuilding Silo loopback reason=\(reason, privacy: .public) media=\(mediaSeconds, privacy: .public) player=\(playerSeconds, privacy: .public)"
+        )
+        subtitleSession?.flushOnSeek()
+        embeddedSubtitleExtractor?.seek(to: mediaSeconds)
+        load(
+            strategy: .siloLoopback(spec: spec.reanchored(at: mediaSeconds)),
+            startTime: mediaSeconds
+        )
     }
 
     private func recoverLocalLoopbackStallIfNeeded(
@@ -2673,6 +3639,10 @@ final class AVPlayerBackend {
 
         isInitialSeekInFlight = true
         isSeekPending = true
+        let seekID = beginSeekDeadline(
+            kind: .initial(mediaTarget: mediaTarget),
+            item: item
+        )
         subtitleSession?.flushOnSeek()
         let time = CMTime(seconds: playerTarget, preferredTimescale: 600)
         Self.logger.info(
@@ -2680,6 +3650,12 @@ final class AVPlayerBackend {
         )
         avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             guard let self, !self.isDisposed, item === self.currentItem else { return }
+            guard self.completeSeekDeadline(seekID) else {
+                Self.logger.info(
+                    "[CMP-SEEK] ignoring late/superseded initial seek completion id=\(seekID, privacy: .public)"
+                )
+                return
+            }
             self.isSeekPending = false
             self.isInitialSeekInFlight = false
 
@@ -2855,7 +3831,7 @@ final class AVPlayerBackend {
             return
         }
         let url = asset.url
-        cmpLog("[CMP-AVP] startup watchdog reloading item in place url=\(url.absoluteString)")
+        cmpLog("[CMP-AVP] startup watchdog reloading item in place url=\(loggableURLDescription(url))")
         detachPerItemObservers()
         let item = AVPlayerItem(asset: AVURLAsset(url: url))
         if case .siloLoopback = currentSourceStrategy {
@@ -2939,14 +3915,10 @@ final class AVPlayerBackend {
         Self.logger.info("[CMP-AVP] initial video display gate released reason=\(reason, privacy: .public)")
     }
 
-    /// Once the first frame is on screen, expand AVPlayer's forward
-    /// buffer target so the loopback path can ride out brief network
-    /// dips. Until now the buffer was capped at
-    /// `loopbackStartupForwardBuffer` to keep readyToPlay snappy; that
-    /// cushion is too thin for sustained playback when the source
-    /// bitrate is close to the user's WAN throughput. Re-enable
-    /// `automaticallyWaitsToMinimizeStalling` so AVPlayer pauses cleanly
-    /// to rebuffer on actual underrun instead of presenting a stutter.
+    /// Once the first frame is on screen, apply the serving mode's steady-
+    /// state target and re-enable automatic waiting. EVENT playlists expand
+    /// their live-edge cushion; static VOD playlists stay near one segment so
+    /// AVPlayer cannot outrun the bounded producer window.
     private func rampLoopbackBufferToSteadyStateIfNeeded(for item: AVPlayerItem) {
         guard case .siloLoopback(let spec) = currentSourceStrategy else { return }
         guard canRampLoopbackBufferToSteadyState else { return }
@@ -2955,13 +3927,18 @@ final class AVPlayerBackend {
         let target = Self.loopbackSteadyStateForwardBufferTarget(
             forBitsPerSecond: mediaBitrate,
             targetDuration: generatedStats.map { Double($0.targetDuration) },
-            longestSegmentDuration: generatedStats?.longestSegmentDuration
+            longestSegmentDuration: generatedStats?.longestSegmentDuration,
+            servingMode: spec.servingMode
         )
-        guard item.preferredForwardBufferDuration < target else { return }
-        item.preferredForwardBufferDuration = target
+        let shouldRaiseForwardBuffer = item.preferredForwardBufferDuration < target
+        let shouldEnableAutomaticWaiting = !avPlayer.automaticallyWaitsToMinimizeStalling
+        guard shouldRaiseForwardBuffer || shouldEnableAutomaticWaiting else { return }
+        if shouldRaiseForwardBuffer {
+            item.preferredForwardBufferDuration = target
+        }
         avPlayer.automaticallyWaitsToMinimizeStalling = true
         Self.logger.info(
-            "[CMP-AVP] loopback buffer ramp forwardBuffer=\(target, privacy: .public)s automaticallyWaits=1 mediaBitrate=\(mediaBitrate ?? 0, privacy: .public)bps generatedBitrate=\(generatedStats?.rollingBitrateBps ?? 0, privacy: .public)bps declaredBitrate=\(spec.sourceBitrateBps ?? 0, privacy: .public)bps sourceReadBitrate=\(self.loopbackSourceDownloadBitrateBps ?? 0, privacy: .public)bps targetDuration=\(generatedStats?.targetDuration ?? 0, privacy: .public) longestSegment=\(generatedStats?.longestSegmentDuration ?? 0, privacy: .public)"
+            "[CMP-AVP] loopback buffer ramp servingMode=\(String(describing: spec.servingMode), privacy: .public) forwardBuffer=\(target, privacy: .public)s automaticallyWaits=1 mediaBitrate=\(mediaBitrate ?? 0, privacy: .public)bps generatedBitrate=\(generatedStats?.rollingBitrateBps ?? 0, privacy: .public)bps declaredBitrate=\(spec.sourceBitrateBps ?? 0, privacy: .public)bps sourceReadBitrate=\(self.loopbackSourceDownloadBitrateBps ?? 0, privacy: .public)bps targetDuration=\(generatedStats?.targetDuration ?? 0, privacy: .public) longestSegment=\(generatedStats?.longestSegmentDuration ?? 0, privacy: .public)"
         )
     }
 
@@ -3321,154 +4298,43 @@ final class AVPlayerBackend {
             width: max(0, bounds.width - videoInsets.left - videoInsets.right),
             height: max(0, bounds.height - videoInsets.top - videoInsets.bottom)
         )
-        let style = BitmapCueStyle.from(bitmapCueAppearance)
         let key = BitmapCueRenderKey(
             videoRect: videoRect,
-            images: cues.map { ObjectIdentifier($0.image) },
-            style: style
+            images: cues.map { ObjectIdentifier($0.image) }
         )
         guard key != lastBitmapCueRenderKey else { return }
         lastBitmapCueRenderKey = key
-        let bottomShift = Self.bitmapBottomAnchorShift(for: cues, in: videoRect, style: style)
         let placements = cues.map { cue in
-            Self.bitmapCuePlacement(for: cue, in: videoRect, style: style, bottomShift: bottomShift)
+            Self.bitmapCuePlacement(for: cue, in: videoRect)
         }
         DispatchQueue.main.async {
             overlay.updateBitmapCues(placements)
         }
     }
 
-    /// Cues whose authored bottom edge falls in this band are treated as
-    /// bottom-anchored dialogue for margin normalization; anything higher
-    /// is a floating sign that keeps its authored placement.
-    private static let bitmapBottomAnchorBand: CGFloat = 0.75
-    /// The text path's "Bottom" MarginV expressed as a fraction of the
-    /// 1080-line ASS playfield (see `SubtitleStylingOverride`). PGS is
-    /// re-margined to the same distance so both subtitle kinds sit at the
-    /// same height at the default position.
-    #if os(tvOS)
-    private static let bitmapBottomMarginFraction: CGFloat = 60.0 / 1080.0
-    #else
-    private static let bitmapBottomMarginFraction: CGFloat = 30.0 / 1080.0
-    #endif
-
-    /// Vertical delta that moves the bottom-anchored cue group's authored
-    /// bottom edge onto the text path's bottom margin. Computed over the
-    /// whole group (not per cue) so multi-rect compositions keep their
-    /// authored line spacing; applied only for the default `.bottom`
-    /// preset — the other presets reposition absolutely.
-    private static func bitmapBottomAnchorShift(
-        for cues: [BitmapSubtitleCue],
-        in videoRect: CGRect,
-        style: BitmapCueStyle
-    ) -> CGFloat {
-        guard style.position == .bottom else { return 0 }
-        let anchoredMaxY = cues.map(\.normalizedFrame.maxY)
-            .filter { $0 >= bitmapBottomAnchorBand }
-            .max()
-        guard let groupMaxY = anchoredMaxY else { return 0 }
-        let authoredBottom = videoRect.minY + groupMaxY * videoRect.height
-        let targetBottom = videoRect.maxY - videoRect.height * bitmapBottomMarginFraction
-        return targetBottom - authoredBottom
-    }
-
-    /// Lay out one bitmap cue honoring the applicable appearance
-    /// preferences (size scale, vertical placement, backing box). Only
-    /// bottom-region cues follow the position preference — top/mid cues
-    /// are typically authored "signs & typesetting" overlays whose
-    /// placement is part of the content.
+    /// Lay out one bitmap cue exactly as authored: the normalized frame
+    /// mapped onto the displayed video rect. PGS/DVD compositions are
+    /// pre-rendered pictures — size, placement, and background are part
+    /// of the content, so no appearance preferences are applied.
     private static func bitmapCuePlacement(
         for cue: BitmapSubtitleCue,
-        in videoRect: CGRect,
-        style: BitmapCueStyle,
-        bottomShift: CGFloat = 0
+        in videoRect: CGRect
     ) -> BitmapCuePlacement {
-        var frame = CGRect(
-            x: videoRect.minX + cue.normalizedFrame.origin.x * videoRect.width,
-            y: videoRect.minY + cue.normalizedFrame.origin.y * videoRect.height,
-            width: cue.normalizedFrame.width * videoRect.width,
-            height: cue.normalizedFrame.height * videoRect.height
-        )
-        let bottomRegion = cue.normalizedFrame.midY >= 0.5
-
-        // Size: scale about the edge the cue is visually anchored to, so
-        // dialogue grows upward from its baseline and signs grow downward
-        // from their authored top.
-        if style.scale != 1, frame.width > 0, frame.height > 0 {
-            let scaled = CGSize(
-                width: frame.width * style.scale,
-                height: frame.height * style.scale
-            )
-            frame = CGRect(
-                x: frame.midX - scaled.width / 2,
-                y: bottomRegion ? frame.maxY - scaled.height : frame.minY,
-                width: scaled.width,
-                height: scaled.height
-            )
-        }
-
-        // Vertical placement (bottom-region cues only). The default
-        // "Bottom" re-margins bottom-anchored dialogue onto the text
-        // path's bottom margin (authored PGS usually sits a broadcast-safe
-        // notch higher than our SRT render); floating signs outside the
-        // anchor band keep their authored placement.
-        if bottomRegion {
-            switch style.position {
-            case .bottom:
-                if cue.normalizedFrame.maxY >= Self.bitmapBottomAnchorBand {
-                    frame.origin.y += bottomShift
-                }
-            case .lowerThird:
-                frame.origin.y = videoRect.minY + videoRect.height * 0.70 - frame.height
-            case .top:
-                frame.origin.y = videoRect.minY + videoRect.height * 0.05
-            }
-        }
-
-        // Clamp into the video rect after scaling/moving.
-        frame.origin.x = min(max(frame.origin.x, videoRect.minX), max(videoRect.minX, videoRect.maxX - frame.width))
-        frame.origin.y = min(max(frame.origin.y, videoRect.minY), max(videoRect.minY, videoRect.maxY - frame.height))
-
-        // Backing box, mirroring the text path's box style. Padding tracks
-        // the cue size so it reads like the text box at any scale.
-        var backgroundFrame = frame
-        var backgroundColor: CGColor?
-        var cornerRadius: CGFloat = 0
-        if let hex = style.boxColorHex,
-           let color = Self.cgColor(hex: hex, opacityPercent: style.boxOpacity) {
-            let padV = min(22, max(6, frame.height * 0.16))
-            let padH = min(30, max(8, frame.height * 0.24))
-            backgroundFrame = frame.insetBy(dx: -padH, dy: -padV)
-                .intersection(videoRect.insetBy(dx: -2, dy: -2))
-            backgroundColor = color
-            cornerRadius = min(8, padV * 0.5)
-        }
-
-        return BitmapCuePlacement(
+        BitmapCuePlacement(
             image: cue.image,
-            frame: frame,
-            backgroundFrame: backgroundFrame,
-            backgroundColor: backgroundColor,
-            cornerRadius: cornerRadius
-        )
-    }
-
-    /// Parse "#RRGGBB" into a CGColor with the given opacity percent.
-    private static func cgColor(hex: String, opacityPercent: Int) -> CGColor? {
-        var raw = hex.trimmingCharacters(in: .whitespacesAndNewlines)
-        if raw.hasPrefix("#") { raw.removeFirst() }
-        guard raw.count == 6, let value = UInt32(raw, radix: 16) else { return nil }
-        let alpha = CGFloat(max(0, min(100, opacityPercent))) / 100
-        guard alpha > 0 else { return nil }
-        return CGColor(
-            srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
-            green: CGFloat((value >> 8) & 0xFF) / 255,
-            blue: CGFloat(value & 0xFF) / 255,
-            alpha: alpha
+            frame: CGRect(
+                x: videoRect.minX + cue.normalizedFrame.origin.x * videoRect.width,
+                y: videoRect.minY + cue.normalizedFrame.origin.y * videoRect.height,
+                width: cue.normalizedFrame.width * videoRect.width,
+                height: cue.normalizedFrame.height * videoRect.height
+            )
         )
     }
 
     private func teardownMediaPipeline(clearDisplayCriteria: Bool = true) {
+        cancelSeekDeadline()
+        loopbackItemDeathRecoveryState.reset()
+        loopbackItemDeathConfirmationState.reset()
         if clearDisplayCriteria {
             clearTVDisplayCriteria(context: "teardown")
         } else {
@@ -3499,6 +4365,8 @@ final class AVPlayerBackend {
         loopbackSubtitleTap?.deactivate()
         embeddedSubtitleExtractor?.teardown()
         activeLoopbackSessionID = nil
+        loopbackPlaylistName = nil
+        loopbackPlaybackUsesExternalURL = false
         isInitialSeekInFlight = false
         initialSeekRetryCount = 0
         isInitialVideoDisplayGatePrepared = false
@@ -3556,6 +4424,17 @@ final class AVPlayerBackend {
                 try? FileManager.default.removeItem(at: dir)
             }
         }
+    }
+
+    /// Loopback URLs carry the segment server's per-session access token as
+    /// their first path component, and the diagnostics redactor keeps URL
+    /// paths — so the raw string would ship the secret in a support bundle.
+    private func loggableURLDescription(_ url: URL) -> String {
+        redactedLogText(url.absoluteString)
+    }
+
+    private func redactedLogText(_ value: String) -> String {
+        segmentServer?.redactingAccessToken(in: value) ?? value
     }
 
     private func reportError(_ message: String) {
@@ -3670,12 +4549,13 @@ final class AVPlayerBackend {
         let domain = nsError?.domain ?? "unknown"
         let code = nsError?.code ?? 0
         let description = nsError?.localizedDescription ?? "AVPlayer item failed"
-        let failingURL = (nsError?.userInfo[NSURLErrorFailingURLErrorKey] as? URL)?.absoluteString
+        let failingURL = (nsError?.userInfo[NSURLErrorFailingURLErrorKey] as? URL)
+            .map(loggableURLDescription)
         let underlying = (nsError?.userInfo[NSUnderlyingErrorKey] as? NSError).map {
             "\($0.domain)(\($0.code)): \($0.localizedDescription)"
         }
         let latestErrorLog = item.errorLog()?.events.last.map { event in
-            let uri = event.uri ?? "nil"
+            let uri = event.uri.map(redactedLogText) ?? "nil"
             let comment = event.errorComment ?? "nil"
             return "uri=\(uri) status=\(event.errorStatusCode) domain=\(event.errorDomain) comment=\(comment)"
         }

@@ -66,6 +66,28 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
                        body: DeviceLoginPollRequest(deviceCode: deviceCode))
     }
 
+    func remotePlaybackCapability(serverURL: String) async throws -> DeviceLoginCapabilityResponse {
+        try await get(serverURL, "/api/v1/auth/device/capability", query: [:], bearer: nil)
+    }
+
+    func startRemotePlayback(
+        serverURL: String,
+        deviceName: String,
+        devicePlatform: String
+    ) async throws -> DeviceLoginStartResponse {
+        try await post(
+            serverURL,
+            "/api/v1/auth/device/start",
+            bearer: nil,
+            body: DeviceLoginStartRequest(
+                deviceName: deviceName,
+                devicePlatform: devicePlatform,
+                clientPurpose: "remote_playback",
+                temporary: true
+            )
+        )
+    }
+
     // MARK: Companion (authenticated with the chosen server's token)
 
     func lookup(serverURL: String, bearer: String, userCode: String) async throws -> DeviceLookupResponse {
@@ -75,6 +97,32 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
     func approve(serverURL: String, bearer: String, userCode: String) async throws {
         let _: EmptyResponse = try await post(serverURL, "/api/v1/auth/device/approve",
                                               bearer: bearer, body: DeviceApproveRequest(code: userCode))
+    }
+
+    func approveRemotePlayback(
+        serverURL: String,
+        bearer: String,
+        profileId: String,
+        profileToken: String?,
+        userCode: String
+    ) async throws {
+        let _: EmptyResponse = try await post(
+            serverURL,
+            "/api/v1/auth/device/approve-handoff",
+            bearer: bearer,
+            profileId: profileId,
+            profileToken: profileToken,
+            body: DeviceApproveRequest(code: userCode)
+        )
+    }
+
+    func denyRemotePlayback(serverURL: String, bearer: String, userCode: String) async throws {
+        let _: EmptyResponse = try await post(
+            serverURL,
+            "/api/v1/auth/device/deny",
+            bearer: bearer,
+            body: DeviceApproveRequest(code: userCode)
+        )
     }
 
     private struct EmptyResponse: Codable {}
@@ -91,18 +139,32 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         return try await send(request)
     }
 
-    private func post<B: Encodable, R: Decodable>(_ serverURL: String, _ path: String, bearer: String?, body: B) async throws -> R {
+    private func post<B: Encodable, R: Decodable>(
+        _ serverURL: String,
+        _ path: String,
+        bearer: String?,
+        profileId: String? = nil,
+        profileToken: String? = nil,
+        body: B
+    ) async throws -> R {
         guard let url = URL(string: serverURL.appending(path)) else { throw APIError.badURL }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
-        applyHeaders(&request, bearer: bearer)
+        applyHeaders(&request, bearer: bearer, profileId: profileId, profileToken: profileToken)
         return try await send(request)
     }
 
-    private func applyHeaders(_ request: inout URLRequest, bearer: String?) {
+    private func applyHeaders(
+        _ request: inout URLRequest,
+        bearer: String?,
+        profileId: String? = nil,
+        profileToken: String? = nil
+    ) {
         if let bearer { request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization") }
+        if let profileId { request.setValue(profileId, forHTTPHeaderField: "X-Profile-Id") }
+        if let profileToken { request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token") }
         let device = AppleDeviceIdentity.current
         request.setValue(device.id, forHTTPHeaderField: "X-Silo-Device-Id")
         request.setValue(device.name, forHTTPHeaderField: "X-Silo-Device-Name")

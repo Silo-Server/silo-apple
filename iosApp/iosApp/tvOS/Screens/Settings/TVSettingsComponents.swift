@@ -134,12 +134,13 @@ private struct TVSettingsRailRowBody: View {
 
     private var foreground: Color {
         if isDestructive {
-            return isFocused ? Color(hex: "#D22F3F") : .continuumError
+            return isFocused ? .white : .continuumError
         }
         return isFocused ? .continuumBackground : .continuumOnSurface
     }
 
     private var fill: Color {
+        if isDestructive && isFocused { return .continuumError }
         if isFocused { return .continuumOnSurface }
         if isSelected { return .continuumChromeSelectedFill }
         return .clear
@@ -248,28 +249,68 @@ struct TVSettingsToggleRow: View {
     }
 }
 
-/// Read-only fact row (server name, version). Focusable so the d-pad
-/// flows through it naturally, but activating it does nothing — same as
-/// the About rows in the system Settings app.
+/// Visually groups controls owned by a parent setting. Inactive groups
+/// stay in the focus graph so their values remain inspectable, but the
+/// owner is responsible for ignoring edits until `enabled` is true.
+struct TVSettingsNestedGroup<Content: View>: View {
+    let enabled: Bool
+    let content: Content
+
+    init(enabled: Bool, @ViewBuilder content: () -> Content) {
+        self.enabled = enabled
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            content
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.025))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
+        )
+        .padding(.leading, 24)
+        .opacity(enabled ? 1 : 0.42)
+        .accessibilityHint(enabled ? "" : "Turn on the parent setting to make changes")
+    }
+}
+
+/// Read-only fact row (server name, version). It is deliberately not a
+/// focus target; focus should land only on actionable settings rows.
 struct TVSettingsInfoRow: View {
     let title: String
     let value: String
 
     var body: some View {
-        Button {} label: {
-            HStack(spacing: 16) {
-                Text(title)
-                    .font(.system(size: 26))
-                    .lineLimit(1)
-                Spacer(minLength: 16)
-                Text(value)
-                    .font(.system(size: 24))
-                    .opacity(0.68)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            }
+        HStack(spacing: 16) {
+            Text(title)
+                .font(.system(size: 26))
+                .lineLimit(1)
+            Spacer(minLength: 16)
+            Text(value)
+                .font(.system(size: 24))
+                .opacity(0.68)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
-        .buttonStyle(TVSettingsPaneRowStyle())
+        .padding(.horizontal, 24)
+        .padding(.vertical, 17)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .foregroundColor(.continuumOnSurface)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.continuumChromeRestingFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -306,6 +347,103 @@ struct TVSettingsFooter: View {
             .padding(.horizontal, 24)
             .padding(.top, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Confirmation overlay
+
+/// Settings-styled destructive confirmation used instead of the native tvOS
+/// alert, whose app-wide tint can leave focused Cancel text without contrast.
+struct TVSettingsConfirmationOverlay: View {
+    let title: String
+    let message: String
+    let confirmTitle: String
+    var additionalDestructiveTitle: String? = nil
+    let cancel: () -> Void
+    let confirm: () -> Void
+    var additionalDestructiveAction: (() -> Void)? = nil
+
+    @FocusState private var focusedAction: Action?
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.62)
+                .ignoresSafeArea()
+                .onTapGesture(perform: cancel)
+
+            VStack(spacing: 28) {
+                VStack(spacing: 12) {
+                    Text(title)
+                        .font(.system(size: 38, weight: .semibold))
+                        .foregroundColor(.continuumOnSurface)
+
+                    Text(message)
+                        .font(.system(size: 22))
+                        .foregroundColor(.continuumSecondaryText)
+                        .multilineTextAlignment(.center)
+                }
+
+                HStack(spacing: 16) {
+                    Button(action: cancel) {
+                        Text("Cancel")
+                            .font(.system(size: 24, weight: .semibold))
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                        .buttonStyle(TVSettingsPaneRowStyle())
+                        .frame(width: buttonWidth)
+                        .focused($focusedAction, equals: .cancel)
+
+                    Button(action: confirm) {
+                        Text(confirmTitle)
+                            .font(.system(size: 24, weight: .semibold))
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                    }
+                        .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
+                        .frame(width: buttonWidth)
+                        .focused($focusedAction, equals: .confirm)
+
+                    if let additionalDestructiveTitle,
+                       let additionalDestructiveAction {
+                        Button(action: additionalDestructiveAction) {
+                            Text(additionalDestructiveTitle)
+                                .font(.system(size: 24, weight: .semibold))
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.65)
+                        }
+                        .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
+                        .frame(width: buttonWidth)
+                        .focused($focusedAction, equals: .additionalDestructive)
+                    }
+                }
+            }
+            .padding(.horizontal, 48)
+            .padding(.vertical, 42)
+            .background(
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .fill(Color.continuumSurfaceElevated)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+            )
+            .focusSection()
+            .defaultFocus($focusedAction, .cancel, priority: .userInitiated)
+            .onExitCommand(perform: cancel)
+        }
+        .onAppear { focusedAction = .cancel }
+    }
+
+    private enum Action: Hashable {
+        case cancel
+        case confirm
+        case additionalDestructive
+    }
+
+    private var buttonWidth: CGFloat {
+        additionalDestructiveTitle == nil ? 260 : 320
     }
 }
 
@@ -414,13 +552,9 @@ private struct TVSettingsPickerOptionRow: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            Image(systemName: "checkmark")
-                .font(.system(size: 22, weight: .semibold))
-                .opacity(isSelected ? 1 : 0)
-
             VStack(alignment: .leading, spacing: 3) {
                 Text(option.label)
-                    .font(.system(size: 28, weight: .medium))
+                    .font(.system(size: 28, weight: isSelected ? .semibold : .medium))
                     .lineLimit(1)
 
                 if let previewFontName = option.previewFontName {
@@ -432,18 +566,22 @@ private struct TVSettingsPickerOptionRow: View {
             }
 
             Spacer(minLength: 0)
+
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 24, weight: .semibold))
+                .opacity(isSelected ? 1 : 0)
         }
         .foregroundStyle(isFocused ? Color.continuumBackground : .continuumOnSurface)
         .padding(.horizontal, 24)
         .padding(.vertical, 15)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(isFocused ? Color.continuumOnSurface : Color.continuumChromeRestingFill)
+                .fill(backgroundFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(
-                    isFocused ? Color.clear : Color.continuumChromeRestingBorder,
+                    borderColor,
                     lineWidth: 1
                 )
         )
@@ -455,6 +593,18 @@ private struct TVSettingsPickerOptionRow: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel(option.label)
         .accessibilityValue(isSelected ? "Selected" : "")
+    }
+
+    private var backgroundFill: Color {
+        if isFocused { return .continuumOnSurface }
+        if isSelected { return .continuumChromeSelectedFill }
+        return .continuumChromeRestingFill
+    }
+
+    private var borderColor: Color {
+        if isFocused { return .clear }
+        if isSelected { return .continuumChromeSelectedBorder }
+        return .continuumChromeRestingBorder
     }
 }
 

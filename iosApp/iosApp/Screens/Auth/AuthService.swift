@@ -27,6 +27,13 @@ final class AuthService: @unchecked Sendable {
     /// `UserDefaults["profileId"]` key that sync callers still read.
     /// Clearing also invalidates the profile token so the next request
     /// doesn't send a stale `X-Profile-Token` header.
+    ///
+    /// Every write re-evaluates diagnostics eligibility (see the setter): the
+    /// active profile changes through many paths beyond `selectProfile` —
+    /// clearing it to enter profile selection, per-tab profile switches — and a
+    /// child profile can't manage diagnostics, so the synchronous
+    /// breadcrumb/sentinel gate must fail closed on any change until the new
+    /// profile is confirmed non-child.
     var profileId: String? {
         get { defaults.string(forKey: SharedStorage.profileIdKey) }
         set {
@@ -37,6 +44,14 @@ final class AuthService: @unchecked Sendable {
             if newValue == nil {
                 Task { await TokenStore.shared.setProfileToken(nil) }
             }
+            #if os(iOS) || os(tvOS)
+            // Fail the breadcrumb/session/exit-sentinel gate closed on every
+            // profile change, not just the `selectProfile` path, so early
+            // navigation/playback breadcrumbs (or the tvOS marker) can't be
+            // captured under the previous profile's eligibility before the
+            // async child-profile re-check lands.
+            DiagnosticsCoordinator.activeProfileDidChange()
+            #endif
         }
     }
 
@@ -100,7 +115,6 @@ final class AuthService: @unchecked Sendable {
             id: id,
             url: normalized,
             fetchedName: fetchedName,
-            userOverrideName: nil,
             profileId: nil,
             lastUsedAt: Date()
         )
@@ -169,7 +183,10 @@ final class AuthService: @unchecked Sendable {
         try await ContinuumAPI.shared.selectProfile(profileId: profileId, pin: pin)
         // Persist through the profileId setter so the registry entry
         // for the active server also records the selection, enabling
-        // automatic restoration when the user switches back.
+        // automatic restoration when the user switches back. The setter also
+        // re-evaluates diagnostics eligibility (an adult→child switch must
+        // disarm breadcrumb/session/exit-sentinel capture even though the
+        // server/account binding is unchanged).
         self.profileId = profileId
         await clearPerProfileCaches()
         // Re-probe AI capabilities for the newly-selected profile. Fire and
@@ -249,6 +266,16 @@ final class AuthService: @unchecked Sendable {
     /// server. Call `ServerRegistry.shared.remove(serverId:)` to fully
     /// forget a server instead.
     func signOut() async {
+        #if os(iOS) || os(tvOS)
+        // Purge the active binding now, while still authenticated: the /logout
+        // below invalidates the session, after which the binding could only be
+        // resolved from the last-known snapshot. The registry-wide purge always
+        // runs in ServerRegistry.signOut regardless, catching diagnostics under
+        // older server_instance_ids for this URL.
+        let purgedCurrentBinding = await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
+        #else
+        let purgedCurrentBinding = false
+        #endif
         // Best-effort server-side logout; never block sign-out on a
         // server-side error, since the client wants to end the session
         // regardless.
@@ -258,7 +285,12 @@ final class AuthService: @unchecked Sendable {
             // Swallow; state will still be cleared locally.
         }
         if let activeId = ServerRegistry.shared.activeServerId {
-            await ServerRegistry.shared.signOut(serverId: activeId)
+            // Only skip the redundant current-binding purge if it already
+            // succeeded above; the registry-wide purge runs either way.
+            await ServerRegistry.shared.signOut(
+                serverId: activeId,
+                purgeCurrentBinding: !purgedCurrentBinding
+            )
         } else {
             await TokenStore.shared.clearTokens()
         }
@@ -279,5 +311,21 @@ final class AuthService: @unchecked Sendable {
         #if os(tvOS)
         ItemDetailCache.shared.clearAll()
         #endif
+    }
+
+    /// A remote-playback handoff changes server/account/profile without
+    /// touching the persistent registry. Treat both entry and restoration as
+    /// full auth boundaries so cached user data cannot cross identities.
+    @MainActor
+    func clearCachesForTemporaryIdentityChange() {
+        clearAllCaches()
+    }
+
+    /// A server switch is the same hard identity boundary as sign-out for
+    /// process-wide response and prefetch caches, even when both servers are
+    /// already authenticated and the router's auth state does not change.
+    @MainActor
+    func clearCachesForServerChange() {
+        clearAllCaches()
     }
 }

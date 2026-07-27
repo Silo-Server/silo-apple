@@ -21,6 +21,29 @@ private struct PersistedControlTarget: Codable {
     let serverName: String?
 }
 
+private enum SiloControlHandoffError: LocalizedError {
+    case updateRequired
+    case timedOut
+    case cancelled(String)
+    case identityChanged
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .updateRequired:
+            return "Update Silo on the TV to play with your profile."
+        case .timedOut:
+            return "The TV took too long to prepare your profile."
+        case .cancelled(let message):
+            return message
+        case .identityChanged:
+            return "Your server or profile changed. Try playing again."
+        case .invalidResponse:
+            return "The TV could not verify your playback profile."
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class SiloControlClient {
@@ -60,6 +83,11 @@ final class SiloControlClient {
     /// frames (and presenting the player twice) for the same in-flight
     /// connection.
     private var launchInFlight = false
+    private var negotiatedVersion: Int?
+    private var pendingHandoffRequestId: String?
+    private var handoffChallenge: SiloControlHandoffChallenge?
+    private var handoffReady: SiloControlHandoffReady?
+    private var handoffCancellation: SiloControlHandoffCancel?
     private var missedHeartbeats = 0
     private(set) var lastTarget: SiloControlTarget?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
@@ -78,12 +106,16 @@ final class SiloControlClient {
     }
 
     @discardableResult
-    func connect(to target: SiloControlTarget, origin: SiloControlConnectOrigin = .user) async -> Bool {
+    func connect(
+        to target: SiloControlTarget,
+        origin: SiloControlConnectOrigin = .user,
+        allowCrossServer: Bool = false
+    ) async -> Bool {
         guard let activeServerId = ServerRegistry.shared.activeServerId else {
             errorMessage = "Choose a server before controlling a TV."
             return false
         }
-        guard target.serverId == activeServerId else {
+        guard target.serverId == activeServerId || (allowCrossServer && target.protocolVersion >= 2) else {
             errorMessage = "That TV is connected to a different server."
             return false
         }
@@ -110,12 +142,14 @@ final class SiloControlClient {
 
         await closeCurrentSession(sendClose: true)
 
-        Self.logger.info("control: connecting to \(target.name, privacy: .public) origin=\(String(describing: origin), privacy: .public)")
+        Self.logger.info("control: connecting origin=\(String(describing: origin), privacy: .public)")
         isConnecting = true
         errorMessage = nil
         activeTarget = target
         lastTarget = target
         state = nil
+        negotiatedVersion = nil
+        resetPendingHandoff()
         // Connecting alone doesn't take over the screen — the mini-bar surfaces
         // the session. The full remote only auto-presents once content launches
         // (see `launch()`) or when the user taps the mini-bar.
@@ -136,7 +170,7 @@ final class SiloControlClient {
         }
         isConnecting = false
         let connected = self.connectionId == connectionId && self.session != nil
-        if connected {
+        if connected, target.serverId == activeServerId {
             persistLastTarget(target)
         }
         return connected
@@ -146,12 +180,14 @@ final class SiloControlClient {
         // Sending content to a TV always opens the remote — show it up front so
         // the connect handshake renders inside the cover, not behind a mini-bar.
         isShowingRemoteControl = true
-        guard await connect(to: target) else { return }
+        guard await connect(to: target, allowCrossServer: true) else { return }
         await launch(request)
     }
 
     func launch(_ request: SiloControlPlaybackRequest) async {
-        guard let activeServerId = ServerRegistry.shared.activeServerId else {
+        guard let activeServer = ServerRegistry.shared.activeServer,
+              let profileId = activeServer.profileId,
+              !profileId.isEmpty else {
             errorMessage = "Choose a server before controlling a TV."
             return
         }
@@ -171,11 +207,144 @@ final class SiloControlClient {
 
         let connectionId = self.connectionId
         do {
-            try await session.send(.launch(SiloControlLaunchRequest(serverId: activeServerId, playback: request)))
+            let profileName = (try? await AuthService.shared.getProfiles())?
+                .first(where: { $0.id == profileId })?
+                .name
+            let ready = try await prepareRemoteIdentity(
+                server: activeServer,
+                profileId: profileId,
+                profileName: profileName,
+                session: session
+            )
+            guard ready.serverId == activeServer.id, ready.profileId == profileId else {
+                throw SiloControlHandoffError.invalidResponse
+            }
+            adoptEffectiveTarget(server: activeServer)
+            try await session.send(.launch(SiloControlLaunchRequest(serverId: activeServer.id, playback: request)))
             isConnecting = false
         } catch {
             fail(error.localizedDescription, connectionId: connectionId)
         }
+    }
+
+    private func prepareRemoteIdentity(
+        server: ServerEntry,
+        profileId: String,
+        profileName: String?,
+        session: SiloControlSession
+    ) async throws -> SiloControlHandoffReady {
+        guard await waitForVersionNegotiation() == 2 else {
+            throw SiloControlHandoffError.updateRequired
+        }
+        guard await TokenStore.shared.getAccessToken() != nil else {
+            throw SiloControlHandoffError.identityChanged
+        }
+
+        let requestId = UUID().uuidString
+        pendingHandoffRequestId = requestId
+        handoffChallenge = nil
+        handoffReady = nil
+        handoffCancellation = nil
+
+        try await session.send(.handoffOffer(SiloControlHandoffOffer(
+            requestId: requestId,
+            serverId: server.id,
+            serverURL: server.url,
+            serverName: server.displayName,
+            profileId: profileId,
+            profileName: profileName
+        )))
+
+        let challenge = try await waitForHandoffChallenge(requestId: requestId)
+        do {
+            try ensureActiveIdentity(serverId: server.id, profileId: profileId)
+
+            let lookup: DeviceLookupResponse = try await HTTPClient.shared.get(
+                "/api/v1/auth/device",
+                query: ["code": challenge.userCode]
+            )
+            guard lookup.matchCode == challenge.matchCode,
+                  lookup.clientPurpose == "remote_playback",
+                  lookup.temporary == true else {
+                throw SiloControlHandoffError.invalidResponse
+            }
+
+            try ensureActiveIdentity(serverId: server.id, profileId: profileId)
+            try await HTTPClient.shared.postVoid(
+                "/api/v1/auth/device/approve-handoff",
+                body: DeviceApproveRequest(code: challenge.userCode)
+            )
+
+            let ready = try await waitForHandoffReady(requestId: requestId)
+            try ensureActiveIdentity(serverId: server.id, profileId: profileId)
+            resetPendingHandoff()
+            return ready
+        } catch {
+            try? await HTTPClient.shared.postVoid(
+                "/api/v1/auth/device/deny",
+                body: DeviceApproveRequest(code: challenge.userCode)
+            )
+            resetPendingHandoff()
+            throw error
+        }
+    }
+
+    private func waitForVersionNegotiation() async -> Int? {
+        for _ in 0..<100 {
+            if let negotiatedVersion { return negotiatedVersion }
+            try? await Task.sleep(for: .milliseconds(50))
+            if Task.isCancelled { return nil }
+        }
+        return nil
+    }
+
+    private func waitForHandoffChallenge(requestId: String) async throws -> SiloControlHandoffChallenge {
+        for _ in 0..<200 {
+            if let cancellation = handoffCancellation, cancellation.requestId == requestId {
+                throw SiloControlHandoffError.cancelled(cancellation.message ?? "The TV cancelled profile setup.")
+            }
+            if let challenge = handoffChallenge, challenge.requestId == requestId {
+                return challenge
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw SiloControlHandoffError.timedOut
+    }
+
+    private func waitForHandoffReady(requestId: String) async throws -> SiloControlHandoffReady {
+        for _ in 0..<600 {
+            if let cancellation = handoffCancellation, cancellation.requestId == requestId {
+                throw SiloControlHandoffError.cancelled(cancellation.message ?? "The TV cancelled profile setup.")
+            }
+            if let ready = handoffReady, ready.requestId == requestId {
+                return ready
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw SiloControlHandoffError.timedOut
+    }
+
+    private func ensureActiveIdentity(serverId: String, profileId: String) throws {
+        guard ServerRegistry.shared.activeServerId == serverId,
+              ServerRegistry.shared.activeProfileId == profileId else {
+            throw SiloControlHandoffError.identityChanged
+        }
+    }
+
+    private func adoptEffectiveTarget(server: ServerEntry) {
+        guard let target = activeTarget else { return }
+        let effective = SiloControlTarget(
+            id: target.id,
+            name: target.name,
+            endpoint: target.endpoint,
+            serverId: server.id,
+            serverName: server.displayName,
+            protocolVersion: target.protocolVersion,
+            isPlaying: true
+        )
+        activeTarget = effective
+        lastTarget = effective
+        persistLastTarget(effective)
     }
 
     func send(_ command: SiloControlCommand) {
@@ -313,7 +482,7 @@ final class SiloControlClient {
             }
             guard let self, let match else { return }
 
-            Self.logger.info("control: auto-resume probe found playing TV \(match.name, privacy: .public)")
+            Self.logger.info("control: auto-resume probe found playing TV")
             self.isAutoResuming = true
             guard await self.connect(to: match, origin: .autoResume) else {
                 self.isAutoResuming = false
@@ -364,8 +533,17 @@ final class SiloControlClient {
         // path dead, send path alive) keeps the session pinned open. See the
         // matching note in TVControlReceiver.handle.
         switch message {
-        case .hello:
-            break
+        case .hello(let hello):
+            negotiatedVersion = SiloControlProtocol.negotiatedVersion(with: hello.supportedVersions)
+        case .handoffChallenge(let challenge):
+            guard challenge.requestId == pendingHandoffRequestId else { return }
+            handoffChallenge = challenge
+        case .handoffReady(let ready):
+            guard ready.requestId == pendingHandoffRequestId else { return }
+            handoffReady = ready
+        case .handoffCancel(let cancel):
+            guard cancel.requestId == pendingHandoffRequestId else { return }
+            handoffCancellation = cancel
         case .state(let state):
             self.state = state
             clock.ingest(state)
@@ -402,7 +580,7 @@ final class SiloControlClient {
             session?.enqueue(.pong)
         case .pong:
             missedHeartbeats = 0
-        case .launch, .control:
+        case .launch, .control, .handoffOffer:
             break
         }
     }
@@ -485,6 +663,8 @@ final class SiloControlClient {
         isConnecting = false
         isAutoResuming = false
         sessionIsAutoResumed = false
+        negotiatedVersion = nil
+        resetPendingHandoff()
         detachNowPlaying()
         session = nil
         readTask?.cancel()
@@ -504,6 +684,8 @@ final class SiloControlClient {
         isReconnecting = false
         isAutoResuming = false
         sessionIsAutoResumed = false
+        negotiatedVersion = nil
+        resetPendingHandoff()
         pendingReconnectReason = nil
         lastTarget = nil
         session = nil
@@ -539,6 +721,8 @@ final class SiloControlClient {
         read?.cancel()
         state = nil
         activeTarget = nil
+        negotiatedVersion = nil
+        resetPendingHandoff()
         detachNowPlaying()
         endBackgroundRemoteControlGracePeriod()
         wasBackgroundedWithActiveSession = false
@@ -591,8 +775,15 @@ final class SiloControlClient {
             deviceId: device.id,
             serverId: server?.id,
             serverName: server?.displayName,
-            supportedVersions: [SiloControlProtocol.version]
+            supportedVersions: SiloControlProtocol.supportedVersions
         ))
+    }
+
+    private func resetPendingHandoff() {
+        pendingHandoffRequestId = nil
+        handoffChallenge = nil
+        handoffReady = nil
+        handoffCancellation = nil
     }
 
     private func updateNowPlaying(for state: SiloControlPlaybackState) {

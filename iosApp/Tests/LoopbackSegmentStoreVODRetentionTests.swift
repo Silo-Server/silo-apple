@@ -114,7 +114,7 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         XCTAssertTrue(store.vodProducerMayAppend(segmentIndex: 9), "window follows the consumer")
     }
 
-    func testProducerByteBudgetBackpressure() {
+    func testProducerWindowIsIndependentOfSegmentByteSize() {
         let store = LoopbackSegmentStore(
             generation: 1,
             memoryBudgetBytes: 64 * 1024 * 1024,
@@ -123,23 +123,44 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         store.configureVODRetention(
             budgetBytes: 10_000_000,
             forwardWindow: 10,
-            backwardWindow: 2,
-            forwardByteBudget: 1 << 20
+            backwardWindow: 2
         )
         store.declareVODTarget(0)
-        // Fill the forward byte budget with segments inside the count window.
         let bigPayload = Data(repeating: 0xEF, count: 600 * 1024)
-        _ = store.putSegment(name: segName(1), data: bigPayload, duration: 4)
-        _ = store.putSegment(name: segName(2), data: bigPayload, duration: 4)
-        // Floor: the next few segments stay producible regardless of bytes.
-        XCTAssertTrue(store.vodProducerMayAppend(segmentIndex: 3), "min-segments floor")
-        // Beyond the floor the byte gate parks the producer even though the
-        // count window (target+10) would allow it.
-        XCTAssertFalse(store.vodProducerMayAppend(segmentIndex: 4), "byte budget exhausted")
-        // Consumption moves the target; the fetched segments are no longer
-        // forward bytes and the gate reopens.
-        store.declareVODTarget(2)
-        XCTAssertTrue(store.vodProducerMayAppend(segmentIndex: 4), "gate follows the consumer")
+        for index in 0...9 {
+            _ = store.putSegment(name: segName(index), data: bigPayload, duration: 4)
+        }
+        XCTAssertTrue(store.vodProducerMayAppend(segmentIndex: 10))
+        XCTAssertFalse(store.vodProducerMayAppend(segmentIndex: 11))
+    }
+
+    func testVODSpillDirectoryIsUniqueAcrossGenerationReuse() throws {
+        let first = makeVODStore(budget: 1 << 20)
+        let second = makeVODStore(budget: 1 << 20)
+        let firstDirectory = try XCTUnwrap(first.spillDirectoryForTesting)
+        let secondDirectory = try XCTUnwrap(second.spillDirectoryForTesting)
+        XCTAssertNotEqual(firstDirectory, secondDirectory)
+    }
+
+    func testVODDiskWriteRecreatesDeletedSessionDirectory() throws {
+        let store = makeVODStore(budget: 1 << 20)
+        let directory = try XCTUnwrap(store.spillDirectoryForTesting)
+        try FileManager.default.removeItem(at: directory)
+
+        let payload = Data(repeating: 0xA5, count: 4_096)
+        _ = store.putSegment(name: segName(0), data: payload, duration: 4)
+
+        guard case .found(let resource) = store.resource(
+            path: segName(0), waitForNearFuture: false
+        ) else {
+            return XCTFail("segment must survive a deleted spill directory")
+        }
+        guard case .disk(let url, let byteCount, _) = resource else {
+            return XCTFail("retried VOD write should remain disk-first")
+        }
+        XCTAssertEqual(byteCount, payload.count)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(store.stats().memoryBytes, 0)
     }
 
     func testWaitForSegmentReturnsWhenProducerFills() {
@@ -244,174 +265,6 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
             return XCTFail("expected .missing on deadline")
         }
         XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.35)
-    }
-
-    // MARK: - Spill-exhaustion relief (living-room deadlock)
-
-    /// 12 puts against a 1-byte memory budget: the memory evictor keeps the
-    /// newest 2 (the byte-capped eviction floor's hard minimum — the 1-byte
-    /// memory budget makes every resident byte over-cap) in memory, spills
-    /// segments 0...3 to disk exactly filling the 64-byte spill budget, and
-    /// drops the middle segments once spill is exhausted.
-    private func makeSpillFullStore(retentionBudget: Int64) -> LoopbackSegmentStore {
-        let store = LoopbackSegmentStore(
-            generation: 1,
-            memoryBudgetBytes: 1,
-            spillPolicy: .enabled(reason: "test", maxBytes: 64)
-        )
-        store.configureVODRetention(
-            budgetBytes: retentionBudget, forwardWindow: 3, backwardWindow: 2
-        )
-        let payload = Data(repeating: 0xEF, count: 16)
-        for index in 0...11 {
-            _ = store.putSegment(name: segName(index), data: payload, duration: 4)
-        }
-        return store
-    }
-
-    func testMakeRoomForAppendForceEvictsSpilledFarFromTarget() {
-        // Retention budget far above the payload: the normal prune
-        // volunteers nothing — the append only fits if force-evict
-        // reclaims the spilled segment farthest from the consumer's target.
-        let store = makeSpillFullStore(retentionBudget: 1_000_000)
-        store.declareVODTarget(11)
-        XCTAssertEqual(store.stats().tempSpillBytes, 64, "spill budget should be exactly full")
-
-        XCTAssertTrue(store.makeRoomForAppend(byteCount: 16))
-
-        if case .found = store.resource(path: segName(0), waitForNearFuture: false) {
-            XCTFail("farthest-from-target spilled segment should have been force-evicted")
-        }
-        // Force-evicted segments are regenerable: .missing, never .gone.
-        if case .gone = store.resource(path: segName(0), waitForNearFuture: false) {
-            XCTFail("force-evicted VOD segment must not be terminal")
-        }
-        // Only the farthest spilled segment goes; nearer spill and the
-        // in-memory tail survive.
-        guard case .found = store.resource(path: segName(3), waitForNearFuture: false) else {
-            return XCTFail("nearer spilled segment must survive")
-        }
-        guard case .found = store.resource(path: segName(11), waitForNearFuture: false) else {
-            return XCTFail("target segment must survive force-evict")
-        }
-        XCTAssertLessThanOrEqual(store.stats().tempSpillBytes + 16, 64)
-    }
-
-    func testMakeRoomForAppendSparesTargetNeighborhood() {
-        // Target near the spilled tail: segments 0...3 sit inside
-        // [target − backward, target + forward] — force-evict must refuse
-        // to free room rather than evict under the playhead.
-        let store = makeSpillFullStore(retentionBudget: 1_000_000)
-        store.declareVODTarget(1)
-        XCTAssertFalse(store.makeRoomForAppend(byteCount: 16))
-        for index in 0...3 {
-            guard case .found = store.resource(path: segName(index), waitForNearFuture: false) else {
-                return XCTFail("in-window spilled segment \(index) must survive")
-            }
-        }
-    }
-
-    func testZeroBudgetConfigurationClampsToFloorInsteadOfDisabling() {
-        // A non-positive configured budget must not leave retention off
-        // (a 0 budget reads as "not configured" and disables every prune
-        // path). Behavior proxy: makeRoomForAppend gates on a configured
-        // retention, so it must still force-evict after a 0-budget
-        // configure.
-        let store = makeSpillFullStore(retentionBudget: 0)
-        store.declareVODTarget(11)
-        XCTAssertTrue(store.makeRoomForAppend(byteCount: 16))
-        if case .found = store.resource(path: segName(0), waitForNearFuture: false) {
-            XCTFail("retention must stay active on a degenerate budget")
-        }
-    }
-
-    func testMakeRoomForAppendSatisfiesTheWriterAppendGate() {
-        // Relief must be judged by the writer's actual append criterion
-        // (spill bytes plus the memory segments the append would displace),
-        // not by byteCount alone: with memory-resident segments larger than
-        // the spilled ones, a byteCount-only stop condition reports fits
-        // while canAppendSegment keeps refusing, and the writer spins its
-        // full capacity-wait deadline.
-        let store = LoopbackSegmentStore(
-            generation: 1,
-            memoryBudgetBytes: 1,
-            spillPolicy: .enabled(reason: "test", maxBytes: 64)
-        )
-        store.configureVODRetention(
-            budgetBytes: 1_000_000, forwardWindow: 3, backwardWindow: 2
-        )
-        for index in 0...3 {
-            _ = store.putSegment(
-                name: segName(index), data: Data(repeating: 0xAA, count: 16), duration: 4
-            )
-        }
-        for index in 4...11 {
-            _ = store.putSegment(
-                name: segName(index), data: Data(repeating: 0xBB, count: 32), duration: 4
-            )
-        }
-        store.declareVODTarget(11)
-        XCTAssertTrue(store.makeRoomForAppend(byteCount: 4))
-        XCTAssertTrue(
-            store.canAppendSegment(byteCount: 4),
-            "relief reporting fits=true must actually unblock the append gate"
-        )
-    }
-
-    func testPruneDuringInFlightSpillDoesNotResurrectSegment() {
-        // Reproduces the evict-while-spilling race deterministically via the
-        // spill-write interlude seam: while the memory evictor's disk write
-        // for seg 0 is in flight (the store lock is released), a consumer
-        // GET's declareVODTarget prunes the spilling name. Finishing the
-        // spill must NOT re-register the segment — that would resurrect a
-        // prune victim whose bytes no longer count against the spill budget
-        // and double-deduct them on its next eviction.
-        let store = LoopbackSegmentStore(
-            generation: 1,
-            memoryBudgetBytes: 1,
-            spillPolicy: .enabled(reason: "test", maxBytes: 1_024)
-        )
-        store.configureVODRetention(budgetBytes: 64, forwardWindow: 3, backwardWindow: 2)
-        store.spillWriteInterludeForTesting = { [weak store] in
-            store?.spillWriteInterludeForTesting = nil
-            store?.declareVODTarget(20)
-        }
-        let payload = Data(repeating: 0xEF, count: 16)
-        for index in 0...8 {
-            _ = store.putSegment(name: segName(index), data: payload, duration: 4)
-        }
-        if case .found = store.resource(path: segName(0), waitForNearFuture: false) {
-            XCTFail("segment pruned mid-spill must not be resurrected")
-        }
-        // Pruned-while-spilling stays regenerable: .missing, never .gone.
-        if case .gone = store.resource(path: segName(0), waitForNearFuture: false) {
-            XCTFail("segment pruned mid-spill must not be terminal")
-        }
-        let stats = store.stats()
-        // Later evictions may legitimately spill other segments (the
-        // byte-capped floor evicts below 8 residents); the invariant under
-        // test is accounting consistency — an aborted spill that
-        // re-registered would double-deduct and break the equality.
-        XCTAssertEqual(
-            stats.tempSpillBytes,
-            Int64(stats.spilledSegmentCount * 16),
-            "spill accounting must match registered spills exactly"
-        )
-    }
-
-    func testRetentionPruneSeesSpilledSegments() {
-        // The living-room deadlock: spilled names leave `segmentOrder`, so
-        // an order-based prune inventory never saw them and retention never
-        // evicted a spilled byte. With a budget below the spilled payload,
-        // declaring a far target must now evict spilled history.
-        let store = makeSpillFullStore(retentionBudget: 80)
-        store.declareVODTarget(11)
-        // Retained bytes: 2 resident (32) + 4 spilled (64) = 96 > 80 —
-        // the farthest spilled segment must go.
-        if case .found = store.resource(path: segName(0), waitForNearFuture: false) {
-            XCTFail("spilled history beyond the retention budget must be pruned")
-        }
-        XCTAssertLessThan(store.stats().tempSpillBytes, 64)
     }
 
     // MARK: - Consumer-fetch wedge signal (start-over deadlock, 2026-07-06)

@@ -109,7 +109,7 @@ private func expectEventually(
 }
 
 private func entry(_ id: String, name: String) -> ServerEntry {
-    ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, userOverrideName: nil, profileId: nil, lastUsedAt: Date())
+    ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, profileId: nil, lastUsedAt: Date())
 }
 
 private let approvedPoll = DeviceLoginPollResponse(
@@ -119,6 +119,50 @@ private let approvedPoll = DeviceLoginPollResponse(
 private let pendingPoll = DeviceLoginPollResponse(
     status: "pending", pollAfter: 1, accessToken: nil, refreshToken: nil, expiresIn: nil, user: nil
 )
+
+// MARK: - Server session persistence
+
+@MainActor
+final class ServerSessionPersistenceTests: XCTestCase {
+    /// Companion authorization may install a different user's credentials for
+    /// an existing URL. That boundary must not inherit the previous account's
+    /// profile, while ordinary metadata upserts continue preserving it.
+    func testNewSessionUpsertClearsExistingProfileAndRefreshesServerName() {
+        let suiteName = "ServerSessionPersistenceTests.suite.\(UUID().uuidString)"
+        let standardName = "ServerSessionPersistenceTests.standard.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        let standard = UserDefaults(suiteName: standardName)!
+        defer {
+            suite.removePersistentDomain(forName: suiteName)
+            standard.removePersistentDomain(forName: standardName)
+        }
+
+        let registry = ServerRegistry(
+            defaults: SharedDefaults(suite: suite, standard: standard),
+            keychain: SharedKeychain(service: "ServerSessionPersistenceTests.\(UUID().uuidString)", accessGroup: nil)
+        )
+        let serverID = ServerRegistry.serverId(for: "https://home.example")
+        registry.addOrUpdate(ServerEntry(
+            id: serverID,
+            url: "https://home.example",
+            fetchedName: "Home",
+            profileId: "OLD-PROFILE",
+            lastUsedAt: Date()
+        ))
+
+        registry.addOrUpdate(ServerEntry(
+            id: serverID,
+            url: "https://home.example",
+            fetchedName: "Home Renamed",
+            profileId: nil,
+            lastUsedAt: Date()
+        ), preservingProfile: false)
+
+        XCTAssertNil(registry.entry(with: serverID)?.profileId)
+        XCTAssertEqual(registry.entry(with: serverID)?.fetchedName, "Home Renamed")
+        XCTAssertEqual(registry.entry(with: serverID)?.displayName, "Home Renamed")
+    }
+}
 
 // MARK: - Companion
 

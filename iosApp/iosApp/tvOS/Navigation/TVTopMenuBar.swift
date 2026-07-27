@@ -65,11 +65,13 @@ enum TVLibraryTabType: String, CaseIterable, Hashable {
         }
     }
 
-    /// Whether a server library belongs under this tab.
+    /// Whether a server library belongs under this tab. A mixed library
+    /// (movies + series in one folder) belongs to both video tabs — it stays
+    /// one browsable library, reachable from either dropdown.
     func matches(_ library: Library) -> Bool {
         switch self {
-        case .movies: return library.type == "movies"
-        case .series: return library.isSeriesLibrary
+        case .movies: return library.type == "movies" || library.isMixedLibrary
+        case .series: return library.isSeriesLibrary || library.isMixedLibrary
         case .music: return library.type == "music"
         case .audiobooks: return library.isAudiobookLibrary
         }
@@ -92,8 +94,9 @@ enum TVRootDestination: Hashable {
     }
 }
 
-/// Skyline top bar: wordmark left, type-derived tabs centered, search +
-/// profile avatar right (§5.1). The bar is custom on purpose — the system
+/// Skyline top bar: wordmark left, search + type-derived tabs centered
+/// (search sits just left of Home; the tabs stay screen-centered), profile
+/// avatar right (§5.1). The bar is custom on purpose — the system
 /// `TabView` sidebar steals leftward focus — and draws no background band;
 /// it floats over each page's own scrim and dims to 70% while focus is
 /// down in the content zone.
@@ -293,20 +296,26 @@ struct TVTopMenuBar: View {
 
     private var tabCluster: some View {
         HStack(spacing: ContinuumTheme.Skyline.tabSpacing) {
+            searchButton
+
             ForEach(Array(roots.enumerated()), id: \.element) { index, root in
                 rootButton(root, index: index, count: roots.count)
             }
+
+            // Invisible twin of the search button so the tab group itself
+            // stays centered on screen with search sitting to its left.
+            Color.clear
+                .frame(
+                    width: ContinuumTheme.Skyline.barIconSize,
+                    height: ContinuumTheme.Skyline.barIconSize
+                )
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .frame(height: ContinuumTheme.Skyline.barHeight)
     }
 
     private var trailingCluster: some View {
-        HStack(spacing: ContinuumTheme.Skyline.barTrailingSpacing) {
-            searchButton
-
-            profileButton
-        }
+        profileButton
     }
 
     // MARK: - Tabs

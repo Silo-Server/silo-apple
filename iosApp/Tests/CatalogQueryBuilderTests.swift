@@ -47,6 +47,39 @@ final class CatalogQueryBuilderTests: XCTestCase {
         XCTAssertNil(build(.none, mediaType: .series, includeType: false)["type"])
     }
 
+    func testMixedLibraryTypeScope() {
+        XCTAssertNil(build(.none, mediaType: .mixed, includeType: true)["type"],
+                     "mixed browses merged — no library-derived scope")
+
+        // The user-chosen Type facet is a grouped filter, even when includeType
+        // is false (the iOS path), and wins over the library-derived scope.
+        var s = CatalogFilterState(); s.mediaScope = "series"
+        let q = build(s, mediaType: .mixed, includeType: false)
+        XCTAssertNil(q["type"], "Type facet must not become unconditional media_scope")
+        XCTAssertEqual(q["groups[0][match]"], "all")
+        XCTAssertEqual(q["groups[0][rules][0][field]"], "type")
+        XCTAssertEqual(q["groups[0][rules][0][op]"], "is")
+        XCTAssertEqual(q["groups[0][rules][0][value]"], "series")
+
+        let includeTypeQuery = build(s, mediaType: .mixed, includeType: true)
+        XCTAssertNil(includeTypeQuery["type"], "mixed library Type facet stays matchable")
+    }
+
+    func testMixedTypeFacetParticipatesInMatchAny() {
+        var s = CatalogFilterState()
+        s.matchAll = false
+        s.mediaScope = "movie"
+        s.genres = ["Drama"]
+
+        let q = build(s, mediaType: .mixed)
+        XCTAssertEqual(q["match"], "any")
+        XCTAssertNil(q["type"])
+        XCTAssertEqual(q["groups[0][rules][0][field]"], "type")
+        XCTAssertEqual(q["groups[0][rules][0][value]"], "movie")
+        XCTAssertEqual(q["groups[1][rules][0][field]"], "genre")
+        XCTAssertEqual(q["groups[1][rules][0][value]"], "Drama")
+    }
+
     func testMultiGenreBecomesOneAnyGroup() {
         var s = CatalogFilterState(); s.genres = ["Drama", "Action"]
         let q = build(s)

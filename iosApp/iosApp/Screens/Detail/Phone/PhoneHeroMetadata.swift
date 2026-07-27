@@ -114,11 +114,6 @@ enum PhoneHeroMetadata {
             default: break
             }
         }
-        if let tagline = detail.tagline?
-            .trimmingCharacters(in: .whitespaces), !tagline.isEmpty,
-           tagline.count <= 44 {
-            return tagline
-        }
         return nil
     }
 

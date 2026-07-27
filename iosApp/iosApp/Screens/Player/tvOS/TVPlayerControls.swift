@@ -1,6 +1,15 @@
 #if os(tvOS)
 import SwiftUI
 
+enum TVPlayerTimeDisplayMode: Equatable {
+    case elapsedRemaining
+    case currentAndFinish
+
+    mutating func toggle() {
+        self = self == .elapsedRemaining ? .currentAndFinish : .elapsedRemaining
+    }
+}
+
 /// tvOS player overlay. Post-redesign the idle state is VidHub-minimal:
 /// no hero strip, thin scrubber, icon-only transport row along the bottom.
 /// When the user opens the options panel, the idle overlay steps aside and
@@ -10,6 +19,10 @@ import SwiftUI
 /// depending on what's on screen.
 struct TVPlayerControls: View {
     let viewModel: PlayerViewModel
+    let showsTimelinePreview: Bool
+    let timeDisplayMode: TVPlayerTimeDisplayMode
+    let timelineSelectionRequest: UUID?
+    let onToggleTimeDisplayMode: () -> Void
     let onDismiss: () -> Void
 
     @Environment(\.scenePhase) private var scenePhase
@@ -28,6 +41,10 @@ struct TVPlayerControls: View {
     /// puck). Held here so the transport cluster can leave the focus graph
     /// while the scrub is modal.
     @State private var isTimelineScrubbing: Bool = false
+    /// Tracks whether the current explicit timeline session interrupted
+    /// active playback. Exiting a timeline opened from an already-paused
+    /// HUD must leave playback paused, while Select from playing resumes.
+    @State private var resumePlaybackAfterTimelineSelection = false
     /// True while the scrubber owns focus. The transport row leaves the
     /// focus graph for that duration so a Down press has no native target:
     /// the engine otherwise moves focus geometrically — to whichever button
@@ -38,6 +55,10 @@ struct TVPlayerControls: View {
     /// any other reason (intro skip, HUD) so direction moves into the row
     /// keep working from elsewhere.
     @State private var trapsTransportFocus = false
+    /// A touch-surface contact can toggle the full HUD's clock labels only
+    /// if it ends as a light touch. Select and drag interactions clear this
+    /// candidate so their existing transport behavior remains exclusive.
+    @State private var fullHUDContactCanToggle = false
 
     // Focus states. SwiftUI's focus engine only holds focus on one
     // focusable at a time, so selecting one of these implicitly clears the
@@ -55,6 +76,10 @@ struct TVPlayerControls: View {
 
     var body: some View {
         ZStack {
+            if showsTimelinePreview && !viewModel.showControls && !isHUDPresented {
+                timelinePreviewOverlay
+                    .transition(.opacity)
+            }
             // Idle overlay and HUD are mutually exclusive. Stacking both
             // confused the focus engine (scrubber clicks bleeding into
             // hidden transport buttons) and added visual noise from the
@@ -77,6 +102,29 @@ struct TVPlayerControls: View {
                 .transition(.opacity)
             }
         }
+        .background {
+            TVTouchSurfaceContactGestureView(
+                // Keep the raw contact observer active in both normal HUD
+                // and timeline-selection states. Its simultaneous-recognition
+                // delegate lets an actual pan continue to own scrubbing.
+                isActive: viewModel.showControls && !isHUDPresented,
+                onContactBegan: {
+                    fullHUDContactCanToggle = true
+                },
+                onContactEnded: {
+                    guard fullHUDContactCanToggle else { return }
+                    fullHUDContactCanToggle = false
+                    onToggleTimeDisplayMode()
+                },
+                onContactCancelled: {
+                    fullHUDContactCanToggle = false
+                },
+                onDirectionalPressBegan: {
+                    fullHUDContactCanToggle = false
+                }
+            )
+            .frame(width: 1, height: 1)
+        }
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isHUDPresented)
         // Menu / exit handling intentionally lives at the `PlayerView` level
         // rather than here. That higher handler reads `viewModel.isHUDPresented`
@@ -84,6 +132,7 @@ struct TVPlayerControls: View {
         // the HUD's tab pill — adding a handler here would consume Menu while
         // the HUD is closed and break the "dismiss controls first" path.
         .onChange(of: isHUDPresented) { _, presented in
+            fullHUDContactCanToggle = false
             if !presented {
                 cancelPendingScrub = false
                 focusedHUDTab = nil
@@ -114,6 +163,17 @@ struct TVPlayerControls: View {
             guard let entryPoint else { return }
             applyHUDEntryPoint(entryPoint)
             viewModel.consumeTVHUDEntryRequest()
+        }
+        .onChange(of: timelineSelectionRequest) { _, request in
+            guard request != nil else { return }
+            fullHUDContactCanToggle = false
+            // PlayerView only issues this request from its playing Select
+            // path, immediately after pausing the backend.
+            resumePlaybackAfterTimelineSelection = true
+            enterTimelineSelection()
+        }
+        .onChange(of: viewModel.showControls) { _, _ in
+            fullHUDContactCanToggle = false
         }
         // Re-arm the auto-hide whenever focus moves between transport controls,
         // so navigating the overlay doesn't let the fixed 5s timer hide it (and
@@ -161,6 +221,55 @@ struct TVPlayerControls: View {
     }
 
     // MARK: - Idle overlay
+
+    private var timelinePreviewOverlay: some View {
+        ZStack(alignment: .bottom) {
+            bottomGradient.ignoresSafeArea()
+            VStack(spacing: 10) {
+                passiveTimelineBar
+                timeRow
+            }
+            .padding(.horizontal, 80)
+            .padding(.bottom, 48)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var passiveTimelineBar: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.24))
+                    .frame(height: 7)
+
+                let bufferedAhead = max(0, bufferedFraction - progressFraction)
+                if bufferedAhead > 0 {
+                    Capsule(style: .continuous)
+                        .fill(Color.white.opacity(0.28))
+                        .frame(width: width * bufferedAhead, height: 7)
+                        .offset(x: width * progressFraction)
+                }
+
+                Capsule(style: .continuous)
+                    .fill(Color.white)
+                    .frame(width: width * progressFraction, height: 7)
+            }
+            .frame(height: 20, alignment: .center)
+        }
+        .frame(height: 20)
+    }
+
+    private var progressFraction: Double {
+        guard viewModel.duration > 0 else { return 0 }
+        return min(max(scrubberDisplayTime / viewModel.duration, 0), 1)
+    }
+
+    private var bufferedFraction: Double {
+        guard viewModel.duration > 0 else { return 0 }
+        let end = viewModel.currentTime + viewModel.bufferedAheadSeconds
+        return min(max(end / viewModel.duration, 0), 1)
+    }
 
     @ViewBuilder
     private var idleOverlay: some View {
@@ -334,6 +443,9 @@ struct TVPlayerControls: View {
             TVPlayerScrubber(
                 viewModel: viewModel,
                 isFocused: $isScrubberFocused,
+                onSelectInteraction: {
+                    fullHUDContactCanToggle = false
+                },
                 onMoveToTransport: {
                     // This fires only because the trap kept the transport row
                     // out of the focus graph (no native Down target). Restore
@@ -357,6 +469,7 @@ struct TVPlayerControls: View {
                     }
                 },
                 isTimelineScrubbing: $isTimelineScrubbing,
+                resumePlaybackAfterTimelineSelection: $resumePlaybackAfterTimelineSelection,
                 cancelOnBlur: cancelPendingScrub
             )
             timeRow
@@ -416,20 +529,34 @@ struct TVPlayerControls: View {
             : viewModel.metadata.primaryTitle
     }
 
+    @ViewBuilder
     private var timeRow: some View {
-        HStack {
-            Text(formatTime(scrubberDisplayTime))
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
-                .monospacedDigit()
-            Spacer()
-            if viewModel.duration > 0 {
-                Text("−\(formatTime(remainingTime))")
-                    .font(.system(size: 28, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.7))
-                    .monospacedDigit()
+        if timeDisplayMode == .currentAndFinish {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                HStack {
+                    clockText(formatClockTime(context.date))
+                    Spacer()
+                    if viewModel.duration > 0 {
+                        clockText(formatClockTime(estimatedFinishDate(from: context.date)))
+                    }
+                }
+            }
+        } else {
+            HStack {
+                clockText(formatTime(scrubberDisplayTime))
+                Spacer()
+                if viewModel.duration > 0 {
+                    clockText("−\(formatTime(remainingTime))")
+                }
             }
         }
+    }
+
+    private func clockText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 28, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white)
+            .monospacedDigit()
     }
 
     private var scrubberDisplayTime: Double {
@@ -440,7 +567,36 @@ struct TVPlayerControls: View {
         max(0, viewModel.duration - scrubberDisplayTime)
     }
 
+    private func estimatedFinishDate(from now: Date) -> Date {
+        let speed = max(viewModel.settings.playbackSpeed, 0.1)
+        return now.addingTimeInterval(remainingTime / speed)
+    }
+
+    private func formatClockTime(_ date: Date) -> String {
+        date.formatted(date: .omitted, time: .shortened)
+    }
+
     // MARK: - HUD open/close
+
+    private func enterTimelineSelection() {
+        cancelPendingScrub = false
+        focusedHUDTab = nil
+        focusedTransportButton = nil
+        focusedIntroAction = nil
+        viewModel.pinControlsVisible()
+
+        guard viewModel.duration > 0 else {
+            isTimelineScrubbing = false
+            resumePlaybackAfterTimelineSelection = false
+            isScrubberFocused = true
+            return
+        }
+
+        let fraction = min(max(viewModel.currentTime / viewModel.duration, 0), 1)
+        viewModel.beginScrub(fraction: fraction)
+        isTimelineScrubbing = true
+        isScrubberFocused = true
+    }
 
     /// Open the Infuse-style HUD. Side-effects land in this order so focus
     /// transitions cleanly:

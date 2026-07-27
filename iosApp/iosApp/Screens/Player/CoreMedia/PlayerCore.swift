@@ -40,6 +40,20 @@ import AppKit
 import OSLog
 import VideoToolbox
 
+/// Only an explicit user pause suspends the I/O timeout. The playback clock
+/// also reads rate 0 during startup and seek restarts, and those windows
+/// rely on this abort as their only escape from a wedged `av_read_frame`.
+enum CoreMediaDemuxInterruptPolicy {
+    static func shouldAbort(
+        cancelled: Bool,
+        userPaused: Bool,
+        secondsSinceProgress: CFTimeInterval,
+        timeoutSeconds: CFTimeInterval
+    ) -> Bool {
+        cancelled || (!userPaused && secondsSinceProgress > timeoutSeconds)
+    }
+}
+
 final class PlayerCore: NSObject {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app.tvos",
@@ -59,6 +73,7 @@ final class PlayerCore: NSObject {
     var onTimeChange: ((Double) -> Void)?
     var onPauseChange: ((Bool) -> Void)?
     var onFileLoaded: (() -> Void)?
+    var onFirstFrame: ((Int) -> Void)?
     var onError: ((String) -> Void)?
     var onEndOfFile: (() -> Void)?
     var onBufferingChange: ((Bool) -> Void)?
@@ -523,6 +538,8 @@ final class PlayerCore: NSObject {
 
     private var refreshRate: Float = 24.0
     private var dynamicRange: SpikeDynamicRange = .sdr
+    private var sourceColorRangeHint: String?
+    private var resolvedVideoColorRange: String?
     /// Parsed Dolby Vision config record from the stream's `AV_PKT_DATA_DOVI_CONF`
     /// side data. `nil` when the source is not DV. Set during
     /// `buildVideoFormatDescription`.
@@ -797,10 +814,21 @@ final class PlayerCore: NSObject {
     /// is reset (tracks/cache) per load via `teardown()`.
     private var subtitleSession: SubtitleSession?
 
-    /// Weak reference to the overlay view mounted by `PlayerSurface`.
-    /// Set by `PlayerSurfaceHostView.attach(player:)`. The display-link
-    /// tick pumps composited `CGImage`s into it.
-    weak var subtitleOverlay: SubtitleOverlayView?
+    /// Live overlay views mounted by `PlayerSurface`. Next Up transitions can
+    /// overlap a mini-player and full-screen surface, so ownership is tracked
+    /// rather than stored in one racy weak property.
+    private let subtitleOverlayAttachments = SubtitleOverlayAttachmentRegistry()
+    var subtitleOverlay: SubtitleOverlayView? {
+        subtitleOverlayAttachments.currentOverlay
+    }
+
+    func attachSubtitleOverlay(_ overlay: SubtitleOverlayView, owner: AnyObject) {
+        subtitleOverlayAttachments.attach(owner: owner, overlay: overlay)
+    }
+
+    func detachSubtitleOverlay(owner: AnyObject) {
+        subtitleOverlayAttachments.detach(owner: owner)
+    }
 
     /// Renderer handle exposed so the overlay view can receive frame-size
     /// notifications directly on layout.
@@ -908,11 +936,22 @@ final class PlayerCore: NSObject {
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonRaw)
         else { return }
         let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
-            .map { "\($0.portName)/\($0.portType.rawValue)" }
+            .map(\.portType.rawValue)
             .joined(separator: ",")
         Self.logger.info(
             "AVAudioSession route changed: reason=\(reason.rawValue) outputs=\(outputs, privacy: .public)"
         )
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .playback,
+            tag: "AudioRoute",
+            message: "audio route changed",
+            attrs: [
+                "reason": .string(String(reason.rawValue)),
+                "sink": .string(outputs.isEmpty ? "none" : outputs),
+            ]
+        )
+        #endif
         // For reasons that change downstream channel layout (new device,
         // category change, override), drop any pending audio chunks so the
         // engine reprepares against the new route's preferred format on the
@@ -1357,7 +1396,12 @@ final class PlayerCore: NSObject {
         return true
     }
 
-    func load(url: URL, headers: [String: String], startTime: Double) {
+    func load(
+        url: URL,
+        headers: [String: String],
+        startTime: Double,
+        colorRangeHint: String? = nil
+    ) {
         guard !isDisposed else { return }
 
         // Stash the load args so the rejection signal (fired from deep inside
@@ -1366,6 +1410,8 @@ final class PlayerCore: NSObject {
         lastLoadURL = url
         lastLoadHeaders = headers
         lastLoadStartTime = startTime
+        sourceColorRangeHint = VideoColorMetadata.normalizedColorRangeName(colorRangeHint)
+        resolvedVideoColorRange = nil
         pendingRejection = nil
         ttffLoadAnchor = CFAbsoluteTimeGetCurrent()
 
@@ -1378,8 +1424,7 @@ final class PlayerCore: NSObject {
         loadSignpostID = OSSignpostID(log: Self.signpostLog)
         if #available(iOS 15.0, tvOS 15.0, *) {
             os_signpost(.begin, log: Self.signpostLog, name: "Load",
-                        signpostID: loadSignpostID,
-                        "url=%{public}s", url.absoluteString)
+                        signpostID: loadSignpostID)
         }
 
         // Bring the audio session up before touching media. Non-fatal if it
@@ -1476,6 +1521,11 @@ final class PlayerCore: NSObject {
         guard !isDisposed else { return }
         userPaused = false
         wasPlayingWhenInterrupted = false
+        // A deliberate pause lets the demux queues fill and then throttles
+        // reads. Without rearming this clock, the first read after a pause
+        // longer than `demuxIOTimeoutSeconds` is immediately killed by the
+        // interrupt callback as a false I/O wedge (AVERROR_EXIT).
+        demuxLastProgressWall = CACurrentMediaTime()
         let time = currentPlaybackTime()
         setPlaybackTimeline(time: time, rate: currentRate)
         audioOutput.setRate(currentRate)
@@ -2650,9 +2700,8 @@ final class PlayerCore: NSObject {
 
     /// Start a 1Hz diagnostics timer that emits a single-line snapshot
     /// covering sync time vs wall time, audio clock, queue depths, and
-    /// display-link / audio-renderer readiness. Uses `print()` so the line
-    /// reaches `devicectl ... --console`. Remove once the slow-motion bug
-    /// is pinned down.
+    /// display-link / audio-renderer readiness. Uses `cmpLog` so the line
+    /// reaches `devicectl ... --console` and the diagnostics ring.
     private func startDiagnostics() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -2663,7 +2712,7 @@ final class PlayerCore: NSObject {
             self.lastDiagAudioEnqueueCount = 0
             self.vSyncHolds = 0
             self.vSyncDrops = 0
-            print(String(format:
+            cmpLog(String(format:
                 "[CMP] startDiagnostics wallStart=%.3f syncStart=%.3f rate=%.2f videoFPS=%.2f refreshRate=%.2f",
                 self.diagStartWall, self.diagStartSyncTime,
                 Double(self.playbackClock.rate), self.videoFPS, Double(self.refreshRate)))
@@ -2730,13 +2779,13 @@ final class PlayerCore: NSObject {
         let audioStatus = audioOutput.statusCode
         if audioStatus != lastAudioRendererStatus {
             let err = audioOutput.lastErrorDescription ?? "nil"
-            print("[CMP] audioOutput.status \(lastAudioRendererStatus) -> \(audioStatus) error=\(err)")
+            cmpLog("[CMP] audioOutput.status \(lastAudioRendererStatus) -> \(audioStatus) error=\(err)")
             lastAudioRendererStatus = audioStatus
         }
         let demuxIdle = now - demuxLastProgressWall
         let health = playbackHealthStats()
         let bufferedAhead = bufferedSecondsEstimate() ?? -1
-        print(String(format:
+        cmpLog(String(format:
             "[CMP-DIAG] wall=%.2f sync=%.3f adv=%.3f ratio=%.3f rate=%.2f ac.pts=%.3f ac.cur=%.3f vidEnq=+%llu aEnq=+%llu holds=%llu drops=%llu vDec=%d vtIn=%d vPkts=%d aPkts=%d layerRdy=%d layerSt=%d audRdy=%d audSt=%d audFeed=%llu rd=%llu rt=%llu idle=%.2f bufS=%.2f rebuf=%d seeks=%llu coal=%llu ladder=%llu/%llu/%llu",
             wall, syncTime, syncAdvance, ratio, Double(syncRate),
             audioPts, audioCurrent,
@@ -2747,7 +2796,8 @@ final class PlayerCore: NSObject {
             demuxReadCount, demuxReturnCount, demuxIdle,
             bufferedAhead, health.rebufferCount, health.seekCount,
             health.coalescedSeekCount, health.avsyncFlushCount,
-            health.avsyncGopDropCount, health.avsyncReseekCount))
+            health.avsyncGopDropCount, health.avsyncReseekCount),
+            verbose: true)
         emitPlaybackStatsSnapshot(
             syncRate: Double(syncRate),
             videoFramesEnqueued: displayLinkEnqueueCount,
@@ -2780,7 +2830,7 @@ final class PlayerCore: NSObject {
                 didRecover = true
             }
             if syncRate == 0 {
-                print(String(format:
+                cmpLog(String(format:
                     "[CMP] stall-recover: playbackRate=0 (userPaused=false); restoring rate=%.2f",
                     Double(currentRate)))
                 let resumeTime = currentPlaybackTime()
@@ -2795,7 +2845,7 @@ final class PlayerCore: NSObject {
                aPkts > 0,
                audioEnqDelta == 0,
                demuxIdle > 2.0 {
-                print(String(format:
+                cmpLog(String(format:
                     "[CMP] stall-recover: audio feed idle while ready (aPkts=%d idle=%.2f); nudging feed",
                     aPkts, demuxIdle))
                 audioOutput.nudgeRequestMediaDataWhenReady()
@@ -3166,9 +3216,13 @@ final class PlayerCore: NSObject {
         ctx.pointee.interrupt_callback.callback = { opaque in
             guard let opaque else { return 0 }
             let player = Unmanaged<PlayerCore>.fromOpaque(opaque).takeUnretainedValue()
-            if player.isCancelled { return 1 }
             let elapsed = CACurrentMediaTime() - player.demuxLastProgressWall
-            if elapsed > player.demuxIOTimeoutSeconds {
+            if CoreMediaDemuxInterruptPolicy.shouldAbort(
+                cancelled: player.isCancelled,
+                userPaused: player.userPaused,
+                secondsSinceProgress: elapsed,
+                timeoutSeconds: player.demuxIOTimeoutSeconds
+            ) {
                 return 1 // Abort blocking read — demux loop surfaces as error.
             }
             return 0
@@ -3279,10 +3333,6 @@ final class PlayerCore: NSObject {
             if !setupAudioDecoder() {
                 Self.logger.warning("audio decoder setup failed; continuing video-only")
                 audioStreamIndex = -1
-            } else {
-                // Nudge the audio session into multichannel layout now that
-                // we know the source's channel count.
-                activateAudioSession(preferredChannels: audioOutputConfig?.channelCount)
             }
         }
         // Register any embedded font attachments with libass BEFORE we
@@ -3475,6 +3525,8 @@ final class PlayerCore: NSObject {
               let codecparPtr = stream.pointee.codecpar
         else { return false }
         let codecpar = codecparPtr.pointee
+        resolvedVideoColorRange = VideoColorMetadata.colorRangeName(codecpar.color_range)
+            ?? sourceColorRangeHint
         videoDecodeOutputDimensions = nil
         useUntimedCompressedVideoSamples = false
 
@@ -3659,7 +3711,10 @@ final class PlayerCore: NSObject {
         // work because their BL is HDR10/SDR/HLG-compatible and VT decodes the
         // BL with 'hvc1' while the dvcC atom + RPU-carrying NALs pass through
         // for the display to apply DV dynamic metadata.
-        let fullRange = codecpar.color_range == AVCOL_RANGE_JPEG
+        let fullRange = VideoColorMetadata.isFullRange(
+            codecpar.color_range,
+            fallbackName: resolvedVideoColorRange
+        )
         // Pick a CVPixelBuffer format that matches the advertised fullRange.
         // Mismatches (e.g. `FullRangeVideo=true` + video-range pixel format)
         // leave VT with no registered decoder → unimpErr (-4). This is what
@@ -3957,13 +4012,52 @@ final class PlayerCore: NSObject {
         }
         audioCodecCtx = ctx
 
-        // Output format: LPCM Float32 interleaved at source sample rate. Size
+        // TrueHD/MLP can leave codecpar and the opened decoder at
+        // AV_SAMPLE_FMT_NONE until the first major-sync unit has decoded.
+        // The output path is therefore configured lazily from that first
+        // authoritative AVFrame in ensureAudioOutputConfigured(from:).
+        return true
+    }
+
+    private func ensureAudioOutputConfigured(
+        from decodedFrame: UnsafeMutablePointer<AVFrame>
+    ) -> AudioDecodePipeline.ResamplingOutput? {
+        if let swrContext = audioSwrCtx, let config = audioOutputConfig {
+            return AudioDecodePipeline.ResamplingOutput(
+                swrContext: swrContext,
+                config: config
+            )
+        }
+        guard let codecContext = audioCodecCtx else { return nil }
+
+        let inputFormatRaw = decodedFrame.pointee.format
+        guard inputFormatRaw >= 0 else {
+            Self.logger.error("audio: decoded frame has unknown sample format")
+            return nil
+        }
+        let inputSampleRate = decodedFrame.pointee.sample_rate > 0
+            ? decodedFrame.pointee.sample_rate
+            : codecContext.pointee.sample_rate
+        guard inputSampleRate > 0 else {
+            Self.logger.error("audio: decoded frame has unknown sample rate")
+            return nil
+        }
+
+        var inputLayout = decodedFrame.pointee.ch_layout
+        if inputLayout.nb_channels <= 0 {
+            inputLayout = codecContext.pointee.ch_layout
+        }
+        if inputLayout.nb_channels <= 0 {
+            av_channel_layout_default(&inputLayout, 2)
+        }
+
+        // Output format: LPCM Float32 planar at the decoded sample rate. Size
         // the output layout to the active audio route instead of blindly
         // exposing the source channel count. This mirrors KSPlayer's pattern:
         // keep the selected stream, but let the resampler fold it down when
         // the Apple output path cannot safely render the full layout.
-        let inChannels = max(1, Int32(codecpar.ch_layout.nb_channels))
-        let outSampleRate = codecpar.sample_rate > 0 ? codecpar.sample_rate : 48000
+        let inChannels = max(1, Int32(inputLayout.nb_channels))
+        let outSampleRate = inputSampleRate
         #if os(macOS)
         let spatialAudioEnabled = false
         let routeMaxChannels = inChannels
@@ -3979,37 +4073,39 @@ final class PlayerCore: NSObject {
         #endif
         if outChannels != inChannels {
             print(
-                "[CMP] audio downmix sourceChannels=\(inChannels) outputChannels=\(outChannels) routeMaxChannels=\(routeMaxChannels) spatial=\(spatialAudioEnabled ? 1 : 0) codecId=\(Int(codecpar.codec_id.rawValue))"
+                "[CMP] audio downmix sourceChannels=\(inChannels) outputChannels=\(outChannels) routeMaxChannels=\(routeMaxChannels) spatial=\(spatialAudioEnabled ? 1 : 0) codecId=\(Int(codecContext.pointee.codec_id.rawValue))"
             )
         }
 
         // Default layout for the destination (stereo if unknown / weird).
         var outChannelLayout = AVChannelLayout()
         av_channel_layout_default(&outChannelLayout, outChannels)
-        var inLayout = codecpar.ch_layout
 
         var swr: OpaquePointer?
-        let r1 = swr_alloc_set_opts2(
+        let allocateResult = swr_alloc_set_opts2(
             &swr,
             &outChannelLayout,
             AV_SAMPLE_FMT_FLTP,
             outSampleRate,
-            &inLayout,
-            AVSampleFormat(rawValue: codecpar.format),
-            codecpar.sample_rate,
+            &inputLayout,
+            AVSampleFormat(rawValue: inputFormatRaw),
+            inputSampleRate,
             0,
             nil)
-        guard r1 == 0, swr != nil else {
-            Self.logger.error("swr_alloc_set_opts2 failed: \(r1)")
-            return false
+        guard allocateResult >= 0, swr != nil else {
+            Self.logger.error(
+                "swr_alloc_set_opts2 failed: \(Self.ffmpegError(allocateResult), privacy: .public)"
+            )
+            return nil
         }
-        let r2 = swr_init(swr)
-        guard r2 >= 0 else {
-            Self.logger.error("swr_init failed: \(r2)")
+        let initializeResult = swr_init(swr)
+        guard initializeResult >= 0 else {
+            Self.logger.error(
+                "swr_init failed: \(Self.ffmpegError(initializeResult), privacy: .public)"
+            )
             swr_free(&swr)
-            return false
+            return nil
         }
-        audioSwrCtx = swr
 
         // Build CMAudioFormatDescription matching our interleaved Float32 output.
         var asbd = AudioStreamBasicDescription(
@@ -4063,7 +4159,8 @@ final class PlayerCore: NSObject {
         }
         guard status == noErr, let afd else {
             Self.logger.error("CMAudioFormatDescriptionCreate failed: \(status)")
-            return false
+            swr_free(&swr)
+            return nil
         }
         let engineChannelLayout = AVAudioChannelLayout(layoutTag: layoutTag)
             ?? AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Stereo)!
@@ -4073,7 +4170,7 @@ final class PlayerCore: NSObject {
             interleaved: false,
             channelLayout: engineChannelLayout
         )
-        audioOutputConfig = NegotiatedAudioOutput(
+        let config = NegotiatedAudioOutput(
             sampleRate: outSampleRate,
             channelCount: outChannels,
             channelLayout: outChannelLayout,
@@ -4082,12 +4179,19 @@ final class PlayerCore: NSObject {
             bytesPerSample: 4,
             layoutTag: layoutTag
         )
+        guard let swr else { return nil }
+        audioSwrCtx = swr
+        audioOutputConfig = config
         audioOutput.prepare(audioFormat: audioFormat)
+        activateAudioSession(preferredChannels: outChannels)
         print(String(format:
             "[CMP] audio codecId=%d sampleRate=%d channels=%d srcFormat=%d srcChannels=%d layoutTag=0x%x",
-            Int(codecpar.codec_id.rawValue), Int(outSampleRate), Int(outChannels),
-            Int(codecpar.format), Int(inChannels), Int(layoutTag)))
-        return true
+            Int(codecContext.pointee.codec_id.rawValue), Int(outSampleRate), Int(outChannels),
+            Int(inputFormatRaw), Int(inChannels), Int(layoutTag)))
+        return AudioDecodePipeline.ResamplingOutput(
+            swrContext: swr,
+            config: config
+        )
     }
 
     private func runDemuxLoop() {
@@ -4495,7 +4599,10 @@ final class PlayerCore: NSObject {
         height: Int
     ) -> CVPixelBuffer? {
         let outputFormat = VideoColorMetadata.highBitDepthOutputPixelFormat(
-            fullRange: frame.pointee.color_range == AVCOL_RANGE_JPEG)
+            fullRange: VideoColorMetadata.isFullRange(
+                frame.pointee.color_range,
+                fallbackName: resolvedVideoColorRange
+            ))
         let attrs: CFDictionary = [
             kCVPixelBufferIOSurfacePropertiesKey: [:],
             kCVPixelBufferMetalCompatibilityKey: true,
@@ -4596,7 +4703,10 @@ final class PlayerCore: NSObject {
             return nil
         }
 
-        let pixelFormat = frame.pointee.color_range == AVCOL_RANGE_JPEG
+        let pixelFormat = VideoColorMetadata.isFullRange(
+            frame.pointee.color_range,
+            fallbackName: resolvedVideoColorRange
+        )
             ? kCVPixelFormatType_420YpCbCr8PlanarFullRange
             : kCVPixelFormatType_420YpCbCr8Planar
         let attrs: CFDictionary = [
@@ -5072,7 +5182,7 @@ final class PlayerCore: NSObject {
             hasLoggedFirstDecodedVideoBuffer = true
             let width = CVPixelBufferGetWidth(imageBuffer)
             let height = CVPixelBufferGetHeight(imageBuffer)
-            print(String(format:
+            cmpLog(String(format:
                 "[CMP] firstDecodedBuffer %dx%d pts=%.3f",
                 width, height, ptsSeconds))
         }
@@ -5095,7 +5205,7 @@ final class PlayerCore: NSObject {
             }
             let ttffMs = Int((CFAbsoluteTimeGetCurrent() - ttffLoadAnchor) * 1000)
             Self.logger.info("[CMP-TTFF] route=playerCoreDirect first_frame_ms=\(ttffMs)")
-            print("[CMP-TTFF] route=playerCoreDirect first_frame_ms=\(ttffMs)")
+            cmpLog("[CMP-TTFF] route=playerCoreDirect first_frame_ms=\(ttffMs)")
         }
     }
 
@@ -5296,6 +5406,7 @@ final class PlayerCore: NSObject {
             // Milestone logs for debugging the "zero frames reach screen" bug.
             switch displayLinkEnqueueCount {
             case 1:
+                onFirstFrame?(max(0, Int((CFAbsoluteTimeGetCurrent() - ttffLoadAnchor) * 1000)))
                 Self.logger.info("displayLink: first frame enqueued pts=\(framePts.seconds)")
                 print(String(format:
                     "[CMP] firstFrameEnqueued pts=%.3f sync=%.3f rate=%.2f ac.cur=%.3f diff=%.3f frameDur=%.4f videoFPS=%.2f skipped=%llu",
@@ -5335,17 +5446,15 @@ final class PlayerCore: NSObject {
     }
 
     private func decodeAudioPacket(_ pkt: UnsafeMutablePointer<AVPacket>) {
-        guard let ctx = audioCodecCtx,
-              let swr = audioSwrCtx,
-              let audioConfig = audioOutputConfig
-        else { return }
+        guard let ctx = audioCodecCtx else { return }
         audioDecodePipeline.decodePacket(
             pkt,
             codecContext: ctx,
-            swrContext: swr,
-            config: audioConfig,
             timeBase: audioTimeBase,
-            eagain: Self.ffmpegEAGAIN
+            eagain: Self.ffmpegEAGAIN,
+            outputForFrame: { [weak self] frame in
+                self?.ensureAudioOutputConfigured(from: frame)
+            }
         ) { [weak self] decoded in
             guard let self else { return }
             if self.pendingSkipBelowPTS > 0,
@@ -5367,8 +5476,8 @@ final class PlayerCore: NSObject {
                     "[CMP] firstAudioEnqueued pts=%.3f samples=%d outRate=%d channels=%d sync=%.3f rate=%.2f skipped=%llu",
                     decoded.ptsSeconds,
                     Int(decoded.convertedSamples),
-                    audioConfig.sampleRate,
-                    audioConfig.channelCount,
+                    decoded.chunk.sampleRate,
+                    decoded.chunk.channelCount,
                     self.currentPlaybackTimeSeconds(),
                     Double(self.playbackClock.rate),
                     self.skippedPreTargetAudioFrames))

@@ -29,6 +29,10 @@ extension Color {
     /// track; this matches the web client's blue-theme primary.
     static let continuumAccent = Color(hex: "#78AEFC")
 
+    /// Orange sampled from the canonical Silo wordmark artwork. Reserved for
+    /// branded moments so ordinary signed-in controls retain `continuumAccent`.
+    static let continuumBrandOrange = Color(hex: "#FD7403")
+
     /// Muted/secondary text — primary at 60% opacity (#99EDEDED)
     static let continuumSecondaryText = Color(hex: "#99EDEDED")
 

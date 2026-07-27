@@ -1,6 +1,7 @@
 # Apple Route Capability Matrix
 
-Snapshot date: 2026-07-03 (SiloPlayer loopback-primary Stages 0–4;
+Snapshot date: 2026-07-24 (SiloPlayer AirPlay hardware validation;
+SiloPlayer loopback-primary Stages 0–4 validated 2026-07-03;
 previous snapshot 2026-04-29 at `6c2b4af`)
 
 This matrix is the implementation-facing truth source for the current Apple
@@ -39,7 +40,7 @@ player routes in `silo-apple`. It separates:
 | tvOS custom shell / Siri Remote ownership | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
 | Now Playing / remote commands | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
 | PiP | Unsupported | Validation required | Validation required | Validation required |
-| AirPlay / external playback | Unclaimed | Unclaimed | Unclaimed | Unclaimed |
+| AirPlay / external playback | Unsupported | Unsupported | Validation required, downloads only | Repo-verified |
 | Premium HDR / DV / Atmos claims | Validation required | Validation required | Validation required | Validation required |
 
 ## Notes
@@ -61,7 +62,27 @@ player routes in `silo-apple`. It separates:
   delay/styling. The capability rows above describe what Silo can
   promise on each route; they are not a claim about every embedded subtitle
   on a NativePlayer or SiloPlayer asset.
-- PiP and external playback stay intentionally conservative until Silo has
-  route-specific lifecycle handling, UI, and device/output validation.
+- PiP stays intentionally conservative until Silo has route-specific lifecycle
+  handling and device/output validation. PiP itself is enabled on the iOS
+  AVPlayer-backed routes.
+- AirPlay video hands the receiver a URL and nothing else: the receiver opens
+  its own HTTP connection, without the asset's `AVURLAssetHTTPHeaderFieldsKey`
+  headers. Two things make a NativePlayer URL unfetchable from a receiver, and
+  a direct-play session can hit either: the URL is authenticated by an
+  `Authorization` header (`/api/v1/...` sits behind `RequireAuth` on the
+  server, so the fetch answers 401), or `prepareSourceProxy` has rewritten it
+  to the on-device caching proxy at 127.0.0.1, which drops the headers but is
+  unreachable off-device. External playback and the route picker are enabled
+  only for assets that survive both checks — offline `file://` downloads, and
+  unauthenticated origin URLs.
+- On iOS, SiloPlayer publishes its generated HLS through a LAN URL carrying a
+  per-session access token, so the selected receiver can fetch the playlist and
+  segments. The server binds to the LAN but refuses off-device connections
+  until a handoff is actually live, and advertises only a Wi-Fi/Ethernet
+  RFC1918 address. If no such address exists, playback stays on the device with
+  a notice instead of stranding the receiver. SiloPlayer AirPlay was
+  hardware-validated 2026-07-24 from an iPhone 16 Pro to Apple TV with a Dolby
+  Vision source. This validates external playback for that route, not a
+  generalized Dolby Vision output-mode or premium-format claim.
 - Premium-media claims stay validation-gated even when playback itself uses a
   NativePlayer or SiloPlayer route.

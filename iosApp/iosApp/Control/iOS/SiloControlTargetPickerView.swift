@@ -12,7 +12,7 @@ struct SiloControlTargetPickerView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if !browser.found.isEmpty {
+                if !displayedTargets.isEmpty {
                     foundList
                 } else if searchTimedOut {
                     emptyState
@@ -36,7 +36,7 @@ struct SiloControlTargetPickerView: View {
             .onDisappear { browser.stop() }
         }
         .preferredColorScheme(.dark)
-        .presentationDetents(browser.found.count > 3 ? [.medium, .large] : [.medium])
+        .presentationDetents(displayedTargets.count > 3 ? [.medium, .large] : [.medium])
         .presentationDragIndicator(.visible)
         .presentationCornerRadius(24)
     }
@@ -60,7 +60,7 @@ struct SiloControlTargetPickerView: View {
     }
 
     private var foundList: some View {
-        List(browser.found) { target in
+        List(displayedTargets) { target in
             Button {
                 Task {
                     if let request {
@@ -80,12 +80,18 @@ struct SiloControlTargetPickerView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(target.name).font(.headline)
-                        if target.isPlaying {
+                        if request != nil, target.protocolVersion < 2 {
+                            Text("Update Silo on this TV to use your profile")
+                                .font(.subheadline)
+                                .foregroundStyle(Color.continuumSecondaryText)
+                        } else if target.isPlaying {
                             Text("Playing now")
                                 .font(.subheadline)
                                 .foregroundStyle(Color.continuumPrimary)
                         } else if let serverName = target.serverName {
-                            Text(serverName)
+                            Text(target.serverId == ServerRegistry.shared.activeServerId
+                                 ? serverName
+                                 : "Will temporarily use your server")
                                 .font(.subheadline)
                                 .foregroundStyle(Color.continuumSecondaryText)
                         }
@@ -100,9 +106,16 @@ struct SiloControlTargetPickerView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .disabled(request != nil && target.protocolVersion < 2)
             .listRowBackground(Color.continuumSurface)
         }
         .scrollContentBackground(.hidden)
+    }
+
+    private var displayedTargets: [SiloControlTarget] {
+        guard request == nil else { return browser.found }
+        guard let activeServerId = ServerRegistry.shared.activeServerId else { return [] }
+        return browser.found.filter { $0.serverId == activeServerId }
     }
 }
 

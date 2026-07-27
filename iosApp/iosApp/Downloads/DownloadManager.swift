@@ -992,7 +992,7 @@ final class DownloadManager {
         do {
             try FileManager.default.moveItem(at: stagedURL, to: destination)
         } catch {
-            Self.logger.error("Failed to move finished media for \(record.id, privacy: .public): \(String(describing: error), privacy: .public)")
+            Self.logger.error("Failed to move finished media: \(String(describing: error), privacy: .private)")
             record.localStatus = .failed
             record.lastError = "move_failed"
             record.taskIdentifier = nil

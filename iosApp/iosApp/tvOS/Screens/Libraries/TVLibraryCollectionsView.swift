@@ -21,6 +21,7 @@ struct TVLibraryCollectionsView: View {
     @State private var hasPendingFocusClaim = false
     @State private var lastShellFocusRequest = 0
     @State private var contentFocusToken = 0
+    @FocusState private var isEmptyContentFocused: Bool
 
     @Environment(AppRouter.self) private var router
     @Namespace private var collectionsFocusNamespace
@@ -51,16 +52,8 @@ struct TVLibraryCollectionsView: View {
 
     @ViewBuilder
     private var gridContent: some View {
-        if isLoadingCollections && collectionSections.isEmpty {
-            Color.clear
-                .frame(maxWidth: .infinity, minHeight: 300)
-        } else if collectionSections.isEmpty {
-            EmptyStateView(
-                icon: "square.stack",
-                title: "No collections yet",
-                subtitle: "Collections created on the server will appear here."
-            )
-            .frame(maxWidth: .infinity, minHeight: 400)
+        if collectionSections.isEmpty {
+            emptyContent
         } else {
             // Only the very first card of the first NON-EMPTY section
             // claims default focus when the tab appears. Skipping empty
@@ -128,6 +121,37 @@ struct TVLibraryCollectionsView: View {
             }
             .focusScope(collectionsFocusNamespace)
             .focusSection()
+        }
+    }
+
+    private var emptyContent: some View {
+        ZStack {
+            if isLoadingCollections {
+                Color.clear
+            } else {
+                EmptyStateView(
+                    icon: "square.stack",
+                    title: "No collections yet",
+                    subtitle: "Collections created on the server will appear here."
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 400)
+        .contentShape(Rectangle())
+        .focusable(true)
+        .focused($isEmptyContentFocused)
+        .focusEffectDisabled()
+        .accessibilityLabel(isLoadingCollections ? "Loading collections" : "No collections yet")
+        .onMoveCommand { direction in
+            if direction == .up {
+                onMoveUp?()
+            }
+        }
+        .task(id: focusRequest) {
+            guard !isTopMenuFocused else { return }
+            await Task.yield()
+            guard collectionSections.isEmpty, !isTopMenuFocused else { return }
+            isEmptyContentFocused = true
         }
     }
 

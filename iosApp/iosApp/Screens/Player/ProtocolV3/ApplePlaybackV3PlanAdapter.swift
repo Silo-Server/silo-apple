@@ -1,0 +1,333 @@
+import Foundation
+
+struct PreparedPlaybackV3: Equatable {
+    let playbackAttemptId: String
+    let planAttemptId: String
+    let planAttemptKey: String
+    let outputRouteGeneration: Int64
+    let serverFeatures: [String]
+    let plan: PlaybackV3Plan
+}
+
+enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
+    case unsupportedDelivery(String)
+    case unsupportedEngine(String)
+    case invalidTransport(String)
+    case unsupportedClientTransformation(String)
+    case invalidClientTransformation(String)
+    case unsupportedRuntimeCorrection(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedDelivery(let value):
+            return "The server selected an unsupported V3 delivery: \(value)."
+        case .unsupportedEngine(let value):
+            return "The server selected an unsupported V3 execution engine: \(value)."
+        case .invalidTransport(let value):
+            return "The V3 playback transport is invalid: \(value)."
+        case .unsupportedClientTransformation(let value):
+            return "The V3 plan requires an unsupported client transformation: \(value)."
+        case .invalidClientTransformation(let value):
+            return "The V3 client transformation cannot be executed as planned: \(value)."
+        case .unsupportedRuntimeCorrection(let value):
+            return "The V3 plan requires an unsupported runtime correction: \(value)."
+        }
+    }
+}
+
+enum ApplePlaybackV3PlanAdapter {
+    private static let clientTransformations = ["client_dv7_to_dv81", "client_dv7_to_hdr10"]
+    private static let runtimeCorrections = [
+        "client_dv8_hdr10plus_sanitizer_v1",
+        "client_post_resume_video_recovery_v1",
+        "client_surface_recovery_v1"
+    ]
+
+    static func validate(_ plan: PlaybackV3Plan) throws {
+        guard [
+            "original_http", "server_remux_hls", "server_remux_progressive", "server_transcode_hls"
+        ].contains(plan.delivery) else {
+            throw ApplePlaybackV3PlanError.unsupportedDelivery(plan.delivery)
+        }
+        guard ["media3_direct", "media3_progressive_remux", "media3_hls"].contains(plan.engine) else {
+            throw ApplePlaybackV3PlanError.unsupportedEngine(plan.engine)
+        }
+        let expectedEngine: String = switch plan.delivery {
+        case "original_http": "media3_direct"
+        case "server_remux_progressive": "media3_progressive_remux"
+        default: "media3_hls"
+        }
+        guard plan.engine == expectedEngine else {
+            throw ApplePlaybackV3PlanError.invalidTransport(
+                "delivery \(plan.delivery) requires engine \(expectedEngine)"
+            )
+        }
+        guard !plan.stream.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ApplePlaybackV3PlanError.invalidTransport("empty stream URL")
+        }
+        guard ["none", "session"].contains(plan.stream.headerRefresh) else {
+            throw ApplePlaybackV3PlanError.invalidTransport(
+                "unsupported header refresh mode \(plan.stream.headerRefresh)"
+            )
+        }
+        if plan.stream.protocol == "hls" {
+            guard plan.delivery == "server_remux_hls" || plan.delivery == "server_transcode_hls" else {
+                throw ApplePlaybackV3PlanError.invalidTransport("HLS protocol/delivery mismatch")
+            }
+        } else if plan.stream.protocol == "http_progressive" {
+            guard plan.delivery == "original_http" || plan.delivery == "server_remux_progressive" else {
+                throw ApplePlaybackV3PlanError.invalidTransport("progressive protocol/delivery mismatch")
+            }
+        } else {
+            throw ApplePlaybackV3PlanError.invalidTransport("unsupported protocol \(plan.stream.protocol)")
+        }
+        if let unsupported = plan.transformations.first(where: {
+            $0.executor == "client" && !clientTransformations.contains($0.name)
+        }) {
+            throw ApplePlaybackV3PlanError.unsupportedClientTransformation(unsupported.name)
+        }
+        let selectedClientTransformations = plan.transformations.filter { $0.executor == "client" }
+        if selectedClientTransformations.count > 1 {
+            throw ApplePlaybackV3PlanError.invalidClientTransformation(
+                "multiple mutually exclusive client transformations"
+            )
+        }
+        if !selectedClientTransformations.isEmpty
+            && (plan.delivery != "original_http" || plan.engine != "media3_direct") {
+            throw ApplePlaybackV3PlanError.invalidClientTransformation(
+                "client transformations require original_http/media3_direct"
+            )
+        }
+        if let unsupported = plan.runtimeCorrections.first(where: { !runtimeCorrections.contains($0) }) {
+            throw ApplePlaybackV3PlanError.unsupportedRuntimeCorrection(unsupported)
+        }
+    }
+
+    static func playbackSession(
+        plan: PlaybackV3Plan,
+        sessionId: String,
+        selectedVersion: FileVersion
+    ) -> PlaybackSessionResponse {
+        let subtitleUrls: [SubtitleUrl]? = plan.subtitle.artifact.map { artifact in
+            let selected = plan.selectedTracks.subtitle?.index.flatMap {
+                subtitleTrack(atServerCombinedIndex: $0, in: selectedVersion)
+            }
+            return [SubtitleUrl(
+                index: plan.selectedTracks.subtitle?.index ?? 0,
+                language: selected?.language,
+                codec: artifact.format,
+                label: selected?.title,
+                source: selected.map { $0.external == true ? "external" : "embedded" } ?? "protocol_v3",
+                forced: selected?.forced,
+                url: artifact.url
+            )]
+        }
+        return PlaybackSessionResponse(
+            sessionId: sessionId,
+            userId: nil,
+            profileId: nil,
+            mediaFileId: plan.effectiveMediaFileId,
+            playMethod: deliveryStrategy(plan.delivery).name,
+            position: max(0, plan.timeline.playerStartSeconds),
+            isPaused: false,
+            streamUrl: plan.stream.url,
+            audioTrackIndex: plan.selectedTracks.audio?.index,
+            // The plan's runtime is authoritative and describes the effective
+            // file the server actually chose. Fall back to the catalog version
+            // only for servers that predate the field; substituting it when
+            // the server reports an unknown runtime would reintroduce a guess.
+            durationSeconds: plan.source.durationSeconds ?? selectedVersion.duration,
+            timelineOffsetSeconds: max(0, plan.timeline.timelineOffsetSeconds),
+            subtitleUrls: subtitleUrls,
+            playbackInfo: PlaybackInfo(
+                streamType: plan.stream.protocol,
+                transcodeAudio: plan.transformations.contains { $0.name == "audio_to_aac" },
+                videoCodec: plan.effectiveRecipe.videoCodec,
+                audioCodec: plan.effectiveRecipe.audioCodec
+            )
+        )
+    }
+
+    /// V3 subtitle identities are external-first combined ordinals. Apple’s
+    /// embedded picker carries FFmpeg stream indices instead, and watch detail
+    /// lists embedded tracks before external tracks, so the wire identity must
+    /// be translated rather than copied.
+    static func serverCombinedSubtitleIndex(
+        ffmpegStreamIndex: Int,
+        in version: FileVersion
+    ) -> Int? {
+        guard ffmpegStreamIndex >= 0 else { return nil }
+        let tracks = version.subtitleTracks ?? []
+        let externalCount = tracks.filter { $0.external == true }.count
+        let embedded = tracks.filter { $0.external != true }
+        guard let embeddedOrdinal = embedded.firstIndex(where: {
+            $0.index == ffmpegStreamIndex
+        }) else {
+            return nil
+        }
+        return externalCount + embeddedOrdinal
+    }
+
+    static func serverCombinedSubtitleIndex(
+        for playerTrack: PlayerTrack,
+        in version: FileVersion
+    ) -> Int? {
+        if playerTrack.isExternal {
+            return playerTrack.srcId.flatMap { $0 >= 0 ? $0 : nil }
+        }
+        guard let ffmpegStreamIndex = playerTrack.ffIndex else { return nil }
+        return serverCombinedSubtitleIndex(
+            ffmpegStreamIndex: ffmpegStreamIndex,
+            in: version
+        )
+    }
+
+    static func makeExecutionPlan(
+        v3: PreparedPlaybackV3,
+        basePlan: PlaybackExecutionPlan,
+        streamRequest: StreamRequest,
+        routeRequirements: PlaybackRouteRequirements
+    ) throws -> PlaybackExecutionPlan {
+        try validate(v3.plan)
+        let plan = v3.plan
+        let delivery = deliveryStrategy(plan.delivery)
+        var engine: PlaybackEngineKind
+        var loopbackSession: LoopbackSessionSpec?
+        switch plan.delivery {
+        case "original_http":
+            // The V3 direct slot describes delivery, while the existing Apple
+            // planner chooses the concrete local executor for that source.
+            engine = basePlan.engine
+            loopbackSession = basePlan.loopbackSession
+        case "server_remux_progressive":
+            engine = .avPlayerNativeDirect
+            loopbackSession = nil
+        case "server_remux_hls", "server_transcode_hls":
+            engine = .avPlayerHLS
+            loopbackSession = nil
+        default:
+            throw ApplePlaybackV3PlanError.unsupportedDelivery(plan.delivery)
+        }
+
+        if let transformation = plan.transformations.first(where: { $0.executor == "client" }) {
+            guard let baseLoopbackSession = basePlan.loopbackSession else {
+                throw ApplePlaybackV3PlanError.invalidClientTransformation(
+                    "\(transformation.name) requires the Apple loopback executor"
+                )
+            }
+            engine = .siloPlayerLoopback
+            loopbackSession = forcedLoopbackSession(
+                baseLoopbackSession,
+                transformation: transformation.name
+            )
+        }
+
+        let routeCapabilities = engine.routeCapabilities
+        let sourceMetadata = PlaybackSourceMetadata(
+            container: plan.source.container,
+            videoCodec: plan.source.videoCodec,
+            audioCodec: plan.source.audioCodec,
+            subtitleCodecs: basePlan.sourceMetadata.subtitleCodecs,
+            dolbyVisionProfile: plan.source.dolbyVisionProfile,
+            colorRange: basePlan.sourceMetadata.colorRange
+        )
+        let transformationTokens = plan.transformations.map {
+            "v3_transform_\($0.executor)_\($0.name)_\($0.recipeVersion)"
+        }
+        let quirkTokens = plan.appliedQuirks.map { "v3_quirk_\($0.registryRevision)_\($0.id)" }
+        let correctionTokens = plan.runtimeCorrections.map { "v3_runtime_correction_\($0)" }
+        let warnings = plan.degradationWarnings.map { "\($0.code): \($0.message)" }
+        let normalization = PlaybackNormalizationSummary(
+            containerMode: plan.delivery == "original_http" ? basePlan.normalizationSummary.containerMode : plan.delivery,
+            videoMode: plan.effectiveRecipe.videoCodec ?? "copy",
+            audioMode: plan.effectiveRecipe.audioCodec ?? "copy",
+            subtitleMode: plan.subtitle.mode
+        )
+
+        return PlaybackExecutionPlan(
+            delivery: delivery,
+            engine: engine,
+            startMode: .absolutePosition(max(0, plan.timeline.playerStartSeconds)),
+            streamRequest: streamRequest,
+            sourceStreamRequest: streamRequest,
+            loopbackSession: engine == .siloPlayerLoopback ? loopbackSession : nil,
+            capabilities: routeCapabilities.backendCapabilities,
+            routeCapabilities: routeCapabilities,
+            requirements: routeRequirements,
+            featureFlagEnabled: true,
+            parityBlockers: routeCapabilities.blockingReasons(for: routeRequirements),
+            decisionTrace: basePlan.decisionTrace + [
+                "protocol_v3", "v3_plan_\(plan.planId)", "v3_engine_\(plan.engine)", "v3_delivery_\(plan.delivery)"
+            ] + transformationTokens + quirkTokens + correctionTokens,
+            degradationWarnings: warnings + routeCapabilities.degradationNotes(for: routeRequirements),
+            reason: "v3_\(plan.decisionReason)",
+            playbackSessionId: plan.sessionId,
+            wireDelivery: plan.delivery,
+            serverFeatures: v3.serverFeatures,
+            sourceMetadata: sourceMetadata,
+            normalizationSummary: normalization
+        )
+    }
+
+    private static func forcedLoopbackSession(
+        _ base: LoopbackSessionSpec,
+        transformation: String
+    ) -> LoopbackSessionSpec {
+        let videoMode: LoopbackSessionSpec.VideoMode
+        let manifestMetadata: LoopbackSessionSpec.ManifestMetadata
+        switch transformation {
+        case "client_dv7_to_dv81":
+            videoMode = .convertProfile7To81
+            manifestMetadata = LoopbackSessionSpec.ManifestMetadata(
+                advertisedDolbyVisionProfile: 8,
+                compatibilityBrand: "db1p",
+                videoRange: "PQ",
+                mayClaimAtmos: base.manifestMetadata.mayClaimAtmos
+            )
+        default:
+            videoMode = .passthroughHEVC
+            manifestMetadata = LoopbackSessionSpec.ManifestMetadata(
+                advertisedDolbyVisionProfile: nil,
+                compatibilityBrand: nil,
+                videoRange: "PQ",
+                mayClaimAtmos: base.manifestMetadata.mayClaimAtmos
+            )
+        }
+        return LoopbackSessionSpec(
+            sourceURL: base.sourceURL,
+            headers: base.headers,
+            sourceStartTimeSeconds: base.sourceStartTimeSeconds,
+            sourceBitrateBps: base.sourceBitrateBps,
+            videoMode: videoMode,
+            sourceVideoFrameRate: base.sourceVideoFrameRate,
+            selectedAudio: base.selectedAudio,
+            availableAudioTracks: base.availableAudioTracks,
+            manifestMetadata: manifestMetadata,
+            servingMode: base.servingMode
+        )
+    }
+
+    private static func subtitleTrack(
+        atServerCombinedIndex index: Int,
+        in version: FileVersion
+    ) -> SubtitleTrack? {
+        guard index >= 0 else { return nil }
+        let tracks = version.subtitleTracks ?? []
+        let external = tracks.filter { $0.external == true }
+        let embedded = tracks.filter { $0.external != true }
+        let combined = external + embedded
+        guard combined.indices.contains(index) else { return nil }
+        return combined[index]
+    }
+
+    private static func deliveryStrategy(_ value: String) -> PlaybackDeliveryStrategy {
+        switch value {
+        case "server_remux_hls", "server_remux_progressive":
+            return .remux
+        case "server_transcode_hls":
+            return .transcode
+        default:
+            return .direct
+        }
+    }
+}

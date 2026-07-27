@@ -12,6 +12,32 @@ import VideoToolbox
 /// colorimetry-string mapping can be reused by the CMSampleBuffer builders
 /// without going through PlayerCore static dispatch.
 enum VideoColorMetadata {
+    static func normalizedColorRangeName(_ value: String?) -> String? {
+        let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "tv", "pc": return normalized
+        default: return nil
+        }
+    }
+
+    static func colorRangeName(_ range: AVColorRange) -> String? {
+        switch range {
+        case AVCOL_RANGE_MPEG: return "tv"
+        case AVCOL_RANGE_JPEG: return "pc"
+        default: return nil
+        }
+    }
+
+    /// Resolve FFmpeg's stream/frame value first and consult server metadata
+    /// only when libav reports AVCOL_RANGE_UNSPECIFIED. Explicit local
+    /// signaling always wins over the API fallback.
+    static func isFullRange(_ range: AVColorRange, fallbackName: String?) -> Bool {
+        if range == AVCOL_RANGE_UNSPECIFIED {
+            return normalizedColorRangeName(fallbackName) == "pc"
+        }
+        return colorRangeName(range) == "pc"
+    }
+
     static func pickPixelFormat(
         dynamicRange: SpikeDynamicRange,
         fullRange: Bool

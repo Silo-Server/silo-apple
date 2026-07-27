@@ -13,16 +13,10 @@ struct TVItemDetailView: View {
     let contentId: String
 
     @State private var viewModel: ItemDetailViewModel
-    @State private var preferredVersionFileId: Int?
-    @State private var preferredAudioTrackIndex: Int?
-    @State private var preferredSubtitleTrackIndex: Int?
-    @State private var preferredNextUpFileId: Int?
-    @State private var preferredNextUpAudioTrackIndex: Int?
-    @State private var preferredNextUpSubtitleTrackIndex: Int?
     /// Set when the user explicitly resets subtitles to "Auto" this visit:
     /// the server override is cleared with a fire-and-forget DELETE, but the
     /// already-fetched detail still carries the old `effectiveSubtitle*`, so
-    /// the selector must stop feeding it to the "Auto - …" preview.
+    /// the selector must stop feeding it to the "Auto: …" preview.
     @State private var didClearSubtitleOverride = false
     @State private var didClearNextUpSubtitleOverride = false
     @State private var nextUpPlaybackDetail: ItemDetail?
@@ -66,12 +60,6 @@ struct TVItemDetailView: View {
             Self.focusLogger.debug("itemDetail.disappear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
         }
         .task(id: contentId) {
-            preferredVersionFileId = nil
-            preferredAudioTrackIndex = nil
-            preferredSubtitleTrackIndex = nil
-            preferredNextUpFileId = nil
-            preferredNextUpAudioTrackIndex = nil
-            preferredNextUpSubtitleTrackIndex = nil
             didClearSubtitleOverride = false
             didClearNextUpSubtitleOverride = false
             nextUpPlaybackDetail = nil
@@ -80,6 +68,39 @@ struct TVItemDetailView: View {
             await viewModel.loadDetail(contentId: contentId)
             seedSubtitleOverrideIfNeeded()
         }
+    }
+
+    // Selection state lives on the cached view model so a pushed player route
+    // or a temporary navigation away from this item cannot discard it. These
+    // nonmutating proxies keep the existing selector callbacks concise.
+    private var preferredVersionFileId: Int? {
+        get { viewModel.preferredVersionFileId }
+        nonmutating set { viewModel.preferredVersionFileId = newValue }
+    }
+
+    private var preferredAudioTrackIndex: Int? {
+        get { viewModel.preferredAudioTrackIndex }
+        nonmutating set { viewModel.preferredAudioTrackIndex = newValue }
+    }
+
+    private var preferredSubtitleTrackIndex: Int? {
+        get { viewModel.preferredSubtitleTrackIndex }
+        nonmutating set { viewModel.preferredSubtitleTrackIndex = newValue }
+    }
+
+    private var preferredNextUpFileId: Int? {
+        get { viewModel.preferredNextUpFileId }
+        nonmutating set { viewModel.preferredNextUpFileId = newValue }
+    }
+
+    private var preferredNextUpAudioTrackIndex: Int? {
+        get { viewModel.preferredNextUpAudioTrackIndex }
+        nonmutating set { viewModel.preferredNextUpAudioTrackIndex = newValue }
+    }
+
+    private var preferredNextUpSubtitleTrackIndex: Int? {
+        get { viewModel.preferredNextUpSubtitleTrackIndex }
+        nonmutating set { viewModel.preferredNextUpSubtitleTrackIndex = newValue }
     }
 
     @ViewBuilder
@@ -100,6 +121,7 @@ struct TVItemDetailView: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
+                episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 selectedNextUpFileId: preferredNextUpFileId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
@@ -137,6 +159,12 @@ struct TVItemDetailView: View {
                 },
                 onEpisodeTap: { id in
                     router.navigate(to: .itemDetail(contentId: id))
+                },
+                onSetEpisodeWatched: { id, played in
+                    await viewModel.setEpisodeWatched(contentId: id, played: played)
+                },
+                onSetEpisodeFavorite: { id, isFavorite in
+                    await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
                 },
                 onSelectSeason: { season in
                     guard season.id != detail.contentId else { return }
@@ -211,6 +239,7 @@ struct TVItemDetailView: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
+                episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 selectedNextUpFileId: preferredNextUpFileId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
@@ -249,6 +278,12 @@ struct TVItemDetailView: View {
                 },
                 onEpisodeTap: { id in
                     router.navigate(to: .itemDetail(contentId: id))
+                },
+                onSetEpisodeWatched: { id, played in
+                    await viewModel.setEpisodeWatched(contentId: id, played: played)
+                },
+                onSetEpisodeFavorite: { id, isFavorite in
+                    await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
                 },
                 onSelectNextUpVersion: { fileId in
                     preferredNextUpFileId = fileId
@@ -323,6 +358,7 @@ struct TVItemDetailView: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 seasonEpisodes: viewModel.episodes,
+                episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 onPlay: { startFromBeginning in
                     let resumePosition = startFromBeginning ? nil : playableResumePosition(for: detail)
@@ -406,11 +442,32 @@ struct TVItemDetailView: View {
                     router.navigate(to: .itemDetail(contentId: id))
                 },
                 onEpisodeTap: { id in
-                    // Episode → episode hops replace the current page so Back
-                    // exits to wherever the chain started (home, series page)
-                    // instead of unwinding every previously viewed episode.
-                    guard id != detail.contentId else { return }
-                    router.replaceCurrent(with: .itemDetail(contentId: id))
+                    let episode = viewModel.episodes.first { $0.contentId == id }
+                    let isCurrentEpisode = id == detail.contentId
+                    let resumePosition = playableResumePosition(
+                        position: episode?.userData?.positionSeconds,
+                        duration: episode?.userData?.durationSeconds
+                    )
+
+                    // Present independently of the navigation stack. Once
+                    // playback reports that it is actually running, the
+                    // hidden detail route is replaced with this episode so
+                    // dismissing the player returns to what was just played.
+                    router.presentPlayer(
+                        contentId: id,
+                        fileId: isCurrentEpisode ? playbackFileId(for: detail) : nil,
+                        audioTrackIndex: isCurrentEpisode ? preferredAudioTrackIndex : nil,
+                        subtitleTrackIndex: isCurrentEpisode ? preferredSubtitleTrackIndex : nil,
+                        startFromBeginning: false,
+                        resumePosition: resumePosition,
+                        returnToContentId: isCurrentEpisode ? nil : id
+                    )
+                },
+                onSetEpisodeWatched: { id, played in
+                    await viewModel.setEpisodeWatched(contentId: id, played: played)
+                },
+                onSetEpisodeFavorite: { id, isFavorite in
+                    await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
                 },
                 belowSynopsis: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)

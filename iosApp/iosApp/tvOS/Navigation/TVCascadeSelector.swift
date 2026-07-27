@@ -225,9 +225,12 @@ struct TVCascadeSelector: View {
     private func libraryRow(_ library: Library) -> some View {
         let isFocused = focus == .library(library.id)
         let isCurrent = library.id == currentScopeId
+        // Mixed libraries appear under both video tabs; a distinct layers
+        // glyph signals "Movies & Series" so the dual listing doesn't read
+        // as two different libraries.
         let label = TVCascadeLibraryRowLabel(
             title: library.name,
-            systemImage: type.systemImage,
+            systemImage: library.isMixedLibrary ? "square.stack.3d.up" : type.systemImage,
             trailingGlyph: isCurrent ? "checkmark" : "chevron.right",
             isFocused: isFocused
         )

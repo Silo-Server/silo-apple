@@ -25,7 +25,7 @@ struct AVPlayerSurface: UIViewRepresentable {
         view.setVideoGravity(videoGravity)
         view.bakedLetterbox = bakedLetterbox
         view.attachSubtitleRenderer(backend.subtitleRendererForOverlay)
-        backend.subtitleOverlay = view.subtitleOverlay
+        backend.attachSubtitleOverlay(view.subtitleOverlay, owner: view)
         return view
     }
 
@@ -34,7 +34,14 @@ struct AVPlayerSurface: UIViewRepresentable {
         uiView.setVideoGravity(videoGravity)
         uiView.bakedLetterbox = bakedLetterbox
         uiView.attachSubtitleRenderer(backend.subtitleRendererForOverlay)
-        backend.subtitleOverlay = uiView.subtitleOverlay
+        backend.attachSubtitleOverlay(uiView.subtitleOverlay, owner: uiView)
+    }
+
+    static func dismantleUIView(_ uiView: AVPlayerLayerView, coordinator: ()) {
+        uiView.detachSubtitleOverlay()
+        #if os(iOS)
+        PictureInPictureCoordinator.shared.detach(playerLayer: uiView.playerLayer)
+        #endif
     }
 }
 
@@ -64,12 +71,18 @@ final class AVPlayerLayerView: UIView {
 
     func attach(backend: AVPlayerBackend) {
         if self.backend !== backend {
+            self.backend?.detachSubtitleOverlay(owner: self)
             self.backend = backend
             observeReadyForDisplay()
         }
         let player = backend.avPlayer
         if playerLayer.player === player { return }
         playerLayer.player = player
+        #if os(iOS)
+        // PiP has to be bound to the live layer, and the layer is only useful
+        // once it actually has a player attached.
+        PictureInPictureCoordinator.shared.attach(playerLayer: playerLayer)
+        #endif
     }
 
     func setVideoGravity(_ gravity: AVLayerVideoGravity) {
@@ -90,6 +103,10 @@ final class AVPlayerLayerView: UIView {
             guard bakedLetterbox != oldValue else { return }
             setNeedsLayout()
         }
+    }
+
+    func detachSubtitleOverlay() {
+        backend?.detachSubtitleOverlay(owner: self)
     }
 
     override func layoutSubviews() {

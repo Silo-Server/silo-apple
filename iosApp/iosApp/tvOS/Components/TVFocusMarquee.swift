@@ -278,6 +278,17 @@ final class TVFocusMarqueeModel {
     /// refetches details.
     private var enrichmentCache: [String: TVMarqueeEnrichment] = [:]
 
+    /// Cold-entry seed: display a candidate immediately, skipping the rest
+    /// debounce, so the page's first frame already carries a backdrop
+    /// instead of fading one in after focus settles. Only applies before
+    /// anything has displayed — later calls are no-ops and the focus-driven
+    /// `preview` path stays authoritative.
+    func seed(_ candidate: TVMarqueeContent) {
+        guard content == nil else { return }
+        debounceTask?.cancel()
+        display(candidate)
+    }
+
     /// Report card focus. Cancels any pending swap and schedules a new
     /// one at +150 ms; reporting the already-displayed content is a no-op.
     func preview(_ candidate: TVMarqueeContent) {
@@ -328,6 +339,16 @@ final class TVFocusMarqueeModel {
     private func sampleTintIfNeeded(for urlString: String?) {
         guard let urlString, !urlString.isEmpty, let url = URL(string: urlString) else { return }
         guard urlString != lastSampledTintURL else { return }
+
+        // A previously-sampled tint (startup prefetch, earlier focus visit)
+        // applies synchronously, so a cold-entry seed paints the wash on the
+        // same frame as the backdrop.
+        if let cached = HeroBackdropPalette.cachedTint(for: url) {
+            lastSampledTintURL = urlString
+            tintTask?.cancel()
+            tintColor = cached
+            return
+        }
 
         lastSampledTintURL = urlString
         tintTask?.cancel()
@@ -398,6 +419,10 @@ struct TVFocusMarquee: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// False until the first content has painted — the initial (seeded)
+    /// block snaps in; only content→content swaps crossfade.
+    @State private var hasDisplayedContent = false
+
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             if let content {
@@ -418,9 +443,13 @@ struct TVFocusMarquee: View {
         .focusEffectDisabled()
         // The model swaps `content` outside any animation transaction, so
         // the crossfade is driven here, keyed on the item id (§4.2 240 ms).
-        // Reduce Motion drops the animation entirely → the swap snaps.
+        // Reduce Motion drops the animation entirely → the swap snaps. The
+        // very first content (cold-entry seed) also snaps, so the marquee is
+        // simply there on the page's first frame instead of fading in.
         .animation(
-            reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.Skyline.marqueeCrossfadeDuration),
+            reduceMotion || !hasDisplayedContent
+                ? nil
+                : .easeInOut(duration: ContinuumTheme.Skyline.marqueeCrossfadeDuration),
             value: content?.id
         )
         // The §9 detail line lands after the block; fade it in on its own.
@@ -431,8 +460,12 @@ struct TVFocusMarquee: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
         .accessibilityAddTraits(.updatesFrequently)
+        .onAppear {
+            if content != nil { hasDisplayedContent = true }
+        }
         .onChange(of: content) { _, newValue in
             guard let newValue else { return }
+            hasDisplayedContent = true
             announce(newValue)
         }
     }
@@ -478,6 +511,24 @@ private struct TVMarqueeBlock: View {
     @State private var titleWrapsTwoLines = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(
+        content: TVMarqueeContent,
+        enrichment: TVMarqueeEnrichment? = nil,
+        scale: TVFocusMarquee.Scale
+    ) {
+        self.content = content
+        self.enrichment = enrichment
+        self.scale = scale
+        // A prefetched logo should be on the block's very first frame —
+        // waiting for onAppear paints one frame of text title first, which
+        // reads as a flash on cold entry. Synchronous memory-cache lookup.
+        if let logoUrl = content.logoUrl, !logoUrl.isEmpty,
+           let url = URL(string: logoUrl),
+           let cached = ImagePipeline.shared.cache[ImageRequest(url: url)] {
+            _logoImage = State(initialValue: cached.image)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {

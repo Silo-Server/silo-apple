@@ -1,0 +1,139 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Silo: Generate Xcode project",
+      "type": "shell",
+      "command": "xcodegen",
+      "args": [
+        "generate"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/iosApp"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Silo: Build iOS",
+      "type": "shell",
+      "command": "xcodebuild",
+      "args": [
+        "build",
+        "-project",
+        "Silo.xcodeproj",
+        "-scheme",
+        "Silo",
+        "-destination",
+        "generic/platform=iOS Simulator",
+        "-derivedDataPath",
+        ".deriveddata",
+        "CODE_SIGN_IDENTITY=",
+        "CODE_SIGNING_ALLOWED=NO"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/iosApp"
+      },
+      "dependsOn": "Silo: Generate Xcode project",
+      "dependsOrder": "sequence",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$swiftc"
+      ]
+    },
+    {
+      "label": "Silo: Build tvOS",
+      "type": "shell",
+      "command": "xcodebuild",
+      "args": [
+        "build",
+        "-project",
+        "Silo.xcodeproj",
+        "-scheme",
+        "SiloTV",
+        "-destination",
+        "generic/platform=tvOS Simulator",
+        "-derivedDataPath",
+        ".deriveddata",
+        "CODE_SIGN_IDENTITY=",
+        "CODE_SIGNING_ALLOWED=NO"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/iosApp"
+      },
+      "dependsOn": "Silo: Generate Xcode project",
+      "dependsOrder": "sequence",
+      "group": "build",
+      "problemMatcher": [
+        "$swiftc"
+      ]
+    },
+    {
+      "label": "Silo: Build macOS",
+      "type": "shell",
+      "command": "xcodebuild",
+      "args": [
+        "build",
+        "-project",
+        "Silo.xcodeproj",
+        "-scheme",
+        "SiloMac",
+        "-destination",
+        "platform=macOS",
+        "-derivedDataPath",
+        ".deriveddata",
+        "CODE_SIGN_IDENTITY=",
+        "CODE_SIGNING_ALLOWED=NO"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/iosApp"
+      },
+      "dependsOn": "Silo: Generate Xcode project",
+      "dependsOrder": "sequence",
+      "group": "build",
+      "problemMatcher": [
+        "$swiftc"
+      ]
+    },
+    {
+      "label": "Silo: Test iOS",
+      "type": "shell",
+      "command": "xcodebuild",
+      "args": [
+        "test",
+        "-project",
+        "Silo.xcodeproj",
+        "-scheme",
+        "Silo",
+        "-destination",
+        "${input:iosTestDestination}",
+        "-derivedDataPath",
+        ".deriveddata",
+        "CODE_SIGN_IDENTITY=",
+        "CODE_SIGNING_ALLOWED=NO"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/iosApp"
+      },
+      "dependsOn": "Silo: Generate Xcode project",
+      "dependsOrder": "sequence",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$swiftc"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "iosTestDestination",
+      "type": "promptString",
+      "description": "Installed iOS Simulator destination",
+      "default": "platform=iOS Simulator,name=iPhone 17 Pro"
+    }
+  ]
+}

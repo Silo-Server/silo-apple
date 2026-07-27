@@ -50,6 +50,9 @@ final class OverlayPrefsStore: ObservableObject {
 
     private var hasHydrated = false
     private var adminDefaultsRaw: String?
+    /// Invalidates an older refresh when the active server changes or a newer
+    /// refresh starts, preventing late responses from repopulating stale prefs.
+    private var refreshGeneration: UInt = 0
 
     /// In-flight write task, if any. While non-nil, additional
     /// `setPrefs(_:)` calls just replace `pendingSnapshot` instead of
@@ -98,20 +101,27 @@ final class OverlayPrefsStore: ObservableObject {
     ///   cards render *something* (registry defaults at worst) rather
     ///   than blocking the UI on the retry.
     func refresh() async {
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
         isLoading = true
         lastError = nil
-        defer { isLoading = false }
+        defer {
+            if generation == refreshGeneration {
+                isLoading = false
+            }
+        }
 
         let api = ContinuumAPI.shared
         var resolvedEnabled = true
         var resolvedAdminDefaults: String?
+        var resolvedError: String?
         var configFetchFailed = false
         do {
             let config = try await api.overlayConfig()
             resolvedEnabled = config.enabled
             resolvedAdminDefaults = config.defaults
         } catch {
-            lastError = (error as? LocalizedError)?.errorDescription
+            resolvedError = (error as? LocalizedError)?.errorDescription
                 ?? String(describing: error)
             configFetchFailed = true
         }
@@ -124,10 +134,13 @@ final class OverlayPrefsStore: ObservableObject {
         } catch HTTPError.http(let code, _) where code == 404 {
             userRaw = nil
         } catch {
-            lastError = (error as? LocalizedError)?.errorDescription
+            resolvedError = (error as? LocalizedError)?.errorDescription
                 ?? String(describing: error)
             userFetchFailed = true
         }
+
+        guard generation == refreshGeneration else { return }
+        lastError = resolvedError
 
         // Preserve cached config state on transient failures. The
         // sentinel `resolvedEnabled = true` is only valid when the
@@ -264,6 +277,10 @@ final class OverlayPrefsStore: ObservableObject {
     /// complete it but the catch block in `flushPendingWrites`
     /// checks `Task.isCancelled` before touching state.
     func clear() {
+        // Let a new server start hydrating immediately while any old network
+        // request winds down; its generation guard prevents stale application.
+        refreshGeneration &+= 1
+        isLoading = false
         pendingWrite?.cancel()
         pendingWrite = nil
         pendingSnapshot = nil

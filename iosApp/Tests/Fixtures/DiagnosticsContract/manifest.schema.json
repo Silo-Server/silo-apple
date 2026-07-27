@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://silo-server.dev/schemas/client-diagnostics/v1/manifest.schema.json",
+  "title": "Silo Client Diagnostics Manifest v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "report",
+    "destination",
+    "consent",
+    "device_summary",
+    "playback_session_ids",
+    "log_summary",
+    "archive"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "report": {
+      "type": "object",
+      "required": [
+        "type",
+        "captured_at",
+        "capture_session_id",
+        "app_version",
+        "app_build",
+        "platform",
+        "os_version"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "crash",
+            "anr",
+            "native_crash",
+            "hang",
+            "abnormal_exit",
+            "manual"
+          ],
+          "maxLength": 32
+        },
+        "captured_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64
+        },
+        "capture_session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "app_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "app_build": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "platform": {
+          "type": "string",
+          "enum": [
+            "android",
+            "android-tv",
+            "ios",
+            "tvos"
+          ],
+          "maxLength": 32
+        },
+        "os_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "profile_id": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": true
+    },
+    "destination": {
+      "type": "object",
+      "required": [
+        "server_instance_id"
+      ],
+      "properties": {
+        "server_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": true
+    },
+    "consent": {
+      "type": "object",
+      "required": [
+        "mode",
+        "notice_version"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "prompt",
+            "always",
+            "manual"
+          ],
+          "maxLength": 32
+        },
+        "notice_version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "crash": {
+      "type": "object",
+      "required": [
+        "summary",
+        "source",
+        "provenance",
+        "occurred_at"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "stack_excerpt": {
+          "type": "string",
+          "maxLength": 8192
+        },
+        "thread": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "foreground": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "ueh",
+            "exit_info",
+            "metrickit",
+            "exit_sentinel"
+          ],
+          "maxLength": 32
+        },
+        "provenance": {
+          "type": "string",
+          "enum": [
+            "pre_failure",
+            "post_restart",
+            "metric_reporting_period"
+          ],
+          "maxLength": 32
+        },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": true
+    },
+    "device_summary": {
+      "type": "object",
+      "required": [
+        "manufacturer",
+        "model",
+        "os",
+        "form_factor"
+      ],
+      "properties": {
+        "manufacturer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "os": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "form_factor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      }
+    },
+    "playback_session_ids": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "log_summary": {
+      "type": "object",
+      "required": [
+        "lines",
+        "bytes_gz",
+        "dropped_lines",
+        "categories",
+        "debug_logging"
+      ],
+      "properties": {
+        "lines": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes_gz": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dropped_lines": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "categories": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 9,
+          "items": {
+            "type": "string",
+            "enum": [
+              "playback",
+              "focus",
+              "network",
+              "lifecycle",
+              "browse",
+              "cast",
+              "download",
+              "crash",
+              "other"
+            ],
+            "maxLength": 32
+          }
+        },
+        "debug_logging": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "archive": {
+      "type": "object",
+      "required": [
+        "entries",
+        "bytes",
+        "uncompressed_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 1,
+          "maxItems": 8,
+          "contains": {
+            "const": "manifest.json"
+          },
+          "items": {
+            "type": "string",
+            "enum": [
+              "manifest.json",
+              "device.json",
+              "logs.jsonl",
+              "crash/summary.json",
+              "crash/stack.txt",
+              "crash/tombstone.pb",
+              "crash/metrickit.json",
+              "breadcrumbs.jsonl"
+            ],
+            "maxLength": 64
+          }
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "uncompressed_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$",
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

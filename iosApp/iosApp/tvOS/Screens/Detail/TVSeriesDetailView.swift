@@ -11,6 +11,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
+    let episodeFavoriteStates: [String: Bool]
     let isLoadingEpisodes: Bool
     let selectedNextUpFileId: Int?
     let selectedNextUpAudioTrackIndex: Int?
@@ -21,12 +22,14 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// True once the user explicitly resets subtitles to "Auto" this visit.
     /// The server override was just cleared, but the next-up detail's
     /// `effectiveSubtitle*` still describes the old manual pick until the
-    /// next refetch — suppress it so the "Auto - …" preview doesn't echo the
+    /// next refetch — suppress it so the "Auto: …" preview doesn't echo the
     /// cleared selection.
     var nextUpSubtitleOverrideCleared: Bool = false
     let onSelectSeason: (Season) -> Void
     let onPlayEpisode: (_ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool) -> Void
     let onEpisodeTap: (_ contentId: String) -> Void
+    let onSetEpisodeWatched: (_ contentId: String, _ played: Bool) async -> Bool
+    let onSetEpisodeFavorite: (_ contentId: String, _ isFavorite: Bool) async -> Bool
     let onSelectNextUpVersion: (Int?) -> Void
     let onSelectNextUpAudioTrack: (Int?) -> Void
     let onSelectNextUpSubtitleTrack: (Int?) -> Void
@@ -113,7 +116,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             sourceTokens: TVHeroMetadata.seriesSourceTokens(from: detail),
             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
-            tagline: detail.tagline,
             factsLine: TVHeroMetadata.seriesFactsLine(from: detail),
             starringText: TVHeroMetadata.starringText(from: detail),
             actions: { actionColumn },
@@ -309,7 +311,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             TVEpisodeRail(
                 episodes: episodes,
                 onSelect: onEpisodeTap,
-                currentContentId: nextUpEpisode?.contentId
+                onSetWatched: onSetEpisodeWatched,
+                onSetFavorite: onSetEpisodeFavorite,
+                currentContentId: nextUpEpisode?.contentId,
+                currentContentIsFavorite: nextUpEpisode.map {
+                    episodeFavoriteStates[$0.contentId] ?? false
+                } ?? false,
+                favoriteStates: episodeFavoriteStates
             )
         }
     }

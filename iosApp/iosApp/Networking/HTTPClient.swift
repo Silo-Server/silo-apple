@@ -47,6 +47,15 @@ actor HTTPClient {
         self.longWaitSession = session ?? Self.makeSession(requestTimeout: 90)
         self.tokenStore = tokenStore
 
+        self.decoder = Self.makeJSONDecoder()
+
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.dateEncodingStrategy = .iso8601
+        self.encoder = encoder
+    }
+
+    static func makeJSONDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .custom { decoder in
@@ -59,12 +68,7 @@ actor HTTPClient {
                 debugDescription: "Unparseable ISO-8601 date: \(str)"
             )
         }
-        self.decoder = decoder
-
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.dateEncodingStrategy = .iso8601
-        self.encoder = encoder
+        return decoder
     }
 
     /// `URLSession` configured for an auth-gated REST API: no shared HTTP
@@ -125,6 +129,23 @@ actor HTTPClient {
         query: [String: String] = [:]
     ) async throws {
         _ = try await sendRaw(method: "POST", path: path, query: query, body: body)
+    }
+
+    func postMultipart<T: Decodable>(
+        _ path: String,
+        parts: [HTTPMultipartPart],
+        timeout: HTTPTimeout = .extended
+    ) async throws -> T {
+        let data = try await sendMultipartRaw(method: "POST", path: path, parts: parts, timeout: timeout)
+        if data.isEmpty, let empty = EmptyResponse.empty as? T {
+            return empty
+        }
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            Self.logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
+            throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
+        }
     }
 
     func put<T: Decodable>(
@@ -316,6 +337,57 @@ actor HTTPClient {
         return data
     }
 
+    private func sendMultipartRaw(
+        method: String,
+        path: String,
+        parts: [HTTPMultipartPart],
+        timeout: HTTPTimeout = .extended
+    ) async throws -> Data {
+        let serverUrl = await tokenStore.getServerUrl()
+        guard !serverUrl.isEmpty else {
+            throw HTTPError.serverUrlNotConfigured
+        }
+
+        let authStateBeforeRequest = await tokenStore.getAccessToken()
+        let boundary = "SiloDiagnostics-\(UUID().uuidString)"
+        let body = Self.multipartBody(parts: parts, boundary: boundary)
+        var request = try buildRequest(
+            serverUrl: serverUrl,
+            method: method,
+            path: path,
+            query: [:],
+            body: Optional<String>.none
+        )
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        await attachAuthHeaders(&request, accessToken: authStateBeforeRequest)
+
+        let (data, response) = try await perform(request: request, timeout: timeout)
+
+        if response.statusCode == 401, shouldAttemptRefresh(path: path) {
+            let refreshed = await refreshTokens(tokenAtRequestTime: authStateBeforeRequest)
+            if refreshed {
+                let refreshedAuthState = await tokenStore.getAccessToken()
+                var retry = try buildRequest(
+                    serverUrl: serverUrl,
+                    method: method,
+                    path: path,
+                    query: [:],
+                    body: Optional<String>.none
+                )
+                retry.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+                retry.httpBody = body
+                await attachAuthHeaders(&retry, accessToken: refreshedAuthState)
+                let (retryData, retryResponse) = try await perform(request: retry, timeout: timeout)
+                try ensureSuccess(retryData, retryResponse, method: method)
+                return retryData
+            }
+        }
+
+        try ensureSuccess(data, response, method: method)
+        return data
+    }
+
     // MARK: - Request building
 
     private func buildRequest(
@@ -361,6 +433,21 @@ actor HTTPClient {
         return request
     }
 
+    static func multipartBody(parts: [HTTPMultipartPart], boundary: String) -> Data {
+        var body = Data()
+        for part in parts {
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data(
+                "Content-Disposition: form-data; name=\"\(part.name)\"; filename=\"\(part.filename)\"\r\n".utf8
+            ))
+            body.append(Data("Content-Type: \(part.contentType)\r\n\r\n".utf8))
+            body.append(part.data)
+            body.append(Data("\r\n".utf8))
+        }
+        body.append(Data("--\(boundary)--\r\n".utf8))
+        return body
+    }
+
     private func attachAuthHeaders(_ request: inout URLRequest, accessToken: String?) async {
         let path = request.url?.path ?? ""
         // Skip auth injection for /auth/refresh (avoid recursion) and
@@ -372,15 +459,15 @@ actor HTTPClient {
         var attached: [String] = []
         if let token = accessToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            attached.append("auth(…\(token.suffix(6)))")
+            attached.append("auth")
         }
         if let profileId = await tokenStore.getProfileId() {
             request.setValue(profileId, forHTTPHeaderField: "X-Profile-Id")
-            attached.append("profileId=\(profileId)")
+            attached.append("profile")
         }
         if let profileToken = await tokenStore.getProfileToken() {
             request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token")
-            attached.append("profileToken(…\(profileToken.suffix(6)))")
+            attached.append("profileToken")
         }
         let device = AppleDeviceIdentity.current
         request.setValue(device.id, forHTTPHeaderField: "X-Silo-Device-Id")
@@ -425,15 +512,13 @@ actor HTTPClient {
     private func ensureSuccess(_ data: Data, _ response: HTTPURLResponse, method: String, quietStatuses: Set<Int> = []) throws {
         guard (200..<300).contains(response.statusCode) else {
             let bodyStr = String(data: data, encoding: .utf8)
-            let urlStr = response.url?.absoluteString ?? ""
-            let preview = (bodyStr ?? "").prefix(512)
             // A status the caller treats as an expected signal (e.g. a 404
             // existence probe) is demoted to debug so it doesn't read as a
             // failure in the log; everything else stays at error level.
             if quietStatuses.contains(response.statusCode) {
-                Self.logger.debug("HTTP \(response.statusCode, privacy: .public) \(method, privacy: .public) \(urlStr, privacy: .public) body=\(preview, privacy: .private)")
+                Self.logger.debug("HTTP \(response.statusCode, privacy: .public) \(method, privacy: .public)")
             } else {
-                Self.logger.error("HTTP \(response.statusCode, privacy: .public) \(method, privacy: .public) \(urlStr, privacy: .public) body=\(preview, privacy: .private)")
+                Self.logger.error("HTTP \(response.statusCode, privacy: .public) \(method, privacy: .public)")
             }
             throw HTTPError.http(
                 statusCode: response.statusCode,
@@ -508,7 +593,7 @@ actor HTTPClient {
         }
 
         guard let url = URL(string: serverUrl + "/api/v1/auth/refresh") else {
-            Self.logger.error("Refresh skipped: bad server URL \(serverUrl, privacy: .public)")
+            Self.logger.error("Refresh skipped: invalid server URL")
             return false
         }
 
@@ -551,13 +636,16 @@ actor HTTPClient {
             } else {
                 let body = String(data: data, encoding: .utf8) ?? ""
                 Self.logger.error("Refresh failed: status=\(http.statusCode, privacy: .public) body=\(body, privacy: .private)")
-                await tokenStore.clearTokens()
+                let temporaryScopeExpired = await tokenStore.hasTemporaryScope()
+                if !temporaryScopeExpired {
+                    await tokenStore.clearTokens()
+                }
                 // Tell the UI to route back to login for the current
                 // server. The registry entry (URL + display name) is
                 // preserved so the user doesn't have to re-add it.
                 await MainActor.run {
                     NotificationCenter.default.post(
-                        name: .continuumSessionExpired,
+                        name: temporaryScopeExpired ? .temporaryRemoteAuthExpired : .continuumSessionExpired,
                         object: nil
                     )
                 }
@@ -587,9 +675,16 @@ enum HTTPTimeout {
     case extended
 }
 
+struct HTTPMultipartPart {
+    let name: String
+    let filename: String
+    let contentType: String
+    let data: Data
+}
+
 // MARK: - Error
 
-enum HTTPError: LocalizedError {
+enum HTTPError: LocalizedError, CustomStringConvertible {
     case serverUrlNotConfigured
     case invalidURL(String)
     case invalidResponse
@@ -617,6 +712,27 @@ enum HTTPError: LocalizedError {
                 return message
             }
             return "Server returned status \(statusCode)"
+        }
+    }
+
+    /// A log-safe representation that never includes request URLs, response
+    /// bodies, auth material, or the localized text of an underlying error.
+    var description: String {
+        switch self {
+        case .serverUrlNotConfigured:
+            return "server_url_not_configured"
+        case .invalidURL:
+            return "invalid_url"
+        case .invalidResponse:
+            return "invalid_response"
+        case .network:
+            return "network_error"
+        case .encodingFailed:
+            return "encoding_failed"
+        case .decodingFailed(let type, _):
+            return "decoding_failed(type: \(type))"
+        case .http(let statusCode, _):
+            return "http_error(status: \(statusCode))"
         }
     }
 

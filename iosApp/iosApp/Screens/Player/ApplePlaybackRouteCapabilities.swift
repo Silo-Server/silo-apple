@@ -251,11 +251,11 @@ extension ApplePlaybackRouteCapabilities {
         ),
         pictureInPicture: .init(
             state: .unsupported,
-            note: "PiP stays off on the compatibility route."
+            note: "PiP stays off on the compatibility route: it renders into an AVSampleBufferDisplayLayer and needs a sample-buffer PiP content source."
         ),
         externalPlayback: .init(
-            state: .unclaimed,
-            note: "Silo does not expose external-playback UI on the compatibility route."
+            state: .unsupported,
+            note: "The compatibility player does not use AVPlayer and cannot provide AirPlay video playback."
         ),
         nowPlayingIntegration: .init(
             state: .repoVerified,
@@ -322,11 +322,11 @@ extension ApplePlaybackRouteCapabilities {
         ),
         pictureInPicture: .init(
             state: .validationRequired,
-            note: "PiP is not re-enabled until route-specific lifecycle validation lands."
+            note: "PiP is enabled on iOS Native Player HLS; Silo-rendered subtitles do not appear in the PiP window."
         ),
         externalPlayback: .init(
-            state: .unclaimed,
-            note: "External playback stays unclaimed until UI and receiver validation exist."
+            state: .validationRequired,
+            note: "Asset-conditional. AirPlay video hands the receiver the stream URL and nothing else: server-hosted direct assets are either header-authenticated (401 on the receiver) or rewritten to the on-device source proxy at 127.0.0.1, so external playback stays off for them. Offline downloads are fetchable and keep it, pending receiver validation."
         ),
         nowPlayingIntegration: .init(
             state: .repoVerified,
@@ -393,11 +393,11 @@ extension ApplePlaybackRouteCapabilities {
         ),
         pictureInPicture: .init(
             state: .validationRequired,
-            note: "PiP stays disabled until native-direct lifecycle validation exists."
+            note: "PiP is enabled on iOS Native Player Direct assets; Silo-rendered subtitles do not appear in the PiP window."
         ),
         externalPlayback: .init(
-            state: .unclaimed,
-            note: "External playback stays unclaimed until explicit native-route UI and validation land."
+            state: .unsupported,
+            note: "AirPlay video hands the receiver the stream URL, which it fetches without the route's Authorization header, so the server answers 401. External playback and the route picker stay off here."
         ),
         nowPlayingIntegration: .init(
             state: .repoVerified,
@@ -464,11 +464,11 @@ extension ApplePlaybackRouteCapabilities {
         ),
         pictureInPicture: .init(
             state: .validationRequired,
-            note: "PiP is not re-enabled on SiloPlayer output."
+            note: "PiP is enabled on iOS SiloPlayer output; Silo-rendered subtitles do not appear in the PiP window."
         ),
         externalPlayback: .init(
-            state: .unclaimed,
-            note: "External playback remains unclaimed on SiloPlayer output."
+            state: .repoVerified,
+            note: "AirPlay from iPhone to Apple TV is hardware-validated for SiloPlayer loopback delivery."
         ),
         nowPlayingIntegration: .init(
             state: .repoVerified,

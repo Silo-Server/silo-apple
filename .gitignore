@@ -4,9 +4,11 @@ iosApp/Silo.xcodeproj/
 xcuserdata/
 *.xcuserstate
 DerivedData/
+iosApp/.deriveddata/
 
 # SwiftPM / CocoaPods
 .build/
+iosApp/.spm-packages/
 iosApp/Pods/
 
 # Fastlane build outputs (IPAs, archives from the ipa_*_unsigned lanes)
@@ -31,13 +33,21 @@ fastlane/screenshots/
 fastlane/test_output/
 
 # Local tooling state
-.claude/
+# `.agents/skills` is a symlink to `.claude/skills` so non-Claude agents find the
+# same files; everything else under .agents/ is per-developer scratch.
+/.agents/*
+!/.agents/skills
+# Ignore everything in .claude/ except the committed, shared skills.
+/.claude/*
+!/.claude/skills/
 .codex/
 .cursor/
+.sweetpad/
 .worktrees/
 .playwright-mcp/
 .playwright-cli/
 .superpowers/
+buildServer.json
 
 # Logs and OS files
 *.log
@@ -48,4 +58,5 @@ Thumbs.db
 .swiftpm/
 docs/*
 !docs/tvos-focus.md
+!docs/mac-builder.md
 !docs/release/*

@@ -40,6 +40,10 @@ struct PlayerSurface: UIViewRepresentable {
         uiView.setVideoGravity(videoGravity)
         uiView.bakedLetterbox = bakedLetterbox
     }
+
+    static func dismantleUIView(_ uiView: PlayerSurfaceHostView, coordinator: ()) {
+        uiView.detachSubtitleOverlay()
+    }
 }
 
 /// UIView whose backing CALayer is AVSampleBufferDisplayLayer. The synchronizer
@@ -86,6 +90,7 @@ final class PlayerSurfaceHostView: UIView {
 
     func attach(player: PlayerCore) {
         if attachedPlayer === player { return }
+        attachedPlayer?.detachSubtitleOverlay(owner: self)
         attachedPlayer = player
         player.attach(to: displayLayer)
 
@@ -93,7 +98,7 @@ final class PlayerSurfaceHostView: UIView {
         // renderer reference is held weakly on the overlay so it
         // doesn't extend the session's lifetime beyond playback.
         subtitleOverlay.renderer = player.subtitleRendererForOverlay
-        player.subtitleOverlay = subtitleOverlay
+        player.attachSubtitleOverlay(subtitleOverlay, owner: self)
 
         // Track the video's presentation size so layoutSubviews() can pin
         // the subtitle overlay to the displayed video rect.
@@ -110,6 +115,10 @@ final class PlayerSurfaceHostView: UIView {
             self?.updateEDR(sigPeak: peak)
         }
         updateEDR(sigPeak: player.lastSigPeak)
+    }
+
+    func detachSubtitleOverlay() {
+        attachedPlayer?.detachSubtitleOverlay(owner: self)
     }
 
     func setVideoGravity(_ gravity: AVLayerVideoGravity) {

@@ -17,11 +17,12 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     /// True once the user explicitly resets subtitles to "Auto" this visit.
     /// The server override was just cleared, but `detail.effectiveSubtitle*`
     /// still describes the old manual pick until the next refetch — suppress
-    /// it so the "Auto - …" preview doesn't echo the cleared selection.
+    /// it so the "Auto: …" preview doesn't echo the cleared selection.
     var subtitleOverrideCleared: Bool = false
     let seasons: [Season]
     let selectedSeason: Season?
     let seasonEpisodes: [EpisodeListItem]
+    let episodeFavoriteStates: [String: Bool]
     let isLoadingEpisodes: Bool
     let onPlay: (_ startFromBeginning: Bool) -> Void
     let onSelectVersion: (Int?) -> Void
@@ -34,6 +35,8 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     let onEpisodeTap: (String) -> Void
+    let onSetEpisodeWatched: (_ contentId: String, _ played: Bool) async -> Bool
+    let onSetEpisodeFavorite: (_ contentId: String, _ isFavorite: Bool) async -> Bool
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the synopsis.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
@@ -51,6 +54,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     // forbids static stored properties on this type.
     private let episodeSectionScrollId = "detail-episode-section"
     private let heroScrollId = "detail-hero"
+    @State private var focusedEpisodeContentId: String?
 
     var body: some View {
         ScrollViewReader { scrollProxy in
@@ -65,7 +69,6 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                         sourceTokens: TVHeroMetadata.movieSourceTokens(from: detail),
                         ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
                         overview: detail.overview,
-                        tagline: detail.tagline,
                         factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
                         starringText: TVHeroMetadata.starringText(from: detail),
                         actions: { actionColumn },
@@ -100,6 +103,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 episodeSectionId: episodeSectionScrollId,
                 heroId: heroScrollId
             )
+            .onPlayPauseCommand(perform: playFocusedEpisodeOrCurrent)
         }
     }
 
@@ -267,9 +271,29 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 TVEpisodeRail(
                     episodes: seasonEpisodes,
                     onSelect: onEpisodeTap,
-                    currentContentId: detail.contentId
+                    onFocusedEpisodeChange: { focusedEpisodeContentId = $0 },
+                    onSetWatched: onSetEpisodeWatched,
+                    onSetFavorite: onSetEpisodeFavorite,
+                    currentContentId: detail.contentId,
+                    currentContentIsFavorite: isFavorite,
+                    favoriteStates: episodeFavoriteStates,
+                    prefersCurrentContentFocus: true
                 )
+                .padding(.horizontal, -ContinuumTheme.safePadding)
             }
+        }
+    }
+
+    /// Siri Remote Play/Pause is a page-level shortcut. A different episode
+    /// highlighted in the rail wins; every other focus zone plays the episode
+    /// represented by this detail page and preserves its selector overrides.
+    private func playFocusedEpisodeOrCurrent() {
+        guard detail.type == "episode" else { return }
+        if let focusedEpisodeContentId,
+           focusedEpisodeContentId != detail.contentId {
+            onEpisodeTap(focusedEpisodeContentId)
+        } else {
+            onPlay(false)
         }
     }
 

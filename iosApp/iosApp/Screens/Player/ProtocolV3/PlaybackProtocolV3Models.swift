@@ -1,0 +1,440 @@
+import Foundation
+
+enum PlaybackProtocolV3 {
+    static let version = 3
+    static let planFeature = "playback_plan_v3"
+    static let detailedDecodeFeature = "detailed_decode_capabilities"
+    static let layoutPassthroughFeature = "layout_aware_passthrough"
+    static let clientTransformFeature = "client_video_transformations_v1"
+    static let routeDiagnosticsFeature = "playback_route_diagnostics"
+    static let deviceQuirksFeature = "device_quirks_v1"
+    static let seekReanchorFeature = "seek_reanchor_v1"
+    static let directStreamResumeFeature = "direct_stream_resume_v1"
+}
+
+struct PlaybackV3HDRCapabilities: Codable, Equatable {
+    let hdr10: Bool
+    let hdr10Plus: Bool
+    let hlg: Bool
+    let dolbyVisionProfiles: [Int]
+}
+
+struct PlaybackV3AudioPassthroughEntry: Codable, Equatable {
+    let codec: String
+    let channelCounts: [Int]
+    let layouts: [String]
+}
+
+struct PlaybackV3AudioPassthrough: Codable, Equatable {
+    let passthroughCodecs: [String]
+    let spatializerEnabled: Bool
+    let maxChannels: Int
+    let entries: [PlaybackV3AudioPassthroughEntry]
+}
+
+struct PlaybackV3VideoDecodeCapability: Codable, Equatable {
+    let codec: String
+    let decoderName: String?
+    let profiles: [String]
+    let levels: [Int]
+    let bitDepths: [Int]
+    let maxWidth: Int
+    let maxHeight: Int
+    let maxFrameRate: Double
+    let maxBitrateKbps: Int
+    let hardware: Bool
+}
+
+struct PlaybackV3CodecCapabilities: Codable, Equatable {
+    let codecsVideo: [String]
+    let codecsVideoHardware: [String]
+    let codecsAudio: [String]
+    let containers: [String]
+    let maxResolution: String?
+    let hdr: Bool
+    let hdrDetails: PlaybackV3HDRCapabilities?
+    let audioPassthrough: PlaybackV3AudioPassthrough?
+    let videoDecode: [PlaybackV3VideoDecodeCapability]
+}
+
+struct PlaybackV3DeviceContext: Codable, Equatable {
+    let manufacturer: String?
+    let model: String?
+    let brand: String?
+    let device: String?
+    let product: String?
+    let socManufacturer: String?
+    let socModel: String?
+    let buildId: String?
+    let buildDisplay: String?
+    let securityPatch: String?
+    let sdkInt: Int?
+    let abis: [String]
+}
+
+struct PlaybackV3OutputContext: Codable, Equatable {
+    let hdrDetails: PlaybackV3HDRCapabilities?
+    let audioPassthrough: PlaybackV3AudioPassthrough?
+    let currentSink: String?
+    let sinkType: String?
+    let outputRouteGeneration: Int64
+}
+
+struct PlaybackV3EngineSubtitleCapabilities: Codable, Equatable {
+    let embeddedText: Bool
+    let sidecarText: Bool
+    let assStyling: Bool
+    let embeddedBitmap: Bool
+    let sidecarBitmap: Bool
+    let fontAttachments: Bool
+}
+
+struct PlaybackV3Transformation: Codable, Equatable {
+    let name: String
+    let executor: String
+    let recipeVersion: String
+    let validatedClaims: [String]
+}
+
+struct PlaybackV3EngineCapability: Codable, Equatable {
+    let enabled: Bool
+    let supportedOnDevice: Bool
+    let failureReason: String?
+    let containers: [String]
+    let videoCodecs: [String]
+    let audioDecodeCodecs: [String]
+    let audioPassthroughCodecs: [String]
+    let maxChannels: Int?
+    let hdrDetails: PlaybackV3HDRCapabilities?
+    let subtitles: PlaybackV3EngineSubtitleCapabilities
+    let features: [String]
+    let authHeaderRefresh: Bool
+    let validatedClaims: [String]
+    let transformations: [PlaybackV3Transformation]
+}
+
+struct PlaybackV3ClientContext: Codable, Equatable {
+    let protocolVersion: Int
+    let features: [String]
+    let platform: String
+    let formFactor: String
+    let appVersion: String
+    let device: PlaybackV3DeviceContext
+    let output: PlaybackV3OutputContext
+    let engines: [String: PlaybackV3EngineCapability]
+}
+
+struct PlaybackV3StartRequest: Codable, Equatable {
+    let protocolVersion: Int
+    let clientFeatures: [String]
+    let fileId: Int
+    let profileId: String
+    let playbackAttemptId: String
+    let qualityPreference: String
+    let subtitleFidelityPreference: String
+    let startPosition: Double?
+    let audioTrackId: String?
+    let audioTrackIndex: Int?
+    let subtitleTrackId: String?
+    let subtitleTrackIndex: Int?
+    let outputRouteGeneration: Int64
+    let metered: Bool
+    let bandwidthEstimateKbps: Int?
+    let bandwidthCapKbps: Int?
+    let clientCapabilities: PlaybackV3CodecCapabilities
+    let clientPlaybackContext: PlaybackV3ClientContext
+}
+
+struct PlaybackV3TrackIdentity: Codable, Equatable {
+    let id: String
+    let index: Int?
+}
+
+struct PlaybackV3SelectedTracks: Codable, Equatable {
+    let audio: PlaybackV3TrackIdentity?
+    let subtitle: PlaybackV3TrackIdentity?
+}
+
+struct PlaybackV3Failure: Codable, Equatable {
+    let classification: String
+    let message: String?
+    let decoderName: String?
+}
+
+struct PlaybackV3ReplanRequest: Codable, Equatable {
+    let protocolVersion: Int
+    let operation: String
+    let playbackAttemptId: String
+    let replanRequestId: String
+    let failedPlanId: String
+    let planAttemptId: String
+    let planAttemptKey: String
+    let attemptedPlanKeys: [String]
+    let attemptCount: Int
+    let qualityPreference: String
+    let positionSeconds: Double
+    let outputRouteGeneration: Int64
+    let metered: Bool
+    let bandwidthEstimateKbps: Int?
+    let bandwidthCapKbps: Int?
+    let selectedTracks: PlaybackV3SelectedTracks
+    let failure: PlaybackV3Failure
+    let clientCapabilities: PlaybackV3CodecCapabilities
+    let clientPlaybackContext: PlaybackV3ClientContext
+}
+
+struct PlaybackV3RouteEvent: Codable, Equatable {
+    let protocolVersion: Int
+    let playbackAttemptId: String
+    let sessionId: String?
+    let planId: String?
+    let planAttemptId: String?
+    let planAttemptKey: String?
+    let event: String
+    let failureClassification: String?
+    let fallbackReason: String?
+    let appliedQuirkIds: [String]
+    let quirkRegistryRevision: String?
+    let outputRouteGeneration: Int64
+    let diagnostics: [String: String]
+}
+
+struct PlaybackV3Stream: Codable, Equatable {
+    let url: String
+    let `protocol`: String
+    let container: String?
+    let mimeType: String?
+    let headers: [String: String]
+    let headerRefresh: String
+    let headerRefreshUrl: String?
+}
+
+struct PlaybackV3Timeline: Codable, Equatable {
+    let sourceStartSeconds: Double
+    let streamOriginSeconds: Double
+    let playerStartSeconds: Double
+    let timelineOffsetSeconds: Double
+    let seekWindowStartSeconds: Double?
+    let seekWindowEndSeconds: Double?
+    let canSeekAnywhere: Bool
+    let seekRestoration: String
+}
+
+struct PlaybackV3EffectiveRecipe: Codable, Equatable {
+    let videoCodec: String?
+    let audioCodec: String?
+    let width: Int?
+    let height: Int?
+    let frameRate: Double?
+    let bitrateKbps: Int?
+    let dynamicRange: String?
+    let audioChannels: Int?
+    let audioLayout: String?
+}
+
+struct PlaybackV3SourceDescriptor: Codable, Equatable {
+    let mediaFileId: Int
+    /// Full runtime of the source, or nil when the server does not know it.
+    ///
+    /// Optional so a server predating the field still decodes: every
+    /// non-Optional property here is a required key, and a `keyNotFound`
+    /// would fail the whole plan.
+    ///
+    /// This is the whole file, never `total - sourceStartSeconds` and never
+    /// adjusted by `timelineOffsetSeconds`. Do not substitute the player's
+    /// reported duration: on an HLS copy remux that is the window produced so
+    /// far, not the runtime.
+    let durationSeconds: Double?
+    let container: String?
+    let videoCodec: String?
+    let videoProfile: String?
+    let videoLevel: Int?
+    let bitDepth: Int?
+    let width: Int?
+    let height: Int?
+    let frameRate: Double?
+    let bitrateKbps: Int?
+    let dynamicRange: String?
+    let hdr10Plus: Bool
+    let dolbyVisionProfile: Int?
+    let dvBlCompatId: Int?
+    let dvEnhancementLayer: String
+    let audioCodec: String?
+    let audioChannels: Int?
+    let audioLayout: String?
+}
+
+struct PlaybackV3VideoClaims: Codable, Equatable {
+    let hdr10: Bool
+    let hdr10Plus: Bool
+    let hlg: Bool
+    let dolbyVision: Bool
+    let dolbyVisionReason: String?
+}
+
+struct PlaybackV3AudioClaims: Codable, Equatable {
+    let codec: String?
+    let passthrough: Bool
+    let atmosPreserved: Bool
+    let dtsVariant: String?
+    let reason: String?
+}
+
+struct PlaybackV3SubtitleClaims: Codable, Equatable {
+    let assStylingPreserved: Bool
+    let bitmapOverlay: Bool
+    let bitmapSidecar: Bool
+    let reason: String?
+}
+
+struct PlaybackV3ValidationClaims: Codable, Equatable {
+    let video: PlaybackV3VideoClaims
+    let audio: PlaybackV3AudioClaims
+    let subtitles: PlaybackV3SubtitleClaims
+}
+
+struct PlaybackV3SubtitleArtifact: Codable, Equatable {
+    let url: String
+    let mimeType: String
+    let format: String
+    let timingOriginSeconds: Double
+}
+
+struct PlaybackV3SubtitleDecision: Codable, Equatable {
+    let mode: String
+    let trackId: String?
+    let artifact: PlaybackV3SubtitleArtifact?
+}
+
+struct PlaybackV3AppliedQuirk: Codable, Equatable {
+    let id: String
+    let registryRevision: String
+    let action: String
+    let reason: String?
+}
+
+struct PlaybackV3DegradationWarning: Codable, Equatable {
+    let code: String
+    let message: String
+}
+
+struct PlaybackV3Plan: Codable, Equatable {
+    let protocolVersion: Int
+    let planId: String
+    let sessionId: String?
+    let expiresAt: String?
+    let delivery: String
+    let engine: String
+    let stream: PlaybackV3Stream
+    let timeline: PlaybackV3Timeline
+    let selectedTracks: PlaybackV3SelectedTracks
+    let effectiveRecipe: PlaybackV3EffectiveRecipe
+    let claims: PlaybackV3ValidationClaims
+    let subtitle: PlaybackV3SubtitleDecision
+    let transformations: [PlaybackV3Transformation]
+    let appliedQuirks: [PlaybackV3AppliedQuirk]
+    let runtimeCorrections: [String]
+    let degradationWarnings: [PlaybackV3DegradationWarning]
+    let decisionReason: String
+    let requestedMediaFileId: Int
+    let effectiveMediaFileId: Int
+    let source: PlaybackV3SourceDescriptor
+    let subtitleFidelityPolicy: String
+
+    func attemptKey(outputRouteGeneration: Int64, localMutations: [String] = []) -> String {
+        let transformations = transformations
+            .map { "\($0.executor.lowercased()):\($0.name):\($0.recipeVersion)" }
+            .sorted()
+            .joined(separator: ",")
+        var parts = [
+            planId,
+            delivery.uppercased(),
+            stream.protocol.uppercased(),
+            (stream.container ?? "").lowercased(),
+            (effectiveRecipe.videoCodec ?? "").lowercased(),
+            (effectiveRecipe.audioCodec ?? "").lowercased(),
+            "\(effectiveRecipe.width ?? 0)x\(effectiveRecipe.height ?? 0)",
+            "\(effectiveRecipe.bitrateKbps ?? 0)",
+            (effectiveRecipe.dynamicRange ?? "").lowercased(),
+            subtitle.mode.uppercased(),
+            transformations
+        ]
+        if !appliedQuirks.isEmpty || !runtimeCorrections.isEmpty {
+            parts.append(appliedQuirks.map { "\($0.registryRevision):\($0.id)" }.sorted().joined(separator: ","))
+            parts.append(runtimeCorrections.sorted().joined(separator: ","))
+        }
+        parts.append(String(outputRouteGeneration))
+        parts.append(localMutations.sorted().joined(separator: ","))
+
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in parts.joined(separator: "|").utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return String(format: "v3:%016llx", hash)
+    }
+}
+
+struct PlaybackV3Terminal: Codable, Equatable {
+    let reason: String
+    let message: String
+    let retryable: Bool
+}
+
+struct PlaybackV3DecisionResponse: Codable, Equatable {
+    let protocolVersion: Int?
+    let serverFeatures: [String]
+    let outcome: String?
+    let sessionId: String?
+    let playbackPlan: PlaybackV3Plan?
+    let terminal: PlaybackV3Terminal?
+}
+
+struct PlaybackV3CapabilityResponse: Codable, Equatable {
+    let enabled: Bool
+    let protocolVersions: [Int]
+    let features: [String]
+    let deliveries: [String]
+    let transformations: [PlaybackV3Transformation]
+    let reason: String?
+}
+
+enum PlaybackV3DecisionValidation: Equatable {
+    case playable(plan: PlaybackV3Plan, sessionId: String)
+    case terminal(PlaybackV3Terminal)
+    case incompatible(allocatedSessionId: String?)
+}
+
+extension PlaybackV3DecisionResponse {
+    func validatedForApple() -> PlaybackV3DecisionValidation {
+        guard protocolVersion == PlaybackProtocolV3.version,
+              serverFeatures.contains(PlaybackProtocolV3.planFeature) else {
+            return .incompatible(allocatedSessionId: sessionId)
+        }
+        if outcome == "adaptation_unavailable" {
+            return .terminal(terminal ?? PlaybackV3Terminal(
+                reason: "invalid_terminal_response",
+                message: "The server could not produce a playable Apple route.",
+                retryable: false
+            ))
+        }
+        guard outcome == "playable",
+              let plan = playbackPlan,
+              plan.protocolVersion == PlaybackProtocolV3.version,
+              let sessionId = plan.sessionId ?? sessionId,
+              !sessionId.isEmpty,
+              !plan.planId.isEmpty,
+              !plan.stream.url.isEmpty,
+              ["none", "session"].contains(plan.stream.headerRefresh) else {
+            return .incompatible(allocatedSessionId: sessionId)
+        }
+        let supportedDelivery = [
+            "original_http", "server_remux_hls", "server_remux_progressive", "server_transcode_hls"
+        ].contains(plan.delivery)
+        let supportedEngine = ["media3_direct", "media3_progressive_remux", "media3_hls"].contains(plan.engine)
+        guard supportedDelivery, supportedEngine else {
+            return .incompatible(allocatedSessionId: sessionId)
+        }
+        return .playable(plan: plan, sessionId: sessionId)
+    }
+}

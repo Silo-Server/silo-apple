@@ -11,16 +11,29 @@ import SwiftUI
 struct TVMainTabView: View {
     @Bindable var router: AppRouter
     @State private var selectedRoot: TVRootDestination = .home
-    @State private var currentProfile: UserProfile?
+    /// Seeded from the startup prefetch so the bar's first frame already
+    /// shows the active profile's avatar instead of filling it in late.
+    @State private var currentProfile: UserProfile? = {
+        guard let profileId = AuthService.shared.profileId,
+              let cached: [UserProfile] = ResponseCache.shared.get(CacheKey.profiles) else {
+            return nil
+        }
+        return cached.first(where: { $0.id == profileId })
+    }()
     @State private var showServerPicker = false
+    @State private var showSignOutConfirm = false
     @State private var registry = ServerRegistry.shared
     /// Local, per-profile tab-visibility prefs (e.g. whether the Audiobooks
     /// tab is opted in). Observed so the bar re-derives `visibleRoots` the
     /// instant a toggle flips in Settings.
     @State private var navPrefs = TVNavPreferences.shared
     /// Visible libraries for the active profile; drives which type tabs
-    /// exist and which library each type tab scopes to.
-    @State private var libraries: [Library] = []
+    /// exist and which library each type tab scopes to. Seeded from the
+    /// startup prefetch so all type tabs are in the bar's first frame —
+    /// waiting for `.task` made the library tabs pop in a beat after the
+    /// splash lifted.
+    @State private var libraries: [Library] =
+        ResponseCache.shared.get(CacheKey.userLibraries, as: LibrariesResponse.self)?.libraries ?? []
     /// Per-type pill selection, session-only (§8): it survives tab
     /// switches but cold start always lands on Browse.
     @State private var pillSelections: [TVLibraryTabType: TVLibraryPill] = [:]
@@ -45,6 +58,13 @@ struct TVMainTabView: View {
     @State private var panelReturnFocus: TVTopMenuPanel?
     @State private var isTopMenuFocused = false
     @State private var isTopMenuFocusSuppressed = true
+    /// True while a route pushed *from the bar* (search, profile/For You
+    /// panel items) is on the stack. When the stack pops back to root,
+    /// focus returns to the bar — the explicit "next owner" choice
+    /// (docs/tvos-focus.md); leaving it to the engine landed on an
+    /// arbitrary row card. Card-pushed routes (detail pages) never set
+    /// this, so their pops keep the engine's restore-to-card behavior.
+    @State private var barOwnsFocusOnPopToRoot = false
     @State private var topMenuFocusRequest = 0
     /// Active focus hand-down token. Incremented whenever a root is
     /// selected so the freshly-swapped-in content imperatively claims
@@ -82,7 +102,7 @@ struct TVMainTabView: View {
                     panelHasFocus: panelHasFocus,
                     panelEntersFocus: panelEntersFocus,
                     onSelectRoot: selectRoot(_:),
-                    onSearch: { router.navigate(to: .search) },
+                    onSearch: { navigateFromBar(.search) },
                     onDwell: handleDwell(_:),
                     onEnterPanel: enterPanelFor,
                     onProfilePressed: openProfilePanelImmediately,
@@ -103,6 +123,22 @@ struct TVMainTabView: View {
         .overlayPreferenceValue(TVTopMenuAnchorKey.self) { anchors in
             panelOverlay(anchors: anchors)
         }
+        .allowsHitTesting(!showSignOutConfirm)
+        .overlay {
+            if showSignOutConfirm {
+                TVSettingsConfirmationOverlay(
+                    title: "Sign Out",
+                    message: "Choose whether to keep or remove this server from this Apple TV.",
+                    confirmTitle: "Sign Out",
+                    additionalDestructiveTitle: "Sign Out & Remove Server",
+                    cancel: dismissSignOutConfirmation,
+                    confirm: router.signOutAndReset,
+                    additionalDestructiveAction: router.signOutRemoveServerAndReset
+                )
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSignOutConfirm)
         .ignoresSafeArea(edges: [.top, .horizontal])
         .tint(.continuumOnSurface)
         .fullScreenCover(isPresented: Binding(
@@ -120,7 +156,12 @@ struct TVMainTabView: View {
                 startFromBeginning: payload.startFromBeginning,
                 resumePositionOverride: payload.resumePosition,
                 posterURLHint: payload.posterURL,
-                backdropURLHint: payload.backdropURL
+                backdropURLHint: payload.backdropURL,
+                onPlaybackStarted: {
+                    guard let returnToContentId = payload.returnToContentId,
+                          router.presentedPlayer?.id == payload.id else { return }
+                    router.replaceCurrent(with: .itemDetail(contentId: returnToContentId))
+                }
             )
         }
         .confirmationDialog(
@@ -152,6 +193,40 @@ struct TVMainTabView: View {
             async let profileTask: Void = loadCurrentProfile()
             async let librariesTask: Void = loadLibraries()
             _ = await (profileTask, librariesTask)
+        }
+        .onChange(of: router.path.isEmpty) { _, isEmpty in
+            // Returning from a pushed route (Search, detail, settings)
+            // re-mounts the bar with whatever suppression it had when it
+            // unmounted — pushing from the bar leaves it *enabled*, so the
+            // engine's post-pop focus restore can land on the last bar
+            // element (e.g. the search icon) for a frame before the
+            // content-boundary Up handler re-pins the selected tab. Content
+            // owns focus after a pop, so re-assert the suppressed invariant;
+            // Up from content re-arms the bar explicitly as usual.
+            if isEmpty {
+                suppressTopMenuFocusForContentHandoff()
+                if barOwnsFocusOnPopToRoot {
+                    barOwnsFocusOnPopToRoot = false
+                    // Deferred one turn: the bar re-mounts in this same
+                    // transaction, so a synchronous request bump would be
+                    // its *initial* value and onChange(focusRequest) would
+                    // never fire.
+                    DispatchQueue.main.async {
+                        focusTopMenuIfVisible()
+                    }
+                }
+            }
+        }
+        .onChange(of: router.requestedTab) { _, requestedTab in
+            guard let requestedTab else { return }
+            router.requestedTab = nil
+
+            // tvOS owns a custom root selector rather than MainTabView's
+            // AppTab binding. Settings uses this one-shot request so its
+            // final Menu/Back exits to Home regardless of the prior root.
+            if requestedTab == .home {
+                selectRoot(.home)
+            }
         }
         .onChange(of: navPrefs.showAudiobooks) {
             // Turning a tab off while parked on it would otherwise orphan the
@@ -433,8 +508,8 @@ struct TVMainTabView: View {
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
             onClose: { closePanel() },
             onExitToContent: { exitPanelToContent() },
-            onWatchlist: { closePanel(then: { router.navigate(to: .watchlist) }) },
-            onFavorites: { closePanel(then: { router.navigate(to: .favorites) }) },
+            onWatchlist: { closePanel(then: { navigateFromBar(.watchlist) }) },
+            onFavorites: { closePanel(then: { navigateFromBar(.favorites) }) },
             onRecommendations: { closePanel(then: { selectRoot(.recommendations) }) }
         )
     }
@@ -448,14 +523,22 @@ struct TVMainTabView: View {
             focusEntryToken: panelFocusEntryToken,
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
             onSwitchProfile: { closePanel(then: switchProfile) },
-            onWatchlist: { closePanel(then: { router.navigate(to: .watchlist) }) },
-            onFavorites: { closePanel(then: { router.navigate(to: .favorites) }) },
-            onHistory: { closePanel(then: { router.navigate(to: .history) }) },
-            onRequests: { closePanel(then: { router.navigate(to: .requestsHub) }) },
-            onSettings: { closePanel(then: { router.navigate(to: .settings) }) },
+            onWatchlist: { closePanel(then: { navigateFromBar(.watchlist) }) },
+            onFavorites: { closePanel(then: { navigateFromBar(.favorites) }) },
+            onHistory: { closePanel(then: { navigateFromBar(.history) }) },
+            onRequests: { closePanel(then: { navigateFromBar(.requestsHub) }) },
+            onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
             onSwitchServer: { closePanel(then: { showServerPicker = true }) },
-            onSignOut: { closePanel(then: { router.signOutAndReset() }) }
+            onSignOut: { closePanel(then: { showSignOutConfirm = true }) }
         )
+    }
+
+    private func dismissSignOutConfirmation() {
+        showSignOutConfirm = false
+        Task { @MainActor in
+            await Task.yield()
+            focusTopMenuIfVisible(focusing: .profile)
+        }
     }
 
     // MARK: - Panel control (§5.3 / §5.8)
@@ -810,6 +893,15 @@ struct TVMainTabView: View {
         isTopMenuFocusSuppressed = true
     }
 
+    /// Push a route on behalf of a bar element (search button, profile /
+    /// For You panel rows). Marks the stack so popping back to root hands
+    /// focus to the bar instead of letting the engine free-resolve into
+    /// the row band.
+    private func navigateFromBar(_ route: Route) {
+        barOwnsFocusOnPopToRoot = true
+        router.navigate(to: route)
+    }
+
     private func switchProfile() {
         AuthService.shared.profileId = nil
         router.showProfileSelection()
@@ -821,11 +913,20 @@ struct TVMainTabView: View {
             return
         }
 
+        // Paint the avatar from the startup prefetch immediately; the fetch
+        // below reconciles (and joins the prefetch's request when it is
+        // still in flight rather than issuing a second one).
+        if currentProfile == nil,
+           let cached: [UserProfile] = ResponseCache.shared.get(CacheKey.profiles) {
+            currentProfile = cached.first(where: { $0.id == profileId })
+        }
+
         do {
-            let profiles = try await AuthService.shared.getProfiles()
+            let profiles = try await StartupContentPrefetcher.fetchProfiles()
             currentProfile = profiles.first(where: { $0.id == profileId })
         } catch {
-            currentProfile = nil
+            // Keep the cached avatar on a transient failure; it already
+            // matches the active profile id.
         }
     }
 

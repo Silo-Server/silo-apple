@@ -25,6 +25,9 @@ enum WatchStatusFilter: String, Codable, CaseIterable, Hashable {
 /// `queryFieldDefs`); `decade`, `dynamicRange`, and `watchStatus` are
 /// client-side groupings that lower to one or more server rules.
 enum CatalogFacet: String, CaseIterable, Codable, Hashable {
+    /// Movie-vs-series scope, offered only in mixed libraries. Lowers to a
+    /// catalog `type` rule so it participates in Match All / Match Any.
+    case itemType = "item_type"
     case genre
     case decade
     case watchStatus
@@ -44,6 +47,7 @@ enum CatalogFacet: String, CaseIterable, Codable, Hashable {
 
     var title: String {
         switch self {
+        case .itemType: return "Type"
         case .genre: return "Genre"
         case .decade: return "Decade"
         case .watchStatus: return "Watch Status"
@@ -75,7 +79,7 @@ enum CatalogFacet: String, CaseIterable, Codable, Hashable {
     /// server-provided value list (decade, dynamic range, watch status).
     var hasFixedVocabulary: Bool {
         switch self {
-        case .decade, .dynamicRange, .watchStatus: return true
+        case .itemType, .decade, .dynamicRange, .watchStatus: return true
         default: return false
         }
     }
@@ -86,6 +90,10 @@ enum CatalogFacet: String, CaseIterable, Codable, Hashable {
         switch mediaType {
         case .movie, .series:
             return [.genre, .decade, .watchStatus, .contentRating, .resolution,
+                    .dynamicRange, .studio, .network, .country,
+                    .audioLanguage, .subtitleLanguage, .originalLanguage]
+        case .mixed:
+            return [.itemType, .genre, .decade, .watchStatus, .contentRating, .resolution,
                     .dynamicRange, .studio, .network, .country,
                     .audioLanguage, .subtitleLanguage, .originalLanguage]
         case .audiobook:
@@ -117,6 +125,9 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
     /// OR'd.
     var matchAll: Bool = true
 
+    /// Movie-vs-series scope for mixed libraries ("movie" / "series");
+    /// `nil` = both. Single-select; lowers to a catalog `type` rule.
+    var mediaScope: String? = nil
     var genres: Set<String> = []
     var contentRatings: Set<String> = []
     var studios: Set<String> = []
@@ -154,6 +165,7 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
                     resolutions, audioLanguages, subtitleLanguages,
                     originalLanguages, authors, narrators, seriesNames]
         where !set.isEmpty { n += 1 }
+        if mediaScope != nil { n += 1 }
         if !decades.isEmpty { n += 1 }
         if hdr || dolbyVision { n += 1 }
         if watchStatus != nil { n += 1 }
@@ -174,6 +186,7 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
 
     func selectedValues(_ facet: CatalogFacet) -> Set<String> {
         switch facet {
+        case .itemType: return mediaScope.map { [$0] } ?? []
         case .genre: return genres
         case .contentRating: return contentRatings
         case .studio: return studios
@@ -205,6 +218,8 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
     /// (toggling the active value clears it); everything else is multi-select.
     mutating func toggle(_ facet: CatalogFacet, value: String) {
         switch facet {
+        case .itemType:
+            mediaScope = (mediaScope == value) ? nil : value
         case .genre: Self.toggle(&genres, value)
         case .contentRating: Self.toggle(&contentRatings, value)
         case .studio: Self.toggle(&studios, value)
@@ -233,6 +248,7 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
     /// Clear a whole facet dimension.
     mutating func clear(_ facet: CatalogFacet) {
         switch facet {
+        case .itemType: mediaScope = nil
         case .genre: genres.removeAll()
         case .contentRating: contentRatings.removeAll()
         case .studio: studios.removeAll()
@@ -272,7 +288,7 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
     /// Active selections as removable chips, in facet display order.
     func activeChips() -> [CatalogFilterChip] {
         var chips: [CatalogFilterChip] = []
-        let ordered: [CatalogFacet] = [.genre, .decade, .watchStatus, .contentRating,
+        let ordered: [CatalogFacet] = [.itemType, .genre, .decade, .watchStatus, .contentRating,
                                        .resolution, .dynamicRange, .studio, .network,
                                        .country, .audioLanguage, .subtitleLanguage,
                                        .originalLanguage, .author, .narrator, .seriesName]
@@ -287,6 +303,8 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
 
     static func chipLabel(facet: CatalogFacet, value: String) -> String {
         switch facet {
+        case .itemType:
+            return value == "series" ? "Series" : "Movies"
         case .decade:
             return Int(value).map { "\($0)s" } ?? value
         case .dynamicRange:
@@ -314,6 +332,7 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
             "m=\(matchAll ? "all" : "any")",
         ]
         if let p = namePrefix { parts.append("p=\(encode(p))") }
+        if let sc = mediaScope { parts.append("sc=\(encode(sc))") }
         if !genres.isEmpty { parts.append("g=\(join(genres))") }
         if !contentRatings.isEmpty { parts.append("cr=\(join(contentRatings))") }
         if !studios.isEmpty { parts.append("st=\(join(studios))") }

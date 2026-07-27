@@ -1,7 +1,11 @@
 import SwiftUI
+#if os(tvOS)
+import UIKit
+#endif
 
 struct ContentView: View {
     @State private var router = AppRouter()
+    @State private var serverRegistry = ServerRegistry.shared
     @State private var audioStore = AudioPlaybackStore()
     #if os(iOS)
     @State private var siloControl = SiloControlClient()
@@ -11,6 +15,9 @@ struct ContentView: View {
     @State private var didStartInitialStateCheck = false
     @State private var didFinishStartupSplash = false
     @State private var pendingInitialAuthState: AppRouter.AuthState?
+    #if os(iOS) || os(tvOS)
+    @State private var diagnosticsModel = DiagnosticsViewModel()
+    #endif
     /// Deep link URL received before the auth state was ready. Drained
     /// on the next `.authenticated` transition so Top Shelf taps during
     /// a cold launch still route to the correct screen.
@@ -27,6 +34,10 @@ struct ContentView: View {
 
     var body: some View {
         authContent
+        // A server change is a hard data boundary even when both servers map
+        // to the same auth state. Re-key the routed subtree so profile, home,
+        // library, focus, and modal state cannot survive from the old server.
+        .id(serverRegistry.activeServerId)
         .environment(audioStore)
         #if os(iOS)
         .environment(siloControl)
@@ -39,12 +50,21 @@ struct ContentView: View {
         #if os(iOS)
         // Hold the pairing offer until the startup splash logo finishes so a
         // quickly-discovered TV doesn't pop the card over the animation.
-        .companionPairingCard(enabled: didFinishStartupSplash && router.authState != .loading)
+        .companionPairingCard(
+            enabled: didFinishStartupSplash && router.authState != .loading,
+            authState: router.authState
+        )
         #endif
         .modifier(DebugPlayerPresentationModifier(
             contentId: debugPlayContentId,
             isPresented: debugPlayerPresentation
         ))
+        #if os(iOS) || os(tvOS)
+        .modifier(DiagnosticsPromptPresentationModifier(
+            model: diagnosticsModel,
+            isEnabled: router.authState == .authenticated
+        ))
+        #endif
         .onReceive(NotificationCenter.default.publisher(for: .continuumDeepLink)) { notification in
             guard let url = notification.userInfo?["url"] as? URL else { return }
             #if os(iOS)
@@ -53,6 +73,9 @@ struct ContentView: View {
             handleDeepLink(url)
         }
         .onAppear {
+            #if os(tvOS)
+            ExitSentinel.shared.appDidEnterForeground()
+            #endif
             #if os(iOS)
             if let url = ApplePushDeepLinkCoordinator.shared.consumePendingDeepLink() {
                 handleDeepLink(url)
@@ -67,6 +90,20 @@ struct ContentView: View {
             #endif
             router.expiredSession()
         }
+        #if os(iOS) || os(tvOS)
+        .onReceive(NotificationCenter.default.publisher(for: .diagnosticsPendingReportCreated)) { _ in
+            guard router.authState == .authenticated else { return }
+            Task { await diagnosticsModel.handleForeground() }
+        }
+        #endif
+        #if os(tvOS)
+        .onReceive(NotificationCenter.default.publisher(for: .temporaryRemoteAuthExpired)) { _ in
+            TVControlReceiver.shared.temporaryAuthExpired()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
+            ExitSentinel.shared.appWillTerminate()
+        }
+        #endif
         .task {
             // Debug: auto-play from launch argument -debugPlay <contentId>
             if let idx = CommandLine.arguments.firstIndex(of: "-debugPlay"),
@@ -76,13 +113,36 @@ struct ContentView: View {
                 debugPlayContentId = contentId
             }
         }
+        #if DEBUG
+        .task {
+            await maybeDebugAutoLogin()
+        }
+        #endif
         .task(id: router.authState) {
+            #if os(iOS) || os(tvOS)
+            if router.authState != .authenticated {
+                // The initial `.loading` state is not an identity boundary.
+                // Keep the previous run's persisted breadcrumbs and playback
+                // sessions intact until tvOS can capture any abnormal-exit
+                // leftover after restored authentication resolves. Explicit
+                // profile/server switches and sign-out own their destructive
+                // cleanup paths separately.
+                DiagnosticsCoordinator.authenticationStateBecameUnavailable()
+                diagnosticsModel.reset()
+            }
+            #endif
             await maybeAutoPlayForDebug()
             if router.authState == .authenticated {
                 if let pending = pendingDeepLink {
                     pendingDeepLink = nil
                     handleDeepLink(pending)
                 }
+                #if os(tvOS)
+                await ExitSentinel.shared.captureLeftoverIfNeeded()
+                #endif
+                #if os(iOS) || os(tvOS)
+                await diagnosticsModel.handleForeground()
+                #endif
                 await overlayPrefs.hydrateIfNeeded()
                 // Hydrate AI capabilities on a cold relaunch into a restored
                 // session — `selectProfile` only refreshes on a fresh sign-in,
@@ -99,7 +159,42 @@ struct ContentView: View {
                 #endif
             }
         }
+        .task(id: serverRegistry.activeServerId) {
+            #if os(iOS) || os(tvOS)
+            diagnosticsModel.reset()
+            #endif
+            // `activeServerId` changes before ServerRegistry finishes its
+            // async token retarget. Complete that boundary here before any
+            // server-scoped overlay request, then clear and rehydrate even
+            // when the destination remains `.authenticated`.
+            await TokenStore.shared.switchActiveServer(
+                serverId: serverRegistry.activeServerId ?? ""
+            )
+            overlayPrefs.clear()
+            if router.authState == .authenticated {
+                await overlayPrefs.hydrateIfNeeded()
+                #if os(iOS) || os(tvOS)
+                await diagnosticsModel.handleForeground()
+                #endif
+            }
+        }
+        #if os(iOS) || os(tvOS)
+        .task(id: serverRegistry.activeProfileId) {
+            diagnosticsModel.reset()
+            if router.authState == .authenticated {
+                await diagnosticsModel.handleForeground()
+            }
+        }
+        #endif
         .onChange(of: scenePhase) { _, newPhase in
+            #if os(iOS) || os(tvOS)
+            DiagnosticsCoordinator.recordBreadcrumb(
+                category: .lifecycle,
+                tag: "Scene",
+                message: "scene phase changed",
+                attrs: ["state": .string(Self.diagnosticsScenePhase(newPhase))]
+            )
+            #endif
             #if os(iOS)
             switch newPhase {
             case .active:
@@ -111,6 +206,16 @@ struct ContentView: View {
                 if DownloadManager.shared.downloadsEnabled {
                     DownloadBackgroundRefresh.schedule()
                 }
+            default:
+                break
+            }
+            #endif
+            #if os(tvOS)
+            switch newPhase {
+            case .active:
+                ExitSentinel.shared.appDidEnterForeground()
+            case .background:
+                ExitSentinel.shared.appDidEnterBackground()
             default:
                 break
             }
@@ -127,6 +232,14 @@ struct ContentView: View {
             // the happy path.
             guard newPhase == .active,
                   router.authState == .authenticated else { return }
+            #if os(tvOS)
+            Task {
+                await ExitSentinel.shared.captureLeftoverIfNeeded()
+                await diagnosticsModel.handleForeground()
+            }
+            #elseif os(iOS)
+            Task { await diagnosticsModel.handleForeground() }
+            #endif
             Task { await overlayPrefs.hydrateIfNeeded() }
             // Same rationale as overlay hydration above: a transiently-failed
             // capability probe (or one skipped on a cold restore) gets a
@@ -148,6 +261,21 @@ struct ContentView: View {
             #endif
         }
     }
+
+    #if os(iOS) || os(tvOS)
+    private static func diagnosticsScenePhase(_ phase: ScenePhase) -> String {
+        switch phase {
+        case .active:
+            return "active"
+        case .inactive:
+            return "inactive"
+        case .background:
+            return "background"
+        @unknown default:
+            return "unknown"
+        }
+    }
+    #endif
 
     @ViewBuilder
     private var authContent: some View {
@@ -334,14 +462,14 @@ struct ContentView: View {
     private static func logTopShelfDiagnostics() async {
         let suite = SharedStorage.suite
         let keychain = SharedKeychain()
-        let serverUrl = suite.string(forKey: SharedStorage.serverUrlKey) ?? "<nil>"
-        let profileId = suite.string(forKey: SharedStorage.profileIdKey) ?? "<nil>"
+        let hasServerURL = suite.string(forKey: SharedStorage.serverUrlKey) != nil
+        let hasProfileID = suite.string(forKey: SharedStorage.profileIdKey) != nil
         let hasAccess = keychain.get(SharedStorage.mirroredAccessTokenAccount) != nil
         let hasProfile = keychain.get(SharedStorage.mirroredProfileTokenAccount) != nil
         let lastRun = suite.string(forKey: SharedStorage.topShelfLastRunAtKey) ?? "<never>"
-        let lastStatus = suite.string(forKey: SharedStorage.topShelfLastStatusKey) ?? "<none>"
-        print("[TopShelfDiag] suite.serverUrl=\(serverUrl) suite.profileId=\(profileId) mirroredAccess=\(hasAccess) mirroredProfile=\(hasProfile)")
-        print("[TopShelfDiag] lastRunAt=\(lastRun) lastStatus=\(lastStatus)")
+        let hasLastStatus = suite.string(forKey: SharedStorage.topShelfLastStatusKey) != nil
+        print("[TopShelfDiag] hasServerURL=\(hasServerURL) hasProfileID=\(hasProfileID) mirroredAccess=\(hasAccess) mirroredProfile=\(hasProfile)")
+        print("[TopShelfDiag] lastRunAt=\(lastRun) hasLastStatus=\(hasLastStatus)")
     }
     #endif
 
@@ -383,6 +511,46 @@ struct ContentView: View {
         }
         return CommandLine.arguments[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    #if DEBUG
+    private func debugLaunchArgValue(_ name: String) -> String? {
+        guard let index = CommandLine.arguments.firstIndex(of: name),
+              index + 1 < CommandLine.arguments.count else {
+            return nil
+        }
+        return CommandLine.arguments[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Debug: sign in from launch arguments
+    /// `-debugServer <url> -debugUsername <user> -debugPassword <pass>`,
+    /// selecting the primary (or only) PIN-less profile. Simulator-driven
+    /// end-to-end runs use this to reach `.authenticated` without UI input.
+    private func maybeDebugAutoLogin() async {
+        guard router.authState != .authenticated,
+              let server = debugLaunchArgValue("-debugServer"),
+              let username = debugLaunchArgValue("-debugUsername"),
+              let password = debugLaunchArgValue("-debugPassword") else {
+            return
+        }
+        do {
+            _ = try await AuthService.shared.checkServer(url: server)
+            try await AuthService.shared.login(username: username, password: password)
+            let profiles = try await StartupContentPrefetcher.fetchProfiles()
+            guard let profile = profiles.first(where: \.isPrimary)
+                ?? (profiles.count == 1 ? profiles.first : nil) else {
+                print("[DebugAutoLogin] no selectable profile")
+                return
+            }
+            try await AuthService.shared.selectProfile(profileId: profile.id)
+            StartupContentPrefetcher.prefetchAuthenticatedContent()
+            await PlayerSettings.shared.refreshFromServer()
+            router.resetToHome()
+            print("[DebugAutoLogin] signed in and selected profile")
+        } catch {
+            print("[DebugAutoLogin] failed: \(error)")
+        }
+    }
+    #endif
 
     private func resolveDebugSearchContentId(query: String) async throws -> String {
         let response = try await ContinuumAPI.shared.catalog(query: [

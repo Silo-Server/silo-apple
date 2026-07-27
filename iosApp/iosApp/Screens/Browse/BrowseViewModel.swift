@@ -12,8 +12,7 @@ class BrowseViewModel {
     /// The committed filter + sort state. The filter sheet edits a draft and
     /// commits it via `apply`.
     private(set) var filterState = CatalogFilterState()
-    /// Media family of this library — picks the sort/facet vocabulary. Best
-    /// effort until the first page lands, then refined from the items.
+    /// Media family of this library — picks the sort/facet vocabulary.
     private(set) var mediaType: BrowseMediaType = .movie
     /// Live facet vocabulary for the filter sheet, loaded lazily.
     private(set) var facets: CatalogFacets?
@@ -21,20 +20,36 @@ class BrowseViewModel {
     private var currentPage = 0
     private let pageSize = 60
     private var libraryId: Int?
+    private var hasConfigured = false
+    private var configurationGeneration = 0
     /// Bumped on every reset; a returning fetch from an older generation
     /// discards its results instead of appending stale data.
     private var generation = 0
 
-    func configure(libraryId: Int?) {
+    @discardableResult
+    func configure(libraryId: Int?, libraryType: String? = nil) async -> Bool {
+        configurationGeneration += 1
+        let myConfiguration = configurationGeneration
+        let libraryChanged = !hasConfigured || self.libraryId != libraryId
+        let resolvedMediaType = await resolveMediaType(libraryId: libraryId, libraryType: libraryType)
+        guard myConfiguration == configurationGeneration, !Task.isCancelled else { return false }
+
         self.libraryId = libraryId
-        // Restore persisted sort/filters for this library + profile (no-op
-        // when the user turned "Preserve" off).
-        if let saved = BrowsePrefsStore.shared.savedState(libraryId: libraryId) {
-            filterState = saved
+        hasConfigured = true
+        mediaType = resolvedMediaType
+
+        if libraryChanged {
+            generation += 1
+            currentPage = 0
+            hasMore = true
+            items = []
+            filterState = BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
         }
+
         facets = FacetLoader.shared.cachedFacets(libraryId: libraryId)
         // Hydrate the page-1 snapshot the next reset will write back into.
         hydratePage1FromCache()
+        return true
     }
 
     // MARK: - Load Items
@@ -198,11 +213,33 @@ class BrowseViewModel {
         isRefreshing = false
     }
 
+    private func resolveMediaType(libraryId: Int?, libraryType: String?) async -> BrowseMediaType {
+        if let libraryType {
+            return BrowseMediaType.from(libraryType: libraryType)
+        }
+
+        guard let libraryId else { return .movie }
+
+        if let cached: LibrariesResponse = ResponseCache.shared.get(CacheKey.userLibraries),
+           let library = cached.libraries.first(where: { $0.id == libraryId }) {
+            return BrowseMediaType.from(libraryType: library.type)
+        }
+
+        if let response = try? await StartupContentPrefetcher.fetchUserLibraries(),
+           let library = response.libraries.first(where: { $0.id == libraryId }) {
+            return BrowseMediaType.from(libraryType: library.type)
+        }
+
+        return .movie
+    }
+
     /// Refine the media family from the first loaded item so the sort/facet
     /// vocabulary matches the library (audiobook vs video) without ever
     /// sending a `type` scope that could filter the page empty.
     private func refineMediaType(from response: CatalogResponse) {
-        guard let first = response.items.first else { return }
+        // A mixed library was resolved from the library list in `configure`;
+        // refining from a (movie or series) item would hide the Type facet.
+        guard mediaType != .mixed, let first = response.items.first else { return }
         mediaType = BrowseMediaType.from(libraryType: first.type)
     }
 }

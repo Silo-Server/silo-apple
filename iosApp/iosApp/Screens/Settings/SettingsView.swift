@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var showSignOutConfirm = false
     #if os(iOS)
     @State private var navPrefs = AppNavPreferences.shared
+    @State private var diagnosticsModel = DiagnosticsViewModel()
     #endif
 
     var body: some View {
@@ -30,6 +31,11 @@ struct SettingsView: View {
         List {
             accountSection
             preferencesSection
+            #if os(iOS)
+            if diagnosticsModel.shouldShowSettings {
+                diagnosticsSection
+            }
+            #endif
             librarySection
             connectionSection
             aboutSection
@@ -49,6 +55,9 @@ struct SettingsView: View {
             navPrefs.refresh()
             #endif
             await viewModel.loadSettings()
+            #if os(iOS)
+            await diagnosticsModel.load(profile: viewModel.activeProfile)
+            #endif
         }
         .alert("Sign Out", isPresented: $showSignOutConfirm) {
             Button("Sign Out", role: .destructive) {
@@ -184,6 +193,26 @@ struct SettingsView: View {
         if tag == PlaybackPrefSentinel.none || tag.isEmpty { return "None" }
         return PlaybackLanguageOption.label(forCode: tag)
     }
+
+    #if os(iOS)
+    private var diagnosticsSection: some View {
+        Section("Diagnostics") {
+            NavigationLink {
+                DiagnosticsSettingsView(
+                    model: diagnosticsModel,
+                    profile: viewModel.activeProfile
+                )
+            } label: {
+                SettingsRowLabel(
+                    title: "Diagnostics",
+                    systemImage: "stethoscope",
+                    color: .orange,
+                    value: diagnosticsModel.featureState.title
+                )
+            }
+        }
+    }
+    #endif
 
     // MARK: - Library
 

@@ -280,10 +280,10 @@ final class ReceiverPairingCoordinator {
             if Task.isCancelled {
                 // Peer cancelled, superseded this server, or the connection
                 // dropped. The attempt is void; whoever cancelled owns state.
-                Self.logger.notice("attempt for \(normalized, privacy: .public) cancelled")
+                Self.logger.notice("server pairing attempt cancelled")
                 return
             }
-            Self.logger.error("server \(normalized, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            Self.logger.error("server pairing failed: \(String(describing: error), privacy: .private)")
             state = .failed(displayName)
             try? await session.send(.serverResult(serverURL: normalized, status: .failed, error: "auth_failed"))
         }
@@ -292,10 +292,15 @@ final class ReceiverPairingCoordinator {
     /// Commit the now-trusted server + tokens. Runs only after a successful poll.
     static func persistServer(url: String, fetchedName: String?, access: String, refresh: String) async {
         let id = ServerRegistry.serverId(for: url)
-        let entry = ServerEntry(id: id, url: url, fetchedName: fetchedName, userOverrideName: nil, profileId: nil, lastUsedAt: Date())
-        ServerRegistry.shared.addOrUpdate(entry)
+        let entry = ServerEntry(id: id, url: url, fetchedName: fetchedName, profileId: nil, lastUsedAt: Date())
+        // Device authorization can replace the account for an already-saved
+        // server URL. Preserve its name, but never carry the previous account's
+        // profile selection across that credential boundary.
+        ServerRegistry.shared.addOrUpdate(entry, preservingProfile: false)
         await TokenStore.shared.setServerUrl(url)
         await TokenStore.shared.switchActiveServer(serverId: id)
+        await TokenStore.shared.setProfileId(nil)
+        await TokenStore.shared.setProfileToken(nil)
         await TokenStore.shared.saveTokens(accessToken: access, refreshToken: refresh)
         await ServerRegistry.shared.switchTo(serverId: id)
     }

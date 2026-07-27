@@ -8,23 +8,24 @@ struct AVPlayerSurface: NSViewRepresentable {
 
     func makeNSView(context: Context) -> ContinuumMacPlayerView {
         let view = ContinuumMacPlayerView()
-        view.attach(player: backend.avPlayer)
-        view.attachSubtitleRenderer(backend.subtitleRendererForOverlay)
+        view.attach(backend: backend)
         view.bakedLetterbox = bakedLetterbox
-        backend.subtitleOverlay = view.subtitleOverlay
         return view
     }
 
     func updateNSView(_ nsView: ContinuumMacPlayerView, context: Context) {
-        nsView.attach(player: backend.avPlayer)
-        nsView.attachSubtitleRenderer(backend.subtitleRendererForOverlay)
+        nsView.attach(backend: backend)
         nsView.bakedLetterbox = bakedLetterbox
-        backend.subtitleOverlay = nsView.subtitleOverlay
+    }
+
+    static func dismantleNSView(_ nsView: ContinuumMacPlayerView, coordinator: ()) {
+        nsView.detachSubtitleOverlay()
     }
 }
 
 final class ContinuumMacPlayerView: AVPlayerView {
     let subtitleOverlay = SubtitleOverlayView()
+    private weak var backend: AVPlayerBackend?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -42,13 +43,20 @@ final class ContinuumMacPlayerView: AVPlayerView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func attach(player: AVPlayer) {
-        if self.player === player { return }
-        self.player = player
+    func attach(backend: AVPlayerBackend) {
+        if self.backend !== backend {
+            self.backend?.detachSubtitleOverlay(owner: self)
+            self.backend = backend
+        }
+        if player !== backend.avPlayer {
+            player = backend.avPlayer
+        }
+        subtitleOverlay.renderer = backend.subtitleRendererForOverlay
+        backend.attachSubtitleOverlay(subtitleOverlay, owner: self)
     }
 
-    func attachSubtitleRenderer(_ renderer: SubtitleRenderer?) {
-        subtitleOverlay.renderer = renderer
+    func detachSubtitleOverlay() {
+        backend?.detachSubtitleOverlay(owner: self)
     }
 
     private func addSubtitleOverlay() {

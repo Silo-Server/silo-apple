@@ -4,8 +4,8 @@ import OSLog
 /// A single Silo server the user has added to the device.
 ///
 /// The registry stores one of these per remembered server. Tokens live in
-/// Keychain keyed by `id`, never in the entry itself. `userOverrideName`
-/// wins over the server-advertised `fetchedName` when both are present.
+/// Keychain keyed by `id`, never in the entry itself. The display name is
+/// always server-administered through the advertised `fetchedName`.
 struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// Stable client-derived ID: base64url of the normalized URL's UTF-8
     /// bytes. Reversible — but the registry treats it as opaque.
@@ -18,9 +18,6 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// Filled on first successful connect and refreshed opportunistically.
     var fetchedName: String?
 
-    /// User-provided override. Wins over `fetchedName`.
-    var userOverrideName: String?
-
     /// Remembered profile for this server. Set after `selectProfile`.
     var profileId: String?
 
@@ -28,9 +25,8 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// list; not part of identity.
     var lastUsedAt: Date
 
-    /// Display label for lists/menus. User override → fetched name → URL.
+    /// Display label for lists/menus. Server-advertised name → URL.
     var displayName: String {
-        if let name = userOverrideName, !name.isEmpty { return name }
         if let name = fetchedName, !name.isEmpty { return name }
         return url
     }
@@ -115,19 +111,20 @@ final class ServerRegistry {
 
     // MARK: - Mutations
 
-    /// Insert or update an entry. Preserves existing `profileId` and
-    /// `userOverrideName` if the incoming entry left them nil, so callers
-    /// that only know the URL + fetched name don't clobber remembered
-    /// session state.
+    /// Insert or update an entry. Preserves an existing `profileId` when the
+    /// incoming entry leaves it nil, so callers that only know the URL and
+    /// fetched name do not clobber remembered session state.
     @discardableResult
-    func addOrUpdate(_ entry: ServerEntry) -> ServerEntry {
+    func addOrUpdate(_ entry: ServerEntry, preservingProfile: Bool = true) -> ServerEntry {
+        registerDiagnosticsSensitiveHosts([entry])
         var merged = entry
         if let existing = self.entries.first(where: { $0.id == entry.id }) {
-            if merged.profileId == nil { merged.profileId = existing.profileId }
-            if merged.userOverrideName == nil {
-                merged.userOverrideName = existing.userOverrideName
+            if preservingProfile, merged.profileId == nil {
+                merged.profileId = existing.profileId
             }
-            if merged.fetchedName == nil { merged.fetchedName = existing.fetchedName }
+            if merged.fetchedName == nil || merged.fetchedName?.isEmpty == true {
+                merged.fetchedName = existing.fetchedName
+            }
         }
         if let idx = self.entries.firstIndex(where: { $0.id == entry.id }) {
             self.entries[idx] = merged
@@ -141,13 +138,6 @@ final class ServerRegistry {
     func setProfileId(_ profileId: String?, for serverId: String) {
         guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return }
         entries[idx].profileId = profileId
-        persist()
-    }
-
-    func rename(serverId: String, userOverrideName: String?) {
-        guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return }
-        let trimmed = userOverrideName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        entries[idx].userOverrideName = (trimmed?.isEmpty ?? true) ? nil : trimmed
         persist()
     }
 
@@ -175,14 +165,14 @@ final class ServerRegistry {
     /// consistent UserDefaults values.
     func switchTo(serverId: String) async {
         guard entries.contains(where: { $0.id == serverId }) else {
-            Self.logger.error("switchTo called with unknown serverId=\(serverId, privacy: .public)")
+            Self.logger.error("switchTo called with unknown server id")
             return
         }
         // Cancel before retargeting: a response from the old server must
         // not be able to land on the new server's token slot. See
         // `HTTPClient.cancelInFlightRequests` for the ordering contract.
         await HTTPClient.shared.cancelInFlightRequests()
-        await StartupContentPrefetcher.resetAllPrefetches()
+        await AuthService.shared.clearCachesForServerChange()
 
         let entry = entries.first(where: { $0.id == serverId })!
         defaults.set(entry.url, forKey: "serverUrl")
@@ -191,9 +181,21 @@ final class ServerRegistry {
         } else {
             defaults.removeObject(forKey: "profileId")
         }
+        #if os(iOS) || os(tvOS)
+        // Activating a server restores its saved profile via the mirror above,
+        // bypassing AuthService's profileId setter. Fail diagnostics closed
+        // synchronously, but do not start `/profiles` while URL routing and the
+        // active token slot still refer to different servers.
+        DiagnosticsCoordinator.activeProfileWillChange()
+        #endif
         activeServerId = serverId
         touchLastUsed(serverId)
         await TokenStore.shared.switchActiveServer(serverId: serverId)
+        #if os(iOS) || os(tvOS)
+        // URL, active id, and credential slot now agree; it is safe to resolve
+        // the restored profile against the newly selected server.
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
 
         // Switching between already-added servers is a per-server boundary too:
         // drop the previous server's AI capability/quota probes after the URL,
@@ -216,7 +218,21 @@ final class ServerRegistry {
     /// and profile selection; URL + display name remain so the user can
     /// log back in. If `serverId` is the active server, the legacy
     /// `profileId` UserDefaults key is cleared too.
-    func signOut(serverId: String) async {
+    ///
+    /// The registry-wide diagnostics purge always runs: it clears reports and
+    /// consent stored under *older* `server_instance_id`s recorded for this
+    /// registry URL (e.g. after a server restore/reinstall at the same URL),
+    /// which a current-binding-only purge would leave behind. Pass
+    /// `purgeCurrentBinding: false` when the caller already purged the active
+    /// binding while still authenticated (AuthService.signOut does, so the
+    /// binding resolves against a live session) to avoid duplicate current work.
+    func signOut(serverId: String, purgeCurrentBinding: Bool = true) async {
+        #if os(iOS) || os(tvOS)
+        if purgeCurrentBinding, serverId == activeServerId {
+            await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
+        }
+        await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
+        #endif
         await TokenStore.shared.deleteTokens(for: serverId)
         if let idx = entries.firstIndex(where: { $0.id == serverId }) {
             entries[idx].profileId = nil
@@ -231,9 +247,25 @@ final class ServerRegistry {
     /// next-most-recent server becomes active; if none remain, the active
     /// slot is cleared.
     func remove(serverId: String) async {
+        let removesActiveServer = activeServerId == serverId
+        #if os(iOS) || os(tvOS)
+        if removesActiveServer {
+            // Close the synchronous capture gate before any await or before
+            // publishing a fallback server/profile combination.
+            DiagnosticsCoordinator.activeProfileWillChange()
+            await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
+        }
+        await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
+        #endif
+        if removesActiveServer {
+            // Stop old-server responses and clear every process-wide cache
+            // before publishing the fallback ID to observing views.
+            await HTTPClient.shared.cancelInFlightRequests()
+            await AuthService.shared.clearCachesForServerChange()
+        }
         await TokenStore.shared.deleteTokens(for: serverId)
         entries.removeAll(where: { $0.id == serverId })
-        if activeServerId == serverId {
+        if removesActiveServer {
             let fallback = entries.sorted { $0.lastUsedAt > $1.lastUsedAt }.first
             activeServerId = fallback?.id
             if let fallback {
@@ -249,6 +281,13 @@ final class ServerRegistry {
                 defaults.removeObject(forKey: "profileId")
                 await TokenStore.shared.switchActiveServer(serverId: "")
             }
+            #if os(iOS) || os(tvOS)
+            // Removing the active server restores a different profile (the
+            // fallback's, or none) via the mirror above without AuthService's
+            // setter. Fail the diagnostics gate closed until the new active
+            // profile is confirmed, same as `switchTo`.
+            DiagnosticsCoordinator.activeProfileDidChange()
+            #endif
             await MainActor.run {
                 AICapabilities.shared.reset()
                 RequestsFeatureStore.shared.reset()
@@ -291,6 +330,7 @@ final class ServerRegistry {
             let state = try JSONDecoder().decode(RegistryState.self, from: data)
             self.entries = state.entries
             self.activeServerId = state.activeServerId
+            registerDiagnosticsSensitiveHosts(state.entries)
         } catch {
             Self.logger.error("Registry decode failed: \(error.localizedDescription, privacy: .public). Starting empty.")
             return
@@ -308,6 +348,19 @@ final class ServerRegistry {
                 }
             }
         }
+    }
+
+    /// Diagnostics log lines replace known server hostnames with hashed
+    /// tokens; every remembered server's host is sensitive, not just the
+    /// active one.
+    private func registerDiagnosticsSensitiveHosts(_ entries: [ServerEntry]) {
+        #if os(iOS) || os(tvOS)
+        for entry in entries {
+            if let host = URL(string: entry.url)?.host {
+                DiagLog.registerSensitiveHost(host)
+            }
+        }
+        #endif
     }
 
     private func persist() {
@@ -358,12 +411,16 @@ final class ServerRegistry {
             id: id,
             url: normalized,
             fetchedName: nil,
-            userOverrideName: nil,
             profileId: defaults.string(forKey: "profileId"),
             lastUsedAt: Date()
         )
         self.entries = [entry]
         self.activeServerId = id
+        // load() registers persisted entries for redaction, but migration
+        // installs this entry directly and returns before that path. Register
+        // it here so the legacy host is hashed in diagnostics logs on the very
+        // first post-upgrade launch.
+        registerDiagnosticsSensitiveHosts([entry])
         if normalized != raw {
             defaults.set(normalized, forKey: "serverUrl")
         }

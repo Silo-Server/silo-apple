@@ -20,6 +20,9 @@ struct MediaRow: View {
     let title: String
     let items: [SectionItem]
     let onItemTap: (String) -> Void
+    /// tvOS-only direct-play action for focused leaf items. Container items
+    /// intentionally receive no Play/Pause command and retain normal focus.
+    var onItemPlay: ((SectionItem) -> Void)? = nil
     var onSeeAll: (() -> Void)? = nil
     var showProgress: Bool = false
     var icon: String? = nil
@@ -30,6 +33,12 @@ struct MediaRow: View {
     /// `.defaultFocus($focusedItemId, firstId, priority: .userInitiated)`;
     /// see CLAUDE.md's "tvOS default focus on d-pad entry" pattern.
     var prefersDefaultFocusOnFirstItem: Bool = false
+    /// Priority for the first-item default focus. `.userInitiated` (the
+    /// default) also snaps d-pad entry into the row onto the first card;
+    /// pass `.automatic` when only the engine's own resolutions (initial
+    /// focus on cold launch) should use the preference, keeping directional
+    /// entry geometric.
+    var defaultFocusPriority: DefaultFocusEvaluationPriority = .userInitiated
     /// Programmatic kick: when this value changes to non-zero, focus
     /// jumps to the first item. Used by callers (e.g. PlayerView) that
     /// shift focus from an unrelated view rather than via d-pad entry —
@@ -37,7 +46,7 @@ struct MediaRow: View {
     /// focus engine isn't doing the moving.
     var focusRequest: Int = 0
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
-    var onSetWatched: ((SectionItem, Bool) -> Void)? = nil
+    var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
     var onMoveUp: (() -> Void)? = nil
     /// tvOS-only: reports which of the row's items holds card focus —
     /// the Skyline focus marquee mirrors it. Fires on focus gain only;
@@ -80,7 +89,7 @@ struct MediaRow: View {
         .onChange(of: focusedItemId) { _, newValue in
             guard let newValue,
                   let item = items.first(where: { $0.contentId == newValue }) else { return }
-            Self.focusLogger.debug("mediaRow.focus item=\(newValue, privacy: .public)")
+            Self.focusLogger.debug("mediaRow.focus changed")
             onItemFocus?(item)
         }
         #endif
@@ -100,7 +109,7 @@ struct MediaRow: View {
             proxy.scrollTo(firstItem.id, anchor: .leading)
         }
         DispatchQueue.main.async {
-            Self.focusLogger.debug("mediaRow.applyFocus request=\(request, privacy: .public) first=\(firstItem.contentId, privacy: .public)")
+            Self.focusLogger.debug("mediaRow.applyFocus request=\(request, privacy: .public)")
             claimFirstItemFocus(firstItem)
         }
     }
@@ -120,7 +129,7 @@ struct MediaRow: View {
         guard attempt < 8 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             guard focusedItemId != firstItem.contentId else { return }
-            Self.focusLogger.debug("mediaRow.reclaimFocus attempt=\(attempt + 1, privacy: .public) first=\(firstItem.contentId, privacy: .public)")
+            Self.focusLogger.debug("mediaRow.reclaimFocus attempt=\(attempt + 1, privacy: .public)")
             claimFirstItemFocus(firstItem, attempt: attempt + 1)
         }
     }
@@ -176,6 +185,7 @@ struct MediaRow: View {
                             userState: item.userState,
                             overlayData: OverlayData.from(item),
                             action: { onItemTap(item.contentId) },
+                            playAction: playAction(for: item),
                             focusedItemId: rowFocusBinding,
                             contentId: item.contentId,
                             onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
@@ -189,6 +199,7 @@ struct MediaRow: View {
                             item: item,
                             showProgress: showProgress,
                             action: { onItemTap(item.contentId) },
+                            playAction: playAction(for: item),
                             focusedItemId: rowFocusBinding,
                             onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
                             onSetWatched: watchedToggleAction(for: item)
@@ -215,7 +226,8 @@ struct MediaRow: View {
         .applyDefaultFirstItemFocus(
             enabled: prefersDefaultFocusOnFirstItem,
             binding: $focusedItemId,
-            firstItemId: items.first?.contentId
+            firstItemId: items.first?.contentId,
+            priority: defaultFocusPriority
         )
         // The programmatic focus kick needs the scroll proxy (it scrolls the
         // strip home before claiming), so it hangs off the strip rather than
@@ -248,14 +260,23 @@ struct MediaRow: View {
         return pos / dur
     }
 
+    private func playAction(for item: SectionItem) -> (() -> Void)? {
+        #if os(tvOS)
+        guard SiloMediaType.isDirectlyPlayable(item.type), let onItemPlay else { return nil }
+        return { onItemPlay(item) }
+        #else
+        return nil
+        #endif
+    }
+
     private func continueWatchingRemovalAction(for item: SectionItem) -> (() -> Void)? {
-        guard item.progressUpdatedAt != nil, let onRemoveFromContinueWatching else { return nil }
+        guard let onRemoveFromContinueWatching else { return nil }
         return { onRemoveFromContinueWatching(item) }
     }
 
-    private func watchedToggleAction(for item: SectionItem) -> ((Bool) -> Void)? {
+    private func watchedToggleAction(for item: SectionItem) -> ((Bool) async -> Bool)? {
         guard let onSetWatched else { return nil }
-        return { played in onSetWatched(item, played) }
+        return { played in await onSetWatched(item, played) }
     }
 
     /// Caption for a poster card. Episodes are captioned with the series name
@@ -357,10 +378,11 @@ private extension View {
     func applyDefaultFirstItemFocus(
         enabled: Bool,
         binding: FocusState<String?>.Binding,
-        firstItemId: String?
+        firstItemId: String?,
+        priority: DefaultFocusEvaluationPriority
     ) -> some View {
         if enabled, let firstItemId {
-            self.defaultFocus(binding, firstItemId, priority: .userInitiated)
+            self.defaultFocus(binding, firstItemId, priority: priority)
         } else {
             self
         }
