@@ -37,23 +37,61 @@ enum VideoGravity: String, CaseIterable {
     }
 }
 
-private enum PlayerDeviceSettingKey: String, CaseIterable {
-    case preferredQuality = "playback.preferred_quality"
-    case audioLanguage = "playback.audio_language"
-    case autoSkipIntro = "playback.auto_skip_intro"
-    case autoSkipCredits = "playback.auto_skip_credits"
-    case autoPlayNext = "playback.auto_play_next"
-    case nextUpPromptSeconds = "playback.next_up_prompt_seconds"
-    case subtitleAppearance = "subtitle_appearance"
-    case hdrEnabled = "player.hdr_enabled"
-    case dolbyVisionEnabled = "player.dolby_vision_enabled"
-    case dvProfile7HDR10Fallback = "player.dv_profile7_hdr10_fallback"
-    case seekCacheEnabled = "player.seek_cache_enabled"
-    case playbackSpeed = "player.playback_speed"
-    case audioSyncMs = "player.audio_sync_ms"
-    case subtitleSyncMs = "player.subtitle_sync_ms"
-    case videoGravity = "player.video_gravity"
-    case orientationMode = "player.orientation_mode"
+/// The device-scoped settings this client syncs, as generated contract keys.
+///
+/// The raw strings used to live here as a private enum, which is how
+/// `subtitle_appearance` kept its unprefixed name and how Apple and Android
+/// ended up disagreeing about `next_up_prompt_seconds`. They come from
+/// `SettingKey` now, so a key this client sends is a key the server's manifest
+/// declares — by construction, not by review.
+private let playerDeviceSettingKeys: [SettingKey] = [
+    .playbackPreferredQuality,
+    .playbackMaxBitrateKbps,
+    .playbackAudioLanguage,
+    .playbackAutoSkipIntro,
+    .playbackAutoSkipCredits,
+    .playbackAutoPlayNext,
+    .playbackNextUpPromptSeconds,
+    .playbackSubtitleAppearance,
+    .playerHdrEnabled,
+    .playerDolbyVisionEnabled,
+    .playerDvProfile7Hdr10Fallback,
+    .playerSeekCacheEnabled,
+    .playerPlaybackSpeed,
+    .playerAudioSyncMs,
+    .playerSubtitleSyncMs,
+    .playerVideoGravity,
+    .playerOrientationMode,
+]
+
+private typealias PlayerDeviceSettingKey = SettingKey
+
+private extension SettingKey {
+    /// The keys this screen syncs, in a stable order for the flush loop.
+    static var playerDeviceSettings: [SettingKey] { playerDeviceSettingKeys }
+
+    // Short names for the keys this file uses. The generated cases are named
+    // after the full dotted key (playbackAutoSkipIntro); these aliases keep the
+    // call sites readable without reintroducing a second list of raw strings —
+    // each one still resolves to a generated case, so a key removed from the
+    // contract fails to compile here.
+    static var preferredQuality: SettingKey { .playbackPreferredQuality }
+    static var maxBitrateKbps: SettingKey { .playbackMaxBitrateKbps }
+    static var audioLanguage: SettingKey { .playbackAudioLanguage }
+    static var autoSkipIntro: SettingKey { .playbackAutoSkipIntro }
+    static var autoSkipCredits: SettingKey { .playbackAutoSkipCredits }
+    static var autoPlayNext: SettingKey { .playbackAutoPlayNext }
+    static var nextUpPromptSeconds: SettingKey { .playbackNextUpPromptSeconds }
+    static var subtitleAppearance: SettingKey { .playbackSubtitleAppearance }
+    static var hdrEnabled: SettingKey { .playerHdrEnabled }
+    static var dolbyVisionEnabled: SettingKey { .playerDolbyVisionEnabled }
+    static var dvProfile7HDR10Fallback: SettingKey { .playerDvProfile7Hdr10Fallback }
+    static var seekCacheEnabled: SettingKey { .playerSeekCacheEnabled }
+    static var playbackSpeed: SettingKey { .playerPlaybackSpeed }
+    static var audioSyncMs: SettingKey { .playerAudioSyncMs }
+    static var subtitleSyncMs: SettingKey { .playerSubtitleSyncMs }
+    static var videoGravity: SettingKey { .playerVideoGravity }
+    static var orientationMode: SettingKey { .playerOrientationMode }
 }
 
 private enum PendingDeviceSettingValue {
@@ -351,7 +389,7 @@ final class PlayerSettings {
 
         do {
             let response = try await ContinuumAPI.shared.effectiveSettings(
-                keys: PlayerDeviceSettingKey.allCases.map(\.rawValue)
+                keys: SettingKey.playerDeviceSettings.map(\.rawValue)
             )
             let effectiveByKey = Dictionary(uniqueKeysWithValues: response.map { ($0.key, $0) })
             applyEffectiveSettings(effectiveByKey)
@@ -499,7 +537,7 @@ final class PlayerSettings {
 
     @MainActor
     func resetAllDeviceSettings() async {
-        await resetDeviceSettings(PlayerDeviceSettingKey.allCases)
+        await resetDeviceSettings(SettingKey.playerDeviceSettings)
     }
 
     private func resetDeviceSettings(_ keys: [PlayerDeviceSettingKey]) async {
@@ -527,7 +565,7 @@ final class PlayerSettings {
             }
         }
 
-        for key in PlayerDeviceSettingKey.allCases {
+        for key in SettingKey.playerDeviceSettings {
             guard let pendingValue = pendingDeviceSettingValues[key] else { continue }
             do {
                 switch pendingValue {
@@ -708,7 +746,7 @@ final class PlayerSettings {
     ) async -> Bool {
         var importedAny = false
 
-        for key in PlayerDeviceSettingKey.allCases {
+        for key in SettingKey.playerDeviceSettings {
             guard let legacyValue = legacySnapshot[key] else { continue }
             guard let entry = effectiveByKey[key.rawValue], !entry.hasDeviceOverride else { continue }
             if key == .subtitleAppearance && !legacySubtitleOverrideEnabled {
