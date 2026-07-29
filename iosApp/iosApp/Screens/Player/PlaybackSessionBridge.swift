@@ -1000,9 +1000,11 @@ actor PlaybackSessionBridge {
             delivery: PlaybackDeliveryStrategy(playMethod: currentSession.playMethod)
         )
         let currentDelivery = PlaybackDeliveryStrategy(playMethod: currentSession.playMethod)
+        let capKbps = PlayerSettings.shared.maxBitrateKbps
         let forcedByQuality = ApplePlaybackQuality.shouldForceTranscode(
             preferredQualityId: preferredQuality,
-            selectedVersion: selectedVersion
+            selectedVersion: selectedVersion,
+            capKbps: capKbps
         )
         let useCopyVideo = currentDelivery == .remux
             || qualityOption.isOriginal
@@ -1018,7 +1020,8 @@ actor PlaybackSessionBridge {
             targetCodecAudio: "aac",
             targetBitrateKbps: useCopyVideo ? 0 : ApplePlaybackQuality.targetBitrateKbps(
                 for: qualityOption,
-                selectedVersion: selectedVersion
+                selectedVersion: selectedVersion,
+                capKbps: capKbps
             ),
             segmentDuration: 2,
             subtitleTrackIndex: -1,
@@ -1297,7 +1300,8 @@ actor PlaybackSessionBridge {
             targetCodecAudio: "aac",
             targetBitrateKbps: useCopyVideo ? 0 : ApplePlaybackQuality.targetBitrateKbps(
                 for: qualityOption,
-                selectedVersion: selectedVersion
+                selectedVersion: selectedVersion,
+                capKbps: PlayerSettings.shared.maxBitrateKbps
             ),
             segmentDuration: 2,
             subtitleTrackIndex: -1,
@@ -1487,7 +1491,8 @@ actor PlaybackSessionBridge {
     ) -> ClientPlaybackPlan {
         let requestedTranscode = ApplePlaybackQuality.shouldForceTranscode(
             preferredQualityId: preferredQuality,
-            selectedVersion: initiallySelectedVersion
+            selectedVersion: initiallySelectedVersion,
+            capKbps: PlayerSettings.shared.maxBitrateKbps
         )
         #if os(macOS)
         return ClientPlaybackPlan(

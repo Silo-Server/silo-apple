@@ -445,10 +445,14 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await editor.saveSubtitlePrefs()
 
         let modeWrites = transport.writes().filter { $0.key == .playbackSubtitleMode }
-        // Two attempts: the failed one and the retry. A count of one would mean
-        // the failed language write above aborted the rest of the batch.
-        try XCTSkipUnless(modeWrites.count == 2, "expected two attempts, got \(modeWrites.count)")
-        XCTAssertEqual(modeWrites[0].mutationId, modeWrites[1].mutationId,
+        // Two attempts: the failed one and the retry. A count of one means the
+        // failed language write above aborted the rest of the batch, which is
+        // the regression this test exists to catch — so it is asserted, not
+        // skipped. XCTSkipUnless would report that exact failure as a *skip*,
+        // which CI counts as a pass.
+        XCTAssertEqual(modeWrites.count, 2,
+                       "a failed write must not abort the independent keys after it")
+        XCTAssertEqual(modeWrites.first?.mutationId, modeWrites.last?.mutationId,
                        "a retry of the same content must replay its id, not mint a new one")
     }
 
@@ -462,9 +466,107 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await editor.saveSubtitlePrefs()
 
         let modeWrites = transport.writes().filter { $0.key == .playbackSubtitleMode }
-        try XCTSkipUnless(modeWrites.count == 2, "expected two writes, got \(modeWrites.count)")
+        XCTAssertEqual(modeWrites.count, 2, "each edit must produce its own write")
         // Different content under a reused id is a 409 by design.
-        XCTAssertNotEqual(modeWrites[0].mutationId, modeWrites[1].mutationId)
+        XCTAssertNotEqual(modeWrites.first?.mutationId, modeWrites.last?.mutationId)
+    }
+
+    // MARK: - Scope promotion
+
+    /// A value the effective read resolved from a *narrower* scope must not be
+    /// written back at `profile` scope on screen open.
+    ///
+    /// All three subtitle keys list `profile_device` in `allowed_scopes`, and
+    /// the web admin's per-device settings pane writes them there. This editor
+    /// only ever writes at `profile`, so repainting the resolved value into the
+    /// fields makes `onChange` fire and promotes one device's override to the
+    /// whole household — with the user having touched nothing.
+    func testOpeningTheScreenDoesNotPromoteADeviceOverrideToTheProfile() async throws {
+        let transport = FakeProfileSettingsTransport()
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+
+        // The profile's own language is "ja"; this device has a profile_device
+        // row of "en", which is what the effective endpoint resolves.
+        editor.seed(from: nil)
+        transport.effective = [
+            .init(
+                key: SettingKey.playbackSubtitleLanguage.rawValue,
+                value: .string("en"),
+                source: .scope(.profileDevice),
+                scope: .profileDevice
+            ),
+            .init(
+                key: SettingKey.playbackSubtitleMode.rawValue,
+                value: .string(SubtitleMode.always.rawValue),
+                source: .scope(.profileDevice),
+                scope: .profileDevice
+            ),
+            .init(
+                key: SettingKey.playbackShowForcedSubtitles.rawValue,
+                value: .bool(false),
+                source: .scope(.profileDevice),
+                scope: .profileDevice
+            ),
+        ]
+        await editor.load()
+        XCTAssertEqual(editor.subtitleLanguage, "en", "precondition: the resolved value is painted")
+
+        // Exactly what the screens do on every field the repaint moved.
+        await editor.saveSubtitlePrefs()
+
+        XCTAssertTrue(
+            transport.writes().isEmpty,
+            "a repaint is not a user edit: writing it back would promote the device row to the profile"
+        )
+    }
+
+    /// The suppression is per key and per value, not a blanket "never write
+    /// after a load": a control the user actually touches still saves.
+    func testAnEditAfterALoadStillSaves() async throws {
+        let transport = FakeProfileSettingsTransport()
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+
+        transport.effective = [
+            .init(
+                key: SettingKey.playbackSubtitleLanguage.rawValue,
+                value: .string("en"),
+                source: .scope(.profileDevice),
+                scope: .profileDevice
+            ),
+        ]
+        await editor.load()
+
+        editor.subtitleLanguage = "ja"
+        await editor.saveSubtitlePrefs()
+
+        let byKey = transport.writesByKey()
+        XCTAssertEqual(byKey[.playbackSubtitleLanguage]?.value, .string("ja"))
+        // And only that key: the two the user did not touch stay where the
+        // server resolved them.
+        XCTAssertNil(byKey[.playbackSubtitleMode], "an untouched control must not be written")
+        XCTAssertNil(byKey[.playbackShowForcedSubtitles], "an untouched control must not be written")
+        XCTAssertEqual(editor.saveState, .saved)
+    }
+
+    /// A write that failed is still owed, so the next save must retry it rather
+    /// than treat the field as already persisted.
+    func testAFailedWriteIsRetriedByTheNextSave() async throws {
+        let transport = FakeProfileSettingsTransport()
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+
+        editor.seed(from: nil)
+        editor.subtitleLanguage = "ko"
+        transport.failWritesWith = .server(status: 503, code: nil, message: nil)
+        await editor.saveSubtitlePrefs()
+        XCTAssertEqual(transport.writes().filter { $0.key == .playbackSubtitleLanguage }.count, 1)
+
+        transport.failWritesWith = nil
+        await editor.saveSubtitlePrefs()
+
+        let languageWrites = transport.writes().filter { $0.key == .playbackSubtitleLanguage }
+        XCTAssertEqual(languageWrites.count, 2,
+                       "a failed write must stay owed rather than being marked persisted")
+        XCTAssertEqual(languageWrites.last?.value, .string("ko"))
     }
 }
 

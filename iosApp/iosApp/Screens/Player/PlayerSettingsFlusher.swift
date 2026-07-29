@@ -68,8 +68,14 @@ final class ContinuumPlayerSettingsTransport: PlayerSettingsTransport {
 }
 
 /// One queued device-scoped write.
-struct PendingSettingWrite: Equatable {
-    enum Operation: Equatable {
+///
+/// `Codable` because the queue outlives the process — see
+/// ``PlayerSettingsWriteJournal``. The mutation id is part of what is
+/// persisted: a write restored after a relaunch is the *same* logical write,
+/// so replaying it under its original id is what stops a crash mid-request
+/// from applying twice.
+struct PendingSettingWrite: Equatable, Codable {
+    enum Operation: Equatable, Codable {
         case set(SettingJSONValue)
         case delete
     }
@@ -83,6 +89,85 @@ struct PendingSettingWrite: Equatable {
     /// double-apply. Minting a fresh id per retry defeats that, and defeats the
     /// 409 that catches genuinely different content reusing an id.
     let mutationId: String
+}
+
+/// Where the queue lives while the process is not running.
+///
+/// The debounce window is 750 ms of edits that exist only in memory, and the
+/// process can end inside it: Cmd-Q on macOS terminates without waiting on a
+/// detached flush, and a suspended iOS app killed from the switcher gets no
+/// `willTerminate` at all. A lifecycle notification cannot close that hole
+/// because it does not always arrive and never waits for a network round trip
+/// — so the queue is written to disk as it is *enqueued*, and replayed by the
+/// first flush after launch. `PlayerSettings.refreshFromServer` drains before
+/// it adopts the server's answer, so a restored edit lands rather than being
+/// overwritten by the stale value it was meant to replace.
+protocol PlayerSettingsWriteJournal: AnyObject, Sendable {
+    func load() -> [SettingKey: PendingSettingWrite]
+    func save(_ pending: [SettingKey: PendingSettingWrite])
+}
+
+/// The production journal: `UserDefaults`, partitioned by settings scope.
+///
+/// Partitioned because a queued op is addressed to one (server, profile,
+/// device) triple. Replaying it after the user switched servers or profiles
+/// would write the previous profile's choice onto the current one, so an entry
+/// whose scope no longer matches is not loaded.
+final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unchecked Sendable {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        category: "PlayerSettingsFlusher"
+    )
+
+    private let defaults: UserDefaults
+    private let scopeProvider: @Sendable () -> String?
+
+    init(
+        defaults: UserDefaults = .standard,
+        scopeProvider: @escaping @Sendable () -> String? = { PlayerSettings.currentScopeIdentifier }
+    ) {
+        self.defaults = defaults
+        self.scopeProvider = scopeProvider
+    }
+
+    private func storageKey() -> String? {
+        scopeProvider().map { "player.pendingDeviceSettingWrites.\($0)" }
+    }
+
+    func load() -> [SettingKey: PendingSettingWrite] {
+        guard let storageKey = storageKey(), let data = defaults.data(forKey: storageKey) else {
+            return [:]
+        }
+        do {
+            let stored = try SettingsWireCoding.makeDecoder()
+                .decode([String: PendingSettingWrite].self, from: data)
+            // A key this build no longer knows is dropped rather than failing
+            // the whole restore: the contract is additive, and one stale entry
+            // must not strand every other queued edit.
+            return stored.reduce(into: [:]) { result, entry in
+                if let key = SettingKey(rawValue: entry.key) { result[key] = entry.value }
+            }
+        } catch {
+            Self.logger.warning("could not restore the pending settings queue: \(String(describing: error), privacy: .public)")
+            defaults.removeObject(forKey: storageKey)
+            return [:]
+        }
+    }
+
+    func save(_ pending: [SettingKey: PendingSettingWrite]) {
+        guard let storageKey = storageKey() else { return }
+        guard !pending.isEmpty else {
+            defaults.removeObject(forKey: storageKey)
+            return
+        }
+        let encodable = Dictionary(uniqueKeysWithValues: pending.map { ($0.key.rawValue, $0.value) })
+        guard let data = try? SettingsWireCoding.makeEncoder().encode(encodable) else {
+            // Unreachable for a dictionary of contract values, and losing
+            // durability is better than losing the in-memory queue.
+            return
+        }
+        defaults.set(data, forKey: storageKey)
+    }
 }
 
 /// Queue + debounce + retry for the player's device-scoped settings.
@@ -142,68 +227,121 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     private let transport: PlayerSettingsTransport
     private let debounce: Duration
     private let retryPolicy: RetryPolicy
+    private let journal: PlayerSettingsWriteJournal?
 
     private let lock = NSLock()
     private var pending: [SettingKey: PendingSettingWrite] = [:]
+    /// Ops a drain has taken out of `pending` but has not yet heard back on.
+    /// Only the journal reads this — it has to describe them too, or a process
+    /// death between the request leaving and its response arriving would lose a
+    /// write that is in neither place.
+    private var inFlight: [SettingKey: PendingSettingWrite] = [:]
     private var debounceTask: Task<Void, Never>?
+    /// Bumped every time the debounce window is re-armed, so a waking timer can
+    /// tell whether it is still the current one before it retires the
+    /// registration in ``flushAfterDebounce(generation:)``.
+    private var debounceGeneration: UInt64 = 0
     private var retryTask: Task<Void, Never>?
     private var retryAttempts = 0
     private var isDraining = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    private var backgroundObserver: NSObjectProtocol?
+    private var lifecycleObservers: [NSObjectProtocol] = []
 
     init(
         transport: PlayerSettingsTransport,
         debounce: Duration = PlayerSettingsFlusher.defaultDebounce,
         retryPolicy: RetryPolicy = .default,
+        journal: PlayerSettingsWriteJournal? = nil,
         flushesOnBackground: Bool = false
     ) {
         self.transport = transport
         self.debounce = debounce
         self.retryPolicy = retryPolicy
+        self.journal = journal
+        // Anything the last run left queued is replayed by the first flush,
+        // carrying the mutation ids it was persisted with.
+        if let journal {
+            pending = journal.load()
+        }
         if flushesOnBackground {
-            observeBackgrounding()
+            observeLifecycle()
         }
     }
 
     convenience init() {
-        // The app-wide instance is the one that must survive backgrounding;
-        // a test's instance opts out so a simulator lifecycle notification
-        // cannot fire an unexpected flush mid-assertion.
-        self.init(transport: ContinuumPlayerSettingsTransport(), flushesOnBackground: true)
+        // The app-wide instance is the one that must survive backgrounding and
+        // termination; a test's instance opts out of both so a simulator
+        // lifecycle notification cannot fire an unexpected flush mid-assertion
+        // and nothing is written to the shared preferences domain.
+        self.init(
+            transport: ContinuumPlayerSettingsTransport(),
+            journal: UserDefaultsSettingsWriteJournal(),
+            flushesOnBackground: true
+        )
     }
 
     deinit {
-        if let backgroundObserver {
-            NotificationCenter.default.removeObserver(backgroundObserver)
+        for observer in lifecycleObservers {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 
-    /// Send whatever is queued when the app leaves the foreground.
+    /// Send whatever is queued when the app leaves the foreground, and hold the
+    /// process open long enough for it to land.
     ///
     /// Without this the debounce window is a data-loss hole: a user who flips a
     /// toggle and immediately swipes the app away has their change sitting in a
-    /// timer that never fires, so the setting silently reverts on next launch.
-    /// The old inline flusher had no window and so no such gap; adding the
-    /// window means adding this.
-    private func observeBackgrounding() {
+    /// timer that never fires. The old inline flusher had no window and so no
+    /// such gap; adding the window means adding this.
+    ///
+    /// The notification alone is not enough, which is why the durable journal
+    /// exists alongside it. On macOS the only lifecycle signal available before
+    /// a Cmd-Q is `willResignActive`, and AppKit terminates without waiting on
+    /// the flush it starts; on iOS a suspended app killed from the switcher is
+    /// never told at all. Both paths therefore rely on the queue already being
+    /// on disk. What these observers buy is the common case landing *now*
+    /// rather than on next launch — and on iOS, a background-task assertion so
+    /// the request is not suspended mid-flight.
+    private func observeLifecycle() {
         #if canImport(UIKit)
-        let name = UIApplication.didEnterBackgroundNotification
+        observe(UIApplication.didEnterBackgroundNotification)
+        observe(UIApplication.willTerminateNotification)
         #elseif canImport(AppKit)
-        let name = NSApplication.willResignActiveNotification
-        #else
-        return
+        observe(NSApplication.willResignActiveNotification)
+        observe(NSApplication.willTerminateNotification)
         #endif
-        #if canImport(UIKit) || canImport(AppKit)
-        backgroundObserver = NotificationCenter.default.addObserver(
-            forName: name,
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            guard let self, self.hasPendingWrites else { return }
-            Task { await self.flushNow() }
+    }
+
+    #if canImport(UIKit) || canImport(AppKit)
+    private func observe(_ name: Notification.Name) {
+        lifecycleObservers.append(
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                guard let self, self.hasPendingWrites else { return }
+                Task { await self.flushHoldingTheProcessOpen() }
+            }
+        )
+    }
+    #endif
+
+    /// Flush with whatever the platform offers to keep the process alive.
+    ///
+    /// On iOS a background-task assertion: without one the app can be suspended
+    /// between the request leaving and its response arriving, and the write
+    /// would then only land on the next launch's replay. ``flushNow()`` cannot
+    /// throw and always returns once every op is acknowledged or has failed, so
+    /// the assertion is always ended — one left open is a watchdog termination.
+    private func flushHoldingTheProcessOpen() async {
+        #if canImport(UIKit)
+        let identifier = await MainActor.run {
+            UIApplication.shared.beginBackgroundTask(withName: "SiloSettingsFlush")
         }
+        await flushNow()
+        if identifier != .invalid {
+            await MainActor.run { UIApplication.shared.endBackgroundTask(identifier) }
+        }
+        #else
+        await flushNow()
         #endif
     }
 
@@ -214,6 +352,29 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// drift onto different transports.
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse {
         try await transport.effectiveValues(keys: keys)
+    }
+
+    /// Re-read the journal and adopt anything it still owes.
+    ///
+    /// `init` already does this, but the journal is partitioned by settings
+    /// scope and the scope is not known until a server and profile are
+    /// selected — which for the app-wide instance happens well after it is
+    /// constructed. ``PlayerSettings/refreshFromServer()`` calls this on every
+    /// launch, sign-in and profile switch so a queue persisted under a scope
+    /// that only just became current is picked up rather than stranded.
+    ///
+    /// An op already queued in memory wins: it is at least as new as the disk
+    /// copy, and it carries the mutation id the server will see.
+    func restorePendingWrites() {
+        guard let journal else { return }
+        let restored = journal.load()
+        guard !restored.isEmpty else { return }
+        lock.lock()
+        for (key, write) in restored where pending[key] == nil && inFlight[key] == nil {
+            pending[key] = write
+        }
+        persistLocked()
+        lock.unlock()
     }
 
     /// Keys with an op still queued: one inside the debounce window, or one
@@ -266,22 +427,53 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     private func schedule(_ key: SettingKey, _ next: (PendingSettingWrite?) -> PendingSettingWrite?) {
         lock.lock()
         pending[key] = next(pending[key])
+        persistLocked()
         // Fresh user activity re-arms the retry budget: whatever made the last
         // attempt fail may well be gone by now.
         retryAttempts = 0
         retryTask?.cancel()
         retryTask = nil
         debounceTask?.cancel()
+        debounceGeneration &+= 1
+        let generation = debounceGeneration
         let interval = debounce
         debounceTask = Task { [weak self] in
             try? await Task.sleep(for: interval)
             guard !Task.isCancelled else { return }
-            await self?.flushNow()
+            await self?.flushAfterDebounce(generation: generation)
         }
         lock.unlock()
     }
 
     // MARK: - Draining
+
+    /// The debounce timer's own way into a drain.
+    ///
+    /// Deliberately not ``flushNow()`` directly: that starts by cancelling
+    /// `debounceTask`, and on this path `debounceTask` *is* the task executing
+    /// the call, so it would cancel itself. Everything after that — the drain,
+    /// the send, the `URLSession` round trip — would then run with
+    /// `Task.isCancelled == true`, and `URLSession` reports its enclosing
+    /// task's cancellation as `NSURLErrorCancelled`. Every debounced write
+    /// would fail an attempt the request never survived, be classified as a
+    /// transport failure, and only land on the first backoff retry a second
+    /// later. Retiring this timer's own registration first makes the cancel in
+    /// ``flushNow()`` a no-op.
+    private func flushAfterDebounce(generation: UInt64) async {
+        lock.lock()
+        let isCurrent = debounceGeneration == generation
+        if isCurrent {
+            debounceTask = nil
+        }
+        lock.unlock()
+        // A newer edit re-armed the window, or an explicit flush ran, while
+        // this timer was waking. Either way this task has been cancelled and
+        // whoever cancelled it owns the flush; going on would put the writes
+        // back under a cancelled task, which is the whole failure this method
+        // exists to avoid.
+        guard isCurrent, !Task.isCancelled else { return }
+        await flushNow()
+    }
 
     /// Cancel any pending debounce, send every queued op, and return once each
     /// has been acknowledged or has failed.
@@ -316,6 +508,23 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         if needsAnotherPass {
             await drain()
         }
+    }
+
+    /// Write the queue to the journal. Caller must hold `lock`.
+    ///
+    /// `alsoOwed` covers ops this drain has already failed and will re-queue
+    /// when it finishes: they are momentarily in neither `pending` nor
+    /// `inFlight`, and a process death in that window would drop them.
+    private func persistLocked(alsoOwed: [SettingKey: PendingSettingWrite] = [:]) {
+        guard let journal else { return }
+        var owed = pending
+        for (key, write) in inFlight where owed[key] == nil {
+            owed[key] = write
+        }
+        for (key, write) in alsoOwed where owed[key] == nil {
+            owed[key] = write
+        }
+        journal.save(owed)
     }
 
     /// Caller must hold `lock`.
@@ -354,6 +563,11 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             lock.lock()
             let snapshot = pending
             pending = [:]
+            // Moved, not dropped: the journal has to keep describing an op that
+            // is out of `pending` but not yet acknowledged, or a process death
+            // mid-request would lose it on both sides.
+            inFlight = snapshot
+            persistLocked()
             lock.unlock()
             if snapshot.isEmpty { break }
 
@@ -362,7 +576,12 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             // reach the server in the same sequence.
             for key in SettingKey.playerDeviceSettings {
                 guard let write = snapshot[key] else { continue }
-                switch await send(key, write) {
+                let outcome = await send(key, write)
+                lock.lock()
+                if inFlight[key] == write {
+                    inFlight.removeValue(forKey: key)
+                }
+                switch outcome {
                 case .settled:
                     retryable.removeValue(forKey: key)
                 case .retryWithBackoff:
@@ -371,6 +590,11 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 case .retryOnNextTrigger:
                     retryable[key] = write
                 }
+                // The failed ops are not in `pending` yet — they go back at the
+                // end of the drain — so the journal is the union of everything
+                // still owed.
+                persistLocked(alsoOwed: retryable)
+                lock.unlock()
             }
         }
 
@@ -380,6 +604,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             // it is newer content, with its own id.
             pending[key] = write
         }
+        inFlight.removeAll()
+        persistLocked()
         isDraining = false
         let resumed = waiters
         waiters.removeAll()

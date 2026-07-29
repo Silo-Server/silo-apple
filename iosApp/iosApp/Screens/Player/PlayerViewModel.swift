@@ -4171,7 +4171,8 @@ class PlayerViewModel {
         let qualityRequiresTranscode = currentSelectedVersion.map {
             ApplePlaybackQuality.shouldForceTranscode(
                 preferredQualityId: resolvedQualityId,
-                selectedVersion: $0
+                selectedVersion: $0,
+                capKbps: settings.maxBitrateKbps
             )
         } ?? true
         if !qualityRequiresTranscode {

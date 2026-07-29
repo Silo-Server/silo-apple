@@ -460,6 +460,13 @@ final class PlayerSettings {
     @MainActor
     func refreshFromServer() async {
         applyCachedSettingsForCurrentScope()
+        // Anything a previous run left owed is picked up before the effective
+        // read, so an edit that never reached the server is *sent* rather than
+        // being overwritten below by the stale value it was meant to replace.
+        // Deliberately here rather than only in the flusher's init: the queue
+        // is partitioned by (server, profile, device), and the app-wide
+        // instance is built long before any of those are known.
+        flusher.restorePendingWrites()
         await flushPendingDeviceSettings()
 
         let scopeID = Self.currentScopeIdentifier
@@ -953,7 +960,12 @@ final class PlayerSettings {
         subtitlePosition = appearance.position.legacyPosition
     }
 
-    private static var currentScopeIdentifier: String? {
+    /// The (server, profile, device) triple this device's settings belong to.
+    ///
+    /// Non-private because the flusher's write journal partitions the persisted
+    /// queue by it: a queued op restored after the user switched servers or
+    /// profiles would write the previous profile's choice onto the current one.
+    static var currentScopeIdentifier: String? {
         let serverURL = ServerRegistry.shared.activeServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         let profileID = AuthService.shared.profileId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let deviceID = AppleDeviceIdentity.current.id.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -123,16 +123,24 @@ enum ApplePlaybackQuality {
         return autoId
     }
 
+    /// Whether this tier requires a transcode for this source.
+    ///
+    /// `capKbps` is the stored `playback.max_bitrate_kbps` — the bandwidth half
+    /// of the quality preference, which is a separate axis from the tier and is
+    /// not implied by it. A source inside the tier's own rung bitrate but above
+    /// the user's cap still has to be re-encoded; without this, widening the
+    /// resolution axis would silently uncap the connection.
     static func shouldForceTranscode(
         preferredQualityId: String?,
-        selectedVersion: FileVersion
+        selectedVersion: FileVersion,
+        capKbps: Int? = nil
     ) -> Bool {
         let id = normalizeStoredId(preferredQualityId)
         guard id != autoId else { return false }
         guard let option = settingsOptions.first(where: { $0.id == id && !$0.isOriginal && !$0.isAuto }) else {
             return false
         }
-        return exceedsBitrateCap(selectedVersion, option: option)
+        return exceedsBitrateCap(selectedVersion, ceilingKbps: ceiling(option.bitrateKbps, capKbps))
             || exceedsResolutionCap(selectedVersion, option: option)
     }
 
@@ -148,15 +156,30 @@ enum ApplePlaybackQuality {
         return sourceHeight > targetHeight ? option.resolution : ""
     }
 
+    /// The encode target for the legacy `/transcode/start` path.
+    ///
+    /// The lesser of the source's own bitrate, the tier's rung, and the stored
+    /// `playback.max_bitrate_kbps` cap. The cap is the only place the bandwidth
+    /// axis can be honoured on this path — the tier is chosen by resolution
+    /// (see AppleQualityAxes.swift), so a 1080p preset capped at 6 Mbps arrives
+    /// here as the 8 Mbps rung and must still encode at 6.
     static func targetBitrateKbps(
         for option: ApplePlaybackQualityOption,
-        selectedVersion: FileVersion
+        selectedVersion: FileVersion,
+        capKbps: Int? = nil
     ) -> Int {
         guard !option.isOriginal, !option.isAuto else { return 0 }
+        let target = ceiling(option.bitrateKbps, capKbps)
         guard let sourceBitrateKbps = sourceBitrateKbps(for: selectedVersion) else {
-            return option.bitrateKbps
+            return target
         }
-        return min(sourceBitrateKbps, option.bitrateKbps)
+        return min(sourceBitrateKbps, target)
+    }
+
+    /// The tighter of a tier's rung bitrate and an optional user cap.
+    private static func ceiling(_ tierKbps: Int, _ capKbps: Int?) -> Int {
+        guard let capKbps, capKbps > 0 else { return tierKbps }
+        return min(tierKbps, capKbps)
     }
 
     static func formatBitrate(kbps: Int) -> String {
@@ -183,12 +206,12 @@ enum ApplePlaybackQuality {
 
     private static func exceedsBitrateCap(
         _ version: FileVersion,
-        option: ApplePlaybackQualityOption
+        ceilingKbps: Int
     ) -> Bool {
         guard let sourceBitrateKbps = sourceBitrateKbps(for: version) else {
             return true
         }
-        return sourceBitrateKbps > option.bitrateKbps
+        return sourceBitrateKbps > ceilingKbps
     }
 
     private static func exceedsResolutionCap(

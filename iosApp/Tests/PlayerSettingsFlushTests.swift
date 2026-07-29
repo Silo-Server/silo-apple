@@ -71,6 +71,194 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(transport.writes().count, 1, "an explicit flush must not wait out the window")
     }
 
+    /// The debounced write must not run inside a task it has cancelled.
+    ///
+    /// The timer used to call `flushNow()` directly, and `flushNow()` opens by
+    /// cancelling `debounceTask` — which on that path *is* the executing task.
+    /// Everything after ran with `Task.isCancelled == true`, and `URLSession`
+    /// reports its enclosing task's cancellation as `NSURLErrorCancelled`, so
+    /// every debounced write burned an attempt the request never survived and
+    /// only landed on the first backoff retry a second later. The fake fails a
+    /// cancelled send for exactly this reason.
+    func testTheDebouncedWriteDoesNotRunUnderACancelledTask() async throws {
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .milliseconds(40),
+            // A retry window long enough that a first-attempt failure could not
+            // be papered over by a retry landing inside the wait below.
+            retryPolicy: .init(maximumAutomaticRetries: 3, base: .seconds(10), maximum: .seconds(10))
+        )
+
+        // Only the timer fires this: no explicit flushNow anywhere.
+        flusher.enqueue(.playerHdrEnabled, value: .bool(false))
+
+        try await waitUntil("the debounced write lands") { transport.writes().count == 1 }
+        XCTAssertEqual(transport.cancelledAttemptCount(), 0,
+                       "the debounce timer cancelled the task its own writes run in")
+        XCTAssertFalse(flusher.hasPendingWrites,
+                       "the first attempt must succeed, not be rescued by a backoff retry")
+    }
+
+    /// The same guarantee for a clear, which takes the other branch of `send`.
+    func testTheDebouncedDeleteDoesNotRunUnderACancelledTask() async throws {
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .milliseconds(40),
+            retryPolicy: .init(maximumAutomaticRetries: 3, base: .seconds(10), maximum: .seconds(10))
+        )
+
+        flusher.enqueueDelete(.playbackSubtitleAppearance)
+
+        try await waitUntil("the debounced delete lands") { transport.deletes().count == 1 }
+        XCTAssertEqual(transport.cancelledAttemptCount(), 0)
+        XCTAssertFalse(flusher.hasPendingWrites)
+    }
+
+    /// A newer edit inside the window replaces the timer, and only one flush
+    /// runs — the fix must not turn a re-armed window into two drains.
+    func testReArmingTheWindowStillCollapsesToOneWrite() async throws {
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .milliseconds(60))
+
+        flusher.enqueue(.playerAudioSyncMs, value: .int(100))
+        try await Task.sleep(for: .milliseconds(20))
+        flusher.enqueue(.playerAudioSyncMs, value: .int(200))
+
+        try await waitUntil("the debounced write lands") { transport.writes().count == 1 }
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(transport.writes().map(\.value), [.int(200)],
+                       "the superseded timer must not fire a second drain")
+        XCTAssertEqual(transport.cancelledAttemptCount(), 0)
+    }
+
+    // MARK: - Durability
+
+    /// An edit still inside the debounce window when the process dies must
+    /// survive it. The window is 750 ms of in-memory-only queue, and neither
+    /// lifecycle notification closes the hole: macOS terminates on Cmd-Q
+    /// without waiting on the flush `willResignActive` starts, and a suspended
+    /// iOS app killed from the switcher is never told at all.
+    func testAnEditInsideTheWindowSurvivesProcessDeath() async throws {
+        let journal = InMemoryWriteJournal()
+        let dying = PlayerSettingsFlusher(
+            transport: FakeSettingsTransport(),
+            debounce: .seconds(30),
+            journal: journal
+        )
+        dying.enqueue(.playerPlaybackSpeed, value: .double(1.5))
+        let queuedId = try XCTUnwrap(dying.mutationId(for: .playerPlaybackSpeed))
+
+        // Relaunch: a fresh flusher over the same journal, nothing shared in
+        // memory.
+        let transport = FakeSettingsTransport()
+        let relaunched = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .milliseconds(10),
+            journal: journal
+        )
+        XCTAssertTrue(relaunched.hasPendingWrites, "the queue must outlive the process")
+        await relaunched.flushNow()
+
+        let writes = transport.writes()
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertEqual(writes.first?.value, .double(1.5))
+        XCTAssertEqual(writes.first?.mutationId, queuedId,
+                       "a restored write is the same logical write: replaying its id is what stops a double apply")
+    }
+
+    /// A write killed between the request leaving and its response arriving is
+    /// in neither `pending` nor the drain's snapshot, so the journal has to
+    /// describe it too.
+    func testAWriteInterruptedMidRequestIsStillOwed() async throws {
+        let journal = InMemoryWriteJournal()
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .seconds(30),
+            journal: journal
+        )
+
+        var journalledMidFlight: [SettingKey: PendingSettingWrite] = [:]
+        transport.onWrite = { _ in
+            journalledMidFlight = journal.load()
+        }
+        flusher.enqueue(.playerVideoGravity, value: .string("fill"))
+        await flusher.flushNow()
+
+        XCTAssertEqual(journalledMidFlight[.playerVideoGravity]?.operation, .set(.string("fill")),
+                       "an in-flight op must stay on disk until it is acknowledged")
+        XCTAssertTrue(journal.load().isEmpty, "a settled op must be cleared from the journal")
+    }
+
+    /// A restored op is superseded by a newer edit to the same key rather than
+    /// resurrecting the value the user has already replaced.
+    func testARestoredOpIsSupersededByANewerEditToTheSameKey() async throws {
+        let journal = InMemoryWriteJournal()
+        journal.stored = [
+            .playerAudioSyncMs: PendingSettingWrite(operation: .set(.int(-500)), mutationId: "stale"),
+        ]
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .seconds(30),
+            journal: journal
+        )
+        XCTAssertEqual(flusher.mutationId(for: .playerAudioSyncMs), "stale",
+                       "precondition: the previous run's op was restored")
+
+        flusher.enqueue(.playerAudioSyncMs, value: .int(250))
+        await flusher.flushNow()
+
+        XCTAssertEqual(transport.writes().map(\.value), [.int(250)],
+                       "the newer edit must replace the restored one, not queue behind it")
+        XCTAssertNotEqual(transport.writes().first?.mutationId, "stale",
+                          "different content must not reuse the restored id — that is the 409 case")
+    }
+
+    /// The journal is partitioned by (server, profile, device), and the app-wide
+    /// flusher is constructed long before any of those are known — so `init`'s
+    /// restore can come up empty for a queue that is nonetheless owed. The
+    /// refresh that runs after sign-in has to look again.
+    func testARestoreAfterTheScopeBecomesKnownPicksUpTheQueue() async throws {
+        let journal = InMemoryWriteJournal()
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .seconds(30),
+            journal: journal
+        )
+        XCTAssertFalse(flusher.hasPendingWrites, "precondition: nothing was readable at construction")
+
+        // The scope resolved, and the journal now answers with what it holds.
+        journal.stored = [
+            .playerHdrEnabled: PendingSettingWrite(operation: .set(.bool(false)), mutationId: "owed"),
+        ]
+        flusher.restorePendingWrites()
+        await flusher.flushNow()
+
+        XCTAssertEqual(transport.writes().count, 1)
+        XCTAssertEqual(transport.writes().first?.mutationId, "owed",
+                       "a restored write keeps its id so a replay cannot double-apply")
+    }
+
+    /// The queue is addressed to one (server, profile, device) triple. Replaying
+    /// it under a different one would write the previous profile's choice onto
+    /// the current profile.
+    func testAQueuePersistedUnderAnotherScopeIsNotReplayed() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "settings-journal-scope-\(UUID().uuidString)"))
+        defer { UserDefaults().removePersistentDomain(forName: "settings-journal-scope") }
+        var scope = "server-a|profile-1|device"
+        let journal = UserDefaultsSettingsWriteJournal(defaults: defaults) { scope }
+
+        journal.save([.playerHdrEnabled: PendingSettingWrite(operation: .set(.bool(false)), mutationId: "id")])
+        XCTAssertFalse(journal.load().isEmpty, "precondition: it is readable in its own scope")
+
+        scope = "server-a|profile-2|device"
+        XCTAssertTrue(journal.load().isEmpty, "another profile's queue must not be adopted")
+    }
+
     // MARK: - Mutation ids
 
     func testEachLogicalWriteGetsItsOwnMutationId() async throws {
@@ -573,20 +761,73 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(axes.bitrateKbps, 700)
     }
 
-    func testAPairFromAnotherClientHonoursBothCaps() throws {
-        // The web's "1080p" preset is 1080p at 6 Mbps, which no Apple tier
-        // matches. Exceeding the bandwidth cap is the harmful direction — it is
-        // usually a metered link — so the answer stays under it.
-        let id = AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 6000)
-        let chosen = try XCTUnwrap(ApplePlaybackQuality.settingsOptions.first { $0.id == id })
-        XCTAssertLessThanOrEqual(chosen.bitrateKbps, 6000, "\(id) exceeds the stored cap")
-        XCTAssertEqual(id, "720p-high")
+    /// The stored resolution is what the join answers with, on every client.
+    ///
+    /// This is the cross-client contract: the V3 start request carries only a
+    /// bare resolution, so a join that traded a resolution tier away to stay
+    /// under the cap would send `720p` from a pair the web and Android send
+    /// `1080p` from. Apple's ladder having no 1080p rung below 8 Mbps is a fact
+    /// about its rung table, not about the user's choice.
+    func testASharedPresetResolvesToItsOwnResolutionNotALowerOne() throws {
+        for (resolution, bitrateKbps) in [("1080p", 10_000), ("1080p", 6_000), ("1080p", 3_000),
+                                          ("720p", 4_000), ("720p", 2_000), ("480p", 1_500)] {
+            let id = AppleQualityAxes.join(resolution: resolution, bitrateKbps: bitrateKbps)
+            XCTAssertEqual(
+                AppleQualityAxes.split(id).resolution, resolution,
+                "\(resolution) at \(bitrateKbps) kbps joined to \(id), a different resolution"
+            )
+        }
     }
 
-    func testACapBelowEveryTierPicksTheSmallestRatherThanAuto() throws {
-        // Auto would ignore the cap entirely, which is the opposite of what the
-        // user asked for.
-        XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 300), "328p")
+    /// The specific regression: the two most common shared presets used to
+    /// resolve to 720p rungs here while the other clients kept 1080p.
+    func testTheWebs1080pPresetsStay1080p() throws {
+        XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 6_000), "1080p-8")
+        XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 3_000), "1080p-8")
+    }
+
+    /// The bitrate axis still chooses *which* rung of the stored resolution.
+    func testTheCapChoosesTheRungWithinTheStoredResolution() throws {
+        XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 12_000), "1080p-medium")
+        XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 20_000), "1080p-high")
+        XCTAssertEqual(AppleQualityAxes.join(resolution: "720p", bitrateKbps: 3_000), "720p-medium")
+    }
+
+    func testACapBelowEveryRungKeepsTheResolutionAndTakesTheSmallestRung() throws {
+        // The resolution is what the request carries, so it is kept; the cap is
+        // enforced at request time instead of by shrinking the picture.
+        XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 300), "1080p-8")
+        XCTAssertEqual(AppleQualityAxes.join(resolution: "480p", bitrateKbps: 300), "328p")
+    }
+
+    /// What the join gave up, the transcode request has to honour: the stored
+    /// cap clamps the encode target rather than being lost.
+    func testTheStoredCapClampsTheLegacyTranscodeTarget() throws {
+        let id = AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 6_000)
+        let option = try XCTUnwrap(ApplePlaybackQuality.settingsOptions.first { $0.id == id })
+        XCTAssertEqual(option.bitrateKbps, 8_000, "precondition: the chosen rung is above the cap")
+
+        let source = Self.version(fileId: 1, resolution: "1080p", bitrateKbps: 30_000)
+        XCTAssertEqual(
+            ApplePlaybackQuality.targetBitrateKbps(for: option, selectedVersion: source, capKbps: 6_000),
+            6_000,
+            "the cap must bound the encode target, not the rung"
+        )
+        // And a source inside the rung but over the cap still has to be
+        // re-encoded, or the cap would be silently uncapped.
+        let modest = Self.version(fileId: 2, resolution: "1080p", bitrateKbps: 7_000)
+        XCTAssertTrue(
+            ApplePlaybackQuality.shouldForceTranscode(
+                preferredQualityId: id, selectedVersion: modest, capKbps: 6_000
+            ),
+            "a source above the cap must transcode even when it is under the rung"
+        )
+        XCTAssertFalse(
+            ApplePlaybackQuality.shouldForceTranscode(
+                preferredQualityId: id, selectedVersion: modest, capKbps: nil
+            ),
+            "without a cap the rung alone decides"
+        )
     }
 
     func testAnUncappedResolutionPicksThatResolutionsBestTier() throws {
@@ -604,6 +845,26 @@ final class PlayerSettingsFlushTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// A source file with only the two fields the quality policy reads.
+    private static func version(fileId: Int, resolution: String, bitrateKbps: Int) -> FileVersion {
+        FileVersion(
+            fileId: fileId,
+            fileName: nil,
+            resolution: resolution,
+            codecVideo: "h264",
+            codecAudio: "aac",
+            hdr: false,
+            container: "mp4",
+            fileSize: nil,
+            duration: nil,
+            bitrate: bitrateKbps,
+            videoTracks: nil,
+            audioTracks: nil,
+            subtitleTracks: nil,
+            chapters: nil
+        )
+    }
 
     /// Poll until `condition` holds, so a test never depends on a fixed sleep
     /// being long enough on a loaded machine.
@@ -650,6 +911,7 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     private var writeError: SettingsAPIError = .transport(description: "stub")
     private var deleteFailures = 0
     private var deleteError: SettingsAPIError = .transport(description: "stub")
+    private var cancelledAttempts = 0
 
     func failNextWrites(_ count: Int, with error: SettingsAPIError) {
         lock.lock()
@@ -719,6 +981,7 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     }
 
     func putValue(key: SettingKey, value: SettingJSONValue, mutationId: String) async throws {
+        try failIfCancelled()
         if let writeDelay {
             try? await Task.sleep(for: writeDelay)
         }
@@ -735,6 +998,7 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     }
 
     func deleteValue(key: SettingKey) async throws {
+        try failIfCancelled()
         lock.lock()
         recordedDeletes.append(key)
         let shouldFail = deleteFailures > 0
@@ -742,6 +1006,61 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         let error = deleteError
         lock.unlock()
         if shouldFail { throw error }
+    }
+
+    /// Behave the way `URLSession` does when the enclosing task is cancelled.
+    ///
+    /// Without this the fake is *more forgiving than the network*: it is pure
+    /// in-process work whose only suspension is a `try?`-swallowed sleep, so a
+    /// drain running under a cancelled task succeeds here and fails against a
+    /// real server with `NSURLErrorCancelled`. That is precisely the shape of
+    /// the debounce bug this suite has to be able to see — the request never
+    /// leaves the device, `HTTPClient` reports it as `.network`,
+    /// `SettingsAPIError.from` maps it to `.transport`, and the write only
+    /// lands on the first backoff retry.
+    private func failIfCancelled() throws {
+        guard !Task.isCancelled else {
+            recordCancellation()
+            throw SettingsAPIError.transport(description: "cancelled")
+        }
+    }
+
+    private func recordCancellation() {
+        lock.lock()
+        cancelledAttempts += 1
+        lock.unlock()
+    }
+
+    /// How many sends were attempted under a cancelled task.
+    func cancelledAttemptCount() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelledAttempts
+    }
+}
+
+/// A ``PlayerSettingsWriteJournal`` in memory, so a test can hand the same
+/// "disk" to a second flusher and model a relaunch without touching
+/// `UserDefaults`.
+final class InMemoryWriteJournal: PlayerSettingsWriteJournal, @unchecked Sendable {
+    private let lock = NSLock()
+    private var contents: [SettingKey: PendingSettingWrite] = [:]
+
+    var stored: [SettingKey: PendingSettingWrite] {
+        get { load() }
+        set { save(newValue) }
+    }
+
+    func load() -> [SettingKey: PendingSettingWrite] {
+        lock.lock()
+        defer { lock.unlock() }
+        return contents
+    }
+
+    func save(_ pending: [SettingKey: PendingSettingWrite]) {
+        lock.lock()
+        contents = pending
+        lock.unlock()
     }
 }
 

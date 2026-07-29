@@ -56,6 +56,33 @@ final class ProfilePrefsEditor {
     /// whose value the user cannot explain.
     private(set) var resolvedSources: [SettingKey: SettingSource] = [:]
 
+    /// What was last *painted* into the fields — by ``seed(from:)``, by
+    /// ``load()``, or by a write this editor made. A save only sends keys that
+    /// differ from it.
+    ///
+    /// Without this baseline the editor writes back what it just read, one
+    /// scope up. `load()` reads through the effective endpoint, which resolves
+    /// `profile_series → profile_library → profile_device → profile → default`,
+    /// while every write here goes to `profile` — so a value that came from a
+    /// narrower scope would be promoted into the profile row. The device half
+    /// of that is reachable today: all three subtitle keys list `profile_device`
+    /// in `allowed_scopes`, and the web admin's per-device settings pane writes
+    /// them there. The user then opens Settings on that device, touches
+    /// nothing, `load()` repaints, `onChange` fires because the value moved,
+    /// and the household profile silently adopts one device's override.
+    ///
+    /// A diff is the fix rather than refusing to save a shadowed key: a value
+    /// the user actually typed must still be written, and only a change the
+    /// user made can differ from what was last painted.
+    private var savedBaseline = Baseline()
+
+    private struct Baseline: Equatable {
+        var subtitleLanguage: String?
+        var subtitleMode: String?
+        var showForcedSubtitles: String?
+        var metadataLanguage: String?
+    }
+
     /// What the screens show in place of server-backed controls when the
     /// server predates the canonical settings API. Playback is unaffected —
     /// it falls back to this device's local defaults — so the message says
@@ -102,6 +129,34 @@ final class ProfilePrefsEditor {
         subtitleMode = preferences.subtitleMode
         showForcedSubtitles = preferences.showForcedSubtitles ? "on" : "off"
         preferredMetadataLanguage = preferences.metadataLanguage ?? PlaybackPrefSentinel.none
+        captureBaseline()
+    }
+
+    /// Record the fields as they now stand, so the next save can tell a user
+    /// edit from a repaint.
+    @MainActor
+    private func captureBaseline() {
+        savedBaseline = Baseline(
+            subtitleLanguage: subtitleLanguage,
+            subtitleMode: subtitleMode,
+            showForcedSubtitles: showForcedSubtitles,
+            metadataLanguage: preferredMetadataLanguage
+        )
+    }
+
+    /// Move one key's baseline up to the field's current value, after a write
+    /// for that key succeeded.
+    @MainActor
+    private func adoptBaseline(for key: SettingKey) {
+        if key == ProfileSettingKeys.subtitleLanguage {
+            savedBaseline.subtitleLanguage = subtitleLanguage
+        } else if key == ProfileSettingKeys.subtitleMode {
+            savedBaseline.subtitleMode = subtitleMode
+        } else if key == ProfileSettingKeys.showForcedSubtitles {
+            savedBaseline.showForcedSubtitles = showForcedSubtitles
+        } else if key == ProfileSettingKeys.metadataLanguage {
+            savedBaseline.metadataLanguage = preferredMetadataLanguage
+        }
     }
 
     /// Seed the editor from an already-fetched profile.
@@ -123,21 +178,39 @@ final class ProfilePrefsEditor {
 
         let metadata = profile?.preferredMetadataLanguage ?? ""
         preferredMetadataLanguage = metadata.isEmpty ? PlaybackPrefSentinel.none : metadata
+
+        captureBaseline()
     }
 
     // MARK: - Save
 
     /// Persist the subtitle trio at `profile` scope.
     ///
-    /// All three go out on every call because the screens trigger this from an
-    /// `onChange` per control and the writes are independent keys — sending
-    /// only the changed one would need change tracking that buys nothing here,
-    /// while a repeat of an unchanged value replays its mutation id and is a
-    /// no-op on the server.
+    /// Only the keys the *user* changed are sent — a field still equal to what
+    /// was last painted into it is not a choice, it is the value that was read
+    /// back, and writing it would move it up a scope. See ``savedBaseline``.
+    ///
+    /// Change tracking is per key rather than per call because the screens
+    /// trigger this from an `onChange` on each control: a repaint moves several
+    /// fields at once, and one genuinely edited control must not drag the other
+    /// two along with it.
     @MainActor
     func saveSubtitlePrefs() async {
-        saveState = .saving
         let language = Self.outboundLanguage(subtitleLanguage)
+
+        var writes: [(SettingKey, SettingJSONValue)] = []
+        if subtitleLanguage != savedBaseline.subtitleLanguage {
+            writes.append((ProfileSettingKeys.subtitleLanguage, ProfileSettingsWriter.languageValue(language)))
+        }
+        if subtitleMode != savedBaseline.subtitleMode {
+            writes.append((ProfileSettingKeys.subtitleMode, .string(subtitleMode)))
+        }
+        if showForcedSubtitles != savedBaseline.showForcedSubtitles {
+            writes.append((ProfileSettingKeys.showForcedSubtitles, .bool(showForcedSubtitles == "on")))
+        }
+        guard !writes.isEmpty else { return }
+
+        saveState = .saving
 
         // Every key is attempted even when an earlier one fails. They are
         // independent rows with no ordering between them, so stopping at the
@@ -147,13 +220,13 @@ final class ProfilePrefsEditor {
         // failure is what gets reported; a repeat of a write that already
         // landed replays its mutation id and is a no-op server-side.
         var firstFailure: Error?
-        for (key, value) in [
-            (ProfileSettingKeys.subtitleLanguage, ProfileSettingsWriter.languageValue(language)),
-            (ProfileSettingKeys.subtitleMode, SettingJSONValue.string(subtitleMode)),
-            (ProfileSettingKeys.showForcedSubtitles, SettingJSONValue.bool(showForcedSubtitles == "on")),
-        ] {
+        for (key, value) in writes {
             do {
                 try await writer.write(key, value: value)
+                // Only a key that actually landed advances the baseline. A
+                // failed one stays "changed" so the next save retries it —
+                // under its original mutation id, which the writer holds.
+                adoptBaseline(for: key)
             } catch {
                 if firstFailure == nil { firstFailure = error }
             }
@@ -172,9 +245,14 @@ final class ProfilePrefsEditor {
     ///
     /// Separate from the subtitle trio because it has a side effect they don't:
     /// when it actually changes, the cached overviews and taglines have to be
-    /// dropped so the next fetch picks up the server-side translation.
+    /// dropped so the next fetch picks up the server-side translation — which
+    /// is the reason this one is gated on the baseline too even though
+    /// `catalog.metadata_language` allows only `profile` scope and so cannot be
+    /// shadowed the way the subtitle trio can. A repaint that re-sent it would
+    /// invalidate every cached overview for nothing.
     @MainActor
     func saveMetadataLanguage() async {
+        guard preferredMetadataLanguage != savedBaseline.metadataLanguage else { return }
         pendingMetadataLanguage = .some(Self.outboundLanguage(preferredMetadataLanguage))
         guard !isSavingMetadataLanguage else { return }
 
@@ -198,6 +276,7 @@ final class ProfilePrefsEditor {
             // A newer edit landed while this was in flight; let its own pass
             // report, or this one would announce a value already superseded.
             guard Self.outboundLanguage(preferredMetadataLanguage) == language else { return }
+            adoptBaseline(for: ProfileSettingKeys.metadataLanguage)
             saveState = .saved
             ResponseCache.shared.invalidateAllItemMetadata()
             #if os(tvOS)

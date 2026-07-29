@@ -25,6 +25,11 @@
 //  *axes*; the rungs stay a client-side table on each, which is exactly why the
 //  contract keeps them apart.
 //
+//  Because the ladders differ, rejoining has to decide what to do with a pair
+//  that lands between two Apple rungs. The resolution wins — see ``join``. The
+//  bitrate axis is not lost; it is carried separately to the one request shape
+//  that can express it.
+//
 
 import Foundation
 
@@ -58,23 +63,33 @@ struct AppleQualityAxes: Equatable {
         return AppleQualityAxes(resolution: resolution, bitrateKbps: option.bitrateKbps)
     }
 
-    /// Rank of a contract resolution member, for "no taller than" comparisons.
-    private static func rank(_ resolution: String) -> Int? {
-        ["480p": 0, "720p": 1, "1080p": 2, "2160p": 3][resolution]
-    }
-
     /// Recompose the two stored axes into the id this client's pickers use.
     ///
-    /// Both axes are honoured, not just the resolution. A pair authored on the
-    /// web or on Android need not match an Apple tier — the ladders are
-    /// deliberately per-client — so this picks the highest tier that is within
-    /// *both* caps. "1080p at 6 Mbps" (a web preset with no Apple equivalent)
-    /// becomes Apple's 720p High at 4 Mbps rather than its 1080p at 8 Mbps:
-    /// exceeding a bandwidth cap the user set is the one outcome that is
-    /// actually harmful, since it is usually a metered or slow connection.
+    /// The **resolution axis is authoritative**: the returned tier always names
+    /// the resolution that was stored. The bitrate axis only chooses *which
+    /// rung of that resolution* — the highest one within the cap, or the
+    /// smallest one when the cap sits under all of them.
     ///
-    /// Only a pair below this client's smallest tier, or one naming a
-    /// resolution it has no ladder for, falls back to `auto`.
+    /// It has to work that way because the resolution is the only half of the
+    /// pair that reaches the server. The V3 start request reduces this id back
+    /// to a bare resolution (`PlaybackSessionBridge.protocolV3QualityPreference`)
+    /// and the cap is not a field on it, so a join that traded a resolution
+    /// tier away to stay under the cap would give the cap up *and* the
+    /// resolution: "1080p at 6 Mbps" — a shared preset, stored identically by
+    /// the web and Android clients — used to answer `720p-high` here and send
+    /// `720p` while the other two clients sent `1080p` from the same stored
+    /// pair. Apple's ladder simply has no 1080p rung below 8 Mbps; that is a
+    /// fact about this client's rung table, not about the user's choice.
+    ///
+    /// The cap is not discarded. It is applied where it is actually
+    /// expressible: ``ApplePlaybackQuality/targetBitrateKbps(for:selectedVersion:capKbps:)``
+    /// and ``ApplePlaybackQuality/shouldForceTranscode(preferredQualityId:selectedVersion:capKbps:)``
+    /// clamp the legacy `/transcode/start` encode target to it, so a stored
+    /// 6 Mbps cap transcodes 1080p at 6 Mbps rather than at the rung's 8.
+    ///
+    /// Only a pair naming a resolution this client has no ladder for — 2160p,
+    /// `original`, `auto`, or a member added by a newer server — falls back to
+    /// `auto`, which here means "do not cap, direct-play first".
     static func join(resolution: String?, bitrateKbps: Int?) -> String {
         let resolution = (resolution?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()).flatMap {
             $0.isEmpty ? nil : $0
@@ -84,45 +99,32 @@ struct AppleQualityAxes: Equatable {
             // client's picker is keyed on the resolution axis.
             return ApplePlaybackQuality.autoId
         }
-        // 2160p has no tier — the ladder tops out at 1080p, and
-        // normalizeStoredId has always folded 4K into auto (direct play).
-        guard resolution != "2160p", let ceiling = rank(resolution) else {
-            return ApplePlaybackQuality.autoId
-        }
 
-        // Compared on each tier's *contract* resolution rather than its own
+        // Matched on each tier's *contract* resolution rather than its own
         // label, so 328p — whose contract member is 480p — stays a candidate
-        // and round-trips instead of widening to the 480p tier above it.
-        let withinResolution = ApplePlaybackQuality.tiers.filter {
-            guard let tierRank = rank(split($0.id).resolution) else { return false }
-            return tierRank <= ceiling
+        // for a stored 480p and round-trips instead of widening to the 480p
+        // tier above it. 2160p and any member this build has never seen match
+        // nothing, which is the `auto` fallback: the ladder tops out at 1080p
+        // and normalizeStoredId has always folded 4K into direct play.
+        let atResolution = ApplePlaybackQuality.tiers.filter {
+            split($0.id).resolution == resolution
         }
-        guard !withinResolution.isEmpty else { return ApplePlaybackQuality.autoId }
+        guard !atResolution.isEmpty else { return ApplePlaybackQuality.autoId }
 
         guard let cap = bitrateKbps, cap > 0 else {
-            // Uncapped: the best tier this resolution allows.
-            return best(of: withinResolution, at: resolution) ?? ApplePlaybackQuality.autoId
-        }
-        let withinBitrate = withinResolution.filter { $0.bitrateKbps <= cap }
-        guard !withinBitrate.isEmpty else {
-            // The cap is below every tier this client offers, so its smallest
-            // is the closest it can get.
-            return withinResolution.min(by: { $0.bitrateKbps < $1.bitrateKbps })?.id
+            // Uncapped: the best rung this resolution offers.
+            return atResolution.max(by: { $0.bitrateKbps < $1.bitrateKbps })?.id
                 ?? ApplePlaybackQuality.autoId
         }
-        return withinBitrate.max(by: { $0.bitrateKbps < $1.bitrateKbps })?.id
+        if let withinCap = atResolution.filter({ $0.bitrateKbps <= cap })
+            .max(by: { $0.bitrateKbps < $1.bitrateKbps }) {
+            return withinCap.id
+        }
+        // The cap is under every rung this resolution has. The resolution is
+        // still what the user asked for and what the request carries, so keep
+        // it and take the smallest rung; the cap itself is enforced at request
+        // time rather than by silently shrinking the picture.
+        return atResolution.min(by: { $0.bitrateKbps < $1.bitrateKbps })?.id
             ?? ApplePlaybackQuality.autoId
-    }
-
-    /// The highest-bitrate tier, preferring one whose own contract resolution
-    /// is the requested one so an uncapped `1080p` does not answer with a 720p
-    /// tier that merely happens to sit under it.
-    private static func best(
-        of tiers: [ApplePlaybackQualityOption],
-        at resolution: String
-    ) -> String? {
-        let exact = tiers.filter { split($0.id).resolution == resolution }
-        let candidates = exact.isEmpty ? tiers : exact
-        return candidates.max(by: { $0.bitrateKbps < $1.bitrateKbps })?.id
     }
 }
