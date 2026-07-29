@@ -26,14 +26,22 @@ struct PlaybackSettingsView: View {
     private var streamingSection: some View {
         Section {
             Picker("Quality", selection: Binding(
-                get: { viewModel.preferredQuality },
+                get: { viewModel.preferredQualityPresetId ?? Self.customPresetTag },
                 set: { newValue in
-                    viewModel.preferredQuality = newValue
-                    Task { await viewModel.setPreferredQuality(newValue) }
+                    guard newValue != Self.customPresetTag else { return }
+                    Task { await viewModel.setQualityPreset(newValue) }
                 }
             )) {
-                ForEach(qualityOptions, id: \.0) { tag, label in
-                    Text(label).tag(tag)
+                // A pair no preset covers — set through the API, or written by
+                // a client whose ladder has a rung this table does not — gets
+                // its own disabled entry describing what is actually stored,
+                // rather than the picker showing a preset the user never chose.
+                if viewModel.preferredQualityPresetId == nil {
+                    Text(viewModel.preferredQualityLabel)
+                        .tag(Self.customPresetTag)
+                }
+                ForEach(SiloQualityPresets.all) { preset in
+                    Text(preset.label).tag(preset.id)
                 }
             }
             .foregroundStyle(Color.continuumOnSurface)
@@ -103,7 +111,13 @@ struct PlaybackSettingsView: View {
     }
 
     private var streamingFooterText: String {
-        var text = "Turn off Dolby Vision to play Dolby Vision titles as HDR10 instead. Profile 5 titles have no HDR10-compatible layer and always play in Dolby Vision."
+        // Leads with what the chosen quality actually means, since the preset
+        // labels ("1080p High") name a tier without stating its bitrate.
+        var text = "\(viewModel.preferredQualityLabel). "
+        if let preset = SiloQualityPresets.preset(id: viewModel.preferredQualityPresetId) {
+            text = "\(preset.description) "
+        }
+        text += "Turn off Dolby Vision to play Dolby Vision titles as HDR10 instead. Profile 5 titles have no HDR10-compatible layer and always play in Dolby Vision."
         if viewModel.dolbyVisionEnabled {
             text += " The fallback plays Dolby Vision Profile 7 as HDR10 on this device."
         }
@@ -185,9 +199,9 @@ struct PlaybackSettingsView: View {
 
     // MARK: - Options
 
-    private var qualityOptions: [(String, String)] {
-        ApplePlaybackQuality.settingsOptions.map { ($0.id, $0.labelWithBitrate) }
-    }
+    /// Tag for the "stored pair matches no preset" entry. Not a preset id, so
+    /// selecting it is a no-op rather than a write.
+    private static let customPresetTag = "__custom__"
 
     private var audioLanguageOptions: [(String, String)] {
         [

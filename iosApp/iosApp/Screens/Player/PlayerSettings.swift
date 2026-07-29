@@ -104,8 +104,70 @@ private extension SettingKey {
 final class PlayerSettings {
     static let shared = PlayerSettings()
 
+    /// The resolution half of the quality preference: a member of the
+    /// contract's `playback.preferred_quality` enum.
+    ///
+    /// The stored *pair* — this and ``maxBitrateKbps`` — is the local source of
+    /// truth. Storing a compound tier id was safe while this client had one
+    /// quality table; it stopped being safe when the settings picker adopted
+    /// the cross-client presets, because both tables spell a rung `1080p-high`
+    /// and mean different bitrates by it (10 Mbps in ``SiloQualityPresets``,
+    /// 20 Mbps in ``ApplePlaybackQuality``). A stored id would silently change
+    /// meaning depending on which table read it back; a stored pair says what
+    /// it means and each table interprets it rather than owning it.
+    var preferredQualityResolution: String {
+        didSet {
+            defaults.set(preferredQualityResolution, forKey: Self.cacheKey(Keys.preferredQuality))
+        }
+    }
+
+    /// The bandwidth half of the quality preference; nil is uncapped.
+    var maxBitrateKbps: Int? {
+        didSet {
+            let key = Self.cacheKey(Keys.maxBitrateKbps)
+            // Removed rather than stored as a sentinel, so "uncapped" is the
+            // absence of a value locally exactly as it is on the wire.
+            if let maxBitrateKbps {
+                defaults.set(maxBitrateKbps, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+    }
+
+    /// The stored pair as an id from this client's in-player ladder.
+    ///
+    /// Read-only, and derived rather than stored: playback's ~12 call sites ask
+    /// "which transcode rung" and have always been answered with an
+    /// ``ApplePlaybackQuality`` id, so they keep working unchanged. The
+    /// derivation honours both caps, which is why a pair authored on web or
+    /// Android — whose ladders differ from this one — still resolves to a rung
+    /// this client can actually request. See AppleQualityAxes.swift.
     var preferredQuality: String {
-        didSet { defaults.set(preferredQuality, forKey: Self.cacheKey(Keys.preferredQuality)) }
+        AppleQualityAxes.join(
+            resolution: preferredQualityResolution,
+            bitrateKbps: maxBitrateKbps
+        )
+    }
+
+    /// The shared preset the stored pair corresponds to, or nil when the pair
+    /// is a combination no preset covers — set through the API, or written by a
+    /// client whose ladder has a rung this table does not. The settings picker
+    /// shows the pair's own description in that case rather than snapping to a
+    /// nearby preset, which would misreport what is stored.
+    var currentQualityPreset: SiloQualityPreset? {
+        SiloQualityPresets.preset(
+            resolution: preferredQualityResolution,
+            bitrateKbps: maxBitrateKbps
+        )
+    }
+
+    /// A user-facing label for the stored pair, preset or not.
+    var preferredQualityLabel: String {
+        SiloQualityPresets.describe(
+            resolution: preferredQualityResolution,
+            bitrateKbps: maxBitrateKbps
+        )
     }
 
     var audioLanguage: String {
@@ -268,16 +330,6 @@ final class PlayerSettings {
     /// mutation ids and the retry schedule; see PlayerSettingsFlusher.swift.
     private let flusher: PlayerSettingsFlusher
 
-    /// The bandwidth half of the quality preference; nil is uncapped.
-    ///
-    /// The contract keeps resolution and bitrate on separate keys, but this
-    /// client's pickers offer one compound tier. Derived from that tier rather
-    /// than stored alongside it so the two cannot drift apart — the tier is the
-    /// single local source of truth, and this is only how it reaches the wire.
-    var maxBitrateKbps: Int? {
-        AppleQualityAxes.split(preferredQuality).bitrateKbps
-    }
-
     /// Designated initializer, non-private so tests can build an instance with
     /// an isolated `UserDefaults` and a fake transport rather than reaching for
     /// the singleton (which would leak state between tests and hit the
@@ -290,6 +342,9 @@ final class PlayerSettings {
         self.flusher = flusher
         defaults.register(defaults: [
             Keys.preferredQuality: "auto",
+            // maxBitrateKbps deliberately has no registered default: the
+            // contract's default is null, and a registered value would make
+            // "uncapped" indistinguishable from "capped at that number".
             Keys.audioLanguage: "",
             Keys.autoSkipIntro: false,
             Keys.autoSkipCredits: false,
@@ -317,9 +372,8 @@ final class PlayerSettings {
             Keys.nextUpPromptSeconds: 30,
         ])
 
-        preferredQuality = ApplePlaybackQuality.normalizeStoredId(
-            defaults.string(forKey: Self.cacheKey(Keys.preferredQuality))
-        )
+        preferredQualityResolution = Self.cachedQualityResolution(defaults)
+        maxBitrateKbps = Self.cachedMaxBitrateKbps(defaults)
         audioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage)) ?? ""
         autoSkipIntro = Self.cachedBool(defaults, key: Keys.autoSkipIntro, defaultValue: false)
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
@@ -443,20 +497,34 @@ final class PlayerSettings {
         }
     }
 
-    /// Set the compound quality tier this client's pickers offer.
+    /// Set the quality from a tier id on this client's in-player ladder.
     ///
-    /// Stored as the contract's two axes: `playback.preferred_quality` holds
-    /// the bare resolution and `playback.max_bitrate_kbps` the bandwidth cap.
-    /// Sending the compound id would fail the enum with `invalid_value`; see
-    /// AppleQualityAxes.swift.
+    /// The in-player switcher's entry point: it offers ``ApplePlaybackQuality``
+    /// rungs, so the id is decomposed into the contract's two axes before it is
+    /// stored. Sending the compound id would fail the enum with
+    /// `invalid_value`; see AppleQualityAxes.swift.
     func setPreferredQuality(_ value: String) {
-        let normalized = ApplePlaybackQuality.normalizeStoredId(value)
-        preferredQuality = normalized
-        let axes = AppleQualityAxes.split(normalized)
-        flusher.enqueue(.preferredQuality, value: .string(axes.resolution))
-        // Uncapped is JSON null, not an omitted write: leaving the old cap in
-        // place would keep throttling a tier the user just widened.
-        flusher.enqueue(.maxBitrateKbps, value: axes.bitrateKbps.map { .int($0) } ?? .null)
+        let axes = AppleQualityAxes.split(ApplePlaybackQuality.normalizeStoredId(value))
+        setQualityAxes(resolution: axes.resolution, bitrateKbps: axes.bitrateKbps)
+    }
+
+    /// Set the quality from a shared preset — the settings screens' entry
+    /// point, on every platform and in the web and Android clients.
+    func setQualityPreset(_ preset: SiloQualityPreset) {
+        setQualityAxes(resolution: preset.resolution, bitrateKbps: preset.bitrateKbps)
+    }
+
+    /// Store one (resolution, bitrate) pair as the contract's two keys.
+    ///
+    /// Both axes are always written, never just the one that changed: the two
+    /// resolve independently, so leaving a stale cap behind would keep
+    /// throttling a tier the user just widened. Uncapped is an explicit JSON
+    /// null rather than an omitted write for the same reason.
+    private func setQualityAxes(resolution: String, bitrateKbps: Int?) {
+        preferredQualityResolution = SiloQualityPresets.normalizeResolution(resolution)
+        maxBitrateKbps = bitrateKbps.flatMap { $0 > 0 ? $0 : nil }
+        flusher.enqueue(.preferredQuality, value: .string(preferredQualityResolution))
+        flusher.enqueue(.maxBitrateKbps, value: maxBitrateKbps.map { .int($0) } ?? .null)
     }
 
     func setAudioLanguage(_ value: String) {
@@ -617,12 +685,18 @@ final class PlayerSettings {
     /// only when the row is missing entirely — a server whose contract predates
     /// this key.
     private func applyEffectiveSettings(_ effectiveByKey: [SettingKey: EffectiveSettingValue]) {
-        preferredQuality = ApplePlaybackQuality.normalizeStoredId(
-            AppleQualityAxes.join(
-                resolution: effectiveByKey[.preferredQuality]?.value.stringValue,
-                bitrateKbps: effectiveByKey[.maxBitrateKbps]?.value.intValue
-            )
+        // Adopted as the pair the server actually stores, not as a tier id.
+        // Round-tripping through this client's ladder here would quantize a
+        // web- or Android-authored pair onto the nearest Apple rung and then
+        // write that back on the next edit, so a 1080p/6 Mbps choice made on
+        // the web would decay into Apple's 720p High the first time this
+        // client touched any quality control.
+        preferredQualityResolution = SiloQualityPresets.normalizeResolution(
+            effectiveByKey[.preferredQuality]?.value.stringValue
         )
+        maxBitrateKbps = effectiveByKey[.maxBitrateKbps]?.value.intValue.flatMap {
+            $0 > 0 ? $0 : nil
+        }
         // A nullable language tag: JSON null is "no preference", which this
         // client spells as the empty string.
         audioLanguage = effectiveByKey[.audioLanguage]?.value.stringValue ?? ""
@@ -710,11 +784,15 @@ final class PlayerSettings {
     /// decomposes it: a compound id like `1080p-high` is not a member of the
     /// contract's enum, so migrating it verbatim would be rejected forever.
     private func legacySnapshot() -> [PlayerDeviceSettingKey: SettingJSONValue] {
-        let legacyQuality = ApplePlaybackQuality.normalizeStoredId(
+        // Both spellings appear here: the unscoped key predates per-scope
+        // caching, and either may still hold a compound tier id from a build
+        // before the axes were stored separately. normalizeResolution reduces
+        // any of them to a contract member.
+        let legacyResolution = SiloQualityPresets.normalizeResolution(
             defaults.string(forKey: Self.cacheKey(Keys.preferredQuality))
                 ?? defaults.string(forKey: Keys.preferredQuality)
         )
-        let axes = AppleQualityAxes.split(legacyQuality)
+        let legacyBitrateKbps = Self.cachedMaxBitrateKbps(defaults)
         let legacyAudioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage))
             ?? defaults.string(forKey: Keys.audioLanguage)
             ?? ""
@@ -724,8 +802,8 @@ final class PlayerSettings {
         )
 
         var snapshot: [PlayerDeviceSettingKey: SettingJSONValue] = [
-            .preferredQuality: .string(axes.resolution),
-            .maxBitrateKbps: axes.bitrateKbps.map { .int($0) } ?? .null,
+            .preferredQuality: .string(legacyResolution),
+            .maxBitrateKbps: legacyBitrateKbps.map { .int($0) } ?? .null,
             .audioLanguage: legacyAudioLanguage.isEmpty ? .null : .string(legacyAudioLanguage),
             .autoSkipIntro: .bool(
                 Self.cachedBool(defaults, key: Keys.autoSkipIntro, defaultValue: false)
@@ -771,9 +849,8 @@ final class PlayerSettings {
     }
 
     private func applyCachedSettingsForCurrentScope() {
-        preferredQuality = ApplePlaybackQuality.normalizeStoredId(
-            defaults.string(forKey: Self.cacheKey(Keys.preferredQuality))
-        )
+        preferredQualityResolution = Self.cachedQualityResolution(defaults)
+        maxBitrateKbps = Self.cachedMaxBitrateKbps(defaults)
         audioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage)) ?? ""
         autoSkipIntro = Self.cachedBool(defaults, key: Keys.autoSkipIntro, defaultValue: false)
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
@@ -936,6 +1013,31 @@ final class PlayerSettings {
         return defaultValue
     }
 
+    /// The cached resolution axis, tolerating a compound value written by a
+    /// build that stored the tier id.
+    ///
+    /// Those builds wrote `1080p-high` and friends into this very key, so the
+    /// value read here may be either spelling.
+    /// ``SiloQualityPresets/normalizeResolution(_:)`` reduces both to a
+    /// contract member, dropping the bitrate half — which is correct, because
+    /// the companion key below carries it. An upgrading device therefore keeps
+    /// its resolution and loses only a cap it never stored separately, and the
+    /// first server refresh restores that from the profile's own row.
+    private static func cachedQualityResolution(_ defaults: UserDefaults) -> String {
+        SiloQualityPresets.normalizeResolution(
+            defaults.string(forKey: cacheKey(Keys.preferredQuality))
+        )
+    }
+
+    /// The cached bitrate axis. Absent is uncapped, which is why this reads
+    /// through `object(forKey:)` rather than `integer(forKey:)` — the latter
+    /// answers 0 for a missing key, and 0 is not a cap the contract accepts.
+    private static func cachedMaxBitrateKbps(_ defaults: UserDefaults) -> Int? {
+        guard defaults.object(forKey: cacheKey(Keys.maxBitrateKbps)) != nil else { return nil }
+        let stored = defaults.integer(forKey: cacheKey(Keys.maxBitrateKbps))
+        return stored > 0 ? stored : nil
+    }
+
     private static func cachedDouble(_ defaults: UserDefaults, key: String, defaultValue: Double) -> Double {
         let scopedKey = cacheKey(key)
         guard defaults.object(forKey: scopedKey) != nil else {
@@ -975,6 +1077,7 @@ final class PlayerSettings {
 
     private enum Keys {
         static let preferredQuality = "preferredQuality"
+        static let maxBitrateKbps = "playback.maxBitrateKbps"
         static let audioLanguage = "preferredAudioLanguage"
         static let autoSkipIntro = "skipIntros"
         static let autoSkipCredits = "skipCredits"

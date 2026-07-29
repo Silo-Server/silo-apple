@@ -110,7 +110,15 @@ struct SubtitleSettingsView: View {
                 .foregroundStyle(Color.continuumSecondaryText)
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
+                if viewModel.settingsServerUpgradeRequired {
+                    // The controls above stay visible and usable: an edit is
+                    // kept locally and the message explains why it will not
+                    // follow the profile to another device.
+                    Text(ProfilePrefsEditor.serverUpgradeMessage)
+                        .foregroundStyle(Color.continuumError)
+                } else {
+                    Text("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
+                }
                 if let state = viewModel.prefSaveState {
                     saveStateView(state)
                 }
@@ -357,6 +365,9 @@ struct SubtitleSettingsView: View {
             Text("Saved")
         case .failed(let message):
             Text("Couldn't save: \(message)")
+                .foregroundStyle(Color.continuumError)
+        case .serverUpgradeRequired:
+            Text(ProfilePrefsEditor.serverUpgradeMessage)
                 .foregroundStyle(Color.continuumError)
         }
     }

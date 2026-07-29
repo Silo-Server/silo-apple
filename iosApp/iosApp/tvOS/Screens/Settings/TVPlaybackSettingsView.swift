@@ -28,7 +28,7 @@ struct TVPlaybackSettingsPane: View {
 
         TVSettingsPickerRow(
             title: "Quality",
-            value: TVSettingsOptions.label(for: viewModel.preferredQuality, in: TVSettingsOptions.quality)
+            value: viewModel.preferredQualityLabel
         ) { activePicker = .quality }
         .focused(detailFocus, equals: .top)
 
@@ -70,7 +70,13 @@ struct TVPlaybackSettingsPane: View {
     }
 
     private var streamingFooterText: String {
-        var text = "Turn off Dolby Vision to play Dolby Vision titles as HDR10 instead. Profile 5 titles have no HDR10-compatible layer and always play in Dolby Vision."
+        // Leads with what the chosen quality actually means, since the preset
+        // labels ("1080p High") name a tier without stating its bitrate.
+        var text = "\(viewModel.preferredQualityLabel). "
+        if let preset = SiloQualityPresets.preset(id: viewModel.preferredQualityPresetId) {
+            text = "\(preset.description) "
+        }
+        text += "Turn off Dolby Vision to play Dolby Vision titles as HDR10 instead. Profile 5 titles have no HDR10-compatible layer and always play in Dolby Vision."
         if viewModel.dolbyVisionEnabled {
             text += " The fallback plays Dolby Vision Profile 7 as HDR10 on this Apple TV."
         }
@@ -143,12 +149,19 @@ struct TVPlaybackSettingsPane: View {
         case .quality:
             TVSettingsPickerSheet(
                 title: "Quality",
-                options: TVSettingsOptions.quality,
+                options: TVSettingsOptions.quality(
+                    // A stored pair no preset covers gets its own entry
+                    // describing what is actually stored, so the sheet never
+                    // highlights a preset the user did not choose.
+                    including: viewModel.preferredQualityPresetId == nil
+                        ? viewModel.preferredQualityLabel
+                        : nil
+                ),
                 selection: Binding(
-                    get: { viewModel.preferredQuality },
+                    get: { viewModel.preferredQualityPresetId ?? TVSettingsOptions.customQualityId },
                     set: { value in
-                        viewModel.preferredQuality = value
-                        Task { await viewModel.setPreferredQuality(value) }
+                        guard value != TVSettingsOptions.customQualityId else { return }
+                        Task { await viewModel.setQualityPreset(value) }
                     }
                 )
             )

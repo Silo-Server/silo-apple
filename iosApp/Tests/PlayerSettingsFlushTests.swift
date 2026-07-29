@@ -308,7 +308,10 @@ final class PlayerSettingsFlushTests: XCTestCase {
         // verbatim is a permanent invalid_value, which is why the tier splits.
         XCTAssertEqual(byKey[.playbackPreferredQuality]?.value, .string("1080p"))
         XCTAssertEqual(byKey[.playbackMaxBitrateKbps]?.value, .int(12_000))
-        // The compound id the pickers use is unchanged locally.
+        // The stored pair is what the client holds; the in-player ladder id
+        // is derived from it, so playback's call sites are unaffected.
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "1080p")
+        XCTAssertEqual(harness.settings.maxBitrateKbps, 12_000)
         XCTAssertEqual(harness.settings.preferredQuality, "1080p-medium")
     }
 
@@ -426,10 +429,13 @@ final class PlayerSettingsFlushTests: XCTestCase {
         ]
         await harness.settings.refreshFromServer()
 
-        // A pair authored on the web or Android recomposes into this client's
-        // tier rather than reverting to Auto.
-        XCTAssertEqual(harness.settings.preferredQuality, "720p-medium")
+        // The pair is adopted verbatim — not quantized onto this client's
+        // ladder — so a web-authored choice is not silently rewritten the next
+        // time this client touches a quality control.
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
         XCTAssertEqual(harness.settings.maxBitrateKbps, 3000)
+        // The derived in-player tier still resolves for playback.
+        XCTAssertEqual(harness.settings.preferredQuality, "720p-medium")
     }
 
     func testRefreshUsesOneBatchedCallForEveryKey() async throws {

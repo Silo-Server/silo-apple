@@ -12,10 +12,23 @@ struct TVSettingsOption: Identifiable, Hashable {
 
 /// Canonical option sets shared by the tvOS settings sub-screens.
 enum TVSettingsOptions {
-    static let quality: [TVSettingsOption] =
-        ApplePlaybackQuality.settingsOptions.map { option in
-            .init(id: option.id, label: option.labelWithBitrate)
+    /// Tag for the "stored pair matches no preset" entry. Not a preset id, so
+    /// selecting it is a no-op rather than a write.
+    static let customQualityId = "__custom__"
+
+    /// The shared cross-client quality presets, optionally led by a
+    /// description of a stored pair no preset covers.
+    ///
+    /// These are the settings vocabulary, not the in-player switcher's finer
+    /// ladder: what is stored is a (resolution, bitrate) pair, so the two
+    /// tables can label it differently without either reinterpreting it.
+    static func quality(including customLabel: String? = nil) -> [TVSettingsOption] {
+        let presets = SiloQualityPresets.all.map {
+            TVSettingsOption(id: $0.id, label: $0.label)
         }
+        guard let customLabel else { return presets }
+        return [.init(id: customQualityId, label: customLabel)] + presets
+    }
 
     static let audioLanguage: [TVSettingsOption] = [
         .init(id: "", label: "Default"),
