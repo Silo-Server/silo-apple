@@ -4,8 +4,7 @@ import SwiftUI
 /// Full-bleed cinematic hero for the tvOS item-detail screen. Modeled
 /// after Apple TV's detail page: a nearly full-viewport backdrop layered
 /// with a tall left-column editorial stack (eyebrow pill → title →
-/// source row → overview → facts+quality → actions) and a quiet
-/// right-side "Starring ..." line positioned mid-hero.
+/// source row → overview → facts → actions).
 ///
 /// The intent is to show enough of the below-fold rail peeking at the
 /// bottom that the viewer instinctively drifts down when they want
@@ -26,13 +25,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     let ratingChip: String?
     /// Short description shown in the hero. Clamped to 3 lines.
     let overview: String?
-    /// Inline facts row shown above the action buttons. Mixes plain text
-    /// (year / runtime / maturity) and outlined quality chips
-    /// (4K / HDR / ATMOS / CC).
+    /// Inline editorial facts row shown above the action buttons.
     let factsLine: [TVHeroFactToken]
-    /// Optional "Starring A, B, C" line floated on the right of the hero
-    /// at mid-height. Hidden when nil.
-    let starringText: String?
     @ViewBuilder let actions: () -> Actions
     /// Affordance rendered directly under the synopsis (e.g. the on-view
     /// description-translation control). Pass `{ EmptyView() }` when there's
@@ -49,7 +43,6 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             bottomFade
             content
         }
-        .overlay(alignment: .trailing) { starringOverlay }
         .frame(height: heroHeight)
         .frame(maxWidth: .infinity)
         .clipped()
@@ -195,7 +188,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
         }
     }
 
-    // MARK: - Facts + quality row
+    // MARK: - Editorial facts row
 
     @ViewBuilder
     private var factsRow: some View {
@@ -229,34 +222,6 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                     .font(.system(size: 22, weight: .medium))
                     .foregroundColor(Color.white.opacity(0.88))
             }
-        case .chip(let value):
-            Text(value)
-                .font(.system(size: 16, weight: .heavy))
-                .tracking(1.0)
-                .foregroundColor(.white)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color.white.opacity(0.65), lineWidth: 1.2)
-                )
-        }
-    }
-
-    // MARK: - Starring overlay (right-aligned, vertical center)
-
-    @ViewBuilder
-    private var starringOverlay: some View {
-        if let starringText, !starringText.isEmpty {
-            Text(starringText)
-                .font(.system(size: 24, weight: .regular))
-                .foregroundColor(Color.white.opacity(0.8))
-                .multilineTextAlignment(.trailing)
-                .lineLimit(2)
-                .frame(maxWidth: 460, alignment: .trailing)
-                .shadow(color: .black.opacity(0.55), radius: 6, y: 2)
-                .padding(.trailing, ContinuumTheme.safePadding)
-                .padding(.bottom, heroHeight * 0.45)
         }
     }
 }
@@ -418,13 +383,11 @@ private struct TVHeroEyebrow: View {
 
 // MARK: - Tokens
 
-/// A token in the combined facts row. `.text` items get pipe separators
-/// between them; `.rating` renders a green check + maturity label;
-/// `.chip` renders an outlined pill (e.g. 4K / HDR / ATMOS).
+/// A token in the combined editorial facts row. `.text` items get
+/// separators; `.rating` retains the supported rating treatment.
 enum TVHeroFactToken: Hashable {
     case text(String)
     case rating(String)
-    case chip(String)
 }
 
 // MARK: - Metadata builders
@@ -484,9 +447,9 @@ enum TVHeroMetadata {
         return rating
     }
 
-    // Facts line (year · runtime · maturity · quality chips)
+    // Editorial facts line (year · runtime · rating)
 
-    static func movieFactsLine(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [TVHeroFactToken] {
+    static func movieFactsLine(from detail: ItemDetail) -> [TVHeroFactToken] {
         var tokens: [TVHeroFactToken] = []
         if detail.type == "episode",
            let airDate = DetailDateFormatting.abbreviatedDate(detail.airDate) {
@@ -500,7 +463,6 @@ enum TVHeroMetadata {
         if let imdb = detail.ratingImdb {
             tokens.append(.text(String(format: "★ %.1f", imdb)))
         }
-        tokens.append(contentsOf: qualityTokens(from: detail, version: selectedVersion))
         return tokens
     }
 
@@ -515,7 +477,6 @@ enum TVHeroMetadata {
         if let imdb = detail.ratingImdb {
             tokens.append(.text(String(format: "★ %.1f", imdb)))
         }
-        tokens.append(contentsOf: qualityTokens(from: detail))
         return tokens
     }
 
@@ -544,15 +505,6 @@ enum TVHeroMetadata {
         return nil
     }
 
-    // Starring (first 3 cast names)
-
-    static func starringText(from detail: ItemDetail) -> String? {
-        guard let cast = detail.cast, !cast.isEmpty else { return nil }
-        let names = cast.prefix(3).map(\.name)
-        guard !names.isEmpty else { return nil }
-        return "Starring " + names.joined(separator: ", ")
-    }
-
     // MARK: - Helpers
 
     private static func typeLabel(detail: ItemDetail) -> String {
@@ -562,75 +514,6 @@ enum TVHeroMetadata {
         case "episode": return "Episode"
         default: return detail.type.capitalized
         }
-    }
-
-    private static func qualityTokens(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [TVHeroFactToken] {
-        guard let version = selectedVersion ?? preferredVersion(from: detail) else { return [] }
-        var tokens: [TVHeroFactToken] = []
-        if let res = resolutionLabel(version.resolution) {
-            tokens.append(.chip(res))
-        }
-        if version.hdr == true {
-            tokens.append(.chip(dolbyVisionLabel(version: version) ?? "HDR"))
-        }
-        if let audio = primaryAudioLabel(version: version) {
-            tokens.append(.chip(audio))
-        }
-        if hasSubtitles(version: version) {
-            tokens.append(.chip("CC"))
-        }
-        return tokens
-    }
-
-    private static func preferredVersion(from detail: ItemDetail) -> FileVersion? {
-        guard let versions = detail.versions, !versions.isEmpty else { return nil }
-        if let lastId = detail.userData?.lastFileId,
-           let lastVersion = versions.first(where: { $0.fileId == lastId }) {
-            return lastVersion
-        }
-        return versions.first
-    }
-
-    private static func resolutionLabel(_ raw: String?) -> String? {
-        guard let raw = raw?.lowercased() else { return nil }
-        if raw.contains("2160") || raw.contains("4k") { return "4K" }
-        if raw.contains("1080") { return "HD" }
-        if raw.contains("720") { return "HD" }
-        if raw.contains("480") { return "SD" }
-        return nil
-    }
-
-    private static func dolbyVisionLabel(version: FileVersion) -> String? {
-        let videoTracks = version.videoTracks ?? []
-        if videoTracks.contains(where: { ($0.dolbyVision ?? "").isEmpty == false }) {
-            return "DOLBY VISION"
-        }
-        return nil
-    }
-
-    private static func primaryAudioLabel(version: FileVersion) -> String? {
-        let tracks = version.audioTracks ?? []
-        let defaultTrack = tracks.first(where: { $0.isDefault == true }) ?? tracks.first
-        guard let track = defaultTrack else { return nil }
-
-        if let layout = track.channelLayout?.lowercased() {
-            if layout.contains("atmos") { return "ATMOS" }
-            if layout.contains("7.1") { return "7.1" }
-            if layout.contains("5.1") { return "5.1" }
-            if layout.contains("stereo") || layout == "2.0" { return nil }
-        }
-        if let channels = track.channels {
-            switch channels {
-            case 8: return "7.1"
-            case 6: return "5.1"
-            default: return nil
-            }
-        }
-        return nil
-    }
-
-    private static func hasSubtitles(version: FileVersion) -> Bool {
-        !(version.subtitleTracks ?? []).isEmpty
     }
 
     private static func formatRuntime(_ minutes: Int) -> String {

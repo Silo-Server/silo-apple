@@ -134,7 +134,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
             factsLine: TVHeroMetadata.seriesFactsLine(from: detail),
-            starringText: TVHeroMetadata.starringText(from: detail),
             actions: { actionColumn },
             belowSynopsis: belowSynopsis
         )
