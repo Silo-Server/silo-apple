@@ -1,13 +1,11 @@
 #if !os(tvOS)
 import Foundation
 
-/// A token in the hero's facts row. `.text` items get a middle-dot
-/// separator between them; `.rating` renders a green check + maturity
-/// label; `.chip` renders an outlined uppercase pill (4K / HDR / ATMOS / CC).
+/// A token in the hero's editorial facts row. `.text` items get a
+/// middle-dot separator; `.rating` retains the supported rating treatment.
 enum PhoneHeroFactToken: Hashable {
     case text(String)
     case rating(String)
-    case chip(String)
 }
 
 /// Builds the eyebrow / source / facts / starring strings shown by the
@@ -61,7 +59,7 @@ enum PhoneHeroMetadata {
 
     // MARK: - Facts row
 
-    static func movieFactsLine(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [PhoneHeroFactToken] {
+    static func movieFactsLine(from detail: ItemDetail) -> [PhoneHeroFactToken] {
         var tokens: [PhoneHeroFactToken] = []
         if detail.type == "episode",
            let airDate = DetailDateFormatting.abbreviatedDate(detail.airDate) {
@@ -75,7 +73,6 @@ enum PhoneHeroMetadata {
         if let imdb = detail.ratingImdb {
             tokens.append(.text(String(format: "★ %.1f", imdb)))
         }
-        tokens.append(contentsOf: qualityTokens(from: detail, version: selectedVersion))
         return tokens
     }
 
@@ -88,7 +85,6 @@ enum PhoneHeroMetadata {
         if let imdb = detail.ratingImdb {
             tokens.append(.text(String(format: "★ %.1f", imdb)))
         }
-        tokens.append(contentsOf: qualityTokens(from: detail))
         return tokens
     }
 
@@ -163,69 +159,6 @@ enum PhoneHeroMetadata {
         case "season": return "Season"
         default: return detail.type.capitalized
         }
-    }
-
-    private static func qualityTokens(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [PhoneHeroFactToken] {
-        guard let version = selectedVersion ?? preferredVersion(from: detail) else { return [] }
-        var tokens: [PhoneHeroFactToken] = []
-        if let res = resolutionLabel(version.resolution) { tokens.append(.chip(res)) }
-        if version.hdr == true {
-            tokens.append(.chip(dolbyVisionLabel(version: version) ?? "HDR"))
-        }
-        if let audio = primaryAudioLabel(version: version) { tokens.append(.chip(audio)) }
-        if hasSubtitles(version: version) { tokens.append(.chip("CC")) }
-        return tokens
-    }
-
-    private static func preferredVersion(from detail: ItemDetail) -> FileVersion? {
-        guard let versions = detail.versions, !versions.isEmpty else { return nil }
-        if let lastId = detail.userData?.lastFileId,
-           let lastVersion = versions.first(where: { $0.fileId == lastId }) {
-            return lastVersion
-        }
-        return versions.first
-    }
-
-    private static func resolutionLabel(_ raw: String?) -> String? {
-        guard let raw = raw?.lowercased() else { return nil }
-        if raw.contains("2160") || raw.contains("4k") { return "4K" }
-        if raw.contains("1080") { return "HD" }
-        if raw.contains("720") { return "HD" }
-        if raw.contains("480") { return "SD" }
-        return nil
-    }
-
-    private static func dolbyVisionLabel(version: FileVersion) -> String? {
-        let videoTracks = version.videoTracks ?? []
-        if videoTracks.contains(where: { ($0.dolbyVision ?? "").isEmpty == false }) {
-            return "DOLBY VISION"
-        }
-        return nil
-    }
-
-    private static func primaryAudioLabel(version: FileVersion) -> String? {
-        let tracks = version.audioTracks ?? []
-        let defaultTrack = tracks.first(where: { $0.isDefault == true }) ?? tracks.first
-        guard let track = defaultTrack else { return nil }
-
-        if let layout = track.channelLayout?.lowercased() {
-            if layout.contains("atmos") { return "ATMOS" }
-            if layout.contains("7.1") { return "7.1" }
-            if layout.contains("5.1") { return "5.1" }
-            if layout.contains("stereo") || layout == "2.0" { return nil }
-        }
-        if let channels = track.channels {
-            switch channels {
-            case 8: return "7.1"
-            case 6: return "5.1"
-            default: return nil
-            }
-        }
-        return nil
-    }
-
-    private static func hasSubtitles(version: FileVersion) -> Bool {
-        !(version.subtitleTracks ?? []).isEmpty
     }
 
     static func formatRuntime(_ minutes: Int) -> String {

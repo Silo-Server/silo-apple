@@ -510,8 +510,8 @@ private struct PhoneHeroEyebrow: View {
 
 /// Centered facts row that line-wraps when the tokens exceed the
 /// container width. SwiftUI's plain HStack truncates instead of
-/// wrapping, so we lean on `Layout` to flow the chips like Apple's
-/// quality-badge row beneath the overview.
+/// wrapping, so we lean on `Layout` to flow the editorial facts
+/// beneath the overview.
 private struct FlowingFactsRow: View {
     let tokens: [PhoneHeroFactToken]
     let alignment: HorizontalAlignment
@@ -547,24 +547,13 @@ private struct FlowingFactsRow: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.continuumOnSurface.opacity(0.78))
             }
-        case .chip(let value):
-            Text(value)
-                .font(.system(size: 10, weight: .heavy))
-                .tracking(0.8)
-                .foregroundColor(.continuumOnSurface)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 3)
-                        .stroke(Color.continuumOnSurface.opacity(0.45), lineWidth: 1)
-                )
         }
     }
 }
 
 /// Minimal flow layout that wraps subviews onto new lines when the
 /// proposed width can't fit them. Uses each subview's intrinsic
-/// width — no shrinking — so every chip stays at its natural size.
+/// width — no shrinking — so every fact stays at its natural size.
 private struct PhoneFactsFlowLayout: Layout {
     var spacing: CGFloat
     var lineSpacing: CGFloat
