@@ -44,7 +44,11 @@ enum VideoGravity: String, CaseIterable {
 /// ended up disagreeing about `next_up_prompt_seconds`. They come from
 /// `SettingKey` now, so a key this client sends is a key the server's manifest
 /// declares — by construction, not by review.
-private let playerDeviceSettingKeys: [SettingKey] = [
+///
+/// Also the order a flush sends them in: `playback.preferred_quality` precedes
+/// `playback.max_bitrate_kbps` so the two axes of one compound tier always land
+/// resolution-first.
+let playerDeviceSettingKeys: [SettingKey] = [
     .playbackPreferredQuality,
     .playbackMaxBitrateKbps,
     .playbackAudioLanguage,
@@ -66,10 +70,12 @@ private let playerDeviceSettingKeys: [SettingKey] = [
 
 private typealias PlayerDeviceSettingKey = SettingKey
 
-private extension SettingKey {
+extension SettingKey {
     /// The keys this screen syncs, in a stable order for the flush loop.
     static var playerDeviceSettings: [SettingKey] { playerDeviceSettingKeys }
+}
 
+private extension SettingKey {
     // Short names for the keys this file uses. The generated cases are named
     // after the full dotted key (playbackAutoSkipIntro); these aliases keep the
     // call sites readable without reintroducing a second list of raw strings —
@@ -92,11 +98,6 @@ private extension SettingKey {
     static var subtitleSyncMs: SettingKey { .playerSubtitleSyncMs }
     static var videoGravity: SettingKey { .playerVideoGravity }
     static var orientationMode: SettingKey { .playerOrientationMode }
-}
-
-private enum PendingDeviceSettingValue {
-    case set(String)
-    case delete
 }
 
 @Observable
@@ -262,12 +263,31 @@ final class PlayerSettings {
     }
 
     private let defaults: UserDefaults
-    private var pendingDeviceSettingValues: [PlayerDeviceSettingKey: PendingDeviceSettingValue] = [:]
-    private var isFlushingPendingDeviceSettings = false
-    private var needsFlushAfterCurrentFlush = false
 
-    private init(defaults: UserDefaults = .standard) {
+    /// Debounced writer for the canonical settings API. Owns the queue, the
+    /// mutation ids and the retry schedule; see PlayerSettingsFlusher.swift.
+    private let flusher: PlayerSettingsFlusher
+
+    /// The bandwidth half of the quality preference; nil is uncapped.
+    ///
+    /// The contract keeps resolution and bitrate on separate keys, but this
+    /// client's pickers offer one compound tier. Derived from that tier rather
+    /// than stored alongside it so the two cannot drift apart — the tier is the
+    /// single local source of truth, and this is only how it reaches the wire.
+    var maxBitrateKbps: Int? {
+        AppleQualityAxes.split(preferredQuality).bitrateKbps
+    }
+
+    /// Designated initializer, non-private so tests can build an instance with
+    /// an isolated `UserDefaults` and a fake transport rather than reaching for
+    /// the singleton (which would leak state between tests and hit the
+    /// network).
+    init(
+        defaults: UserDefaults = .standard,
+        flusher: PlayerSettingsFlusher = PlayerSettingsFlusher()
+    ) {
         self.defaults = defaults
+        self.flusher = flusher
         defaults.register(defaults: [
             Keys.preferredQuality: "auto",
             Keys.audioLanguage: "",
@@ -378,6 +398,11 @@ final class PlayerSettings {
         return "#" + String(format: "%02X", alphaByte) + rgb
     }
 
+    /// Pull every synced setting from the server and adopt it.
+    ///
+    /// One batched call: the server resolves all seventeen keys in a single
+    /// store read, and asking per key would be seventeen round trips on every
+    /// app launch, profile switch and settings-screen open.
     @MainActor
     func refreshFromServer() async {
         applyCachedSettingsForCurrentScope()
@@ -388,10 +413,8 @@ final class PlayerSettings {
         let legacySubtitleOverrideEnabled = subtitleUsesDeviceAppearanceOverride
 
         do {
-            let response = try await ContinuumAPI.shared.effectiveSettings(
-                keys: SettingKey.playerDeviceSettings.map(\.rawValue)
-            )
-            let effectiveByKey = Dictionary(uniqueKeysWithValues: response.map { ($0.key, $0) })
+            let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
+            let effectiveByKey = response.byKey
             applyEffectiveSettings(effectiveByKey)
 
             if let scopeID, !isMigrationComplete(for: scopeID) {
@@ -405,7 +428,7 @@ final class PlayerSettings {
                     // The migration just pushed legacy device-setting values
                     // to the server. Local state already holds those values
                     // (they came from local UserDefaults), so a second
-                    // `effectiveSettings` round-trip just to mirror the
+                    // effective-values round-trip just to mirror the
                     // server's echo is wasted bandwidth on every session
                     // start until migration completes — and re-applying
                     // those same values overwrites any in-flight local
@@ -420,82 +443,93 @@ final class PlayerSettings {
         }
     }
 
+    /// Set the compound quality tier this client's pickers offer.
+    ///
+    /// Stored as the contract's two axes: `playback.preferred_quality` holds
+    /// the bare resolution and `playback.max_bitrate_kbps` the bandwidth cap.
+    /// Sending the compound id would fail the enum with `invalid_value`; see
+    /// AppleQualityAxes.swift.
     func setPreferredQuality(_ value: String) {
         let normalized = ApplePlaybackQuality.normalizeStoredId(value)
         preferredQuality = normalized
-        enqueueDeviceSetting(.preferredQuality, operation: .set(normalized))
+        let axes = AppleQualityAxes.split(normalized)
+        flusher.enqueue(.preferredQuality, value: .string(axes.resolution))
+        // Uncapped is JSON null, not an omitted write: leaving the old cap in
+        // place would keep throttling a tier the user just widened.
+        flusher.enqueue(.maxBitrateKbps, value: axes.bitrateKbps.map { .int($0) } ?? .null)
     }
 
     func setAudioLanguage(_ value: String) {
         audioLanguage = value
-        enqueueDeviceSetting(.audioLanguage, operation: .set(value))
+        // The contract's language_tag rejects "": "no preference" is JSON null.
+        flusher.enqueue(.audioLanguage, value: value.isEmpty ? .null : .string(value))
     }
 
     func setAutoSkipIntro(_ enabled: Bool) {
         autoSkipIntro = enabled
-        enqueueDeviceSetting(.autoSkipIntro, operation: .set(boolString(enabled)))
+        flusher.enqueue(.autoSkipIntro, value: .bool(enabled))
     }
 
     func setAutoSkipCredits(_ enabled: Bool) {
         autoSkipCredits = enabled
-        enqueueDeviceSetting(.autoSkipCredits, operation: .set(boolString(enabled)))
+        flusher.enqueue(.autoSkipCredits, value: .bool(enabled))
     }
 
     func setAutoPlayNextEpisode(_ enabled: Bool) {
         autoPlayNextEpisode = enabled
-        enqueueDeviceSetting(.autoPlayNext, operation: .set(boolString(enabled)))
+        flusher.enqueue(.autoPlayNext, value: .bool(enabled))
     }
 
     func setNextUpPromptSeconds(_ seconds: Int) {
         let normalized = Self.clampNextUpPromptSeconds(seconds)
         nextUpPromptSeconds = normalized
-        enqueueDeviceSetting(.nextUpPromptSeconds, operation: .set(String(normalized)))
+        flusher.enqueue(.nextUpPromptSeconds, value: .int(normalized))
     }
 
     func setHDREnabled(_ enabled: Bool) {
         hdrEnabled = enabled
-        enqueueDeviceSetting(.hdrEnabled, operation: .set(boolString(enabled)))
+        flusher.enqueue(.hdrEnabled, value: .bool(enabled))
     }
 
     func setDolbyVisionEnabled(_ enabled: Bool) {
         dolbyVisionEnabled = enabled
-        enqueueDeviceSetting(.dolbyVisionEnabled, operation: .set(boolString(enabled)))
+        flusher.enqueue(.dolbyVisionEnabled, value: .bool(enabled))
     }
 
     func setPreferProfile7HDR10Fallback(_ enabled: Bool) {
         preferProfile7HDR10Fallback = enabled
-        enqueueDeviceSetting(.dvProfile7HDR10Fallback, operation: .set(boolString(enabled)))
+        flusher.enqueue(.dvProfile7HDR10Fallback, value: .bool(enabled))
     }
 
     func setSeekCacheEnabled(_ enabled: Bool) {
         seekCacheEnabled = enabled
-        enqueueDeviceSetting(.seekCacheEnabled, operation: .set(boolString(enabled)))
+        flusher.enqueue(.seekCacheEnabled, value: .bool(enabled))
     }
 
     func setPlaybackSpeed(_ rate: Double) {
-        let normalized = max(0.25, min(rate, 3.0))
+        let normalized = Self.clampPlaybackSpeed(rate)
         playbackSpeed = normalized
-        enqueueDeviceSetting(.playbackSpeed, operation: .set(numberString(normalized)))
+        flusher.enqueue(.playbackSpeed, value: .double(normalized))
     }
 
     func setVideoGravity(_ gravity: VideoGravity) {
         videoGravity = gravity
-        enqueueDeviceSetting(.videoGravity, operation: .set(gravity.rawValue))
+        flusher.enqueue(.videoGravity, value: .string(gravity.rawValue))
     }
 
     func setPlayerOrientationMode(_ mode: PlayerOrientationMode) {
         playerOrientationMode = mode
-        enqueueDeviceSetting(.orientationMode, operation: .set(mode.rawValue))
+        flusher.enqueue(.orientationMode, value: .string(mode.rawValue))
     }
 
     func setAudioSyncMs(_ milliseconds: Int) {
         audioSyncMs = max(-5000, min(milliseconds, 5000))
-        enqueueDeviceSetting(.audioSyncMs, operation: .set(String(audioSyncMs)))
+        flusher.enqueue(.audioSyncMs, value: .int(audioSyncMs))
     }
 
     func setSubtitleSyncMs(_ milliseconds: Int) {
         subtitleSyncMs = max(-10000, min(milliseconds, 10000))
-        enqueueDeviceSetting(.subtitleSyncMs, operation: .set(String(subtitleSyncMs)))
+        flusher.enqueue(.subtitleSyncMs, value: .int(subtitleSyncMs))
     }
 
     @MainActor
@@ -505,7 +539,7 @@ final class PlayerSettings {
         subtitleUsesDeviceAppearanceOverride = true
         // A manual edit takes over from the system-matching source.
         subtitleMatchesSystemAppearance = false
-        enqueueDeviceSetting(.subtitleAppearance, operation: .set(sanitized.jsonString))
+        enqueueSubtitleAppearance(sanitized)
         await flushPendingDeviceSettings()
     }
 
@@ -525,12 +559,12 @@ final class PlayerSettings {
         guard enabled != subtitleUsesDeviceAppearanceOverride else { return }
         subtitleUsesDeviceAppearanceOverride = enabled
         if enabled {
-            enqueueDeviceSetting(.subtitleAppearance, operation: .set(subtitleAppearance.sanitized().jsonString))
+            enqueueSubtitleAppearance(subtitleAppearance.sanitized())
             await flushPendingDeviceSettings()
             return
         }
 
-        enqueueDeviceSetting(.subtitleAppearance, operation: .delete)
+        flusher.enqueueDelete(.subtitleAppearance)
         await flushPendingDeviceSettings()
         await refreshFromServer()
     }
@@ -542,119 +576,164 @@ final class PlayerSettings {
 
     private func resetDeviceSettings(_ keys: [PlayerDeviceSettingKey]) async {
         for key in keys {
-            enqueueDeviceSetting(key, operation: .delete)
+            flusher.enqueueDelete(key)
         }
         await flushPendingDeviceSettings()
         await refreshFromServer()
     }
 
+    /// Send everything queued and wait for it.
+    ///
+    /// The debounce exists to coalesce a *user* dragging a control; a caller
+    /// that explicitly asks to flush (leaving the player, switching profile,
+    /// resetting) has already decided the edit is final, so this bypasses the
+    /// window rather than waiting it out.
     @MainActor
     func flushPendingDeviceSettings() async {
-        if isFlushingPendingDeviceSettings {
-            needsFlushAfterCurrentFlush = true
+        await flusher.flushNow()
+    }
+
+    /// Encode the appearance as the contract's object type.
+    ///
+    /// `playback.subtitle_appearance` is a JSON object on the wire, not the
+    /// stringified JSON the legacy string-only registry stored. Encoding goes
+    /// through ``SettingJSONValue/encoding(_:)`` so the value's own camelCase
+    /// keys (`fontSize`, `backgroundOpacity`) reach the server verbatim.
+    private func enqueueSubtitleAppearance(_ appearance: SubtitleAppearance) {
+        guard let value = try? SettingJSONValue.encoding(appearance) else {
+            // Unreachable for a struct of scalars, and dropping the write is
+            // the right failure: the server would reject a value that cannot
+            // be encoded, and the local value is already applied.
             return
         }
-        isFlushingPendingDeviceSettings = true
-        defer {
-            isFlushingPendingDeviceSettings = false
-            if needsFlushAfterCurrentFlush {
-                needsFlushAfterCurrentFlush = false
-                Task { @MainActor [weak self] in
-                    await self?.flushPendingDeviceSettings()
-                }
-            }
-        }
-
-        for key in SettingKey.playerDeviceSettings {
-            guard let pendingValue = pendingDeviceSettingValues[key] else { continue }
-            do {
-                switch pendingValue {
-                case .set(let value):
-                    try await ContinuumAPI.shared.setDeviceSetting(key: key.rawValue, value: value)
-                case .delete:
-                    try await ContinuumAPI.shared.deleteDeviceSetting(key: key.rawValue)
-                }
-                pendingDeviceSettingValues.removeValue(forKey: key)
-            } catch {
-                continue
-            }
-        }
+        flusher.enqueue(.subtitleAppearance, value: value)
     }
 
-    private func enqueueDeviceSetting(_ key: PlayerDeviceSettingKey, operation: PendingDeviceSettingValue) {
-        pendingDeviceSettingValues[key] = operation
-        Task { @MainActor [weak self] in
-            await self?.flushPendingDeviceSettings()
-        }
-    }
-
-    private func applyEffectiveSettings(_ effectiveByKey: [String: EffectiveSettingResponse]) {
+    /// Adopt a batched resolution from the server.
+    ///
+    /// Every fallback here is the value the generated contract declares. The
+    /// server sends a row for every key it knows, including ones nobody has
+    /// stored a value for (`source == "default"`), so a fallback is reached
+    /// only when the row is missing entirely — a server whose contract predates
+    /// this key.
+    private func applyEffectiveSettings(_ effectiveByKey: [SettingKey: EffectiveSettingValue]) {
         preferredQuality = ApplePlaybackQuality.normalizeStoredId(
-            effectiveString(for: .preferredQuality, in: effectiveByKey, fallback: "auto")
+            AppleQualityAxes.join(
+                resolution: effectiveByKey[.preferredQuality]?.value.stringValue,
+                bitrateKbps: effectiveByKey[.maxBitrateKbps]?.value.intValue
+            )
         )
-        audioLanguage = effectiveString(for: .audioLanguage, in: effectiveByKey, fallback: "")
-        autoSkipIntro = effectiveBool(for: .autoSkipIntro, in: effectiveByKey, fallback: false)
-        autoSkipCredits = effectiveBool(for: .autoSkipCredits, in: effectiveByKey, fallback: false)
-        autoPlayNextEpisode = effectiveBool(for: .autoPlayNext, in: effectiveByKey, fallback: true)
+        // A nullable language tag: JSON null is "no preference", which this
+        // client spells as the empty string.
+        audioLanguage = effectiveByKey[.audioLanguage]?.value.stringValue ?? ""
+        autoSkipIntro = effectiveBool(.autoSkipIntro, in: effectiveByKey, default: false)
+        autoSkipCredits = effectiveBool(.autoSkipCredits, in: effectiveByKey, default: false)
+        autoPlayNextEpisode = effectiveBool(.autoPlayNext, in: effectiveByKey, default: true)
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
-            effectiveInt(for: .nextUpPromptSeconds, in: effectiveByKey, fallback: 30)
+            effectiveByKey[.nextUpPromptSeconds]?.value.intValue ?? 30
         )
-        hdrEnabled = effectiveBool(for: .hdrEnabled, in: effectiveByKey, fallback: true)
-        dolbyVisionEnabled = effectiveBool(for: .dolbyVisionEnabled, in: effectiveByKey, fallback: true)
+        hdrEnabled = effectiveBool(.hdrEnabled, in: effectiveByKey, default: true)
+        dolbyVisionEnabled = effectiveBool(.dolbyVisionEnabled, in: effectiveByKey, default: true)
         preferProfile7HDR10Fallback = effectiveBool(
-            for: .dvProfile7HDR10Fallback,
+            .dvProfile7HDR10Fallback,
             in: effectiveByKey,
-            fallback: false
+            default: false
         )
-        seekCacheEnabled = effectiveBool(
-            for: .seekCacheEnabled,
-            in: effectiveByKey,
-            fallback: true
+        seekCacheEnabled = effectiveBool(.seekCacheEnabled, in: effectiveByKey, default: true)
+        playbackSpeed = Self.clampPlaybackSpeed(
+            effectiveByKey[.playbackSpeed]?.value.doubleValue ?? 1.0
         )
-        playbackSpeed = effectiveDouble(for: .playbackSpeed, in: effectiveByKey, fallback: 1.0)
-        audioSyncMs = effectiveInt(for: .audioSyncMs, in: effectiveByKey, fallback: 0)
-        subtitleSyncMs = effectiveInt(for: .subtitleSyncMs, in: effectiveByKey, fallback: 0)
+        audioSyncMs = effectiveByKey[.audioSyncMs]?.value.intValue ?? 0
+        subtitleSyncMs = effectiveByKey[.subtitleSyncMs]?.value.intValue ?? 0
         videoGravity = VideoGravity(
-            rawValue: effectiveString(for: .videoGravity, in: effectiveByKey, fallback: VideoGravity.fit.rawValue)
+            rawValue: effectiveByKey[.videoGravity]?.value.stringValue ?? VideoGravity.fit.rawValue
         ) ?? .fit
         playerOrientationMode = PlayerOrientationMode(
-            rawValue: effectiveString(
-                for: .orientationMode,
-                in: effectiveByKey,
-                fallback: PlayerOrientationMode.landscapeLocked.rawValue
-            )
+            rawValue: effectiveByKey[.orientationMode]?.value.stringValue
+                ?? PlayerOrientationMode.landscapeLocked.rawValue
         ) ?? .landscapeLocked
 
-        if let entry = effectiveByKey[PlayerDeviceSettingKey.subtitleAppearance.rawValue] {
-            subtitleUsesDeviceAppearanceOverride = entry.hasDeviceOverride
-            let effectiveAppearance = SubtitleAppearance.decode(from: entry.effectiveValue)
-            if entry.hasDeviceOverride {
-                subtitleAppearance = effectiveAppearance
-            } else {
-                inheritedSubtitleAppearance = effectiveAppearance
-            }
-        } else {
+        applyEffectiveSubtitleAppearance(effectiveByKey[.subtitleAppearance])
+    }
+
+    /// Split the resolved appearance between the device override and the
+    /// inherited value.
+    ///
+    /// "Has a device override" is now a fact the server reports — the resolved
+    /// row names the scope it came from — rather than something the legacy
+    /// endpoint had to carry as a separate `hasDeviceOverride` boolean.
+    private func applyEffectiveSubtitleAppearance(_ entry: EffectiveSettingValue?) {
+        guard let entry else {
             subtitleUsesDeviceAppearanceOverride = false
             inheritedSubtitleAppearance = .default
+            return
+        }
+        let hasDeviceOverride = entry.scope == .profileDevice
+        subtitleUsesDeviceAppearanceOverride = hasDeviceOverride
+        // A stored appearance is a sparse override the schema merges over the
+        // contract default, and SubtitleAppearance's decoder already fills each
+        // absent property from `.default` — so a partial object round-trips
+        // rather than resetting the properties it omits.
+        let appearance = ((try? entry.value.decoded(as: SubtitleAppearance.self)) ?? .default).sanitized()
+        if hasDeviceOverride {
+            subtitleAppearance = appearance
+        } else {
+            inheritedSubtitleAppearance = appearance
         }
     }
 
-    private func legacySnapshot() -> [PlayerDeviceSettingKey: String] {
-        [
-            .preferredQuality: ApplePlaybackQuality.normalizeStoredId(
-                defaults.string(forKey: Self.cacheKey(Keys.preferredQuality))
-                    ?? defaults.string(forKey: Keys.preferredQuality)
-            ),
-            .audioLanguage: defaults.string(forKey: Self.cacheKey(Keys.audioLanguage))
-                ?? defaults.string(forKey: Keys.audioLanguage)
-                ?? "",
-            .autoSkipIntro: boolString(
+    /// A bool from a resolved row, falling back to the contract's typed default
+    /// only when the server sent no row for the key at all.
+    ///
+    /// The `effectiveValue.isEmpty` guard this replaces existed because the
+    /// legacy endpoint had no way to say "unset": it answered with an empty
+    /// string, which is not a bool, so every default-ON toggle flipped off on
+    /// the first refresh against a server that predated the key. The canonical
+    /// endpoint sends a typed value with `source: "default"` instead, so
+    /// "absent" and "false" are now distinct on the wire and the guard is not
+    /// only unnecessary but wrong — it would swallow a genuine `false`.
+    private func effectiveBool(
+        _ key: PlayerDeviceSettingKey,
+        in effectiveByKey: [SettingKey: EffectiveSettingValue],
+        default fallback: Bool
+    ) -> Bool {
+        effectiveByKey[key]?.value.boolValue ?? fallback
+    }
+
+    /// This device's locally cached values, as the contract's typed JSON.
+    ///
+    /// Read once at the top of a refresh, before the server's answer is
+    /// applied, so the one-time migration can tell a value this device has
+    /// always held from one the server just handed back.
+    ///
+    /// The quality half is decomposed here for the same reason the setter
+    /// decomposes it: a compound id like `1080p-high` is not a member of the
+    /// contract's enum, so migrating it verbatim would be rejected forever.
+    private func legacySnapshot() -> [PlayerDeviceSettingKey: SettingJSONValue] {
+        let legacyQuality = ApplePlaybackQuality.normalizeStoredId(
+            defaults.string(forKey: Self.cacheKey(Keys.preferredQuality))
+                ?? defaults.string(forKey: Keys.preferredQuality)
+        )
+        let axes = AppleQualityAxes.split(legacyQuality)
+        let legacyAudioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage))
+            ?? defaults.string(forKey: Keys.audioLanguage)
+            ?? ""
+        let legacyAppearance = SubtitleAppearance.decode(
+            from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance))
+                ?? defaults.string(forKey: Keys.subtitleAppearance)
+        )
+
+        var snapshot: [PlayerDeviceSettingKey: SettingJSONValue] = [
+            .preferredQuality: .string(axes.resolution),
+            .maxBitrateKbps: axes.bitrateKbps.map { .int($0) } ?? .null,
+            .audioLanguage: legacyAudioLanguage.isEmpty ? .null : .string(legacyAudioLanguage),
+            .autoSkipIntro: .bool(
                 Self.cachedBool(defaults, key: Keys.autoSkipIntro, defaultValue: false)
             ),
-            .autoSkipCredits: boolString(
+            .autoSkipCredits: .bool(
                 Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
             ),
-            .autoPlayNext: boolString(
+            .autoPlayNext: .bool(
                 Self.cachedBool(
                     defaults,
                     key: Keys.autoPlayNextEpisode,
@@ -662,26 +741,33 @@ final class PlayerSettings {
                     defaultValue: true
                 )
             ),
-            .nextUpPromptSeconds: String(
+            .nextUpPromptSeconds: .int(
                 Self.clampNextUpPromptSeconds(
                     Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
                 )
             ),
-            .subtitleAppearance: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance))
-                ?? defaults.string(forKey: Keys.subtitleAppearance)
-                ?? SubtitleAppearance.default.jsonString,
-            .hdrEnabled: boolString(
+            .hdrEnabled: .bool(
                 Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
             ),
-            .playbackSpeed: numberString(
-                Self.cachedDouble(defaults, key: Keys.playbackSpeed, defaultValue: 1.0)
+            .playbackSpeed: .double(
+                Self.clampPlaybackSpeed(
+                    Self.cachedDouble(defaults, key: Keys.playbackSpeed, defaultValue: 1.0)
+                )
             ),
-            .audioSyncMs: String(defaults.integer(forKey: Self.cacheKey(Keys.audioSyncMs))),
-            .subtitleSyncMs: String(defaults.integer(forKey: Self.cacheKey(Keys.subtitleSyncMs))),
-            .videoGravity: defaults.string(forKey: Self.cacheKey(Keys.videoGravity)) ?? VideoGravity.fit.rawValue,
-            .orientationMode: defaults.string(forKey: Self.cacheKey(Keys.playerOrientationMode))
-                ?? PlayerOrientationMode.landscapeLocked.rawValue,
+            .audioSyncMs: .int(defaults.integer(forKey: Self.cacheKey(Keys.audioSyncMs))),
+            .subtitleSyncMs: .int(defaults.integer(forKey: Self.cacheKey(Keys.subtitleSyncMs))),
+            .videoGravity: .string(
+                defaults.string(forKey: Self.cacheKey(Keys.videoGravity)) ?? VideoGravity.fit.rawValue
+            ),
+            .orientationMode: .string(
+                defaults.string(forKey: Self.cacheKey(Keys.playerOrientationMode))
+                    ?? PlayerOrientationMode.landscapeLocked.rawValue
+            ),
         ]
+        if let appearance = try? SettingJSONValue.encoding(legacyAppearance) {
+            snapshot[.subtitleAppearance] = appearance
+        }
+        return snapshot
     }
 
     private func applyCachedSettingsForCurrentScope() {
@@ -712,7 +798,9 @@ final class PlayerSettings {
             key: Keys.seekCacheEnabled,
             defaultValue: true
         )
-        playbackSpeed = Self.cachedDouble(defaults, key: Keys.playbackSpeed, defaultValue: 1.0)
+        playbackSpeed = Self.clampPlaybackSpeed(
+            Self.cachedDouble(defaults, key: Keys.playbackSpeed, defaultValue: 1.0)
+        )
         audioSyncMs = defaults.integer(forKey: Self.cacheKey(Keys.audioSyncMs))
         subtitleSyncMs = defaults.integer(forKey: Self.cacheKey(Keys.subtitleSyncMs))
         videoGravity = VideoGravity(
@@ -737,25 +825,33 @@ final class PlayerSettings {
         )
     }
 
+    /// One-time push of this device's pre-contract local values to the server.
+    ///
+    /// Only for keys with nothing stored at `profile_device`: a value already
+    /// there is either this device's own earlier write or a deliberate reset,
+    /// and neither should be overwritten by whatever UserDefaults still holds.
     @MainActor
     private func importLegacySettingsIfNeeded(
         scopeID: String,
-        legacySnapshot: [PlayerDeviceSettingKey: String],
+        legacySnapshot: [PlayerDeviceSettingKey: SettingJSONValue],
         legacySubtitleOverrideEnabled: Bool,
-        effectiveByKey: [String: EffectiveSettingResponse]
+        effectiveByKey: [SettingKey: EffectiveSettingValue]
     ) async -> Bool {
         var importedAny = false
 
         for key in SettingKey.playerDeviceSettings {
             guard let legacyValue = legacySnapshot[key] else { continue }
-            guard let entry = effectiveByKey[key.rawValue], !entry.hasDeviceOverride else { continue }
+            guard let entry = effectiveByKey[key], entry.scope != .profileDevice else { continue }
             if key == .subtitleAppearance && !legacySubtitleOverrideEnabled {
                 continue
             }
-            if legacyValue == entry.effectiveValue {
+            // Nothing to migrate when the resolved value already equals what
+            // this device holds — typed comparison now, so `1` and `1.0` are
+            // not two different values the way their strings were.
+            if legacyValue == entry.value {
                 continue
             }
-            pendingDeviceSettingValues[key] = .set(legacyValue)
+            flusher.enqueue(key, value: legacyValue)
             importedAny = true
         }
 
@@ -765,46 +861,9 @@ final class PlayerSettings {
         }
 
         await flushPendingDeviceSettings()
-        return pendingDeviceSettingValues.isEmpty
-    }
-
-    private func effectiveString(
-        for key: PlayerDeviceSettingKey,
-        in effectiveByKey: [String: EffectiveSettingResponse],
-        fallback: String
-    ) -> String {
-        effectiveByKey[key.rawValue]?.effectiveValue ?? fallback
-    }
-
-    private func effectiveBool(
-        for key: PlayerDeviceSettingKey,
-        in effectiveByKey: [String: EffectiveSettingResponse],
-        fallback: Bool
-    ) -> Bool {
-        let value = effectiveString(for: key, in: effectiveByKey, fallback: boolString(fallback))
-        // Servers return an entry with an empty effectiveValue for keys they
-        // have no registry default or stored override for (source "unset").
-        // An empty string is never a valid bool, so treat it as absent —
-        // otherwise every default-ON toggle flips off on the first refresh
-        // against a server that predates the key.
-        guard !value.isEmpty else { return fallback }
-        return boolValue(value)
-    }
-
-    private func effectiveInt(
-        for key: PlayerDeviceSettingKey,
-        in effectiveByKey: [String: EffectiveSettingResponse],
-        fallback: Int
-    ) -> Int {
-        Int(effectiveString(for: key, in: effectiveByKey, fallback: String(fallback))) ?? fallback
-    }
-
-    private func effectiveDouble(
-        for key: PlayerDeviceSettingKey,
-        in effectiveByKey: [String: EffectiveSettingResponse],
-        fallback: Double
-    ) -> Double {
-        Double(effectiveString(for: key, in: effectiveByKey, fallback: numberString(fallback))) ?? fallback
+        // Only complete when every op drained. Anything still queued failed and
+        // will be retried, and marking the migration done would strand it.
+        return !flusher.hasPendingWrites
     }
 
     private func syncLegacySubtitleFields(from appearance: SubtitleAppearance) {
@@ -815,21 +874,6 @@ final class PlayerSettings {
         subtitleBackgroundColor = appearance.backgroundColor.uppercased()
         subtitleBackgroundOpacityPercent = appearance.backgroundStyle == .box ? appearance.backgroundOpacity : 0
         subtitlePosition = appearance.position.legacyPosition
-    }
-
-    private func boolString(_ value: Bool) -> String {
-        value ? "true" : "false"
-    }
-
-    private func boolValue(_ value: String) -> Bool {
-        value == "true"
-    }
-
-    private func numberString(_ value: Double) -> String {
-        if value.rounded(.towardZero) == value {
-            return String(Int(value))
-        }
-        return String(value)
     }
 
     private static var currentScopeIdentifier: String? {
@@ -910,6 +954,23 @@ final class PlayerSettings {
 
     private static func clampNextUpPromptSeconds(_ seconds: Int) -> Int {
         max(0, min(seconds, 120))
+    }
+
+    /// Clamp to the contract's declared range *and* step for
+    /// `player.playback_speed` (0.25…3.0, step 0.05).
+    ///
+    /// The step is the part worth stating: the server rejects a value off the
+    /// grid with `invalid_value`, and a UI that ever offers 1.33× — or a
+    /// double that lands at 1.7499999999999998 after arithmetic — would queue a
+    /// write that can never succeed. Rounding here means the value the user
+    /// sees is the value the server accepts.
+    private static func clampPlaybackSpeed(_ rate: Double) -> Double {
+        let bounded = max(0.25, min(rate, 3.0))
+        let steps = ((bounded - 0.25) / 0.05).rounded()
+        // Re-rounded to hundredths because 0.05 is not representable in binary:
+        // 0.25 + 30 * 0.05 is 1.7500000000000002, which serializes as that.
+        let aligned = ((0.25 + steps * 0.05) * 100).rounded() / 100
+        return min(3.0, max(0.25, aligned))
     }
 
     private enum Keys {
