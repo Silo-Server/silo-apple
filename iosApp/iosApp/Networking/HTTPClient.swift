@@ -213,6 +213,54 @@ actor HTTPClient {
         try await sendRaw(method: "GET", path: path, query: query, body: Optional<String>.none)
     }
 
+    /// Send a request with a caller-supplied body and extra headers, doing no
+    /// JSON coding, and hand back the status and response headers alongside
+    /// the bytes.
+    ///
+    /// Exists for endpoints the shared coders cannot serve. The canonical
+    /// settings API is the motivating case: its values are opaque JSON whose
+    /// object keys must survive verbatim, so it codes with its own
+    /// strategy-free coders; it also sends a per-request header
+    /// (`X-Silo-Mutation-Id`) and reads a response header
+    /// (`X-Silo-Idempotent-Replay`) that a decoded body cannot carry.
+    ///
+    /// `headers` are applied after the auth/profile/device headers, so a
+    /// caller can address a profile other than the session default. Everything
+    /// else — server URL resolution, 401 refresh, non-2xx translation — is the
+    /// path every other request takes.
+    func requestData(
+        method: String,
+        path: String,
+        query: [String: String] = [:],
+        body: Data? = nil,
+        contentType: String = "application/json",
+        headers: [String: String] = [:],
+        quietStatuses: Set<Int> = [],
+        timeout: HTTPTimeout = .standard
+    ) async throws -> HTTPRawResponse {
+        let (data, response) = try await performWithAuthRetry(
+            method: method,
+            path: path,
+            additionalHeaders: headers,
+            quietStatuses: quietStatuses,
+            timeout: timeout
+        ) { serverUrl in
+            var request = try self.buildRequest(
+                serverUrl: serverUrl,
+                method: method,
+                path: path,
+                query: query,
+                body: Optional<String>.none
+            )
+            if let body {
+                request.httpBody = body
+                request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+            }
+            return request
+        }
+        return HTTPRawResponse(data: data, statusCode: response.statusCode, headers: response.allHeaderFields)
+    }
+
     /// Cancel all in-flight tasks on the shared session and drop any
     /// pending refresh. Called by the registry *before* retargeting
     /// `TokenStore` on a server switch so a response from the old server
@@ -331,7 +379,7 @@ actor HTTPClient {
                 query: query,
                 body: body
             )
-        }
+        }.0
     }
 
     /// Shared server-URL/auth/401-refresh/success skeleton for every request
@@ -339,13 +387,18 @@ actor HTTPClient {
     /// attempt; auth headers are attached here so the retry after a token
     /// refresh carries the new token while keeping the caller's body and
     /// Content-Type intact.
+    ///
+    /// `additionalHeaders` are applied after the auth/profile/device headers,
+    /// so a caller can override the session default (e.g. address a specific
+    /// profile) or add a per-request header the client doesn't know about.
     private func performWithAuthRetry(
         method: String,
         path: String,
+        additionalHeaders: [String: String] = [:],
         quietStatuses: Set<Int> = [],
         timeout: HTTPTimeout,
         makeRequest: (String) throws -> URLRequest
-    ) async throws -> Data {
+    ) async throws -> (Data, HTTPURLResponse) {
         let serverUrl = await tokenStore.getServerUrl()
         guard !serverUrl.isEmpty else {
             throw HTTPError.serverUrlNotConfigured
@@ -354,6 +407,7 @@ actor HTTPClient {
         let tokenBeforeRequest = await tokenStore.getAccessToken()
         var request = try makeRequest(serverUrl)
         await attachAuthHeaders(&request, accessToken: tokenBeforeRequest)
+        Self.apply(additionalHeaders, to: &request)
 
         let (data, response) = try await perform(request: request, timeout: timeout)
 
@@ -364,14 +418,21 @@ actor HTTPClient {
                 let refreshedToken = await tokenStore.getAccessToken()
                 var retry = try makeRequest(serverUrl)
                 await attachAuthHeaders(&retry, accessToken: refreshedToken)
+                Self.apply(additionalHeaders, to: &retry)
                 let (retryData, retryResponse) = try await perform(request: retry, timeout: timeout)
                 try ensureSuccess(retryData, retryResponse, method: method, quietStatuses: quietStatuses)
-                return retryData
+                return (retryData, retryResponse)
             }
         }
 
         try ensureSuccess(data, response, method: method, quietStatuses: quietStatuses)
-        return data
+        return (data, response)
+    }
+
+    private static func apply(_ headers: [String: String], to request: inout URLRequest) {
+        for (name, value) in headers {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
     }
 
     private func sendRawBody<T: Decodable>(
@@ -417,7 +478,7 @@ actor HTTPClient {
             request.setValue(contentType, forHTTPHeaderField: "Content-Type")
             request.httpBody = body
             return request
-        }
+        }.0
     }
 
     // MARK: - Request building
@@ -712,6 +773,35 @@ struct HTTPMultipartPart {
     let filename: String
     let contentType: String
     let data: Data
+}
+
+// MARK: - Undecoded response
+
+/// A 2xx response handed back undecoded, for callers that need the status or a
+/// response header as well as the body. See ``HTTPClient/requestData``.
+struct HTTPRawResponse: Sendable {
+    let data: Data
+    let statusCode: Int
+    /// Header names are lowercased on the way in, because HTTP header names
+    /// are case-insensitive and a lookup must not depend on the server's
+    /// casing.
+    let headers: [String: String]
+
+    init(data: Data, statusCode: Int, headers: [AnyHashable: Any]) {
+        self.data = data
+        self.statusCode = statusCode
+        var normalized: [String: String] = [:]
+        for (name, value) in headers {
+            if let name = name as? String, let value = value as? String {
+                normalized[name.lowercased()] = value
+            }
+        }
+        self.headers = normalized
+    }
+
+    func header(_ name: String) -> String? {
+        headers[name.lowercased()]
+    }
 }
 
 // MARK: - Error

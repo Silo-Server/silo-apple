@@ -37,6 +37,11 @@ actor ContinuumAPI {
         await tokenStore.getAccessToken()
     }
 
+    /// The profile the session is acting as, or nil before one is selected.
+    func currentProfileId() async -> String? {
+        await tokenStore.getProfileId()
+    }
+
     // MARK: - Path-based dispatcher (legacy)
 
     func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
