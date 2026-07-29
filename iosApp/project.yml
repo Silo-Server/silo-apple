@@ -281,6 +281,25 @@ targets:
     platform: iOS
     sources:
       - path: Tests
+        excludes:
+          # Re-declared below with an explicit build phase. Both spellings:
+          # the directory itself, and everything under it.
+          - "Fixtures/SettingsContract"
+          - "Fixtures/SettingsContract/**"
+      # The vendored settings contract. SettingsConformanceTests reads both
+      # files out of the test bundle at runtime and fails hard when either is
+      # missing, so the build phase is stated rather than left to XcodeGen's
+      # extension-based inference: a cross-platform drift gate that quietly
+      # stopped being bundled is worse than no gate at all.
+      - path: Tests/Fixtures/SettingsContract/conformance.json
+        buildPhase: resources
+      - path: Tests/Fixtures/SettingsContract/manifest.json
+        buildPhase: resources
+      # Provenance for the two files above — which server commits they came
+      # from, and how to re-vendor. In the project so it is discoverable next
+      # to them, out of the bundle because nothing reads it at runtime.
+      - path: Tests/Fixtures/SettingsContract/SOURCE
+        buildPhase: none
     dependencies:
       - target: Silo
       # PacketQueueTests allocates real AVPackets, so the test bundle needs
