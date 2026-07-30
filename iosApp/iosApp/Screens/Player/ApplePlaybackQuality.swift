@@ -146,6 +146,46 @@ enum ApplePlaybackQuality {
         return autoId
     }
 
+    /// Whether changing quality must re-run source-version selection instead
+    /// of merely changing the label on the current direct/remux stream.
+    ///
+    /// A tier that raises the resolution ceiling can make a better alternate
+    /// eligible. Legacy playback chooses that alternate only during a fresh
+    /// load, so keeping the current file would leave (for example) a 720p file
+    /// playing while the controls reported Original or 4K.
+    static func shouldReselectSource(
+        preferredQualityId: String?,
+        selectedVersion: FileVersion,
+        availableVersions: [FileVersion]
+    ) -> Bool {
+        let id = normalizeStoredId(preferredQualityId)
+        guard id != autoId,
+              let selectedHeight = height(for: selectedVersion.resolution) else {
+            return false
+        }
+
+        let maximumHeight: Int?
+        if id == originalId {
+            maximumHeight = nil
+        } else if id == ultraHDId {
+            maximumHeight = height(for: ultraHDId)
+        } else {
+            maximumHeight = settingsOptions
+                .first(where: { $0.id == id })
+                .flatMap { height(for: $0.resolution) }
+        }
+        guard id == originalId || maximumHeight != nil else { return false }
+
+        return availableVersions.contains { candidate in
+            guard candidate.fileId != selectedVersion.fileId,
+                  let candidateHeight = height(for: candidate.resolution),
+                  candidateHeight > selectedHeight else {
+                return false
+            }
+            return maximumHeight.map { candidateHeight <= $0 } ?? true
+        }
+    }
+
     /// Whether this tier requires a transcode for this source.
     ///
     /// `capKbps` is the stored `playback.max_bitrate_kbps` — the bandwidth half
@@ -227,6 +267,17 @@ enum ApplePlaybackQuality {
     ) -> Bool {
         guard !forcedByQuality else { return false }
         return delivery != .transcode || option.isOriginal
+    }
+
+    /// Whether an older server rejecting codec-copy may be retried as H.264.
+    /// Original is an explicit no-transcode choice, so its copy failure must
+    /// surface instead of silently reducing and re-encoding the video. Auto
+    /// can also resolve to an original-quality copy, but retains its historical
+    /// compatibility fallback because it did not promise never to transcode.
+    static func allowsLegacyCopyFallbackToTranscode(
+        preferredQualityId: String?
+    ) -> Bool {
+        normalizeStoredId(preferredQualityId) != originalId
     }
 
     /// The older-server retry target after codec copy is rejected. Preserve

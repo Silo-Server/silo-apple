@@ -123,6 +123,43 @@ enum SettingJSONValue: Codable, Hashable, Sendable {
 }
 
 extension SettingJSONValue {
+    /// Structural equality for contract values, treating the two Swift
+    /// representations of the same JSON number (`1` and `1.0`) as equivalent.
+    /// Other JSON types remain distinct, and arrays/objects compare
+    /// recursively so a numeric spelling nested inside a value behaves the
+    /// same way as one at the top level.
+    func isSemanticallyEquivalent(to other: SettingJSONValue) -> Bool {
+        switch (self, other) {
+        case (.null, .null):
+            return true
+        case (.bool(let left), .bool(let right)):
+            return left == right
+        case (.int(let left), .int(let right)):
+            return left == right
+        case (.double(let left), .double(let right)):
+            return left == right
+        case (.int(let left), .double(let right)):
+            return Int(exactly: right) == left
+        case (.double(let left), .int(let right)):
+            return Int(exactly: left) == right
+        case (.string(let left), .string(let right)):
+            return left == right
+        case (.array(let left), .array(let right)):
+            guard left.count == right.count else { return false }
+            return zip(left, right).allSatisfy { lhs, rhs in
+                lhs.isSemanticallyEquivalent(to: rhs)
+            }
+        case (.object(let left), .object(let right)):
+            guard left.count == right.count else { return false }
+            return left.allSatisfy { key, value in
+                guard let counterpart = right[key] else { return false }
+                return value.isSemanticallyEquivalent(to: counterpart)
+            }
+        default:
+            return false
+        }
+    }
+
     var boolValue: Bool? {
         if case .bool(let value) = self { return value }
         return nil

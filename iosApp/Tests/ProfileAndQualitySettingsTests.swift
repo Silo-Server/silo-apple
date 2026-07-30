@@ -472,6 +472,109 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertNotEqual(modeWrites.first?.mutationId, modeWrites.last?.mutationId)
     }
 
+    func testSameValueForAnotherProfileMintsAFreshMutationId() async throws {
+        let transport = FakeProfileSettingsTransport()
+        transport.failWritesWith = .server(status: 503, code: nil, message: nil)
+        let writer = ProfileSettingsWriter(transport: transport)
+
+        for profileId in ["profile-1", "profile-2"] {
+            do {
+                try await writer.write(
+                    .playbackSubtitleMode,
+                    value: .string(SubtitleMode.always.rawValue),
+                    profileId: profileId
+                )
+                XCTFail("the fake was expected to fail the write")
+            } catch {
+                // Retryable by design: the writer retains each logical id.
+            }
+        }
+
+        let writes = transport.writes().filter { $0.key == .playbackSubtitleMode }
+        XCTAssertEqual(writes.map(\.profileId), ["profile-1", "profile-2"])
+        XCTAssertNotEqual(
+            writes.first?.mutationId,
+            writes.last?.mutationId,
+            "mutation identity includes the profile, not only key and value"
+        )
+    }
+
+    func testQueuedSubtitleEditsKeepTheProfileThatOwnedEachEdit() async throws {
+        let transport = FakeProfileSettingsTransport()
+        await transport.writeGate.block(.string("ja"))
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        editor.bindProfile(id: "profile-1")
+        editor.seed(from: nil)
+
+        editor.subtitleLanguage = "ja"
+        let firstSave = Task { @MainActor in await editor.saveSubtitlePrefs() }
+        await transport.writeGate.waitUntilEntered(.string("ja"))
+
+        editor.bindProfile(id: "profile-2")
+        editor.subtitleLanguage = "ko"
+        await editor.saveSubtitlePrefs()
+        await transport.writeGate.release(.string("ja"))
+        await firstSave.value
+
+        let writes = transport.writes().filter { $0.key == .playbackSubtitleLanguage }
+        XCTAssertEqual(writes.map(\.value), [.string("ja"), .string("ko")])
+        XCTAssertEqual(writes.map(\.profileId), ["profile-1", "profile-2"])
+    }
+
+    func testFailedWriteForPreviousProfileSurvivesAQueuedCurrentProfileEdit() async throws {
+        let transport = FakeProfileSettingsTransport()
+        await transport.writeGate.block(.string("ja"))
+        transport.setWriteFailure(
+            .transport(description: "response lost"),
+            for: .playbackSubtitleLanguage
+        )
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        editor.bindProfile(id: "profile-1")
+        editor.seed(from: nil)
+
+        editor.subtitleLanguage = "ja"
+        let firstSave = Task { @MainActor in await editor.saveSubtitlePrefs() }
+        await transport.writeGate.waitUntilEntered(.string("ja"))
+
+        editor.bindProfile(id: "profile-2")
+        editor.subtitleLanguage = "ko"
+        await editor.saveSubtitlePrefs()
+        transport.setWriteFailure(nil, for: .playbackSubtitleLanguage)
+        await transport.writeGate.release(.string("ja"))
+        await firstSave.value
+
+        let writes = transport.writes().filter { $0.key == .playbackSubtitleLanguage }
+        XCTAssertEqual(writes.map(\.value), [.string("ja"), .string("ja"), .string("ko")])
+        XCTAssertEqual(writes.map(\.profileId), ["profile-1", "profile-1", "profile-2"])
+        XCTAssertEqual(
+            writes[0].mutationId,
+            writes[1].mutationId,
+            "the previous profile's ambiguous write must retry with its original identity"
+        )
+    }
+
+    func testQueuedMetadataEditsKeepTheProfileThatOwnedEachEdit() async throws {
+        let transport = FakeProfileSettingsTransport()
+        await transport.writeGate.block(.string("ja"))
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        editor.bindProfile(id: "profile-1")
+        editor.seed(from: nil)
+
+        editor.preferredMetadataLanguage = "ja"
+        let firstSave = Task { @MainActor in await editor.saveMetadataLanguage() }
+        await transport.writeGate.waitUntilEntered(.string("ja"))
+
+        editor.bindProfile(id: "profile-2")
+        editor.preferredMetadataLanguage = "ko"
+        await editor.saveMetadataLanguage()
+        await transport.writeGate.release(.string("ja"))
+        await firstSave.value
+
+        let writes = transport.writes().filter { $0.key == .catalogMetadataLanguage }
+        XCTAssertEqual(writes.map(\.value), [.string("ja"), .string("ko")])
+        XCTAssertEqual(writes.map(\.profileId), ["profile-1", "profile-2"])
+    }
+
     // MARK: - Scope promotion
 
     /// A value the effective read resolved from a *narrower* scope must not be
@@ -786,6 +889,7 @@ final class FakeProfileSettingsTransport: ProfileSettingsTransport, @unchecked S
         let key: SettingKey
         let value: SettingJSONValue
         let mutationId: String
+        let profileId: String?
     }
 
     var effective: [EffectiveSettingValue] = []
@@ -849,9 +953,19 @@ final class FakeProfileSettingsTransport: ProfileSettingsTransport, @unchecked S
         return EffectiveSettingValuesResponse(settings: settings, revision: SettingKey.revision)
     }
 
-    func putValue(key: SettingKey, value: SettingJSONValue, mutationId: String) async throws {
+    func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        mutationId: String,
+        profileId: String?
+    ) async throws {
         lock.lock()
-        let write = Write(key: key, value: value, mutationId: mutationId)
+        let write = Write(
+            key: key,
+            value: value,
+            mutationId: mutationId,
+            profileId: profileId
+        )
         recordedWrites.append(write)
         let failure = failWritesByKey[key] ?? failWritesWith
         let delay = writeDelays[value]
@@ -868,15 +982,29 @@ final class FakeProfileSettingsTransport: ProfileSettingsTransport, @unchecked S
 actor ProfileSettingsWriteGate {
     private var blockedValues: Set<SettingJSONValue> = []
     private var waiters: [SettingJSONValue: [CheckedContinuation<Void, Never>]] = [:]
+    private var enteredValues: Set<SettingJSONValue> = []
+    private var entryWaiters: [SettingJSONValue: [CheckedContinuation<Void, Never>]] = [:]
 
     func block(_ value: SettingJSONValue) {
         blockedValues.insert(value)
     }
 
     func waitIfBlocked(_ value: SettingJSONValue) async {
+        enteredValues.insert(value)
+        let observers = entryWaiters.removeValue(forKey: value) ?? []
+        for observer in observers {
+            observer.resume()
+        }
         guard blockedValues.contains(value) else { return }
         await withCheckedContinuation { continuation in
             waiters[value, default: []].append(continuation)
+        }
+    }
+
+    func waitUntilEntered(_ value: SettingJSONValue) async {
+        guard !enteredValues.contains(value) else { return }
+        await withCheckedContinuation { continuation in
+            entryWaiters[value, default: []].append(continuation)
         }
     }
 

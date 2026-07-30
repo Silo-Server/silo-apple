@@ -479,7 +479,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     }
 
     /// Keys with an op still queued: one inside the debounce window, or one
-    /// held back after a failure.
+    /// held back after a failure. In-flight keys are intentionally excluded;
+    /// use ``hasPendingWrites`` when deciding whether the process must stay
+    /// alive for all outstanding work.
     var pendingKeys: [SettingKey] {
         lock.lock()
         defer { lock.unlock() }
@@ -489,7 +491,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     var hasPendingWrites: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return !pending.isEmpty
+        return !pending.isEmpty || !inFlight.isEmpty || isDraining
     }
 
     /// The mutation id currently attached to this key's queued write, if any.

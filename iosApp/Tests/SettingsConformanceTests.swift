@@ -551,7 +551,7 @@ final class SettingsConformanceTests: XCTestCase {
                 continue
             }
             XCTAssertTrue(
-                settingJSONEquivalent(entry.value, expectation.value),
+                entry.value.isSemanticallyEquivalent(to: expectation.value),
                 "\(label): value = \(entry.value), want \(expectation.value)"
             )
             XCTAssertEqual(entry.source, expectation.source, "\(label): source")
@@ -570,7 +570,7 @@ final class SettingsConformanceTests: XCTestCase {
                 // the fallback only keeps this side of the check total.
                 let expectedStored = expectation.storedValue ?? .null
                 XCTAssertTrue(
-                    settingJSONEquivalent(storedValue, expectedStored),
+                    storedValue.isSemanticallyEquivalent(to: expectedStored),
                     "\(label): stored_value = \(storedValue), want \(expectedStored)"
                 )
             } else {

@@ -4204,6 +4204,34 @@ class PlayerViewModel {
         } ?? true
         if !qualityRequiresTranscode {
             if plan.delivery == .direct || plan.delivery == .remux {
+                if let selectedVersion = currentSelectedVersion,
+                   let watchDetail = currentWatchDetail,
+                   let lastLoadRequest,
+                   lastLoadRequest.offlineDownloadId == nil,
+                   ApplePlaybackQuality.shouldReselectSource(
+                       preferredQualityId: resolvedQualityId,
+                       selectedVersion: selectedVersion,
+                       availableVersions: watchDetail.versions
+                   ) {
+                    var request = lastLoadRequest.copyForRecovery(
+                        preferredFileId: nil,
+                        preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
+                        preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
+                        preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
+                        offlineDownloadId: nil
+                    )
+                    request.preferredQualityOverride = resolvedQualityId
+                    let target = currentTime.isFinite ? max(0, currentTime) : 0
+                    qualitySwitchError = nil
+                    beginFreshLoad(
+                        request: request,
+                        progressPosition: target,
+                        finalizeCurrentSession: true,
+                        resumePositionOverride: target,
+                        allowNearEndResume: true
+                    )
+                    return
+                }
                 activeQualityId = resolvedQualityId
                 lastLoadRequest?.preferredQualityOverride = resolvedQualityId
                 qualitySwitchError = nil

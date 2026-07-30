@@ -1472,6 +1472,11 @@ actor PlaybackSessionBridge {
             guard isRecoverable else { throw error }
 
             if useCopyVideo {
+                guard ApplePlaybackQuality.allowsLegacyCopyFallbackToTranscode(
+                    preferredQualityId: preferredQuality
+                ) else {
+                    throw error
+                }
                 logger.warning("Video copy rejected, falling back to 1080p transcode")
                 let fallback = TranscodeStartRequest(
                     sessionId: session.sessionId,

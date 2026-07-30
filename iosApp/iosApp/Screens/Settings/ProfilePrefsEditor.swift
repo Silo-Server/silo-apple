@@ -119,6 +119,18 @@ final class ProfilePrefsEditor {
         /// never to a newer edit currently visible in the field.
         let editorValue: String
         let language: String?
+        /// Profile that owned the editor when this logical write was queued.
+        let profileId: String?
+    }
+
+    private struct SubtitleWriteIdentity: Hashable {
+        let key: SettingKey
+        let profileId: String?
+    }
+
+    private struct MetadataWrite {
+        let language: String?
+        let profileId: String?
     }
 
     /// What the screens show in place of server-backed controls when the
@@ -133,23 +145,30 @@ final class ProfilePrefsEditor {
 
     private let writer: ProfileSettingsWriter
 
+    /// The profile whose values this editor currently represents. Every write
+    /// captures this before its first suspension so a later session switch
+    /// cannot redirect the request through a newly active X-Profile-Id.
+    private var boundProfileId: String?
+
     /// SwiftUI can launch another onChange task while a PUT is suspended. The
     /// later task marks another pass owed and returns, preserving call order
     /// for every profile key.
     private var isSavingSubtitlePrefs = false
     private var subtitleSaveRequested = false
-    /// Latest per-key edits made while another subtitle PUT is suspended.
+    /// Latest per-profile, per-key edits made while another subtitle PUT is
+    /// suspended. Different profiles own independent rows, so a queued edit for
+    /// one must not displace an ambiguous failure still owed by another.
     /// Kept independently of `savedBaseline`: a request can reach the server
     /// even when its response is lost, so reverting to the baseline still owes
     /// an explicit compensating write.
-    private var pendingSubtitleEditorValues: [SettingKey: String] = [:]
-    private var activeSubtitleEditorValues: [SettingKey: String] = [:]
+    private var pendingSubtitleEditorValues: [SubtitleWriteIdentity: String] = [:]
+    private var activeSubtitleEditorValues: [SubtitleWriteIdentity: String] = [:]
 
     /// Coalescing for the metadata language: it has a side effect the others
     /// don't (flushing cached translations), so overlapping writes are folded
     /// into one rather than each invalidating the cache.
     private var isSavingMetadataLanguage = false
-    private var pendingMetadataLanguage: String??
+    private var pendingMetadataWrite: MetadataWrite?
 
     private static let subtitleKeys: [SettingKey] = [
         ProfileSettingKeys.subtitleLanguage,
@@ -159,6 +178,13 @@ final class ProfilePrefsEditor {
 
     init(writer: ProfileSettingsWriter = ProfileSettingsWriter()) {
         self.writer = writer
+    }
+
+    /// Bind subsequent edits to the profile painted into this editor.
+    @MainActor
+    func bindProfile(id: String?) {
+        let trimmed = id?.trimmingCharacters(in: .whitespacesAndNewlines)
+        boundProfileId = trimmed.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     // MARK: - Load
@@ -260,7 +286,7 @@ final class ProfilePrefsEditor {
         isSavingSubtitlePrefs = true
         defer { isSavingSubtitlePrefs = false }
 
-        var failures: [SettingKey: Error] = [:]
+        var failures: [SubtitleWriteIdentity: Error] = [:]
         var needsEffectiveRefresh = false
 
         while true {
@@ -271,33 +297,49 @@ final class ProfilePrefsEditor {
                 saveState = .saving
 
                 // Every key is attempted even when an earlier one fails. They
-                // are independent rows; failure state is tracked per key so a
-                // newer successful value clears an older failed attempt.
+                // are independent rows; failure state is tracked per profile
+                // and key so one profile cannot clear another profile's failed
+                // attempt.
                 for write in writes {
+                    let identity = SubtitleWriteIdentity(
+                        key: write.key,
+                        profileId: write.profileId
+                    )
                     do {
-                        try await writer.write(write.key, value: write.value)
-                        failures.removeValue(forKey: write.key)
-                        adoptBaseline(for: write.key, value: write.editorValue)
+                        try await writer.write(
+                            write.key,
+                            value: write.value,
+                            profileId: write.profileId
+                        )
+                        failures.removeValue(forKey: identity)
+                        let stillEditingWrittenProfile = boundProfileId == write.profileId
+                        if stillEditingWrittenProfile {
+                            adoptBaseline(for: write.key, value: write.editorValue)
+                        }
 
-                        if write.key == ProfileSettingKeys.subtitleLanguage {
+                        if stillEditingWrittenProfile,
+                           write.key == ProfileSettingKeys.subtitleLanguage {
                             // This row landed even if a sibling later fails.
                             ProfilePrefsStore.shared.setPreferredSubtitleLanguage(write.language)
                         }
 
-                        if Self.profileWriteMayBeShadowed(by: resolvedSources[write.key]) {
+                        if stillEditingWrittenProfile,
+                           Self.profileWriteMayBeShadowed(by: resolvedSources[write.key]) {
                             needsEffectiveRefresh = true
-                        } else {
+                        } else if stillEditingWrittenProfile {
                             resolvedSources[write.key] = .scope(.profile)
                         }
                     } catch {
-                        failures[write.key] = error
-                        if pendingSubtitleEditorValues[write.key] == nil,
-                           currentEditorValue(for: write.key) == write.editorValue {
+                        failures[identity] = error
+                        let stillEditingWrittenProfile = boundProfileId == write.profileId
+                        if pendingSubtitleEditorValues[identity] == nil,
+                           (!stillEditingWrittenProfile
+                            || currentEditorValue(for: write.key) == write.editorValue) {
                             // The server may have applied this request even
                             // though its response was lost. Preserve it as an
                             // explicit owed value so a baseline-equal revert is
                             // still retried on the next trigger.
-                            pendingSubtitleEditorValues[write.key] = write.editorValue
+                            pendingSubtitleEditorValues[identity] = write.editorValue
                         }
                     }
                 }
@@ -305,7 +347,10 @@ final class ProfilePrefsEditor {
                 // A control may have changed while this batch was suspended
                 // even before its onChange task got to run. Preserve that
                 // newest local operation with another serialized pass.
-                if writes.contains(where: { currentEditorValue(for: $0.key) != $0.editorValue }) {
+                if writes.contains(where: {
+                    $0.profileId == boundProfileId
+                        && currentEditorValue(for: $0.key) != $0.editorValue
+                }) {
                     capturePendingSubtitleEdits()
                     subtitleSaveRequested = true
                 }
@@ -324,7 +369,10 @@ final class ProfilePrefsEditor {
             break
         }
 
-        if let firstFailure = ProfileSettingKeys.all.compactMap({ failures[$0] }).first {
+        let firstFailure = Self.subtitleKeys.lazy.compactMap { key in
+            failures.first(where: { $0.key.key == key })?.value
+        }.first
+        if let firstFailure {
             saveState = Self.saveState(for: firstFailure)
         } else {
             saveState = .saved
@@ -333,48 +381,67 @@ final class ProfilePrefsEditor {
 
     @MainActor
     private func takePendingSubtitleWrites() -> [SubtitleWrite] {
-        let queued = pendingSubtitleEditorValues
+        var queued = pendingSubtitleEditorValues
         pendingSubtitleEditorValues.removeAll()
-        var writes: [SubtitleWrite] = []
-        let languageValue = queued[ProfileSettingKeys.subtitleLanguage] ?? subtitleLanguage
-        if queued[ProfileSettingKeys.subtitleLanguage] != nil
-            || languageValue != savedBaseline.subtitleLanguage {
-            let language = Self.outboundLanguage(languageValue)
-            writes.append(
-                SubtitleWrite(
-                    key: ProfileSettingKeys.subtitleLanguage,
+
+        // A previous profile may have an owed retry in `queued` while the
+        // currently bound profile has a fresh edit. Keep both identities.
+        for key in Self.subtitleKeys {
+            let identity = SubtitleWriteIdentity(key: key, profileId: boundProfileId)
+            if queued[identity] == nil,
+               let current = currentEditorValue(for: key),
+               current != savedBaselineValue(for: key) {
+                queued[identity] = current
+            }
+        }
+
+        let keyOrder = Dictionary(
+            uniqueKeysWithValues: Self.subtitleKeys.enumerated().map { ($1, $0) }
+        )
+        let ordered = queued.sorted { lhs, rhs in
+            let lhsOrder = keyOrder[lhs.key.key] ?? Int.max
+            let rhsOrder = keyOrder[rhs.key.key] ?? Int.max
+            if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+            return (lhs.key.profileId ?? "") < (rhs.key.profileId ?? "")
+        }
+        let writes = ordered.compactMap { identity, editorValue -> SubtitleWrite? in
+            if identity.key == ProfileSettingKeys.subtitleLanguage {
+                let language = Self.outboundLanguage(editorValue)
+                return SubtitleWrite(
+                    key: identity.key,
                     value: ProfileSettingsWriter.languageValue(language),
-                    editorValue: languageValue,
-                    language: language
+                    editorValue: editorValue,
+                    language: language,
+                    profileId: identity.profileId
                 )
-            )
-        }
-        let modeValue = queued[ProfileSettingKeys.subtitleMode] ?? subtitleMode
-        if queued[ProfileSettingKeys.subtitleMode] != nil
-            || modeValue != savedBaseline.subtitleMode {
-            writes.append(
-                SubtitleWrite(
-                    key: ProfileSettingKeys.subtitleMode,
-                    value: .string(modeValue),
-                    editorValue: modeValue,
-                    language: nil
+            }
+            if identity.key == ProfileSettingKeys.subtitleMode {
+                return SubtitleWrite(
+                    key: identity.key,
+                    value: .string(editorValue),
+                    editorValue: editorValue,
+                    language: nil,
+                    profileId: identity.profileId
                 )
-            )
-        }
-        let forcedValue = queued[ProfileSettingKeys.showForcedSubtitles] ?? showForcedSubtitles
-        if queued[ProfileSettingKeys.showForcedSubtitles] != nil
-            || forcedValue != savedBaseline.showForcedSubtitles {
-            writes.append(
-                SubtitleWrite(
-                    key: ProfileSettingKeys.showForcedSubtitles,
-                    value: .bool(forcedValue == "on"),
-                    editorValue: forcedValue,
-                    language: nil
+            }
+            if identity.key == ProfileSettingKeys.showForcedSubtitles {
+                return SubtitleWrite(
+                    key: identity.key,
+                    value: .bool(editorValue == "on"),
+                    editorValue: editorValue,
+                    language: nil,
+                    profileId: identity.profileId
                 )
-            )
+            }
+            return nil
         }
         activeSubtitleEditorValues = Dictionary(
-            uniqueKeysWithValues: writes.map { ($0.key, $0.editorValue) }
+            uniqueKeysWithValues: writes.map {
+                (
+                    SubtitleWriteIdentity(key: $0.key, profileId: $0.profileId),
+                    $0.editorValue
+                )
+            }
         )
         return writes
     }
@@ -383,16 +450,17 @@ final class ProfilePrefsEditor {
     private func capturePendingSubtitleEdits() {
         for key in Self.subtitleKeys {
             guard let current = currentEditorValue(for: key) else { continue }
-            if let queued = pendingSubtitleEditorValues[key] {
+            let identity = SubtitleWriteIdentity(key: key, profileId: boundProfileId)
+            if let queued = pendingSubtitleEditorValues[identity] {
                 if queued != current {
-                    pendingSubtitleEditorValues[key] = current
+                    pendingSubtitleEditorValues[identity] = current
                 }
-            } else if let active = activeSubtitleEditorValues[key] {
+            } else if let active = activeSubtitleEditorValues[identity] {
                 if active != current {
-                    pendingSubtitleEditorValues[key] = current
+                    pendingSubtitleEditorValues[identity] = current
                 }
             } else if current != savedBaselineValue(for: key) {
-                pendingSubtitleEditorValues[key] = current
+                pendingSubtitleEditorValues[identity] = current
             }
         }
     }
@@ -469,47 +537,55 @@ final class ProfilePrefsEditor {
     @MainActor
     func saveMetadataLanguage() async {
         let language = Self.outboundLanguage(preferredMetadataLanguage)
+        let write = MetadataWrite(language: language, profileId: boundProfileId)
         // The displayed value may have returned to the saved baseline while
         // an older, different PUT is still suspended. Queue that revert before
         // consulting the baseline or the older value would win on the server.
         if isSavingMetadataLanguage {
-            pendingMetadataLanguage = .some(language)
+            pendingMetadataWrite = write
             return
         }
         guard preferredMetadataLanguage != savedBaseline.metadataLanguage else { return }
-        pendingMetadataLanguage = .some(language)
+        pendingMetadataWrite = write
 
         isSavingMetadataLanguage = true
         defer { isSavingMetadataLanguage = false }
 
-        while let next = pendingMetadataLanguage {
-            pendingMetadataLanguage = nil
+        while let next = pendingMetadataWrite {
+            pendingMetadataWrite = nil
             await writeMetadataLanguage(next)
         }
     }
 
     @MainActor
-    private func writeMetadataLanguage(_ language: String?) async {
+    private func writeMetadataLanguage(_ write: MetadataWrite) async {
         saveState = .saving
         do {
             try await writer.write(
                 ProfileSettingKeys.metadataLanguage,
-                value: ProfileSettingsWriter.languageValue(language)
+                value: ProfileSettingsWriter.languageValue(write.language),
+                profileId: write.profileId
             )
+            ResponseCache.shared.invalidateAllItemMetadata()
+            #if os(tvOS)
+            ItemDetailCache.shared.clearAll()
+            #endif
             // A newer edit landed while this was in flight; let its own pass
             // report, or this one would announce a value already superseded.
-            guard Self.outboundLanguage(preferredMetadataLanguage) == language else { return }
+            guard Self.outboundLanguage(preferredMetadataLanguage) == write.language,
+                  boundProfileId == write.profileId else {
+                return
+            }
             adoptBaseline(
                 for: ProfileSettingKeys.metadataLanguage,
                 value: preferredMetadataLanguage
             )
             saveState = .saved
-            ResponseCache.shared.invalidateAllItemMetadata()
-            #if os(tvOS)
-            ItemDetailCache.shared.clearAll()
-            #endif
         } catch {
-            guard Self.outboundLanguage(preferredMetadataLanguage) == language else { return }
+            guard Self.outboundLanguage(preferredMetadataLanguage) == write.language,
+                  boundProfileId == write.profileId else {
+                return
+            }
             saveState = Self.saveState(for: error)
         }
     }

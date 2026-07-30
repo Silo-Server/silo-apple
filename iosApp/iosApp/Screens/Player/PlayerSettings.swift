@@ -797,17 +797,19 @@ final class PlayerSettings {
     func legacySnapshot() -> [SettingKey: SettingJSONValue] {
         // Both spellings appear here: the unscoped key predates per-scope
         // caching, and either may still hold a compound tier id from a build
-        // before the axes were stored separately. normalizeResolution reduces
-        // any of them to a contract member.
+        // before the axes were stored separately. The shared axes conversion
+        // reduces any of them to a contract member without losing its cap.
         let legacyQualityId = defaults.string(forKey: Self.cacheKey(Keys.preferredQuality))
             ?? defaults.string(forKey: Keys.preferredQuality)
-        let legacyResolution = SiloQualityPresets.normalizeResolution(legacyQualityId)
+        let legacyQualityAxes = AppleQualityAxes.split(
+            legacyQualityId ?? ApplePlaybackQuality.autoId
+        )
         // Builds before the contract stored Apple's compound rung id in the
         // quality key and had no companion bitrate key. Recover that rung's
         // cap only when no explicit axis exists; the separate key is always
         // authoritative once present.
         let legacyBitrateKbps = Self.cachedMaxBitrateKbps(defaults)
-            ?? AppleQualityAxes.split(legacyQualityId ?? ApplePlaybackQuality.autoId).bitrateKbps
+            ?? legacyQualityAxes.bitrateKbps
         let legacyAudioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage))
             ?? defaults.string(forKey: Keys.audioLanguage)
             ?? ""
@@ -817,7 +819,7 @@ final class PlayerSettings {
         )
 
         var snapshot: [SettingKey: SettingJSONValue] = [
-            .preferredQuality: .string(legacyResolution),
+            .preferredQuality: .string(legacyQualityAxes.resolution),
             .maxBitrateKbps: legacyBitrateKbps.map { .int($0) } ?? .null,
             .audioLanguage: legacyAudioLanguage.isEmpty ? .null : .string(legacyAudioLanguage),
             .autoSkipIntro: .bool(
@@ -947,7 +949,7 @@ final class PlayerSettings {
             // Nothing to migrate when the resolved value already equals what
             // this device holds — typed comparison now, so `1` and `1.0` are
             // not two different values the way their strings were.
-            if legacyValue == entry.value {
+            if legacyValue.isSemanticallyEquivalent(to: entry.value) {
                 continue
             }
             flusher.enqueue(key, value: legacyValue)

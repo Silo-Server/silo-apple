@@ -32,7 +32,12 @@ import OSLog
 /// above them.
 protocol ProfileSettingsTransport: AnyObject, Sendable {
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse
-    func putValue(key: SettingKey, value: SettingJSONValue, mutationId: String) async throws
+    func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        mutationId: String,
+        profileId: String?
+    ) async throws
 }
 
 /// The production transport: the canonical endpoints on ``ContinuumAPI``.
@@ -47,12 +52,18 @@ final class ContinuumProfileSettingsTransport: ProfileSettingsTransport {
         try await api.getEffectiveValues(keys: keys)
     }
 
-    func putValue(key: SettingKey, value: SettingJSONValue, mutationId: String) async throws {
+    func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        mutationId: String,
+        profileId: String?
+    ) async throws {
         _ = try await api.putValue(
             key: key,
             scope: .profile,
             value: value,
-            mutationId: mutationId
+            mutationId: mutationId,
+            profileId: profileId
         )
     }
 }
@@ -118,10 +129,18 @@ final class ProfileSettingsWriter: @unchecked Sendable {
 
     private let transport: ProfileSettingsTransport
 
-    /// The mutation id in flight per key, so a retry of the *same* logical
-    /// write replays the server's receipt instead of applying twice.
+    /// The mutation id in flight per key and profile, so a retry of the *same*
+    /// logical write replays the server's receipt instead of applying twice.
+    private struct MutationIdentity: Hashable {
+        let key: SettingKey
+        let profileId: String?
+    }
+
     private let lock = NSLock()
-    private var inFlight: [SettingKey: (value: SettingJSONValue, mutationId: String)] = [:]
+    private var inFlight: [MutationIdentity: (
+        value: SettingJSONValue,
+        mutationId: String
+    )] = [:]
 
     init(transport: ProfileSettingsTransport) {
         self.transport = transport
@@ -165,11 +184,20 @@ final class ProfileSettingsWriter: @unchecked Sendable {
     ///
     /// Throws ``SettingsAPIError`` so a caller can distinguish "this server is
     /// too old" and "no profile selected" from a value the contract refused.
-    func write(_ key: SettingKey, value: SettingJSONValue) async throws {
-        let mutationId = mutationId(for: key, value: value)
+    func write(
+        _ key: SettingKey,
+        value: SettingJSONValue,
+        profileId: String? = nil
+    ) async throws {
+        let mutationId = mutationId(for: key, value: value, profileId: profileId)
         do {
-            try await transport.putValue(key: key, value: value, mutationId: mutationId)
-            clearInFlight(key, matching: mutationId)
+            try await transport.putValue(
+                key: key,
+                value: value,
+                mutationId: mutationId,
+                profileId: profileId
+            )
+            clearInFlight(key, profileId: profileId, matching: mutationId)
         } catch {
             let mapped = SettingsAPIError.from(error, key: key.rawValue, scope: .profile)
             switch mapped {
@@ -178,7 +206,7 @@ final class ProfileSettingsWriter: @unchecked Sendable {
                 // exact content would fail identically, and reusing the id for
                 // corrected content is the 409 case. Drop it so the next
                 // attempt is a genuinely new write.
-                clearInFlight(key, matching: mutationId)
+                clearInFlight(key, profileId: profileId, matching: mutationId)
                 Self.logger.warning(
                     "\(key.rawValue, privacy: .public): contract refused the profile write: \(String(describing: mapped), privacy: .public)"
                 )
@@ -204,23 +232,33 @@ final class ProfileSettingsWriter: @unchecked Sendable {
 
     /// The id for this write: reused when the same content is being retried,
     /// fresh when the content changed.
-    private func mutationId(for key: SettingKey, value: SettingJSONValue) -> String {
+    private func mutationId(
+        for key: SettingKey,
+        value: SettingJSONValue,
+        profileId: String?
+    ) -> String {
         lock.lock()
         defer { lock.unlock() }
-        if let existing = inFlight[key], existing.value == value {
+        let identity = MutationIdentity(key: key, profileId: profileId)
+        if let existing = inFlight[identity], existing.value == value {
             return existing.mutationId
         }
         let minted = newSettingMutationId()
-        inFlight[key] = (value, minted)
+        inFlight[identity] = (value, minted)
         return minted
     }
 
     /// Retire an id once its write settled, but only if a newer write has not
-    /// already claimed the key.
-    private func clearInFlight(_ key: SettingKey, matching mutationId: String) {
+    /// already claimed the key for this profile.
+    private func clearInFlight(
+        _ key: SettingKey,
+        profileId: String?,
+        matching mutationId: String
+    ) {
         lock.lock()
-        if inFlight[key]?.mutationId == mutationId {
-            inFlight.removeValue(forKey: key)
+        let identity = MutationIdentity(key: key, profileId: profileId)
+        if inFlight[identity]?.mutationId == mutationId {
+            inFlight.removeValue(forKey: identity)
         }
         lock.unlock()
     }

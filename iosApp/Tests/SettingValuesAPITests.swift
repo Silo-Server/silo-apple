@@ -57,6 +57,24 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(decoded.intValue, 8000)
     }
 
+    func testSemanticEqualityTreatsNumericSpellingsAsTheSameJSONValue() throws {
+        XCTAssertTrue(SettingJSONValue.double(1.0).isSemanticallyEquivalent(to: .int(1)))
+        XCTAssertTrue(
+            SettingJSONValue.object([
+                "values": .array([.double(1.0), .object(["cap": .int(8_000)])]),
+            ]).isSemanticallyEquivalent(
+                to: .object([
+                    "values": .array([.int(1), .object(["cap": .double(8_000.0)])]),
+                ])
+            )
+        )
+    }
+
+    func testSemanticEqualityDoesNotCoerceBooleansToNumbers() throws {
+        XCTAssertFalse(SettingJSONValue.bool(true).isSemanticallyEquivalent(to: .int(1)))
+        XCTAssertFalse(SettingJSONValue.bool(false).isSemanticallyEquivalent(to: .int(0)))
+    }
+
     func testNullValueIsDistinctFromAbsentValue() throws {
         // Several ui.* settings are nullable objects, so JSON null is a real
         // value and must not collapse into "nothing stored".

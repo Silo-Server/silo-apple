@@ -602,6 +602,28 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(transport.writes().count, 1, "a second flush must wait, not re-send")
     }
 
+    func testAWriteAlreadyBeingDrainedStillCountsAsOutstanding() async throws {
+        let transport = FakeSettingsTransport()
+        await transport.writeGate.block()
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .seconds(30)
+        )
+
+        flusher.enqueue(.playerHdrEnabled, value: .bool(false))
+        let flush = Task { await flusher.flushNow() }
+        await transport.writeGate.waitUntilEntered()
+
+        XCTAssertTrue(
+            flusher.hasPendingWrites,
+            "lifecycle handling must keep the process alive after pending moves to inFlight"
+        )
+
+        await transport.writeGate.release()
+        await flush.value
+        XCTAssertFalse(flusher.hasPendingWrites)
+    }
+
     // MARK: - Deletes
 
     func testClearingAScopeWithNothingStoredIsTreatedAsAlreadyDone() async throws {
@@ -627,6 +649,45 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         XCTAssertEqual(snapshot[.playbackPreferredQuality], .string("720p"))
         XCTAssertEqual(snapshot[.playbackMaxBitrateKbps], .int(3_000))
+    }
+
+    func testLegacy328pAliasesMigrateTo480pWithTheir700KbpsCap() throws {
+        for legacyId in ["328p", "420p"] {
+            let harness = try PlayerSettingsHarness()
+            harness.defaults.set(legacyId, forKey: "preferredQuality")
+            harness.defaults.removeObject(forKey: "playback.maxBitrateKbps")
+
+            let snapshot = harness.settings.legacySnapshot()
+
+            XCTAssertEqual(
+                snapshot[.playbackPreferredQuality],
+                .string("480p"),
+                legacyId
+            )
+            XCTAssertEqual(
+                snapshot[.playbackMaxBitrateKbps],
+                .int(700),
+                legacyId
+            )
+        }
+    }
+
+    func testMigrationDoesNotWriteAnEquivalentNumericDefault() async throws {
+        let harness = try PlayerSettingsHarness()
+        let effective = EffectiveSettingValue(
+            key: SettingKey.playerPlaybackSpeed.rawValue,
+            value: .int(1),
+            source: .contractDefault
+        )
+
+        let imported = await harness.settings.importLegacySettingsIfNeeded(
+            scopeID: "numeric-equivalence-test",
+            legacySnapshot: [.playerPlaybackSpeed: .double(1.0)],
+            effectiveByKey: [.playerPlaybackSpeed: effective]
+        )
+
+        XCTAssertFalse(imported)
+        XCTAssertTrue(harness.transport.writes().isEmpty)
     }
 
     func testLegacySnapshotCoversEverySyncedDeviceSetting() throws {
@@ -1123,6 +1184,58 @@ final class PlayerSettingsFlushTests: XCTestCase {
         )
     }
 
+    func testWideningToOriginalOr4KReselectsAHigherResolutionSource() throws {
+        let sevenTwenty = Self.version(fileId: 1, resolution: "720p", bitrateKbps: 4_000)
+        let tenEighty = Self.version(fileId: 2, resolution: "1080p", bitrateKbps: 10_000)
+        let fourK = Self.version(fileId: 3, resolution: "2160p", bitrateKbps: 30_000)
+        let versions = [sevenTwenty, tenEighty, fourK]
+
+        XCTAssertTrue(
+            ApplePlaybackQuality.shouldReselectSource(
+                preferredQualityId: "original",
+                selectedVersion: sevenTwenty,
+                availableVersions: versions
+            )
+        )
+        XCTAssertTrue(
+            ApplePlaybackQuality.shouldReselectSource(
+                preferredQualityId: "2160p",
+                selectedVersion: sevenTwenty,
+                availableVersions: versions
+            )
+        )
+        XCTAssertFalse(
+            ApplePlaybackQuality.shouldReselectSource(
+                preferredQualityId: "720p-high",
+                selectedVersion: sevenTwenty,
+                availableVersions: versions
+            ),
+            "a higher file above the requested ceiling is not eligible"
+        )
+        XCTAssertFalse(
+            ApplePlaybackQuality.shouldReselectSource(
+                preferredQualityId: "2160p",
+                selectedVersion: fourK,
+                availableVersions: versions
+            ),
+            "the selected file already satisfies the highest eligible resolution"
+        )
+    }
+
+    func testOriginalCopyFailureCannotFallBackToATranscode() throws {
+        XCTAssertFalse(
+            ApplePlaybackQuality.allowsLegacyCopyFallbackToTranscode(
+                preferredQualityId: "original"
+            )
+        )
+        XCTAssertTrue(
+            ApplePlaybackQuality.allowsLegacyCopyFallbackToTranscode(
+                preferredQualityId: nil
+            ),
+            "Auto retains the older-server compatibility fallback"
+        )
+    }
+
     func testLegacyCopyRejectionFallbackRetainsTheBandwidthCap() throws {
         XCTAssertEqual(ApplePlaybackQuality.legacyCopyFallbackBitrateKbps(capKbps: nil), 6_000)
         XCTAssertEqual(ApplePlaybackQuality.legacyCopyFallbackBitrateKbps(capKbps: 12_000), 6_000)
@@ -1336,6 +1449,7 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     /// Invoked as each write is attempted, before its outcome is decided —
     /// the seam a test uses to enqueue a newer value mid-drain.
     var onWrite: ((Write) -> Void)?
+    let writeGate = SettingsWriteGate()
 
     private let lock = NSLock()
     private var recordedWrites: [Write] = []
@@ -1422,6 +1536,7 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     ) async throws {
         try failIfCancelled()
         onAttemptStart?()
+        await writeGate.waitIfBlocked()
         if let writeDelay {
             try? await Task.sleep(for: writeDelay)
         }
@@ -1482,6 +1597,46 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         lock.lock()
         defer { lock.unlock() }
         return cancelledAttempts
+    }
+}
+
+actor SettingsWriteGate {
+    private var isBlocked = false
+    private var hasEntered = false
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func block() {
+        isBlocked = true
+    }
+
+    func waitIfBlocked() async {
+        hasEntered = true
+        let observers = entryWaiters
+        entryWaiters.removeAll()
+        for observer in observers {
+            observer.resume()
+        }
+        guard isBlocked else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilEntered() async {
+        guard !hasEntered else { return }
+        await withCheckedContinuation { continuation in
+            entryWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isBlocked = false
+        let resumptions = releaseWaiters
+        releaseWaiters.removeAll()
+        for continuation in resumptions {
+            continuation.resume()
+        }
     }
 }
 

@@ -395,7 +395,7 @@ private func narrowValue(
         // The policy value replaces the user's outright. An already-equal value
         // is not a narrowing, so clients do not tell the user their own choice
         // was overridden.
-        return settingJSONEquivalent(value, limit) ? nil : limit
+        return value.isSemanticallyEquivalent(to: limit) ? nil : limit
 
     case .ceiling:
         // null on a nullable numeric means "no cap of my own" — unbounded
@@ -412,7 +412,7 @@ private func narrowValue(
 
     case .allowlist:
         guard let allowed = limit.arrayValue, let fallback = allowed.first else { return nil }
-        if allowed.contains(where: { settingJSONEquivalent($0, value) }) { return nil }
+        if allowed.contains(where: { $0.isSemanticallyEquivalent(to: value) }) { return nil }
         // Falling back to the first allowed member rather than the definition
         // default: the default may itself be outside the allowlist, and an
         // effective value the policy forbids is the one thing this must never
@@ -445,8 +445,8 @@ private func compareSettingValues(
     if definition.valueSchema.type == "enum" && definition.valueSchema.ordered {
         let members = definition.valueSchema.values
         guard
-            let left = members.firstIndex(where: { settingJSONEquivalent($0.value, lhs) }),
-            let right = members.firstIndex(where: { settingJSONEquivalent($0.value, rhs) })
+            let left = members.firstIndex(where: { $0.value.isSemanticallyEquivalent(to: lhs) }),
+            let right = members.firstIndex(where: { $0.value.isSemanticallyEquivalent(to: rhs) })
         else {
             return 0
         }
@@ -454,36 +454,4 @@ private func compareSettingValues(
         return left > right ? 1 : 0
     }
     return 0
-}
-
-/// Structural equality over setting values, ignoring object key order and
-/// numeric spelling.
-///
-/// `SettingJSONValue` is already `Equatable`, but its synthesized conformance
-/// separates `.int(8000)` from `.double(8000.0)` — the same JSON number, and
-/// the fixture is free to author either. The Go runner decodes to `any` before
-/// comparing, which collapses both to a float64; this does the same by hand.
-func settingJSONEquivalent(_ lhs: SettingJSONValue, _ rhs: SettingJSONValue) -> Bool {
-    switch (lhs, rhs) {
-    case (.null, .null):
-        return true
-    case (.bool(let left), .bool(let right)):
-        return left == right
-    case (.string(let left), .string(let right)):
-        return left == right
-    case (.array(let left), .array(let right)):
-        guard left.count == right.count else { return false }
-        return zip(left, right).allSatisfy { settingJSONEquivalent($0, $1) }
-    case (.object(let left), .object(let right)):
-        guard left.count == right.count else { return false }
-        return left.allSatisfy { key, value in
-            guard let counterpart = right[key] else { return false }
-            return settingJSONEquivalent(value, counterpart)
-        }
-    default:
-        // Numbers only: `doubleValue` is nil for every non-numeric case, so a
-        // bool never compares equal to 1.
-        guard let left = lhs.doubleValue, let right = rhs.doubleValue else { return false }
-        return left == right
-    }
 }

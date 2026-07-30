@@ -129,6 +129,7 @@ final class TVSettingsViewModel {
     /// itself main-actor bound.
     @MainActor
     func load() async {
+        prefs.bindProfile(id: AuthService.shared.profileId)
         await PlayerSettings.shared.refreshFromServer()
         adoptQualityFromPlayerSettings()
         preferredAudioLanguage = PlayerSettings.shared.audioLanguage
@@ -150,8 +151,9 @@ final class TVSettingsViewModel {
         let (loadedUser, loadedProfiles) = await (user, profiles)
         userInfo = loadedUser
 
-        if let activeId = AuthService.shared.profileId {
-            activeProfile = loadedProfiles.first(where: { $0.id == activeId })
+        let activeProfileId = AuthService.shared.profileId
+        if let activeProfileId {
+            activeProfile = loadedProfiles.first(where: { $0.id == activeProfileId })
         } else {
             activeProfile = nil
         }
@@ -159,6 +161,7 @@ final class TVSettingsViewModel {
         // Paint the profile's own values first, then let the batched effective
         // read replace them: it is the only source that accounts for a library,
         // series or device override winning over the profile row.
+        prefs.bindProfile(id: activeProfileId)
         prefs.seed(from: activeProfile)
         await prefs.load()
     }
