@@ -40,6 +40,25 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertFalse(options.contains("en"))
     }
 
+    func testBibliographicAliasesReplaceTheirCanonicalContractRows() {
+        let aliases = [
+            "fre": "fr",
+            "ger": "de",
+            "chi": "zh",
+            "mao": "mi",
+        ]
+
+        for (alias, canonical) in aliases {
+            let options = PlaybackLanguageOption.options(
+                for: .playbackAudioLanguage,
+                currentValue: alias
+            ).map(\.code)
+
+            XCTAssertTrue(options.contains(alias), "the exact current value \(alias) must win")
+            XCTAssertFalse(options.contains(canonical), "\(alias) must replace its alias \(canonical)")
+        }
+    }
+
     // MARK: - Preset table
 
     /// The contract's `playback.preferred_quality` members. Spelled out here

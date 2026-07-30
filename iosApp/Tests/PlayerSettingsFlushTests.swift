@@ -860,6 +860,27 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertTrue(harness.settings.autoSkipIntro)
     }
 
+    func testMigrationPreservesAudioLanguageSuggestions() async throws {
+        let harness = try PlayerSettingsHarness()
+        let suggestions = ["en", "ja", "pt-BR"]
+        let effective = EffectiveSettingValue(
+            key: SettingKey.playbackAudioLanguage.rawValue,
+            value: .null,
+            source: .contractDefault,
+            suggestedValues: suggestions
+        )
+
+        let imported = await harness.settings.importLegacySettingsIfNeeded(
+            scopeID: "audio-suggestions-import-test",
+            legacySnapshot: [.playbackAudioLanguage: .string("fr")],
+            effectiveByKey: [.playbackAudioLanguage: effective]
+        )
+
+        XCTAssertTrue(imported)
+        XCTAssertEqual(harness.settings.audioLanguage, "fr")
+        XCTAssertEqual(harness.settings.audioLanguageSuggestions, suggestions)
+    }
+
     func testMigrationKeepsAPolicyConstrainedEffectiveValueLocally() async throws {
         let harness = try PlayerSettingsHarness()
         let constrained = EffectiveSettingValue(

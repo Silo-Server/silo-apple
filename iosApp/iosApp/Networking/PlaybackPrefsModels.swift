@@ -143,9 +143,18 @@ struct PlaybackLanguageOption: Identifiable, Hashable {
     let label: String
     var id: String { code }
 
-    static var all: [PlaybackLanguageOption] {
-        options(for: .playbackSubtitleLanguage)
-    }
+    static let all = options(for: .playbackSubtitleLanguage)
+
+    /// ISO 639-2/B spellings whose terminology form differs. Foundation
+    /// canonicalizes most of these through CLDR, but not every supported
+    /// spelling (notably `mao`), so keep the stable ISO aliases explicit.
+    private static let bibliographicAliases: [String: String] = [
+        "alb": "sq", "arm": "hy", "baq": "eu", "bur": "my",
+        "chi": "zh", "cze": "cs", "dut": "nl", "fre": "fr",
+        "geo": "ka", "ger": "de", "gre": "el", "ice": "is",
+        "mac": "mk", "mao": "mi", "may": "ms", "per": "fa",
+        "rum": "ro", "slo": "sk", "tib": "bo", "wel": "cy",
+    ]
 
     static func options(
         for key: SettingKey,
@@ -189,9 +198,10 @@ struct PlaybackLanguageOption: Identifiable, Hashable {
         let normalized = value.replacingOccurrences(of: "_", with: "-")
         var components = normalized.split(separator: "-").map(String.init)
         guard let language = components.first else { return normalized.lowercased() }
-        if let canonical = Locale(identifier: language).language.languageCode?.identifier {
-            components[0] = canonical
-        }
+        let languageCode = Locale(identifier: language).language.languageCode
+        components[0] = languageCode?.identifier(.alpha2)
+            ?? bibliographicAliases[language.lowercased()]
+            ?? language
         return components.joined(separator: "-").lowercased()
     }
 }

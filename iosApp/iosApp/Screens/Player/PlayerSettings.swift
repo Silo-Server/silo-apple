@@ -993,6 +993,7 @@ final class PlayerSettings {
                     key: key.rawValue,
                     value: legacyValue,
                     source: .scope(.profileDevice),
+                    suggestedValues: entry.suggestedValues,
                     scope: .profileDevice
                 )
             }
