@@ -575,6 +575,35 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(writes.map(\.profileId), ["profile-1", "profile-2"])
     }
 
+    func testProfileSwitchSettlesMetadataSaveStateWithoutAReplacementWrite() async throws {
+        let outcomes: [SettingsAPIError?] = [
+            nil,
+            .transport(description: "response lost"),
+        ]
+
+        for outcome in outcomes {
+            let transport = FakeProfileSettingsTransport()
+            await transport.writeGate.block(.string("ja"))
+            transport.failWritesWith = outcome
+            let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+            editor.bindProfile(id: "profile-1")
+            editor.seed(from: nil)
+
+            editor.preferredMetadataLanguage = "ja"
+            let save = Task { @MainActor in await editor.saveMetadataLanguage() }
+            await transport.writeGate.waitUntilEntered(.string("ja"))
+
+            editor.bindProfile(id: "profile-2")
+            await transport.writeGate.release(.string("ja"))
+            await save.value
+
+            XCTAssertNil(
+                editor.saveState,
+                "a stale completion must not leave the newly bound profile showing Saving"
+            )
+        }
+    }
+
     // MARK: - Scope promotion
 
     /// A value the effective read resolved from a *narrower* scope must not be

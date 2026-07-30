@@ -574,6 +574,7 @@ final class ProfilePrefsEditor {
             // report, or this one would announce a value already superseded.
             guard Self.outboundLanguage(preferredMetadataLanguage) == write.language,
                   boundProfileId == write.profileId else {
+                if pendingMetadataWrite == nil { saveState = nil }
                 return
             }
             adoptBaseline(
@@ -584,6 +585,7 @@ final class ProfilePrefsEditor {
         } catch {
             guard Self.outboundLanguage(preferredMetadataLanguage) == write.language,
                   boundProfileId == write.profileId else {
+                if pendingMetadataWrite == nil { saveState = nil }
                 return
             }
             saveState = Self.saveState(for: error)
