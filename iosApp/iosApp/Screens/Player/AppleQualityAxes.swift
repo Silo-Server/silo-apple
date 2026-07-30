@@ -52,6 +52,9 @@ struct AppleQualityAxes: Equatable {
     /// the cap would silently uncap their connection.
     static func split(_ qualityId: String) -> AppleQualityAxes {
         let normalized = ApplePlaybackQuality.normalizeStoredId(qualityId)
+        if normalized == ApplePlaybackQuality.ultraHDId {
+            return AppleQualityAxes(resolution: "2160p", bitrateKbps: nil)
+        }
         guard let option = ApplePlaybackQuality.settingsOptions.first(where: { $0.id == normalized }),
               !option.isAuto else {
             return .auto
@@ -83,9 +86,12 @@ struct AppleQualityAxes: Equatable {
     /// clamp the legacy `/transcode/start` encode target to it, so a stored
     /// 6 Mbps cap transcodes 1080p at 6 Mbps rather than at the rung's 8.
     ///
-    /// `original` remains its own direct-play-only intent. A pair naming a
-    /// resolution this client has no ladder for — 2160p or a member added by a
-    /// newer server — falls back to `auto`.
+    /// `original` remains the uncapped source-resolution intent; when paired
+    /// with a numeric bandwidth cap, the legacy planner still re-encodes to
+    /// honour that independent axis. The contract's 2160p member is preserved
+    /// as an opaque resolution-only id even though Apple's local transcode
+    /// ladder has no fabricated 4K bitrate rung. A member added by a newer
+    /// server still falls back to `auto` until this client knows it.
     static func join(resolution: String?, bitrateKbps: Int?) -> String {
         let resolution = (resolution?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()).flatMap {
             $0.isEmpty ? nil : $0
@@ -99,13 +105,15 @@ struct AppleQualityAxes: Equatable {
             // independent and is sent to V3 or enforced by the legacy planner.
             return ApplePlaybackQuality.autoId
         }
+        if resolution == "2160p" {
+            return ApplePlaybackQuality.ultraHDId
+        }
 
         // Matched on each tier's *contract* resolution rather than its own
         // label, so 328p — whose contract member is 480p — stays a candidate
         // for a stored 480p and round-trips instead of widening to the 480p
-        // tier above it. 2160p and any member this build has never seen match
-        // nothing, which is the `auto` fallback: the ladder tops out at 1080p
-        // and normalizeStoredId has always folded 4K into direct play.
+        // tier above it. Any member this build has never seen matches nothing,
+        // which is the `auto` fallback.
         let atResolution = ApplePlaybackQuality.tiers.filter {
             split($0.id).resolution == resolution
         }
@@ -126,5 +134,22 @@ struct AppleQualityAxes: Equatable {
         // time rather than by silently shrinking the picture.
         return atResolution.min(by: { $0.bitrateKbps < $1.bitrateKbps })?.id
             ?? ApplePlaybackQuality.autoId
+    }
+
+    /// Resolve the bandwidth half of the active playback intent.
+    ///
+    /// An in-player selection is a complete temporary override, so its local
+    /// tier replaces the fallback cap (including Auto/Original clearing it).
+    /// With no override, the exact fallback survives untouched. That distinction
+    /// matters for pairs authored by another client: Apple's local 1080p rung is
+    /// 8 Mbps, so splitting a stored 1080p/6 Mbps pair would silently widen it.
+    static func resolvedBitrateCap(
+        qualityOverride: String?,
+        fallbackBitrateKbps: Int?
+    ) -> Int? {
+        if let qualityOverride {
+            return split(qualityOverride).bitrateKbps
+        }
+        return fallbackBitrateKbps.flatMap { $0 > 0 ? $0 : nil }
     }
 }

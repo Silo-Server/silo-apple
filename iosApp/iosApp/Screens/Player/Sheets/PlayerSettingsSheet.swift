@@ -195,7 +195,8 @@ struct PlayerSettingsSheet: View {
     }
 
     private var activeQualityLabel: String {
-        viewModel.qualityOptions.first(where: { $0.id == viewModel.activeQualityId })?.label ?? "Auto"
+        viewModel.qualityOptions.first(where: { $0.id == viewModel.activeQualityId })?.label
+            ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
     }
 
     private var qualityPage: some View {

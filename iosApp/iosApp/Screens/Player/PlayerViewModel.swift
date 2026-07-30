@@ -937,7 +937,7 @@ class PlayerViewModel {
     private var staleSessionRecoverySessionId: String?
     private var hasAttemptedNativeDirectRouteRecovery = false
     private var hasAttemptedSiloRouteCompatibilityFallback = false
-    private struct LoadRequest {
+    struct LoadRequest {
         let contentId: String
         let preferredFileId: Int?
         let preferredAudioTrackIndex: Int?
@@ -951,6 +951,28 @@ class PlayerViewModel {
         /// Explicit quality for this load (mid-stream quality-change replan);
         /// wins over `PlayerSettings.preferredQuality` in the bridge.
         var preferredQualityOverride: String? = nil
+
+        /// Rebuild a request for the same playback session while retaining the
+        /// user's temporary quality choice. Recovery must not fall back to the
+        /// persisted preference merely because tracks or the file id changed.
+        func copyForRecovery(
+            preferredFileId: Int?,
+            preferredAudioTrackIndex: Int?,
+            preferredSubtitleTrackIndex: Int?,
+            preferredSidecarSubtitleTrackId: Int64?,
+            offlineDownloadId: String?
+        ) -> LoadRequest {
+            LoadRequest(
+                contentId: contentId,
+                preferredFileId: preferredFileId,
+                preferredAudioTrackIndex: preferredAudioTrackIndex,
+                preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
+                preferredSidecarSubtitleTrackId: preferredSidecarSubtitleTrackId,
+                startFromBeginning: false,
+                offlineDownloadId: offlineDownloadId,
+                preferredQualityOverride: preferredQualityOverride
+            )
+        }
     }
 
     /// Where a `beginFreshLoad` invocation came from. Determines (a) whether
@@ -1530,6 +1552,9 @@ class PlayerViewModel {
                     return
                 }
                 guard !Task.isCancelled, !self.isDisposed else { return }
+                if completesQualitySwitch {
+                    self.lastLoadRequest?.preferredQualityOverride = prepared.activeQualityId
+                }
 
                 let previousSessionId = self.activePlaybackSessionId
                 self.activePlaybackSessionId = prepared.session.sessionId
@@ -1560,6 +1585,8 @@ class PlayerViewModel {
                 self.logExecutionPlan(plan)
                 await self.sessionBridge.reportProtocolV3PlanExecutionStarted()
                 await self.loadStream(plan: plan)
+            } catch is CancellationError {
+                return
             } catch {
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 Self.logger.error("Protocol V3 replan failed: \(String(describing: error), privacy: .public)")
@@ -3164,13 +3191,11 @@ class PlayerViewModel {
 
     private func makeSuspendedPlaybackContext() -> SuspendedPlaybackContext? {
         guard let lastLoadRequest else { return nil }
-        let request = LoadRequest(
-            contentId: lastLoadRequest.contentId,
+        let request = lastLoadRequest.copyForRecovery(
             preferredFileId: lastLoadRequest.preferredFileId,
             preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
             preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
             preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-            startFromBeginning: false,
             offlineDownloadId: lastLoadRequest.offlineDownloadId
         )
         let resumePosition = currentTime.isFinite ? max(0, currentTime) : 0
@@ -3753,13 +3778,12 @@ class PlayerViewModel {
         let durationHint = duration.isFinite && duration > 0
             ? duration
             : (currentSelectedVersion?.duration ?? 0)
-        let renewalRequest = LoadRequest(
-            contentId: lastLoadRequest.contentId,
+        let renewalRequest = lastLoadRequest.copyForRecovery(
             preferredFileId: currentSelectedVersion?.fileId ?? lastLoadRequest.preferredFileId,
             preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
             preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
             preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-            startFromBeginning: false
+            offlineDownloadId: nil
         )
 
         Self.logger.warning(
@@ -3932,13 +3956,12 @@ class PlayerViewModel {
         let resumePosition = observedPosition.isFinite
             ? max(0, observedPosition)
             : max(0, currentTime)
-        let recoveryRequest = LoadRequest(
-            contentId: lastLoadRequest.contentId,
+        let recoveryRequest = lastLoadRequest.copyForRecovery(
             preferredFileId: currentSelectedVersion?.fileId ?? lastLoadRequest.preferredFileId,
             preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
             preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
             preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-            startFromBeginning: false
+            offlineDownloadId: nil
         )
 
         Self.logger.warning(
@@ -4168,16 +4191,21 @@ class PlayerViewModel {
             )
             return
         }
+        let qualityOverrideCapKbps = AppleQualityAxes.resolvedBitrateCap(
+            qualityOverride: resolvedQualityId,
+            fallbackBitrateKbps: nil
+        )
         let qualityRequiresTranscode = currentSelectedVersion.map {
             ApplePlaybackQuality.shouldForceTranscode(
                 preferredQualityId: resolvedQualityId,
                 selectedVersion: $0,
-                capKbps: settings.maxBitrateKbps
+                capKbps: qualityOverrideCapKbps
             )
         } ?? true
         if !qualityRequiresTranscode {
             if plan.delivery == .direct || plan.delivery == .remux {
                 activeQualityId = resolvedQualityId
+                lastLoadRequest?.preferredQualityOverride = resolvedQualityId
                 qualitySwitchError = nil
                 return
             }
@@ -4188,13 +4216,11 @@ class PlayerViewModel {
                 // replan the whole session so the server can hand back direct
                 // play. Same pattern as interruption recovery: preserve the
                 // current track selections and resume at the current position.
-                var request = LoadRequest(
-                    contentId: lastLoadRequest.contentId,
+                var request = lastLoadRequest.copyForRecovery(
                     preferredFileId: lastLoadRequest.preferredFileId,
                     preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
                     preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
                     preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-                    startFromBeginning: false,
                     offlineDownloadId: lastLoadRequest.offlineDownloadId
                 )
                 request.preferredQualityOverride = resolvedQualityId
@@ -4648,13 +4674,12 @@ class PlayerViewModel {
             return true
         }
 
-        let seekRequest = LoadRequest(
-            contentId: lastLoadRequest.contentId,
+        let seekRequest = lastLoadRequest.copyForRecovery(
             preferredFileId: lastLoadRequest.preferredFileId,
             preferredAudioTrackIndex: lastLoadRequest.preferredAudioTrackIndex,
             preferredSubtitleTrackIndex: lastLoadRequest.preferredSubtitleTrackIndex,
             preferredSidecarSubtitleTrackId: lastLoadRequest.preferredSidecarSubtitleTrackId,
-            startFromBeginning: false
+            offlineDownloadId: nil
         )
         beginFreshLoad(
             request: seekRequest,
@@ -4795,9 +4820,12 @@ class PlayerViewModel {
                 let session = try await self.sessionBridge.restartCurrentTranscode(
                     selectedVersion: selectedVersion,
                     seekSeconds: target,
-                    qualityId: qualityId
+                    qualityOverride: source == "quality" ? qualityId : nil
                 )
                 guard !Task.isCancelled, !self.isDisposed else { return }
+                if source == "quality" {
+                    self.lastLoadRequest?.preferredQualityOverride = qualityId
+                }
                 self.activePlaybackSessionId = session.sessionId
                 self.autoSkippedIntroKey = nil
                 self.autoSkipIntroCancelledKey = nil
@@ -4868,6 +4896,8 @@ class PlayerViewModel {
                     "[CMP-SEEK] in-place transcode restart loaded target=\(target, privacy: .public)"
                 )
                 await self.loadStream(plan: restartedPlan)
+            } catch is CancellationError {
+                return
             } catch {
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 Self.logger.error("[CMP-SEEK] in-place transcode restart failed: \(String(describing: error), privacy: .public)")

@@ -15,6 +15,7 @@ struct ApplePlaybackQualityOption: Identifiable, Hashable {
         if isAuto {
             return "Best available, direct-play first"
         }
+        guard bitrateKbps > 0 else { return nil }
         return "Maximum bitrate: \(bitrateLabel)"
     }
 
@@ -23,7 +24,7 @@ struct ApplePlaybackQualityOption: Identifiable, Hashable {
     }
 
     var labelWithBitrate: String {
-        guard !isOriginal, !isAuto else { return label }
+        guard !isOriginal, !isAuto, bitrateKbps > 0 else { return label }
         return "\(label) (\(bitrateLabel))"
     }
 }
@@ -31,6 +32,8 @@ struct ApplePlaybackQualityOption: Identifiable, Hashable {
 enum ApplePlaybackQuality {
     static let autoId = "auto"
     static let originalId = "original"
+    /// Contract-supported resolution with no fabricated local bitrate rung.
+    static let ultraHDId = "2160p"
 
     static let original = ApplePlaybackQualityOption(
         id: originalId,
@@ -50,6 +53,17 @@ enum ApplePlaybackQuality {
         isAuto: true
     )
 
+    /// A contract resolution cap without an invented bandwidth rung. A zero
+    /// bitrate is a local sentinel for "uncapped" and is never sent as a cap.
+    static let ultraHD = ApplePlaybackQualityOption(
+        id: ultraHDId,
+        label: "4K",
+        resolution: ultraHDId,
+        bitrateKbps: 0,
+        isOriginal: false,
+        isAuto: false
+    )
+
     static let tiers: [ApplePlaybackQualityOption] = [
         .init(id: "1080p-high", label: "Up to 1080p HD (High)", resolution: "1080p", bitrateKbps: 20_000, isOriginal: false, isAuto: false),
         .init(id: "1080p-medium", label: "Up to 1080p HD (Medium)", resolution: "1080p", bitrateKbps: 12_000, isOriginal: false, isAuto: false),
@@ -62,15 +76,17 @@ enum ApplePlaybackQuality {
         .init(id: "328p", label: "Up to 328p", resolution: "328p", bitrateKbps: 700, isOriginal: false, isAuto: false),
     ]
 
-    static let settingsOptions: [ApplePlaybackQualityOption] = [auto, original] + tiers
+    static let settingsOptions: [ApplePlaybackQualityOption] = [auto, original, ultraHD] + tiers
 
     static func normalizeStoredId(_ raw: String?) -> String {
         let value = raw?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
         switch value {
-        case "", autoId, "2160p", "4k", "uhd":
+        case "", autoId:
             return autoId
+        case ultraHDId, "4k", "uhd":
+            return ultraHDId
         case originalId:
             return originalId
         case "420p":
@@ -85,11 +101,13 @@ enum ApplePlaybackQuality {
 
     static func displayName(for raw: String) -> String {
         let id = normalizeStoredId(raw)
+        if id == ultraHDId { return "4K" }
         return settingsOptions.first(where: { $0.id == id })?.label ?? id
     }
 
     static func displayNameWithBitrate(for raw: String) -> String {
         let id = normalizeStoredId(raw)
+        if id == ultraHDId { return "4K" }
         return settingsOptions.first(where: { $0.id == id })?.labelWithBitrate ?? id
     }
 
@@ -119,6 +137,9 @@ enum ApplePlaybackQuality {
         if id == autoId {
             return autoId
         }
+        if id == ultraHDId {
+            return ultraHDId
+        }
         if playbackOptions(for: selectedVersion).contains(where: { $0.id == id }) {
             return id
         }
@@ -138,9 +159,18 @@ enum ApplePlaybackQuality {
         capKbps: Int? = nil
     ) -> Bool {
         let id = normalizeStoredId(preferredQualityId)
-        if id == autoId {
+        if id == autoId || id == originalId {
             guard let capKbps, capKbps > 0 else { return false }
             return exceedsBitrateCap(selectedVersion, ceilingKbps: capKbps)
+        }
+        if id == ultraHDId {
+            let exceedsBandwidth = capKbps.flatMap { $0 > 0 ? $0 : nil }.map {
+                exceedsBitrateCap(selectedVersion, ceilingKbps: $0)
+            } ?? false
+            return exceedsBandwidth || exceedsResolutionCap(
+                selectedVersion,
+                targetResolution: ultraHDId
+            )
         }
         guard let option = settingsOptions.first(where: { $0.id == id && !$0.isOriginal && !$0.isAuto }) else {
             return false
@@ -173,8 +203,7 @@ enum ApplePlaybackQuality {
         selectedVersion: FileVersion,
         capKbps: Int? = nil
     ) -> Int {
-        guard !option.isOriginal else { return 0 }
-        if option.isAuto {
+        if option.isOriginal || option.isAuto || option.id == ultraHDId {
             guard let capKbps, capKbps > 0 else { return 0 }
             guard let sourceBitrateKbps = sourceBitrateKbps(for: selectedVersion) else {
                 return capKbps
@@ -186,6 +215,26 @@ enum ApplePlaybackQuality {
             return target
         }
         return min(sourceBitrateKbps, target)
+    }
+
+    /// Whether the legacy HLS request should preserve the source video.
+    /// A quality-imposed transcode always wins: `original` removes the
+    /// resolution ceiling, but it does not cancel an independent bandwidth cap.
+    static func shouldUseLegacyCopyVideo(
+        delivery: PlaybackDeliveryStrategy,
+        option: ApplePlaybackQualityOption,
+        forcedByQuality: Bool
+    ) -> Bool {
+        guard !forcedByQuality else { return false }
+        return delivery != .transcode || option.isOriginal
+    }
+
+    /// The older-server retry target after codec copy is rejected. Preserve
+    /// the historical 6 Mbps fallback without widening a lower user cap.
+    static func legacyCopyFallbackBitrateKbps(capKbps: Int?) -> Int {
+        let fallbackKbps = 6_000
+        guard let capKbps, capKbps > 0 else { return fallbackKbps }
+        return min(fallbackKbps, capKbps)
     }
 
     /// The tighter of a tier's rung bitrate and an optional user cap.
@@ -230,8 +279,15 @@ enum ApplePlaybackQuality {
         _ version: FileVersion,
         option: ApplePlaybackQualityOption
     ) -> Bool {
+        exceedsResolutionCap(version, targetResolution: option.resolution)
+    }
+
+    private static func exceedsResolutionCap(
+        _ version: FileVersion,
+        targetResolution: String
+    ) -> Bool {
         guard let sourceHeight = height(for: version.resolution),
-              let targetHeight = height(for: option.resolution) else {
+              let targetHeight = height(for: targetResolution) else {
             return false
         }
         return sourceHeight > targetHeight

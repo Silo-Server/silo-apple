@@ -577,7 +577,9 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
 
         editor.subtitleLanguage = "ja"
         let firstSave = Task { @MainActor in await editor.saveSubtitlePrefs() }
-        try await Task.sleep(for: .milliseconds(20))
+        try await waitUntil("the first language write to start") {
+            transport.writes().count == 1
+        }
 
         editor.subtitleLanguage = "ko"
         await editor.saveSubtitlePrefs()
@@ -702,7 +704,9 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
 
         editor.preferredMetadataLanguage = "ja"
         let firstSave = Task { @MainActor in await editor.saveMetadataLanguage() }
-        try await Task.sleep(for: .milliseconds(20))
+        try await waitUntil("the first metadata-language write to start") {
+            transport.writes().count == 1
+        }
 
         editor.preferredMetadataLanguage = PlaybackPrefSentinel.none
         await editor.saveMetadataLanguage()
@@ -718,6 +722,21 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         )
         XCTAssertEqual(editor.preferredMetadataLanguage, PlaybackPrefSentinel.none)
         XCTAssertEqual(editor.saveState, .saved)
+    }
+
+    private func waitUntil(
+        _ description: String,
+        timeout: Duration = .seconds(5),
+        _ condition: @escaping () -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("timed out waiting for \(description)", file: file, line: line)
     }
 }
 
