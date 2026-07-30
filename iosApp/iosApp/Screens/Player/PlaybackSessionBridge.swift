@@ -204,6 +204,9 @@ actor PlaybackSessionBridge {
         var attemptedPlanKeys: [String]
         var attemptCount: Int
         var clientQualityId: String
+        /// The independent bandwidth ceiling captured for this attempt. Every
+        /// replan must repeat it or recovery silently widens the connection.
+        let bandwidthCapKbps: Int?
         var snapshot: ApplePlaybackV3CapabilitySnapshot
         var serverFeatures: [String]
         var plan: PlaybackV3Plan
@@ -278,6 +281,9 @@ actor PlaybackSessionBridge {
         let preferredQuality = normalizedQualityPreference(
             preferredQualityOverride ?? PlayerSettings.shared.preferredQuality
         )
+        let bandwidthCapKbps = PlayerSettings.shared.maxBitrateKbps.flatMap {
+            $0 > 0 ? $0 : nil
+        }
         let normalizedResumePosition: Double? = {
             guard let resumePosition, resumePosition.isFinite, resumePosition >= 0 else {
                 return nil
@@ -352,6 +358,7 @@ actor PlaybackSessionBridge {
                selectedVersion: selectedVersion,
                profileId: profileId,
                qualityPreference: resolvedQualityPreference,
+               bandwidthCapKbps: bandwidthCapKbps,
                startPosition: effectiveStartPosition,
                audioTrackIndex: preferredAudioTrackIndex ?? selectedVersion.effectiveAudioTrackIndex,
                subtitleTrackIndex: preferredSubtitleTrackIndex
@@ -424,6 +431,7 @@ actor PlaybackSessionBridge {
         selectedVersion: FileVersion,
         profileId: String,
         qualityPreference: String?,
+        bandwidthCapKbps: Int?,
         startPosition: Double?,
         audioTrackIndex: Int?,
         subtitleTrackIndex: Int?
@@ -468,7 +476,7 @@ actor PlaybackSessionBridge {
             outputRouteGeneration: snapshot.outputRouteGeneration,
             metered: false,
             bandwidthEstimateKbps: nil,
-            bandwidthCapKbps: nil,
+            bandwidthCapKbps: bandwidthCapKbps,
             clientCapabilities: snapshot.capabilities,
             clientPlaybackContext: snapshot.context
         )
@@ -529,6 +537,7 @@ actor PlaybackSessionBridge {
                 attemptedPlanKeys: [planAttemptKey],
                 attemptCount: 1,
                 clientQualityId: ApplePlaybackQuality.normalizeStoredId(qualityPreference),
+                bandwidthCapKbps: bandwidthCapKbps,
                 snapshot: snapshot,
                 serverFeatures: serverFeatures,
                 plan: plan
@@ -660,7 +669,7 @@ actor PlaybackSessionBridge {
             outputRouteGeneration: active.snapshot.outputRouteGeneration,
             metered: false,
             bandwidthEstimateKbps: nil,
-            bandwidthCapKbps: nil,
+            bandwidthCapKbps: active.bandwidthCapKbps,
             selectedTracks: selectedTracks,
             failure: PlaybackV3Failure(
                 classification: classification,

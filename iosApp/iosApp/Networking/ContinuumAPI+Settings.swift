@@ -123,11 +123,12 @@ extension ContinuumAPI {
         mutationId: String,
         profileId: String? = nil
     ) async throws -> SettingValueWriteReceipt {
-        var headers = try await profileHeaders(explicit: profileId)
         let trimmedMutationId = mutationId.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedMutationId.isEmpty {
-            headers["X-Silo-Mutation-Id"] = trimmedMutationId
+        guard !trimmedMutationId.isEmpty else {
+            throw SettingsAPIError.invalidValue(message: "Mutation ID must not be blank.")
         }
+        var headers = try await profileHeaders(explicit: profileId)
+        headers["X-Silo-Mutation-Id"] = trimmedMutationId
 
         do {
             let body = try SettingsWireCoding.makeEncoder().encode(SettingValueWriteRequest(value: value))

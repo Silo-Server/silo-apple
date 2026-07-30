@@ -474,6 +474,30 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(receipt.value.value, .string("2160p"))
     }
 
+    func testPutValueRejectsABlankMutationIdBeforeSendingARequest() async throws {
+        SettingsStubProtocol.reset(mode: .normal)
+        let api = await makeStubbedAPI()
+
+        do {
+            _ = try await api.putValue(
+                key: .playbackPreferredQuality,
+                scope: .profile,
+                value: "1080p",
+                mutationId: "  \n\t"
+            )
+            XCTFail("a blank mutation id must not silently disable idempotency")
+        } catch let error as SettingsAPIError {
+            guard case .invalidValue = error else {
+                return XCTFail("expected a local invalid-value error, got \(error)")
+            }
+        }
+
+        XCTAssertNil(
+            SettingsStubProtocol.state().lastRequest,
+            "local mutation-id validation must run before any network activity"
+        )
+    }
+
     func testGetEffectiveValuesSendsBatchedQueryParams() async throws {
         SettingsStubProtocol.reset(mode: .normal)
         let api = await makeStubbedAPI()

@@ -20,10 +20,9 @@
 //
 //  The Apple bitrate ladder deliberately stays as it is rather than being
 //  retuned to match the web's presets: the tiers are what the in-player
-//  switcher already offers, and changing what "1080p High" means to a user mid
-//  migration would be a silent quality change. The two clients agree on the
-//  *axes*; the rungs stay a client-side table on each, which is exactly why the
-//  contract keeps them apart.
+//  switcher already offers. The clients agree on the stored *axes*; each
+//  client may map those axes onto its own playback rungs without changing the
+//  authored resolution or bitrate cap.
 //
 //  Because the ladders differ, rejoining has to decide what to do with a pair
 //  that lands between two Apple rungs. The resolution wins — see ``join``. The
@@ -42,9 +41,7 @@ struct AppleQualityAxes: Equatable {
 
     static let auto = AppleQualityAxes(resolution: "auto", bitrateKbps: nil)
 
-    /// Contract enum members, most to least constrained. `original` is absent
-    /// on purpose: `ApplePlaybackQuality.normalizeStoredId` collapses it into
-    /// `auto`, so this client never stores it.
+    /// Contract enum members, most to least constrained.
     static let resolutionMembers = ["auto", "480p", "720p", "1080p", "2160p", "original"]
 
     /// Split one of this client's stored quality ids into the two axes.
@@ -56,8 +53,11 @@ struct AppleQualityAxes: Equatable {
     static func split(_ qualityId: String) -> AppleQualityAxes {
         let normalized = ApplePlaybackQuality.normalizeStoredId(qualityId)
         guard let option = ApplePlaybackQuality.settingsOptions.first(where: { $0.id == normalized }),
-              !option.isAuto, !option.isOriginal else {
+              !option.isAuto else {
             return .auto
+        }
+        if option.isOriginal {
+            return AppleQualityAxes(resolution: "original", bitrateKbps: nil)
         }
         let resolution = resolutionMembers.contains(option.resolution) ? option.resolution : "480p"
         return AppleQualityAxes(resolution: resolution, bitrateKbps: option.bitrateKbps)
@@ -70,16 +70,12 @@ struct AppleQualityAxes: Equatable {
     /// rung of that resolution* — the highest one within the cap, or the
     /// smallest one when the cap sits under all of them.
     ///
-    /// It has to work that way because the resolution is the only half of the
-    /// pair that reaches the server. The V3 start request reduces this id back
-    /// to a bare resolution (`PlaybackSessionBridge.protocolV3QualityPreference`)
-    /// and the cap is not a field on it, so a join that traded a resolution
-    /// tier away to stay under the cap would give the cap up *and* the
-    /// resolution: "1080p at 6 Mbps" — a shared preset, stored identically by
-    /// the web and Android clients — used to answer `720p-high` here and send
-    /// `720p` while the other two clients sent `1080p` from the same stored
-    /// pair. Apple's ladder simply has no 1080p rung below 8 Mbps; that is a
-    /// fact about this client's rung table, not about the user's choice.
+    /// It has to work that way because V3 sends the bare resolution and bitrate
+    /// cap as separate request fields. A join that traded the resolution away
+    /// to fit Apple's local rung table would still change a shared "1080p at
+    /// 6 Mbps" preference into 720p. Apple's ladder simply has no 1080p rung
+    /// below 8 Mbps; that is a fact about this client's table, not the user's
+    /// authored resolution.
     ///
     /// The cap is not discarded. It is applied where it is actually
     /// expressible: ``ApplePlaybackQuality/targetBitrateKbps(for:selectedVersion:capKbps:)``
@@ -87,16 +83,20 @@ struct AppleQualityAxes: Equatable {
     /// clamp the legacy `/transcode/start` encode target to it, so a stored
     /// 6 Mbps cap transcodes 1080p at 6 Mbps rather than at the rung's 8.
     ///
-    /// Only a pair naming a resolution this client has no ladder for — 2160p,
-    /// `original`, `auto`, or a member added by a newer server — falls back to
-    /// `auto`, which here means "do not cap, direct-play first".
+    /// `original` remains its own direct-play-only intent. A pair naming a
+    /// resolution this client has no ladder for — 2160p or a member added by a
+    /// newer server — falls back to `auto`.
     static func join(resolution: String?, bitrateKbps: Int?) -> String {
         let resolution = (resolution?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()).flatMap {
             $0.isEmpty ? nil : $0
         } ?? "auto"
-        if resolution == "auto" || resolution == "original" {
+        if resolution == "original" {
+            return ApplePlaybackQuality.originalId
+        }
+        if resolution == "auto" {
             // A bandwidth cap with no resolution cap has no tier to name: this
-            // client's picker is keyed on the resolution axis.
+            // client's picker is keyed on the resolution axis. The cap remains
+            // independent and is sent to V3 or enforced by the legacy planner.
             return ApplePlaybackQuality.autoId
         }
 

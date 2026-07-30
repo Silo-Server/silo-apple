@@ -363,6 +363,28 @@ struct TVSettingsFooter: View {
     }
 }
 
+/// Semantic warning caption used for server and persistence failures.
+struct TVSettingsWarningFooter: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .accessibilityHidden(true)
+            Text(text)
+        }
+        .font(.body)
+        .foregroundColor(.continuumError)
+        .padding(.horizontal, 24)
+        .padding(.top, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Warning: \(text)")
+    }
+}
+
 // MARK: - Confirmation overlay
 
 /// Settings-styled destructive confirmation used instead of the native tvOS

@@ -60,9 +60,12 @@ struct TVSubtitleSettingsPane: View {
         if viewModel.settingsServerUpgradeRequired {
             // The controls above stay usable: an edit is kept locally and the
             // message explains why it will not follow the profile elsewhere.
-            warningFooter(ProfilePrefsEditor.serverUpgradeMessage)
+            TVSettingsWarningFooter(ProfilePrefsEditor.serverUpgradeMessage)
         } else {
             TVSettingsFooter("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
+            if let overrideMessage = viewModel.prefs.subtitleProfileOverrideMessage {
+                TVSettingsFooter("Override active — \(overrideMessage)")
+            }
         }
         prefSaveFooter
     }
@@ -191,26 +194,19 @@ struct TVSubtitleSettingsPane: View {
         return source + " Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings."
     }
 
-    private func warningFooter(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 19))
-            .foregroundStyle(.red)
-            .padding(.horizontal, 24)
-            .padding(.top, 4)
-    }
-
     @ViewBuilder
     private var prefSaveFooter: some View {
-        if let state = viewModel.prefSaveState {
+        if let state = viewModel.prefSaveState,
+           !(viewModel.settingsServerUpgradeRequired && state == .serverUpgradeRequired) {
             switch state {
             case .saving:
                 TVSettingsFooter("Saving…")
             case .saved:
                 TVSettingsFooter("Saved")
             case .failed(let err):
-                warningFooter("Couldn't save: \(err)")
+                TVSettingsWarningFooter("Couldn't save: \(err)")
             case .serverUpgradeRequired:
-                warningFooter(ProfilePrefsEditor.serverUpgradeMessage)
+                TVSettingsWarningFooter(ProfilePrefsEditor.serverUpgradeMessage)
             }
         }
     }

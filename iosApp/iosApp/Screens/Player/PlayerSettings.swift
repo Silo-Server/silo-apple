@@ -459,6 +459,11 @@ final class PlayerSettings {
     /// app launch, profile switch and settings-screen open.
     @MainActor
     func refreshFromServer() async {
+        // Capture the pre-contract values before applying the normalized cache
+        // for this scope. That normalization intentionally turns a compound
+        // legacy quality id into a bare resolution and would otherwise erase
+        // the bitrate half before migration can preserve it.
+        let legacySnapshot = legacySnapshot()
         applyCachedSettingsForCurrentScope()
         // Anything a previous run left owed is picked up before the effective
         // read, so an edit that never reached the server is *sent* rather than
@@ -470,8 +475,6 @@ final class PlayerSettings {
         await flushPendingDeviceSettings()
 
         let scopeID = Self.currentScopeIdentifier
-        let legacySnapshot = legacySnapshot()
-        let legacySubtitleOverrideEnabled = subtitleUsesDeviceAppearanceOverride
 
         do {
             let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
@@ -482,7 +485,6 @@ final class PlayerSettings {
                 let imported = await importLegacySettingsIfNeeded(
                     scopeID: scopeID,
                     legacySnapshot: legacySnapshot,
-                    legacySubtitleOverrideEnabled: legacySubtitleOverrideEnabled,
                     effectiveByKey: effectiveByKey
                 )
                 if imported {
@@ -790,16 +792,22 @@ final class PlayerSettings {
     /// The quality half is decomposed here for the same reason the setter
     /// decomposes it: a compound id like `1080p-high` is not a member of the
     /// contract's enum, so migrating it verbatim would be rejected forever.
-    private func legacySnapshot() -> [PlayerDeviceSettingKey: SettingJSONValue] {
+    // Internal so the migration's lossless key coverage can be pinned by the
+    // focused settings tests without reaching through a live server/profile.
+    func legacySnapshot() -> [SettingKey: SettingJSONValue] {
         // Both spellings appear here: the unscoped key predates per-scope
         // caching, and either may still hold a compound tier id from a build
         // before the axes were stored separately. normalizeResolution reduces
         // any of them to a contract member.
-        let legacyResolution = SiloQualityPresets.normalizeResolution(
-            defaults.string(forKey: Self.cacheKey(Keys.preferredQuality))
-                ?? defaults.string(forKey: Keys.preferredQuality)
-        )
+        let legacyQualityId = defaults.string(forKey: Self.cacheKey(Keys.preferredQuality))
+            ?? defaults.string(forKey: Keys.preferredQuality)
+        let legacyResolution = SiloQualityPresets.normalizeResolution(legacyQualityId)
+        // Builds before the contract stored Apple's compound rung id in the
+        // quality key and had no companion bitrate key. Recover that rung's
+        // cap only when no explicit axis exists; the separate key is always
+        // authoritative once present.
         let legacyBitrateKbps = Self.cachedMaxBitrateKbps(defaults)
+            ?? AppleQualityAxes.split(legacyQualityId ?? ApplePlaybackQuality.autoId).bitrateKbps
         let legacyAudioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage))
             ?? defaults.string(forKey: Keys.audioLanguage)
             ?? ""
@@ -808,7 +816,7 @@ final class PlayerSettings {
                 ?? defaults.string(forKey: Keys.subtitleAppearance)
         )
 
-        var snapshot: [PlayerDeviceSettingKey: SettingJSONValue] = [
+        var snapshot: [SettingKey: SettingJSONValue] = [
             .preferredQuality: .string(legacyResolution),
             .maxBitrateKbps: legacyBitrateKbps.map { .int($0) } ?? .null,
             .audioLanguage: legacyAudioLanguage.isEmpty ? .null : .string(legacyAudioLanguage),
@@ -833,6 +841,15 @@ final class PlayerSettings {
             ),
             .hdrEnabled: .bool(
                 Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
+            ),
+            .dolbyVisionEnabled: .bool(
+                Self.cachedBool(defaults, key: Keys.dolbyVisionEnabled, defaultValue: true)
+            ),
+            .dvProfile7HDR10Fallback: .bool(
+                Self.cachedBool(defaults, key: Keys.dvProfile7HDR10Fallback, defaultValue: false)
+            ),
+            .seekCacheEnabled: .bool(
+                Self.cachedBool(defaults, key: Keys.seekCacheEnabled, defaultValue: true)
             ),
             .playbackSpeed: .double(
                 Self.clampPlaybackSpeed(
@@ -915,10 +932,11 @@ final class PlayerSettings {
     /// there is either this device's own earlier write or a deliberate reset,
     /// and neither should be overwritten by whatever UserDefaults still holds.
     @MainActor
-    private func importLegacySettingsIfNeeded(
+    // Internal for focused migration tests; callers still go through the
+    // ordinary refresh path in production.
+    func importLegacySettingsIfNeeded(
         scopeID: String,
-        legacySnapshot: [PlayerDeviceSettingKey: SettingJSONValue],
-        legacySubtitleOverrideEnabled: Bool,
+        legacySnapshot: [SettingKey: SettingJSONValue],
         effectiveByKey: [SettingKey: EffectiveSettingValue]
     ) async -> Bool {
         var importedAny = false
@@ -926,9 +944,6 @@ final class PlayerSettings {
         for key in SettingKey.playerDeviceSettings {
             guard let legacyValue = legacySnapshot[key] else { continue }
             guard let entry = effectiveByKey[key], entry.scope != .profileDevice else { continue }
-            if key == .subtitleAppearance && !legacySubtitleOverrideEnabled {
-                continue
-            }
             // Nothing to migrate when the resolved value already equals what
             // this device holds — typed comparison now, so `1` and `1.0` are
             // not two different values the way their strings were.

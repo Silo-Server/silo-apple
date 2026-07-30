@@ -56,6 +56,34 @@ final class ProfilePrefsEditor {
     /// whose value the user cannot explain.
     private(set) var resolvedSources: [SettingKey: SettingSource] = [:]
 
+    /// User-facing explanation when a narrower subtitle scope wins over the
+    /// profile row edited by this screen.
+    var subtitleProfileOverrideMessage: String? {
+        let scopes = Set(Self.subtitleKeys.compactMap { key -> SettingScope? in
+            guard case .scope(let scope) = resolvedSources[key],
+                  Self.profileWriteMayBeShadowed(by: .scope(scope)) else {
+                return nil
+            }
+            return scope
+        })
+        guard let scope = scopes.first else { return nil }
+        guard scopes.count == 1 else {
+            return "More specific device, library, or series subtitle settings override this profile default. Changes here are saved for the profile, but those overrides still apply where configured."
+        }
+        switch scope {
+        case .profileDevice:
+            return "This device, for this profile, has a more specific subtitle setting. Changes here update the profile default, but the device override still applies."
+        case .profileLibrary:
+            return "A library-specific subtitle setting overrides this profile default. Changes here are saved for the profile, but the library override still applies."
+        case .profileSeries:
+            return "A series-specific subtitle setting overrides this profile default. Changes here are saved for the profile, but the series override still applies."
+        case .other:
+            return "A more specific subtitle setting overrides this profile default. Changes here are saved for the profile, but the override still applies."
+        case .account, .profile:
+            return nil
+        }
+    }
+
     /// What was last *painted* into the fields — by ``seed(from:)``, by
     /// ``load()``, or by a write this editor made. A save only sends keys that
     /// differ from it.
@@ -83,6 +111,16 @@ final class ProfilePrefsEditor {
         var metadataLanguage: String?
     }
 
+    private struct SubtitleWrite {
+        let key: SettingKey
+        let value: SettingJSONValue
+        /// Picker-facing value captured before the network suspension. A
+        /// successful older PUT must advance the baseline only to this value,
+        /// never to a newer edit currently visible in the field.
+        let editorValue: String
+        let language: String?
+    }
+
     /// What the screens show in place of server-backed controls when the
     /// server predates the canonical settings API. Playback is unaffected —
     /// it falls back to this device's local defaults — so the message says
@@ -95,11 +133,23 @@ final class ProfilePrefsEditor {
 
     private let writer: ProfileSettingsWriter
 
+    /// SwiftUI can launch another onChange task while a PUT is suspended. The
+    /// later task marks another pass owed and returns, preserving call order
+    /// for every profile key.
+    private var isSavingSubtitlePrefs = false
+    private var subtitleSaveRequested = false
+
     /// Coalescing for the metadata language: it has a side effect the others
     /// don't (flushing cached translations), so overlapping writes are folded
     /// into one rather than each invalidating the cache.
     private var isSavingMetadataLanguage = false
     private var pendingMetadataLanguage: String??
+
+    private static let subtitleKeys: [SettingKey] = [
+        ProfileSettingKeys.subtitleLanguage,
+        ProfileSettingKeys.subtitleMode,
+        ProfileSettingKeys.showForcedSubtitles,
+    ]
 
     init(writer: ProfileSettingsWriter = ProfileSettingsWriter()) {
         self.writer = writer
@@ -144,18 +194,17 @@ final class ProfilePrefsEditor {
         )
     }
 
-    /// Move one key's baseline up to the field's current value, after a write
-    /// for that key succeeded.
+    /// Move one key's baseline to the exact captured value that landed.
     @MainActor
-    private func adoptBaseline(for key: SettingKey) {
+    private func adoptBaseline(for key: SettingKey, value: String) {
         if key == ProfileSettingKeys.subtitleLanguage {
-            savedBaseline.subtitleLanguage = subtitleLanguage
+            savedBaseline.subtitleLanguage = value
         } else if key == ProfileSettingKeys.subtitleMode {
-            savedBaseline.subtitleMode = subtitleMode
+            savedBaseline.subtitleMode = value
         } else if key == ProfileSettingKeys.showForcedSubtitles {
-            savedBaseline.showForcedSubtitles = showForcedSubtitles
+            savedBaseline.showForcedSubtitles = value
         } else if key == ProfileSettingKeys.metadataLanguage {
-            savedBaseline.metadataLanguage = preferredMetadataLanguage
+            savedBaseline.metadataLanguage = value
         }
     }
 
@@ -196,49 +245,160 @@ final class ProfilePrefsEditor {
     /// two along with it.
     @MainActor
     func saveSubtitlePrefs() async {
-        let language = Self.outboundLanguage(subtitleLanguage)
+        subtitleSaveRequested = true
+        guard !isSavingSubtitlePrefs else { return }
 
-        var writes: [(SettingKey, SettingJSONValue)] = []
+        isSavingSubtitlePrefs = true
+        defer { isSavingSubtitlePrefs = false }
+
+        var failures: [SettingKey: Error] = [:]
+        var needsEffectiveRefresh = false
+
+        while true {
+            while subtitleSaveRequested {
+                subtitleSaveRequested = false
+                let writes = pendingSubtitleWrites()
+                guard !writes.isEmpty else { continue }
+                saveState = .saving
+
+                // Every key is attempted even when an earlier one fails. They
+                // are independent rows; failure state is tracked per key so a
+                // newer successful value clears an older failed attempt.
+                for write in writes {
+                    do {
+                        try await writer.write(write.key, value: write.value)
+                        failures.removeValue(forKey: write.key)
+                        adoptBaseline(for: write.key, value: write.editorValue)
+
+                        if write.key == ProfileSettingKeys.subtitleLanguage {
+                            // This row landed even if a sibling later fails.
+                            ProfilePrefsStore.shared.setPreferredSubtitleLanguage(write.language)
+                        }
+
+                        if Self.profileWriteMayBeShadowed(by: resolvedSources[write.key]) {
+                            needsEffectiveRefresh = true
+                        } else {
+                            resolvedSources[write.key] = .scope(.profile)
+                        }
+                    } catch {
+                        failures[write.key] = error
+                    }
+                }
+
+                // A control may have changed while this batch was suspended
+                // even before its onChange task got to run. Preserve that
+                // newest local operation with another serialized pass.
+                if writes.contains(where: { currentEditorValue(for: $0.key) != $0.editorValue }) {
+                    subtitleSaveRequested = true
+                }
+            }
+
+            if failures.isEmpty, needsEffectiveRefresh {
+                needsEffectiveRefresh = false
+                await refreshSubtitleResolutionAfterWrite()
+                // An onChange that arrived while the effective read was
+                // suspended marked another pass owed and returned because
+                // this saver still owns serialization. Drain it before
+                // releasing that ownership.
+                if subtitleSaveRequested { continue }
+            }
+            break
+        }
+
+        if let firstFailure = ProfileSettingKeys.all.compactMap({ failures[$0] }).first {
+            saveState = Self.saveState(for: firstFailure)
+        } else {
+            saveState = .saved
+        }
+    }
+
+    @MainActor
+    private func pendingSubtitleWrites() -> [SubtitleWrite] {
+        let language = Self.outboundLanguage(subtitleLanguage)
+        var writes: [SubtitleWrite] = []
         if subtitleLanguage != savedBaseline.subtitleLanguage {
-            writes.append((ProfileSettingKeys.subtitleLanguage, ProfileSettingsWriter.languageValue(language)))
+            writes.append(
+                SubtitleWrite(
+                    key: ProfileSettingKeys.subtitleLanguage,
+                    value: ProfileSettingsWriter.languageValue(language),
+                    editorValue: subtitleLanguage,
+                    language: language
+                )
+            )
         }
         if subtitleMode != savedBaseline.subtitleMode {
-            writes.append((ProfileSettingKeys.subtitleMode, .string(subtitleMode)))
+            writes.append(
+                SubtitleWrite(
+                    key: ProfileSettingKeys.subtitleMode,
+                    value: .string(subtitleMode),
+                    editorValue: subtitleMode,
+                    language: nil
+                )
+            )
         }
         if showForcedSubtitles != savedBaseline.showForcedSubtitles {
-            writes.append((ProfileSettingKeys.showForcedSubtitles, .bool(showForcedSubtitles == "on")))
+            writes.append(
+                SubtitleWrite(
+                    key: ProfileSettingKeys.showForcedSubtitles,
+                    value: .bool(showForcedSubtitles == "on"),
+                    editorValue: showForcedSubtitles,
+                    language: nil
+                )
+            )
         }
-        guard !writes.isEmpty else { return }
+        return writes
+    }
 
-        saveState = .saving
+    @MainActor
+    private func currentEditorValue(for key: SettingKey) -> String? {
+        if key == ProfileSettingKeys.subtitleLanguage { return subtitleLanguage }
+        if key == ProfileSettingKeys.subtitleMode { return subtitleMode }
+        if key == ProfileSettingKeys.showForcedSubtitles { return showForcedSubtitles }
+        if key == ProfileSettingKeys.metadataLanguage { return preferredMetadataLanguage }
+        return nil
+    }
 
-        // Every key is attempted even when an earlier one fails. They are
-        // independent rows with no ordering between them, so stopping at the
-        // first error would mean a hiccup writing the language silently
-        // prevented the mode and forced-subtitle choices from ever being
-        // sent — the user changed one control and lost two others. The first
-        // failure is what gets reported; a repeat of a write that already
-        // landed replays its mutation id and is a no-op server-side.
-        var firstFailure: Error?
-        for (key, value) in writes {
-            do {
-                try await writer.write(key, value: value)
-                // Only a key that actually landed advances the baseline. A
-                // failed one stays "changed" so the next save retries it —
-                // under its original mutation id, which the writer holds.
-                adoptBaseline(for: key)
-            } catch {
-                if firstFailure == nil { firstFailure = error }
+    private static func profileWriteMayBeShadowed(by source: SettingSource?) -> Bool {
+        guard case .scope(let scope) = source else { return false }
+        switch scope {
+        case .profileDevice, .profileLibrary, .profileSeries, .other:
+            return true
+        case .account, .profile:
+            return false
+        }
+    }
+
+    /// Re-resolve after writing a profile row that was known to be shadowed by
+    /// a narrower scope. Apply only if no newer edit appeared during the read.
+    @MainActor
+    private func refreshSubtitleResolutionAfterWrite() async {
+        let expected = [
+            ProfileSettingKeys.subtitleLanguage: subtitleLanguage,
+            ProfileSettingKeys.subtitleMode: subtitleMode,
+            ProfileSettingKeys.showForcedSubtitles: showForcedSubtitles,
+        ]
+        do {
+            let (preferences, byKey) = try await writer.load()
+            let current = [
+                ProfileSettingKeys.subtitleLanguage: subtitleLanguage,
+                ProfileSettingKeys.subtitleMode: subtitleMode,
+                ProfileSettingKeys.showForcedSubtitles: showForcedSubtitles,
+            ]
+            guard current == expected else { return }
+
+            subtitleLanguage = preferences.subtitleLanguage ?? PlaybackPrefSentinel.none
+            subtitleMode = preferences.subtitleMode
+            showForcedSubtitles = preferences.showForcedSubtitles ? "on" : "off"
+            savedBaseline.subtitleLanguage = subtitleLanguage
+            savedBaseline.subtitleMode = subtitleMode
+            savedBaseline.showForcedSubtitles = showForcedSubtitles
+            for key in Self.subtitleKeys {
+                resolvedSources[key] = byKey[key]?.source
             }
+        } catch {
+            // The profile write itself succeeded. Keep the captured values and
+            // retry effective resolution on the next ordinary load.
         }
-
-        if let firstFailure {
-            saveState = Self.saveState(for: firstFailure)
-            return
-        }
-        saveState = .saved
-        // Keep the detail page's track ordering in step without a refetch.
-        ProfilePrefsStore.shared.setPreferredSubtitleLanguage(language)
     }
 
     /// Persist the metadata language at `profile` scope.
@@ -252,9 +412,16 @@ final class ProfilePrefsEditor {
     /// invalidate every cached overview for nothing.
     @MainActor
     func saveMetadataLanguage() async {
+        let language = Self.outboundLanguage(preferredMetadataLanguage)
+        // The displayed value may have returned to the saved baseline while
+        // an older, different PUT is still suspended. Queue that revert before
+        // consulting the baseline or the older value would win on the server.
+        if isSavingMetadataLanguage {
+            pendingMetadataLanguage = .some(language)
+            return
+        }
         guard preferredMetadataLanguage != savedBaseline.metadataLanguage else { return }
-        pendingMetadataLanguage = .some(Self.outboundLanguage(preferredMetadataLanguage))
-        guard !isSavingMetadataLanguage else { return }
+        pendingMetadataLanguage = .some(language)
 
         isSavingMetadataLanguage = true
         defer { isSavingMetadataLanguage = false }
@@ -276,7 +443,10 @@ final class ProfilePrefsEditor {
             // A newer edit landed while this was in flight; let its own pass
             // report, or this one would announce a value already superseded.
             guard Self.outboundLanguage(preferredMetadataLanguage) == language else { return }
-            adoptBaseline(for: ProfileSettingKeys.metadataLanguage)
+            adoptBaseline(
+                for: ProfileSettingKeys.metadataLanguage,
+                value: preferredMetadataLanguage
+            )
             saveState = .saved
             ResponseCache.shared.invalidateAllItemMetadata()
             #if os(tvOS)

@@ -34,7 +34,7 @@ enum ApplePlaybackQuality {
 
     static let original = ApplePlaybackQualityOption(
         id: originalId,
-        label: "Auto",
+        label: "Original",
         resolution: "",
         bitrateKbps: 0,
         isOriginal: true,
@@ -62,15 +62,17 @@ enum ApplePlaybackQuality {
         .init(id: "328p", label: "Up to 328p", resolution: "328p", bitrateKbps: 700, isOriginal: false, isAuto: false),
     ]
 
-    static let settingsOptions: [ApplePlaybackQualityOption] = [auto] + tiers
+    static let settingsOptions: [ApplePlaybackQualityOption] = [auto, original] + tiers
 
     static func normalizeStoredId(_ raw: String?) -> String {
         let value = raw?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
         switch value {
-        case "", autoId, originalId, "2160p", "4k", "uhd":
+        case "", autoId, "2160p", "4k", "uhd":
             return autoId
+        case originalId:
+            return originalId
         case "420p":
             return "328p"
         default:
@@ -136,7 +138,10 @@ enum ApplePlaybackQuality {
         capKbps: Int? = nil
     ) -> Bool {
         let id = normalizeStoredId(preferredQualityId)
-        guard id != autoId else { return false }
+        if id == autoId {
+            guard let capKbps, capKbps > 0 else { return false }
+            return exceedsBitrateCap(selectedVersion, ceilingKbps: capKbps)
+        }
         guard let option = settingsOptions.first(where: { $0.id == id && !$0.isOriginal && !$0.isAuto }) else {
             return false
         }
@@ -168,7 +173,14 @@ enum ApplePlaybackQuality {
         selectedVersion: FileVersion,
         capKbps: Int? = nil
     ) -> Int {
-        guard !option.isOriginal, !option.isAuto else { return 0 }
+        guard !option.isOriginal else { return 0 }
+        if option.isAuto {
+            guard let capKbps, capKbps > 0 else { return 0 }
+            guard let sourceBitrateKbps = sourceBitrateKbps(for: selectedVersion) else {
+                return capKbps
+            }
+            return min(sourceBitrateKbps, capKbps)
+        }
         let target = ceiling(option.bitrateKbps, capKbps)
         guard let sourceBitrateKbps = sourceBitrateKbps(for: selectedVersion) else {
             return target

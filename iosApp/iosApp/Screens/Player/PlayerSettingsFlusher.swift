@@ -89,6 +89,31 @@ struct PendingSettingWrite: Equatable, Codable {
     /// double-apply. Minting a fresh id per retry defeats that, and defeats the
     /// 409 that catches genuinely different content reusing an id.
     let mutationId: String
+
+    /// The (server, profile, device) identity this operation belongs to.
+    /// Nil is retained for in-memory/test journals with no scoped identity;
+    /// the production journal binds older encoded entries to the scope whose
+    /// storage partition they were loaded from.
+    let scopeIdentifier: String?
+
+    init(
+        operation: Operation,
+        mutationId: String,
+        scopeIdentifier: String? = nil
+    ) {
+        self.operation = operation
+        self.mutationId = mutationId
+        self.scopeIdentifier = scopeIdentifier
+    }
+
+    func bound(to scopeIdentifier: String?) -> PendingSettingWrite {
+        guard self.scopeIdentifier == nil else { return self }
+        return PendingSettingWrite(
+            operation: operation,
+            mutationId: mutationId,
+            scopeIdentifier: scopeIdentifier
+        )
+    }
 }
 
 /// Where the queue lives while the process is not running.
@@ -103,8 +128,15 @@ struct PendingSettingWrite: Equatable, Codable {
 /// it adopts the server's answer, so a restored edit lands rather than being
 /// overwritten by the stale value it was meant to replace.
 protocol PlayerSettingsWriteJournal: AnyObject, Sendable {
+    /// The partition currently addressed by load/save, when the journal is
+    /// scope-aware. In-memory test journals use the default nil identity.
+    var scopeIdentifier: String? { get }
     func load() -> [SettingKey: PendingSettingWrite]
     func save(_ pending: [SettingKey: PendingSettingWrite])
+}
+
+extension PlayerSettingsWriteJournal {
+    var scopeIdentifier: String? { nil }
 }
 
 /// The production journal: `UserDefaults`, partitioned by settings scope.
@@ -134,6 +166,8 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
         scopeProvider().map { "player.pendingDeviceSettingWrites.\($0)" }
     }
 
+    var scopeIdentifier: String? { scopeProvider() }
+
     func load() -> [SettingKey: PendingSettingWrite] {
         guard let storageKey = storageKey(), let data = defaults.data(forKey: storageKey) else {
             return [:]
@@ -144,8 +178,11 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
             // A key this build no longer knows is dropped rather than failing
             // the whole restore: the contract is additive, and one stale entry
             // must not strand every other queued edit.
+            let scopeIdentifier = scopeProvider()
             return stored.reduce(into: [:]) { result, entry in
-                if let key = SettingKey(rawValue: entry.key) { result[key] = entry.value }
+                if let key = SettingKey(rawValue: entry.key) {
+                    result[key] = entry.value.bound(to: scopeIdentifier)
+                }
             }
         } catch {
             Self.logger.warning("could not restore the pending settings queue: \(String(describing: error), privacy: .public)")
@@ -242,7 +279,13 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// registration in ``flushAfterDebounce(generation:)``.
     private var debounceGeneration: UInt64 = 0
     private var retryTask: Task<Void, Never>?
+    /// Mirrors debounceGeneration for the retry timer: a waking task retires
+    /// its own registration before it starts a drain.
+    private var retryGeneration: UInt64 = 0
     private var retryAttempts = 0
+    /// Scope represented by the in-memory queue. A scope transition drops the
+    /// local view and restores that partition's journal instead.
+    private var activeJournalScope: String?
     private var isDraining = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
@@ -262,6 +305,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         // Anything the last run left queued is replayed by the first flush,
         // carrying the mutation ids it was persisted with.
         if let journal {
+            activeJournalScope = journal.scopeIdentifier
             pending = journal.load()
         }
         if flushesOnBackground {
@@ -367,14 +411,41 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// copy, and it carries the mutation id the server will see.
     func restorePendingWrites() {
         guard let journal else { return }
+        let scopeIdentifier = journal.scopeIdentifier
         let restored = journal.load()
-        guard !restored.isEmpty else { return }
         lock.lock()
-        for (key, write) in restored where pending[key] == nil && inFlight[key] == nil {
+        transitionScopeIfNeededLocked(to: scopeIdentifier)
+        for (key, write) in restored where pending[key] == nil {
+            // An in-flight write from the scope we just left must not block the
+            // same key restored for the newly selected scope. Only a request
+            // already draining for this exact partition supersedes its journal
+            // copy.
+            if let draining = inFlight[key], draining.scopeIdentifier == scopeIdentifier {
+                continue
+            }
             pending[key] = write
         }
         persistLocked()
         lock.unlock()
+    }
+
+    /// Switch the in-memory view to another journal partition. The previous
+    /// queue was persisted at enqueue time, so clearing it here does not lose
+    /// anything; it prevents those operations from being sent with the newly
+    /// selected profile's request headers.
+    ///
+    /// Caller must hold `lock`.
+    private func transitionScopeIfNeededLocked(to scopeIdentifier: String?) {
+        guard activeJournalScope != scopeIdentifier else { return }
+        activeJournalScope = scopeIdentifier
+        pending.removeAll()
+        debounceTask?.cancel()
+        debounceTask = nil
+        debounceGeneration &+= 1
+        retryTask?.cancel()
+        retryTask = nil
+        retryGeneration &+= 1
+        retryAttempts = 0
     }
 
     /// Keys with an op still queued: one inside the debounce window, or one
@@ -382,7 +453,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     var pendingKeys: [SettingKey] {
         lock.lock()
         defer { lock.unlock() }
-        return SettingKey.playerDeviceSettings.filter { pending[$0] != nil }
+        return Self.orderedKeys(in: pending)
     }
 
     var hasPendingWrites: Bool {
@@ -403,36 +474,50 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
 
     /// Queue one device-scoped write, restarting the debounce window.
     func enqueue(_ key: SettingKey, value: SettingJSONValue) {
-        schedule(key) { existing in
+        schedule(key) { existing, scopeIdentifier in
             // Re-enqueueing the identical value keeps the pending op *and* its
             // mutation id: it is the same logical write, and the server treats
             // a replayed id carrying identical content as already done.
             if case .set(let queued) = existing?.operation, queued == value {
                 return existing
             }
-            return PendingSettingWrite(operation: .set(value), mutationId: newSettingMutationId())
+            return PendingSettingWrite(
+                operation: .set(value),
+                mutationId: newSettingMutationId(),
+                scopeIdentifier: scopeIdentifier
+            )
         }
     }
 
     /// Queue clearing this device's value, so the setting inherits again.
     func enqueueDelete(_ key: SettingKey) {
-        schedule(key) { existing in
+        schedule(key) { existing, scopeIdentifier in
             if case .delete = existing?.operation {
                 return existing
             }
-            return PendingSettingWrite(operation: .delete, mutationId: newSettingMutationId())
+            return PendingSettingWrite(
+                operation: .delete,
+                mutationId: newSettingMutationId(),
+                scopeIdentifier: scopeIdentifier
+            )
         }
     }
 
-    private func schedule(_ key: SettingKey, _ next: (PendingSettingWrite?) -> PendingSettingWrite?) {
+    private func schedule(
+        _ key: SettingKey,
+        _ next: (PendingSettingWrite?, String?) -> PendingSettingWrite?
+    ) {
         lock.lock()
-        pending[key] = next(pending[key])
+        let scopeIdentifier = journal?.scopeIdentifier
+        transitionScopeIfNeededLocked(to: scopeIdentifier)
+        pending[key] = next(pending[key], scopeIdentifier)
         persistLocked()
         // Fresh user activity re-arms the retry budget: whatever made the last
         // attempt fail may well be gone by now.
         retryAttempts = 0
         retryTask?.cancel()
         retryTask = nil
+        retryGeneration &+= 1
         debounceTask?.cancel()
         debounceGeneration &+= 1
         let generation = debounceGeneration
@@ -486,6 +571,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         debounceTask = nil
         retryTask?.cancel()
         retryTask = nil
+        retryGeneration &+= 1
         retryAttempts = 0
         let claimed = claimDrainLocked()
         lock.unlock()
@@ -517,11 +603,14 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// `inFlight`, and a process death in that window would drop them.
     private func persistLocked(alsoOwed: [SettingKey: PendingSettingWrite] = [:]) {
         guard let journal else { return }
-        var owed = pending
-        for (key, write) in inFlight where owed[key] == nil {
+        let scopeIdentifier = journal.scopeIdentifier
+        var owed = pending.filter { $0.value.scopeIdentifier == scopeIdentifier }
+        for (key, write) in inFlight
+            where write.scopeIdentifier == scopeIdentifier && owed[key] == nil {
             owed[key] = write
         }
-        for (key, write) in alsoOwed where owed[key] == nil {
+        for (key, write) in alsoOwed
+            where write.scopeIdentifier == scopeIdentifier && owed[key] == nil {
             owed[key] = write
         }
         journal.save(owed)
@@ -545,6 +634,20 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             waiters.append(continuation)
             lock.unlock()
         }
+    }
+
+    /// Preferred player order first, followed by any other queued contract
+    /// key in deterministic raw-value order. The queue accepts SettingKey, so
+    /// the preferred list must not become an accidental allowlist.
+    private static func orderedKeys(
+        in writes: [SettingKey: PendingSettingWrite]
+    ) -> [SettingKey] {
+        let preferred = SettingKey.playerDeviceSettings.filter { writes[$0] != nil }
+        let preferredSet = Set(preferred)
+        let remaining = writes.keys
+            .filter { !preferredSet.contains($0) }
+            .sorted { $0.rawValue < $1.rawValue }
+        return preferred + remaining
     }
 
     private func drain() async {
@@ -574,7 +677,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             // A stable order so the two axes of the quality preset
             // (playback.preferred_quality and playback.max_bitrate_kbps) always
             // reach the server in the same sequence.
-            for key in SettingKey.playerDeviceSettings {
+            for key in Self.orderedKeys(in: snapshot) {
                 guard let write = snapshot[key] else { continue }
                 let outcome = await send(key, write)
                 lock.lock()
@@ -599,7 +702,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         }
 
         lock.lock()
-        for (key, write) in retryable where pending[key] == nil {
+        let currentScopeIdentifier = journal?.scopeIdentifier
+        for (key, write) in retryable
+            where write.scopeIdentifier == currentScopeIdentifier && pending[key] == nil {
             // A newer op enqueued during the drain wins over the failed one:
             // it is newer content, with its own id.
             pending[key] = write
@@ -634,21 +739,37 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     private func scheduleRetryLocked(attempt: Int) {
         let delay = retryPolicy.delay(forAttempt: attempt)
         retryTask?.cancel()
+        retryGeneration &+= 1
+        let generation = retryGeneration
         retryTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
-            guard !Task.isCancelled, let self else { return }
-            self.lock.lock()
-            let claimed = self.claimDrainLocked()
-            self.lock.unlock()
-            if claimed {
-                await self.drain()
-            }
+            guard !Task.isCancelled else { return }
+            await self?.flushAfterRetry(generation: generation)
         }
+    }
+
+    /// Retire a waking retry timer before it starts draining. Otherwise an
+    /// overlapping explicit flush sees `retryTask` still pointing at the task
+    /// executing the request and cancels that live URLSession operation.
+    private func flushAfterRetry(generation: UInt64) async {
+        lock.lock()
+        let isCurrent = retryGeneration == generation
+        if isCurrent {
+            retryTask = nil
+        }
+        let claimed = isCurrent && claimDrainLocked()
+        lock.unlock()
+        guard claimed, !Task.isCancelled else { return }
+        await drain()
     }
 
     // MARK: - Sending
 
     private func send(_ key: SettingKey, _ write: PendingSettingWrite) async -> FlushOutcome {
+        if let journal, write.scopeIdentifier != journal.scopeIdentifier {
+            log(key, "settings scope changed before send", kept: true)
+            return .settled
+        }
         do {
             switch write.operation {
             case .set(let value):

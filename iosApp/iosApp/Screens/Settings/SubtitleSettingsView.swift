@@ -118,8 +118,13 @@ struct SubtitleSettingsView: View {
                         .foregroundStyle(Color.continuumError)
                 } else {
                     Text("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
+                    if let overrideMessage = viewModel.prefs.subtitleProfileOverrideMessage {
+                        Text("Override active — \(overrideMessage)")
+                            .foregroundStyle(Color.continuumWarning)
+                    }
                 }
-                if let state = viewModel.prefSaveState {
+                if let state = viewModel.prefSaveState,
+                   !(viewModel.settingsServerUpgradeRequired && state == .serverUpgradeRequired) {
                     saveStateView(state)
                 }
             }

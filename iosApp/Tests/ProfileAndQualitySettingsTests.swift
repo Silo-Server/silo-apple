@@ -446,7 +446,8 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
 
         let modeWrites = transport.writes().filter { $0.key == .playbackSubtitleMode }
         // Two attempts: the failed one and the retry. A count of one means the
-        // failed language write above aborted the rest of the batch, which is
+        // failed language write earlier in the batch aborted the remaining
+        // independent keys, which is
         // the regression this test exists to catch — so it is asserted, not
         // skipped. XCTSkipUnless would report that exact failure as a *skip*,
         // which CI counts as a pass.
@@ -568,6 +569,156 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
                        "a failed write must stay owed rather than being marked persisted")
         XCTAssertEqual(languageWrites.last?.value, .string("ko"))
     }
+
+    func testOverlappingEditsToOneProfileKeyLandNewestLast() async throws {
+        let transport = FakeProfileSettingsTransport()
+        transport.writeDelays[.string("ja")] = .milliseconds(100)
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+
+        editor.subtitleLanguage = "ja"
+        let firstSave = Task { @MainActor in await editor.saveSubtitlePrefs() }
+        try await Task.sleep(for: .milliseconds(20))
+
+        editor.subtitleLanguage = "ko"
+        await editor.saveSubtitlePrefs()
+        await firstSave.value
+
+        let completedLanguages = transport.completedWrites()
+            .filter { $0.key == .playbackSubtitleLanguage }
+            .map(\.value)
+        XCTAssertEqual(
+            completedLanguages,
+            [.string("ja"), .string("ko")],
+            "same-key saves must serialize so an older slow PUT cannot overwrite the newer choice"
+        )
+        XCTAssertEqual(editor.subtitleLanguage, "ko")
+        XCTAssertEqual(editor.saveState, .saved)
+    }
+
+    func testSuccessfulLanguageWriteUpdatesThePreferenceStoreWhenASiblingFails() async throws {
+        let transport = FakeProfileSettingsTransport()
+        transport.failWritesByKey[.playbackSubtitleMode] = .server(
+            status: 503,
+            code: "unavailable",
+            message: nil
+        )
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        ProfilePrefsStore.shared.clear()
+        defer { ProfilePrefsStore.shared.clear() }
+
+        editor.subtitleLanguage = "ja"
+        editor.subtitleMode = SubtitleMode.always.rawValue
+        await editor.saveSubtitlePrefs()
+
+        XCTAssertEqual(
+            ProfilePrefsStore.shared.preferredSubtitleLanguage,
+            "ja",
+            "a landed language row must update local ordering even when another row in the batch fails"
+        )
+        guard case .failed = editor.saveState else {
+            return XCTFail("the sibling failure must still be reported")
+        }
+    }
+
+    func testAProfileWriteReResolvesWhenADeviceOverrideStillWins() async throws {
+        let transport = FakeProfileSettingsTransport()
+        transport.effective = [
+            .init(
+                key: SettingKey.playbackSubtitleLanguage.rawValue,
+                value: .string("en"),
+                source: .scope(.profileDevice),
+                scope: .profileDevice
+            ),
+        ]
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        await editor.load()
+
+        editor.subtitleLanguage = "ja"
+        await editor.saveSubtitlePrefs()
+
+        XCTAssertEqual(
+            transport.effectiveCalls().count,
+            2,
+            "a successful profile write must refresh an effective value known to be shadowed"
+        )
+        XCTAssertEqual(
+            editor.subtitleLanguage,
+            "en",
+            "the editor must show the still-winning device override, not the ineffective optimistic profile value"
+        )
+        XCTAssertTrue(
+            editor.subtitleProfileOverrideMessage?.contains("This device, for this profile") == true,
+            "the UI needs a visible explanation for why the saved profile value did not become effective"
+        )
+    }
+
+    func testEditDuringShadowRefreshStillSavesNewestValue() async throws {
+        let transport = FakeProfileSettingsTransport()
+        transport.effective = [
+            .init(
+                key: SettingKey.playbackSubtitleLanguage.rawValue,
+                value: .string("en"),
+                source: .scope(.profileDevice),
+                scope: .profileDevice
+            ),
+        ]
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        await editor.load()
+        transport.effectiveDelay = .milliseconds(100)
+
+        editor.subtitleLanguage = "ja"
+        let firstSave = Task { @MainActor in await editor.saveSubtitlePrefs() }
+        for _ in 0..<100 {
+            if transport.effectiveCalls().count >= 2 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(transport.effectiveCalls().count, 2, "the post-write resolution read must start")
+
+        editor.subtitleLanguage = "ko"
+        await editor.saveSubtitlePrefs()
+        await firstSave.value
+
+        let languages = transport.writes()
+            .filter { $0.key == .playbackSubtitleLanguage }
+            .map(\.value)
+        XCTAssertEqual(
+            languages,
+            [.string("ja"), .string("ko")],
+            "an edit queued while the shadow-resolution read is suspended must get its own serialized write"
+        )
+        XCTAssertEqual(
+            editor.subtitleLanguage,
+            "en",
+            "the device override remains the displayed effective value after the profile write lands"
+        )
+        XCTAssertEqual(editor.saveState, .saved)
+    }
+
+    func testMetadataEditRevertedDuringWriteStillLandsNewestValue() async throws {
+        let transport = FakeProfileSettingsTransport()
+        transport.writeDelays[.string("ja")] = .milliseconds(100)
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        editor.seed(from: nil)
+
+        editor.preferredMetadataLanguage = "ja"
+        let firstSave = Task { @MainActor in await editor.saveMetadataLanguage() }
+        try await Task.sleep(for: .milliseconds(20))
+
+        editor.preferredMetadataLanguage = PlaybackPrefSentinel.none
+        await editor.saveMetadataLanguage()
+        await firstSave.value
+
+        let values = transport.writes()
+            .filter { $0.key == .catalogMetadataLanguage }
+            .map(\.value)
+        XCTAssertEqual(
+            values,
+            [.string("ja"), .null],
+            "reverting to the baseline while an older PUT is suspended must enqueue the revert"
+        )
+        XCTAssertEqual(editor.preferredMetadataLanguage, PlaybackPrefSentinel.none)
+        XCTAssertEqual(editor.saveState, .saved)
+    }
 }
 
 // MARK: - Fakes
@@ -584,9 +735,13 @@ final class FakeProfileSettingsTransport: ProfileSettingsTransport, @unchecked S
     var effective: [EffectiveSettingValue] = []
     var failReadsWith: SettingsAPIError?
     var failWritesWith: SettingsAPIError?
+    var failWritesByKey: [SettingKey: SettingsAPIError] = [:]
+    var writeDelays: [SettingJSONValue: Duration] = [:]
+    var effectiveDelay: Duration?
 
     private let lock = NSLock()
     private var recordedWrites: [Write] = []
+    private var recordedCompletions: [Write] = []
     private var recordedEffectiveCalls: [[SettingKey]] = []
 
     func writes() -> [Write] {
@@ -611,6 +766,12 @@ final class FakeProfileSettingsTransport: ProfileSettingsTransport, @unchecked S
         return recordedEffectiveCalls
     }
 
+    func completedWrites() -> [Write] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedCompletions
+    }
+
     // MARK: ProfileSettingsTransport
 
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse {
@@ -618,16 +779,24 @@ final class FakeProfileSettingsTransport: ProfileSettingsTransport, @unchecked S
         recordedEffectiveCalls.append(keys)
         let settings = effective
         let failure = failReadsWith
+        let delay = effectiveDelay
         lock.unlock()
+        if let delay { try? await Task.sleep(for: delay) }
         if let failure { throw failure }
         return EffectiveSettingValuesResponse(settings: settings, revision: SettingKey.revision)
     }
 
     func putValue(key: SettingKey, value: SettingJSONValue, mutationId: String) async throws {
         lock.lock()
-        recordedWrites.append(Write(key: key, value: value, mutationId: mutationId))
-        let failure = failWritesWith
+        let write = Write(key: key, value: value, mutationId: mutationId)
+        recordedWrites.append(write)
+        let failure = failWritesByKey[key] ?? failWritesWith
+        let delay = writeDelays[value]
         lock.unlock()
+        if let delay { try? await Task.sleep(for: delay) }
         if let failure { throw failure }
+        lock.lock()
+        recordedCompletions.append(write)
+        lock.unlock()
     }
 }
