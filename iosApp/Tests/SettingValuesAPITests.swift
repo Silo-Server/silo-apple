@@ -446,8 +446,16 @@ final class SettingValuesAPITests: XCTestCase {
         guard case .available(let capabilities) = await api.getContractCapabilities() else {
             return XCTFail("a current server must report capabilities")
         }
-        XCTAssertEqual(capabilities.revision, 1)
+        XCTAssertEqual(capabilities.revision, SettingKey.revision)
         XCTAssertTrue(capabilities.supportsIdempotentWrites)
+    }
+
+    func testGetContractCapabilitiesRequiresTheServersRevisionToBeCurrent() async throws {
+        SettingsStubProtocol.reset(mode: .olderContractRevision)
+        let api = await makeStubbedAPI()
+
+        let result = await api.getContractCapabilities()
+        XCTAssertEqual(result, .serverUpgradeRequired)
     }
 
     func testPutValueSendsScopeIdentityMutationIdAndProfileHeader() async throws {
@@ -547,13 +555,25 @@ final class SettingValuesAPITests: XCTestCase {
             libraryIds: [7, 9],
             seriesIds: ["s-101"]
         )
-        XCTAssertEqual(response.revision, 1)
+        XCTAssertEqual(response.revision, SettingKey.revision)
 
         let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
         XCTAssertEqual(recorded.query["keys"], "playback.subtitle_language,playback.auto_play_next")
         XCTAssertEqual(recorded.query["library_ids"], "7,9")
         XCTAssertEqual(recorded.query["series_ids"], "s-101")
         XCTAssertEqual(recorded.header("X-Profile-Id"), Self.stubProfileId)
+    }
+
+    func testGetEffectiveValuesRejectsAnOlderContractRevision() async throws {
+        SettingsStubProtocol.reset(mode: .olderContractRevision)
+        let api = await makeStubbedAPI()
+
+        do {
+            _ = try await api.getEffectiveValues(keys: [.playbackSubtitleLanguage])
+            XCTFail("a client must not apply an effective response from an older contract")
+        } catch let error as SettingsAPIError {
+            XCTAssertEqual(error, .serverUpgradeRequired)
+        }
     }
 
     func testGetEffectiveValuesOmitsEmptyParams() async throws {
@@ -635,6 +655,8 @@ final class SettingsStubProtocol: URLProtocol {
         case normal
         /// A server predating it: the router 404s with no Silo envelope.
         case serverTooOld
+        /// A server with the canonical routes but an older manifest revision.
+        case olderContractRevision
         /// A write whose mutation id the server already applied.
         case idempotentReplay
         /// A delete addressing a scope with no stored value.
@@ -710,18 +732,21 @@ final class SettingsStubProtocol: URLProtocol {
             respond(status: 404, body: "404 page not found\n", contentType: "text/plain", headers: [:])
             return
         }
+        let responseRevision = mode == .olderContractRevision
+            ? SettingKey.revision - 1
+            : SettingKey.revision
 
         switch (recorded.method, recorded.path) {
         case ("GET", "/api/v1/settings/contract/capabilities"):
             respond(status: 200, body: """
-            {"api_version":1,"revision":1,"contract_etag":"\\"etag\\"","definition_count":48,
+            {"api_version":1,"revision":\(responseRevision),"contract_etag":"\\"etag\\"","definition_count":48,
              "scopes":["account","profile","profile_device","profile_library","profile_series"],
              "supports_batched_effective":true,"supports_idempotent_writes":true}
             """)
         case ("GET", "/api/v1/settings/values/effective"):
             respond(status: 200, body: """
             {"settings":[{"key":"playback.auto_play_next","value":true,"source":"default"}],
-             "revision":1}
+             "revision":\(responseRevision)}
             """)
         case ("PUT", let path) where path.hasPrefix("/api/v1/settings/values/"):
             let key = String(path.dropFirst("/api/v1/settings/values/".count))

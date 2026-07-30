@@ -46,6 +46,9 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             "ger": "de",
             "chi": "zh",
             "mao": "mi",
+            "iw": "he",
+            "in": "id",
+            "ji": "yi",
         ]
 
         for (alias, canonical) in aliases {

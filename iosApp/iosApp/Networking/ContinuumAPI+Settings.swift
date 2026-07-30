@@ -24,10 +24,10 @@ extension ContinuumAPI {
     /// What the connected server's settings contract supports.
     ///
     /// Returns a typed result rather than throwing, because the interesting
-    /// failure is not an error: a server that predates the canonical settings
-    /// API has no `/settings/contract` routes at all, so the probe 404s. The
+    /// failure is not an error: a server may predate the canonical settings
+    /// API entirely or serve an older manifest revision than this build. The
     /// UI must say "this server needs an upgrade" rather than render an empty
-    /// settings screen, so that case is
+    /// or incomplete settings screen, so that case is
     /// ``SettingsCapabilitiesResult/serverUpgradeRequired`` instead of
     /// dissolving into the generic error path.
     ///
@@ -45,6 +45,9 @@ extension ContinuumAPI {
             )
             let capabilities = try SettingsWireCoding.makeDecoder()
                 .decode(SettingsContractCapabilities.self, from: response.data)
+            guard !capabilities.contractIsAheadOfServer else {
+                return .serverUpgradeRequired
+            }
             return .available(capabilities)
         } catch {
             let mapped = SettingsAPIError.from(error)
@@ -92,8 +95,12 @@ extension ContinuumAPI {
                 query: query,
                 headers: headers
             )
-            return try SettingsWireCoding.makeDecoder()
+            let decoded = try SettingsWireCoding.makeDecoder()
                 .decode(EffectiveSettingValuesResponse.self, from: response.data)
+            guard !decoded.contractIsAheadOfServer else {
+                throw SettingsAPIError.serverUpgradeRequired
+            }
+            return decoded
         } catch {
             throw SettingsAPIError.from(error)
         }

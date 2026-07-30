@@ -445,6 +445,18 @@ final class SettingsConformanceTests: XCTestCase {
     func testGeneratedPresentationMetadataMatchesTheVendoredManifest() throws {
         let manifest = try loadManifest()
 
+        let manifestKeys = Set(manifest.definitions.compactMap { definition in
+            definition.suggestedOptions != nil || definition.unsetLabel != nil
+                ? definition.key
+                : nil
+        })
+        let generatedKeys = Set(SettingPresentationMetadata.definitions.keys.map(\.rawValue))
+        XCTAssertEqual(
+            generatedKeys,
+            manifestKeys,
+            "the generated bindings and vendored manifest expose presentation metadata for different keys"
+        )
+
         for (key, presentation) in SettingPresentationMetadata.definitions {
             let definition = try XCTUnwrap(manifest.lookup(key.rawValue))
             XCTAssertEqual(presentation.suggestedOptions, definition.suggestedOptions)
