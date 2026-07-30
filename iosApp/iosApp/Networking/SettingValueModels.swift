@@ -472,6 +472,9 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
     let storedValue: SettingJSONValue?
     let constrained: Bool
     let constraintKind: SettingConstraintKind?
+    /// Advisory picker values for an open setting. These never constrain
+    /// writes; they augment the generated contract floor.
+    let suggestedValues: [String]?
 
     /// The scope holding the value, so a reset can target exactly that row.
     /// Absent for a contract default.
@@ -488,6 +491,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         case storedValue = "stored_value"
         case constrained
         case constraintKind = "constraint_kind"
+        case suggestedValues = "suggested_values"
         case scope
         case profileId = "profile_id"
         case deviceId = "device_id"
@@ -507,6 +511,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         }
         constrained = try container.decodeIfPresent(Bool.self, forKey: .constrained) ?? false
         constraintKind = try container.decodeIfPresent(SettingConstraintKind.self, forKey: .constraintKind)
+        suggestedValues = try container.decodeIfPresent([String].self, forKey: .suggestedValues)
         scope = try container.decodeIfPresent(SettingScope.self, forKey: .scope)
         profileId = try container.decodeIfPresent(String.self, forKey: .profileId)
         deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
@@ -521,6 +526,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         storedValue: SettingJSONValue? = nil,
         constrained: Bool = false,
         constraintKind: SettingConstraintKind? = nil,
+        suggestedValues: [String]? = nil,
         scope: SettingScope? = nil,
         profileId: String? = nil,
         deviceId: String? = nil,
@@ -533,6 +539,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         self.storedValue = storedValue
         self.constrained = constrained
         self.constraintKind = constraintKind
+        self.suggestedValues = suggestedValues
         self.scope = scope
         self.profileId = profileId
         self.deviceId = deviceId

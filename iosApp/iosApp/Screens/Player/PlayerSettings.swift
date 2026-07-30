@@ -180,6 +180,10 @@ final class PlayerSettings {
         didSet { defaults.set(audioLanguage, forKey: Self.cacheKey(Keys.audioLanguage)) }
     }
 
+    /// Deployment-observed choices returned with the effective audio setting.
+    /// The UI unions these with the generated contract floor and current value.
+    private(set) var audioLanguageSuggestions: [String] = []
+
     var autoSkipIntro: Bool {
         didSet { defaults.set(autoSkipIntro, forKey: Self.cacheKey(Keys.autoSkipIntro)) }
     }
@@ -734,6 +738,7 @@ final class PlayerSettings {
         // A nullable language tag: JSON null is "no preference", which this
         // client spells as the empty string.
         audioLanguage = effectiveByKey[.audioLanguage]?.value.stringValue ?? ""
+        audioLanguageSuggestions = effectiveByKey[.audioLanguage]?.suggestedValues ?? []
         autoSkipIntro = effectiveBool(.autoSkipIntro, in: effectiveByKey, default: false)
         autoSkipCredits = effectiveBool(.autoSkipCredits, in: effectiveByKey, default: false)
         autoPlayNextEpisode = effectiveBool(.autoPlayNext, in: effectiveByKey, default: true)

@@ -41,13 +41,19 @@ struct TVSubtitleSettingsPane: View {
         if viewModel.settingsServerUpgradeRequired {
             TVSettingsPickerRow(
                 title: "Language",
-                value: TVSettingsOptions.label(for: viewModel.editorSubtitleLanguage, in: TVSettingsOptions.subtitleLanguage)
+                value: TVSettingsOptions.label(
+                    for: viewModel.editorSubtitleLanguage,
+                    in: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions)
+                )
             ) { activePicker = .language }
             .disabled(true)
         } else {
             TVSettingsPickerRow(
                 title: "Language",
-                value: TVSettingsOptions.label(for: viewModel.editorSubtitleLanguage, in: TVSettingsOptions.subtitleLanguage)
+                value: TVSettingsOptions.label(
+                    for: viewModel.editorSubtitleLanguage,
+                    in: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions)
+                )
             ) { activePicker = .language }
             .focused(detailFocus, equals: .top)
         }
@@ -84,7 +90,10 @@ struct TVSubtitleSettingsPane: View {
 
         TVSettingsPickerRow(
             title: "Metadata Language",
-            value: TVSettingsOptions.label(for: viewModel.editorPreferredMetadataLanguage, in: TVSettingsOptions.metadataLanguage)
+            value: TVSettingsOptions.label(
+                for: viewModel.editorPreferredMetadataLanguage,
+                in: TVSettingsOptions.metadataLanguage(viewModel.metadataLanguageOptions)
+            )
         ) { activePicker = .metadataLanguage }
         .disabled(viewModel.settingsServerUpgradeRequired)
 
@@ -256,7 +265,7 @@ struct TVSubtitleSettingsPane: View {
         case .language:
             TVSettingsPickerSheet(
                 title: "Language",
-                options: TVSettingsOptions.subtitleLanguage,
+                options: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions),
                 selection: $viewModel.editorSubtitleLanguage
             )
         case .mode:
@@ -268,7 +277,7 @@ struct TVSubtitleSettingsPane: View {
         case .metadataLanguage:
             TVSettingsPickerSheet(
                 title: "Metadata Language",
-                options: TVSettingsOptions.metadataLanguage,
+                options: TVSettingsOptions.metadataLanguage(viewModel.metadataLanguageOptions),
                 selection: $viewModel.editorPreferredMetadataLanguage
             )
         case .fontSize:

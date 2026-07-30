@@ -8,6 +8,21 @@
 
 import Foundation
 
+public struct SettingSuggestedOption: Hashable, Sendable {
+    public let value: String
+    public let introducedIn: Int
+}
+
+public struct SettingOptionSet: Hashable, Sendable {
+    public let type: String
+    public let options: [SettingSuggestedOption]
+}
+
+public struct SettingPresentation: Hashable, Sendable {
+    public let suggestedOptions: String?
+    public let unsetLabel: String?
+}
+
 /// Every setting the contract defines.
 public enum SettingKey: String, CaseIterable, Sendable {
     /// Metadata language
@@ -111,7 +126,7 @@ public enum SettingKey: String, CaseIterable, Sendable {
 }
 
 public extension SettingKey {
-    static let revision = 1
+    static let revision = 2
 
     /// Keys the server stores. The rest never leave the device.
     static let remote: [SettingKey] = [
@@ -168,4 +183,161 @@ public extension SettingKey {
         .playerResumeRewindSeconds,
         .subtitleMatchesDevice,
     ]
+}
+
+public enum SettingPresentationMetadata {
+    public static let optionSets: [String: SettingOptionSet] = [
+        "catalog_metadata_languages": SettingOptionSet(
+            type: "language_tag",
+            options: [
+                SettingSuggestedOption(value: "ar", introducedIn: 1),
+                SettingSuggestedOption(value: "bn", introducedIn: 1),
+                SettingSuggestedOption(value: "bg", introducedIn: 1),
+                SettingSuggestedOption(value: "zh", introducedIn: 1),
+                SettingSuggestedOption(value: "hr", introducedIn: 1),
+                SettingSuggestedOption(value: "cs", introducedIn: 1),
+                SettingSuggestedOption(value: "da", introducedIn: 1),
+                SettingSuggestedOption(value: "nl", introducedIn: 1),
+                SettingSuggestedOption(value: "en", introducedIn: 1),
+                SettingSuggestedOption(value: "fi", introducedIn: 1),
+                SettingSuggestedOption(value: "fr", introducedIn: 1),
+                SettingSuggestedOption(value: "de", introducedIn: 1),
+                SettingSuggestedOption(value: "el", introducedIn: 1),
+                SettingSuggestedOption(value: "he", introducedIn: 1),
+                SettingSuggestedOption(value: "hi", introducedIn: 1),
+                SettingSuggestedOption(value: "hu", introducedIn: 1),
+                SettingSuggestedOption(value: "id", introducedIn: 1),
+                SettingSuggestedOption(value: "it", introducedIn: 1),
+                SettingSuggestedOption(value: "ja", introducedIn: 1),
+                SettingSuggestedOption(value: "ko", introducedIn: 1),
+                SettingSuggestedOption(value: "ms", introducedIn: 1),
+                SettingSuggestedOption(value: "no", introducedIn: 1),
+                SettingSuggestedOption(value: "fa", introducedIn: 1),
+                SettingSuggestedOption(value: "pl", introducedIn: 1),
+                SettingSuggestedOption(value: "pt", introducedIn: 1),
+                SettingSuggestedOption(value: "ro", introducedIn: 1),
+                SettingSuggestedOption(value: "ru", introducedIn: 1),
+                SettingSuggestedOption(value: "sk", introducedIn: 1),
+                SettingSuggestedOption(value: "sl", introducedIn: 1),
+                SettingSuggestedOption(value: "es", introducedIn: 1),
+                SettingSuggestedOption(value: "sv", introducedIn: 1),
+                SettingSuggestedOption(value: "ta", introducedIn: 1),
+                SettingSuggestedOption(value: "te", introducedIn: 1),
+                SettingSuggestedOption(value: "th", introducedIn: 1),
+                SettingSuggestedOption(value: "tr", introducedIn: 1),
+                SettingSuggestedOption(value: "uk", introducedIn: 1),
+                SettingSuggestedOption(value: "vi", introducedIn: 1),
+            ]
+        ),
+        "playback_audio_languages": SettingOptionSet(
+            type: "language_tag",
+            options: [
+                SettingSuggestedOption(value: "ar", introducedIn: 1),
+                SettingSuggestedOption(value: "bn", introducedIn: 1),
+                SettingSuggestedOption(value: "bg", introducedIn: 1),
+                SettingSuggestedOption(value: "zh", introducedIn: 1),
+                SettingSuggestedOption(value: "hr", introducedIn: 1),
+                SettingSuggestedOption(value: "cs", introducedIn: 1),
+                SettingSuggestedOption(value: "da", introducedIn: 1),
+                SettingSuggestedOption(value: "nl", introducedIn: 1),
+                SettingSuggestedOption(value: "en", introducedIn: 1),
+                SettingSuggestedOption(value: "fi", introducedIn: 1),
+                SettingSuggestedOption(value: "fr", introducedIn: 1),
+                SettingSuggestedOption(value: "de", introducedIn: 1),
+                SettingSuggestedOption(value: "el", introducedIn: 1),
+                SettingSuggestedOption(value: "he", introducedIn: 1),
+                SettingSuggestedOption(value: "hi", introducedIn: 1),
+                SettingSuggestedOption(value: "hu", introducedIn: 1),
+                SettingSuggestedOption(value: "id", introducedIn: 1),
+                SettingSuggestedOption(value: "it", introducedIn: 1),
+                SettingSuggestedOption(value: "ja", introducedIn: 1),
+                SettingSuggestedOption(value: "ko", introducedIn: 1),
+                SettingSuggestedOption(value: "ms", introducedIn: 1),
+                SettingSuggestedOption(value: "no", introducedIn: 1),
+                SettingSuggestedOption(value: "fa", introducedIn: 1),
+                SettingSuggestedOption(value: "pl", introducedIn: 1),
+                SettingSuggestedOption(value: "pt", introducedIn: 1),
+                SettingSuggestedOption(value: "ro", introducedIn: 1),
+                SettingSuggestedOption(value: "ru", introducedIn: 1),
+                SettingSuggestedOption(value: "sk", introducedIn: 1),
+                SettingSuggestedOption(value: "sl", introducedIn: 1),
+                SettingSuggestedOption(value: "es", introducedIn: 1),
+                SettingSuggestedOption(value: "sv", introducedIn: 1),
+                SettingSuggestedOption(value: "ta", introducedIn: 1),
+                SettingSuggestedOption(value: "te", introducedIn: 1),
+                SettingSuggestedOption(value: "th", introducedIn: 1),
+                SettingSuggestedOption(value: "tr", introducedIn: 1),
+                SettingSuggestedOption(value: "uk", introducedIn: 1),
+                SettingSuggestedOption(value: "vi", introducedIn: 1),
+            ]
+        ),
+        "playback_subtitle_languages": SettingOptionSet(
+            type: "language_tag",
+            options: [
+                SettingSuggestedOption(value: "ar", introducedIn: 1),
+                SettingSuggestedOption(value: "bn", introducedIn: 1),
+                SettingSuggestedOption(value: "bg", introducedIn: 1),
+                SettingSuggestedOption(value: "zh", introducedIn: 1),
+                SettingSuggestedOption(value: "hr", introducedIn: 1),
+                SettingSuggestedOption(value: "cs", introducedIn: 1),
+                SettingSuggestedOption(value: "da", introducedIn: 1),
+                SettingSuggestedOption(value: "nl", introducedIn: 1),
+                SettingSuggestedOption(value: "en", introducedIn: 1),
+                SettingSuggestedOption(value: "fi", introducedIn: 1),
+                SettingSuggestedOption(value: "fr", introducedIn: 1),
+                SettingSuggestedOption(value: "de", introducedIn: 1),
+                SettingSuggestedOption(value: "el", introducedIn: 1),
+                SettingSuggestedOption(value: "he", introducedIn: 1),
+                SettingSuggestedOption(value: "hi", introducedIn: 1),
+                SettingSuggestedOption(value: "hu", introducedIn: 1),
+                SettingSuggestedOption(value: "id", introducedIn: 1),
+                SettingSuggestedOption(value: "it", introducedIn: 1),
+                SettingSuggestedOption(value: "ja", introducedIn: 1),
+                SettingSuggestedOption(value: "ko", introducedIn: 1),
+                SettingSuggestedOption(value: "ms", introducedIn: 1),
+                SettingSuggestedOption(value: "no", introducedIn: 1),
+                SettingSuggestedOption(value: "fa", introducedIn: 1),
+                SettingSuggestedOption(value: "pl", introducedIn: 1),
+                SettingSuggestedOption(value: "pt", introducedIn: 1),
+                SettingSuggestedOption(value: "ro", introducedIn: 1),
+                SettingSuggestedOption(value: "ru", introducedIn: 1),
+                SettingSuggestedOption(value: "sk", introducedIn: 1),
+                SettingSuggestedOption(value: "sl", introducedIn: 1),
+                SettingSuggestedOption(value: "es", introducedIn: 1),
+                SettingSuggestedOption(value: "sv", introducedIn: 1),
+                SettingSuggestedOption(value: "ta", introducedIn: 1),
+                SettingSuggestedOption(value: "te", introducedIn: 1),
+                SettingSuggestedOption(value: "th", introducedIn: 1),
+                SettingSuggestedOption(value: "tr", introducedIn: 1),
+                SettingSuggestedOption(value: "uk", introducedIn: 1),
+                SettingSuggestedOption(value: "vi", introducedIn: 1),
+            ]
+        ),
+    ]
+
+    public static let definitions: [SettingKey: SettingPresentation] = [
+        .catalogMetadataLanguage: SettingPresentation(
+            suggestedOptions: "catalog_metadata_languages",
+            unsetLabel: "Library default"
+        ),
+        .playbackAudioLanguage: SettingPresentation(
+            suggestedOptions: "playback_audio_languages",
+            unsetLabel: "No preference"
+        ),
+        .playbackSubtitleLanguage: SettingPresentation(
+            suggestedOptions: "playback_subtitle_languages",
+            unsetLabel: "None"
+        ),
+    ]
+
+    public static func suggestedValues(
+        for key: SettingKey,
+        revision: Int = SettingKey.revision
+    ) -> [String] {
+        guard let setID = definitions[key]?.suggestedOptions,
+              let optionSet = optionSets[setID] else { return [] }
+        return optionSet.options
+            .filter { $0.introducedIn <= revision }
+            .map(\.value)
+    }
 }

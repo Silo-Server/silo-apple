@@ -30,17 +30,14 @@ enum TVSettingsOptions {
         return [.init(id: customQualityId, label: customLabel)] + presets
     }
 
-    static let audioLanguage: [TVSettingsOption] = [
-        .init(id: "", label: "Default"),
-        .init(id: "en", label: "English"),
-        .init(id: "es", label: "Spanish"),
-        .init(id: "fr", label: "French"),
-        .init(id: "de", label: "German"),
-        .init(id: "it", label: "Italian"),
-        .init(id: "pt", label: "Portuguese"),
-        .init(id: "ja", label: "Japanese"),
-        .init(id: "ko", label: "Korean"),
-    ]
+    static func audioLanguage(_ languages: [PlaybackLanguageOption]) -> [TVSettingsOption] {
+        languageOptions(
+            languages,
+            key: .playbackAudioLanguage,
+            unsetID: "",
+            fallbackUnsetLabel: "No preference"
+        )
+    }
 
     static let nextUpPrompt: [TVSettingsOption] = [
         .init(id: "0", label: "At end"),
@@ -50,13 +47,35 @@ enum TVSettingsOptions {
         .init(id: "120", label: "2 minutes before end"),
     ]
 
-    static let subtitleLanguage: [TVSettingsOption] =
-        [.init(id: PlaybackPrefSentinel.none, label: "None")]
-            + PlaybackLanguageOption.all.map { .init(id: $0.code, label: $0.label) }
+    static func subtitleLanguage(_ languages: [PlaybackLanguageOption]) -> [TVSettingsOption] {
+        languageOptions(
+            languages,
+            key: .playbackSubtitleLanguage,
+            unsetID: PlaybackPrefSentinel.none,
+            fallbackUnsetLabel: "None"
+        )
+    }
 
-    static let metadataLanguage: [TVSettingsOption] =
-        [.init(id: PlaybackPrefSentinel.none, label: "Library Default")]
-            + PlaybackLanguageOption.all.map { .init(id: $0.code, label: $0.label) }
+    static func metadataLanguage(_ languages: [PlaybackLanguageOption]) -> [TVSettingsOption] {
+        languageOptions(
+            languages,
+            key: .catalogMetadataLanguage,
+            unsetID: PlaybackPrefSentinel.none,
+            fallbackUnsetLabel: "Library default"
+        )
+    }
+
+    private static func languageOptions(
+        _ languages: [PlaybackLanguageOption],
+        key: SettingKey,
+        unsetID: String,
+        fallbackUnsetLabel: String
+    ) -> [TVSettingsOption] {
+        let unsetLabel = SettingPresentationMetadata.definitions[key]?.unsetLabel
+            ?? fallbackUnsetLabel
+        return [.init(id: unsetID, label: unsetLabel)]
+            + languages.map { .init(id: $0.code, label: $0.label) }
+    }
 
     static let subtitleMode: [TVSettingsOption] =
         SubtitleMode.allCases.map { .init(id: $0.rawValue, label: $0.displayLabel) }

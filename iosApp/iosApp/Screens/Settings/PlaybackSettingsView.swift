@@ -58,8 +58,12 @@ struct PlaybackSettingsView: View {
                     Task { await viewModel.setPreferredAudioLanguage(newValue) }
                 }
             )) {
-                ForEach(audioLanguageOptions, id: \.0) { tag, label in
-                    Text(label).tag(tag)
+                Text(
+                    SettingPresentationMetadata.definitions[.playbackAudioLanguage]?.unsetLabel
+                        ?? "No preference"
+                ).tag("")
+                ForEach(viewModel.audioLanguageOptions) { option in
+                    Text(option.label).tag(option.code)
                 }
             }
             .foregroundStyle(Color.continuumOnSurface)
@@ -202,20 +206,6 @@ struct PlaybackSettingsView: View {
     /// Tag for the "stored pair matches no preset" entry. Not a preset id, so
     /// selecting it is a no-op rather than a write.
     private static let customPresetTag = "__custom__"
-
-    private var audioLanguageOptions: [(String, String)] {
-        [
-            ("", "Default"),
-            ("en", "English"),
-            ("es", "Spanish"),
-            ("fr", "French"),
-            ("de", "German"),
-            ("it", "Italian"),
-            ("pt", "Portuguese"),
-            ("ja", "Japanese"),
-            ("ko", "Korean"),
-        ]
-    }
 
     private var nextUpPromptOptions: [(Int, String)] {
         [

@@ -34,7 +34,10 @@ struct TVPlaybackSettingsPane: View {
 
         TVSettingsPickerRow(
             title: "Audio Language",
-            value: TVSettingsOptions.label(for: viewModel.preferredAudioLanguage, in: TVSettingsOptions.audioLanguage)
+            value: TVSettingsOptions.label(
+                for: viewModel.preferredAudioLanguage,
+                in: TVSettingsOptions.audioLanguage(viewModel.audioLanguageOptions)
+            )
         ) { activePicker = .audioLanguage }
 
         TVSettingsToggleRow(
@@ -168,7 +171,7 @@ struct TVPlaybackSettingsPane: View {
         case .audioLanguage:
             TVSettingsPickerSheet(
                 title: "Audio Language",
-                options: TVSettingsOptions.audioLanguage,
+                options: TVSettingsOptions.audioLanguage(viewModel.audioLanguageOptions),
                 selection: Binding(
                     get: { viewModel.preferredAudioLanguage },
                     set: { value in

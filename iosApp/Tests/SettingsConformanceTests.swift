@@ -442,6 +442,26 @@ final class SettingsConformanceTests: XCTestCase {
         )
     }
 
+    func testGeneratedPresentationMetadataMatchesTheVendoredManifest() throws {
+        let manifest = try loadManifest()
+
+        for (key, presentation) in SettingPresentationMetadata.definitions {
+            let definition = try XCTUnwrap(manifest.lookup(key.rawValue))
+            XCTAssertEqual(presentation.suggestedOptions, definition.suggestedOptions)
+            XCTAssertEqual(presentation.unsetLabel, definition.unsetLabel)
+
+            guard let setID = definition.suggestedOptions else { continue }
+            let optionSet = try XCTUnwrap(manifest.optionSets[setID])
+            XCTAssertEqual(optionSet.type, "language_tag")
+            XCTAssertEqual(
+                SettingPresentationMetadata.suggestedValues(for: key),
+                optionSet.options
+                    .filter { $0.introducedIn <= manifest.revision }
+                    .map(\.value)
+            )
+        }
+    }
+
     func testEveryCaseIsDeclaredOnce() throws {
         let names = try loadFixture().cases.map(\.name)
         XCTAssertFalse(names.contains(where: \.isEmpty), "a conformance case has no name")

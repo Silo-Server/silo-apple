@@ -207,7 +207,8 @@ final class SettingValuesAPITests: XCTestCase {
             .decode(EffectiveSettingValuesResponse.self, from: Data("""
             {"settings":[
               {"key":"playback.subtitle_language","value":"ja","source":"profile_series",
-               "scope":"profile_series","profile_id":"p1","series_id":"s-101"},
+               "scope":"profile_series","profile_id":"p1","series_id":"s-101",
+               "suggested_values":["en","ja","pt-BR"]},
               {"key":"playback.auto_play_next","value":true,"source":"default"}
             ],"revision":1}
             """.utf8))
@@ -217,6 +218,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(series.source, .scope(.profileSeries))
         XCTAssertEqual(series.value, .string("ja"))
         XCTAssertEqual(series.storedAt, .profileSeries(seriesId: "s-101"))
+        XCTAssertEqual(series.suggestedValues, ["en", "ja", "pt-BR"])
 
         let fromDefault = try XCTUnwrap(response.value(for: .playbackAutoPlayNext))
         XCTAssertEqual(fromDefault.source, .contractDefault)

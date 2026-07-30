@@ -45,6 +45,11 @@ final class ProfilePrefsEditor {
     /// Gated on `AICapabilities.shared.metadataEnabled` at the row.
     var preferredMetadataLanguage: String = PlaybackPrefSentinel.none
 
+    /// Deployment-observed advisory values from the effective settings API.
+    /// Picker helpers add the generated floor and exact current value.
+    private(set) var subtitleLanguageSuggestions: [String] = []
+    private(set) var metadataLanguageSuggestions: [String] = []
+
     var saveState: PrefSaveState?
 
     /// True when the connected server has no canonical settings API. The
@@ -197,6 +202,7 @@ final class ProfilePrefsEditor {
             serverUpgradeRequired = false
             apply(preferences)
             resolvedSources = byKey.compactMapValues { $0.source }
+            adoptLanguageSuggestions(from: byKey)
         } catch SettingsAPIError.serverUpgradeRequired {
             serverUpgradeRequired = true
         } catch {
@@ -224,6 +230,12 @@ final class ProfilePrefsEditor {
             showForcedSubtitles: showForcedSubtitles,
             metadataLanguage: preferredMetadataLanguage
         )
+    }
+
+    @MainActor
+    private func adoptLanguageSuggestions(from byKey: [SettingKey: EffectiveSettingValue]) {
+        subtitleLanguageSuggestions = byKey[ProfileSettingKeys.subtitleLanguage]?.suggestedValues ?? []
+        metadataLanguageSuggestions = byKey[ProfileSettingKeys.metadataLanguage]?.suggestedValues ?? []
     }
 
     /// Move one key's baseline to the exact captured value that landed.
@@ -535,6 +547,7 @@ final class ProfilePrefsEditor {
             for key in Self.subtitleKeys {
                 resolvedSources[key] = byKey[key]?.source
             }
+            adoptLanguageSuggestions(from: byKey)
         } catch {
             // The profile write itself succeeded. Keep the captured values and
             // retry effective resolution on the next ordinary load.

@@ -51,6 +51,7 @@ import Foundation
 struct SettingsContractManifest: Decodable {
     let apiVersion: Int
     let revision: Int
+    let optionSets: [String: SettingsContractOptionSet]
     let definitions: [SettingsContractDefinition]
 
     private let byKey: [String: SettingsContractDefinition]
@@ -58,6 +59,7 @@ struct SettingsContractManifest: Decodable {
     enum CodingKeys: String, CodingKey {
         case apiVersion = "api_version"
         case revision
+        case optionSets = "option_sets"
         case definitions
     }
 
@@ -65,6 +67,10 @@ struct SettingsContractManifest: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         apiVersion = try container.decode(Int.self, forKey: .apiVersion)
         revision = try container.decode(Int.self, forKey: .revision)
+        optionSets = try container.decodeIfPresent(
+            [String: SettingsContractOptionSet].self,
+            forKey: .optionSets
+        ) ?? [:]
         definitions = try container.decode([SettingsContractDefinition].self, forKey: .definitions)
 
         // A duplicate key would let the last definition silently win, which is
@@ -101,6 +107,8 @@ struct SettingsContractDefinition: Decodable {
     let valueSchema: SettingsContractValueSchema
     let defaultValue: SettingJSONValue
     let constrainedBy: SettingsContractConstraint?
+    let suggestedOptions: String?
+    let unsetLabel: String?
 
     enum CodingKeys: String, CodingKey {
         case key
@@ -109,6 +117,8 @@ struct SettingsContractDefinition: Decodable {
         case valueSchema = "value_schema"
         case defaultValue = "default_value"
         case constrainedBy = "constrained_by"
+        case suggestedOptions = "suggested_options"
+        case unsetLabel = "unset_label"
     }
 
     init(from decoder: Decoder) throws {
@@ -124,6 +134,8 @@ struct SettingsContractDefinition: Decodable {
         constrainedBy = try container.decodeIfPresent(
             SettingsContractConstraint.self, forKey: .constrainedBy
         )
+        suggestedOptions = try container.decodeIfPresent(String.self, forKey: .suggestedOptions)
+        unsetLabel = try container.decodeIfPresent(String.self, forKey: .unsetLabel)
     }
 
     /// Server-stored settings. `client_local` ones never have server rows.
@@ -131,6 +143,21 @@ struct SettingsContractDefinition: Decodable {
 
     var isNumeric: Bool {
         valueSchema.type == "integer" || valueSchema.type == "number"
+    }
+}
+
+struct SettingsContractOptionSet: Decodable {
+    let type: String
+    let options: [SettingsContractSuggestedOption]
+}
+
+struct SettingsContractSuggestedOption: Decodable {
+    let value: String
+    let introducedIn: Int
+
+    enum CodingKeys: String, CodingKey {
+        case value
+        case introducedIn = "introduced_in"
     }
 }
 
