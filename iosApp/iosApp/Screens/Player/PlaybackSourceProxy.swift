@@ -264,6 +264,19 @@ final class PlaybackSourceCache {
         return lastReadEnd == nil ? Int64(cachedBytes) : forwardCachedBytesLocked()
     }
 
+    /// Bytes consumption must drain between the park (high water) and the
+    /// prefetch re-arm (low water) — the interval a parked origin stream
+    /// waits before demand resumes it.
+    var hysteresisGapBytes: Int64 {
+        Int64(highWaterBytes - lowWaterBytes)
+    }
+
+    func currentSourceBitrateBps() -> Double? {
+        lock.lock()
+        defer { lock.unlock() }
+        return sourceBitrateBps
+    }
+
     func setTotalLength(_ length: Int64?) {
         guard let length, length > 0 else { return }
         lock.lock()
@@ -718,6 +731,16 @@ private final class PlaybackSourceResource {
     /// completion fires. Guarded by `stateLock`.
     private var serveTasks: [UUID: Task<Void, Never>] = [:]
     private var completedServeTaskIDs: Set<UUID> = []
+    /// Serve connections currently inside their response loop, keyed by the
+    /// same id as `serveTasks`. Inserted before the task body can run so
+    /// window-claim arbitration always sees a live claimant.
+    private var activeServeIDs: Set<UUID> = []
+    /// The serve connection that last re-anchored (or spawned) the streaming
+    /// window. While it is alive, other serve connections' qualified misses
+    /// are served by chunks instead of stealing the window
+    /// (`PlaybackWindowClaimPolicy`) — the fix for the 2026-07 tvOS
+    /// cancellation/range-request storm.
+    private var windowOwnerServeID: UUID?
 
     init(
         originURL: URL,
@@ -975,12 +998,15 @@ private final class PlaybackSourceResource {
             return
         }
         let id = UUID()
+        stateLock.lock()
+        activeServeIDs.insert(id)
+        stateLock.unlock()
         let task = Task.detached(priority: .userInitiated) { [weak self, weak connection] in
             if let self, let connection {
                 if method == "HEAD" {
                     await self.respondHead(on: connection)
                 } else {
-                    await self.respondGet(rangeHeader: rangeHeader, on: connection)
+                    await self.respondGet(rangeHeader: rangeHeader, on: connection, serveID: id)
                 }
             }
             self?.serveTaskFinished(id)
@@ -1009,6 +1035,10 @@ private final class PlaybackSourceResource {
 
     private func serveTaskFinished(_ id: UUID) {
         stateLock.lock()
+        activeServeIDs.remove(id)
+        if windowOwnerServeID == id {
+            windowOwnerServeID = nil
+        }
         if serveTasks.removeValue(forKey: id) == nil,
            !cancelled,
            !sourceEntityInvalidated {
@@ -1029,7 +1059,11 @@ private final class PlaybackSourceResource {
         _ = await send(Data(header.utf8), on: connection, close: true)
     }
 
-    private func respondGet(rangeHeader: String?, on connection: NWConnection) async {
+    private func respondGet(
+        rangeHeader: String?,
+        on connection: NWConnection,
+        serveID: UUID
+    ) async {
         let request = PlaybackSourceRangeRequest.parse(rangeHeader)
         let total = await awaitTotalLength(hint: request.start)
         let resolved = resolveRequest(request, totalLength: total)
@@ -1092,7 +1126,11 @@ private final class PlaybackSourceResource {
                 continue
             }
             cache.recordCacheMiss(byteCount: Int64(max(1, sendLength)))
-            switch await awaitData(at: cursor, servedSequentialBytes: cursor - resolved.start) {
+            switch await awaitData(
+                at: cursor,
+                servedSequentialBytes: cursor - resolved.start,
+                serveID: serveID
+            ) {
             case .available:
                 continue
             case .eof:
@@ -1171,7 +1209,11 @@ private final class PlaybackSourceResource {
     /// has already streamed enough to prove it is the playback reader), or
     /// fetch a discrete chunk for everything else so probes never disturb
     /// the warm window connection.
-    private func routeMiss(for offset: Int64, servedSequentialBytes: Int64) {
+    private func routeMiss(
+        for offset: Int64,
+        servedSequentialBytes: Int64,
+        serveID: UUID? = nil
+    ) {
         var toStart: PlaybackOriginStream?
         var toNote: PlaybackOriginStream?
         var toRetarget: PlaybackOriginStream?
@@ -1200,17 +1242,32 @@ private final class PlaybackSourceResource {
         case .rideWindow:
             toNote = windowStream
         case .claimWindow:
-            if let window = windowStream {
-                toRetarget = window
-            } else {
-                let stream = makeStream(startOffset: offset, order: order)
-                windowStream = stream
-                // Pair the gauge while still holding the lock: stop()
-                // snapshots the window and ends its request, so begin must
-                // not trail publication or a racing stop leaves the count
-                // stranded.
-                cache.beginOriginRequest()
-                toStart = stream
+            let ownerIsAlive = windowOwnerServeID.map { activeServeIDs.contains($0) } ?? false
+            switch PlaybackWindowClaimPolicy.arbitrate(
+                claimant: serveID,
+                owner: windowOwnerServeID,
+                ownerIsAlive: ownerIsAlive
+            ) {
+            case .retarget:
+                windowOwnerServeID = serveID
+                if let window = windowStream {
+                    toRetarget = window
+                } else {
+                    let stream = makeStream(startOffset: offset, order: order)
+                    windowStream = stream
+                    // Pair the gauge while still holding the lock: stop()
+                    // snapshots the window and ends its request, so begin must
+                    // not trail publication or a racing stop leaves the count
+                    // stranded.
+                    cache.beginOriginRequest()
+                    toStart = stream
+                }
+            case .chunk:
+                Self.logger.info(
+                    "[CMP-SOURCE-CACHE] window claim contested offset=\(offset, privacy: .public) served=\(servedSequentialBytes, privacy: .public) routed=chunk"
+                )
+                chunk = true
+                deferChunkUntilEntityKnown = resumeCapable && sourceEntityETag == nil
             }
         case .chunk:
             chunk = true
@@ -1379,6 +1436,7 @@ private final class PlaybackSourceResource {
     /// toward data we already have.
     private func noteDemandHint(at offset: Int64) {
         var toNote: PlaybackOriginStream?
+        var toNudge: PlaybackOriginStream?
         var order: UInt64 = 0
         stateLock.lock()
         guard !cancelled, !sourceEntityInvalidated else {
@@ -1392,10 +1450,19 @@ private final class PlaybackSourceResource {
             if offset >= snapshot.startOffset,
                offset <= snapshot.writeCursor + PlaybackOriginRoutingPolicy.rideThroughBytes {
                 toNote = window
+            } else {
+                // The read is outside the window's region (e.g. the window
+                // was re-anchored ahead by a seek while this consumer still
+                // drains behind it). Its consumption still frees the global
+                // budget, so a parked/detached window must re-check the
+                // low-water re-arm here — a cache miss when playback is
+                // already starved must not be the only wake-up.
+                toNudge = window
             }
         }
         stateLock.unlock()
         toNote?.noteDemand(offset: offset, order: order)
+        toNudge?.resumeFillingIfNeeded()
     }
 
     /// Suspend the serve loop until the byte at `offset` is cached, the file
@@ -1403,7 +1470,11 @@ private final class PlaybackSourceResource {
     /// `servedSequentialBytes` is how much this serve connection has already
     /// delivered sequentially — the signal that separates the playback
     /// reader (which may re-anchor the window) from short-lived probes.
-    private func awaitData(at offset: Int64, servedSequentialBytes: Int64) async -> WaitOutcome {
+    private func awaitData(
+        at offset: Int64,
+        servedSequentialBytes: Int64,
+        serveID: UUID? = nil
+    ) async -> WaitOutcome {
         let state = currentState()
         if state.cancelled || state.sourceEntityInvalidated { return .failed }
         if let total = state.total, offset >= total { return .eof }
@@ -1421,7 +1492,11 @@ private final class PlaybackSourceResource {
                 // Route the demand only after the waiter is registered, so a
                 // fetch give-up can never fire between routing and
                 // registration and leave this waiter stranded.
-                routeMiss(for: offset, servedSequentialBytes: servedSequentialBytes)
+                routeMiss(
+                    for: offset,
+                    servedSequentialBytes: servedSequentialBytes,
+                    serveID: serveID
+                )
                 // The bytes may also have landed between the cache miss and
                 // the registration above; re-check so the waiter can't sleep
                 // through its own wake-up.
@@ -1536,7 +1611,16 @@ private final class PlaybackSourceResource {
             resumeCapable: resumeCapable,
             initialEntityETag: resumeCapable ? sourceEntityETag : nil,
             initialResponseRequiresEntityValidation: resumeCapable && sawOriginResponse,
-            clock: originStreamClock
+            clock: originStreamClock,
+            detachGraceSecondsProvider: { [weak cache] in
+                guard let cache else {
+                    return PlaybackOriginStreamPolicy.detachAfterSeconds
+                }
+                return PlaybackOriginStreamPolicy.detachGraceSeconds(
+                    hysteresisGapBytes: cache.hysteresisGapBytes,
+                    sourceBitrateBps: cache.currentSourceBitrateBps()
+                )
+            }
         )
     }
 
