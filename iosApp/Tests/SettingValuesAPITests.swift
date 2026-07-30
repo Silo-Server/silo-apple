@@ -460,6 +460,26 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertFalse(body.contains("font_size"))
     }
 
+    func testPutValueExplicitProfileOverridesTheCurrentSessionHeader() async throws {
+        SettingsStubProtocol.reset(mode: .normal)
+        let api = await makeStubbedAPI(profileId: "new-session-profile")
+
+        _ = try await api.putValue(
+            key: .playerHdrEnabled,
+            scope: .profileDevice,
+            value: false,
+            mutationId: newSettingMutationId(),
+            profileId: "profile-captured-with-write"
+        )
+
+        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
+        XCTAssertEqual(
+            recorded.header("X-Profile-Id"),
+            "profile-captured-with-write",
+            "the queued profile must override a newer session header"
+        )
+    }
+
     func testPutValueSurfacesAnIdempotentReplay() async throws {
         SettingsStubProtocol.reset(mode: .idempotentReplay)
         let api = await makeStubbedAPI()

@@ -138,6 +138,12 @@ final class ProfilePrefsEditor {
     /// for every profile key.
     private var isSavingSubtitlePrefs = false
     private var subtitleSaveRequested = false
+    /// Latest per-key edits made while another subtitle PUT is suspended.
+    /// Kept independently of `savedBaseline`: a request can reach the server
+    /// even when its response is lost, so reverting to the baseline still owes
+    /// an explicit compensating write.
+    private var pendingSubtitleEditorValues: [SettingKey: String] = [:]
+    private var activeSubtitleEditorValues: [SettingKey: String] = [:]
 
     /// Coalescing for the metadata language: it has a side effect the others
     /// don't (flushing cached translations), so overlapping writes are folded
@@ -246,7 +252,10 @@ final class ProfilePrefsEditor {
     @MainActor
     func saveSubtitlePrefs() async {
         subtitleSaveRequested = true
-        guard !isSavingSubtitlePrefs else { return }
+        guard !isSavingSubtitlePrefs else {
+            capturePendingSubtitleEdits()
+            return
+        }
 
         isSavingSubtitlePrefs = true
         defer { isSavingSubtitlePrefs = false }
@@ -257,7 +266,7 @@ final class ProfilePrefsEditor {
         while true {
             while subtitleSaveRequested {
                 subtitleSaveRequested = false
-                let writes = pendingSubtitleWrites()
+                let writes = takePendingSubtitleWrites()
                 guard !writes.isEmpty else { continue }
                 saveState = .saving
 
@@ -282,6 +291,14 @@ final class ProfilePrefsEditor {
                         }
                     } catch {
                         failures[write.key] = error
+                        if pendingSubtitleEditorValues[write.key] == nil,
+                           currentEditorValue(for: write.key) == write.editorValue {
+                            // The server may have applied this request even
+                            // though its response was lost. Preserve it as an
+                            // explicit owed value so a baseline-equal revert is
+                            // still retried on the next trigger.
+                            pendingSubtitleEditorValues[write.key] = write.editorValue
+                        }
                     }
                 }
 
@@ -289,8 +306,10 @@ final class ProfilePrefsEditor {
                 // even before its onChange task got to run. Preserve that
                 // newest local operation with another serialized pass.
                 if writes.contains(where: { currentEditorValue(for: $0.key) != $0.editorValue }) {
+                    capturePendingSubtitleEdits()
                     subtitleSaveRequested = true
                 }
+                activeSubtitleEditorValues.removeAll()
             }
 
             if failures.isEmpty, needsEffectiveRefresh {
@@ -313,40 +332,77 @@ final class ProfilePrefsEditor {
     }
 
     @MainActor
-    private func pendingSubtitleWrites() -> [SubtitleWrite] {
-        let language = Self.outboundLanguage(subtitleLanguage)
+    private func takePendingSubtitleWrites() -> [SubtitleWrite] {
+        let queued = pendingSubtitleEditorValues
+        pendingSubtitleEditorValues.removeAll()
         var writes: [SubtitleWrite] = []
-        if subtitleLanguage != savedBaseline.subtitleLanguage {
+        let languageValue = queued[ProfileSettingKeys.subtitleLanguage] ?? subtitleLanguage
+        if queued[ProfileSettingKeys.subtitleLanguage] != nil
+            || languageValue != savedBaseline.subtitleLanguage {
+            let language = Self.outboundLanguage(languageValue)
             writes.append(
                 SubtitleWrite(
                     key: ProfileSettingKeys.subtitleLanguage,
                     value: ProfileSettingsWriter.languageValue(language),
-                    editorValue: subtitleLanguage,
+                    editorValue: languageValue,
                     language: language
                 )
             )
         }
-        if subtitleMode != savedBaseline.subtitleMode {
+        let modeValue = queued[ProfileSettingKeys.subtitleMode] ?? subtitleMode
+        if queued[ProfileSettingKeys.subtitleMode] != nil
+            || modeValue != savedBaseline.subtitleMode {
             writes.append(
                 SubtitleWrite(
                     key: ProfileSettingKeys.subtitleMode,
-                    value: .string(subtitleMode),
-                    editorValue: subtitleMode,
+                    value: .string(modeValue),
+                    editorValue: modeValue,
                     language: nil
                 )
             )
         }
-        if showForcedSubtitles != savedBaseline.showForcedSubtitles {
+        let forcedValue = queued[ProfileSettingKeys.showForcedSubtitles] ?? showForcedSubtitles
+        if queued[ProfileSettingKeys.showForcedSubtitles] != nil
+            || forcedValue != savedBaseline.showForcedSubtitles {
             writes.append(
                 SubtitleWrite(
                     key: ProfileSettingKeys.showForcedSubtitles,
-                    value: .bool(showForcedSubtitles == "on"),
-                    editorValue: showForcedSubtitles,
+                    value: .bool(forcedValue == "on"),
+                    editorValue: forcedValue,
                     language: nil
                 )
             )
         }
+        activeSubtitleEditorValues = Dictionary(
+            uniqueKeysWithValues: writes.map { ($0.key, $0.editorValue) }
+        )
         return writes
+    }
+
+    @MainActor
+    private func capturePendingSubtitleEdits() {
+        for key in Self.subtitleKeys {
+            guard let current = currentEditorValue(for: key) else { continue }
+            if let queued = pendingSubtitleEditorValues[key] {
+                if queued != current {
+                    pendingSubtitleEditorValues[key] = current
+                }
+            } else if let active = activeSubtitleEditorValues[key] {
+                if active != current {
+                    pendingSubtitleEditorValues[key] = current
+                }
+            } else if current != savedBaselineValue(for: key) {
+                pendingSubtitleEditorValues[key] = current
+            }
+        }
+    }
+
+    @MainActor
+    private func savedBaselineValue(for key: SettingKey) -> String? {
+        if key == ProfileSettingKeys.subtitleLanguage { return savedBaseline.subtitleLanguage }
+        if key == ProfileSettingKeys.subtitleMode { return savedBaseline.subtitleMode }
+        if key == ProfileSettingKeys.showForcedSubtitles { return savedBaseline.showForcedSubtitles }
+        return nil
     }
 
     @MainActor

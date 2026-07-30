@@ -597,6 +597,43 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(editor.saveState, .saved)
     }
 
+    func testSubtitleRevertIsSentAfterTheSupersededWriteFailsAmbiguously() async throws {
+        let transport = FakeProfileSettingsTransport()
+        await transport.writeGate.block(.string("ja"))
+        transport.setWriteFailure(
+            .transport(description: "response lost"),
+            for: .playbackSubtitleLanguage
+        )
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        editor.seed(from: nil)
+
+        editor.subtitleLanguage = "ja"
+        let firstSave = Task { @MainActor in await editor.saveSubtitlePrefs() }
+        try await waitUntil("the first subtitle-language write to start") {
+            transport.writes().count == 1
+        }
+
+        // The first request may have reached the server even though its
+        // response was lost. Reverting to the saved baseline still owes an
+        // explicit compensating write.
+        transport.setWriteFailure(nil, for: .playbackSubtitleLanguage)
+        editor.subtitleLanguage = PlaybackPrefSentinel.none
+        await editor.saveSubtitlePrefs()
+        await transport.writeGate.release(.string("ja"))
+        await firstSave.value
+
+        let values = transport.writes()
+            .filter { $0.key == .playbackSubtitleLanguage }
+            .map(\.value)
+        XCTAssertEqual(
+            values,
+            [.string("ja"), .null],
+            "an ambiguous failure must not let the saved baseline suppress the queued revert"
+        )
+        XCTAssertEqual(editor.subtitleLanguage, PlaybackPrefSentinel.none)
+        XCTAssertEqual(editor.saveState, .saved)
+    }
+
     func testSuccessfulLanguageWriteUpdatesThePreferenceStoreWhenASiblingFails() async throws {
         let transport = FakeProfileSettingsTransport()
         transport.failWritesByKey[.playbackSubtitleMode] = .server(
@@ -757,6 +794,7 @@ final class FakeProfileSettingsTransport: ProfileSettingsTransport, @unchecked S
     var failWritesByKey: [SettingKey: SettingsAPIError] = [:]
     var writeDelays: [SettingJSONValue: Duration] = [:]
     var effectiveDelay: Duration?
+    let writeGate = ProfileSettingsWriteGate()
 
     private let lock = NSLock()
     private var recordedWrites: [Write] = []
@@ -791,6 +829,12 @@ final class FakeProfileSettingsTransport: ProfileSettingsTransport, @unchecked S
         return recordedCompletions
     }
 
+    func setWriteFailure(_ error: SettingsAPIError?, for key: SettingKey) {
+        lock.lock()
+        failWritesByKey[key] = error
+        lock.unlock()
+    }
+
     // MARK: ProfileSettingsTransport
 
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse {
@@ -812,10 +856,35 @@ final class FakeProfileSettingsTransport: ProfileSettingsTransport, @unchecked S
         let failure = failWritesByKey[key] ?? failWritesWith
         let delay = writeDelays[value]
         lock.unlock()
+        await writeGate.waitIfBlocked(value)
         if let delay { try? await Task.sleep(for: delay) }
         if let failure { throw failure }
         lock.lock()
         recordedCompletions.append(write)
         lock.unlock()
+    }
+}
+
+actor ProfileSettingsWriteGate {
+    private var blockedValues: Set<SettingJSONValue> = []
+    private var waiters: [SettingJSONValue: [CheckedContinuation<Void, Never>]] = [:]
+
+    func block(_ value: SettingJSONValue) {
+        blockedValues.insert(value)
+    }
+
+    func waitIfBlocked(_ value: SettingJSONValue) async {
+        guard blockedValues.contains(value) else { return }
+        await withCheckedContinuation { continuation in
+            waiters[value, default: []].append(continuation)
+        }
+    }
+
+    func release(_ value: SettingJSONValue) {
+        blockedValues.remove(value)
+        let resumptions = waiters.removeValue(forKey: value) ?? []
+        for continuation in resumptions {
+            continuation.resume()
+        }
     }
 }

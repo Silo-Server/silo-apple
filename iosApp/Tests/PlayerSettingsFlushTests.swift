@@ -296,7 +296,10 @@ final class PlayerSettingsFlushTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { UserDefaults().removePersistentDomain(forName: suiteName) }
         let scope = LockedScopeValue("server-a|profile-1|device")
-        let journal = UserDefaultsSettingsWriteJournal(defaults: defaults) { scope.value }
+        let journal = UserDefaultsSettingsWriteJournal(
+            defaults: defaults,
+            scopeProvider: { scope.value }
+        )
 
         journal.save([.playerHdrEnabled: PendingSettingWrite(operation: .set(.bool(false)), mutationId: "id")])
         XCTAssertFalse(journal.load().isEmpty, "precondition: it is readable in its own scope")
@@ -311,7 +314,10 @@ final class PlayerSettingsFlushTests: XCTestCase {
         defer { UserDefaults().removePersistentDomain(forName: suiteName) }
 
         let scope = LockedScopeValue("server-a|profile-1|device")
-        let journal = UserDefaultsSettingsWriteJournal(defaults: defaults) { scope.value }
+        let journal = UserDefaultsSettingsWriteJournal(
+            defaults: defaults,
+            scopeProvider: { scope.value }
+        )
         let transport = FakeSettingsTransport()
         transport.failNextWrites(1, with: .profileRequired)
         let flusher = PlayerSettingsFlusher(
@@ -348,7 +354,10 @@ final class PlayerSettingsFlushTests: XCTestCase {
         let firstScope = "server-a|profile-1|device"
         let secondScope = "server-a|profile-2|device"
         let scope = LockedScopeValue(firstScope)
-        let journal = UserDefaultsSettingsWriteJournal(defaults: defaults) { scope.value }
+        let journal = UserDefaultsSettingsWriteJournal(
+            defaults: defaults,
+            scopeProvider: { scope.value }
+        )
         let transport = FakeSettingsTransport()
         let flusher = PlayerSettingsFlusher(
             transport: transport,
@@ -378,6 +387,45 @@ final class PlayerSettingsFlushTests: XCTestCase {
             "an old scope's in-flight key must not erase the new scope's journal entry for that key"
         )
         XCTAssertTrue(journal.load().isEmpty, "the new scope's write should be retired after it lands")
+    }
+
+    func testAWriteKeepsTheProfileCapturedBeforeItsTransportSuspends() async throws {
+        let suiteName = "settings-journal-profile-binding-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+
+        let firstScope = "server-a|profile-1|device"
+        let secondScope = "server-a|profile-2|device"
+        let scope = LockedScopeValue(firstScope)
+        let profile = LockedScopeValue("profile-1")
+        let journal = UserDefaultsSettingsWriteJournal(
+            defaults: defaults,
+            profileProvider: { profile.value },
+            scopeProvider: { scope.value }
+        )
+        let transport = FakeSettingsTransport()
+        transport.currentProfileId = { profile.value }
+        transport.onAttemptStart = {
+            // The flusher's pre-send scope check has already passed. Model the
+            // profile picker changing the session while the API call is
+            // suspended before it resolves X-Profile-Id.
+            scope.value = secondScope
+            profile.value = "profile-2"
+        }
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .seconds(30),
+            journal: journal
+        )
+
+        flusher.enqueue(.playerHdrEnabled, value: .bool(false))
+        await flusher.flushNow()
+
+        XCTAssertEqual(
+            transport.writes().first?.profileId,
+            "profile-1",
+            "a queued operation must not resolve its profile from a newer session after suspension"
+        )
     }
 
     // MARK: - Mutation ids
@@ -1273,12 +1321,16 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         let key: SettingKey
         let value: SettingJSONValue
         let mutationId: String
+        let profileId: String?
     }
 
     /// What the next `effectiveValues` call answers with.
     var effective: [EffectiveSettingValue] = []
     /// Artificial latency, so a test can overlap two flushes.
     var writeDelay: Duration?
+    /// Models the production transport resolving the active profile after an
+    /// asynchronous suspension rather than receiving the queued profile.
+    var currentProfileId: (@Sendable () -> String?)?
     /// Invoked as an attempt enters the transport, before artificial latency.
     var onAttemptStart: (() -> Void)?
     /// Invoked as each write is attempted, before its outcome is decided —
@@ -1362,14 +1414,24 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         return EffectiveSettingValuesResponse(settings: settings, revision: SettingKey.revision)
     }
 
-    func putValue(key: SettingKey, value: SettingJSONValue, mutationId: String) async throws {
+    func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        mutationId: String,
+        profileId: String?
+    ) async throws {
         try failIfCancelled()
         onAttemptStart?()
         if let writeDelay {
             try? await Task.sleep(for: writeDelay)
         }
         try failIfCancelled()
-        let write = Write(key: key, value: value, mutationId: mutationId)
+        let write = Write(
+            key: key,
+            value: value,
+            mutationId: mutationId,
+            profileId: profileId ?? currentProfileId?()
+        )
         lock.lock()
         recordedWrites.append(write)
         let shouldFail = writeFailures > 0
@@ -1381,7 +1443,7 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         if shouldFail { throw error }
     }
 
-    func deleteValue(key: SettingKey) async throws {
+    func deleteValue(key: SettingKey, profileId: String?) async throws {
         try failIfCancelled()
         lock.lock()
         recordedDeletes.append(key)

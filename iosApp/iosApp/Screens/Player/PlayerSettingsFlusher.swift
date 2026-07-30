@@ -37,8 +37,13 @@ import AppKit
 /// is baked in at `profile_device`, the only scope this client writes.
 protocol PlayerSettingsTransport: AnyObject, Sendable {
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse
-    func putValue(key: SettingKey, value: SettingJSONValue, mutationId: String) async throws
-    func deleteValue(key: SettingKey) async throws
+    func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        mutationId: String,
+        profileId: String?
+    ) async throws
+    func deleteValue(key: SettingKey, profileId: String?) async throws
 }
 
 /// The production transport: the canonical endpoints on ``ContinuumAPI``.
@@ -53,17 +58,23 @@ final class ContinuumPlayerSettingsTransport: PlayerSettingsTransport {
         try await api.getEffectiveValues(keys: keys)
     }
 
-    func putValue(key: SettingKey, value: SettingJSONValue, mutationId: String) async throws {
+    func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        mutationId: String,
+        profileId: String?
+    ) async throws {
         _ = try await api.putValue(
             key: key,
             scope: .profileDevice,
             value: value,
-            mutationId: mutationId
+            mutationId: mutationId,
+            profileId: profileId
         )
     }
 
-    func deleteValue(key: SettingKey) async throws {
-        try await api.deleteValue(key: key, scope: .profileDevice)
+    func deleteValue(key: SettingKey, profileId: String?) async throws {
+        try await api.deleteValue(key: key, scope: .profileDevice, profileId: profileId)
     }
 }
 
@@ -96,22 +107,30 @@ struct PendingSettingWrite: Equatable, Codable {
     /// storage partition they were loaded from.
     let scopeIdentifier: String?
 
+    /// The profile captured with the journal partition. The production
+    /// transport passes it explicitly so an async request cannot resolve its
+    /// X-Profile-Id from a newer session after the user switches profiles.
+    let profileId: String?
+
     init(
         operation: Operation,
         mutationId: String,
-        scopeIdentifier: String? = nil
+        scopeIdentifier: String? = nil,
+        profileId: String? = nil
     ) {
         self.operation = operation
         self.mutationId = mutationId
         self.scopeIdentifier = scopeIdentifier
+        self.profileId = profileId
     }
 
-    func bound(to scopeIdentifier: String?) -> PendingSettingWrite {
-        guard self.scopeIdentifier == nil else { return self }
+    func bound(to scopeIdentifier: String?, profileId: String?) -> PendingSettingWrite {
+        guard self.scopeIdentifier == nil || self.profileId == nil else { return self }
         return PendingSettingWrite(
             operation: operation,
             mutationId: mutationId,
-            scopeIdentifier: scopeIdentifier
+            scopeIdentifier: self.scopeIdentifier ?? scopeIdentifier,
+            profileId: self.profileId ?? profileId
         )
     }
 }
@@ -131,12 +150,16 @@ protocol PlayerSettingsWriteJournal: AnyObject, Sendable {
     /// The partition currently addressed by load/save, when the journal is
     /// scope-aware. In-memory test journals use the default nil identity.
     var scopeIdentifier: String? { get }
+    /// Profile addressed by the current partition. Older test journals have
+    /// no profile identity and use the default nil value.
+    var profileId: String? { get }
     func load() -> [SettingKey: PendingSettingWrite]
     func save(_ pending: [SettingKey: PendingSettingWrite])
 }
 
 extension PlayerSettingsWriteJournal {
     var scopeIdentifier: String? { nil }
+    var profileId: String? { nil }
 }
 
 /// The production journal: `UserDefaults`, partitioned by settings scope.
@@ -152,13 +175,18 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
     )
 
     private let defaults: UserDefaults
+    private let profileProvider: @Sendable () -> String?
     private let scopeProvider: @Sendable () -> String?
 
     init(
         defaults: UserDefaults = .standard,
+        profileProvider: @escaping @Sendable () -> String? = {
+            AuthService.shared.profileId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        },
         scopeProvider: @escaping @Sendable () -> String? = { PlayerSettings.currentScopeIdentifier }
     ) {
         self.defaults = defaults
+        self.profileProvider = profileProvider
         self.scopeProvider = scopeProvider
     }
 
@@ -167,6 +195,7 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
     }
 
     var scopeIdentifier: String? { scopeProvider() }
+    var profileId: String? { profileProvider() }
 
     func load() -> [SettingKey: PendingSettingWrite] {
         guard let storageKey = storageKey(), let data = defaults.data(forKey: storageKey) else {
@@ -179,9 +208,10 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
             // the whole restore: the contract is additive, and one stale entry
             // must not strand every other queued edit.
             let scopeIdentifier = scopeProvider()
+            let profileId = profileProvider()
             return stored.reduce(into: [:]) { result, entry in
                 if let key = SettingKey(rawValue: entry.key) {
-                    result[key] = entry.value.bound(to: scopeIdentifier)
+                    result[key] = entry.value.bound(to: scopeIdentifier, profileId: profileId)
                 }
             }
         } catch {
@@ -474,7 +504,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
 
     /// Queue one device-scoped write, restarting the debounce window.
     func enqueue(_ key: SettingKey, value: SettingJSONValue) {
-        schedule(key) { existing, scopeIdentifier in
+        schedule(key) { existing, scopeIdentifier, profileId in
             // Re-enqueueing the identical value keeps the pending op *and* its
             // mutation id: it is the same logical write, and the server treats
             // a replayed id carrying identical content as already done.
@@ -484,33 +514,35 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             return PendingSettingWrite(
                 operation: .set(value),
                 mutationId: newSettingMutationId(),
-                scopeIdentifier: scopeIdentifier
+                scopeIdentifier: scopeIdentifier,
+                profileId: profileId
             )
         }
     }
 
     /// Queue clearing this device's value, so the setting inherits again.
     func enqueueDelete(_ key: SettingKey) {
-        schedule(key) { existing, scopeIdentifier in
+        schedule(key) { existing, scopeIdentifier, profileId in
             if case .delete = existing?.operation {
                 return existing
             }
             return PendingSettingWrite(
                 operation: .delete,
                 mutationId: newSettingMutationId(),
-                scopeIdentifier: scopeIdentifier
+                scopeIdentifier: scopeIdentifier,
+                profileId: profileId
             )
         }
     }
 
     private func schedule(
         _ key: SettingKey,
-        _ next: (PendingSettingWrite?, String?) -> PendingSettingWrite?
+        _ next: (PendingSettingWrite?, String?, String?) -> PendingSettingWrite?
     ) {
         lock.lock()
         let scopeIdentifier = journal?.scopeIdentifier
         transitionScopeIfNeededLocked(to: scopeIdentifier)
-        pending[key] = next(pending[key], scopeIdentifier)
+        pending[key] = next(pending[key], scopeIdentifier, journal?.profileId)
         persistLocked()
         // Fresh user activity re-arms the retry budget: whatever made the last
         // attempt fail may well be gone by now.
@@ -767,15 +799,24 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
 
     private func send(_ key: SettingKey, _ write: PendingSettingWrite) async -> FlushOutcome {
         if let journal, write.scopeIdentifier != journal.scopeIdentifier {
-            log(key, "settings scope changed before send", kept: true)
+            log(
+                key,
+                "settings scope changed before send; owed by the original scope's journal",
+                kept: false
+            )
             return .settled
         }
         do {
             switch write.operation {
             case .set(let value):
-                try await transport.putValue(key: key, value: value, mutationId: write.mutationId)
+                try await transport.putValue(
+                    key: key,
+                    value: value,
+                    mutationId: write.mutationId,
+                    profileId: write.profileId
+                )
             case .delete:
-                try await transport.deleteValue(key: key)
+                try await transport.deleteValue(key: key, profileId: write.profileId)
             }
             return .settled
         } catch let error as SettingsAPIError {
