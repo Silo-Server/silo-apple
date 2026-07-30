@@ -14,30 +14,35 @@ final class AppNavPreferences {
     private(set) var showAudiobooks: Bool
 
     @ObservationIgnored private let defaults: SharedDefaults
+    @ObservationIgnored private let storageKey: () -> String?
 
-    init(defaults: SharedDefaults = .shared) {
+    init(
+        defaults: SharedDefaults = .shared,
+        storageKey: @escaping () -> String? = AppNavPreferences.showAudiobooksKey
+    ) {
         self.defaults = defaults
-        self.showAudiobooks = Self.readShowAudiobooks(from: defaults)
+        self.storageKey = storageKey
+        self.showAudiobooks = Self.readShowAudiobooks(from: defaults, key: storageKey())
     }
 
     /// Persist the choice for the active profile and update the observed
     /// mirror so visible navigation/search surfaces update immediately.
     func setShowAudiobooks(_ value: Bool) {
         showAudiobooks = value
-        guard let key = Self.showAudiobooksKey() else { return }
+        guard let key = storageKey() else { return }
         defaults.set(value, forKey: key)
     }
 
     /// Re-read the active profile's stored value. Call once the profile is
     /// known or after switching servers in place.
     func refresh() {
-        showAudiobooks = Self.readShowAudiobooks(from: defaults)
+        showAudiobooks = Self.readShowAudiobooks(from: defaults, key: storageKey())
     }
 
     // MARK: - Storage
 
-    private static func readShowAudiobooks(from defaults: SharedDefaults) -> Bool {
-        guard let key = showAudiobooksKey() else { return defaultShowAudiobooks }
+    private static func readShowAudiobooks(from defaults: SharedDefaults, key: String?) -> Bool {
+        guard let key else { return defaultShowAudiobooks }
         guard defaults.containsObject(forKey: key) else {
             return defaultShowAudiobooks
         }
@@ -54,13 +59,9 @@ final class AppNavPreferences {
         return "\(storagePrefix).\(serverId).\(profileId)"
     }
 
-    private static var defaultShowAudiobooks: Bool {
-        #if os(tvOS)
-        false
-        #else
-        true
-        #endif
-    }
+    /// Contract default for `nav.show_audiobooks`: this is an opt-in surface
+    /// on every Apple platform. A stored per-profile choice still wins.
+    private static let defaultShowAudiobooks = false
 
     private static var storagePrefix: String {
         #if os(tvOS)

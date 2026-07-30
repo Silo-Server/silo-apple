@@ -43,7 +43,9 @@ final class DownloadSettings {
 
     private let defaults: UserDefaults
 
-    private init(defaults: UserDefaults = .standard) {
+    /// Internal so tests can verify the contract-known local preferences in an
+    /// isolated defaults domain instead of mutating the app-wide singleton.
+    init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [
             Keys.preferredFormat: DownloadFormat.original.rawValue,

@@ -942,20 +942,51 @@ final class PlayerSettingsFlushTests: XCTestCase {
     func testSettersEncodeEachKeyAsItsContractType() async throws {
         let harness = try PlayerSettingsHarness()
 
+        harness.settings.setPreferredQuality("1080p-medium")
+        harness.settings.setAudioLanguage("ja")
         harness.settings.setAutoSkipIntro(true)
+        harness.settings.setAutoSkipCredits(true)
+        harness.settings.setAutoPlayNextEpisode(false)
         harness.settings.setNextUpPromptSeconds(45)
+        harness.settings.setHDREnabled(false)
+        harness.settings.setDolbyVisionEnabled(false)
+        harness.settings.setPreferProfile7HDR10Fallback(true)
+        harness.settings.setSeekCacheEnabled(false)
         harness.settings.setPlaybackSpeed(1.5)
+        harness.settings.setAudioSyncMs(275)
+        harness.settings.setSubtitleSyncMs(-350)
         harness.settings.setVideoGravity(.fill)
-        await harness.settings.flushPendingDeviceSettings()
+        harness.settings.setPlayerOrientationMode(.rotateFreely)
+        var appearance = SubtitleAppearance.default
+        appearance.fontSize = .xlarge
+        appearance.backgroundOpacity = 40
+        await harness.settings.setSubtitleAppearance(appearance)
 
         let byKey = harness.transport.writesByKey()
+        XCTAssertEqual(Set(byKey.keys), Set(SettingKey.playerDeviceSettings))
         // Not strings: the legacy registry took "true"/"45"/"1.5" because it
         // validated nothing. The contract types these, and a string here fails
         // the schema.
+        XCTAssertEqual(byKey[.playbackPreferredQuality]?.value, .string("1080p"))
+        XCTAssertEqual(byKey[.playbackMaxBitrateKbps]?.value, .int(12_000))
+        XCTAssertEqual(byKey[.playbackAudioLanguage]?.value, .string("ja"))
         XCTAssertEqual(byKey[.playbackAutoSkipIntro]?.value, .bool(true))
+        XCTAssertEqual(byKey[.playbackAutoSkipCredits]?.value, .bool(true))
+        XCTAssertEqual(byKey[.playbackAutoPlayNext]?.value, .bool(false))
         XCTAssertEqual(byKey[.playbackNextUpPromptSeconds]?.value, .int(45))
+        XCTAssertEqual(
+            byKey[.playbackSubtitleAppearance]?.value,
+            try SettingJSONValue.encoding(appearance)
+        )
+        XCTAssertEqual(byKey[.playerHdrEnabled]?.value, .bool(false))
+        XCTAssertEqual(byKey[.playerDolbyVisionEnabled]?.value, .bool(false))
+        XCTAssertEqual(byKey[.playerDvProfile7Hdr10Fallback]?.value, .bool(true))
+        XCTAssertEqual(byKey[.playerSeekCacheEnabled]?.value, .bool(false))
         XCTAssertEqual(byKey[.playerPlaybackSpeed]?.value, .double(1.5))
+        XCTAssertEqual(byKey[.playerAudioSyncMs]?.value, .int(275))
+        XCTAssertEqual(byKey[.playerSubtitleSyncMs]?.value, .int(-350))
         XCTAssertEqual(byKey[.playerVideoGravity]?.value, .string("fill"))
+        XCTAssertEqual(byKey[.playerOrientationMode]?.value, .string("rotateFreely"))
     }
 
     func testNoAudioLanguagePreferenceIsSentAsJSONNull() async throws {
@@ -1124,6 +1155,66 @@ final class PlayerSettingsFlushTests: XCTestCase {
         let calls = harness.transport.effectiveCalls()
         XCTAssertEqual(calls.count, 1, "a refresh must be one round trip, not one per key")
         XCTAssertEqual(Set(calls[0]), Set(SettingKey.playerDeviceSettings))
+    }
+
+    func testRefreshAdoptsEverySyncedPlayerSetting() async throws {
+        let harness = try PlayerSettingsHarness()
+        var appearance = SubtitleAppearance.default
+        appearance.fontSize = .xxlarge
+        appearance.fontColor = "#facc15"
+        appearance.backgroundOpacity = 35
+        appearance.position = .top
+
+        let values: [SettingKey: SettingJSONValue] = [
+            .playbackPreferredQuality: .string("1080p"),
+            .playbackMaxBitrateKbps: .int(6_500),
+            .playbackAudioLanguage: .string("fr-CA"),
+            .playbackAutoSkipIntro: .bool(true),
+            .playbackAutoSkipCredits: .bool(true),
+            .playbackAutoPlayNext: .bool(false),
+            .playbackNextUpPromptSeconds: .int(75),
+            .playbackSubtitleAppearance: try SettingJSONValue.encoding(appearance),
+            .playerHdrEnabled: .bool(false),
+            .playerDolbyVisionEnabled: .bool(false),
+            .playerDvProfile7Hdr10Fallback: .bool(true),
+            .playerSeekCacheEnabled: .bool(false),
+            .playerPlaybackSpeed: .double(1.75),
+            .playerAudioSyncMs: .int(125),
+            .playerSubtitleSyncMs: .int(-250),
+            .playerVideoGravity: .string("stretch"),
+            .playerOrientationMode: .string("rotateFreely"),
+        ]
+        XCTAssertEqual(Set(values.keys), Set(SettingKey.playerDeviceSettings))
+        harness.transport.effective = SettingKey.playerDeviceSettings.compactMap { key in
+            guard let value = values[key] else { return nil }
+            return EffectiveSettingValue(
+                key: key.rawValue,
+                value: value,
+                source: .scope(.profileDevice),
+                scope: .profileDevice
+            )
+        }
+
+        await harness.settings.refreshFromServer()
+
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "1080p")
+        XCTAssertEqual(harness.settings.maxBitrateKbps, 6_500)
+        XCTAssertEqual(harness.settings.audioLanguage, "fr-CA")
+        XCTAssertTrue(harness.settings.autoSkipIntro)
+        XCTAssertTrue(harness.settings.autoSkipCredits)
+        XCTAssertFalse(harness.settings.autoPlayNextEpisode)
+        XCTAssertEqual(harness.settings.nextUpPromptSeconds, 75)
+        XCTAssertEqual(harness.settings.subtitleAppearance, appearance.sanitized())
+        XCTAssertTrue(harness.settings.subtitleUsesDeviceAppearanceOverride)
+        XCTAssertFalse(harness.settings.hdrEnabled)
+        XCTAssertFalse(harness.settings.dolbyVisionEnabled)
+        XCTAssertTrue(harness.settings.preferProfile7HDR10Fallback)
+        XCTAssertFalse(harness.settings.seekCacheEnabled)
+        XCTAssertEqual(harness.settings.playbackSpeed, 1.75)
+        XCTAssertEqual(harness.settings.audioSyncMs, 125)
+        XCTAssertEqual(harness.settings.subtitleSyncMs, -250)
+        XCTAssertEqual(harness.settings.videoGravity, .stretch)
+        XCTAssertEqual(harness.settings.playerOrientationMode, .rotateFreely)
     }
 
     func testASubtitleAppearanceResolvedAtTheProfileIsNotADeviceOverride() async throws {

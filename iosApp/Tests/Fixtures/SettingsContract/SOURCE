@@ -11,9 +11,9 @@ vendored manifest's revision, and the generated SettingKey.revision stop
 agreeing, which is the whole point of carrying the pair rather than the
 fixture alone.
 
-conformance.json commit=f248d5b6bd17e0df84105cf37af25f6ebfe44ffd
-manifest.json    commit=f44240e5e5feb2685b20f0d5351a2df5763dc4f2
-copied from      commit=8cacc51391897b40820be803971cee0da2046b52
+conformance.json commit=dc4b9a0909461bfb57c8eefcf357e68d9fbd584b
+manifest.json    commit=dc4b9a0909461bfb57c8eefcf357e68d9fbd584b
+copied from      commit=dc4b9a0909461bfb57c8eefcf357e68d9fbd584b
 
 manifest.json is vendored whole, including the maintainer `notes` the server
 strips before serving /api/v1/settings/contract. Keeping it byte-identical is

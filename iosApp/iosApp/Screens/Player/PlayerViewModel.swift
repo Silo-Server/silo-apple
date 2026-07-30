@@ -7,6 +7,39 @@ import SwiftUI
 /// so UI code (ChapterSheet, etc.) doesn't depend on the core type directly.
 typealias PlayerChapterInfo = PlayerCore.ChapterInfo
 
+/// Pure decision boundary for the credits setting's playback behavior.
+///
+/// Keeping the range/key checks outside the player backend makes every edge
+/// deterministic to test: the VM owns the seek side effect, while this policy
+/// decides whether the current time is the first eligible visit to this
+/// session/file/marker combination.
+enum CreditsAutoSkipPolicy {
+    static func target(
+        enabled: Bool,
+        playbackEligible: Bool,
+        time: Double,
+        range: TimeRange?,
+        markerKey: String?,
+        lastSkippedKey: String?
+    ) -> Double? {
+        guard enabled,
+              playbackEligible,
+              time.isFinite,
+              let range,
+              range.start.isFinite,
+              range.end.isFinite,
+              range.start >= 0,
+              range.end > range.start,
+              let markerKey,
+              markerKey != lastSkippedKey,
+              time >= range.start,
+              time < range.end else {
+            return nil
+        }
+        return range.end
+    }
+}
+
 private final class OneShotContinuation: @unchecked Sendable {
     private let lock = NSLock()
     private var didResume = false
@@ -931,6 +964,7 @@ class PlayerViewModel {
     private var activePreparedProtocolV3: PreparedPlaybackV3?
     private var activePlaybackSessionId: String?
     private var autoSkippedIntroKey: String?
+    private var autoSkippedCreditsKey: String?
     private var autoSkipIntroCancelledKey: String?
     private var pendingAutoSkipIntroKey: String?
     private var autoSkipIntroCountdownTask: Task<Void, Never>?
@@ -1274,6 +1308,7 @@ class PlayerViewModel {
             )
             self.updateNextUpPresentation(for: movieTime)
             self.autoSkipIntroIfNeeded(at: movieTime)
+            self.autoSkipCreditsIfNeeded(at: movieTime)
             self.pushNowPlayingIfDue()
         }
         cb.onDurationChange = { [weak self] seconds in
@@ -3114,6 +3149,7 @@ class PlayerViewModel {
         currentSelectedVersion = nil
         activePreparedProtocolV3 = nil
         autoSkippedIntroKey = nil
+        autoSkippedCreditsKey = nil
         autoSkipIntroCancelledKey = nil
         selectedAudioId = nil
         selectedSubtitleId = nil
@@ -3331,6 +3367,7 @@ class PlayerViewModel {
                 let session = prepared.session
                 self.activePlaybackSessionId = session.sessionId
                 self.autoSkippedIntroKey = nil
+                self.autoSkippedCreditsKey = nil
                 self.autoSkipIntroCancelledKey = nil
                 self.cancelPendingIntroAutoSkip()
                 self.staleSessionRecoverySessionId = nil
@@ -4856,6 +4893,7 @@ class PlayerViewModel {
                 }
                 self.activePlaybackSessionId = session.sessionId
                 self.autoSkippedIntroKey = nil
+                self.autoSkippedCreditsKey = nil
                 self.autoSkipIntroCancelledKey = nil
                 self.cancelPendingIntroAutoSkip()
                 self.staleSessionRecoverySessionId = nil
@@ -4978,7 +5016,13 @@ class PlayerViewModel {
                 "[CMP-MARKERS] intro range active start=\(introRange.start, privacy: .public) end=\(introRange.end, privacy: .public)"
             )
         }
+        if let creditsRange {
+            Self.logger.info(
+                "[CMP-MARKERS] credits range active start=\(creditsRange.start, privacy: .public) end=\(creditsRange.end, privacy: .public)"
+            )
+        }
         autoSkipIntroIfNeeded(at: currentTime)
+        autoSkipCreditsIfNeeded(at: currentTime)
     }
 
     private func validTimeRange(_ range: TimeRange?) -> TimeRange? {
@@ -5077,12 +5121,42 @@ class PlayerViewModel {
         introAutoSkipCountdownSeconds = nil
     }
 
+    private func autoSkipCreditsIfNeeded(at time: Double) {
+        let key = creditsRange.flatMap(currentCreditsSkipKey(for:))
+        guard let target = CreditsAutoSkipPolicy.target(
+            enabled: settings.autoSkipCredits,
+            playbackEligible: !isLoading && !isBackgroundSuspended && !hasReachedEndOfFile,
+            time: time,
+            range: creditsRange,
+            markerKey: key,
+            lastSkippedKey: autoSkippedCreditsKey
+        ), let key else {
+            return
+        }
+
+        // Set the latch before seeking: a synchronous backend time callback
+        // caused by the seek must see this marker as already handled.
+        autoSkippedCreditsKey = key
+        Self.logger.info(
+            "[CMP-MARKERS] auto-skip credits target=\(target, privacy: .public) current=\(time, privacy: .public)"
+        )
+        seekTo(seconds: target)
+    }
+
     private func currentIntroSkipKey(for range: TimeRange) -> String? {
         guard let sessionId = activePlaybackSessionId,
               let fileId = currentSelectedVersion?.fileId else {
             return nil
         }
         return "\(sessionId):\(fileId):\(range.start):\(range.end)"
+    }
+
+    private func currentCreditsSkipKey(for range: TimeRange) -> String? {
+        guard let sessionId = activePlaybackSessionId,
+              let fileId = currentSelectedVersion?.fileId else {
+            return nil
+        }
+        return "\(sessionId):\(fileId):credits:\(range.start):\(range.end)"
     }
 
     func beginScrub(fraction: Double) {
@@ -5845,6 +5919,7 @@ class PlayerViewModel {
         creditsRange = nil
         cancelPendingIntroAutoSkip()
         autoSkippedIntroKey = nil
+        autoSkippedCreditsKey = nil
         autoSkipIntroCancelledKey = nil
         knownExternalSubtitles = []
         subtitleAI.reset()

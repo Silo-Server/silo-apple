@@ -616,12 +616,13 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// later. Retiring this timer's own registration first makes the cancel in
     /// ``flushNow()`` a no-op.
     private func flushAfterDebounce(generation: UInt64) async {
-        lock.lock()
-        let isCurrent = debounceGeneration == generation
-        if isCurrent {
-            debounceTask = nil
+        let isCurrent = lock.withLock {
+            let isCurrent = debounceGeneration == generation
+            if isCurrent {
+                debounceTask = nil
+            }
+            return isCurrent
         }
-        lock.unlock()
         // A newer edit re-armed the window, or an explicit flush ran, while
         // this timer was waking. Either way this task has been cancelled and
         // whoever cancelled it owns the flush; going on would put the writes
@@ -637,15 +638,15 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// Re-entrant calls coalesce: a second caller waits for the drain already
     /// running rather than issuing the same writes twice.
     func flushNow() async {
-        lock.lock()
-        debounceTask?.cancel()
-        debounceTask = nil
-        retryTask?.cancel()
-        retryTask = nil
-        retryGeneration &+= 1
-        retryAttempts = 0
-        let claimed = claimDrainLocked()
-        lock.unlock()
+        let claimed = lock.withLock {
+            debounceTask?.cancel()
+            debounceTask = nil
+            retryTask?.cancel()
+            retryTask = nil
+            retryGeneration &+= 1
+            retryAttempts = 0
+            return claimDrainLocked()
+        }
 
         if claimed {
             await drain()
@@ -659,9 +660,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         // it. The exception is one enqueued in the instant that drain was
         // finishing, so take one more pass if anything is left. A duplicate
         // send would be harmless anyway: the mutation id makes it a replay.
-        lock.lock()
-        let needsAnotherPass = !pending.isEmpty && claimDrainLocked()
-        lock.unlock()
+        let needsAnotherPass = lock.withLock {
+            !pending.isEmpty && claimDrainLocked()
+        }
         if needsAnotherPass {
             await drain()
         }
@@ -734,15 +735,16 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         var wantsBackoff = false
 
         while true {
-            lock.lock()
-            let snapshot = pending
-            pending = [:]
-            // Moved, not dropped: the journal has to keep describing an op that
-            // is out of `pending` but not yet acknowledged, or a process death
-            // mid-request would lose it on both sides.
-            inFlight = snapshot
-            persistLocked()
-            lock.unlock()
+            let snapshot = lock.withLock {
+                let snapshot = pending
+                pending = [:]
+                // Moved, not dropped: the journal has to keep describing an op that
+                // is out of `pending` but not yet acknowledged, or a process death
+                // mid-request would lose it on both sides.
+                inFlight = snapshot
+                persistLocked()
+                return snapshot
+            }
             if snapshot.isEmpty { break }
 
             // A stable order so the two axes of the quality preset
@@ -751,58 +753,59 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             for key in Self.orderedKeys(in: snapshot) {
                 guard let write = snapshot[key] else { continue }
                 let outcome = await send(key, write)
-                lock.lock()
-                if inFlight[key] == write {
-                    inFlight.removeValue(forKey: key)
+                lock.withLock {
+                    if inFlight[key] == write {
+                        inFlight.removeValue(forKey: key)
+                    }
+                    switch outcome {
+                    case .settled:
+                        retryable.removeValue(forKey: key)
+                        journal?.retire(key, matching: write)
+                    case .leftInOriginalJournal:
+                        retryable.removeValue(forKey: key)
+                    case .retryWithBackoff:
+                        retryable[key] = write
+                        wantsBackoff = true
+                    case .retryOnNextTrigger:
+                        retryable[key] = write
+                    }
+                    // The failed ops are not in `pending` yet — they go back at the
+                    // end of the drain — so the journal is the union of everything
+                    // still owed.
+                    persistLocked(alsoOwed: retryable)
                 }
-                switch outcome {
-                case .settled:
-                    retryable.removeValue(forKey: key)
-                    journal?.retire(key, matching: write)
-                case .leftInOriginalJournal:
-                    retryable.removeValue(forKey: key)
-                case .retryWithBackoff:
-                    retryable[key] = write
-                    wantsBackoff = true
-                case .retryOnNextTrigger:
-                    retryable[key] = write
-                }
-                // The failed ops are not in `pending` yet — they go back at the
-                // end of the drain — so the journal is the union of everything
-                // still owed.
-                persistLocked(alsoOwed: retryable)
-                lock.unlock()
             }
         }
 
-        lock.lock()
-        let currentScopeIdentifier = journal?.scopeIdentifier
-        for (key, write) in retryable
-            where write.scopeIdentifier == currentScopeIdentifier && pending[key] == nil {
-            // A newer op enqueued during the drain wins over the failed one:
-            // it is newer content, with its own id.
-            pending[key] = write
-        }
-        inFlight.removeAll()
-        persistLocked()
-        isDraining = false
-        let resumed = waiters
-        waiters.removeAll()
+        let resumed = lock.withLock {
+            let currentScopeIdentifier = journal?.scopeIdentifier
+            for (key, write) in retryable
+                where write.scopeIdentifier == currentScopeIdentifier && pending[key] == nil {
+                // A newer op enqueued during the drain wins over the failed one:
+                // it is newer content, with its own id.
+                pending[key] = write
+            }
+            inFlight.removeAll()
+            persistLocked()
+            isDraining = false
+            let resumed = waiters
+            waiters.removeAll()
 
-        var scheduledAttempt: Int?
-        if pending.isEmpty {
-            retryAttempts = 0
-        } else if wantsBackoff, retryAttempts < retryPolicy.maximumAutomaticRetries {
-            retryAttempts += 1
-            scheduledAttempt = retryAttempts
+            var scheduledAttempt: Int?
+            if pending.isEmpty {
+                retryAttempts = 0
+            } else if wantsBackoff, retryAttempts < retryPolicy.maximumAutomaticRetries {
+                retryAttempts += 1
+                scheduledAttempt = retryAttempts
+            }
+            // Out of automatic retries, or nothing worth a timer: the ops stay
+            // queued and the next enqueue or flushNow tries again with the same
+            // mutation ids.
+            if let scheduledAttempt {
+                scheduleRetryLocked(attempt: scheduledAttempt)
+            }
+            return resumed
         }
-        // Out of automatic retries, or nothing worth a timer: the ops stay
-        // queued and the next enqueue or flushNow tries again with the same
-        // mutation ids.
-        if let scheduledAttempt {
-            scheduleRetryLocked(attempt: scheduledAttempt)
-        }
-        lock.unlock()
 
         for continuation in resumed {
             continuation.resume()
@@ -826,13 +829,13 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// overlapping explicit flush sees `retryTask` still pointing at the task
     /// executing the request and cancels that live URLSession operation.
     private func flushAfterRetry(generation: UInt64) async {
-        lock.lock()
-        let isCurrent = retryGeneration == generation
-        if isCurrent {
-            retryTask = nil
+        let claimed = lock.withLock {
+            let isCurrent = retryGeneration == generation
+            if isCurrent {
+                retryTask = nil
+            }
+            return isCurrent && claimDrainLocked()
         }
-        let claimed = isCurrent && claimDrainLocked()
-        lock.unlock()
         guard claimed, !Task.isCancelled else { return }
         await drain()
     }
