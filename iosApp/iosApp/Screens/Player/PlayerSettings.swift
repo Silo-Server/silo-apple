@@ -102,6 +102,12 @@ private extension SettingKey {
 
 @Observable
 final class PlayerSettings {
+    enum RefreshResult: Equatable {
+        case refreshed
+        case serverUpgradeRequired
+        case unavailable
+    }
+
     static let shared = PlayerSettings()
 
     /// The resolution half of the quality preference: a member of the
@@ -457,8 +463,9 @@ final class PlayerSettings {
     /// One batched call: the server resolves all seventeen keys in a single
     /// store read, and asking per key would be seventeen round trips on every
     /// app launch, profile switch and settings-screen open.
+    @discardableResult
     @MainActor
-    func refreshFromServer() async {
+    func refreshFromServer() async -> RefreshResult {
         // Capture the pre-contract values before applying the normalized cache
         // for this scope. That normalization intentionally turns a compound
         // legacy quality id into a bare resolution and would otherwise erase
@@ -501,8 +508,12 @@ final class PlayerSettings {
                     markMigrationComplete(for: scopeID)
                 }
             }
+            return .refreshed
+        } catch SettingsAPIError.serverUpgradeRequired {
+            return .serverUpgradeRequired
         } catch {
             // Keep using the last cached values when offline.
+            return .unavailable
         }
     }
 
@@ -648,15 +659,29 @@ final class PlayerSettings {
 
     @MainActor
     func resetAllDeviceSettings() async {
-        await resetDeviceSettings(SettingKey.playerDeviceSettings)
-    }
-
-    private func resetDeviceSettings(_ keys: [PlayerDeviceSettingKey]) async {
-        for key in keys {
+        let resetScopeID = Self.currentScopeIdentifier
+        // Reset is an explicit instruction to discard the pre-contract local
+        // values. Retire migration before the follow-up refresh or that refresh
+        // can snapshot and import the values whose canonical rows were just
+        // deleted.
+        if let resetScopeID {
+            markMigrationComplete(for: resetScopeID)
+        }
+        for key in SettingKey.playerDeviceSettings {
             flusher.enqueueDelete(key)
         }
         await flushPendingDeviceSettings()
-        await refreshFromServer()
+        if await refreshFromServer() == .serverUpgradeRequired {
+            // A pre-contract server has no inherited canonical rows to read
+            // back. Persist defaults into the captured partition even if the
+            // user switched profiles while the DELETEs were suspended, but do
+            // not repaint a different profile's live state. An ordinary
+            // offline failure keeps the cached values instead.
+            cacheContractDefaults(for: resetScopeID)
+            if Self.currentScopeIdentifier == resetScopeID {
+                applyCachedSettingsForCurrentScope()
+            }
+        }
     }
 
     /// Send everything queued and wait for it.
@@ -942,6 +967,7 @@ final class PlayerSettings {
         effectiveByKey: [SettingKey: EffectiveSettingValue]
     ) async -> Bool {
         var importedAny = false
+        var locallyEffective = effectiveByKey
 
         for key in SettingKey.playerDeviceSettings {
             guard let legacyValue = legacySnapshot[key] else { continue }
@@ -953,6 +979,18 @@ final class PlayerSettings {
                 continue
             }
             flusher.enqueue(key, value: legacyValue)
+            if !entry.constrained {
+                // Reflect only the rows selected for import. This happens
+                // before the first await so a later user edit cannot be
+                // overwritten, while constrained rows keep the policy-limited
+                // effective value the server already returned.
+                locallyEffective[key] = EffectiveSettingValue(
+                    key: key.rawValue,
+                    value: legacyValue,
+                    source: .scope(.profileDevice),
+                    scope: .profileDevice
+                )
+            }
             importedAny = true
         }
 
@@ -961,6 +999,7 @@ final class PlayerSettings {
             return false
         }
 
+        applyEffectiveSettings(locallyEffective)
         await flushPendingDeviceSettings()
         // Only complete when every op drained. Anything still queued failed and
         // will be retried, and marking the migration done would strand it.
@@ -1005,8 +1044,47 @@ final class PlayerSettings {
         defaults.set(true, forKey: migrationKey(for: scopeID))
     }
 
+    /// Store the canonical reset state in one explicit cache partition.
+    /// `cacheKey(_:)` normally follows the mutable active profile, which is
+    /// unsafe after the network suspensions in Reset.
+    private func cacheContractDefaults(for scopeID: String?) {
+        func key(_ baseKey: String) -> String {
+            Self.cacheKey(baseKey, scopeID: scopeID)
+        }
+
+        defaults.set("auto", forKey: key(Keys.preferredQuality))
+        defaults.removeObject(forKey: key(Keys.maxBitrateKbps))
+        defaults.set("", forKey: key(Keys.audioLanguage))
+        defaults.set(false, forKey: key(Keys.autoSkipIntro))
+        defaults.set(false, forKey: key(Keys.autoSkipCredits))
+        defaults.set(true, forKey: key(Keys.autoPlayNextEpisode))
+        defaults.set(30, forKey: key(Keys.nextUpPromptSeconds))
+        defaults.set(true, forKey: key(Keys.hdrEnabled))
+        defaults.set(true, forKey: key(Keys.dolbyVisionEnabled))
+        defaults.set(false, forKey: key(Keys.dvProfile7HDR10Fallback))
+        defaults.set(true, forKey: key(Keys.seekCacheEnabled))
+        defaults.set(1.0, forKey: key(Keys.playbackSpeed))
+        defaults.set(0, forKey: key(Keys.audioSyncMs))
+        defaults.set(0, forKey: key(Keys.subtitleSyncMs))
+        defaults.set(VideoGravity.fit.rawValue, forKey: key(Keys.videoGravity))
+        defaults.set(
+            PlayerOrientationMode.landscapeLocked.rawValue,
+            forKey: key(Keys.playerOrientationMode)
+        )
+        defaults.set(SubtitleAppearance.default.jsonString, forKey: key(Keys.subtitleAppearance))
+        defaults.set(
+            SubtitleAppearance.default.jsonString,
+            forKey: key(Keys.inheritedSubtitleAppearance)
+        )
+        defaults.set(false, forKey: key(Keys.subtitleUsesDeviceAppearanceOverride))
+    }
+
     private static func cacheKey(_ baseKey: String) -> String {
-        guard let scopeID = currentScopeIdentifier else {
+        cacheKey(baseKey, scopeID: currentScopeIdentifier)
+    }
+
+    private static func cacheKey(_ baseKey: String, scopeID: String?) -> String {
+        guard let scopeID else {
             return baseKey
         }
         return "player.serverDeviceSettings.\(scopeID).\(baseKey)"

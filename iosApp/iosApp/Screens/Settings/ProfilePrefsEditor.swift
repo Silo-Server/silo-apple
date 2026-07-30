@@ -277,6 +277,10 @@ final class ProfilePrefsEditor {
     /// two along with it.
     @MainActor
     func saveSubtitlePrefs() async {
+        guard !serverUpgradeRequired else {
+            saveState = .serverUpgradeRequired
+            return
+        }
         subtitleSaveRequested = true
         guard !isSavingSubtitlePrefs else {
             capturePendingSubtitleEdits()
@@ -330,6 +334,18 @@ final class ProfilePrefsEditor {
                             resolvedSources[write.key] = .scope(.profile)
                         }
                     } catch {
+                        if Self.isServerUpgradeRequired(error) {
+                            serverUpgradeRequired = true
+                            // Route absence is definitive, not an ambiguous
+                            // response that might have applied. Stop this
+                            // already-owned drain and discard edits queued
+                            // while its request was suspended.
+                            subtitleSaveRequested = false
+                            pendingSubtitleEditorValues.removeAll()
+                            activeSubtitleEditorValues.removeAll()
+                            saveState = .serverUpgradeRequired
+                            return
+                        }
                         failures[identity] = error
                         let stillEditingWrittenProfile = boundProfileId == write.profileId
                         if pendingSubtitleEditorValues[identity] == nil,
@@ -536,6 +552,10 @@ final class ProfilePrefsEditor {
     /// invalidate every cached overview for nothing.
     @MainActor
     func saveMetadataLanguage() async {
+        guard !serverUpgradeRequired else {
+            saveState = .serverUpgradeRequired
+            return
+        }
         let language = Self.outboundLanguage(preferredMetadataLanguage)
         let write = MetadataWrite(language: language, profileId: boundProfileId)
         // The displayed value may have returned to the saved baseline while
@@ -583,6 +603,12 @@ final class ProfilePrefsEditor {
             )
             saveState = .saved
         } catch {
+            if Self.isServerUpgradeRequired(error) {
+                serverUpgradeRequired = true
+                pendingMetadataWrite = nil
+                saveState = .serverUpgradeRequired
+                return
+            }
             guard Self.outboundLanguage(preferredMetadataLanguage) == write.language,
                   boundProfileId == write.profileId else {
                 if pendingMetadataWrite == nil { saveState = nil }
@@ -599,6 +625,12 @@ final class ProfilePrefsEditor {
     /// produces from nil.
     private static func outboundLanguage(_ value: String) -> String? {
         value == PlaybackPrefSentinel.none ? nil : value
+    }
+
+    private static func isServerUpgradeRequired(_ error: Error) -> Bool {
+        guard let settingsError = error as? SettingsAPIError else { return false }
+        if case .serverUpgradeRequired = settingsError { return true }
+        return false
     }
 
     private static func saveState(for error: Error) -> PrefSaveState {

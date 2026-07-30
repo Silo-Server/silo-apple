@@ -401,6 +401,21 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertTrue(editor.serverUpgradeRequired)
     }
 
+    func testAnOldServerReadDisablesSubsequentProfileSaveAttempts() async throws {
+        let transport = FakeProfileSettingsTransport()
+        transport.failReadsWith = .serverUpgradeRequired
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+
+        await editor.load()
+        editor.subtitleLanguage = "en"
+        editor.preferredMetadataLanguage = "fr"
+        await editor.saveSubtitlePrefs()
+        await editor.saveMetadataLanguage()
+
+        XCTAssertTrue(transport.writes().isEmpty)
+        XCTAssertEqual(editor.saveState, .serverUpgradeRequired)
+    }
+
     func testAnOldServerSurfacesAsUpgradeRequiredOnWrite() async throws {
         let transport = FakeProfileSettingsTransport()
         transport.failWritesWith = .serverUpgradeRequired
@@ -410,6 +425,88 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await editor.saveSubtitlePrefs()
 
         XCTAssertEqual(editor.saveState, .serverUpgradeRequired)
+        XCTAssertTrue(editor.serverUpgradeRequired)
+
+        let attempts = transport.writes().count
+        editor.subtitleLanguage = "fr"
+        await editor.saveSubtitlePrefs()
+        XCTAssertEqual(
+            transport.writes().count,
+            attempts,
+            "once the old server is known, later edits must not issue broken requests"
+        )
+    }
+
+    func testOldServerDetectionStopsAnOverlappingSubtitleSaveDrain() async throws {
+        let transport = FakeProfileSettingsTransport()
+        transport.failWritesWith = .serverUpgradeRequired
+        await transport.writeGate.block(.string("en"))
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+
+        editor.subtitleLanguage = "en"
+        let firstSave = Task { await editor.saveSubtitlePrefs() }
+        await transport.writeGate.waitUntilEntered(.string("en"))
+
+        editor.subtitleLanguage = "fr"
+        await editor.saveSubtitlePrefs()
+        await transport.writeGate.release(.string("en"))
+        await firstSave.value
+
+        XCTAssertEqual(transport.writes().map(\.value), [.string("en")])
+        XCTAssertTrue(editor.serverUpgradeRequired)
+
+        transport.failWritesWith = nil
+        transport.effective = [
+            .init(
+                key: SettingKey.playbackSubtitleLanguage.rawValue,
+                value: .string("ja"),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+        ]
+        await editor.load()
+        await editor.saveSubtitlePrefs()
+        XCTAssertEqual(
+            transport.writes().map(\.value),
+            [.string("en")],
+            "a later successful load must not revive the obsolete queued edit"
+        )
+    }
+
+    func testOldServerDetectionStopsAnOverlappingMetadataSaveDrain() async throws {
+        let transport = FakeProfileSettingsTransport()
+        transport.failWritesWith = .serverUpgradeRequired
+        await transport.writeGate.block(.string("en"))
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+
+        editor.preferredMetadataLanguage = "en"
+        let firstSave = Task { await editor.saveMetadataLanguage() }
+        await transport.writeGate.waitUntilEntered(.string("en"))
+
+        editor.preferredMetadataLanguage = "fr"
+        await editor.saveMetadataLanguage()
+        await transport.writeGate.release(.string("en"))
+        await firstSave.value
+
+        XCTAssertEqual(transport.writes().map(\.value), [.string("en")])
+        XCTAssertTrue(editor.serverUpgradeRequired)
+
+        transport.failWritesWith = nil
+        transport.effective = [
+            .init(
+                key: SettingKey.catalogMetadataLanguage.rawValue,
+                value: .string("ja"),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+        ]
+        await editor.load()
+        await editor.saveMetadataLanguage()
+        XCTAssertEqual(
+            transport.writes().map(\.value),
+            [.string("en")],
+            "a later successful load must not revive the obsolete queued edit"
+        )
     }
 
     /// A transient read failure must not blank the screen: snapping every

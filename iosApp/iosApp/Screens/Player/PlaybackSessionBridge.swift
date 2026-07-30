@@ -374,8 +374,9 @@ actor PlaybackSessionBridge {
                 )
             }
 
-            initiallySelectedVersion = selectVersion(
-                from: watchDetail,
+            initiallySelectedVersion = Self.selectVersion(
+                from: watchDetail.versions,
+                lastFileId: watchDetail.userData?.lastFileId,
                 preferredQuality: preferredQuality
             )
         }
@@ -1707,11 +1708,12 @@ actor PlaybackSessionBridge {
     /// filtering happens separately in `planClientPlayback`; this ranking step
     /// only decides the user's preferred source before device-specific fallbacks
     /// are applied.
-    private func selectVersion(
-        from watchDetail: WatchDetail,
+    static func selectVersion(
+        from versions: [FileVersion],
+        lastFileId: Int?,
         preferredQuality: String?
     ) -> FileVersion {
-        let ranked = watchDetail.versions.sorted {
+        let ranked = versions.sorted {
             score(for: $0, preferredQuality: preferredQuality) >
                 score(for: $1, preferredQuality: preferredQuality)
         }
@@ -1723,15 +1725,15 @@ actor PlaybackSessionBridge {
             return matchingQuality
         }
 
-        if let lastFileId = watchDetail.userData?.lastFileId,
-           let lastUsed = watchDetail.versions.first(where: { $0.fileId == lastFileId }) {
+        if let lastFileId,
+           let lastUsed = versions.first(where: { $0.fileId == lastFileId }) {
             return lastUsed
         }
 
-        return ranked.first ?? watchDetail.versions[0]
+        return ranked.first ?? versions[0]
     }
 
-    private func score(for version: FileVersion, preferredQuality: String?) -> Int {
+    private static func score(for version: FileVersion, preferredQuality: String?) -> Int {
         var score = resolutionRank(version.resolution) * 10
 
         if let preferredQuality {
@@ -1759,13 +1761,16 @@ actor PlaybackSessionBridge {
         return selectedVersion.resolution ?? preferredQuality ?? "original"
     }
 
-    private func qualityMatches(_ resolution: String?, preferredQuality: String) -> Bool {
+    private static func qualityMatches(_ resolution: String?, preferredQuality: String) -> Bool {
         let versionRank = resolutionRank(resolution)
+        if preferredQuality == ApplePlaybackQuality.originalId {
+            return versionRank > 0
+        }
         let requestedRank = resolutionRank(preferredQuality)
         return versionRank > 0 && versionRank <= requestedRank
     }
 
-    private func resolutionRank(_ value: String?) -> Int {
+    private static func resolutionRank(_ value: String?) -> Int {
         guard let value = value?.lowercased() else { return 0 }
 
         if value.contains("2160") || value.contains("4k") {

@@ -63,6 +63,7 @@ struct SubtitleSettingsView: View {
             Text("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
                 .foregroundStyle(Color.continuumSecondaryText)
         }
+        .disabled(viewModel.settingsServerUpgradeRequired)
         .listRowBackground(Color.continuumSurfaceElevated)
     }
 
@@ -111,9 +112,6 @@ struct SubtitleSettingsView: View {
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 if viewModel.settingsServerUpgradeRequired {
-                    // The controls above stay visible and usable: an edit is
-                    // kept locally and the message explains why it will not
-                    // follow the profile to another device.
                     Text(ProfilePrefsEditor.serverUpgradeMessage)
                         .foregroundStyle(Color.continuumError)
                 } else {
@@ -130,6 +128,7 @@ struct SubtitleSettingsView: View {
             }
             .foregroundStyle(Color.continuumSecondaryText)
         }
+        .disabled(viewModel.settingsServerUpgradeRequired)
         .listRowBackground(Color.continuumSurfaceElevated)
     }
 

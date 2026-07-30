@@ -155,6 +155,10 @@ protocol PlayerSettingsWriteJournal: AnyObject, Sendable {
     var profileId: String? { get }
     func load() -> [SettingKey: PendingSettingWrite]
     func save(_ pending: [SettingKey: PendingSettingWrite])
+    /// Remove one acknowledged operation from the partition it was captured
+    /// from. Matching both the operation and mutation id prevents a late
+    /// response from erasing a newer write to the same key.
+    func retire(_ key: SettingKey, matching write: PendingSettingWrite)
 }
 
 extension PlayerSettingsWriteJournal {
@@ -190,15 +194,17 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
         self.scopeProvider = scopeProvider
     }
 
-    private func storageKey() -> String? {
-        scopeProvider().map { "player.pendingDeviceSettingWrites.\($0)" }
+    private func storageKey(for scopeIdentifier: String?) -> String? {
+        scopeIdentifier.map { "player.pendingDeviceSettingWrites.\($0)" }
     }
 
     var scopeIdentifier: String? { scopeProvider() }
     var profileId: String? { profileProvider() }
 
     func load() -> [SettingKey: PendingSettingWrite] {
-        guard let storageKey = storageKey(), let data = defaults.data(forKey: storageKey) else {
+        let scopeIdentifier = scopeProvider()
+        guard let storageKey = storageKey(for: scopeIdentifier),
+              let data = defaults.data(forKey: storageKey) else {
             return [:]
         }
         do {
@@ -207,7 +213,6 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
             // A key this build no longer knows is dropped rather than failing
             // the whole restore: the contract is additive, and one stale entry
             // must not strand every other queued edit.
-            let scopeIdentifier = scopeProvider()
             let profileId = profileProvider()
             return stored.reduce(into: [:]) { result, entry in
                 if let key = SettingKey(rawValue: entry.key) {
@@ -222,7 +227,7 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
     }
 
     func save(_ pending: [SettingKey: PendingSettingWrite]) {
-        guard let storageKey = storageKey() else { return }
+        guard let storageKey = storageKey(for: scopeProvider()) else { return }
         guard !pending.isEmpty else {
             defaults.removeObject(forKey: storageKey)
             return
@@ -234,6 +239,35 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
             return
         }
         defaults.set(data, forKey: storageKey)
+    }
+
+    func retire(_ key: SettingKey, matching write: PendingSettingWrite) {
+        guard let storageKey = storageKey(for: write.scopeIdentifier),
+              let data = defaults.data(forKey: storageKey) else {
+            return
+        }
+        do {
+            var stored = try SettingsWireCoding.makeDecoder()
+                .decode([String: PendingSettingWrite].self, from: data)
+            guard let persisted = stored[key.rawValue],
+                  persisted.operation == write.operation,
+                  persisted.mutationId == write.mutationId else {
+                return
+            }
+            stored.removeValue(forKey: key.rawValue)
+            guard !stored.isEmpty else {
+                defaults.removeObject(forKey: storageKey)
+                return
+            }
+            guard let updated = try? SettingsWireCoding.makeEncoder().encode(stored) else {
+                return
+            }
+            defaults.set(updated, forKey: storageKey)
+        } catch {
+            Self.logger.warning(
+                "could not retire an acknowledged settings write: \(String(describing: error), privacy: .public)"
+            )
+        }
     }
 }
 
@@ -278,6 +312,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     private enum FlushOutcome {
         /// Applied, or refused in a way retrying cannot fix. Drop it.
         case settled
+        /// The active partition changed before the request could be sent. Its
+        /// original journal still owns it; do not retire an unattempted op.
+        case leftInOriginalJournal
         /// Transient — keep the op and retry it on the backoff schedule.
         case retryWithBackoff
         /// A precondition is not met yet (no profile selected, server predates
@@ -721,6 +758,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 switch outcome {
                 case .settled:
                     retryable.removeValue(forKey: key)
+                    journal?.retire(key, matching: write)
+                case .leftInOriginalJournal:
+                    retryable.removeValue(forKey: key)
                 case .retryWithBackoff:
                     retryable[key] = write
                     wantsBackoff = true
@@ -804,9 +844,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             log(
                 key,
                 "settings scope changed before send; owed by the original scope's journal",
-                kept: false
+                kept: true
             )
-            return .settled
+            return .leftInOriginalJournal
         }
         do {
             switch write.operation {
@@ -854,6 +894,13 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             return .retryOnNextTrigger
 
         case .serverUpgradeRequired:
+            if case .delete = operation {
+                // A server with no canonical settings API cannot hold a row at
+                // this scope. Locally resetting is therefore final; retaining
+                // the DELETE would let it erase a future value after upgrade.
+                log(key, "server predates canonical settings; reset locally", kept: false)
+                return .settled
+            }
             log(key, "server does not serve the canonical settings API", kept: true)
             return .retryOnNextTrigger
 

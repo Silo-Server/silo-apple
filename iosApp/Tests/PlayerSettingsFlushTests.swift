@@ -389,6 +389,102 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertTrue(journal.load().isEmpty, "the new scope's write should be retired after it lands")
     }
 
+    func testASettledDeleteIsRetiredFromItsOriginalScopeAfterAProfileSwitch() async throws {
+        let suiteName = "settings-journal-delete-switch-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+
+        let firstScope = "server-a|profile-1|device"
+        let secondScope = "server-a|profile-2|device"
+        let scope = LockedScopeValue(firstScope)
+        let profile = LockedScopeValue("profile-1")
+        let journal = UserDefaultsSettingsWriteJournal(
+            defaults: defaults,
+            profileProvider: { profile.value },
+            scopeProvider: { scope.value }
+        )
+        let transport = FakeSettingsTransport()
+        await transport.writeGate.block()
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .seconds(30),
+            journal: journal
+        )
+
+        flusher.enqueueDelete(.playerHdrEnabled)
+        let flush = Task { await flusher.flushNow() }
+        await transport.writeGate.waitUntilEntered()
+
+        // The DELETE passed the flusher's scope check and is now inside the
+        // transport. Switch profiles and keep a same-key write in profile 2;
+        // retiring profile 1 must neither erase nor replace it.
+        scope.value = secondScope
+        profile.value = "profile-2"
+        journal.save([
+            .playerHdrEnabled: PendingSettingWrite(
+                operation: .set(.bool(true)),
+                mutationId: "profile-2-write",
+                scopeIdentifier: secondScope,
+                profileId: "profile-2"
+            ),
+        ])
+        flusher.restorePendingWrites()
+
+        await transport.writeGate.release()
+        await flush.value
+
+        XCTAssertEqual(transport.deletes(), [.playerHdrEnabled])
+        XCTAssertEqual(transport.writes().map(\.mutationId), ["profile-2-write"])
+
+        scope.value = firstScope
+        profile.value = "profile-1"
+        XCTAssertTrue(
+            journal.load().isEmpty,
+            "the acknowledged DELETE must be removed from profile 1's partition"
+        )
+        flusher.restorePendingWrites()
+        await flusher.flushNow()
+        XCTAssertEqual(
+            transport.deletes(),
+            [.playerHdrEnabled],
+            "returning to profile 1 must not replay the settled DELETE"
+        )
+    }
+
+    func testAScopeMismatchBeforeSendLeavesTheOperationInItsOriginalJournal() async throws {
+        let suiteName = "settings-journal-unsent-switch-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+
+        let firstScope = "server-a|profile-1|device"
+        let scope = LockedScopeValue(firstScope)
+        let journal = UserDefaultsSettingsWriteJournal(
+            defaults: defaults,
+            scopeProvider: { scope.value }
+        )
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .seconds(30),
+            journal: journal
+        )
+
+        flusher.enqueueDelete(.playerHdrEnabled)
+        scope.value = "server-a|profile-2|device"
+        await flusher.flushNow()
+        XCTAssertTrue(transport.deletes().isEmpty, "the mismatched operation must not be sent")
+
+        scope.value = firstScope
+        XCTAssertEqual(journal.load()[.playerHdrEnabled]?.operation, .delete)
+        flusher.restorePendingWrites()
+        await flusher.flushNow()
+        XCTAssertEqual(
+            transport.deletes(),
+            [.playerHdrEnabled],
+            "an unattempted operation must remain available in its captured partition"
+        )
+    }
+
     func testAWriteKeepsTheProfileCapturedBeforeItsTransportSuspends() async throws {
         let suiteName = "settings-journal-profile-binding-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -638,6 +734,43 @@ final class PlayerSettingsFlushTests: XCTestCase {
                        "a 404 on delete means the reset already happened")
     }
 
+    func testAnOldServerSettlesADeleteInsteadOfReplayingItAfterUpgrade() async throws {
+        let transport = FakeSettingsTransport()
+        transport.failNextDeletes(1, with: .serverUpgradeRequired)
+        let journal = InMemoryWriteJournal()
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .seconds(30),
+            journal: journal
+        )
+
+        flusher.enqueueDelete(.playerHdrEnabled)
+        await flusher.flushNow()
+
+        XCTAssertFalse(flusher.hasPendingWrites)
+        XCTAssertTrue(journal.load().isEmpty)
+        transport.succeedFromNowOn()
+        await flusher.flushNow()
+        XCTAssertEqual(transport.deletes(), [.playerHdrEnabled])
+    }
+
+    func testAnOldServerKeepsASetQueuedForALaterUpgrade() async throws {
+        let transport = FakeSettingsTransport()
+        transport.failNextWrites(1, with: .serverUpgradeRequired)
+        let journal = InMemoryWriteJournal()
+        let flusher = PlayerSettingsFlusher(
+            transport: transport,
+            debounce: .seconds(30),
+            journal: journal
+        )
+
+        flusher.enqueue(.playerHdrEnabled, value: .bool(false))
+        await flusher.flushNow()
+
+        XCTAssertTrue(flusher.hasPendingWrites)
+        XCTAssertEqual(journal.load()[.playerHdrEnabled]?.operation, .set(.bool(false)))
+    }
+
     // MARK: - PlayerSettings integration
 
     func testLegacyCompoundQualityMigrationPreservesBothAxes() throws {
@@ -688,6 +821,72 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         XCTAssertFalse(imported)
         XCTAssertTrue(harness.transport.writes().isEmpty)
+    }
+
+    func testMigrationImmediatelyRestoresEveryImportedValueLocally() async throws {
+        let harness = try PlayerSettingsHarness()
+        let effectiveByKey: [SettingKey: EffectiveSettingValue] = [
+            .playbackPreferredQuality: .init(
+                key: SettingKey.playbackPreferredQuality.rawValue,
+                value: .string("auto"),
+                source: .contractDefault
+            ),
+            .playbackMaxBitrateKbps: .init(
+                key: SettingKey.playbackMaxBitrateKbps.rawValue,
+                value: .null,
+                source: .contractDefault
+            ),
+            .playbackAutoSkipIntro: .init(
+                key: SettingKey.playbackAutoSkipIntro.rawValue,
+                value: .bool(false),
+                source: .contractDefault
+            ),
+        ]
+
+        let imported = await harness.settings.importLegacySettingsIfNeeded(
+            scopeID: "local-import-overlay-test",
+            legacySnapshot: [
+                .playbackPreferredQuality: .string("720p"),
+                .playbackMaxBitrateKbps: .int(3_000),
+                .playbackAutoSkipIntro: .bool(true),
+            ],
+            effectiveByKey: effectiveByKey
+        )
+
+        XCTAssertTrue(imported)
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
+        XCTAssertEqual(harness.settings.maxBitrateKbps, 3_000)
+        XCTAssertEqual(harness.settings.preferredQuality, "720p-medium")
+        XCTAssertTrue(harness.settings.autoSkipIntro)
+    }
+
+    func testMigrationKeepsAPolicyConstrainedEffectiveValueLocally() async throws {
+        let harness = try PlayerSettingsHarness()
+        let constrained = EffectiveSettingValue(
+            key: SettingKey.playbackPreferredQuality.rawValue,
+            value: .string("720p"),
+            source: .contractDefault,
+            storedValue: .string("original"),
+            constrained: true,
+            constraintKind: .ceiling
+        )
+
+        let imported = await harness.settings.importLegacySettingsIfNeeded(
+            scopeID: "constrained-import-overlay-test",
+            legacySnapshot: [.playbackPreferredQuality: .string("original")],
+            effectiveByKey: [.playbackPreferredQuality: constrained]
+        )
+
+        XCTAssertTrue(imported)
+        XCTAssertEqual(
+            harness.transport.writesByKey()[.playbackPreferredQuality]?.value,
+            .string("original")
+        )
+        XCTAssertEqual(
+            harness.settings.preferredQualityResolution,
+            "720p",
+            "migration must not bypass the policy-limited effective value locally"
+        )
     }
 
     func testLegacySnapshotCoversEverySyncedDeviceSetting() throws {
@@ -987,6 +1186,54 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(Set(harness.transport.deletes()), Set(SettingKey.playerDeviceSettings))
     }
 
+    func testAnOldServerResetAppliesContractDefaultsAndDoesNotQueueDeletes() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.settings.setPreferredQuality("720p-medium")
+        harness.settings.setAutoSkipIntro(true)
+        harness.settings.setHDREnabled(false)
+        var appearance = SubtitleAppearance.default
+        appearance.fontSize = .xlarge
+        await harness.settings.setSubtitleAppearance(appearance)
+        harness.transport.reset()
+        harness.transport.failNextDeletes(
+            SettingKey.playerDeviceSettings.count,
+            with: .serverUpgradeRequired
+        )
+        harness.transport.effectiveError = .serverUpgradeRequired
+
+        await harness.settings.resetAllDeviceSettings()
+
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "auto")
+        XCTAssertNil(harness.settings.maxBitrateKbps)
+        XCTAssertFalse(harness.settings.autoSkipIntro)
+        XCTAssertTrue(harness.settings.hdrEnabled)
+        XCTAssertEqual(harness.settings.subtitleAppearance, .default)
+        XCTAssertFalse(harness.settings.subtitleUsesDeviceAppearanceOverride)
+
+        let attemptedDeletes = harness.transport.deletes().count
+        harness.transport.succeedFromNowOn()
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertEqual(
+            harness.transport.deletes().count,
+            attemptedDeletes,
+            "old-server reset deletes must not replay after the server is upgraded"
+        )
+    }
+
+    func testAnUnavailableRefreshKeepsCachedValues() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.settings.setPreferredQuality("720p-medium")
+        harness.settings.setAutoSkipIntro(true)
+        harness.transport.effectiveError = .transport(description: "offline")
+
+        let result = await harness.settings.refreshFromServer()
+
+        XCTAssertEqual(result, .unavailable)
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
+        XCTAssertEqual(harness.settings.maxBitrateKbps, 3_000)
+        XCTAssertTrue(harness.settings.autoSkipIntro)
+    }
+
     // MARK: - Playback speed alignment
 
     func testPlaybackSpeedIsSnappedToTheContractsStepGrid() async throws {
@@ -1222,6 +1469,30 @@ final class PlayerSettingsFlushTests: XCTestCase {
         )
     }
 
+    func testInitialOriginalSelectionIgnoresARememberedLowerResolutionSource() throws {
+        let sevenTwenty = Self.version(fileId: 1, resolution: "720p", bitrateKbps: 4_000)
+        let fourK = Self.version(fileId: 2, resolution: "2160p", bitrateKbps: 30_000)
+        let versions = [sevenTwenty, fourK]
+
+        XCTAssertEqual(
+            PlaybackSessionBridge.selectVersion(
+                from: versions,
+                lastFileId: sevenTwenty.fileId,
+                preferredQuality: "original"
+            ).fileId,
+            fourK.fileId
+        )
+        XCTAssertEqual(
+            PlaybackSessionBridge.selectVersion(
+                from: versions,
+                lastFileId: sevenTwenty.fileId,
+                preferredQuality: nil
+            ).fileId,
+            sevenTwenty.fileId,
+            "Auto must retain the remembered-version fallback"
+        )
+    }
+
     func testOriginalCopyFailureCannotFallBackToATranscode() throws {
         XCTAssertFalse(
             ApplePlaybackQuality.allowsLegacyCopyFallbackToTranscode(
@@ -1439,6 +1710,7 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
 
     /// What the next `effectiveValues` call answers with.
     var effective: [EffectiveSettingValue] = []
+    var effectiveError: SettingsAPIError?
     /// Artificial latency, so a test can overlap two flushes.
     var writeDelay: Duration?
     /// Models the production transport resolving the active profile after an
@@ -1524,7 +1796,9 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         lock.lock()
         recordedEffectiveCalls.append(keys)
         let settings = effective
+        let error = effectiveError
         lock.unlock()
+        if let error { throw error }
         return EffectiveSettingValuesResponse(settings: settings, revision: SettingKey.revision)
     }
 
@@ -1559,6 +1833,8 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     }
 
     func deleteValue(key: SettingKey, profileId: String?) async throws {
+        try failIfCancelled()
+        await writeGate.waitIfBlocked()
         try failIfCancelled()
         lock.lock()
         recordedDeletes.append(key)
@@ -1661,6 +1937,16 @@ final class InMemoryWriteJournal: PlayerSettingsWriteJournal, @unchecked Sendabl
     func save(_ pending: [SettingKey: PendingSettingWrite]) {
         lock.lock()
         contents = pending
+        lock.unlock()
+    }
+
+    func retire(_ key: SettingKey, matching write: PendingSettingWrite) {
+        lock.lock()
+        if let persisted = contents[key],
+           persisted.operation == write.operation,
+           persisted.mutationId == write.mutationId {
+            contents.removeValue(forKey: key)
+        }
         lock.unlock()
     }
 }
