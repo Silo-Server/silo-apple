@@ -86,10 +86,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             .defaultFocus($playFocused, true, priority: .userInitiated)
             .onChange(of: nextUpEpisode?.contentId) { _, newValue in
                 guard newValue != nil else { return }
-                let seasonKey = selectedSeason?.contentId ?? ""
-                guard autoFocusedSeasonKey != seasonKey else { return }
-                autoFocusedSeasonKey = seasonKey
-                playFocused = true
+                claimInitialPlayFocus()
             }
             .detailFocusScroll(
                 proxy: scrollProxy,
@@ -162,6 +159,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     action: { onPlayEpisode(nextUp.contentId, selectedFileId(for: nextUp), false) },
                     focused: $playFocused
                 )
+                .onAppear(perform: claimInitialPlayFocus)
                 if nextUp.userData?.isInProgress == true {
                     TVSecondaryPillButton(
                         icon: "backward.end.fill",
@@ -205,6 +203,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         // on the nearest action button. Buttons stay left-aligned.
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
+    }
+
+    private func claimInitialPlayFocus() {
+        let seasonKey = selectedSeason?.contentId ?? ""
+        guard autoFocusedSeasonKey != seasonKey else { return }
+        autoFocusedSeasonKey = seasonKey
+        playFocused = true
     }
 
     /// Best "Play" target for the series: an in-progress episode if there

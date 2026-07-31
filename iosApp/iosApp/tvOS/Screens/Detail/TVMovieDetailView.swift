@@ -49,6 +49,11 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
+    /// `defaultFocus` participates in focus evaluation, but a detail page can
+    /// inherit the synopsis focus when it is pushed from a card. Claim Play
+    /// once when the real button mounts so cache-hit and freshly-loaded pages
+    /// have the same entry focus without stealing it again later.
+    @State private var didClaimInitialPlayFocus = false
 
     // Plain constants (not `static`) — the generic BelowSynopsis parameter
     // forbids static stored properties on this type.
@@ -137,6 +142,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 action: { onPlay(false) },
                 focused: $playFocused
             )
+            .onAppear(perform: claimInitialPlayFocus)
 
             if hasResumeProgress {
                 TVSecondaryPillButton(
@@ -184,6 +190,12 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
         // on the nearest action button. Buttons stay left-aligned.
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
+    }
+
+    private func claimInitialPlayFocus() {
+        guard !didClaimInitialPlayFocus else { return }
+        didClaimInitialPlayFocus = true
+        playFocused = true
     }
 
     // MARK: - More menu
