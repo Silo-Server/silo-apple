@@ -102,7 +102,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
             .ignoresSafeArea()
             .focusScope(detailFocusNamespace)
             .defaultFocus($playFocused, true, priority: .userInitiated)
-            .onChange(of: nextUpEpisode?.contentId) { _, newValue in
+            .onChange(of: selectedSeason?.contentId) { _, newValue in
                 guard newValue != nil else { return }
                 claimInitialPlayFocus()
             }
@@ -204,7 +204,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     }
 
     private func claimInitialPlayFocus() {
-        let seasonKey = selectedSeason?.contentId ?? ""
+        guard let seasonKey = selectedSeason?.contentId else { return }
         guard autoFocusedSeasonKey != seasonKey else { return }
         autoFocusedSeasonKey = seasonKey
         playFocused = true
