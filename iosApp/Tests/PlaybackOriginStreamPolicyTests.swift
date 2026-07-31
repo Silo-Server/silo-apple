@@ -206,6 +206,33 @@ final class PlaybackOriginDetachGraceTests: XCTestCase {
         XCTAssertLessThanOrEqual(grace, PlaybackOriginStreamPolicy.detachGraceCeilingSeconds)
     }
 
+    func testSlowPlaybackRateStretchesTheGrace() {
+        // At 0.75x the 19.4 Mbps title drains 64 MiB in ~36.9s, past the
+        // 1x grace — the rate must scale the drain estimate.
+        let gap: Int64 = 64 * 1024 * 1024
+        let slowDrain = Double(gap) * 8.0 / (19_400_000 * 0.75)
+        let grace = PlaybackOriginStreamPolicy.detachGraceSeconds(
+            hysteresisGapBytes: gap,
+            sourceBitrateBps: 19_400_000,
+            playbackRate: 0.75
+        )
+        XCTAssertGreaterThan(grace, slowDrain)
+        XCTAssertLessThanOrEqual(grace, PlaybackOriginStreamPolicy.detachGraceCeilingSeconds)
+        // Zero/negative rates (paused, backends reporting 0) fall back to 1x
+        // instead of producing an infinite drain.
+        XCTAssertEqual(
+            PlaybackOriginStreamPolicy.detachGraceSeconds(
+                hysteresisGapBytes: gap,
+                sourceBitrateBps: 19_400_000,
+                playbackRate: 0
+            ),
+            PlaybackOriginStreamPolicy.detachGraceSeconds(
+                hysteresisGapBytes: gap,
+                sourceBitrateBps: 19_400_000
+            )
+        )
+    }
+
     func testVerySlowSourceClampsToProxySafeCeiling() {
         // 4 Mbps would drain 64 MiB in ~134s; the grace must still close
         // the connection before reverse-proxy client-send timeouts reap it.

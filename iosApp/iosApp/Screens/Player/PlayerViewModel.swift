@@ -2365,6 +2365,7 @@ class PlayerViewModel {
             return
         }
         sourceProxy = prepared.proxy
+        sourceProxy?.setPlaybackRate(settings.playbackSpeed)
         sourceProxyFileId = prepared.proxy != nil ? currentSelectedVersion?.fileId : nil
         let loadPlan = prepared.plan
         activeExecutionPlan = loadPlan
@@ -2853,6 +2854,7 @@ class PlayerViewModel {
     func setPlaybackSpeed(_ rate: Double) {
         settings.setPlaybackSpeed(rate)
         activePlayer.setSpeed(settings.playbackSpeed)
+        sourceProxy?.setPlaybackRate(settings.playbackSpeed)
         scheduleHideControls()
     }
 

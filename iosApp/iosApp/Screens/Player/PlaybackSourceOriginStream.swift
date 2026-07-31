@@ -101,15 +101,20 @@ enum PlaybackOriginStreamPolicy {
     /// 25 s grace detached ~2.7 s BEFORE the low-water resume for a
     /// 19.4 Mbps source draining the 64 MiB hysteresis gap (~27.7 s), so
     /// every park cycle paid a full reconnect instead of a task resume —
-    /// and every title under ~21.5 Mbps hit the same cliff.
+    /// and every title under ~21.5 Mbps hit the same cliff. The cache
+    /// drains at the CONSUMPTION rate, not the nominal file rate: slow-speed
+    /// playback (0.75×) stretches the drain proportionally, so the grace
+    /// scales by `playbackRate` (non-positive/unknown rates fall back to 1×).
     static func detachGraceSeconds(
         hysteresisGapBytes: Int64,
-        sourceBitrateBps: Double?
+        sourceBitrateBps: Double?,
+        playbackRate: Double = 1.0
     ) -> TimeInterval {
         guard let bps = sourceBitrateBps, bps > 0, hysteresisGapBytes > 0 else {
             return detachAfterSeconds
         }
-        let drainSeconds = Double(hysteresisGapBytes) * 8.0 / bps
+        let rate = playbackRate > 0 ? playbackRate : 1.0
+        let drainSeconds = Double(hysteresisGapBytes) * 8.0 / (bps * rate)
         let ceiling = max(detachAfterSeconds, detachGraceCeilingSeconds)
         return min(max(drainSeconds + detachDrainMarginSeconds, detachAfterSeconds), ceiling)
     }

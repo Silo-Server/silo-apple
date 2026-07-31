@@ -239,9 +239,15 @@ final class PlaybackSourceCache {
     var shouldPrefetch: Bool {
         var didRearm = false
         lock.lock()
-        let cachedAhead = lastReadEnd == nil
+        // Anchor at the actual recent read position, like disk eviction does:
+        // monotonic `lastReadEnd` stays pinned ahead after a backward seek, so
+        // a consumer draining behind it would never shrink the forward count
+        // and the low-water re-arm would only fire on a cache miss — when
+        // playback is already starved.
+        let anchor = lastReadPosition ?? lastReadEnd
+        let cachedAhead = anchor == nil
             ? Int64(cachedBytes)
-            : forwardCachedBytesLocked()
+            : forwardCachedBytesLocked(from: anchor! + 1)
         if prefetchArmed, cachedAhead >= Int64(highWaterBytes) {
             prefetchArmed = false
         } else if !prefetchArmed, cachedAhead <= Int64(lowWaterBytes) {
@@ -582,7 +588,11 @@ final class PlaybackSourceCache {
 
     private func forwardCachedBytesLocked() -> Int64 {
         guard let readEnd = lastReadEnd else { return 0 }
-        var cursor = readEnd + 1
+        return forwardCachedBytesLocked(from: readEnd + 1)
+    }
+
+    private func forwardCachedBytesLocked(from start: Int64) -> Int64 {
+        var cursor = start
         var bytes: Int64 = 0
         for range in cachedRangesLocked() {
             if range.upperBound < cursor { continue }
@@ -721,6 +731,10 @@ private final class PlaybackSourceResource {
     private var windowStream: PlaybackOriginStream?
     private var chunkFetcher: PlaybackOriginChunkFetcher?
     private var demandCounter: UInt64 = 0
+    /// Current playback rate (1.0 = normal). Cache drain time — and thus the
+    /// adaptive detach grace — scales with consumption speed, not the file's
+    /// nominal bitrate. Guarded by `stateLock`.
+    private var playbackRate: Double = 1.0
     private var dataWaiters: [UUID: (offset: Int64, continuation: CheckedContinuation<WaitOutcome, Never>)] = [:]
     private var totalWaiters: [UUID: CheckedContinuation<Int64?, Never>] = [:]
     /// Detached serve tasks hold strong `self` for their whole body, so an
@@ -735,6 +749,11 @@ private final class PlaybackSourceResource {
     /// same id as `serveTasks`. Inserted before the task body can run so
     /// window-claim arbitration always sees a live claimant.
     private var activeServeIDs: Set<UUID> = []
+    /// Serve id per client socket, so a peer disconnect can cancel the serve
+    /// task immediately. Without this, a task suspended in `awaitData` when
+    /// its client vanished would stay "alive" — and keep window ownership —
+    /// until origin bytes arrived and the send failed.
+    private var serveIDsByConnection: [ObjectIdentifier: UUID] = [:]
     /// The serve connection that last re-anchored (or spawned) the streaming
     /// window. While it is alive, other serve connections' qualified misses
     /// are served by chunks instead of stealing the window
@@ -789,6 +808,9 @@ private final class PlaybackSourceResource {
         let serving = serveTasks
         serveTasks.removeAll()
         completedServeTaskIDs.removeAll()
+        activeServeIDs.removeAll()
+        serveIDsByConnection.removeAll()
+        windowOwnerServeID = nil
         stateLock.unlock()
         probeToCancel?.cancel()
         if let windowToCancel {
@@ -825,6 +847,7 @@ private final class PlaybackSourceResource {
         originHeaders = headers
         windowToCancel = windowStream
         windowStream = nil
+        windowOwnerServeID = nil
         fetcherToCancel = chunkFetcher
         chunkFetcher = nil
         // A renewed session resolves any outage the dead session caused;
@@ -989,6 +1012,18 @@ private final class PlaybackSourceResource {
         Self.logger.info("[CMP-SOURCE-CACHE] source bitrate=\(bps ?? 0, privacy: .public)")
     }
 
+    func setPlaybackRate(_ rate: Double) {
+        stateLock.lock()
+        playbackRate = rate
+        stateLock.unlock()
+    }
+
+    private func currentPlaybackRate() -> Double {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return playbackRate
+    }
+
     func handle(method: String, rangeHeader: String?, on connection: NWConnection) {
         stateLock.lock()
         let alreadyStopped = cancelled || sourceEntityInvalidated
@@ -1000,6 +1035,7 @@ private final class PlaybackSourceResource {
         let id = UUID()
         stateLock.lock()
         activeServeIDs.insert(id)
+        serveIDsByConnection[ObjectIdentifier(connection)] = id
         stateLock.unlock()
         let task = Task.detached(priority: .userInitiated) { [weak self, weak connection] in
             if let self, let connection {
@@ -1039,12 +1075,29 @@ private final class PlaybackSourceResource {
         if windowOwnerServeID == id {
             windowOwnerServeID = nil
         }
+        if let key = serveIDsByConnection.first(where: { $0.value == id })?.key {
+            serveIDsByConnection.removeValue(forKey: key)
+        }
         if serveTasks.removeValue(forKey: id) == nil,
            !cancelled,
            !sourceEntityInvalidated {
             completedServeTaskIDs.insert(id)
         }
         stateLock.unlock()
+    }
+
+    /// The client socket died (peer closed, reset). Cancel the serve task now
+    /// so its `awaitData` unwinds and `serveTaskFinished` releases window
+    /// ownership — a dead client must not hold the window against a live
+    /// replacement request (e.g. the demuxer reopening after a seek).
+    func connectionClosed(key: ObjectIdentifier) {
+        var toCancel: Task<Void, Never>?
+        stateLock.lock()
+        if let id = serveIDsByConnection.removeValue(forKey: key) {
+            toCancel = serveTasks[id]
+        }
+        stateLock.unlock()
+        toCancel?.cancel()
     }
 
     private func respondHead(on connection: NWConnection) async {
@@ -1612,13 +1665,14 @@ private final class PlaybackSourceResource {
             initialEntityETag: resumeCapable ? sourceEntityETag : nil,
             initialResponseRequiresEntityValidation: resumeCapable && sawOriginResponse,
             clock: originStreamClock,
-            detachGraceSecondsProvider: { [weak cache] in
-                guard let cache else {
+            detachGraceSecondsProvider: { [weak self] in
+                guard let self else {
                     return PlaybackOriginStreamPolicy.detachAfterSeconds
                 }
                 return PlaybackOriginStreamPolicy.detachGraceSeconds(
-                    hysteresisGapBytes: cache.hysteresisGapBytes,
-                    sourceBitrateBps: cache.currentSourceBitrateBps()
+                    hysteresisGapBytes: self.cache.hysteresisGapBytes,
+                    sourceBitrateBps: self.cache.currentSourceBitrateBps(),
+                    playbackRate: self.currentPlaybackRate()
                 )
             }
         )
@@ -1771,6 +1825,9 @@ private final class PlaybackSourceResource {
         let wasTracked = windowStream === stream
         if wasTracked {
             windowStream = nil
+            // The window is gone; a live owner reference would force every
+            // later claim into chunks with no window left to protect.
+            windowOwnerServeID = nil
         }
         // Safe lock nesting: the fetcher never calls back into the resource
         // while holding its own lock, so stateLock → fetcher.lock is the
@@ -2134,6 +2191,12 @@ final class PlaybackSourceProxy {
         resource.setSourceBitrate(bps)
     }
 
+    /// Playback rate feeds the adaptive detach grace: the cache drains at
+    /// consumption speed, so slow-speed playback needs a longer parked grace.
+    func setPlaybackRate(_ rate: Double) {
+        resource.setPlaybackRate(rate)
+    }
+
     private var isStopped: Bool {
         lock.lock()
         let value = stopped
@@ -2173,6 +2236,7 @@ final class PlaybackSourceProxy {
         lock.lock()
         connections.removeValue(forKey: id)
         lock.unlock()
+        resource.connectionClosed(key: id)
     }
 
     private func receive(on connection: NWConnection, accumulated: Data = Data()) {
