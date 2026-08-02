@@ -24,6 +24,20 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     let seasonEpisodes: [EpisodeListItem]
     let episodeFavoriteStates: [String: Bool]
     let isLoadingEpisodes: Bool
+    /// Merged remote-video + local-extra rail, already shaped by the call
+    /// site (which owns the YouTube-app availability probe that decides
+    /// whether remote cards exist at all). Empty hides the rail.
+    let trailerEntries: [TrailerRailEntry]
+    let onSelectTrailer: (TrailerRailEntry) -> Void
+    /// Whether the manual "Find Trailers" action applies to this item —
+    /// false on episode pages, which never carry videos.
+    let supportsTrailerFetch: Bool
+    let onFindTrailers: () -> Void
+    /// Copy from the fetch coordinator; nil while idle.
+    let trailerFetchStatus: String?
+    let isFetchingTrailers: Bool
+    /// Called once a terminal fetch message has been on screen long enough.
+    let onTrailerStatusShown: () -> Void
     let onPlay: (_ startFromBeginning: Bool) -> Void
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
@@ -84,6 +98,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                         if let cast = detail.cast, !cast.isEmpty {
                             castSection(cast: cast)
                         }
+                        trailersSection
                         detailsSection
                         if showsSimilarRail {
                             similarSection
@@ -126,6 +141,15 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 onSelectAudioTrack: onSelectAudioTrack,
                 onSelectSubtitleTrack: onSelectSubtitleTrack
             )
+            if let trailerFetchStatus {
+                // Non-focusable readout, so it adds no stop to the action
+                // column's focus traversal.
+                TVTrailerStatusPill(
+                    message: trailerFetchStatus,
+                    isFetching: isFetchingTrailers,
+                    onAutoDismiss: onTrailerStatusShown
+                )
+            }
         }
     }
 
@@ -192,13 +216,20 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
         detail.type == "episode" && detail.seriesId != nil
     }
 
+    /// The ellipsis now also appears on movie pages, which previously had
+    /// no overflow entries at all — "Find Trailers" is the first.
     private var hasMoreMenu: Bool {
-        hasOverflowNavigation
+        hasOverflowNavigation || supportsTrailerFetch
     }
 
     @ViewBuilder
     private var moreMenu: some View {
         TVCircleMenuButton(accessibilityLabel: "More options") {
+            if supportsTrailerFetch {
+                Button(action: onFindTrailers) {
+                    Label("Find Trailers", systemImage: "film.stack")
+                }
+            }
             if let seriesId = detail.seriesId,
                let seasonNumber = detail.seasonNumber,
                seasonNumber > 0 {
@@ -327,6 +358,14 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
             contentId: detail.contentId,
             onSelect: onNavigateToItem
         )
+    }
+
+    // MARK: - Trailers & More
+
+    private var trailersSection: some View {
+        // Header lives inside the rail so it disappears with the cards when
+        // the item has neither remote videos nor local extras.
+        TVTrailersRail(entries: trailerEntries, onSelect: onSelectTrailer)
     }
 
     // MARK: - Cast

@@ -42,7 +42,14 @@ class ItemDetailViewModel {
     // Track the series contentId for season/episode loading
     private var seriesContentId: String?
 
-    func loadDetail(contentId: String) async {
+    /// - Parameter preserveSeasonSelection: keep the season the user is
+    ///   currently browsing instead of re-running the auto-select. Set by
+    ///   background reloads that happen *while* the page is on screen (the
+    ///   trailer fetch's found-path), where snapping the episode rail back to
+    ///   the preferred initial season would yank the ground out from under
+    ///   the user — under focus, on tvOS. Entry loads and the player-dismiss
+    ///   reload leave it false: there, re-picking the season is the point.
+    func loadDetail(contentId: String, preserveSeasonSelection: Bool = false) async {
         // Stage 1 — hydrate from cache synchronously so the view paints
         // the last-known detail immediately. Anything missing (e.g.
         // first-ever visit) leaves the corresponding fields nil and the
@@ -87,7 +94,15 @@ class ItemDetailViewModel {
             // the season list and fetch episodes directly for this season.
             if enriched.type == "series" {
                 seriesContentId = contentId
-                await loadSeasons(seriesId: contentId)
+                let keepSeason = preserveSeasonSelection ? selectedSeason?.seasonNumber : nil
+                await loadSeasons(seriesId: contentId, autoSelectInitial: keepSeason == nil)
+                if let keepSeason {
+                    // Re-point at the freshly-loaded instance of the same
+                    // season so its progress counters are current, without
+                    // re-fetching the episode rail the user is looking at.
+                    selectedSeason = seasons.first(where: { $0.seasonNumber == keepSeason })
+                        ?? selectedSeason
+                }
             } else if enriched.type == "season",
                       let seriesId = enriched.seriesId,
                       let seasonNumber = enriched.seasonNumber {
@@ -216,11 +231,86 @@ class ItemDetailViewModel {
                 effectiveSubtitleTrackSignature: watchDetail.effectiveSubtitleTrackSignature,
                 overlaySummary: item.overlaySummary,
                 audiobook: item.audiobook,
-                pendingTranslationLanguage: item.pendingTranslationLanguage
+                pendingTranslationLanguage: item.pendingTranslationLanguage,
+                // Catalog-only fields: the watch detail knows nothing about
+                // them, so they must be carried across or the trailers rail
+                // would disappear the moment enrichment succeeds.
+                videos: item.videos,
+                extras: item.extras
             )
         } catch {
             return item
         }
+    }
+
+    // MARK: - Trailer fetch
+
+    /// Manual "Find Trailers" driver, created on first use and wired to the
+    /// live API plus this view model's own reload. Lazy because most detail
+    /// visits never invoke the action.
+    ///
+    /// `@ObservationIgnored` because the UI binds to the coordinator's own
+    /// `@Observable` phase, not through this view model — and because the
+    /// accessor below writes the slot on first read, which must not count as
+    /// a state mutation during a view update.
+    @ObservationIgnored
+    private var trailerFetchStorage: TrailerFetchCoordinator?
+
+    var trailerFetch: TrailerFetchCoordinator {
+        if let trailerFetchStorage { return trailerFetchStorage }
+        // The closures resolve `contentId` when they run rather than
+        // capturing it here, so a view model that gets reused for another
+        // item (tvOS keeps them cached) can never address the old one.
+        let coordinator = TrailerFetchCoordinator(
+            request: { [weak self] in
+                guard let contentId = self?.detail?.contentId else {
+                    throw ItemDetailViewModelError.noItemLoaded
+                }
+                return try await ContinuumAPI.shared.requestTrailersRefresh(contentId: contentId)
+            },
+            fetchDetail: { [weak self] in
+                guard let contentId = self?.detail?.contentId else {
+                    throw ItemDetailViewModelError.noItemLoaded
+                }
+                return try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+            }
+        )
+        trailerFetchStorage = coordinator
+        return coordinator
+    }
+
+    /// Whether the "Find Trailers" action applies to what's on screen. The
+    /// server only ever populates videos for movies and series.
+    var supportsTrailerFetch: Bool {
+        detail?.type == "movie" || detail?.type == "series"
+    }
+
+    func startTrailerFetch() {
+        guard let contentId = detail?.contentId, supportsTrailerFetch else { return }
+        trailerFetch.start(baseline: detail) { [weak self] in
+            guard let self else { return }
+            // Re-run the normal load so the enriched detail — and with it
+            // `CacheKey.itemDetail` — is rewritten with the new trailers.
+            // This lands while the page is on screen, so the season the user
+            // is browsing must survive it.
+            await self.loadDetail(contentId: contentId, preserveSeasonSelection: true)
+        }
+    }
+
+    /// Stop the poll when the page leaves the nav stack: the coordinator's
+    /// task is not owned by SwiftUI's `.task` lifetime and would otherwise
+    /// keep this view model alive and mutating.
+    func stopTrailerFetch() {
+        trailerFetchStorage?.stop()
+    }
+
+    /// Pick the poll back up when the page returns — e.g. the user played
+    /// the movie mid-fetch, which cancelled it. No-op unless a poll was
+    /// actually interrupted, and never re-POSTs (the slot is already spent).
+    /// Lazily-created on purpose: a page that never ran a fetch has no
+    /// coordinator and needs none.
+    func resumeTrailerFetchIfNeeded() {
+        trailerFetchStorage?.resumeIfInterrupted()
     }
 
     // MARK: - Seasons
@@ -483,6 +573,19 @@ class ItemDetailViewModel {
         #if os(tvOS)
         ItemDetailCache.shared.markStaleFamily(contentId: contentId)
         #endif
+    }
+}
+
+/// Failures raised by the view model's own coordinator wiring rather than by
+/// the API layer.
+enum ItemDetailViewModelError: LocalizedError {
+    case noItemLoaded
+
+    var errorDescription: String? {
+        switch self {
+        case .noItemLoaded:
+            return "No item is loaded."
+        }
     }
 }
 

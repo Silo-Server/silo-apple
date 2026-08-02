@@ -25,6 +25,19 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// next refetch — suppress it so the "Auto: …" preview doesn't echo the
     /// cleared selection.
     var nextUpSubtitleOverrideCleared: Bool = false
+    /// Merged remote-video + local-extra rail, already shaped by the call
+    /// site (which owns the YouTube-app availability probe that decides
+    /// whether remote cards exist at all). Empty hides the rail.
+    let trailerEntries: [TrailerRailEntry]
+    let onSelectTrailer: (TrailerRailEntry) -> Void
+    /// Whether the manual "Find Trailers" action applies to this item.
+    let supportsTrailerFetch: Bool
+    let onFindTrailers: () -> Void
+    /// Copy from the fetch coordinator; nil while idle.
+    let trailerFetchStatus: String?
+    let isFetchingTrailers: Bool
+    /// Called once a terminal fetch message has been on screen long enough.
+    let onTrailerStatusShown: () -> Void
     let onSelectSeason: (Season) -> Void
     let onPlayEpisode: (_ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool) -> Void
     let onEpisodeTap: (_ contentId: String) -> Void
@@ -74,6 +87,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                         if let cast = detail.cast, !cast.isEmpty {
                             castSection(cast: cast)
                         }
+                        trailersSection
                         detailsSection
                         similarSection
                     }
@@ -146,6 +160,15 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
                 )
             }
+            if let trailerFetchStatus {
+                // Non-focusable readout, so it adds no stop to the action
+                // column's focus traversal.
+                TVTrailerStatusPill(
+                    message: trailerFetchStatus,
+                    isFetching: isFetchingTrailers,
+                    onAutoDismiss: onTrailerStatusShown
+                )
+            }
         }
     }
 
@@ -194,6 +217,10 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 accessibilityLabel: isWatched ? "Mark Series Unwatched" : "Mark Series Watched",
                 action: onToggleWatched
             )
+
+            if supportsTrailerFetch {
+                moreMenu
+            }
         }
         // Container binding — flips true when any button in the row has
         // focus, driving the scroll-to-top in `body`.
@@ -205,6 +232,20 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         // on the nearest action button. Buttons stay left-aligned.
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
+    }
+
+    // MARK: - More menu
+
+    /// The series action row had no overflow button before "Find Trailers";
+    /// it is the only entry today. Lives inside the row's existing
+    /// `.focusSection()`, so it needs no focus work of its own.
+    @ViewBuilder
+    private var moreMenu: some View {
+        TVCircleMenuButton(accessibilityLabel: "More options") {
+            Button(action: onFindTrailers) {
+                Label("Find Trailers", systemImage: "film.stack")
+            }
+        }
     }
 
     /// Best "Play" target for the series: an in-progress episode if there
@@ -331,6 +372,14 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             contentId: detail.contentId,
             onSelect: onNavigateToItem
         )
+    }
+
+    // MARK: - Trailers & More
+
+    private var trailersSection: some View {
+        // Header lives inside the rail so it disappears with the cards when
+        // the item has neither remote videos nor local extras.
+        TVTrailersRail(entries: trailerEntries, onSelect: onSelectTrailer)
     }
 
     // MARK: - Cast

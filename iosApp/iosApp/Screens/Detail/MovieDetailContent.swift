@@ -32,6 +32,19 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     let onEpisodeTap: (String) -> Void
+    /// Play a local extra from the trailers rail. Routed separately from
+    /// `onPlay` because extras are never downloadable and have no resume
+    /// point — see `ItemDetailView` for why they skip the offline/cast gates.
+    let onPlayExtra: (String) -> Void
+    /// Kick off the manual "Find Trailers" fetch (movies only).
+    let onFindTrailers: () -> Void
+    /// Copy for the fetch status pill, straight from the coordinator. `nil`
+    /// hides the pill.
+    let trailerStatusMessage: String?
+    /// True while the fetch is still requesting or polling.
+    let isFindingTrailers: Bool
+    /// Called once a terminal status message has been on screen long enough.
+    let onTrailerStatusShown: () -> Void
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
@@ -138,11 +151,20 @@ struct MovieDetailContent<BelowOverview: View>: View {
                 }
             }
 
+            if let trailerStatusMessage {
+                PhoneTrailerStatusPill(
+                    message: trailerStatusMessage,
+                    isFetching: isFindingTrailers,
+                    onAutoDismiss: onTrailerStatusShown
+                )
+            }
+
             if let effectiveVersion {
                 playbackSelectors(for: effectiveVersion)
             }
         }
         .frame(maxWidth: .infinity)
+        .animation(.easeInOut(duration: 0.18), value: trailerStatusMessage)
     }
 
     private func playbackSelectors(for version: FileVersion) -> some View {
@@ -177,9 +199,11 @@ struct MovieDetailContent<BelowOverview: View>: View {
     }
 
     /// Downloads also earn the overflow menu: a plain tap on Download starts
-    /// it, so the menu is what keeps the options sheet discoverable.
+    /// it, so the menu is what keeps the options sheet discoverable. Movies
+    /// always earn it, because "Find Trailers" is the only entry point to the
+    /// trailer fetch.
     private var hasOverflowMenu: Bool {
-        hasOverflowNavigation || showsDownloadButton
+        hasOverflowNavigation || showsDownloadButton || detail.type == "movie"
     }
     /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
@@ -206,6 +230,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
                 Label("Download Options…", systemImage: "slider.horizontal.3")
             }
         }
+        if detail.type == "movie" {
+            Button(action: onFindTrailers) {
+                Label("Find Trailers", systemImage: "film")
+            }
+            .disabled(isFindingTrailers)
+        }
     }
 
     // MARK: - Below the fold
@@ -220,12 +250,36 @@ struct MovieDetailContent<BelowOverview: View>: View {
                 castSection(cast: cast)
             }
 
+            trailersSection
+
             detailsSection
                 .padding(.horizontal, ContinuumTheme.safePadding)
 
             if showsSimilarRail {
                 similarSection
             }
+        }
+    }
+
+    // MARK: - Trailers & extras
+
+    /// Hidden — header and all — when the item has neither remote videos nor
+    /// local extras. The emptiness test lives here rather than only inside
+    /// the rail so the surrounding VStack doesn't reserve a 36pt gap for a
+    /// section that renders nothing.
+    ///
+    /// `allowRemote` is unconditionally true: iOS plays remote trailers in a
+    /// web sheet and macOS opens them in the browser, so unlike tvOS there is
+    /// never a reason to drop them.
+    @ViewBuilder
+    private var trailersSection: some View {
+        let entries = TrailerRail.entries(
+            videos: detail.videos,
+            extras: detail.extras,
+            allowRemote: true
+        )
+        if !entries.isEmpty {
+            PhoneTrailersSection(entries: entries, onPlayExtra: onPlayExtra)
         }
     }
 

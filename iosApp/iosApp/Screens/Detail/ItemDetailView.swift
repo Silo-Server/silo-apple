@@ -106,6 +106,19 @@ private struct ItemDetailPhoneContent: View {
             await viewModel.loadDetail(contentId: contentId)
             seedSubtitleOverrideIfNeeded()
         }
+        .onAppear {
+            // Coming back from the player (or an extra) resumes a poll that
+            // `onDisappear` cancelled — without re-POSTing, since the server
+            // already spent the item's weekly slot. Precedent:
+            // `PersonDetailView.resumeMetadataRefreshIfNeeded`.
+            viewModel.resumeTrailerFetchIfNeeded()
+        }
+        .onDisappear {
+            // The trailer poll isn't owned by `.task`, so it would otherwise
+            // keep running (and retaining the view model) after the route
+            // pops. Same reasoning as `PersonDetailView.stopMetadataRefresh`.
+            viewModel.stopTrailerFetch()
+        }
         .onChange(of: router.presentedPlayer?.id) { oldValue, newValue in
             guard oldValue != nil, newValue == nil, refreshOnPlayerDismiss else { return }
             refreshOnPlayerDismiss = false
@@ -455,6 +468,11 @@ private struct ItemDetailPhoneContent: View {
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 },
+                onPlayExtra: { id in playExtra(contentId: id) },
+                onFindTrailers: { viewModel.startTrailerFetch() },
+                trailerStatusMessage: viewModel.trailerFetch.statusMessage,
+                isFindingTrailers: viewModel.trailerFetch.isFetching,
+                onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 belowOverview: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
                         .id(detail.contentId)
@@ -553,12 +571,57 @@ private struct ItemDetailPhoneContent: View {
                 onEpisodeTap: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 },
+                onPlayExtra: { id in playExtra(contentId: id) },
+                onFindTrailers: { viewModel.startTrailerFetch() },
+                trailerStatusMessage: viewModel.trailerFetch.statusMessage,
+                isFindingTrailers: viewModel.trailerFetch.isFetching,
+                onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 belowOverview: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
                         .id(detail.contentId)
                 }
             )
         }
+    }
+
+    /// Play a local extra from the trailers rail. Always from the beginning
+    /// — an extra has no stored resume point.
+    ///
+    /// An extra is an ordinary watch target with its own `contentId`, so a
+    /// live Silo Control session casts it to the TV exactly like every other
+    /// play affordance on the page; anything else would make extras the one
+    /// odd affordance that plays locally while the rest beam.
+    ///
+    /// Without a session it skips `presentPlayerFromDetail` and streams
+    /// directly, because that function's remaining two gates don't apply:
+    /// extras can't be downloaded, so the downloaded-vs-stream choice has
+    /// nothing to offer, and with no local copy to fall back on the
+    /// unreachable-server alert would only add a step in front of the same
+    /// stream attempt.
+    private func playExtra(contentId: String) {
+        #if os(iOS)
+        if siloControl.hasActiveSession {
+            let request = SiloControlPlaybackRequest(
+                contentId: contentId,
+                fileId: nil,
+                audioTrackIndex: nil,
+                subtitleTrackIndex: nil,
+                startFromBeginning: true,
+                resumePosition: nil
+            )
+            Task { await siloControl.launch(request) }
+            return
+        }
+        #endif
+
+        presentStreamingPlayer(
+            contentId: contentId,
+            fileId: nil,
+            audioTrackIndex: nil,
+            subtitleTrackIndex: nil,
+            startFromBeginning: true,
+            resumePosition: nil
+        )
     }
 
     private func playbackFileId(for detail: ItemDetail) -> Int? {
