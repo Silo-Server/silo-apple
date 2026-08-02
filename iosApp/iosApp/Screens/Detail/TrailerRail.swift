@@ -94,8 +94,15 @@ enum TrailerRail {
     }
 
     /// Deep link into the installed YouTube app (tvOS playback path).
+    ///
+    /// The full web URL with only the scheme swapped — NOT the iOS-style
+    /// short form `youtube://watch?v=`. The tvOS YouTube app ignores the
+    /// short form (opens on its home screen, id dropped); the full-URL
+    /// form starts the video. Verified on Apple TV 4K hardware (2nd gen,
+    /// tvOS 26, Aug 2026); same format Home Assistant documents for its
+    /// Apple TV deep links.
     static func youtubeAppURL(siteKey: String) -> URL? {
-        URL(string: "youtube://watch?v=\(siteKey)")
+        URL(string: "youtube://www.youtube.com/watch?v=\(siteKey)")
     }
 
     /// The public watch page, used as the macOS `openURL` fallback.

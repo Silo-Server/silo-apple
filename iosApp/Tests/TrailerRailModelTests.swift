@@ -162,9 +162,12 @@ final class TrailerRailModelTests: XCTestCase {
             TrailerRail.thumbnailURL(siteKey: key)?.absoluteString,
             "https://i.ytimg.com/vi/tFMo3UJ4B4g/hqdefault.jpg"
         )
+        // Full-URL form: the tvOS YouTube app ignores the iOS-style short
+        // form `youtube://watch?v=` (opens on Home, id dropped) but plays
+        // this one. Hardware-verified; see TrailerRail.youtubeAppURL.
         XCTAssertEqual(
             TrailerRail.youtubeAppURL(siteKey: key)?.absoluteString,
-            "youtube://watch?v=tFMo3UJ4B4g"
+            "youtube://www.youtube.com/watch?v=tFMo3UJ4B4g"
         )
         XCTAssertEqual(
             TrailerRail.youtubeWatchURL(siteKey: key)?.absoluteString,
