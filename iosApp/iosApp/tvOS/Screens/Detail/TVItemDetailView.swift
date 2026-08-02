@@ -297,7 +297,13 @@ struct TVItemDetailView: View {
                 trailerEntries: trailerEntries(for: detail),
                 onSelectTrailer: playTrailer,
                 supportsTrailerFetch: viewModel.supportsTrailerFetch,
-                onFindTrailers: { viewModel.startTrailerFetch() },
+                onFindTrailers: {
+                    // Without the YouTube app the rail hides remote cards, so
+                    // new remote videos must not be reported as a find.
+                    viewModel.startTrailerFetch(
+                        remoteVideosDisplayable: allowRemoteTrailers
+                    )
+                },
                 trailerFetchStatus: viewModel.trailerFetch.statusMessage,
                 isFetchingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
@@ -416,7 +422,13 @@ struct TVItemDetailView: View {
                 trailerEntries: trailerEntries(for: detail),
                 onSelectTrailer: playTrailer,
                 supportsTrailerFetch: viewModel.supportsTrailerFetch,
-                onFindTrailers: { viewModel.startTrailerFetch() },
+                onFindTrailers: {
+                    // Without the YouTube app the rail hides remote cards, so
+                    // new remote videos must not be reported as a find.
+                    viewModel.startTrailerFetch(
+                        remoteVideosDisplayable: allowRemoteTrailers
+                    )
+                },
                 trailerFetchStatus: viewModel.trailerFetch.statusMessage,
                 isFetchingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },

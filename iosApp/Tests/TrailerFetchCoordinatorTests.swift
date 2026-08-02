@@ -26,8 +26,15 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         var requestCount = 0
         var detailFetchCount = 0
         var foundCallbackCount = 0
+        /// The payloads handed to the found callback, so a test can assert
+        /// the coordinator published what it observed rather than expecting
+        /// the owner to re-fetch it.
+        var foundDetails: [ItemDetail] = []
         var response = TrailerRefreshResponse(status: "queued", nextAllowedAt: nil)
         var requestError: Error?
+        /// Held before the request answers, so a test can catch the
+        /// coordinator in `.requesting`.
+        var requestDelay: Duration?
         /// Consulted per detail fetch, by 0-based fetch index.
         var details: (Int) -> ItemDetail = { _ in trailerTestDetail() }
         var detailError: Error?
@@ -45,6 +52,9 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         TrailerFetchCoordinator(
             request: {
                 script.requestCount += 1
+                if let delay = script.requestDelay {
+                    try await Task.sleep(for: delay)
+                }
                 if let error = script.requestError { throw error }
                 return script.response
             },
@@ -86,8 +96,9 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         }
 
         let coordinator = makeCoordinator(script)
-        coordinator.start(baseline: trailerTestDetail()) {
+        coordinator.start(baseline: trailerTestDetail()) { found in
             script.foundCallbackCount += 1
+            script.foundDetails.append(found)
         }
 
         let reached = await waitUntil { coordinator.phase == .found }
@@ -101,6 +112,31 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let settledFetches = script.detailFetchCount
         try? await Task.sleep(for: .milliseconds(80))
         XCTAssertEqual(script.detailFetchCount, settledFetches, "polling continued after .found")
+    }
+
+    func testTheFoundCallbackReceivesTheDetailTheTrailersWereObservedIn() async {
+        // The owner applies this payload directly. Re-fetching instead would
+        // let a transient failure leave the page on the old detail after the
+        // run has already reported success and cleared its status.
+        let script = Script()
+        script.details = { index in
+            index >= 1 ? trailerTestDetail(videoKeys: ["k1", "k2"]) : trailerTestDetail()
+        }
+
+        let coordinator = makeCoordinator(script)
+        coordinator.start(baseline: trailerTestDetail()) { found in
+            script.foundCallbackCount += 1
+            script.foundDetails.append(found)
+        }
+
+        let reached = await waitUntil { coordinator.phase == .found }
+        XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
+        XCTAssertEqual(script.foundDetails.count, 1)
+        XCTAssertEqual(
+            TrailerRail.supportedVideos(script.foundDetails.first?.videos).count,
+            2,
+            "the callback must receive the payload the trailers were seen in"
+        )
     }
 
     func testANewLocalExtraCountsAsFoundEvenWithoutRemoteVideos() async {
@@ -153,8 +189,9 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         }
 
         let coordinator = makeCoordinator(script, settledPollCount: 100)
-        coordinator.start(baseline: trailerTestDetail(videoKeys: ["k1"])) {
+        coordinator.start(baseline: trailerTestDetail(videoKeys: ["k1"])) { found in
             script.foundCallbackCount += 1
+            script.foundDetails.append(found)
         }
 
         let reached = await waitUntil { coordinator.phase == .found }
@@ -190,6 +227,65 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
 
         let reached = await waitUntil { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
+    }
+
+    // MARK: - Platform trailer visibility
+
+    func testRemoteOnlyGrowthIsNotAFindWhenRemoteCardsCannotBeShown() async {
+        // tvOS without the YouTube app: the rail drops every remote card, so
+        // reporting .found would clear the status over an unchanged rail.
+        let script = Script()
+        script.details = { _ in trailerTestDetail(videoKeys: ["k1"]) }
+
+        let coordinator = makeCoordinator(script, settledPollCount: 100)
+        coordinator.start(
+            baseline: trailerTestDetail(),
+            remoteVideosDisplayable: false
+        ) { found in
+            script.foundCallbackCount += 1
+            script.foundDetails.append(found)
+        }
+
+        let reached = await waitUntil { coordinator.phase == .foundUnplayable }
+        XCTAssertTrue(reached, "expected .foundUnplayable, got \(coordinator.phase)")
+        XCTAssertEqual(script.foundCallbackCount, 0, "nothing renderable arrived")
+        XCTAssertEqual(coordinator.statusMessage, "No playable trailers here")
+        XCTAssertFalse(coordinator.isFetching)
+    }
+
+    func testNewExtrasStillCountWhenRemoteCardsCannotBeShown() async {
+        // Local extras play natively on every platform, YouTube app or not.
+        let script = Script()
+        script.details = { _ in trailerTestDetail(videoKeys: ["k1"], extraIds: ["extra:1"]) }
+
+        let coordinator = makeCoordinator(script, settledPollCount: 100)
+        coordinator.start(
+            baseline: trailerTestDetail(),
+            remoteVideosDisplayable: false
+        ) { found in
+            script.foundCallbackCount += 1
+            script.foundDetails.append(found)
+        }
+
+        let reached = await waitUntil { coordinator.phase == .found }
+        XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
+        XCTAssertEqual(script.foundCallbackCount, 1)
+    }
+
+    func testHiddenRemoteVideosDoNotBlockAQuietExhaustion() async {
+        // Nothing new at all, on a platform that hides remotes: still the
+        // ordinary "No trailers found" ending, not the unplayable one.
+        let script = Script()
+        script.details = { _ in trailerTestDetail(videoKeys: ["k1"]) }
+
+        let coordinator = makeCoordinator(script, settledPollCount: 2)
+        coordinator.start(
+            baseline: trailerTestDetail(videoKeys: ["k1"]),
+            remoteVideosDisplayable: false
+        )
+
+        let reached = await waitUntil { coordinator.phase == .exhausted }
+        XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
     }
 
     // MARK: - Cooldown / disabled
@@ -358,8 +454,9 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         script.details = { _ in trailerTestDetail(overview: "\(Date.now.timeIntervalSince1970)") }
 
         let coordinator = makeCoordinator(script, settledPollCount: 100, windowSeconds: 30)
-        coordinator.start(baseline: trailerTestDetail()) {
+        coordinator.start(baseline: trailerTestDetail()) { found in
             script.foundCallbackCount += 1
+            script.foundDetails.append(found)
         }
 
         let polling = await waitUntil { script.detailFetchCount >= 2 }
@@ -435,8 +532,9 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         }
 
         let coordinator = makeCoordinator(script, settledPollCount: 100, windowSeconds: 30)
-        coordinator.start(baseline: trailerTestDetail()) {
+        coordinator.start(baseline: trailerTestDetail()) { found in
             script.foundCallbackCount += 1
+            script.foundDetails.append(found)
         }
 
         let polling = await waitUntil { script.detailFetchCount >= 1 }
@@ -452,6 +550,60 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         XCTAssertTrue(found, "expected .found, got \(coordinator.phase)")
         XCTAssertEqual(script.requestCount, 1, "resume must not re-POST the refresh")
         XCTAssertEqual(script.foundCallbackCount, 1)
+    }
+
+    func testResumePicksUpARunCancelledDuringTheRequestWithoutRePosting() async {
+        // Leaving the page before the 202 lands: the server may already have
+        // queued the work and spent the weekly slot, so the run must be
+        // resumable — and resuming must poll rather than re-POST, or the
+        // retry could only ever come back as "checked recently".
+        let script = Script()
+        script.requestDelay = .seconds(30)
+        script.details = { index in
+            index >= 2 ? trailerTestDetail(videoKeys: ["k1"]) : trailerTestDetail(overview: "p\(index)")
+        }
+
+        let coordinator = makeCoordinator(script, settledPollCount: 100, windowSeconds: 30)
+        coordinator.start(baseline: trailerTestDetail()) { found in
+            script.foundCallbackCount += 1
+            script.foundDetails.append(found)
+        }
+        XCTAssertEqual(coordinator.phase, .requesting)
+        let requested = await waitUntil { script.requestCount == 1 }
+        XCTAssertTrue(requested, "the POST never went out")
+
+        coordinator.stop()
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertEqual(script.detailFetchCount, 0, "the run never reached the poll loop")
+
+        coordinator.resumeIfInterrupted()
+        XCTAssertEqual(coordinator.phase, .polling, "an interrupted request must resume as a poll")
+
+        let found = await waitUntil { coordinator.phase == .found }
+        XCTAssertTrue(found, "expected .found, got \(coordinator.phase)")
+        XCTAssertEqual(script.requestCount, 1, "resume must not re-POST the refresh")
+        XCTAssertEqual(script.foundCallbackCount, 1)
+    }
+
+    func testAResumedRequestKeepsTheOriginalBaseline() async {
+        // The baselines are captured before the POST goes out, so a run
+        // interrupted during it resumes against the same starting point —
+        // pre-existing trailers still must not read as a find.
+        let script = Script()
+        script.requestDelay = .seconds(30)
+        script.details = { _ in trailerTestDetail(videoKeys: ["k1"]) }
+
+        let coordinator = makeCoordinator(script, settledPollCount: 2)
+        coordinator.start(baseline: trailerTestDetail(videoKeys: ["k1"]))
+        let requested = await waitUntil { script.requestCount == 1 }
+        XCTAssertTrue(requested)
+
+        coordinator.stop()
+        coordinator.resumeIfInterrupted()
+
+        let reached = await waitUntil { coordinator.phase == .exhausted }
+        XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
+        XCTAssertEqual(script.requestCount, 1)
     }
 
     func testResumeIsANoOpWhenNothingWasInterrupted() {

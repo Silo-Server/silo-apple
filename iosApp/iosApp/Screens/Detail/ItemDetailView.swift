@@ -592,12 +592,12 @@ private struct ItemDetailPhoneContent: View {
     /// play affordance on the page; anything else would make extras the one
     /// odd affordance that plays locally while the rest beam.
     ///
-    /// Without a session it skips `presentPlayerFromDetail` and streams
-    /// directly, because that function's remaining two gates don't apply:
-    /// extras can't be downloaded, so the downloaded-vs-stream choice has
-    /// nothing to offer, and with no local copy to fall back on the
-    /// unreachable-server alert would only add a step in front of the same
-    /// stream attempt.
+    /// Without a session it skips only the downloaded-vs-stream choice of
+    /// `presentPlayerFromDetail`: extras can't be downloaded, so that dialog
+    /// has nothing to offer. The unreachable-server alert still applies —
+    /// it warns up front rather than dropping the user into a player that
+    /// will spin and fail, and extras must fail the same way as every other
+    /// play affordance on the page.
     private func playExtra(contentId: String) {
         #if os(iOS)
         if siloControl.hasActiveSession {
@@ -613,6 +613,18 @@ private struct ItemDetailPhoneContent: View {
             return
         }
         #endif
+
+        guard ConnectionMonitor.shared.isServerReachable else {
+            unreachablePlayRequest = UnreachablePlayRequest(
+                contentId: contentId,
+                fileId: nil,
+                audioTrackIndex: nil,
+                subtitleTrackIndex: nil,
+                startFromBeginning: true,
+                resumePosition: nil
+            )
+            return
+        }
 
         presentStreamingPlayer(
             contentId: contentId,

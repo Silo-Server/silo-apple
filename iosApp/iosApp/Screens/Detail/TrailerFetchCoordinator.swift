@@ -20,9 +20,9 @@ import os
 /// One run at a time; call ``stop()`` when the page leaves the nav stack —
 /// this task is not owned by SwiftUI's `.task` lifetime and would otherwise
 /// keep polling (and retaining the view model) after the route pops. A run
-/// stopped mid-poll (the user opened the movie while the fetch was running)
-/// can be picked back up with ``resumeIfInterrupted()`` on the next appear,
-/// without spending another server-side cooldown slot.
+/// stopped before it reached an outcome (the user opened the movie while the
+/// fetch was running) can be picked back up with ``resumeIfInterrupted()``
+/// on the next appear, without spending another server-side cooldown slot.
 @MainActor
 @Observable
 final class TrailerFetchCoordinator {
@@ -37,9 +37,16 @@ final class TrailerFetchCoordinator {
         case cooldown(Date?)
         /// Remote videos are switched off for every library holding the item.
         case disabled
-        /// Trailers (or new extras) arrived; the owner has been asked to
-        /// refresh.
+        /// Trailers (or new extras) arrived; the owner has been handed the
+        /// detail they arrived in.
         case found
+        /// The refresh did return new remote videos, but this platform can't
+        /// play them — tvOS without the YouTube app installed, where the rail
+        /// drops every remote card. Distinct from ``found`` (nothing would
+        /// appear on screen, so clearing the status would leave the tap
+        /// looking unanswered) and from ``exhausted`` (the server did find
+        /// trailers; "No trailers found" would be wrong).
+        case foundUnplayable
         /// The window (or the settle counter) lapsed without anything new.
         case exhausted
         /// The POST itself never came back with an answer — a timeout, a
@@ -61,6 +68,7 @@ final class TrailerFetchCoordinator {
         case .requesting, .polling: return "Finding trailers…"
         case .cooldown: return "Trailers were checked recently"
         case .disabled: return "Trailers are disabled for this library"
+        case .foundUnplayable: return "No playable trailers here"
         case .exhausted: return "No trailers found"
         case .requestFailed(let rateLimited):
             return rateLimited
@@ -104,10 +112,11 @@ final class TrailerFetchCoordinator {
 
     private var task: Task<Void, Never>?
     private var activeRunID: UUID?
-    /// Set for the lifetime of the poll loop, so ``stop()`` can hand an
-    /// interrupted poll to ``resumeIfInterrupted()``.
+    /// Set for the lifetime of a run — from the POST through the poll loop —
+    /// so ``stop()`` can hand an interrupted run to
+    /// ``resumeIfInterrupted()``.
     private var pollContext: PollContext?
-    /// A poll ``stop()`` cancelled before it reached any outcome. Consumed
+    /// A run ``stop()`` cancelled before it reached any outcome. Consumed
     /// (once) by ``resumeIfInterrupted()``.
     private var interruptedPoll: PollContext?
 
@@ -141,17 +150,25 @@ final class TrailerFetchCoordinator {
     ///     would otherwise report success on the first poll tick, before the
     ///     server refresh had a chance to run, and burn the weekly slot for
     ///     nothing.
-    ///   - onFound: invoked once, on the main actor, when trailers arrive —
-    ///     the owner re-runs its own load so the response cache is rewritten.
+    ///   - remoteVideosDisplayable: whether this platform can actually show
+    ///     a remote (YouTube) card. False on tvOS without the YouTube app,
+    ///     where the rail drops every remote entry: new remote videos then
+    ///     end the run as ``Phase/foundUnplayable`` rather than as a
+    ///     ``Phase/found`` that clears the status over an unchanged rail.
+    ///   - onFound: invoked once, on the main actor, with the detail the
+    ///     trailers were observed in, so the owner can apply that payload
+    ///     directly rather than spending a second round trip on it.
     ///     No-op if a run is already in flight.
     func start(
         baseline: ItemDetail?,
-        onFound: (@MainActor () async -> Void)? = nil
+        remoteVideosDisplayable: Bool = true,
+        onFound: (@MainActor (ItemDetail) async -> Void)? = nil
     ) {
         guard task == nil else { return }
         let context = PollContext(
             baselineVideoCount: TrailerRail.supportedVideos(baseline?.videos).count,
             baselineExtraCount: baseline?.extras?.count ?? 0,
+            remoteVideosDisplayable: remoteVideosDisplayable,
             onFound: onFound
         )
         // A fresh run supersedes anything left over from an earlier one.
@@ -173,10 +190,19 @@ final class TrailerFetchCoordinator {
     /// Leaving the page also *acknowledges* a terminal outcome: the pill's
     /// dismiss timer dies with the view, so a phase kept across navigation
     /// would replay its message for three seconds on a visit minutes later.
-    /// A poll cancelled before reaching any outcome is instead remembered
-    /// for ``resumeIfInterrupted()``.
+    /// A run cancelled before reaching any outcome is instead remembered for
+    /// ``resumeIfInterrupted()``.
+    ///
+    /// `.requesting` counts as interrupted as much as `.polling` does: the
+    /// server may already have accepted the POST — and spent the item's
+    /// weekly slot — before the connection was abandoned, so dropping the
+    /// run here would leave the only route back to those trailers a retry
+    /// that can answer nothing but "checked recently". The baselines were
+    /// captured before the POST went out, so the resumed poll is measured
+    /// against the same starting point either way; if the request never
+    /// actually reached the server the poll simply settles quietly.
     func stop() {
-        if phase == .polling, let pollContext {
+        if phase == .requesting || phase == .polling, let pollContext {
             interruptedPoll = pollContext
         }
         if task != nil {
@@ -189,13 +215,17 @@ final class TrailerFetchCoordinator {
         phase = .idle
     }
 
-    /// Pick a poll back up after the page came back — e.g. the user played
+    /// Pick a run back up after the page came back — e.g. the user played
     /// the movie (or one of its extras) while the refresh was still running,
-    /// which cancelled the poll through ``stop()``.
+    /// which cancelled it through ``stop()``.
     ///
     /// The refresh was already queued server-side and the weekly slot is
     /// already spent, so this deliberately does **not** re-POST; it only
-    /// resumes observing. The poll window restarts rather than carrying the
+    /// resumes observing. That holds for a run interrupted during the POST
+    /// too: re-sending would either duplicate work the server already
+    /// accepted or come straight back as `cooldown`, whereas polling on a
+    /// request that genuinely never landed costs a few detail fetches and
+    /// then settles. The poll window restarts rather than carrying the
     /// original deadline: a lapsed deadline would report "No trailers found"
     /// without a single fetch, even though the refresh very likely landed
     /// while the player was open. The settle counter still ends a resumed
@@ -231,7 +261,8 @@ final class TrailerFetchCoordinator {
     private struct PollContext {
         let baselineVideoCount: Int
         let baselineExtraCount: Int
-        let onFound: (@MainActor () async -> Void)?
+        let remoteVideosDisplayable: Bool
+        let onFound: (@MainActor (ItemDetail) async -> Void)?
     }
 
     private func run(runID: UUID, context: PollContext) async {
@@ -284,9 +315,9 @@ final class TrailerFetchCoordinator {
     /// ``run(runID:context:)`` so ``resumeIfInterrupted()`` can re-enter it
     /// without re-POSTing.
     private func poll(runID: UUID, context: PollContext) async {
-        // Both entry points (``start(baseline:onFound:)`` and
-        // ``resumeIfInterrupted()``) publish `pollContext` synchronously, so
-        // it is already in place for a `stop()` that lands here.
+        // Both entry points (``start(baseline:remoteVideosDisplayable:onFound:)``
+        // and ``resumeIfInterrupted()``) publish `pollContext` synchronously,
+        // so it is already in place for a `stop()` that lands here.
         defer {
             if activeRunID == runID {
                 activeRunID = nil
@@ -314,15 +345,30 @@ final class TrailerFetchCoordinator {
             }
             guard isCurrentRun(runID) else { return }
 
-            if Self.isFound(
+            switch Self.outcome(
                 detail: detail,
                 baselineVideoCount: context.baselineVideoCount,
-                baselineExtraCount: context.baselineExtraCount
+                baselineExtraCount: context.baselineExtraCount,
+                remoteVideosDisplayable: context.remoteVideosDisplayable
             ) {
+            case .found:
                 Self.logger.debug("trailerFetchFound")
                 phase = .found
-                await context.onFound?()
+                // Hand the payload the trailers were observed in straight to
+                // the owner. Re-fetching instead would risk a transient
+                // failure (or a stale replica) leaving the page showing the
+                // old detail while this run has already reported success and
+                // cleared its status.
+                await context.onFound?(detail)
                 return
+            case .unplayable:
+                // Only non-displayable remote videos arrived; the rail will
+                // look exactly as it did. Say so rather than claiming a find.
+                Self.logger.debug("trailerFetchFoundUnplayable")
+                phase = .foundUnplayable
+                return
+            case .nothing:
+                break
             }
 
             let current = DetailSignature(detail)
@@ -347,21 +393,41 @@ final class TrailerFetchCoordinator {
         activeRunID == runID && !Task.isCancelled
     }
 
-    /// The refresh delivered something worth showing: a remote video or a
-    /// local extra that wasn't there before the request.
+    /// What a polled detail means for the run.
+    enum Outcome: Equatable {
+        /// Something the rail will render appeared.
+        case found
+        /// Remote videos appeared, but this platform hides them.
+        case unplayable
+        /// Nothing new: keep polling.
+        case nothing
+    }
+
+    /// Classify a polled detail against the baseline the run started from.
     ///
     /// Both sides are baseline-relative — an item that already had trailers
     /// must not "find" them again on the first tick — and remote videos are
     /// counted through ``TrailerRail/supportedVideos(_:)`` so a provider
     /// result the rails cannot render (a Vimeo link) never passes for a
     /// visible one.
-    static func isFound(
+    ///
+    /// `remoteVideosDisplayable` is the platform's own answer to "would a
+    /// YouTube card even appear": false on tvOS without the YouTube app,
+    /// where `TrailerRail.entries(…, allowRemote: false)` drops them. New
+    /// remote videos alone are then a real server-side result that the user
+    /// cannot see, which is neither ``Outcome/found`` nor ``Outcome/nothing``.
+    /// Local extras always count — they play natively everywhere.
+    static func outcome(
         detail: ItemDetail,
         baselineVideoCount: Int,
-        baselineExtraCount: Int
-    ) -> Bool {
-        if TrailerRail.supportedVideos(detail.videos).count > baselineVideoCount { return true }
-        return (detail.extras?.count ?? 0) > baselineExtraCount
+        baselineExtraCount: Int,
+        remoteVideosDisplayable: Bool = true
+    ) -> Outcome {
+        if (detail.extras?.count ?? 0) > baselineExtraCount { return .found }
+        guard TrailerRail.supportedVideos(detail.videos).count > baselineVideoCount else {
+            return .nothing
+        }
+        return remoteVideosDisplayable ? .found : .unplayable
     }
 
     /// The cheap "did anything about this item change" probe behind the

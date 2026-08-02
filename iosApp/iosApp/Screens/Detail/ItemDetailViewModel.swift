@@ -67,9 +67,7 @@ class ItemDetailViewModel {
             let item: ItemDetail = try await ContinuumAPI.shared.get(
                 "/api/v1/catalog/items/\(contentId)"
             )
-            let enriched = await enrichPlaybackMetadata(for: item, contentId: contentId)
-            detail = enriched
-            ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(contentId))
+            let enriched = await adoptDetail(item, contentId: contentId)
 
             do {
                 async let favorite = ContinuumAPI.shared.isFavorite(contentId: contentId)
@@ -89,38 +87,11 @@ class ItemDetailViewModel {
 
             isWatched = enriched.userData?.played ?? false
 
-            // For series, load seasons (which auto-selects the first season
-            // and fetches its episodes). For a standalone season page, skip
-            // the season list and fetch episodes directly for this season.
-            if enriched.type == "series" {
-                seriesContentId = contentId
-                let keepSeason = preserveSeasonSelection ? selectedSeason?.seasonNumber : nil
-                await loadSeasons(seriesId: contentId, autoSelectInitial: keepSeason == nil)
-                if let keepSeason {
-                    // Re-point at the freshly-loaded instance of the same
-                    // season so its progress counters are current, without
-                    // re-fetching the episode rail the user is looking at.
-                    selectedSeason = seasons.first(where: { $0.seasonNumber == keepSeason })
-                        ?? selectedSeason
-                }
-            } else if enriched.type == "season",
-                      let seriesId = enriched.seriesId,
-                      let seasonNumber = enriched.seasonNumber {
-                seriesContentId = seriesId
-                await loadEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
-                await loadSeasons(seriesId: seriesId, autoSelectInitial: false)
-                selectedSeason = seasons.first(where: { $0.seasonNumber == seasonNumber })
-            } else if enriched.type == "episode",
-                      let seriesId = enriched.seriesId,
-                      let seasonNumber = enriched.seasonNumber {
-                // Load the siblings for this episode's season so the
-                // detail page can render the horizontal episode rail with
-                // the current episode highlighted + scrolled into view.
-                seriesContentId = seriesId
-                await loadEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
-                await loadSeasons(seriesId: seriesId, autoSelectInitial: false)
-                selectedSeason = seasons.first(where: { $0.seasonNumber == seasonNumber })
-            }
+            await loadRelatedStructure(
+                for: enriched,
+                contentId: contentId,
+                preserveSeasonSelection: preserveSeasonSelection
+            )
         } catch let err {
             if detail == nil {
                 self.error = ErrorState(err)
@@ -128,6 +99,80 @@ class ItemDetailViewModel {
         }
         isLoading = false
         isRefreshing = false
+    }
+
+    /// Enrich, publish, and cache a freshly fetched detail payload. The one
+    /// place `detail` and `CacheKey.itemDetail` are written together, so any
+    /// caller that obtains an `ItemDetail` lands it identically.
+    @discardableResult
+    private func adoptDetail(_ item: ItemDetail, contentId: String) async -> ItemDetail {
+        let enriched = await enrichPlaybackMetadata(for: item, contentId: contentId)
+        detail = enriched
+        ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(contentId))
+        return enriched
+    }
+
+    /// Load the season / episode structure a detail payload implies.
+    ///
+    /// For series, load seasons (which auto-selects the first season and
+    /// fetches its episodes). For a standalone season page, skip the season
+    /// list and fetch episodes directly for this season.
+    private func loadRelatedStructure(
+        for enriched: ItemDetail,
+        contentId: String,
+        preserveSeasonSelection: Bool
+    ) async {
+        if enriched.type == "series" {
+            seriesContentId = contentId
+            let keepSeason = preserveSeasonSelection ? selectedSeason?.seasonNumber : nil
+            await loadSeasons(seriesId: contentId, autoSelectInitial: keepSeason == nil)
+            if let keepSeason {
+                // Re-point at the freshly-loaded instance of the same
+                // season so its progress counters are current, without
+                // re-fetching the episode rail the user is looking at.
+                selectedSeason = seasons.first(where: { $0.seasonNumber == keepSeason })
+                    ?? selectedSeason
+            }
+        } else if enriched.type == "season",
+                  let seriesId = enriched.seriesId,
+                  let seasonNumber = enriched.seasonNumber {
+            seriesContentId = seriesId
+            await loadEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
+            await loadSeasons(seriesId: seriesId, autoSelectInitial: false)
+            selectedSeason = seasons.first(where: { $0.seasonNumber == seasonNumber })
+        } else if enriched.type == "episode",
+                  let seriesId = enriched.seriesId,
+                  let seasonNumber = enriched.seasonNumber {
+            // Load the siblings for this episode's season so the
+            // detail page can render the horizontal episode rail with
+            // the current episode highlighted + scrolled into view.
+            seriesContentId = seriesId
+            await loadEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
+            await loadSeasons(seriesId: seriesId, autoSelectInitial: false)
+            selectedSeason = seasons.first(where: { $0.seasonNumber == seasonNumber })
+        }
+    }
+
+    /// Adopt a detail payload the caller already has in hand, taking the
+    /// same path a `loadDetail` response would — enrichment, cache write,
+    /// watched flag, season/episode structure — minus the catalog fetch that
+    /// produced it and the favorite/watchlist round trips, which nothing
+    /// about a background refresh invalidates.
+    ///
+    /// Enrichment failing is not fatal here: it returns the payload
+    /// untouched, so the new trailers still render.
+    private func apply(
+        item: ItemDetail,
+        contentId: String,
+        preserveSeasonSelection: Bool
+    ) async {
+        let enriched = await adoptDetail(item, contentId: contentId)
+        isWatched = enriched.userData?.played ?? false
+        await loadRelatedStructure(
+            for: enriched,
+            contentId: contentId,
+            preserveSeasonSelection: preserveSeasonSelection
+        )
     }
 
     /// Paint every cached fragment the screen knows how to render so a
@@ -256,27 +301,45 @@ class ItemDetailViewModel {
     @ObservationIgnored
     private var trailerFetchStorage: TrailerFetchCoordinator?
 
+    /// The item the in-flight run started on. Pins the whole run to one id:
+    /// the closures below resolve `detail?.contentId` when they run, so
+    /// without this a view model reused for another item mid-poll (tvOS
+    /// keeps them cached) would poll the *new* item against the *old*
+    /// item's baseline counts and could report a false "found".
+    @ObservationIgnored
+    private var trailerFetchContentId: String?
+
     var trailerFetch: TrailerFetchCoordinator {
         if let trailerFetchStorage { return trailerFetchStorage }
         // The closures resolve `contentId` when they run rather than
         // capturing it here, so a view model that gets reused for another
-        // item (tvOS keeps them cached) can never address the old one.
+        // item can never address the old one — and the pin makes them fail
+        // outright rather than quietly switch items mid-run.
         let coordinator = TrailerFetchCoordinator(
             request: { [weak self] in
-                guard let contentId = self?.detail?.contentId else {
-                    throw ItemDetailViewModelError.noItemLoaded
-                }
+                let contentId = try self?.pinnedTrailerFetchContentId()
+                guard let contentId else { throw ItemDetailViewModelError.noItemLoaded }
                 return try await ContinuumAPI.shared.requestTrailersRefresh(contentId: contentId)
             },
             fetchDetail: { [weak self] in
-                guard let contentId = self?.detail?.contentId else {
-                    throw ItemDetailViewModelError.noItemLoaded
-                }
+                let contentId = try self?.pinnedTrailerFetchContentId()
+                guard let contentId else { throw ItemDetailViewModelError.noItemLoaded }
                 return try await ContinuumAPI.shared.itemDetail(contentId: contentId)
             }
         )
         trailerFetchStorage = coordinator
         return coordinator
+    }
+
+    /// The loaded item's id, but only while it is still the item the trailer
+    /// run started on. Throws otherwise, which the coordinator treats as a
+    /// transient failure (the poll keeps its baseline and settles out).
+    private func pinnedTrailerFetchContentId() throws -> String {
+        guard let contentId = detail?.contentId,
+              contentId == trailerFetchContentId else {
+            throw ItemDetailViewModelError.noItemLoaded
+        }
+        return contentId
     }
 
     /// Whether the "Find Trailers" action applies to what's on screen. The
@@ -285,15 +348,34 @@ class ItemDetailViewModel {
         detail?.type == "movie" || detail?.type == "series"
     }
 
-    func startTrailerFetch() {
+    /// - Parameter remoteVideosDisplayable: false when the caller's rail
+    ///   cannot render remote (YouTube) cards — tvOS with no YouTube app
+    ///   installed. iOS and macOS always can, so they leave it at true.
+    func startTrailerFetch(remoteVideosDisplayable: Bool = true) {
         guard let contentId = detail?.contentId, supportsTrailerFetch else { return }
-        trailerFetch.start(baseline: detail) { [weak self] in
+        trailerFetchContentId = contentId
+        trailerFetch.start(
+            baseline: detail,
+            remoteVideosDisplayable: remoteVideosDisplayable
+        ) { [weak self] found in
             guard let self else { return }
-            // Re-run the normal load so the enriched detail — and with it
-            // `CacheKey.itemDetail` — is rewritten with the new trailers.
-            // This lands while the page is on screen, so the season the user
-            // is browsing must survive it.
-            await self.loadDetail(contentId: contentId, preserveSeasonSelection: true)
+            // Apply the payload the coordinator already observed the trailers
+            // in, rather than fetching the same item a second time: a
+            // transient failure there would leave the page on the old detail
+            // even though the run has reported success. This lands while the
+            // page is on screen, so the season the user is browsing must
+            // survive it.
+            guard found.contentId == contentId else {
+                // Shouldn't happen (the run is pinned to one id), but a
+                // mismatched payload must never be written under this id.
+                await self.loadDetail(contentId: contentId, preserveSeasonSelection: true)
+                return
+            }
+            await self.apply(
+                item: found,
+                contentId: contentId,
+                preserveSeasonSelection: true
+            )
         }
     }
 
