@@ -23,6 +23,19 @@ class ItemDetailViewModel {
     private var episodeFavoriteMutationVersions: [String: Int] = [:]
     private var episodeFavoriteRefreshGeneration = 0
 
+    /// Bumped by every writer of `detail` + `CacheKey.itemDetail`, so a load
+    /// that started earlier but finishes later cannot publish over a newer
+    /// payload. Same idiom as `BrowseViewModel` / `TVLibraryGridViewModel`.
+    ///
+    /// The race this closes: an entry `loadDetail` on a cache hit fetches the
+    /// pre-refresh catalog payload and then suspends inside
+    /// ``enrichPlaybackMetadata(for:contentId:)`` (a whole `/watch` round
+    /// trip); the trailer poll publishes its newer, trailers-bearing payload
+    /// meanwhile; the older load resumes and overwrites `detail` and the
+    /// cache with the trailer-less item — the run reports `.found` and no
+    /// rail appears.
+    private var detailGeneration = 0
+
     // User actions
     var isFavorite = false
     var inWatchlist = false
@@ -56,18 +69,27 @@ class ItemDetailViewModel {
         // view falls back to its skeleton.
         hydrateFromCache(contentId: contentId)
 
+        // Claimed before the fetch, so "newer" means "started later" — a
+        // trailer-found adopt that begins while this request is in flight
+        // supersedes it even though it publishes first.
+        let generation = beginDetailWrite()
+
         if detail == nil {
             isLoading = true
         } else {
             isRefreshing = true
         }
         error = nil
+        defer {
+            isLoading = false
+            isRefreshing = false
+        }
 
         do {
             let item: ItemDetail = try await ContinuumAPI.shared.get(
                 "/api/v1/catalog/items/\(contentId)"
             )
-            let enriched = await adoptDetail(item, contentId: contentId)
+            let enriched = await adoptDetail(item, contentId: contentId, generation: generation)
 
             do {
                 async let favorite = ContinuumAPI.shared.isFavorite(contentId: contentId)
@@ -82,8 +104,15 @@ class ItemDetailViewModel {
                 )
             } catch {
                 // Leave whatever we hydrated from cache; per-item user
-                // state is non-fatal.
+                // state is non-fatal. Independent of the detail payload, so
+                // it still applies to a superseded load.
             }
+
+            // Superseded: a newer payload is already on screen. Deriving
+            // watched state or the season/episode structure from this older
+            // copy would undo parts of it (and re-run the season auto-select
+            // under the user).
+            guard let enriched else { return }
 
             isWatched = enriched.userData?.played ?? false
 
@@ -97,16 +126,39 @@ class ItemDetailViewModel {
                 self.error = ErrorState(err)
             }
         }
-        isLoading = false
-        isRefreshing = false
+    }
+
+    /// Claim the right to publish into `detail`, invalidating any write that
+    /// claimed earlier and hasn't landed yet.
+    private func beginDetailWrite() -> Int {
+        detailGeneration += 1
+        return detailGeneration
+    }
+
+    /// Publish a payload the caller re-fetched itself, taking the generation
+    /// with it so an in-flight load can't land its older copy afterwards.
+    /// Used by the description translator, which polls the catalog directly
+    /// and (deliberately) skips playback enrichment.
+    func publishRefetchedDetail(_ item: ItemDetail, contentId: String) {
+        _ = beginDetailWrite()
+        detail = item
+        ResponseCache.shared.set(item, for: CacheKey.itemDetail(contentId))
     }
 
     /// Enrich, publish, and cache a freshly fetched detail payload. The one
     /// place `detail` and `CacheKey.itemDetail` are written together, so any
     /// caller that obtains an `ItemDetail` lands it identically.
-    @discardableResult
-    private func adoptDetail(_ item: ItemDetail, contentId: String) async -> ItemDetail {
+    ///
+    /// Returns `nil` — publishing nothing — when a newer write claimed the
+    /// slot while this one was suspended in enrichment (a full `/watch`
+    /// round trip, which is where the window is widest).
+    private func adoptDetail(
+        _ item: ItemDetail,
+        contentId: String,
+        generation: Int
+    ) async -> ItemDetail? {
         let enriched = await enrichPlaybackMetadata(for: item, contentId: contentId)
+        guard generation == detailGeneration else { return nil }
         detail = enriched
         ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(contentId))
         return enriched
@@ -161,12 +213,21 @@ class ItemDetailViewModel {
     ///
     /// Enrichment failing is not fatal here: it returns the payload
     /// untouched, so the new trailers still render.
+    ///
+    /// Claiming a generation is what stops an entry `loadDetail` that is
+    /// still suspended in enrichment from landing its older, trailer-less
+    /// payload on top of this one afterwards.
     private func apply(
         item: ItemDetail,
         contentId: String,
         preserveSeasonSelection: Bool
     ) async {
-        let enriched = await adoptDetail(item, contentId: contentId)
+        let generation = beginDetailWrite()
+        guard let enriched = await adoptDetail(
+            item,
+            contentId: contentId,
+            generation: generation
+        ) else { return }
         isWatched = enriched.userData?.played ?? false
         await loadRelatedStructure(
             for: enriched,

@@ -44,10 +44,16 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
 
     /// A coordinator wired to `script`, with a fast cadence so the poll loop
     /// completes in milliseconds rather than minutes.
+    ///
+    /// `minimumObservationSeconds` — the floor the settle counter may not
+    /// conclude below in production — defaults to 0 here so the settle tests
+    /// stay millisecond-fast. The floor's own behaviour is covered by the
+    /// tests that pass it explicitly.
     private func makeCoordinator(
         _ script: Script,
         settledPollCount: Int = 3,
-        windowSeconds: TimeInterval = 5
+        windowSeconds: TimeInterval = 5,
+        minimumObservationSeconds: TimeInterval = 0
     ) -> TrailerFetchCoordinator {
         TrailerFetchCoordinator(
             request: {
@@ -66,7 +72,8 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
             },
             pollInterval: Duration.milliseconds(5),
             windowSeconds: windowSeconds,
-            settledPollCount: settledPollCount
+            settledPollCount: settledPollCount,
+            minimumObservationSeconds: minimumObservationSeconds
         )
     }
 
@@ -227,6 +234,70 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
 
         let reached = await waitUntil { coordinator.phase == .found }
         XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
+    }
+
+    func testAReplacedTrailerCountsAsFoundAtAnUnchangedCount() async {
+        // The refresh swapped a dead YouTube key for a working one: the array
+        // stays 1 → 1, so a count comparison would call it "nothing", never
+        // publish the payload, and end on "No trailers found" — with the
+        // weekly slot already spent.
+        let script = Script()
+        script.details = { index in
+            index >= 1 ? trailerTestDetail(videoKeys: ["fresh"]) : trailerTestDetail(videoKeys: ["stale"])
+        }
+
+        let coordinator = makeCoordinator(script, settledPollCount: 100)
+        coordinator.start(baseline: trailerTestDetail(videoKeys: ["stale"])) { found in
+            script.foundCallbackCount += 1
+            script.foundDetails.append(found)
+        }
+
+        let reached = await waitUntil { coordinator.phase == .found }
+        XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
+        XCTAssertEqual(script.foundCallbackCount, 1)
+        XCTAssertEqual(
+            TrailerRail.supportedVideos(script.foundDetails.first?.videos).first?.siteKey,
+            "fresh"
+        )
+    }
+
+    func testAReplacedExtraCountsAsFoundAtAnUnchangedCount() async {
+        let script = Script()
+        script.details = { index in
+            index >= 1 ? trailerTestDetail(extraIds: ["extra:2"]) : trailerTestDetail(extraIds: ["extra:1"])
+        }
+
+        let coordinator = makeCoordinator(script, settledPollCount: 100)
+        coordinator.start(baseline: trailerTestDetail(extraIds: ["extra:1"]))
+
+        let reached = await waitUntil { coordinator.phase == .found }
+        XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
+    }
+
+    func testAReorderedSetIsNotAFind() async {
+        // Identity, not order: the server re-sorting the same two trailers
+        // shows the user nothing new.
+        let script = Script()
+        script.details = { _ in trailerTestDetail(videoKeys: ["k2", "k1"]) }
+
+        let coordinator = makeCoordinator(script, settledPollCount: 2)
+        coordinator.start(baseline: trailerTestDetail(videoKeys: ["k1", "k2"]))
+
+        let reached = await waitUntil { coordinator.phase == .exhausted }
+        XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
+    }
+
+    func testShrinkingToASubsetOfTheBaselineIsNotAFind() async {
+        // A refresh that drops one of two known trailers left nothing new to
+        // show, even though the payload changed.
+        let script = Script()
+        script.details = { _ in trailerTestDetail(videoKeys: ["k1"]) }
+
+        let coordinator = makeCoordinator(script, settledPollCount: 2)
+        coordinator.start(baseline: trailerTestDetail(videoKeys: ["k1", "k2"]))
+
+        let reached = await waitUntil { coordinator.phase == .exhausted }
+        XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
     }
 
     // MARK: - Platform trailer visibility
@@ -431,6 +502,118 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
         let reached = await waitUntil { coordinator.phase == .exhausted }
         XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
         XCTAssertGreaterThan(script.detailFetchCount, 4, "failures should keep polling until the window lapses")
+    }
+
+    func testTheSettleCounterCannotEndTheRunBeforeTheJobCouldHaveFinished() async {
+        // There is no completion signal: five unchanged polls mean the
+        // provider has been quiet, not that the queued refresh is done. Under
+        // the minimum observation time an unchanged item must keep polling —
+        // exiting there reports "No trailers found" over a slot that is
+        // already spent, so the result can never be retrieved.
+        let script = Script()
+        script.details = { _ in trailerTestDetail() }
+
+        // Settles immediately by count, but the floor holds the run open past
+        // where the bare counter would have ended it.
+        let coordinator = makeCoordinator(
+            script,
+            settledPollCount: 2,
+            windowSeconds: 5,
+            minimumObservationSeconds: 0.3
+        )
+        coordinator.start(baseline: trailerTestDetail())
+
+        // 3 fetches is what the bare counter would have stopped at (seed + 2).
+        let settleable = await waitUntil { script.detailFetchCount >= 3 }
+        XCTAssertTrue(settleable)
+        XCTAssertEqual(coordinator.phase, .polling, "settled out before the job could have finished")
+
+        let reached = await waitUntil { coordinator.phase == .exhausted }
+        XCTAssertTrue(reached, "expected .exhausted after the floor, got \(coordinator.phase)")
+        XCTAssertGreaterThan(
+            script.detailFetchCount,
+            3,
+            "the floor should have bought more polls"
+        )
+    }
+
+    func testALateResultIsStillFoundAfterTheSettleCounterWouldHaveGivenUp() async {
+        // The case the floor exists for: a slow provider writes nothing for a
+        // while, then lands the trailer. With the bare counter this reported
+        // "No trailers found" ~18s in and the payload was never published.
+        let script = Script()
+        script.details = { index in
+            index >= 12 ? trailerTestDetail(videoKeys: ["late"]) : trailerTestDetail()
+        }
+
+        let coordinator = makeCoordinator(
+            script,
+            settledPollCount: 2,
+            windowSeconds: 5,
+            minimumObservationSeconds: 0.5
+        )
+        coordinator.start(baseline: trailerTestDetail()) { found in
+            script.foundCallbackCount += 1
+            script.foundDetails.append(found)
+        }
+
+        let reached = await waitUntil { coordinator.phase == .found }
+        XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
+        XCTAssertEqual(script.foundCallbackCount, 1)
+    }
+
+    func testAnEarlyResultStillEndsTheRunImmediately() async {
+        // The floor gates only the settle *exit*; it must never delay a
+        // result. The common fast case is unchanged.
+        let script = Script()
+        script.details = { _ in trailerTestDetail(videoKeys: ["k1"]) }
+
+        let coordinator = makeCoordinator(
+            script,
+            settledPollCount: 2,
+            windowSeconds: 30,
+            minimumObservationSeconds: 30
+        )
+        coordinator.start(baseline: trailerTestDetail())
+
+        let reached = await waitUntil(timeout: 2) { coordinator.phase == .found }
+        XCTAssertTrue(reached, "expected .found, got \(coordinator.phase)")
+        XCTAssertEqual(script.detailFetchCount, 1, "the first poll already had the answer")
+    }
+
+    func testTheFloorNeverOutlivesTheWindow() async {
+        // A floor longer than the window must not wedge the run open: the
+        // window is still the hard cap.
+        let script = Script()
+        script.details = { _ in trailerTestDetail() }
+
+        let coordinator = makeCoordinator(
+            script,
+            settledPollCount: 2,
+            windowSeconds: 0.3,
+            minimumObservationSeconds: 60
+        )
+        coordinator.start(baseline: trailerTestDetail())
+
+        let reached = await waitUntil(timeout: 3) { coordinator.phase == .exhausted }
+        XCTAssertTrue(reached, "expected .exhausted, got \(coordinator.phase)")
+    }
+
+    func testTheShippedFloorSitsInsideTheShippedWindow() {
+        // Both defaults are tied to the server's own 2-minute on-demand
+        // refresh timeout; the floor has to leave polls on the table.
+        XCTAssertLessThan(
+            TrailerFetchCoordinator.defaultMinimumObservationSeconds,
+            TrailerFetchCoordinator.defaultWindowSeconds
+        )
+        // And it must sit past where the bare settle counter would fire.
+        let bareSettleSeconds =
+            Double(TrailerFetchCoordinator.defaultSettledPollCount + 1)
+            * (Double(TrailerFetchCoordinator.defaultPollInterval.components.seconds))
+        XCTAssertGreaterThan(
+            TrailerFetchCoordinator.defaultMinimumObservationSeconds,
+            bareSettleSeconds
+        )
     }
 
     func testWindowLapseEndsTheRun() async {
