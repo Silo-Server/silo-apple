@@ -23,6 +23,7 @@ struct TVAudiobookDetailView: View {
 
     @FocusState private var focusedAction: Action?
     @State private var showChapters = false
+    @State private var didClaimInitialActionFocus = false
 
     private enum Action: Hashable { case primary, chapters, startOver }
 
@@ -310,6 +311,7 @@ struct TVAudiobookDetailView: View {
                 model.performPrimary(audioStore)
             }
             .focused($focusedAction, equals: .primary)
+            .onAppear(perform: claimInitialActionFocus)
 
             if model.showsChapters {
                 TVSecondaryPillButton(icon: "list.bullet", title: "Chapters") {
@@ -324,6 +326,12 @@ struct TVAudiobookDetailView: View {
             .focused($focusedAction, equals: .startOver)
         }
         .defaultFocus($focusedAction, .primary)
+    }
+
+    private func claimInitialActionFocus() {
+        guard !didClaimInitialActionFocus else { return }
+        didClaimInitialActionFocus = true
+        focusedAction = .primary
     }
 }
 #endif

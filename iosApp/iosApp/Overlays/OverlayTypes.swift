@@ -250,6 +250,20 @@ enum OverlayIconId: String, Hashable {
     case atmos
     case av1
     case tomato
+
+    /// The text a wordmark icon already spells out as the mark itself.
+    /// Mirrors web's `WORDMARK_TEXT`: when a badge's label matches its
+    /// mark, the renderer suppresses the label so the badge doesn't
+    /// read "HDR10 HDR10".
+    var wordmarkText: String? {
+        switch self {
+        case .hdr: return "HDR"
+        case .hdr10: return "HDR10"
+        case .atmos: return "ATMOS"
+        case .av1: return "AV1"
+        default: return nil
+        }
+    }
 }
 
 /// How the preset paints the accent color. Mirrors web's

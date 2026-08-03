@@ -472,6 +472,9 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
     let storedValue: SettingJSONValue?
     let constrained: Bool
     let constraintKind: SettingConstraintKind?
+    /// Advisory picker values for an open setting. These never constrain
+    /// writes; they augment the generated contract floor.
+    let suggestedValues: [String]?
 
     /// The scope holding the value, so a reset can target exactly that row.
     /// Absent for a contract default.
@@ -488,6 +491,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         case storedValue = "stored_value"
         case constrained
         case constraintKind = "constraint_kind"
+        case suggestedValues = "suggested_values"
         case scope
         case profileId = "profile_id"
         case deviceId = "device_id"
@@ -507,6 +511,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         }
         constrained = try container.decodeIfPresent(Bool.self, forKey: .constrained) ?? false
         constraintKind = try container.decodeIfPresent(SettingConstraintKind.self, forKey: .constraintKind)
+        suggestedValues = try container.decodeIfPresent([String].self, forKey: .suggestedValues)
         scope = try container.decodeIfPresent(SettingScope.self, forKey: .scope)
         profileId = try container.decodeIfPresent(String.self, forKey: .profileId)
         deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
@@ -521,6 +526,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         storedValue: SettingJSONValue? = nil,
         constrained: Bool = false,
         constraintKind: SettingConstraintKind? = nil,
+        suggestedValues: [String]? = nil,
         scope: SettingScope? = nil,
         profileId: String? = nil,
         deviceId: String? = nil,
@@ -533,6 +539,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         self.storedValue = storedValue
         self.constrained = constrained
         self.constraintKind = constraintKind
+        self.suggestedValues = suggestedValues
         self.scope = scope
         self.profileId = profileId
         self.deviceId = deviceId
@@ -586,6 +593,13 @@ struct EffectiveSettingValuesResponse: Codable, Hashable, Sendable {
     func value(for key: SettingKey) -> EffectiveSettingValue? {
         settings.first { $0.key == key.rawValue }
     }
+
+    /// True when this build was generated from a newer manifest than the
+    /// server used for this resolution. Applying the response would silently
+    /// substitute missing rows with this client's newer contract defaults.
+    var contractIsAheadOfServer: Bool {
+        SettingKey.revision > revision
+    }
 }
 
 /// What the connected server's settings contract supports.
@@ -622,10 +636,11 @@ struct SettingsContractCapabilities: Codable, Hashable, Sendable {
 /// The result of probing the canonical settings contract.
 ///
 /// A server that predates the canonical settings API has no
-/// `/api/v1/settings/contract` routes at all, so the probe 404s. That is a
-/// distinct, actionable state — the UI must say "this server needs an upgrade"
-/// rather than render an empty settings screen — so it is a typed case here
-/// instead of dissolving into the generic error path.
+/// `/api/v1/settings/contract` routes at all, while one on an older contract
+/// revision lacks definitions this build exposes. Both are actionable states:
+/// the UI must say "this server needs an upgrade" rather than render an empty
+/// or incomplete settings screen, so they are a typed case here instead of
+/// dissolving into the generic error path.
 enum SettingsCapabilitiesResult: Equatable, Sendable {
     case available(SettingsContractCapabilities)
     case serverUpgradeRequired

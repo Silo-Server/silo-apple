@@ -13,6 +13,55 @@ import XCTest
 @MainActor
 final class ProfileAndQualitySettingsTests: XCTestCase {
 
+    // MARK: - Language catalog
+
+    func testLanguageOptionsUnionContractRuntimeAndExactCurrentValue() {
+        let options = PlaybackLanguageOption.options(
+            for: .playbackSubtitleLanguage,
+            currentValue: "pt-BR",
+            runtimeValues: ["eng", "es-MX"]
+        ).map(\.code)
+
+        XCTAssertTrue(options.contains("en"))
+        XCTAssertFalse(options.contains("eng"), "a true ISO alias must not create a duplicate row")
+        XCTAssertTrue(options.contains("te"), "the generated contract floor must be present")
+        XCTAssertTrue(options.contains("es-MX"), "deployment-observed region tags must be present")
+        XCTAssertTrue(options.contains("pt"), "a base language is not an alias for a region choice")
+        XCTAssertTrue(options.contains("pt-BR"), "the exact current wire value must stay selectable")
+    }
+
+    func testCurrentAliasReplacesTheContractWireValue() {
+        let options = PlaybackLanguageOption.options(
+            for: .playbackAudioLanguage,
+            currentValue: "eng"
+        ).map(\.code)
+
+        XCTAssertTrue(options.contains("eng"))
+        XCTAssertFalse(options.contains("en"))
+    }
+
+    func testBibliographicAliasesReplaceTheirCanonicalContractRows() {
+        let aliases = [
+            "fre": "fr",
+            "ger": "de",
+            "chi": "zh",
+            "mao": "mi",
+            "iw": "he",
+            "in": "id",
+            "ji": "yi",
+        ]
+
+        for (alias, canonical) in aliases {
+            let options = PlaybackLanguageOption.options(
+                for: .playbackAudioLanguage,
+                currentValue: alias
+            ).map(\.code)
+
+            XCTAssertTrue(options.contains(alias), "the exact current value \(alias) must win")
+            XCTAssertFalse(options.contains(canonical), "\(alias) must replace its alias \(canonical)")
+        }
+    }
+
     // MARK: - Preset table
 
     /// The contract's `playback.preferred_quality` members. Spelled out here

@@ -45,8 +45,11 @@ struct SubtitleSettingsView: View {
     private var metadataLanguageSection: some View {
         Section {
             Picker("Metadata Language", selection: $viewModel.editorPreferredMetadataLanguage) {
-                Text("Library Default").tag(PlaybackPrefSentinel.none)
-                ForEach(PlaybackLanguageOption.all) { option in
+                Text(
+                    SettingPresentationMetadata.definitions[.catalogMetadataLanguage]?.unsetLabel
+                        ?? "Library default"
+                ).tag(PlaybackPrefSentinel.none)
+                ForEach(viewModel.metadataLanguageOptions) { option in
                     Text(option.label).tag(option.code)
                 }
             }
@@ -73,8 +76,11 @@ struct SubtitleSettingsView: View {
     private var profileBackedSection: some View {
         Section {
             Picker("Language", selection: $viewModel.editorSubtitleLanguage) {
-                Text("None").tag(PlaybackPrefSentinel.none)
-                ForEach(PlaybackLanguageOption.all) { option in
+                Text(
+                    SettingPresentationMetadata.definitions[.playbackSubtitleLanguage]?.unsetLabel
+                        ?? "None"
+                ).tag(PlaybackPrefSentinel.none)
+                ForEach(viewModel.subtitleLanguageOptions) { option in
                     Text(option.label).tag(option.code)
                 }
             }

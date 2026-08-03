@@ -1,6 +1,6 @@
 repository=https://github.com/Silo-Server/silo-server
 path=contracts/settings/v1
-manifest_revision=1
+manifest_revision=2
 fixture_version=1
 
 Both files are byte-identical copies of the server's canonical settings
@@ -11,9 +11,9 @@ vendored manifest's revision, and the generated SettingKey.revision stop
 agreeing, which is the whole point of carrying the pair rather than the
 fixture alone.
 
-conformance.json commit=dc4b9a0909461bfb57c8eefcf357e68d9fbd584b
-manifest.json    commit=dc4b9a0909461bfb57c8eefcf357e68d9fbd584b
-copied from      commit=dc4b9a0909461bfb57c8eefcf357e68d9fbd584b
+conformance.json commit=025083159f9624269483479cc05de02a822c6cd2
+manifest.json    commit=025083159f9624269483479cc05de02a822c6cd2
+copied from      commit=025083159f9624269483479cc05de02a822c6cd2
 
 manifest.json is vendored whole, including the maintainer `notes` the server
 strips before serving /api/v1/settings/contract. Keeping it byte-identical is

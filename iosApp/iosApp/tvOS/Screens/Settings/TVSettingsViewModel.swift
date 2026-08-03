@@ -99,6 +99,30 @@ final class TVSettingsViewModel {
     /// server-backed controls cannot work and the screens say why.
     var settingsServerUpgradeRequired: Bool { prefs.serverUpgradeRequired }
 
+    var audioLanguageOptions: [PlaybackLanguageOption] {
+        PlaybackLanguageOption.options(
+            for: .playbackAudioLanguage,
+            currentValue: preferredAudioLanguage,
+            runtimeValues: PlayerSettings.shared.audioLanguageSuggestions
+        )
+    }
+
+    var subtitleLanguageOptions: [PlaybackLanguageOption] {
+        PlaybackLanguageOption.options(
+            for: .playbackSubtitleLanguage,
+            currentValue: editorSubtitleLanguage,
+            runtimeValues: prefs.subtitleLanguageSuggestions
+        )
+    }
+
+    var metadataLanguageOptions: [PlaybackLanguageOption] {
+        PlaybackLanguageOption.options(
+            for: .catalogMetadataLanguage,
+            currentValue: editorPreferredMetadataLanguage,
+            runtimeValues: prefs.metadataLanguageSuggestions
+        )
+    }
+
     // MARK: - Derived
 
     var isAdmin: Bool { userInfo?.isAdmin == true }

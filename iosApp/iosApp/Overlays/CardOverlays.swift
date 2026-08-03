@@ -171,7 +171,7 @@ struct OverlayBadgeView: View {
                     tint: preset.foregroundColor(state.accentColor)
                 )
             }
-            if !state.iconOnly || state.iconId == nil {
+            if (!state.iconOnly || state.iconId == nil) && !labelRedundantWithIcon {
                 badgeText
             }
         }
@@ -180,6 +180,16 @@ struct OverlayBadgeView: View {
         .background(background)
         .overlay(border)
         .clipShape(shape)
+    }
+
+    /// A wordmark icon (HDR10, ATMOS, …) spells its text as the mark
+    /// itself; when the label says the same thing, showing both reads
+    /// "HDR10 HDR10". Mirrors web's `labelRedundantWithIcon`.
+    private var labelRedundantWithIcon: Bool {
+        guard let iconId = state.iconId, let mark = iconId.wordmarkText else { return false }
+        return mark.lowercased() == state.label
+            .trimmingCharacters(in: .whitespaces)
+            .lowercased()
     }
 
     @ViewBuilder

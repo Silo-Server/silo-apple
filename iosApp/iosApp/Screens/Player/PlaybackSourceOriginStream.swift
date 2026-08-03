@@ -54,6 +54,32 @@ enum PlaybackOriginRoutingPolicy {
     }
 }
 
+/// Who may re-anchor the streaming window when a qualified (≥
+/// `windowClaimBytes`) demand misses. Two concurrent long-lived readers —
+/// e.g. the demuxer's video read plus a second full-rate audio/extractor
+/// read — can BOTH pass the claim threshold; letting each steal the window
+/// on every miss produced a retarget storm (production tvOS logs,
+/// 2026-07-29: an origin cancel + fresh range request every 1–2 s, each
+/// discarding 10–30 MB of delivered bytes). The window belongs to one serve
+/// connection at a time; a contested claim is served by a discrete chunk,
+/// which never disturbs the window. Ownership frees when the owning serve
+/// connection ends, so an ordinary seek (close + new connection) still
+/// re-anchors immediately.
+enum PlaybackWindowClaimPolicy {
+    enum Verdict: Equatable {
+        /// The claimant may re-anchor (or spawn) the window.
+        case retarget
+        /// A live owner holds the window; serve this demand with a chunk.
+        case chunk
+    }
+
+    static func arbitrate(claimant: UUID?, owner: UUID?, ownerIsAlive: Bool) -> Verdict {
+        guard let owner, ownerIsAlive else { return .retarget }
+        guard let claimant else { return .chunk }
+        return claimant == owner ? .retarget : .chunk
+    }
+}
+
 /// Pause/backpressure decisions for the window stream plus its snapshot
 /// type. (Routing across multiple streams lived here before the
 /// window+chunk split — see `PlaybackOriginRoutingPolicy`.)
@@ -62,6 +88,36 @@ enum PlaybackOriginStreamPolicy {
     /// closes before ordinary reverse-proxy client-send timeouts can reap it.
     /// `var` so tests can drive the lifecycle without wall-clock waits.
     static var detachAfterSeconds: TimeInterval = 25
+    /// Upper bound for the adaptive grace below: parked connections must
+    /// still close before common reverse-proxy client-send timeouts (60 s)
+    /// can reap them mid-park.
+    static var detachGraceCeilingSeconds: TimeInterval = 45
+    /// Headroom added to the computed drain time so the low-water resume
+    /// always lands before the detach timer, not in a race with it.
+    static let detachDrainMarginSeconds: TimeInterval = 5
+
+    /// Grace before a budget-parked stream detaches, sized to the cache
+    /// hysteresis drain time when the source bitrate is known. The fixed
+    /// 25 s grace detached ~2.7 s BEFORE the low-water resume for a
+    /// 19.4 Mbps source draining the 64 MiB hysteresis gap (~27.7 s), so
+    /// every park cycle paid a full reconnect instead of a task resume —
+    /// and every title under ~21.5 Mbps hit the same cliff. The cache
+    /// drains at the CONSUMPTION rate, not the nominal file rate: slow-speed
+    /// playback (0.75×) stretches the drain proportionally, so the grace
+    /// scales by `playbackRate` (non-positive/unknown rates fall back to 1×).
+    static func detachGraceSeconds(
+        hysteresisGapBytes: Int64,
+        sourceBitrateBps: Double?,
+        playbackRate: Double = 1.0
+    ) -> TimeInterval {
+        guard let bps = sourceBitrateBps, bps > 0, hysteresisGapBytes > 0 else {
+            return detachAfterSeconds
+        }
+        let rate = playbackRate > 0 ? playbackRate : 1.0
+        let drainSeconds = Double(hysteresisGapBytes) * 8.0 / (bps * rate)
+        let ceiling = max(detachAfterSeconds, detachGraceCeilingSeconds)
+        return min(max(drainSeconds + detachDrainMarginSeconds, detachAfterSeconds), ceiling)
+    }
 
     /// The window's fetch region: where it started and how far it has
     /// filled. All the state the routing and hint paths need.
@@ -266,6 +322,10 @@ final class PlaybackOriginStream {
     private let callbacks: Callbacks
     private let resumeCapable: Bool
     private let clock: PlaybackOriginStreamClock
+    /// Grace before a park becomes a detach. Supplied by the owner when it
+    /// can size the grace to the cache drain time; nil falls back to the
+    /// fixed `PlaybackOriginStreamPolicy.detachAfterSeconds`.
+    private let detachGraceSecondsProvider: (() -> TimeInterval)?
 
     private let lock = NSLock()
     private var generation: UInt64 = 0
@@ -314,7 +374,8 @@ final class PlaybackOriginStream {
         resumeCapable: Bool = false,
         initialEntityETag: String? = nil,
         initialResponseRequiresEntityValidation: Bool = false,
-        clock: PlaybackOriginStreamClock = SystemPlaybackOriginStreamClock()
+        clock: PlaybackOriginStreamClock = SystemPlaybackOriginStreamClock(),
+        detachGraceSecondsProvider: (() -> TimeInterval)? = nil
     ) {
         self.originURL = originURL
         self.originHeaders = originHeaders
@@ -328,6 +389,7 @@ final class PlaybackOriginStream {
         self.entityETag = initialEntityETag
         self.initialResponseRequiresEntityValidation = initialResponseRequiresEntityValidation
         self.clock = clock
+        self.detachGraceSecondsProvider = detachGraceSecondsProvider
         self.lastDataAt = clock.now()
     }
 
@@ -597,6 +659,7 @@ final class PlaybackOriginStream {
 
     private func detachIfParkedPastGrace() {
         let now = clock.now()
+        let grace = detachGraceSecondsProvider?() ?? PlaybackOriginStreamPolicy.detachAfterSeconds
         lock.lock()
         guard resumeCapable,
               parked,
@@ -604,7 +667,7 @@ final class PlaybackOriginStream {
               !cancelled,
               !finished,
               let parkedAt,
-              now.timeIntervalSince(parkedAt) >= PlaybackOriginStreamPolicy.detachAfterSeconds,
+              now.timeIntervalSince(parkedAt) >= grace,
               let oldTask = task,
               let oldTaskID = currentTaskID else {
             lock.unlock()
