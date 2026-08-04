@@ -2604,8 +2604,12 @@ final class AVPlayerBackend {
         )
         // Prefer the format description of what AVPlayer is actually
         // playing (e.g. "Dolby Vision Profile 8 Level 6 (HDR10
-        // compatible)") over the spec-derived expectation.
+        // compatible)") over the spec-derived expectation. The route-derived
+        // label is a diagnostic fallback describing what was planned, so it
+        // deliberately does not feed `confirmedDynamicRange`, which the HUD
+        // badge trusts.
         stats.dynamicRange = videoFormat.dynamicRange ?? dynamicRangeLabel(for: currentSourceStrategy)
+        stats.confirmedDynamicRange = videoFormat.confirmedDynamicRange
         stats.audio = audio
         stats.subtitles = selectedSubtitleLabel()
         stats.screenFrameRate = PlatformScreen.maximumFramesPerSecond

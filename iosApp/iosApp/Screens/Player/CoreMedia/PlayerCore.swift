@@ -2897,6 +2897,7 @@ final class PlayerCore: NSObject {
         stats.video = currentVideoStats()
         stats.audio = currentAudioStats()
         stats.dynamicRange = currentDynamicRangeStatsLabel()
+        stats.confirmedDynamicRange = confirmedDynamicRangeForStats()
         stats.subtitles = currentSubtitleStats()
         stats.screenFrameRate = PlatformScreen.maximumFramesPerSecond
         stats.playbackRate = syncRate
@@ -2980,6 +2981,19 @@ final class PlayerCore: NSObject {
             detail: detailParts.isEmpty ? nil : detailParts.joined(separator: ", "),
             bitrateBps: codecpar.bit_rate > 0 ? Double(codecpar.bit_rate) : nil
         )
+    }
+
+    /// What this decoder is rendering, for the HUD badge. `dynamicRange` is
+    /// set from the resolved routing, so a Dolby Vision source the user's
+    /// settings stripped to its base layer reports `.hdr10` here even though
+    /// the prose label below still names the source's DV profile.
+    private func confirmedDynamicRangeForStats() -> PlaybackStats.ConfirmedDynamicRange {
+        switch dynamicRange {
+        case .sdr: return .sdr
+        case .hdr10: return .hdr10
+        case .hlg: return .hlg
+        case .dolbyVision: return .dolbyVision
+        }
     }
 
     private func currentDynamicRangeStatsLabel() -> String? {

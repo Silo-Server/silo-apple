@@ -6540,24 +6540,42 @@ class PlayerViewModel {
         }
     }
 
-    /// The session metadata is available before AVPlayer has inspected its
-    /// format description, and may only say "HDR". Once AVPlayer identifies
-    /// the delivered stream as Dolby Vision, make the visible player badge
-    /// precise rather than retaining that generic source label.
+    /// The session metadata is available before the engine has inspected its
+    /// format description, and derives its badge from the server's `hdr`
+    /// flag — so it may only say "HDR", or claim HDR for a source the user's
+    /// settings have since routed to SDR. Once the engine confirms what it is
+    /// actually rendering, reconcile the visible badge with that.
+    ///
+    /// Only `confirmedDynamicRange` is trusted here: `stats.dynamicRange` is
+    /// a prose label that describes the *source* ("Dolby Vision Profile 7 …
+    /// as HDR10") and falls back to the planned route when introspection is
+    /// unavailable, so matching on it claims Dolby Vision for pictures
+    /// rendering as plain HDR10. A `nil` confirmation means "not determined
+    /// yet" and leaves the source-derived badge untouched.
     private func applyRuntimeDynamicRangeBadge(_ stats: PlaybackStats) {
+        guard let confirmed = stats.confirmedDynamicRange else { return }
+
+        let replacement: String?
+        switch confirmed {
+        case .dolbyVision: replacement = "Dolby Vision"
+        case .hdr10, .hlg: replacement = "HDR"
+        case .sdr: replacement = nil
+        }
+
         let isDynamicRangeBadge: (String) -> Bool = { badge in
             let normalized = badge.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
             return normalized == "HDR" || normalized == "DV" || normalized == "DOLBY VISION"
         }
-        guard stats.dynamicRange?.localizedCaseInsensitiveContains("dolby vision") == true else {
-            if metadata.badges.contains(where: isDynamicRangeBadge) {
-                metadata.badges.removeAll(where: isDynamicRangeBadge)
-            }
-            return
+
+        // Keep the badge where the source put it — between resolution and
+        // video codec — rather than re-inserting it at a fixed index.
+        var expectedBadges = metadata.badges
+        let existing = expectedBadges.firstIndex(where: isDynamicRangeBadge)
+        expectedBadges.removeAll(where: isDynamicRangeBadge)
+        if let replacement {
+            expectedBadges.insert(replacement, at: min(existing ?? 1, expectedBadges.count))
         }
 
-        var expectedBadges = metadata.badges.filter { !isDynamicRangeBadge($0) }
-        expectedBadges.insert("Dolby Vision", at: min(1, expectedBadges.count))
         guard metadata.badges != expectedBadges else { return }
         metadata.badges = expectedBadges
     }

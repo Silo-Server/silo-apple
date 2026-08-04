@@ -11,6 +11,19 @@ struct PlaybackStats: Equatable {
         var bitrateBps: Double?
     }
 
+    /// What the engine is actually rendering, as opposed to what the plan
+    /// asked for. `dynamicRange` below is a human-readable label that may
+    /// describe the source instead ("Dolby Vision Profile 7 … as HDR10") or
+    /// fall back to the planned route, so it cannot be pattern-matched to
+    /// decide what the picture really is. This is only ever set from engine
+    /// introspection; `nil` means "not determined yet", never "SDR".
+    enum ConfirmedDynamicRange: Equatable {
+        case sdr
+        case hdr10
+        case hlg
+        case dolbyVision
+    }
+
     var sampledAt: Date = Date()
     var route: String?
     var source: String?
@@ -19,6 +32,7 @@ struct PlaybackStats: Equatable {
     var video: MediaStream = .init()
     var audio: MediaStream = .init()
     var dynamicRange: String?
+    var confirmedDynamicRange: ConfirmedDynamicRange?
     var subtitles: String?
     var screenFrameRate: Double?
     var playbackRate: Double?
@@ -375,6 +389,10 @@ enum AVFoundationPlaybackIntrospection {
     struct VideoFormat {
         var stream: PlaybackStats.MediaStream
         var dynamicRange: String?
+        /// Set only when the item's own format description settled the
+        /// question. `nil` when there is no format description to read yet,
+        /// so callers never mistake an unresolved item for SDR.
+        var confirmedDynamicRange: PlaybackStats.ConfirmedDynamicRange?
     }
 
     @MainActor
@@ -406,7 +424,8 @@ enum AVFoundationPlaybackIntrospection {
                 detail: detail,
                 bitrateBps: bitrate
             ),
-            dynamicRange: description.flatMap(dynamicRangeLabel)
+            dynamicRange: description.flatMap(dynamicRangeLabel),
+            confirmedDynamicRange: description.map(confirmedDynamicRange)
         )
     }
 
@@ -493,6 +512,33 @@ enum AVFoundationPlaybackIntrospection {
             channelLayoutLabel(channelCount),
             sampleRate
         ])
+    }
+
+    /// The same classification `dynamicRangeLabel` describes in prose, as a
+    /// value the UI can branch on. Read from the description AVPlayer is
+    /// actually feeding its decoder, so a Dolby Vision source the loopback
+    /// stripped to its base layer is written out as `hvc1` + PQ and reports
+    /// `.hdr10` here, not `.dolbyVision`.
+    private static func confirmedDynamicRange(
+        from description: CMFormatDescription
+    ) -> PlaybackStats.ConfirmedDynamicRange {
+        if dolbyVisionConfig(in: description) != nil {
+            return .dolbyVision
+        }
+
+        let subtype = fourCC(CMFormatDescriptionGetMediaSubType(description)).lowercased()
+        if subtype == "dvh1" || subtype == "dvhe" {
+            return .dolbyVision
+        }
+
+        let transfer = extensionString(description, key: kCMFormatDescriptionExtension_TransferFunction)
+        if containsAny(transfer, ["smpte_st_2084", "smpte2084", "pq"]) {
+            return .hdr10
+        }
+        if containsAny(transfer, ["arib_std_b67", "itu_r_2100_hlg", "hlg"]) {
+            return .hlg
+        }
+        return .sdr
     }
 
     private static func dynamicRangeLabel(from description: CMFormatDescription) -> String? {
