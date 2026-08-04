@@ -1590,7 +1590,7 @@ actor PlaybackSessionBridge {
         return (
             codecsVideo: avoidDirectHDRPlayback ? ["h264"] : ["h264", "hevc"],
             codecsAudio: [
-                "aac", "ac3", "eac3", "dts", "truehd", "flac", "mp3",
+                "aac", "ac3", "eac3", "dts", "truehd", "flac", "alac", "mp3",
                 "opus", "vorbis", "pcm", "pcm_s16le", "pcm_s24le"
             ],
             containers: ["mkv", "mp4", "mov", "m4v", "webm", "avi", "ts", "m2ts"],

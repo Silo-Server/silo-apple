@@ -222,7 +222,7 @@ struct DownloadCaps: Encodable, Sendable {
         // Output-dependent HDR eligibility belongs to playback negotiation.
         return DownloadCaps(
             codecsVideo: ["h264", "hevc"],
-            codecsAudio: ["aac", "ac3", "eac3", "dts", "truehd", "flac", "mp3", "opus"],
+            codecsAudio: ["aac", "ac3", "eac3", "dts", "truehd", "flac", "alac", "mp3", "opus"],
             audioPassthroughCodecs: ["ac3", "eac3"],
             containers: ["mkv", "mp4", "mov", "m4v", "webm", "avi", "ts", "m2ts"],
             maxResolution: nil,
