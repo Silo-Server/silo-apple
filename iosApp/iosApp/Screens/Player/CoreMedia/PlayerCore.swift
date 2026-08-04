@@ -1980,15 +1980,22 @@ final class PlayerCore: NSObject {
 
     #if os(tvOS)
     /// Preserves the Dolby Vision base-layer transfer for HDMI negotiation.
-    /// Compatibility ID 4 identifies Profile 8.4's HLG base; all other
-    /// native Dolby Vision routes reaching PlayerCore use a PQ base.
+    /// Shares the compatibility-ID mapping with the route planner so the
+    /// pre-decode and post-decode paths cannot disagree. Profile 8.2
+    /// (compatibility ID 2) has an SDR base and falls in with the PQ default,
+    /// as it did under the private API this replaced — that API requested DV
+    /// mode with no transfer information at all.
     private var tvDisplayContentFormat: TVDisplayCriteria.ContentFormat {
         switch dynamicRange {
         case .sdr: return .sdr
         case .hdr10: return .hdr10
         case .hlg: return .hlg
         case .dolbyVision:
-            return .dolbyVision(baseLayer: doviConfig?.compatId == 4 ? .hlg : .hdr10)
+            return .dolbyVision(
+                baseLayer: LoopbackSessionSpec.DVProfile8BaseLayer(
+                    dolbyVisionCompatibilityID: doviConfig.map { Int($0.compatId) }
+                )
+            )
         }
     }
     #endif

@@ -6,6 +6,16 @@ struct LoopbackSessionSpec {
     enum DVProfile8BaseLayer: Equatable {
         case hdr10
         case hlg
+
+        /// The base layer a `dvcC`/`dvvC` compatibility ID names. Only ID 4
+        /// (Profile 8.4) is HLG. ID 2 is Profile 8.2, whose base layer is
+        /// SDR — this enum has no case for it because no route writes one,
+        /// and it falls in with the PQ default rather than being modelled;
+        /// see `ApplePlaybackRoutePlanner.dvProfile8BaseLayer` for the
+        /// server-metadata path that decides the same thing before decode.
+        init(dolbyVisionCompatibilityID: Int?) {
+            self = dolbyVisionCompatibilityID == 4 ? .hlg : .hdr10
+        }
     }
 
     enum VideoMode: Equatable {
