@@ -17,6 +17,12 @@ struct PlaybackV3HDRCapabilities: Codable, Equatable {
     let hdr10Plus: Bool
     let hlg: Bool
     let dolbyVisionProfiles: [Int]
+
+    /// The coarse `capabilities.hdr` flag the protocol also carries. Derived
+    /// rather than declared so the two can never disagree.
+    var claimsAnyHDR: Bool {
+        hdr10 || hdr10Plus || hlg || !dolbyVisionProfiles.isEmpty
+    }
 }
 
 struct PlaybackV3AudioPassthroughEntry: Codable, Equatable {

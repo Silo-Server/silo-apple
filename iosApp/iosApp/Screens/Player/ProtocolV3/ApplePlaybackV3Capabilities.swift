@@ -50,7 +50,7 @@ enum ApplePlaybackV3Capabilities {
             codecsAudio: audioCodecs,
             containers: containers,
             maxResolution: isSimulator ? "1080p" : "2160p",
-            hdr: true,
+            hdr: output.hdrDetails?.claimsAnyHDR ?? false,
             hdrDetails: output.hdrDetails,
             audioPassthrough: output.audioPassthrough,
             videoDecode: videoCodecs.map { codec in
@@ -182,12 +182,41 @@ enum ApplePlaybackV3Capabilities {
         // correctly? That is what the server plans against, and it does not
         // depend on the display — PQ, HLG and the HDR10 base of HDR10+ all tone
         // map on the display layer, and Dolby Vision is resolved during decode.
-        let hdrDetails: PlaybackV3HDRCapabilities? = PlaybackV3HDRCapabilities(
-            hdr10: true,
-            hdr10Plus: true,
-            hlg: true,
-            dolbyVisionProfiles: [5, 8]
-        )
+        //
+        // Dolby Vision is per-platform because Profile 5 carries IPT-PQ-c2
+        // pixels with no HDR10-compatible base layer: rendering it correctly
+        // needs a display in Dolby Vision mode. tvOS negotiates that mode over
+        // HDMI and refuses playback when the panel declines
+        // (`PlayerCore.applyDvGatedDisplayCriteria`); iOS drives its own
+        // Dolby-Vision-capable panel. macOS has neither — an arbitrary
+        // attached display is never negotiated — so it claims only the
+        // base-layer-compatible Profile 8.
+        let hdrDetails: PlaybackV3HDRCapabilities? = {
+            #if targetEnvironment(simulator)
+            // The simulator decodes H.264 only, matching the rest of this
+            // snapshot and `PlaybackSessionBridge.makeClientCaps()`.
+            return PlaybackV3HDRCapabilities(
+                hdr10: false,
+                hdr10Plus: false,
+                hlg: false,
+                dolbyVisionProfiles: []
+            )
+            #elseif os(macOS)
+            return PlaybackV3HDRCapabilities(
+                hdr10: true,
+                hdr10Plus: true,
+                hlg: true,
+                dolbyVisionProfiles: [8]
+            )
+            #else
+            return PlaybackV3HDRCapabilities(
+                hdr10: true,
+                hdr10Plus: true,
+                hlg: true,
+                dolbyVisionProfiles: [5, 8]
+            )
+            #endif
+        }()
 
         let sink: String
         let sinkType: String
