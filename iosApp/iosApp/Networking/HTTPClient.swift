@@ -1183,8 +1183,13 @@ actor HTTPClient {
     ) async -> Bool {
         guard !isRequestDispatchBlocked,
               requestDispatchRevision == dispatchRevision else { return false }
-        guard case .persistentServer(let credentialServerId) = auth.credentialOwner,
-              credentialServerId == expected.serverId,
+        let ownerMatchesExpectedServer = switch auth.credentialOwner {
+        case .temporary:
+            true
+        case .persistentServer(let credentialServerId):
+            credentialServerId == expected.serverId
+        }
+        guard ownerMatchesExpectedServer,
               auth.account.serverId == expected.serverId,
               auth.account.serverURL == ServerRegistry.normalize(url: expected.serverURL),
               let refreshValue = auth.refreshToken, !refreshValue.isEmpty,
@@ -1298,7 +1303,9 @@ actor HTTPClient {
                 await MainActor.run {
                     guard !Task.isCancelled else { return }
                     NotificationCenter.default.post(
-                        name: .continuumSessionExpired,
+                        name: disposition == .temporarySessionExpired
+                            ? .temporaryRemoteAuthExpired
+                            : .continuumSessionExpired,
                         object: event
                     )
                 }

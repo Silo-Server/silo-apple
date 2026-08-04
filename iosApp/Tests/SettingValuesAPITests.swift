@@ -1215,6 +1215,110 @@ final class SettingValuesAPITests: XCTestCase {
         )])
     }
 
+    func testRejectedTemporaryScopedRefreshPostsTemporaryExpiryNotification() async throws {
+        SettingsStubProtocol.reset(mode: .temporaryRefreshRejected)
+        let harness = try await makeRefreshHarness(testName: "RejectedTemporaryScopedGeneration")
+        let temporary = TemporaryAuthScope(
+            serverId: harness.identity.serverId,
+            serverURL: harness.identity.serverURL,
+            accessToken: "example",
+            refreshToken: "sample",
+            profileId: harness.identity.profileId,
+            profileToken: "decoy-token",
+            controllerDeviceId: "controller",
+            expiresAt: Date().addingTimeInterval(60)
+        )
+        await harness.tokenStore.beginTemporaryScope(temporary)
+        let temporaryExpiryCount = LockedCounter()
+        let persistentExpiryCount = LockedCounter()
+        let expiryEvents = LockedSessionExpiryEvents()
+        let temporaryObserver = NotificationCenter.default.addObserver(
+            forName: .temporaryRemoteAuthExpired,
+            object: nil,
+            queue: nil
+        ) { notification in
+            temporaryExpiryCount.increment()
+            if let event = notification.object as? SessionExpiryEvent {
+                expiryEvents.append(event)
+            }
+        }
+        let persistentObserver = NotificationCenter.default.addObserver(
+            forName: .continuumSessionExpired,
+            object: nil,
+            queue: nil
+        ) { _ in
+            persistentExpiryCount.increment()
+        }
+        defer {
+            NotificationCenter.default.removeObserver(temporaryObserver)
+            NotificationCenter.default.removeObserver(persistentObserver)
+        }
+
+        do {
+            _ = try await harness.http.requestData(
+                method: "GET",
+                path: "/api/v1/settings/contract/capabilities",
+                requestIdentity: harness.identity
+            )
+            XCTFail("the scoped temporary request must remain unauthorized")
+        } catch {
+            XCTAssertEqual((error as? HTTPError)?.statusCode, 401)
+        }
+
+        let state = SettingsStubProtocol.state()
+        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(temporaryExpiryCount.value, 1)
+        XCTAssertEqual(persistentExpiryCount.value, 0)
+        XCTAssertEqual(expiryEvents.values, [SessionExpiryEvent(
+            account: RefreshAccountIdentity(
+                serverId: temporary.serverId,
+                serverURL: temporary.serverURL,
+                credentialGenerationID: temporary.credentialGenerationID
+            ),
+            disposition: .temporarySessionExpired
+        )])
+    }
+
+    func testSuccessfulTemporaryScopedRefreshRotatesOnlyTemporaryGeneration() async throws {
+        SettingsStubProtocol.reset(mode: .mixedRefreshScopedWins)
+        let harness = try await makeRefreshHarness(testName: "SuccessfulTemporaryScopedGeneration")
+        let temporary = TemporaryAuthScope(
+            serverId: harness.identity.serverId,
+            serverURL: harness.identity.serverURL,
+            accessToken: "example",
+            refreshToken: "sample",
+            profileId: harness.identity.profileId,
+            profileToken: "decoy-token",
+            controllerDeviceId: "controller",
+            expiresAt: Date().addingTimeInterval(60)
+        )
+        await harness.tokenStore.beginTemporaryScope(temporary)
+
+        let response = try await harness.http.requestData(
+            method: "GET",
+            path: "/api/v1/settings/contract/capabilities",
+            headers: ["X-Test-Refresh-Flow": "scoped"],
+            requestIdentity: harness.identity
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        let activeScope = await harness.tokenStore.getTemporaryScope()
+        XCTAssertEqual(activeScope?.credentialGenerationID, temporary.credentialGenerationID)
+        XCTAssertEqual(activeScope?.accessToken, "placeholder")
+        XCTAssertEqual(activeScope?.refreshToken, "redacted")
+        _ = await harness.tokenStore.endTemporaryScope(
+            expectedGenerationID: temporary.credentialGenerationID
+        )
+        let persistentAccess = await harness.tokenStore.getAccessToken()
+        let persistentRefresh = await harness.tokenStore.getRefreshToken()
+        XCTAssertEqual(persistentAccess, "fake")
+        XCTAssertEqual(persistentRefresh, "dummy")
+        let state = SettingsStubProtocol.state()
+        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
+    }
+
     func testPersistentExpiryEventIsRejectedAfterSameServerSessionReplacement() async throws {
         SettingsStubProtocol.reset(mode: .normal)
         let harness = try await makeRefreshHarness(testName: "PersistentExpiryEpoch")
