@@ -250,4 +250,29 @@ final class HDRDisplayCriteriaPolicyTests: XCTestCase {
             )
         )
     }
+
+    // MARK: - EDR (iOS + macOS hosts)
+
+    func testEDRNeedsBothAnHDRStreamAndScreenHeadroom() {
+        // `publishSigPeakIfNeeded` emits 1.1 for HDR with the user setting on.
+        XCTAssertTrue(HDRDisplayCriteriaPolicy.shouldEnableEDR(sigPeak: 1.1, screenHeadroom: 4.0))
+        // HDR stream, SDR display — e.g. the window dragged onto one.
+        XCTAssertFalse(HDRDisplayCriteriaPolicy.shouldEnableEDR(sigPeak: 1.1, screenHeadroom: 1.0))
+        // SDR stream on an HDR-capable display.
+        XCTAssertFalse(HDRDisplayCriteriaPolicy.shouldEnableEDR(sigPeak: 0.0, screenHeadroom: 4.0))
+    }
+
+    func testEDRHeadroomUsesTheSharedFloorNotBareOne() {
+        // An SDR panel reporting just over 1.0 through float noise must not
+        // read as HDR — the same floor the tvOS settle path judges by.
+        XCTAssertFalse(
+            HDRDisplayCriteriaPolicy.shouldEnableEDR(sigPeak: 1.1, screenHeadroom: 1.0005)
+        )
+        XCTAssertTrue(
+            HDRDisplayCriteriaPolicy.shouldEnableEDR(
+                sigPeak: 1.1,
+                screenHeadroom: HDRDisplayCriteriaPolicy.hdrHeadroomFloor + 0.001
+            )
+        )
+    }
 }
