@@ -3647,24 +3647,49 @@ final class LoopbackSegmentWriter {
         }
         // Profile 5 advertises Dolby Vision in CODECS itself, so it needs the
         // Dolby form. Running it through the HEVC builder produces a `dvh1`
-        // fourcc glued to HEVC profile/level fields, which AVPlayer rejects.
-        if videoMode == .passthroughProfile5, let dolbyVision = dolbyVisionRFC6381CodecString() {
-            return dolbyVision
+        // fourcc glued to HEVC profile/level fields — the `dvh1.2.4.L150`
+        // shape AVPlayer rejects with -15517 — so the HEVC path below must
+        // never see a `dvh1` sample entry.
+        if videoMode == .passthroughProfile5 {
+            return dolbyVisionRFC6381CodecString() ?? "hvc1"
         }
         return hevcRFC6381CodecString(sampleEntry: sampleEntry, hvccHeader: inputHvccHeader)
             ?? sampleEntry
     }
 
     /// Dolby Vision RFC 6381 form, `dvh1.<profile>.<level>` with both fields
-    /// zero-padded to two digits. Profiles 7 and 8 carry the same string in
-    /// SUPPLEMENTAL-CODECS with a compatibility brand appended.
+    /// zero-padded to two digits. The one builder behind both CODECS
+    /// (Profile 5) and SUPPLEMENTAL-CODECS (Profiles 7 and 8, which append a
+    /// compatibility brand), so the two fields AVPlayer cross-validates
+    /// cannot name different profiles for the same stream.
+    private static func dolbyVisionRFC6381CodecString(profile: Int, level: Int) -> String {
+        String(format: "dvh1.%02d.%02d", profile, level)
+    }
+
     private func dolbyVisionRFC6381CodecString() -> String? {
-        guard let record = doviRecord else {
-            // No dvcC/dvvC parsed; the manifest profile is a weaker fallback
-            // and carries no level, so leave the caller to its HEVC path.
+        guard let profile = outputDolbyVisionProfile else { return nil }
+        return Self.dolbyVisionRFC6381CodecString(profile: profile, level: Int(doviRecord?.level ?? 0))
+    }
+
+    /// The Dolby Vision profile the written segments actually carry, which is
+    /// not always the source's: `convertProfile7To81` rewrites the `dvcC` to
+    /// Profile 8.1, so the parsed record's 7 would misdescribe the output.
+    /// The planner derives `advertisedDolbyVisionProfile` from the same
+    /// `videoMode` that selects what gets written, so it leads; the parsed
+    /// record covers callers that build a spec without it. A source whose
+    /// DOVI side data the demuxer never surfaced — `parseDoviRecord` also
+    /// rejects records under 8 bytes — leaves only the advertised value.
+    private var outputDolbyVisionProfile: Int? {
+        switch videoMode {
+        case .convertProfile7To81:
+            // `derivedProfile81DoviConfig` stamps 8 into the written record.
+            return 8
+        case .passthroughProfile5, .passthroughProfile8:
+            return manifestMetadata.advertisedDolbyVisionProfile
+                ?? doviRecord.map { Int($0.profile) }
+        case .passthroughHEVC, .passthroughH264:
             return nil
         }
-        return String(format: "dvh1.%02d.%02d", Int(record.profile), Int(record.level))
     }
 
     private func masterManifestSampleEntryCodec() -> String {
@@ -3748,13 +3773,11 @@ final class LoopbackSegmentWriter {
         case .passthroughProfile5, .passthroughHEVC, .passthroughH264:
             emitsSupplemental = false
         }
-        guard emitsSupplemental,
-              let profile = manifestMetadata.advertisedDolbyVisionProfile else {
+        guard emitsSupplemental, let token = dolbyVisionRFC6381CodecString() else {
             return nil
         }
-        let level = doviRecord?.level ?? 0
         let compat = manifestMetadata.compatibilityBrand ?? "db1p"
-        return String(format: "dvh1.%02d.%02d/%@", profile, level, compat)
+        return "\(token)/\(compat)"
     }
 
     private func outputDoviConfig(from data: Data?) -> Data? {
