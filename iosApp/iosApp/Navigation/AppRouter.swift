@@ -246,7 +246,7 @@ class AppRouter {
     /// buttons and error-screen callbacks don't spell out a `Task`.
     func signOutAndReset() {
         Task {
-            await AuthService.shared.signOut()
+            guard await completeRequestedSignOut() else { return }
             await MainActor.run {
                 if ServerRegistry.shared.hasActiveServer {
                     self.resetToLogin()
@@ -263,7 +263,7 @@ class AppRouter {
     func signOutRemoveServerAndReset() {
         Task {
             let serverId = ServerRegistry.shared.activeServerId
-            await AuthService.shared.signOut()
+            guard await completeRequestedSignOut() else { return }
             if let serverId {
                 await ServerRegistry.shared.remove(serverId: serverId)
             }
@@ -280,6 +280,23 @@ class AppRouter {
                 }
             }
         }
+    }
+
+    /// A user-initiated tvOS sign-out first retires a playback-only overlay if
+    /// it owns request authentication, then retries against the persistent
+    /// account. Other refusals leave navigation and credentials untouched.
+    private func completeRequestedSignOut() async -> Bool {
+        if await AuthService.shared.signOut() {
+            return true
+        }
+        #if os(tvOS)
+        guard await RemotePlaybackIdentityManager.shared.end() else {
+            return false
+        }
+        return await AuthService.shared.signOut()
+        #else
+        return false
+        #endif
     }
 
     /// A refresh failed for the active server. Keep the registry entry,

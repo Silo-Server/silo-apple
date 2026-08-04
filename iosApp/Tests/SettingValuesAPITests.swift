@@ -1388,14 +1388,150 @@ final class SettingValuesAPITests: XCTestCase {
         )
         await harness.tokenStore.beginTemporaryScope(replacement)
 
-        let removed = await harness.tokenStore.endTemporaryScope(
+        let endResult = await harness.tokenStore.endTemporaryScope(
             expectedGenerationID: rejected.credentialGenerationID
         )
-        XCTAssertNil(removed)
+        XCTAssertEqual(
+            endResult,
+            .differentGeneration(
+                activeGenerationID: replacement.credentialGenerationID
+            )
+        )
         let currentScope = await harness.tokenStore.getTemporaryScope()
         let consumableAfterReplacement = await harness.tokenStore.shouldConsumeSessionExpiryEvent(event)
         XCTAssertEqual(currentScope, replacement)
         XCTAssertFalse(consumableAfterReplacement)
+    }
+
+    func testTemporaryScopeTeardownDistinguishesAbsenceFromReplacementGeneration() async throws {
+        SettingsStubProtocol.reset(mode: .normal)
+        let harness = try await makeRefreshHarness(testName: "TemporaryScopeEndResult")
+        let ending = TemporaryAuthScope(
+            serverId: harness.identity.serverId,
+            serverURL: harness.identity.serverURL,
+            accessToken: "ending-access",
+            refreshToken: "ending-refresh",
+            profileId: harness.identity.profileId,
+            profileToken: "ending-profile",
+            controllerDeviceId: "controller-a",
+            expiresAt: Date().addingTimeInterval(60)
+        )
+        await harness.tokenStore.beginTemporaryScope(ending)
+
+        await harness.tokenStore.clearTokens()
+        let absentResult = await harness.tokenStore.endTemporaryScope(
+            expectedGenerationID: ending.credentialGenerationID
+        )
+        XCTAssertEqual(absentResult, .alreadyAbsent)
+
+        let replacement = TemporaryAuthScope(
+            serverId: ending.serverId,
+            serverURL: ending.serverURL,
+            accessToken: "replacement-access",
+            refreshToken: "replacement-refresh",
+            profileId: ending.profileId,
+            profileToken: "replacement-profile",
+            controllerDeviceId: "controller-b",
+            expiresAt: Date().addingTimeInterval(120)
+        )
+        await harness.tokenStore.beginTemporaryScope(replacement)
+
+        let replacementResult = await harness.tokenStore.endTemporaryScope(
+            expectedGenerationID: ending.credentialGenerationID
+        )
+        let currentScope = await harness.tokenStore.getTemporaryScope()
+        XCTAssertEqual(
+            replacementResult,
+            .differentGeneration(
+                activeGenerationID: replacement.credentialGenerationID
+            )
+        )
+        XCTAssertEqual(currentScope, replacement)
+    }
+
+    func testRemotePlaybackEndPolicyAcceptsExpectedGenerationWhenScopeIsAlreadyAbsent() {
+        let endingGenerationID = UUID()
+        let replacementGenerationID = UUID()
+
+        XCTAssertEqual(
+            RemotePlaybackIdentityEndPolicy.endingGenerationID(
+                activeIdentityGenerationID: endingGenerationID,
+                scopeGenerationID: nil,
+                expectedGenerationID: endingGenerationID
+            ),
+            endingGenerationID,
+            "delayed cleanup must clear a matching identity after its scope was already removed"
+        )
+        XCTAssertNil(
+            RemotePlaybackIdentityEndPolicy.endingGenerationID(
+                activeIdentityGenerationID: endingGenerationID,
+                scopeGenerationID: replacementGenerationID,
+                expectedGenerationID: endingGenerationID
+            ),
+            "a replacement scope must remain protected"
+        )
+        XCTAssertNil(
+            RemotePlaybackIdentityEndPolicy.endingGenerationID(
+                activeIdentityGenerationID: replacementGenerationID,
+                scopeGenerationID: nil,
+                expectedGenerationID: endingGenerationID
+            ),
+            "a replacement manager identity must remain protected"
+        )
+    }
+
+    func testSignOutAuthorizationAllowsIncompleteLocalStateAndRefusesTemporaryOwner() {
+        let account = RefreshAccountIdentity(
+            serverId: "server-a",
+            serverURL: "http://settings-test.invalid",
+            credentialGenerationID: UUID()
+        )
+        let persistentAuth = CapturedOrdinaryRequestAuth(
+            account: account,
+            credentialOwner: .persistentServer(serverId: account.serverId),
+            accessToken: "persistent-access",
+            profileId: "profile-a",
+            profileToken: "persistent-profile"
+        )
+        let temporaryAuth = CapturedOrdinaryRequestAuth(
+            account: account,
+            credentialOwner: .temporary,
+            accessToken: "temporary-access",
+            profileId: "profile-a",
+            profileToken: "temporary-profile"
+        )
+
+        XCTAssertEqual(
+            AuthService.signOutAuthorization(
+                activeServerId: account.serverId,
+                capturedAuth: persistentAuth
+            ),
+            .allowed(account: account)
+        )
+        XCTAssertEqual(
+            AuthService.signOutAuthorization(
+                activeServerId: account.serverId,
+                capturedAuth: nil
+            ),
+            .allowed(account: nil),
+            "an incomplete URL/defaults mirror must not strand local credentials"
+        )
+        XCTAssertEqual(
+            AuthService.signOutAuthorization(
+                activeServerId: account.serverId,
+                capturedAuth: temporaryAuth
+            ),
+            .refused,
+            "the temporary identity owner must be torn down before persistent sign-out"
+        )
+        XCTAssertEqual(
+            AuthService.signOutAuthorization(
+                activeServerId: "server-b",
+                capturedAuth: persistentAuth
+            ),
+            .refused,
+            "a stale capture must not clear another active server"
+        )
     }
 
     func testReplacementCancellationWaitsForOldEndBeforeStartingNewGenerationRequest() async throws {

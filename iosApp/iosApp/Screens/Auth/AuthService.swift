@@ -12,6 +12,11 @@ final class AuthService: @unchecked Sendable {
     static let shared = AuthService()
     private let defaults = SharedDefaults.shared
 
+    enum SignOutAuthorization: Equatable, Sendable {
+        case allowed(account: RefreshAccountIdentity?)
+        case refused
+    }
+
     private init() {}
 
     // MARK: - Stored State Accessors
@@ -297,19 +302,17 @@ final class AuthService: @unchecked Sendable {
     /// display name) so the user can log back in without re-adding the
     /// server. Call `ServerRegistry.shared.remove(serverId:)` to fully
     /// forget a server instead.
-    func signOut() async {
+    @discardableResult
+    func signOut() async -> Bool {
         let signingOutServerId = ServerRegistry.shared.activeServerId
         let signingOutAuth = await TokenStore.shared.captureOrdinaryRequestAuth()
-        if let signingOutServerId {
-            guard let signingOutAuth,
-                  signingOutAuth.credentialOwner == .persistentServer(
-                      serverId: signingOutServerId
-                  ),
-                  signingOutAuth.account.serverId == signingOutServerId else {
-                return
-            }
+        let authorization = Self.signOutAuthorization(
+            activeServerId: signingOutServerId,
+            capturedAuth: signingOutAuth
+        )
+        guard case .allowed(let signingOutAccount) = authorization else {
+            return false
         }
-        let signingOutAccount = signingOutAuth?.account
         #if os(iOS) || os(tvOS)
         // Purge the active binding now, while still authenticated: the /logout
         // below invalidates the session, after which the binding could only be
@@ -344,18 +347,18 @@ final class AuthService: @unchecked Sendable {
         }
         #endif
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
-            return
+            return false
         }
         guard !Task.isCancelled else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
         await HTTPClient.shared.cancelInFlightRequests()
         guard !Task.isCancelled,
               ServerRegistry.shared.activeServerId == signingOutServerId,
               await TokenStore.shared.refreshAccountIdentity() == signingOutAccount else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
         if let signingOutServerId {
             await ServerRegistry.shared.signOut(
@@ -368,6 +371,32 @@ final class AuthService: @unchecked Sendable {
         }
         await clearAllCaches()
         await HTTPClient.shared.endIdentityTransition(transitionLease)
+        return true
+    }
+
+    /// Decide whether a captured credential can authorize local sign-out.
+    /// Missing capture data is allowed so a damaged URL/defaults mirror cannot
+    /// strand Keychain credentials. A temporary playback overlay is refused:
+    /// its owner must end that generation before persistent state is touched.
+    static func signOutAuthorization(
+        activeServerId: String?,
+        capturedAuth: CapturedOrdinaryRequestAuth?
+    ) -> SignOutAuthorization {
+        if capturedAuth?.credentialOwner == .temporary {
+            return .refused
+        }
+        guard let activeServerId, !activeServerId.isEmpty else {
+            return .allowed(account: capturedAuth?.account)
+        }
+        guard let capturedAuth else {
+            return .allowed(account: nil)
+        }
+        guard capturedAuth.credentialOwner == .persistentServer(
+            serverId: activeServerId
+        ), capturedAuth.account.serverId == activeServerId else {
+            return .refused
+        }
+        return .allowed(account: capturedAuth.account)
     }
 
     /// Wipe every cached response. Sign-out boundary: tokens are gone,

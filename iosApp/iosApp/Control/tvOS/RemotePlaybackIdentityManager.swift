@@ -1,6 +1,32 @@
-#if os(tvOS)
 import Foundation
 
+/// Pure entry policy for temporary-identity teardown. Kept outside the tvOS
+/// conditional so the generation rules can be regression-tested without a
+/// simulator-only test target.
+enum RemotePlaybackIdentityEndPolicy {
+    static func endingGenerationID(
+        activeIdentityGenerationID: UUID?,
+        scopeGenerationID: UUID?,
+        expectedGenerationID: UUID?
+    ) -> UUID? {
+        if let expectedGenerationID {
+            guard activeIdentityGenerationID == expectedGenerationID,
+                  scopeGenerationID == nil || scopeGenerationID == expectedGenerationID else {
+                return nil
+            }
+            return expectedGenerationID
+        }
+
+        guard let currentGenerationID = activeIdentityGenerationID ?? scopeGenerationID,
+              activeIdentityGenerationID == nil || activeIdentityGenerationID == currentGenerationID,
+              scopeGenerationID == nil || scopeGenerationID == currentGenerationID else {
+            return nil
+        }
+        return currentGenerationID
+    }
+}
+
+#if os(tvOS)
 @MainActor
 final class RemotePlaybackIdentityManager {
     static let shared = RemotePlaybackIdentityManager()
@@ -168,23 +194,12 @@ final class RemotePlaybackIdentityManager {
         notifyServer: Bool = true
     ) async -> Bool {
         let scope = await TokenStore.shared.getTemporaryScope()
-        guard activationGenerationPending == nil else { return false }
-        let endingGenerationID: UUID
-        if let expectedGenerationID {
-            guard activeIdentity?.generationID == expectedGenerationID,
-                  scope?.credentialGenerationID == expectedGenerationID else {
-                return false
-            }
-            endingGenerationID = expectedGenerationID
-        } else {
-            guard let currentGenerationID = activeIdentity?.generationID
-                    ?? scope?.credentialGenerationID,
-                  activeIdentity == nil || activeIdentity?.generationID == currentGenerationID,
-                  scope == nil || scope?.credentialGenerationID == currentGenerationID else {
-                return false
-            }
-            endingGenerationID = currentGenerationID
-        }
+        guard activationGenerationPending == nil,
+              let endingGenerationID = RemotePlaybackIdentityEndPolicy.endingGenerationID(
+                  activeIdentityGenerationID: activeIdentity?.generationID,
+                  scopeGenerationID: scope?.credentialGenerationID,
+                  expectedGenerationID: expectedGenerationID
+              ) else { return false }
         if let scope, notifyServer {
             try? await HTTPClient.shared.postVoid(
                 "/api/v1/auth/logout",
@@ -218,12 +233,16 @@ final class RemotePlaybackIdentityManager {
               activeIdentity == nil || activeIdentity?.generationID == endingGenerationID else {
             return await releaseIdentityTransition(transitionLease, returning: false)
         }
-        if scope != nil {
-            guard await TokenStore.shared.endTemporaryScope(
-                expectedGenerationID: endingGenerationID
-            ) != nil else {
-                return await releaseIdentityTransition(transitionLease, returning: false)
-            }
+        switch await TokenStore.shared.endTemporaryScope(
+            expectedGenerationID: endingGenerationID
+        ) {
+        case .ended, .alreadyAbsent:
+            break
+        case .differentGeneration:
+            // A replacement generation owns the credential slot. Its
+            // activation will publish the matching identity after this
+            // transition lease is released, so preserve manager state.
+            return await releaseIdentityTransition(transitionLease, returning: false)
         }
         activeIdentity = nil
         AuthService.shared.clearCachesForTemporaryIdentityChange()

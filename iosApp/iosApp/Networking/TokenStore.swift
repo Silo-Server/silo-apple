@@ -95,6 +95,15 @@ struct TemporaryAuthScopeSnapshot: Equatable, Sendable {
     fileprivate let wasRefreshRejected: Bool
 }
 
+/// Atomic result of ending one temporary credential generation. Callers must
+/// distinguish an already-absent scope (the requested generation is gone) from
+/// a different installed generation (a replacement owns the slot).
+enum TemporaryAuthScopeEndResult: Equatable, Sendable {
+    case ended(TemporaryAuthScope)
+    case alreadyAbsent
+    case differentGeneration(activeGenerationID: UUID)
+}
+
 /// Persistent, thread-safe store for Continuum session state.
 ///
 /// Mirrors the surface of the shared Kotlin `TokenManager`, but persists
@@ -342,15 +351,19 @@ actor TokenStore {
     }
 
     @discardableResult
-    func endTemporaryScope(expectedGenerationID: UUID? = nil) -> TemporaryAuthScope? {
-        guard let scope = temporaryScope else { return nil }
+    func endTemporaryScope(
+        expectedGenerationID: UUID? = nil
+    ) -> TemporaryAuthScopeEndResult {
+        guard let scope = temporaryScope else { return .alreadyAbsent }
         if let expectedGenerationID,
            scope.credentialGenerationID != expectedGenerationID {
-            return nil
+            return .differentGeneration(
+                activeGenerationID: scope.credentialGenerationID
+            )
         }
         rejectedTemporaryCredentialGenerations.remove(scope.credentialGenerationID)
         temporaryScope = nil
-        return scope
+        return .ended(scope)
     }
 
     func getTemporaryScope() -> TemporaryAuthScope? { temporaryScope }
