@@ -745,6 +745,11 @@ private final class PlaybackSourceResource {
     /// completion fires. Guarded by `stateLock`.
     private var serveTasks: [UUID: Task<Void, Never>] = [:]
     private var completedServeTaskIDs: Set<UUID> = []
+    /// A peer may close after `handle` publishes its serve id but before the
+    /// newly-created task reaches `registerServeTask`. Remember that close so
+    /// registration cancels the task instead of installing a dead reader that
+    /// can retain window ownership indefinitely.
+    private var closedServeTaskIDs: Set<UUID> = []
     /// Serve connections currently inside their response loop, keyed by the
     /// same id as `serveTasks`. Inserted before the task body can run so
     /// window-claim arbitration always sees a live claimant.
@@ -808,6 +813,7 @@ private final class PlaybackSourceResource {
         let serving = serveTasks
         serveTasks.removeAll()
         completedServeTaskIDs.removeAll()
+        closedServeTaskIDs.removeAll()
         activeServeIDs.removeAll()
         serveIDsByConnection.removeAll()
         windowOwnerServeID = nil
@@ -1056,8 +1062,17 @@ private final class PlaybackSourceResource {
     private func registerServeTask(_ task: Task<Void, Never>, id: UUID) {
         var cancelNow = false
         stateLock.lock()
-        if completedServeTaskIDs.remove(id) != nil {
+        let completedBeforeRegistration = completedServeTaskIDs.remove(id) != nil
+        let closedBeforeRegistration = closedServeTaskIDs.remove(id) != nil
+        if completedBeforeRegistration {
             // Finished before registration — nothing to track.
+        } else if closedBeforeRegistration {
+            // Track before cancelling so serveTaskFinished removes this id
+            // through the ordinary registered-task path. Cancelling an
+            // untracked task here would make completion publish a tombstone
+            // after registration had already consumed its only reader.
+            serveTasks[id] = task
+            cancelNow = true
         } else if cancelled || sourceEntityInvalidated {
             cancelNow = true
         } else {
@@ -1094,7 +1109,11 @@ private final class PlaybackSourceResource {
         var toCancel: Task<Void, Never>?
         stateLock.lock()
         if let id = serveIDsByConnection.removeValue(forKey: key) {
-            toCancel = serveTasks[id]
+            if let task = serveTasks[id] {
+                toCancel = task
+            } else if !completedServeTaskIDs.contains(id) {
+                closedServeTaskIDs.insert(id)
+            }
         }
         stateLock.unlock()
         toCancel?.cancel()
@@ -1299,7 +1318,9 @@ private final class PlaybackSourceResource {
             switch PlaybackWindowClaimPolicy.arbitrate(
                 claimant: serveID,
                 owner: windowOwnerServeID,
-                ownerIsAlive: ownerIsAlive
+                ownerIsAlive: ownerIsAlive,
+                demandOffset: offset,
+                windowCursor: cursor
             ) {
             case .retarget:
                 windowOwnerServeID = serveID
@@ -1315,9 +1336,9 @@ private final class PlaybackSourceResource {
                     cache.beginOriginRequest()
                     toStart = stream
                 }
-            case .chunk:
+            case .chunk(let reason):
                 Self.logger.info(
-                    "[CMP-SOURCE-CACHE] window claim contested offset=\(offset, privacy: .public) served=\(servedSequentialBytes, privacy: .public) routed=chunk"
+                    "[CMP-SOURCE-CACHE] window claim diverted reason=\(reason.rawValue, privacy: .public) offset=\(offset, privacy: .public) cursor=\(cursor ?? -1, privacy: .public) served=\(servedSequentialBytes, privacy: .public) routed=chunk"
                 )
                 chunk = true
                 deferChunkUntilEntityKnown = resumeCapable && sourceEntityETag == nil

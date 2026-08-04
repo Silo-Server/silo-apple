@@ -62,21 +62,50 @@ enum PlaybackOriginRoutingPolicy {
 /// 2026-07-29: an origin cancel + fresh range request every 1–2 s, each
 /// discarding 10–30 MB of delivered bytes). The window belongs to one serve
 /// connection at a time; a contested claim is served by a discrete chunk,
-/// which never disturbs the window. Ownership frees when the owning serve
-/// connection ends, so an ordinary seek (close + new connection) still
-/// re-anchors immediately.
+/// which never disturbs the window. A live owner's miss just behind the
+/// productive cursor is also served discretely: this is commonly the race
+/// where origin storage lands between the response's cache check and claim.
+/// That diversion is bounded to one chunk's distance. A farther-behind owner
+/// may re-anchor so cache eviction or reader lag cannot strand sequential
+/// playback on RTT-bound chunks. Ownership frees when the owning serve
+/// connection ends, so a new response created by an ordinary seek can still
+/// re-anchor immediately.
 enum PlaybackWindowClaimPolicy {
+    /// A nearby miss costs at most one discrete fetch. Beyond this distance,
+    /// preserving the ahead window would make a lagging sequential reader
+    /// issue an unbounded series of RTT-bound chunk requests.
+    static let sameOwnerChunkBehindBytes = PlaybackOriginRoutingPolicy.chunkBytes
+
+    enum ChunkReason: String, Equatable {
+        /// Another live response owns the streaming window.
+        case liveOwnerConflict = "live_owner_conflict"
+        /// The owning response missed just behind the productive cursor.
+        case sameOwnerBehindWindow = "same_owner_behind_window"
+    }
+
     enum Verdict: Equatable {
         /// The claimant may re-anchor (or spawn) the window.
         case retarget
-        /// A live owner holds the window; serve this demand with a chunk.
-        case chunk
+        /// Preserve the productive window and serve this demand discretely.
+        case chunk(ChunkReason)
     }
 
-    static func arbitrate(claimant: UUID?, owner: UUID?, ownerIsAlive: Bool) -> Verdict {
+    static func arbitrate(
+        claimant: UUID?,
+        owner: UUID?,
+        ownerIsAlive: Bool,
+        demandOffset: Int64,
+        windowCursor: Int64?
+    ) -> Verdict {
         guard let owner, ownerIsAlive else { return .retarget }
-        guard let claimant else { return .chunk }
-        return claimant == owner ? .retarget : .chunk
+        guard let claimant else { return .chunk(.liveOwnerConflict) }
+        guard claimant == owner else { return .chunk(.liveOwnerConflict) }
+        if let windowCursor,
+           demandOffset < windowCursor,
+           windowCursor - demandOffset <= sameOwnerChunkBehindBytes {
+            return .chunk(.sameOwnerBehindWindow)
+        }
+        return .retarget
     }
 }
 

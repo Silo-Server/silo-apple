@@ -18,15 +18,19 @@ final class PlaybackSourceProxyThroughputTests: XCTestCase {
     private final class StubOrigin {
         let listener: NWListener
         let totalBytes: Int64
+        let responseDelay: TimeInterval
         private(set) var port: UInt16 = 0
         private let queue = DispatchQueue(label: "stub-origin")
         private var connections: [ObjectIdentifier: NWConnection] = [:]
         private let lock = NSLock()
         /// Range request offsets observed, in arrival order.
         private(set) var requestedOffsets: [Int64] = []
+        /// Raw byte-range specs (for example `0-4194303` or `8388608-`).
+        private var requestedRanges: [String] = []
 
-        init(totalBytes: Int64) throws {
+        init(totalBytes: Int64, responseDelay: TimeInterval = 0) throws {
             self.totalBytes = totalBytes
+            self.responseDelay = responseDelay
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
             params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
@@ -70,6 +74,12 @@ final class PlaybackSourceProxyThroughputTests: XCTestCase {
             open.forEach { $0.cancel() }
         }
 
+        func observedRanges() -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return requestedRanges
+        }
+
         private func accept(_ connection: NWConnection) {
             lock.lock()
             connections[ObjectIdentifier(connection)] = connection
@@ -97,10 +107,12 @@ final class PlaybackSourceProxyThroughputTests: XCTestCase {
         private func respond(_ connection: NWConnection, request: String) {
             var offset: Int64 = 0
             var end: Int64 = totalBytes - 1
+            var requestedRange = "0-"
             for line in request.split(separator: "\r\n") {
                 let lower = line.lowercased()
                 if lower.hasPrefix("range:"), let eq = line.range(of: "bytes=") {
                     let spec = line[eq.upperBound...]
+                    requestedRange = String(spec)
                     let parts = spec.split(separator: "-", omittingEmptySubsequences: false)
                     offset = parts.first.flatMap { Int64($0) } ?? 0
                     if parts.count > 1, let bounded = Int64(parts[1]) {
@@ -110,12 +122,21 @@ final class PlaybackSourceProxyThroughputTests: XCTestCase {
             }
             lock.lock()
             requestedOffsets.append(offset)
+            requestedRanges.append(requestedRange)
             lock.unlock()
             let remaining = end - offset + 1
             let header = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(offset)-\(end)/\(totalBytes)\r\nContent-Length: \(remaining)\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
-            connection.send(content: Data(header.utf8), completion: .contentProcessed { [weak self] _ in
-                self?.sendBody(connection, remaining: remaining)
-            })
+            let sendResponse = { [weak self] in
+                connection.send(content: Data(header.utf8), completion: .contentProcessed { [weak self] error in
+                    guard error == nil else { return }
+                    self?.sendBody(connection, remaining: remaining)
+                })
+            }
+            if responseDelay > 0 {
+                queue.asyncAfter(deadline: .now() + responseDelay, execute: sendResponse)
+            } else {
+                sendResponse()
+            }
         }
 
         private static let bodyChunk = Data(count: 256 * 1024)
@@ -233,6 +254,46 @@ final class PlaybackSourceProxyThroughputTests: XCTestCase {
         // loopback should clear that by an order of magnitude. This is a
         // diagnostic floor, not a performance target.
         XCTAssertGreaterThan(rate, 100, "proxy sequential serve path is the ingest bottleneck")
+    }
+
+    func testProxyKeepsStreamingAfter150MillisecondOriginDelay() async throws {
+        let origin = try StubOrigin(
+            totalBytes: Self.fileSize,
+            responseDelay: 0.150
+        )
+        try await origin.start()
+        defer { origin.stop() }
+
+        let proxy = PlaybackSourceProxy(originURL: origin.url, originHeaders: [:])
+        try await proxy.start()
+        defer { proxy.stop() }
+        proxy.startPrefetch(at: 0)
+        let localURL = try XCTUnwrap(proxy.localURL)
+
+        let target: Int64 = 64 * 1024 * 1024
+        let reader = ThroughputReader(target: target, deadline: Self.readDeadline)
+        let (bytes, seconds) = reader.measure(url: localURL, testCase: self)
+        let rate = mbps(bytes, seconds)
+        let ranges = origin.observedRanges()
+        let openEndedWindows = ranges.filter { $0.hasSuffix("-") }
+        print(
+            "[THROUGHPUT] delayed-origin latency=150ms bytes=\(bytes) "
+                + "seconds=\(String(format: "%.2f", seconds)) "
+                + "rate=\(String(format: "%.1f", rate))Mbps ranges=\(ranges)"
+        )
+
+        XCTAssertGreaterThanOrEqual(bytes, target, "delayed origin starved the sequential reader")
+        XCTAssertEqual(
+            openEndedWindows.count,
+            1,
+            "sequential delivery reopened its streaming window under latency: \(ranges)"
+        )
+        XCTAssertLessThanOrEqual(
+            ranges.count,
+            4,
+            "sequential delivery fell back to RTT-bound discrete reads: \(ranges)"
+        )
+        XCTAssertGreaterThan(rate, 80, "150 ms request latency collapsed steady-state throughput")
     }
 
     /// AE-parity churn regression: random-access probe reads (mkv head,

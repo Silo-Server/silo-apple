@@ -129,18 +129,69 @@ final class PlaybackWindowClaimPolicyTests: XCTestCase {
 
     func testUnownedWindowGrantsAnyClaim() {
         XCTAssertEqual(
-            PlaybackWindowClaimPolicy.arbitrate(claimant: rival, owner: nil, ownerIsAlive: false),
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: rival,
+                owner: nil,
+                ownerIsAlive: false,
+                demandOffset: 10,
+                windowCursor: 20
+            ),
             .retarget
         )
         XCTAssertEqual(
-            PlaybackWindowClaimPolicy.arbitrate(claimant: nil, owner: nil, ownerIsAlive: false),
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: nil,
+                owner: nil,
+                ownerIsAlive: false,
+                demandOffset: 10,
+                windowCursor: 20
+            ),
             .retarget
         )
     }
 
-    func testOwnerReclaimsItsOwnWindow() {
+    func testOwnerMayAdvanceItsOwnWindow() {
         XCTAssertEqual(
-            PlaybackWindowClaimPolicy.arbitrate(claimant: owner, owner: owner, ownerIsAlive: true),
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: owner,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: 100,
+                windowCursor: 20
+            ),
+            .retarget
+        )
+    }
+
+    func testOwnerUsesChunkForNearbyBehindWindowMiss() {
+        // Origin bytes can land between the response's cache check and its
+        // window claim. Re-anchoring for this tiny behind-cursor race caused
+        // the production 1-2 second cancellation loop.
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: owner,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: 10,
+                windowCursor: 50
+            ),
+            .chunk(.sameOwnerBehindWindow)
+        )
+    }
+
+    func testOwnerReanchorsWhenFarBehindProductiveWindow() {
+        // A sequential reader can lag after finite-cache eviction. Discrete
+        // fallback is deliberately bounded to one chunk so that reader can
+        // reclaim the streaming connection instead of becoming RTT-bound.
+        let cursor = PlaybackWindowClaimPolicy.sameOwnerChunkBehindBytes + 100
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: owner,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: 0,
+                windowCursor: cursor
+            ),
             .retarget
         )
     }
@@ -150,12 +201,24 @@ final class PlaybackWindowClaimPolicyTests: XCTestCase {
         // retargeting the window, cancelling each other's origin connection
         // every 1-2s. The rival must be served by a chunk instead.
         XCTAssertEqual(
-            PlaybackWindowClaimPolicy.arbitrate(claimant: rival, owner: owner, ownerIsAlive: true),
-            .chunk
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: rival,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: 100,
+                windowCursor: 20
+            ),
+            .chunk(.liveOwnerConflict)
         )
         XCTAssertEqual(
-            PlaybackWindowClaimPolicy.arbitrate(claimant: nil, owner: owner, ownerIsAlive: true),
-            .chunk
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: nil,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: 100,
+                windowCursor: 20
+            ),
+            .chunk(.liveOwnerConflict)
         )
     }
 
@@ -163,9 +226,54 @@ final class PlaybackWindowClaimPolicyTests: XCTestCase {
         // A seek closes the old serve connection and opens a new one; the
         // new consumer must be able to re-anchor immediately.
         XCTAssertEqual(
-            PlaybackWindowClaimPolicy.arbitrate(claimant: rival, owner: owner, ownerIsAlive: false),
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: rival,
+                owner: owner,
+                ownerIsAlive: false,
+                demandOffset: 10,
+                windowCursor: 50
+            ),
             .retarget
         )
+    }
+
+    func testRepeatedBehindMissesDoNotRetargetTheLiveOwner() {
+        // Model the live simulator trace: the origin advances productively
+        // while a cache-check/storage race leaves the same response only
+        // kilobytes behind it. Those nearby misses must never cancel the
+        // warm request.
+        var windowCursor: Int64 = 64 * 1024 * 1024
+        var retargetCount = 0
+        var chunkCount = 0
+        let deliveredPerInterval: [Int64] = [
+            23_709_456,
+            16_391_800,
+            14_292_744,
+        ]
+
+        for cycle in 0..<48 {
+            let delivered = deliveredPerInterval[cycle % deliveredPerInterval.count]
+            windowCursor += delivered
+            let demandOffset = windowCursor - 64 * 1024
+            let verdict = PlaybackWindowClaimPolicy.arbitrate(
+                claimant: owner,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: demandOffset,
+                windowCursor: windowCursor
+            )
+            switch verdict {
+            case .retarget:
+                retargetCount += 1
+                windowCursor = demandOffset
+            case .chunk(let reason):
+                XCTAssertEqual(reason, .sameOwnerBehindWindow)
+                chunkCount += 1
+            }
+        }
+
+        XCTAssertEqual(retargetCount, 0)
+        XCTAssertEqual(chunkCount, 48)
     }
 }
 
