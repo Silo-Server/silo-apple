@@ -91,4 +91,14 @@ final class SystemCaptionAppearanceTests: XCTestCase {
             XCTFail("grayscale conversion failed")
         }
     }
+
+    func testContentFallbackBehaviorStillUsesSystemValueWhenMatchingDeviceSettings() {
+        XCTAssertEqual(
+            SystemCaptionAppearance.valueForMatchingDeviceSettings(
+                MACaptionAppearanceTextEdgeStyle.uniform,
+                behavior: .useContentIfAvailable
+            ),
+            .uniform
+        )
+    }
 }

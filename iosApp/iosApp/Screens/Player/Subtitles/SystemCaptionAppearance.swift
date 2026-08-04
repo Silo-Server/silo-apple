@@ -6,9 +6,12 @@
 //  Accessibility → Subtitles & Captioning) onto `SubtitleAppearance` so
 //  the player can offer a "match device settings" appearance source.
 //
-//  Only fields the user actually customized (behavior == .useValue) are
-//  taken from the system; everything else keeps the Silo default, which
-//  mirrors how AVPlayer applies these preferences to its own captions.
+//  Every value returned by MediaAccessibility participates in the mapped
+//  appearance. Apple's `.useContentIfAvailable` behavior still requires the
+//  returned value when content does not supply one. Silo-controlled text
+//  tracks intentionally have no competing authored style while "Match Device
+//  Settings" is enabled, so dropping those fallback values would replace the
+//  selected system profile with Silo's defaults.
 //
 
 import CoreGraphics
@@ -18,10 +21,9 @@ import MediaAccessibility
 
 enum SystemCaptionAppearance {
 
-    /// Raw values read from MediaAccessibility. `nil` means the user did
-    /// not customize that field (behavior was `.useContentIfAvailable`).
-    /// Split from the mapping so tests can exercise the mapping without
-    /// touching the process-wide accessibility state.
+    /// Raw values read from MediaAccessibility. `nil` means the framework did
+    /// not provide a value Silo can map. Split from the mapping so tests can
+    /// exercise the mapping without touching process-wide accessibility state.
     struct Snapshot: Equatable {
         var foregroundColorHex: String?
         var backgroundColorHex: String?
@@ -48,45 +50,70 @@ enum SystemCaptionAppearance {
         var behavior = MACaptionAppearanceBehavior.useValue
 
         let foreground = MACaptionAppearanceCopyForegroundColor(.user, &behavior).takeRetainedValue()
-        if behavior == .useValue {
-            result.foregroundColorHex = hexString(from: foreground)
+        if let foregroundHex = hexString(from: foreground) {
+            result.foregroundColorHex = valueForMatchingDeviceSettings(
+                foregroundHex,
+                behavior: behavior
+            )
         }
 
         behavior = .useValue
         let background = MACaptionAppearanceCopyBackgroundColor(.user, &behavior).takeRetainedValue()
-        if behavior == .useValue {
-            result.backgroundColorHex = hexString(from: background)
+        if let backgroundHex = hexString(from: background) {
+            result.backgroundColorHex = valueForMatchingDeviceSettings(
+                backgroundHex,
+                behavior: behavior
+            )
         }
 
         behavior = .useValue
         let backgroundOpacity = MACaptionAppearanceGetBackgroundOpacity(.user, &behavior)
-        if behavior == .useValue {
-            result.backgroundOpacity = Double(backgroundOpacity)
-        }
+        result.backgroundOpacity = valueForMatchingDeviceSettings(
+            Double(backgroundOpacity),
+            behavior: behavior
+        )
 
         behavior = .useValue
         let edge = MACaptionAppearanceGetTextEdgeStyle(.user, &behavior)
-        if behavior == .useValue {
-            result.edgeStyle = edge
-        }
+        result.edgeStyle = valueForMatchingDeviceSettings(edge, behavior: behavior)
 
         behavior = .useValue
         let size = MACaptionAppearanceGetRelativeCharacterSize(.user, &behavior)
-        if behavior == .useValue {
-            result.relativeCharacterSize = Double(size)
-        }
+        result.relativeCharacterSize = valueForMatchingDeviceSettings(
+            Double(size),
+            behavior: behavior
+        )
 
         behavior = .useValue
         let descriptor = MACaptionAppearanceCopyFontDescriptorForStyle(
             .user, &behavior, .default
         ).takeRetainedValue()
-        if behavior == .useValue,
-           let family = CTFontDescriptorCopyAttribute(descriptor, kCTFontFamilyNameAttribute) as? String,
+        if let family = CTFontDescriptorCopyAttribute(descriptor, kCTFontFamilyNameAttribute) as? String,
            !family.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            result.fontFamilyName = family
+            result.fontFamilyName = valueForMatchingDeviceSettings(family, behavior: behavior)
         }
 
         return result
+    }
+
+    /// Resolve a value for Silo's explicit "Match Device Settings" mode.
+    ///
+    /// `.useContentIfAvailable` is a precedence rule, not an absent value:
+    /// Apple's contract says to use the returned preference when the content
+    /// has no competing style. Plain SRT/VTT and other controlled text tracks
+    /// have no authored appearance, so both known behaviors resolve to the
+    /// system value. Native ASS continues to preserve its authored styling in
+    /// `SubtitleStylingOverride`, downstream from this mapper.
+    static func valueForMatchingDeviceSettings<Value>(
+        _ value: Value,
+        behavior: MACaptionAppearanceBehavior
+    ) -> Value? {
+        switch behavior {
+        case .useValue, .useContentIfAvailable:
+            return value
+        @unknown default:
+            return nil
+        }
     }
 
     // MARK: - Mapping
