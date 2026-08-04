@@ -1,3 +1,19 @@
+enum TVVisibleRootsFocusRearm: Equatable {
+    case none
+    case topMenu
+    case content
+}
+
+func tvVisibleRootsFocusRearm(
+    menuOwnedFocus: Bool,
+    isShowingRoot: Bool,
+    selectedRootWasRemoved: Bool
+) -> TVVisibleRootsFocusRearm {
+    guard isShowingRoot else { return .none }
+    if menuOwnedFocus { return .topMenu }
+    return selectedRootWasRemoved ? .content : .none
+}
+
 #if os(tvOS)
 import SwiftUI
 
@@ -242,16 +258,8 @@ struct TVMainTabView: View {
                 selectRoot(.home)
             }
         }
-        .onChange(of: navPrefs.showAudiobooks) {
-            // Turning a tab off while parked on it would otherwise orphan the
-            // page with no matching tab in the bar; snap back to Home.
-            ensureSelectedRootIsVisible()
-        }
-        .onChange(of: uiCustomization.primaryMenu) { _, _ in
-            ensureSelectedRootIsVisible()
-        }
-        .onChange(of: uiCustomization.shortcuts) { _, _ in
-            ensureSelectedRootIsVisible()
+        .onChange(of: visibleRoots) { _, _ in
+            reconcileVisibleRootsChange()
         }
         .onDisappear {
             controlReceiver.stop()
@@ -952,11 +960,41 @@ struct TVMainTabView: View {
     /// The selected root can stop being visible — a library refresh removes
     /// its type (e.g. profile permissions changed), or the user hides its tab
     /// from Settings. Snap back to Home rather than leaving a tab-less content
-    /// view on screen. Home / For You / Calendar are always in `visibleRoots`,
-    /// so this never strands the user.
-    private func ensureSelectedRootIsVisible() {
+    /// view on screen. Home is always injected into `visibleRoots`, so this
+    /// never strands the user.
+    private func ensureSelectedRootIsVisible(requestContentFocus: Bool = true) {
         if !visibleRoots.contains(selectedRoot) {
             selectedRoot = .home
+            if requestContentFocus {
+                contentFocusRequest += 1
+            }
+        }
+    }
+
+    /// A synced menu edit can remove the bar button that currently owns focus
+    /// even when the selected page remains visible. Capture the owner before
+    /// closing any panel, then explicitly re-arm that same focus zone after the
+    /// graph changes so tvOS never has to repair from an ownerless state.
+    private func reconcileVisibleRootsChange() {
+        let menuOwnedFocus = !isTopMenuFocusSuppressed || panelEntersFocus
+        let isShowingRoot = router.path.isEmpty
+        let selectedRootWasRemoved = !visibleRoots.contains(selectedRoot)
+        let focusRearm = tvVisibleRootsFocusRearm(
+            menuOwnedFocus: menuOwnedFocus,
+            isShowingRoot: isShowingRoot,
+            selectedRootWasRemoved: selectedRootWasRemoved
+        )
+
+        closePanel()
+        ensureSelectedRootIsVisible(requestContentFocus: false)
+
+        switch focusRearm {
+        case .none:
+            break
+        case .topMenu:
+            focusTopMenuIfVisible()
+        case .content:
+            suppressTopMenuFocusForContentHandoff()
             contentFocusRequest += 1
         }
     }

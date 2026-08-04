@@ -74,6 +74,35 @@ private func libraryRootScopeID(
     return "\(authority?.serverId ?? "none"):\(authority?.profileId ?? "none"):\(destination)"
 }
 
+func librarySelectionStorageKey(
+    category: PrimaryMenuBuiltin?,
+    fixedLibraryId: Int?,
+    authority: MainTabLibraryAuthority?
+) -> String? {
+    guard fixedLibraryId == nil else { return nil }
+    guard category != nil else { return "librariesTabSelectedLibraryId" }
+    guard authority != nil else { return nil }
+    let scopeId = libraryRootScopeID(
+        category: category,
+        fixedLibraryId: nil,
+        authority: authority
+    )
+    return "librariesTabSelectedLibraryId.\(scopeId)"
+}
+
+func storedLibrarySelectionId(
+    for storageKey: String?,
+    defaults: UserDefaults = .standard
+) -> Int {
+    guard let storageKey else { return 0 }
+    if defaults.object(forKey: storageKey) != nil {
+        return defaults.integer(forKey: storageKey)
+    }
+    // Seed new category-scoped selections from the legacy aggregate choice.
+    // The first resolved selection is persisted under its own scoped key.
+    return defaults.integer(forKey: "librariesTabSelectedLibraryId")
+}
+
 /// Root of the Libraries tab.
 ///
 /// Mirrors the Plex/Android flow: the tab lands directly on the active
@@ -95,10 +124,11 @@ struct LibrariesTabView: View {
     @State private var currentProfile: UserProfile?
     @State private var navPrefs = AppNavPreferences.shared
 
-    /// Persist the last-selected library across launches so the user lands
-    /// back where they left off. Stored as Int because `@AppStorage` does
-    /// not support `Int?` directly; `0` represents "no stored value".
-    @AppStorage("librariesTabSelectedLibraryId") private var storedLibraryId: Int = 0
+    /// Persist the last-selected library per authored root so visiting Series
+    /// cannot replace the Movies or aggregate selection. Fixed-library roots
+    /// have no persistence key because their destination already fixes the ID.
+    private let selectionStorageKey: String?
+    @State private var storedLibraryId: Int
 
     @Environment(AppRouter.self) private var router
 
@@ -112,6 +142,13 @@ struct LibrariesTabView: View {
         self.fixedLibraryId = fixedLibraryId
         self.libraryAuthority = libraryAuthority
         self.onLibrariesLoaded = onLibrariesLoaded
+        let storageKey = librarySelectionStorageKey(
+            category: category,
+            fixedLibraryId: fixedLibraryId,
+            authority: libraryAuthority
+        )
+        selectionStorageKey = storageKey
+        _storedLibraryId = State(initialValue: storedLibrarySelectionId(for: storageKey))
     }
 
     var body: some View {
@@ -140,6 +177,7 @@ struct LibrariesTabView: View {
             authority: libraryAuthority
         )) {
             navPrefs.refresh()
+            storedLibraryId = storedLibrarySelectionId(for: selectionStorageKey)
             // SwiftUI can preserve this view while a split-view selection
             // changes from one direct library root to another. Reconcile the
             // selection before awaiting I/O so the old library never renders
@@ -157,7 +195,7 @@ struct LibrariesTabView: View {
                 selectedLibraryId: selectedLibraryId,
                 onSelect: { id in
                     selectedLibraryId = id
-                    storedLibraryId = id
+                    persistLibrarySelection(id)
                     showPicker = false
                     StartupContentPrefetcher.prefetchLibraryLanding(libraryId: id)
                 }
@@ -277,7 +315,13 @@ struct LibrariesTabView: View {
             storedLibraryId: storedLibraryId
         )
         selectedLibraryId = resolved
-        if fixedLibraryId == nil, let resolved { storedLibraryId = resolved }
+        if let resolved { persistLibrarySelection(resolved) }
+    }
+
+    private func persistLibrarySelection(_ libraryId: Int) {
+        guard let selectionStorageKey else { return }
+        storedLibraryId = libraryId
+        UserDefaults.standard.set(libraryId, forKey: selectionStorageKey)
     }
 
     /// Load the currently-selected profile so we can render its avatar in

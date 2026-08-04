@@ -59,7 +59,12 @@ final class DeviceSnapshotBuilderTests: XCTestCase {
     ) -> DeviceSnapshotBuilder {
         DeviceSnapshotBuilder(
             identityProvider: {
-                AppleDeviceIdentity(id: "device-id", name: "Unit Test iPhone", platform: "iOS")
+                AppleDeviceIdentity(
+                    id: "device-id",
+                    name: "Unit Test iPhone",
+                    platform: "iOS",
+                    clientFamily: "mobile"
+                )
             },
             playbackSnapshotProvider: {
                 DiagnosticsCapabilityProbe.Snapshot(

@@ -337,6 +337,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
     private func makeCoordinator(api: FakePairingAPI, recorder: PersistRecorder) -> ReceiverPairingCoordinator {
         ReceiverPairingCoordinator(api: api) { url, _, access, _ in
             recorder.persisted.append(Persisted(url: url, access: access))
+            return true
         }
     }
 
@@ -479,4 +480,63 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         XCTAssertEqual(names, ["Home"])
         XCTAssertEqual(recorder.persisted.map(\.url), ["https://home.example"])
     }
+
+    /// A peer cancellation can arrive while the persistence transaction is
+    /// queued behind another identity transition. If the lease is never
+    /// acquired, the coordinator must not publish a sign-in that did not
+    /// commit or include it in the completion summary.
+    func testCancelledQueuedPersistDoesNotPublishSignedIn() async {
+        let http = HTTPClient()
+        guard let blockingLease = await http.beginIdentityTransition() else {
+            return XCTFail("blocking transition was unexpectedly cancelled")
+        }
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResponse = approvedPoll
+        let recorder = PersistRecorder()
+        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _ in
+            guard let lease = await http.beginIdentityTransition() else {
+                return false
+            }
+            recorder.persisted.append(Persisted(url: url, access: access))
+            await http.endIdentityTransition(lease)
+            return true
+        }
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        channel.deliver(.pushServer(serverURL: "https://home.example", serverName: "Home"))
+        await expectEventually("consent prompt") {
+            if case .consentRequested = coordinator.state { return true }
+            return false
+        }
+        coordinator.allowPendingServer()
+        guard await waitForIdentityTransitionWaiter(http) else {
+            await http.endIdentityTransition(blockingLease)
+            channel.dropConnection()
+            await runTask.value
+            return XCTFail("pairing persistence did not queue behind the active transition")
+        }
+
+        channel.deliver(.cancel(reason: "test_cancel"))
+        await runTask.value
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertTrue(recorder.persisted.isEmpty)
+        XCTAssertFalse(channel.sent.contains {
+            if case .serverResult(_, .signedIn, _) = $0 { return true }
+            return false
+        })
+
+        await http.endIdentityTransition(blockingLease)
+    }
+}
+
+private func waitForIdentityTransitionWaiter(_ http: HTTPClient) async -> Bool {
+    let deadline = ContinuousClock.now + .seconds(2)
+    while ContinuousClock.now < deadline {
+        if await http.pendingIdentityTransitionCount() > 0 {
+            return true
+        }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return false
 }

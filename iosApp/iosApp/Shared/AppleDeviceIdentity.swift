@@ -16,11 +16,11 @@ struct AppleDeviceIdentity: Sendable {
     /// interchangeable form factors across operating systems.
     let clientFamily: String
 
-    init(id: String, name: String, platform: String, clientFamily: String? = nil) {
+    init(id: String, name: String, platform: String, clientFamily: String) {
         self.id = id
         self.name = name
         self.platform = platform
-        self.clientFamily = clientFamily ?? Self.defaultClientFamily(for: platform)
+        self.clientFamily = clientFamily
     }
 
     static let current = AppleDeviceIdentity(
@@ -74,14 +74,5 @@ struct AppleDeviceIdentity: Sendable {
         #else
         return "desktop"
         #endif
-    }
-
-    private static func defaultClientFamily(for platform: String) -> String {
-        switch platform.lowercased() {
-        case "tvos": return "tv"
-        case "ios": return "mobile"
-        case "macos": return "desktop"
-        default: return "desktop"
-        }
     }
 }

@@ -76,39 +76,30 @@ final class AuthService: @unchecked Sendable {
     /// return the setup status so the caller can decide between initial
     /// setup and login.
     ///
-    /// The sequence matters: we set the URL first because `HTTPClient`
-    /// needs it to build requests, then upsert the registry entry with
-    /// the advertised server identity. If the health probe fails
-    /// (older server, 404) we still register the entry so the user can
-    /// proceed — the display name falls back to the URL.
+    /// Candidate probes use their explicit URL and no active credentials.
+    /// Global registry/default/token routing changes only after setup status
+    /// succeeds. If the optional health probe fails, the display name falls
+    /// back to the URL.
     func checkServer(url: String) async throws -> SetupStatus {
         let normalized = ServerRegistry.normalize(url: url)
         let id = ServerRegistry.serverId(for: normalized)
-        let previousActiveId = ServerRegistry.shared.activeServerId
 
-        // Point HTTPClient + TokenStore at this server before any probe.
-        await TokenStore.shared.setServerUrl(normalized)
-        await TokenStore.shared.switchActiveServer(serverId: id)
-
-        // Fetch identity. Tolerate failure: older servers omit these
-        // fields and we still want the URL to work.
+        // Probe the candidate by explicit URL without touching the active
+        // defaults or credential slot. This prevents candidate discovery from
+        // exposing a global A/B routing mixture to unrelated requests.
         var fetchedName: String?
-        if let health: HealthStatus = try? await HTTPClient.shared.get("/api/v1/health") {
+        if let health: HealthStatus = try? await HTTPClient.shared.getUnauthenticated(
+            serverURL: normalized,
+            path: "/api/v1/health"
+        ) {
             fetchedName = health.serverName
         }
 
-        // Probe /auth/setup BEFORE committing. If it fails we must
-        // restore the previous active server so the user isn't silently
-        // switched into a half-configured one.
-        let status: SetupStatus
-        do {
-            status = try await HTTPClient.shared.get("/api/v1/auth/setup")
-        } catch {
-            if let previousActiveId, previousActiveId != id {
-                await ServerRegistry.shared.switchTo(serverId: previousActiveId)
-            }
-            throw error
-        }
+        // Commit only after the candidate proves it can serve setup status.
+        let status: SetupStatus = try await HTTPClient.shared.getUnauthenticated(
+            serverURL: normalized,
+            path: "/api/v1/auth/setup"
+        )
 
         // Success: upsert the registry entry and make it active.
         let entry = ServerEntry(
@@ -129,22 +120,39 @@ final class AuthService: @unchecked Sendable {
     // MARK: - Authentication
 
     func login(username: String, password: String) async throws {
+        guard let expectedAccount = await TokenStore.shared.refreshAccountIdentity() else {
+            throw HTTPError.serverUrlNotConfigured
+        }
         let response: LoginResponse = try await HTTPClient.shared.post(
             "/api/v1/auth/login",
             body: LoginRequest(username: username, password: password)
         )
-        await startSession(accessToken: response.accessToken, refreshToken: response.refreshToken)
+        try await installSession(
+            accessToken: response.accessToken,
+            refreshToken: response.refreshToken,
+            expectedAccount: expectedAccount
+        )
     }
 
     func setupAdmin(username: String, email: String, password: String) async throws {
+        guard let expectedAccount = await TokenStore.shared.refreshAccountIdentity() else {
+            throw HTTPError.serverUrlNotConfigured
+        }
         let response: LoginResponse = try await HTTPClient.shared.post(
             "/api/v1/auth/setup",
             body: SetupRequest(username: username, email: email, password: password)
         )
-        await startSession(accessToken: response.accessToken, refreshToken: response.refreshToken)
+        try await installSession(
+            accessToken: response.accessToken,
+            refreshToken: response.refreshToken,
+            expectedAccount: expectedAccount
+        )
     }
 
     func signup(username: String, email: String, password: String, inviteCode: String) async throws {
+        guard let expectedAccount = await TokenStore.shared.refreshAccountIdentity() else {
+            throw HTTPError.serverUrlNotConfigured
+        }
         let response: LoginResponse = try await HTTPClient.shared.post(
             "/api/v1/auth/signup",
             body: SignupRequest(
@@ -154,19 +162,43 @@ final class AuthService: @unchecked Sendable {
                 inviteCode: inviteCode
             )
         )
-        await startSession(accessToken: response.accessToken, refreshToken: response.refreshToken)
+        try await installSession(
+            accessToken: response.accessToken,
+            refreshToken: response.refreshToken,
+            expectedAccount: expectedAccount
+        )
     }
 
     /// A login response establishes a brand-new session. Wipe every piece of
     /// prior auth state before persisting the new tokens — no need to carry
     /// `profileId` or `profileToken` across the boundary, and keeping them
     /// just strands stale values that the server rejects.
-    private func startSession(accessToken: String, refreshToken: String) async {
+    func installSession(
+        accessToken: String,
+        refreshToken: String,
+        expectedAccount: RefreshAccountIdentity
+    ) async throws {
+        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            throw CancellationError()
+        }
+        guard !Task.isCancelled else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            throw CancellationError()
+        }
+        await HTTPClient.shared.cancelInFlightRequests()
+        guard !Task.isCancelled,
+              await TokenStore.shared.refreshAccountIdentity() == expectedAccount else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            if Task.isCancelled { throw CancellationError() }
+            throw HTTPError.requestIdentityChanged
+        }
         await TokenStore.shared.clearTokens()
         await TokenStore.shared.saveTokens(
             accessToken: accessToken,
             refreshToken: refreshToken
         )
+        await clearAllCaches()
+        await HTTPClient.shared.endIdentityTransition(transitionLease)
     }
 
     // MARK: - Profiles
@@ -266,6 +298,18 @@ final class AuthService: @unchecked Sendable {
     /// server. Call `ServerRegistry.shared.remove(serverId:)` to fully
     /// forget a server instead.
     func signOut() async {
+        let signingOutServerId = ServerRegistry.shared.activeServerId
+        let signingOutAuth = await TokenStore.shared.captureOrdinaryRequestAuth()
+        if let signingOutServerId {
+            guard let signingOutAuth,
+                  signingOutAuth.credentialOwner == .persistentServer(
+                      serverId: signingOutServerId
+                  ),
+                  signingOutAuth.account.serverId == signingOutServerId else {
+                return
+            }
+        }
+        let signingOutAccount = signingOutAuth?.account
         #if os(iOS) || os(tvOS)
         // Purge the active binding now, while still authenticated: the /logout
         // below invalidates the session, after which the binding could only be
@@ -279,22 +323,51 @@ final class AuthService: @unchecked Sendable {
         // Best-effort server-side logout; never block sign-out on a
         // server-side error, since the client wants to end the session
         // regardless.
-        do {
-            try await HTTPClient.shared.postVoid("/api/v1/auth/logout")
-        } catch {
-            // Swallow; state will still be cleared locally.
+        if let signingOutAccount {
+            do {
+                try await HTTPClient.shared.postVoid(
+                    "/api/v1/auth/logout",
+                    expectedAccount: signingOutAccount
+                )
+            } catch {
+                // Swallow; the captured account check below still prevents
+                // clearing a server selected while logout was in flight.
+            }
         }
-        if let activeId = ServerRegistry.shared.activeServerId {
-            // Only skip the redundant current-binding purge if it already
-            // succeeded above; the registry-wide purge runs either way.
+        #if os(iOS) || os(tvOS)
+        if !purgedCurrentBinding,
+           ServerRegistry.shared.activeServerId == signingOutServerId {
+            _ = await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
+        }
+        if let signingOutServerId {
+            await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(signingOutServerId)
+        }
+        #endif
+        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            return
+        }
+        guard !Task.isCancelled else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return
+        }
+        await HTTPClient.shared.cancelInFlightRequests()
+        guard !Task.isCancelled,
+              ServerRegistry.shared.activeServerId == signingOutServerId,
+              await TokenStore.shared.refreshAccountIdentity() == signingOutAccount else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return
+        }
+        if let signingOutServerId {
             await ServerRegistry.shared.signOut(
-                serverId: activeId,
-                purgeCurrentBinding: !purgedCurrentBinding
+                serverId: signingOutServerId,
+                purgeCurrentBinding: false,
+                purgeRegistryBindings: false
             )
         } else {
             await TokenStore.shared.clearTokens()
         }
         await clearAllCaches()
+        await HTTPClient.shared.endIdentityTransition(transitionLease)
     }
 
     /// Wipe every cached response. Sign-out boundary: tokens are gone,

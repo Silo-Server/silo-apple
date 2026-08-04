@@ -126,7 +126,8 @@ extension ContinuumAPI {
     /// A value that exceeds a policy restriction is stored, not rejected: the
     /// restriction filters what the preference does at resolution time, so a
     /// successful write does not mean playback will use this value. Call
-    /// ``getEffectiveValues(keys:libraryIds:seriesIds:profileId:)`` for that.
+    /// ``getEffectiveValues(keys:libraryIds:seriesIds:profileId:requestIdentity:)``
+    /// for that.
     @discardableResult
     func putValue(
         key: SettingKey,

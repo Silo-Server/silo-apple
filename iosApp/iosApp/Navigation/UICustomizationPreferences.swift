@@ -754,26 +754,23 @@ final class UICustomizationPreferences {
                   cacheKey() == targetCacheKey,
                   capturedIdentity(for: targetCacheKey) == identity else { return }
             let values = response.byKey
-
-            if let row = values[.navPrimaryMenu] {
-                storedPrimaryMenuSource = row.source
-                if row.value.isNull {
-                    storedPrimaryMenu = nil
-                } else {
-                    let decoded = try row.value.decoded(as: PrimaryMenuPreference.self)
-                    storedPrimaryMenu = decoded.isValid ? decoded : nil
+            var decodedEveryValue = true
+            for key in Self.keys {
+                guard let row = values[key] else {
+                    setSyncError(Self.missingEffectiveValueMessage, for: key)
+                    decodedEveryValue = false
+                    continue
                 }
-            }
-            if let row = values[.navShortcuts] {
-                let decoded = try row.value.decoded(as: NavigationShortcutsPreference.self)
-                storedShortcuts = Self.sanitizedShortcuts(decoded)
-            }
-            if let row = values[.uiCardPresentation] {
-                storedCardPresentationSource = row.source
-                storedCardPresentation = try row.value.decoded(as: CardPresentationPreference.self)
+                decodedEveryValue = applyEffectiveValue(row, for: key) && decodedEveryValue
             }
 
-            clearReconciledSyncErrors()
+            if decodedEveryValue {
+                clearReconciledSyncErrors()
+            } else {
+                refreshSyncErrorMessage = nil
+                reconcilePendingShortcutPlacementError()
+                updateSyncErrorMessage()
+            }
             saveCache(for: targetCacheKey)
         } catch {
             guard refreshSequence == sequence,
@@ -1307,27 +1304,115 @@ final class UICustomizationPreferences {
                     requestIdentity: context.requestIdentity
                 )
                 guard contextIsCurrent(context) else { return }
-                let identity = Self.deleteIdentity(key: key, scope: scope.scope)
-                if pendingDeletes[identity]?.operationId == pendingDelete.operationId {
-                    pendingDeletes.removeValue(forKey: identity)
-                }
-                saveCache(for: context.cacheKey)
-                setSyncError(nil, for: key)
+                await finishAcceptedDelete(
+                    key: key,
+                    scope: scope,
+                    pendingDelete: pendingDelete,
+                    context: context
+                )
             } catch {
                 guard contextIsCurrent(context) else { return }
                 if case .noValueAtScope = SettingsAPIError.from(error) {
-                    let identity = Self.deleteIdentity(key: key, scope: scope.scope)
-                    if pendingDeletes[identity]?.operationId == pendingDelete.operationId {
-                        pendingDeletes.removeValue(forKey: identity)
-                    }
-                    saveCache(for: context.cacheKey)
-                    setSyncError(nil, for: key)
+                    await finishAcceptedDelete(
+                        key: key,
+                        scope: scope,
+                        pendingDelete: pendingDelete,
+                        context: context
+                    )
                 } else {
+                    let identity = Self.deleteIdentity(key: key, scope: scope.scope)
+                    guard pendingDeletes[identity]?.operationId == pendingDelete.operationId else {
+                        return
+                    }
                     setSyncError("Could not reset this setting to its inherited value.", for: key)
                 }
             }
         }
         saveTail = save
+    }
+
+    /// A successful device-row delete changes the effective value immediately,
+    /// even if another queued delete fails. Reconcile only this accepted key so
+    /// a failed sibling remains durable for retry without blocking the value
+    /// that the server has already exposed underneath the deleted override.
+    private func finishAcceptedDelete(
+        key: SettingKey,
+        scope: SettingScopeIdentity,
+        pendingDelete: PendingDelete,
+        context: OperationContext
+    ) async {
+        let identity = Self.deleteIdentity(key: key, scope: scope.scope)
+        guard pendingDeletes[identity]?.operationId == pendingDelete.operationId else { return }
+
+        guard scope.scope == .profileDevice else {
+            pendingDeletes.removeValue(forKey: identity)
+            saveCache(for: context.cacheKey)
+            setSyncError(nil, for: key)
+            return
+        }
+
+        do {
+            let response = try await transport.effectiveValues(
+                keys: [key],
+                requestIdentity: context.requestIdentity
+            )
+            guard contextIsCurrent(context),
+                  pendingDeletes[identity]?.operationId == pendingDelete.operationId else { return }
+            guard let row = response.byKey[key] else {
+                setSyncError(Self.missingEffectiveValueMessage, for: key)
+                return
+            }
+            guard applyEffectiveValue(row, for: key) else { return }
+            pendingDeletes.removeValue(forKey: identity)
+            saveCache(for: context.cacheKey)
+        } catch {
+            guard contextIsCurrent(context),
+                  pendingDeletes[identity]?.operationId == pendingDelete.operationId else { return }
+            setSyncError(Self.message(for: error), for: key)
+        }
+    }
+
+    /// Decode and apply one key atomically. A future value for one setting must
+    /// not prevent compatible siblings from reconciling, and its source must
+    /// never be paired with a stale value from an earlier successful read.
+    @discardableResult
+    private func applyEffectiveValue(
+        _ row: EffectiveSettingValue,
+        for key: SettingKey
+    ) -> Bool {
+        do {
+            switch key {
+            case .navPrimaryMenu:
+                let menu: PrimaryMenuPreference?
+                if row.value.isNull {
+                    menu = nil
+                } else {
+                    let decoded = try row.value.decoded(as: PrimaryMenuPreference.self)
+                    guard decoded.isValid else {
+                        throw SettingsAPIError.invalidValue(
+                            message: "The primary menu value is not valid for this client."
+                        )
+                    }
+                    menu = decoded
+                }
+                storedPrimaryMenu = menu
+                storedPrimaryMenuSource = row.source
+            case .navShortcuts:
+                let decoded = try row.value.decoded(as: NavigationShortcutsPreference.self)
+                storedShortcuts = Self.sanitizedShortcuts(decoded)
+            case .uiCardPresentation:
+                let presentation = try row.value.decoded(as: CardPresentationPreference.self)
+                storedCardPresentation = presentation
+                storedCardPresentationSource = row.source
+            default:
+                throw SettingsAPIError.unknownSetting(key: key.rawValue)
+            }
+            setSyncError(nil, for: key)
+            return true
+        } catch {
+            setSyncError(Self.effectiveValueDecodeMessage, for: key)
+            return false
+        }
     }
 
     /// Durable optimistic writes are replayed before reading effective values.
@@ -1576,6 +1661,10 @@ final class UICustomizationPreferences {
     private static let shortcutLimitMessage = "You can pin up to 256 navigation shortcuts."
     private static let pendingShortcutPlacementMessage =
         "Wait for this library pin to finish syncing before placing it in the top menu."
+    private static let effectiveValueDecodeMessage =
+        "Could not read this interface preference from the server."
+    private static let missingEffectiveValueMessage =
+        "The server did not return this interface preference."
 
     private static func writeScope(for key: SettingKey) -> SettingScopeIdentity? {
         switch key {

@@ -52,7 +52,7 @@ final class ReceiverPairingCoordinator {
     private(set) var state: State = .idle
 
     private let api: any PairingDeviceAuthorizing
-    private let persist: @MainActor (_ url: String, _ fetchedName: String?, _ access: String, _ refresh: String) async -> Void
+    private let persist: @MainActor (_ url: String, _ fetchedName: String?, _ access: String, _ refresh: String) async -> Bool
     private var signedInNames: [String] = []
     private var consented = false
     private var pendingPush: (serverURL: String, serverName: String?)?
@@ -66,7 +66,7 @@ final class ReceiverPairingCoordinator {
 
     init(
         api: any PairingDeviceAuthorizing = PairingDeviceAPI(),
-        persist: @escaping @MainActor (String, String?, String, String) async -> Void = ReceiverPairingCoordinator.persistServer
+        persist: @escaping @MainActor (String, String?, String, String) async -> Bool = ReceiverPairingCoordinator.persistServer
     ) {
         self.api = api
         self.persist = persist
@@ -207,7 +207,7 @@ final class ReceiverPairingCoordinator {
     /// flight (a poll is bounded by the server's own device-code expiry).
     private func armIdleTimer(_ session: any PairingChannel) {
         idleTask?.cancel()
-        idleTask = Task { [weak self] in
+        idleTask = Task {
             try? await Task.sleep(for: Self.idleTimeout)
             guard !Task.isCancelled else { return }
             Self.logger.notice("pairing session idle timeout; dropping peer")
@@ -229,7 +229,7 @@ final class ReceiverPairingCoordinator {
         idleTask?.cancel()
         pollTask = Task { [weak self] in
             await self?.handlePushServer(serverURL: serverURL, serverName: serverName, session: session, automatic: automatic)
-            await self?.attemptEnded(session)
+            self?.attemptEnded(session)
         }
     }
 
@@ -259,7 +259,9 @@ final class ReceiverPairingCoordinator {
                     guard let access = poll.accessToken, let refresh = poll.refreshToken else {
                         throw PairingDeviceAPI.APIError.decode
                     }
-                    await persist(normalized, serverName, access, refresh)
+                    guard await persist(normalized, serverName, access, refresh) else {
+                        return
+                    }
                     signedInNames.append(displayName)
                     state = .signedIn(serverCount: signedInNames.count)
                     // Best-effort: the tokens are committed, so a lost
@@ -290,18 +292,39 @@ final class ReceiverPairingCoordinator {
     }
 
     /// Commit the now-trusted server + tokens. Runs only after a successful poll.
-    static func persistServer(url: String, fetchedName: String?, access: String, refresh: String) async {
+    static func persistServer(url: String, fetchedName: String?, access: String, refresh: String) async -> Bool {
         let id = ServerRegistry.serverId(for: url)
         let entry = ServerEntry(id: id, url: url, fetchedName: fetchedName, profileId: nil, lastUsedAt: Date())
         // Device authorization can replace the account for an already-saved
         // server URL. Preserve its name, but never carry the previous account's
         // profile selection across that credential boundary.
+        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            return false
+        }
+        guard !Task.isCancelled else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return false
+        }
+        await HTTPClient.shared.cancelInFlightRequests()
+        guard !Task.isCancelled else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return false
+        }
+        // From this first persistent mutation onward the transaction must
+        // finish even if the pairing task is cancelled. Publishing failure
+        // after committed credentials would make the phone and TV disagree.
         ServerRegistry.shared.addOrUpdate(entry, preservingProfile: false)
         await TokenStore.shared.setServerUrl(url)
         await TokenStore.shared.switchActiveServer(serverId: id)
         await TokenStore.shared.setProfileId(nil)
         await TokenStore.shared.setProfileToken(nil)
         await TokenStore.shared.saveTokens(accessToken: access, refreshToken: refresh)
-        await ServerRegistry.shared.switchTo(serverId: id)
+        await ServerRegistry.shared.commitSwitchTo(
+            serverId: id,
+            holding: transitionLease
+        )
+        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        await ServerRegistry.shared.refreshFeaturesAfterGatedServerSwitch()
+        return true
     }
 }

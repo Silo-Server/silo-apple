@@ -86,13 +86,21 @@ struct ContentView: View {
             }
             #endif
         }
-        .onReceive(NotificationCenter.default.publisher(for: .continuumSessionExpired)) { _ in
-            audioStore.dismissFullPlayer()
-            Task { await audioStore.player.close() }
-            #if !os(tvOS)
-            DownloadManager.shared.clearForSignOut()
-            #endif
-            router.expiredSession()
+        .onReceive(NotificationCenter.default.publisher(for: .continuumSessionExpired)) { notification in
+            guard let event = notification.object as? SessionExpiryEvent,
+                  event.disposition == .persistentSessionCleared else { return }
+            Task { @MainActor in
+                // Delivery is asynchronous. Revalidate at the destructive
+                // consumer so a same-server login that replaced this epoch
+                // after posting cannot be routed back to login.
+                guard await TokenStore.shared.shouldConsumeSessionExpiryEvent(event) else { return }
+                audioStore.dismissFullPlayer()
+                Task { await audioStore.player.close() }
+                #if !os(tvOS)
+                DownloadManager.shared.clearForSignOut()
+                #endif
+                router.expiredSession()
+            }
         }
         #if os(iOS) || os(tvOS)
         .onReceive(NotificationCenter.default.publisher(for: .diagnosticsPendingReportCreated)) { _ in
@@ -101,8 +109,13 @@ struct ContentView: View {
         }
         #endif
         #if os(tvOS)
-        .onReceive(NotificationCenter.default.publisher(for: .temporaryRemoteAuthExpired)) { _ in
-            TVControlReceiver.shared.temporaryAuthExpired()
+        .onReceive(NotificationCenter.default.publisher(for: .temporaryRemoteAuthExpired)) { notification in
+            guard let event = notification.object as? SessionExpiryEvent,
+                  event.disposition == .temporarySessionExpired else { return }
+            Task { @MainActor in
+                guard await TokenStore.shared.shouldConsumeSessionExpiryEvent(event) else { return }
+                TVControlReceiver.shared.temporaryAuthExpired(expected: event)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
             ExitSentinel.shared.appWillTerminate()
@@ -165,6 +178,13 @@ struct ContentView: View {
             }
         }
         .task(id: serverRegistry.activeServerId) {
+            // ServerRegistry publishes the destination ID while its identity
+            // transition lease is still held. Wait before reading or
+            // retargeting any server-scoped state so this task cannot race the
+            // final token commit. A superseded SwiftUI task is cancelled while
+            // queued and must perform no work for the stale destination.
+            guard await HTTPClient.shared.waitForRequestDispatchOpen() else { return }
+            guard !Task.isCancelled else { return }
             #if os(iOS) || os(tvOS)
             diagnosticsModel.reset()
             #endif
@@ -876,7 +896,19 @@ func resolvedRequestedMainTabDestination(
     _ requestedTab: AppTab,
     visibleDestinations: [MainTabDestination]
 ) -> MainTabDestinationID {
-    resolvedVisibleMainTabDestination(
+    if requestedTab == .libraries,
+       !visibleDestinations.contains(where: { $0.id == .app(.libraries) }),
+       let authoredLibraryRoot = visibleDestinations.first(where: {
+           switch $0.id {
+           case .libraryCategory, .library:
+               return true
+           case .app:
+               return false
+           }
+       }) {
+        return authoredLibraryRoot.id
+    }
+    return resolvedVisibleMainTabDestination(
         .app(requestedTab),
         visibleDestinations: visibleDestinations
     )

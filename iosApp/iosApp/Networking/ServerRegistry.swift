@@ -168,13 +168,60 @@ final class ServerRegistry {
             Self.logger.error("switchTo called with unknown server id")
             return
         }
-        // Cancel before retargeting: a response from the old server must
-        // not be able to land on the new server's token slot. See
-        // `HTTPClient.cancelInFlightRequests` for the ordering contract.
+        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            return
+        }
+        guard !Task.isCancelled else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return
+        }
         await HTTPClient.shared.cancelInFlightRequests()
-        await AuthService.shared.clearCachesForServerChange()
+        guard !Task.isCancelled else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return
+        }
+        guard await commitSwitchTo(serverId: serverId, abortIfCancelled: true) else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return
+        }
+        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        await refreshFeaturesAfterServerSwitch()
+    }
 
-        let entry = entries.first(where: { $0.id == serverId })!
+    /// Commit while the caller already holds HTTPClient's transition lease.
+    /// Pairing uses this to publish its new tokens, defaults, and observable
+    /// active server with no ungated A/B routing interval.
+    func commitSwitchTo(
+        serverId: String,
+        holding transitionLease: HTTPIdentityTransitionLease
+    ) async {
+        guard entries.contains(where: { $0.id == serverId }),
+              await HTTPClient.shared.isIdentityTransitionActive(transitionLease) else {
+            Self.logger.error("gated switchTo called without its identity transition")
+            return
+        }
+        // Pairing has already written the new credential slot under this
+        // lease. Finish the registry/default commit even if cancellation
+        // arrives now; aborting would publish a split A/B routing state.
+        _ = await commitSwitchTo(serverId: serverId, abortIfCancelled: false)
+    }
+
+    func refreshFeaturesAfterGatedServerSwitch() async {
+        await refreshFeaturesAfterServerSwitch()
+    }
+
+    @discardableResult
+    private func commitSwitchTo(
+        serverId: String,
+        abortIfCancelled: Bool
+    ) async -> Bool {
+        guard let entry = entries.first(where: { $0.id == serverId }) else {
+            Self.logger.error("switchTo target was removed while waiting for transition")
+            return false
+        }
+        await AuthService.shared.clearCachesForServerChange()
+        guard !abortIfCancelled || !Task.isCancelled else { return false }
+
         defaults.set(entry.url, forKey: "serverUrl")
         if let pid = entry.profileId {
             defaults.set(pid, forKey: "profileId")
@@ -196,7 +243,10 @@ final class ServerRegistry {
         // the restored profile against the newly selected server.
         DiagnosticsCoordinator.activeProfileDidChange()
         #endif
+        return true
+    }
 
+    private func refreshFeaturesAfterServerSwitch() async {
         // Switching between already-added servers is a per-server boundary too:
         // drop the previous server's AI capability/quota probes after the URL,
         // profile, active id, and token slot have all been retargeted so any
@@ -226,12 +276,18 @@ final class ServerRegistry {
     /// `purgeCurrentBinding: false` when the caller already purged the active
     /// binding while still authenticated (AuthService.signOut does, so the
     /// binding resolves against a live session) to avoid duplicate current work.
-    func signOut(serverId: String, purgeCurrentBinding: Bool = true) async {
+    func signOut(
+        serverId: String,
+        purgeCurrentBinding: Bool = true,
+        purgeRegistryBindings: Bool = true
+    ) async {
         #if os(iOS) || os(tvOS)
         if purgeCurrentBinding, serverId == activeServerId {
             await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
         }
-        await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
+        if purgeRegistryBindings {
+            await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
+        }
         #endif
         await TokenStore.shared.deleteTokens(for: serverId)
         if let idx = entries.firstIndex(where: { $0.id == serverId }) {
@@ -247,6 +303,17 @@ final class ServerRegistry {
     /// next-most-recent server becomes active; if none remain, the active
     /// slot is cleared.
     func remove(serverId: String) async {
+        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            return
+        }
+        guard !Task.isCancelled else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return
+        }
+        guard entries.contains(where: { $0.id == serverId }) else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return
+        }
         let removesActiveServer = activeServerId == serverId
         #if os(iOS) || os(tvOS)
         if removesActiveServer {
@@ -257,11 +324,19 @@ final class ServerRegistry {
         }
         await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
         #endif
+        guard !Task.isCancelled else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return
+        }
         if removesActiveServer {
             // Stop old-server responses and clear every process-wide cache
             // before publishing the fallback ID to observing views.
             await HTTPClient.shared.cancelInFlightRequests()
             await AuthService.shared.clearCachesForServerChange()
+            guard !Task.isCancelled else {
+                await HTTPClient.shared.endIdentityTransition(transitionLease)
+                return
+            }
         }
         await TokenStore.shared.deleteTokens(for: serverId)
         entries.removeAll(where: { $0.id == serverId })
@@ -288,6 +363,10 @@ final class ServerRegistry {
             // profile is confirmed, same as `switchTo`.
             DiagnosticsCoordinator.activeProfileDidChange()
             #endif
+        }
+        persist()
+        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        if removesActiveServer {
             await MainActor.run {
                 AICapabilities.shared.reset()
                 RequestsFeatureStore.shared.reset()
@@ -298,7 +377,6 @@ final class ServerRegistry {
                 Task { await RequestsFeatureStore.shared.refresh() }
             }
         }
-        persist()
     }
 
     // MARK: - ID derivation

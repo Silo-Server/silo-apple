@@ -126,7 +126,10 @@ struct TVGeneralSettingsPane: View {
     }
 
     private var visibleMenuCount: Int {
-        preferences.resolvedPrimaryMenuItems(availableLibraries: libraries).count
+        TVMenuCustomizationSheet.visibleItems(
+            in: preferences.resolvedPrimaryMenuItems(),
+            libraries: libraries
+        ).count
     }
 
     @ViewBuilder
@@ -349,8 +352,21 @@ private struct TVMenuCustomizationSheet: View {
     }
 
     private var visibleItems: [PrimaryMenuItem] {
+        Self.visibleItems(
+            in: preferences.resolvedPrimaryMenuItems(),
+            libraries: libraries
+        )
+    }
+
+    static func visibleItems(
+        in items: [PrimaryMenuItem],
+        libraries: [Library]
+    ) -> [PrimaryMenuItem] {
         let availableIds = Set(libraries.map(\.id))
-        return preferences.resolvedPrimaryMenuItems(availableLibraries: libraries).filter { item in
+        func hasLibrary(_ type: TVLibraryTabType) -> Bool {
+            libraries.contains(where: { type.matches($0) })
+        }
+        return items.filter { item in
             switch item {
             case .builtin(.movies): return hasLibrary(.movies)
             case .builtin(.series): return hasLibrary(.series)

@@ -44,6 +44,45 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(CardPosterSize.large.scale, 1.2, accuracy: 0.001)
     }
 
+    func testVisibleRootChangesOnlyRearmTheAffectedFocusOwner() {
+        XCTAssertEqual(
+            tvVisibleRootsFocusRearm(
+                menuOwnedFocus: false,
+                isShowingRoot: true,
+                selectedRootWasRemoved: false
+            ),
+            .none,
+            "reordering an unrelated root must preserve the currently focused card"
+        )
+        XCTAssertEqual(
+            tvVisibleRootsFocusRearm(
+                menuOwnedFocus: false,
+                isShowingRoot: true,
+                selectedRootWasRemoved: true
+            ),
+            .content,
+            "removing content's selected root must hand focus to the Home content"
+        )
+        XCTAssertEqual(
+            tvVisibleRootsFocusRearm(
+                menuOwnedFocus: true,
+                isShowingRoot: true,
+                selectedRootWasRemoved: false
+            ),
+            .topMenu,
+            "a changing focus graph must explicitly re-arm the top menu when it owns focus"
+        )
+        XCTAssertEqual(
+            tvVisibleRootsFocusRearm(
+                menuOwnedFocus: true,
+                isShowingRoot: false,
+                selectedRootWasRemoved: true
+            ),
+            .none,
+            "a pushed route must not re-arm hidden root content"
+        )
+    }
+
     func testCaptionStylesGateTitleAndMetadataIndependently() {
         XCTAssertTrue(CardCaptionStyle.titleMetadata.showsTitle)
         XCTAssertTrue(CardCaptionStyle.titleMetadata.showsMetadata)
@@ -286,6 +325,43 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(knownEmpty.map(\.id), [.app(.home)])
     }
 
+    func testLibraryTabRequestUsesFirstAuthoredLibraryRoot() {
+        let authoredDestinations: [MainTabDestination] = [
+            .app(.home),
+            .libraryCategory(.series),
+            .library(id: 8, label: "Pinned"),
+            .app(.downloads),
+        ]
+        XCTAssertEqual(
+            resolvedRequestedMainTabDestination(
+                .libraries,
+                visibleDestinations: authoredDestinations
+            ),
+            .libraryCategory(.series),
+            "Browse Libraries should follow authored menu order when the aggregate root is hidden"
+        )
+
+        let aggregateDestinations: [MainTabDestination] = [
+            .app(.home),
+            .app(.libraries),
+            .libraryCategory(.series),
+        ]
+        XCTAssertEqual(
+            resolvedRequestedMainTabDestination(
+                .libraries,
+                visibleDestinations: aggregateDestinations
+            ),
+            .app(.libraries)
+        )
+        XCTAssertEqual(
+            resolvedRequestedMainTabDestination(
+                .libraries,
+                visibleDestinations: [.app(.home), .app(.downloads)]
+            ),
+            .app(.home)
+        )
+    }
+
     func testMainTabProjectionOnlyShowsCategoriesBackedByCurrentLibraries() {
         let menu = PrimaryMenuPreference(items: [
             .builtin(.home),
@@ -488,6 +564,77 @@ final class UICustomizationPreferencesTests: XCTestCase {
             second.id,
             "changing a reused fixed-root scope must immediately select the new exact library"
         )
+    }
+
+    func testLibrarySelectionPersistenceIsScopedByAuthorityAndRoot() throws {
+        let firstAuthority = try XCTUnwrap(
+            MainTabLibraryAuthority(serverId: "server", profileId: "profile-a")
+        )
+        let secondAuthority = try XCTUnwrap(
+            MainTabLibraryAuthority(serverId: "server", profileId: "profile-b")
+        )
+        let aggregateKey = try XCTUnwrap(
+            librarySelectionStorageKey(
+                category: nil,
+                fixedLibraryId: nil,
+                authority: firstAuthority
+            )
+        )
+        let moviesKey = try XCTUnwrap(
+            librarySelectionStorageKey(
+                category: .movies,
+                fixedLibraryId: nil,
+                authority: firstAuthority
+            )
+        )
+        let seriesKey = try XCTUnwrap(
+            librarySelectionStorageKey(
+                category: .series,
+                fixedLibraryId: nil,
+                authority: firstAuthority
+            )
+        )
+        let otherProfileMoviesKey = try XCTUnwrap(
+            librarySelectionStorageKey(
+                category: .movies,
+                fixedLibraryId: nil,
+                authority: secondAuthority
+            )
+        )
+
+        XCTAssertEqual(aggregateKey, "librariesTabSelectedLibraryId")
+        XCTAssertNotEqual(moviesKey, seriesKey)
+        XCTAssertNotEqual(moviesKey, otherProfileMoviesKey)
+        XCTAssertNil(
+            librarySelectionStorageKey(
+                category: nil,
+                fixedLibraryId: 7,
+                authority: firstAuthority
+            ),
+            "a fixed root derives its selection from the destination and must not persist it"
+        )
+        XCTAssertNil(
+            librarySelectionStorageKey(
+                category: .movies,
+                fixedLibraryId: nil,
+                authority: nil
+            ),
+            "an unauthenticated category root must not persist under a shared none:none key"
+        )
+
+        let suiteName = "library-selection-scope-suite-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+        defaults.set(8, forKey: aggregateKey)
+        XCTAssertEqual(
+            storedLibrarySelectionId(for: moviesKey, defaults: defaults),
+            8,
+            "a missing scoped value seeds from the legacy aggregate selection"
+        )
+        defaults.set(9, forKey: moviesKey)
+        defaults.set(10, forKey: seriesKey)
+        XCTAssertEqual(storedLibrarySelectionId(for: moviesKey, defaults: defaults), 9)
+        XCTAssertEqual(storedLibrarySelectionId(for: seriesKey, defaults: defaults), 10)
     }
 
     func testDirectTVLibraryShortcutDoesNotInheritCategoryPillState() {
@@ -2407,6 +2554,293 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertTrue(preferences.hasDeviceOverrides)
     }
 
+    func testSuccessfulDeviceDeleteReconcilesWhenSiblingFailsAndOnlyFailureReplays() async throws {
+        let suiteName = "ui-customization-partial-device-delete-suite-\(UUID().uuidString)"
+        let standardName = "ui-customization-partial-device-delete-standard-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
+        defer {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+            UserDefaults().removePersistentDomain(forName: standardName)
+        }
+
+        let cacheKey = "silo.uiCustomization.server.profile.tv"
+        let defaults = SharedDefaults(suite: suite, standard: standard)
+        let transport = DeviceOverrideDeleteProbe(deleteFailureKey: .navPrimaryMenu)
+        let preferences = UICustomizationPreferences(
+            defaults: defaults,
+            transport: transport,
+            cacheKey: { cacheKey },
+            requestIdentity: { testRequestIdentity(for: cacheKey) },
+            initialCapabilityState: .supported
+        )
+        await preferences.refresh()
+        XCTAssertTrue(preferences.primaryMenuUsesDeviceOverride)
+        XCTAssertTrue(preferences.cardPresentationUsesDeviceOverride)
+
+        preferences.useFamilySettings()
+        while preferences.isSaving { await Task.yield() }
+
+        XCTAssertTrue(
+            preferences.primaryMenuUsesDeviceOverride,
+            "the failed device delete must keep its effective value and source"
+        )
+        XCTAssertFalse(
+            preferences.cardPresentationUsesDeviceOverride,
+            "the successful sibling must reconcile even while another delete remains pending"
+        )
+        XCTAssertEqual(preferences.cardPresentation, .standard)
+        XCTAssertNotNil(preferences.syncErrorMessage)
+
+        var snapshot = await transport.snapshot()
+        XCTAssertEqual(snapshot.deleteKeys, [.navPrimaryMenu, .uiCardPresentation])
+        XCTAssertEqual(snapshot.targetedReadKeys, [.uiCardPresentation])
+
+        let restarted = UICustomizationPreferences(
+            defaults: defaults,
+            transport: transport,
+            cacheKey: { cacheKey },
+            requestIdentity: { testRequestIdentity(for: cacheKey) },
+            initialCapabilityState: .supported
+        )
+        await restarted.refresh()
+
+        snapshot = await transport.snapshot()
+        XCTAssertEqual(
+            snapshot.deleteKeys,
+            [.navPrimaryMenu, .uiCardPresentation, .navPrimaryMenu],
+            "restart must replay only the failed device delete"
+        )
+        XCTAssertFalse(restarted.cardPresentationUsesDeviceOverride)
+        XCTAssertEqual(restarted.cardPresentation, .standard)
+    }
+
+    func testDeviceDeleteReadFailureRemainsDurableUntilRestartReconcilesIt() async throws {
+        let suiteName = "ui-customization-device-delete-read-suite-\(UUID().uuidString)"
+        let standardName = "ui-customization-device-delete-read-standard-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
+        defer {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+            UserDefaults().removePersistentDomain(forName: standardName)
+        }
+
+        let cacheKey = "silo.uiCustomization.server.profile.tv"
+        let defaults = SharedDefaults(suite: suite, standard: standard)
+        let transport = DeviceOverrideDeleteProbe(
+            targetedReadFailureKey: .navPrimaryMenu
+        )
+        let preferences = UICustomizationPreferences(
+            defaults: defaults,
+            transport: transport,
+            cacheKey: { cacheKey },
+            requestIdentity: { testRequestIdentity(for: cacheKey) },
+            initialCapabilityState: .supported
+        )
+        await preferences.refresh()
+        preferences.useFamilySettings()
+        while preferences.isSaving { await Task.yield() }
+
+        XCTAssertTrue(
+            preferences.primaryMenuUsesDeviceOverride,
+            "a successful delete without its inherited value must retain the safe cached pair"
+        )
+        XCTAssertFalse(preferences.cardPresentationUsesDeviceOverride)
+        XCTAssertNotNil(preferences.syncErrorMessage)
+
+        let restarted = UICustomizationPreferences(
+            defaults: defaults,
+            transport: transport,
+            cacheKey: { cacheKey },
+            requestIdentity: { testRequestIdentity(for: cacheKey) },
+            initialCapabilityState: .supported
+        )
+        await restarted.refresh()
+
+        let snapshot = await transport.snapshot()
+        XCTAssertEqual(
+            snapshot.deleteKeys,
+            [.navPrimaryMenu, .uiCardPresentation, .navPrimaryMenu],
+            "only the delete whose effective read failed remains in the durable outbox"
+        )
+        XCTAssertEqual(
+            snapshot.targetedReadKeys,
+            [.navPrimaryMenu, .uiCardPresentation, .navPrimaryMenu]
+        )
+        XCTAssertFalse(restarted.primaryMenuUsesDeviceOverride)
+        XCTAssertFalse(restarted.cardPresentationUsesDeviceOverride)
+        XCTAssertEqual(
+            restarted.primaryMenu,
+            PrimaryMenuPreference(items: [.builtin(.home), .builtin(.series)])
+        )
+        XCTAssertEqual(restarted.cardPresentation, .standard)
+        XCTAssertNil(restarted.syncErrorMessage)
+    }
+
+    func testRefreshReconcilesValidKeysAndPreservesEachInvalidValueAndSource() async throws {
+        let suiteName = "ui-customization-independent-decode-suite-\(UUID().uuidString)"
+        let standardName = "ui-customization-independent-decode-standard-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
+        defer {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+            UserDefaults().removePersistentDomain(forName: standardName)
+        }
+
+        let originalMenu = PrimaryMenuPreference(items: [
+            .builtin(.home),
+            .builtin(.movies),
+        ])
+        let updatedMenu = PrimaryMenuPreference(items: [
+            .builtin(.home),
+            .builtin(.series),
+        ])
+        let updatedShortcuts = NavigationShortcutsPreference(items: [
+            .library(libraryId: 8, label: "Pinned"),
+        ])
+        let initialResponse = EffectiveSettingValuesResponse(
+            settings: [
+                EffectiveSettingValue(
+                    key: SettingKey.navPrimaryMenu.rawValue,
+                    value: try SettingJSONValue.encoding(originalMenu),
+                    source: .scope(.profileDevice),
+                    scope: .profileDevice,
+                    profileId: "profile",
+                    deviceId: "device"
+                ),
+                EffectiveSettingValue(
+                    key: SettingKey.navShortcuts.rawValue,
+                    value: try SettingJSONValue.encoding(NavigationShortcutsPreference.empty),
+                    source: .scope(.profile),
+                    scope: .profile,
+                    profileId: "profile"
+                ),
+                EffectiveSettingValue(
+                    key: SettingKey.uiCardPresentation.rawValue,
+                    value: try SettingJSONValue.encoding(
+                        CardPresentationPreset.compact.presentation
+                    ),
+                    source: .scope(.profileDevice),
+                    scope: .profileDevice,
+                    profileId: "profile",
+                    deviceId: "device"
+                ),
+            ],
+            revision: SettingKey.revision
+        )
+        let transport = MutableEffectiveValuesProbe(response: initialResponse)
+        let cacheKey = "silo.uiCustomization.server.profile.mobile"
+        let preferences = UICustomizationPreferences(
+            defaults: SharedDefaults(suite: suite, standard: standard),
+            transport: transport,
+            cacheKey: { cacheKey },
+            requestIdentity: { testRequestIdentity(for: cacheKey) },
+            initialCapabilityState: .supported
+        )
+        await preferences.refresh()
+
+        await transport.setResponse(EffectiveSettingValuesResponse(
+            settings: [
+                EffectiveSettingValue(
+                    key: SettingKey.navPrimaryMenu.rawValue,
+                    value: try SettingJSONValue.encoding(updatedMenu),
+                    source: .scope(.profileClient),
+                    scope: .profileClient,
+                    profileId: "profile",
+                    clientFamily: "mobile"
+                ),
+                EffectiveSettingValue(
+                    key: SettingKey.navShortcuts.rawValue,
+                    value: try SettingJSONValue.encoding(updatedShortcuts),
+                    source: .scope(.profile),
+                    scope: .profile,
+                    profileId: "profile"
+                ),
+                EffectiveSettingValue(
+                    key: SettingKey.uiCardPresentation.rawValue,
+                    value: .object([
+                        "poster_size": .string("future-size"),
+                        "caption": .string("title"),
+                    ]),
+                    source: .scope(.profileClient),
+                    scope: .profileClient,
+                    profileId: "profile",
+                    clientFamily: "mobile"
+                ),
+            ],
+            revision: SettingKey.revision
+        ))
+        await preferences.refresh()
+
+        XCTAssertEqual(preferences.primaryMenu, updatedMenu)
+        XCTAssertFalse(preferences.primaryMenuUsesDeviceOverride)
+        XCTAssertEqual(preferences.shortcuts, updatedShortcuts)
+        XCTAssertEqual(preferences.cardPresentation, CardPresentationPreset.compact.presentation)
+        XCTAssertTrue(
+            preferences.cardPresentationUsesDeviceOverride,
+            "a failed decode must retain the matching prior source with its prior value"
+        )
+        XCTAssertNotNil(preferences.syncErrorMessage)
+
+        let invalidMenu = PrimaryMenuPreference(items: [.builtin(.movies)])
+        await transport.setResponse(EffectiveSettingValuesResponse(
+            settings: [
+                EffectiveSettingValue(
+                    key: SettingKey.navPrimaryMenu.rawValue,
+                    value: try SettingJSONValue.encoding(invalidMenu),
+                    source: .scope(.profileDevice),
+                    scope: .profileDevice,
+                    profileId: "profile",
+                    deviceId: "device"
+                ),
+                EffectiveSettingValue(
+                    key: SettingKey.navShortcuts.rawValue,
+                    value: try SettingJSONValue.encoding(updatedShortcuts),
+                    source: .scope(.profile),
+                    scope: .profile,
+                    profileId: "profile"
+                ),
+                EffectiveSettingValue(
+                    key: SettingKey.uiCardPresentation.rawValue,
+                    value: try SettingJSONValue.encoding(
+                        CardPresentationPreset.artworkOnly.presentation
+                    ),
+                    source: .scope(.profileClient),
+                    scope: .profileClient,
+                    profileId: "profile",
+                    clientFamily: "mobile"
+                ),
+            ],
+            revision: SettingKey.revision
+        ))
+        await preferences.refresh()
+
+        XCTAssertEqual(preferences.primaryMenu, updatedMenu)
+        XCTAssertFalse(
+            preferences.primaryMenuUsesDeviceOverride,
+            "an invalid menu must not pair its source with the previous valid menu"
+        )
+        XCTAssertEqual(
+            preferences.cardPresentation,
+            CardPresentationPreset.artworkOnly.presentation
+        )
+        XCTAssertFalse(preferences.cardPresentationUsesDeviceOverride)
+        XCTAssertNotNil(preferences.syncErrorMessage)
+
+        let cached = UICustomizationPreferences(
+            defaults: SharedDefaults(suite: suite, standard: standard),
+            transport: transport,
+            cacheKey: { cacheKey },
+            requestIdentity: { testRequestIdentity(for: cacheKey) },
+            initialCapabilityState: .supported
+        )
+        XCTAssertEqual(cached.primaryMenu, updatedMenu)
+        XCTAssertEqual(cached.shortcuts, updatedShortcuts)
+        XCTAssertEqual(cached.cardPresentation, CardPresentationPreset.artworkOnly.presentation)
+        XCTAssertFalse(cached.primaryMenuUsesDeviceOverride)
+        XCTAssertFalse(cached.cardPresentationUsesDeviceOverride)
+    }
+
     func testDeviceMenuOverrideDoesNotBlockProfileLibraryPin() async throws {
         let suiteName = "ui-customization-device-menu-pin-suite-\(UUID().uuidString)"
         let standardName = "ui-customization-device-menu-pin-standard-\(UUID().uuidString)"
@@ -2667,6 +3101,37 @@ private func testCapabilities(
     )
 }
 
+private func completeCustomizationEffectiveResponse(
+    keys: [SettingKey],
+    settings: [EffectiveSettingValue]
+) throws -> EffectiveSettingValuesResponse {
+    var completed = settings
+    let presentKeys = Set(settings.compactMap(\.settingKey))
+    for key in keys where !presentKeys.contains(key) {
+        let value: SettingJSONValue
+        switch key {
+        case .navPrimaryMenu:
+            value = .null
+        case .navShortcuts:
+            value = try SettingJSONValue.encoding(NavigationShortcutsPreference.empty)
+        case .uiCardPresentation:
+            value = try SettingJSONValue.encoding(CardPresentationPreference.standard)
+        default:
+            continue
+        }
+        completed.append(EffectiveSettingValue(
+            key: key.rawValue,
+            value: value,
+            source: .contractDefault,
+            profileId: "profile"
+        ))
+    }
+    return EffectiveSettingValuesResponse(
+        settings: completed,
+        revision: SettingKey.revision
+    )
+}
+
 private final class MutableRequestIdentity: @unchecked Sendable {
     var value: HTTPRequestIdentity
 
@@ -2762,6 +3227,147 @@ private actor CapabilityGateProbe: UICustomizationTransport {
     }
 }
 
+private actor MutableEffectiveValuesProbe: CurrentCapabilitiesTransport {
+    private var response: EffectiveSettingValuesResponse
+
+    init(response: EffectiveSettingValuesResponse) {
+        self.response = response
+    }
+
+    func effectiveValues(
+        keys: [SettingKey],
+        requestIdentity: HTTPRequestIdentity
+    ) async throws -> EffectiveSettingValuesResponse {
+        response
+    }
+
+    func putValue(
+        key: SettingKey,
+        scope: SettingScopeIdentity,
+        value: SettingJSONValue,
+        mutationId: String,
+        requestIdentity: HTTPRequestIdentity
+    ) async throws {}
+
+    func setResponse(_ response: EffectiveSettingValuesResponse) {
+        self.response = response
+    }
+}
+
+private actor DeviceOverrideDeleteProbe: CurrentCapabilitiesTransport {
+    private let deleteFailureKey: SettingKey?
+    private let targetedReadFailureKey: SettingKey?
+    private var didFailTargetedRead = false
+    private var deviceOverrideKeys: Set<SettingKey> = [
+        .navPrimaryMenu,
+        .uiCardPresentation,
+    ]
+    private var deleteKeys: [SettingKey] = []
+    private var targetedReadKeys: [SettingKey] = []
+
+    init(
+        deleteFailureKey: SettingKey? = nil,
+        targetedReadFailureKey: SettingKey? = nil
+    ) {
+        self.deleteFailureKey = deleteFailureKey
+        self.targetedReadFailureKey = targetedReadFailureKey
+    }
+
+    func effectiveValues(
+        keys: [SettingKey],
+        requestIdentity: HTTPRequestIdentity
+    ) async throws -> EffectiveSettingValuesResponse {
+        if keys.count == 1, let key = keys.first {
+            targetedReadKeys.append(key)
+            if key == targetedReadFailureKey, !didFailTargetedRead {
+                didFailTargetedRead = true
+                throw URLError(.notConnectedToInternet)
+            }
+        }
+        var settings: [EffectiveSettingValue] = []
+        for key in keys {
+            if let value = try effectiveValue(for: key) {
+                settings.append(value)
+            }
+        }
+        return EffectiveSettingValuesResponse(
+            settings: settings,
+            revision: SettingKey.revision
+        )
+    }
+
+    func putValue(
+        key: SettingKey,
+        scope: SettingScopeIdentity,
+        value: SettingJSONValue,
+        mutationId: String,
+        requestIdentity: HTTPRequestIdentity
+    ) async throws {}
+
+    func deleteValue(
+        key: SettingKey,
+        scope: SettingScopeIdentity,
+        requestIdentity: HTTPRequestIdentity
+    ) async throws {
+        deleteKeys.append(key)
+        if key == deleteFailureKey {
+            throw URLError(.notConnectedToInternet)
+        }
+        guard deviceOverrideKeys.remove(key) != nil else {
+            throw SettingsAPIError.noValueAtScope
+        }
+    }
+
+    func snapshot() -> (deleteKeys: [SettingKey], targetedReadKeys: [SettingKey]) {
+        (deleteKeys, targetedReadKeys)
+    }
+
+    private func effectiveValue(for key: SettingKey) throws -> EffectiveSettingValue? {
+        switch key {
+        case .navPrimaryMenu:
+            let hasDeviceOverride = deviceOverrideKeys.contains(key)
+            let menu = PrimaryMenuPreference(items: [
+                .builtin(.home),
+                .builtin(hasDeviceOverride ? .movies : .series),
+            ])
+            return EffectiveSettingValue(
+                key: key.rawValue,
+                value: try SettingJSONValue.encoding(menu),
+                source: .scope(hasDeviceOverride ? .profileDevice : .profileClient),
+                scope: hasDeviceOverride ? .profileDevice : .profileClient,
+                profileId: "profile",
+                clientFamily: hasDeviceOverride ? nil : "tv",
+                deviceId: hasDeviceOverride ? "device" : nil
+            )
+        case .navShortcuts:
+            return EffectiveSettingValue(
+                key: key.rawValue,
+                value: try SettingJSONValue.encoding(NavigationShortcutsPreference.empty),
+                source: .scope(.profile),
+                scope: .profile,
+                profileId: "profile"
+            )
+        case .uiCardPresentation:
+            let hasDeviceOverride = deviceOverrideKeys.contains(key)
+            let presentation = hasDeviceOverride
+                ? CardPresentationPreset.compact.presentation
+                : CardPresentationPreference.standard
+            return EffectiveSettingValue(
+                key: key.rawValue,
+                value: try SettingJSONValue.encoding(presentation),
+                source: hasDeviceOverride
+                    ? .scope(.profileDevice)
+                    : .contractDefault,
+                scope: hasDeviceOverride ? .profileDevice : nil,
+                profileId: "profile",
+                deviceId: hasDeviceOverride ? "device" : nil
+            )
+        default:
+            return nil
+        }
+    }
+}
+
 private actor RecoveringDeleteProbe: CurrentCapabilitiesTransport {
     private var deletesOnline = false
     private var familyRowPresent = true
@@ -2778,7 +3384,8 @@ private actor RecoveringDeleteProbe: CurrentCapabilitiesTransport {
         let presentation = familyRowPresent
             ? CardPresentationPreset.compact.presentation
             : CardPresentationPreference.standard
-        return EffectiveSettingValuesResponse(
+        return try completeCustomizationEffectiveResponse(
+            keys: keys,
             settings: [
                 EffectiveSettingValue(
                     key: SettingKey.uiCardPresentation.rawValue,
@@ -2788,8 +3395,7 @@ private actor RecoveringDeleteProbe: CurrentCapabilitiesTransport {
                     profileId: "profile",
                     clientFamily: familyRowPresent ? "mobile" : nil
                 ),
-            ],
-            revision: SettingKey.revision
+            ]
         )
     }
 
@@ -3122,7 +3728,8 @@ private actor ShortcutOrderingProbe: CurrentCapabilitiesTransport {
         requestIdentity: HTTPRequestIdentity
     ) async throws -> EffectiveSettingValuesResponse {
         if effectiveFails { throw URLError(.notConnectedToInternet) }
-        return EffectiveSettingValuesResponse(
+        return try completeCustomizationEffectiveResponse(
+            keys: keys,
             settings: [
                 EffectiveSettingValue(
                     key: SettingKey.navPrimaryMenu.rawValue,
@@ -3141,8 +3748,7 @@ private actor ShortcutOrderingProbe: CurrentCapabilitiesTransport {
                     scope: .profile,
                     profileId: "profile"
                 ),
-            ],
-            revision: SettingKey.revision
+            ]
         )
     }
 
@@ -3313,7 +3919,8 @@ private actor RecoveringWriteProbe: CurrentCapabilitiesTransport {
         requestIdentity: HTTPRequestIdentity
     ) async throws -> EffectiveSettingValuesResponse {
         events.append("effective")
-        return EffectiveSettingValuesResponse(
+        return try completeCustomizationEffectiveResponse(
+            keys: keys,
             settings: [
                 EffectiveSettingValue(
                     key: SettingKey.uiCardPresentation.rawValue,
@@ -3323,8 +3930,7 @@ private actor RecoveringWriteProbe: CurrentCapabilitiesTransport {
                     profileId: "profile",
                     clientFamily: "mobile"
                 ),
-            ],
-            revision: SettingKey.revision
+            ]
         )
     }
 
@@ -3385,6 +3991,7 @@ private actor RecoveringShortcutProbe: CurrentCapabilitiesTransport {
     private var genericPutWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var events: [String] = []
     private var storedShortcuts: [PrimaryMenuItem] = []
+    private var storedMenu: PrimaryMenuPreference?
     private let offlineFailure: SettingsAPIError?
 
     init(offlineFailure: SettingsAPIError? = nil) {
@@ -3396,19 +4003,30 @@ private actor RecoveringShortcutProbe: CurrentCapabilitiesTransport {
         requestIdentity: HTTPRequestIdentity
     ) async throws -> EffectiveSettingValuesResponse {
         events.append("effective")
-        return EffectiveSettingValuesResponse(
-            settings: [
-                EffectiveSettingValue(
-                    key: SettingKey.navShortcuts.rawValue,
-                    value: try SettingJSONValue.encoding(
-                        NavigationShortcutsPreference(items: storedShortcuts)
-                    ),
-                    source: .scope(.profile),
-                    scope: .profile,
-                    profileId: "profile"
+        var settings = [
+            EffectiveSettingValue(
+                key: SettingKey.navShortcuts.rawValue,
+                value: try SettingJSONValue.encoding(
+                    NavigationShortcutsPreference(items: storedShortcuts)
                 ),
-            ],
-            revision: SettingKey.revision
+                source: .scope(.profile),
+                scope: .profile,
+                profileId: "profile"
+            ),
+        ]
+        if let storedMenu {
+            settings.append(EffectiveSettingValue(
+                key: SettingKey.navPrimaryMenu.rawValue,
+                value: try SettingJSONValue.encoding(storedMenu),
+                source: .scope(.profileClient),
+                scope: .profileClient,
+                profileId: "profile",
+                clientFamily: requestIdentity.clientFamily
+            ))
+        }
+        return try completeCustomizationEffectiveResponse(
+            keys: keys,
+            settings: settings
         )
     }
 
@@ -3440,6 +4058,9 @@ private actor RecoveringShortcutProbe: CurrentCapabilitiesTransport {
     ) async throws {
         genericPutCount += 1
         events.append("put-\(key.rawValue)")
+        if key == .navPrimaryMenu {
+            storedMenu = try value.decoded(as: PrimaryMenuPreference.self)
+        }
         let ready = genericPutWaiters.filter { genericPutCount >= $0.0 }
         genericPutWaiters.removeAll { genericPutCount >= $0.0 }
         ready.forEach { $0.1.resume() }
@@ -3506,7 +4127,8 @@ private actor BlockingShortcutProbe: CurrentCapabilitiesTransport {
         keys: [SettingKey],
         requestIdentity: HTTPRequestIdentity
     ) async throws -> EffectiveSettingValuesResponse {
-        EffectiveSettingValuesResponse(
+        try completeCustomizationEffectiveResponse(
+            keys: keys,
             settings: [
                 EffectiveSettingValue(
                     key: SettingKey.navShortcuts.rawValue,
@@ -3517,8 +4139,7 @@ private actor BlockingShortcutProbe: CurrentCapabilitiesTransport {
                     scope: .profile,
                     profileId: "profile"
                 ),
-            ],
-            revision: SettingKey.revision
+            ]
         )
     }
 
