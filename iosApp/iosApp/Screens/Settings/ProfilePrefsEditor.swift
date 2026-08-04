@@ -76,6 +76,8 @@ final class ProfilePrefsEditor {
             return "More specific device, library, or series subtitle settings override this profile default. Changes here are saved for the profile, but those overrides still apply where configured."
         }
         switch scope {
+        case .profileClient:
+            return "This device family has a more specific subtitle setting. Changes here update the profile default, but the family override still applies."
         case .profileDevice:
             return "This device, for this profile, has a more specific subtitle setting. Changes here update the profile default, but the device override still applies."
         case .profileLibrary:
@@ -513,7 +515,7 @@ final class ProfilePrefsEditor {
     private static func profileWriteMayBeShadowed(by source: SettingSource?) -> Bool {
         guard case .scope(let scope) = source else { return false }
         switch scope {
-        case .profileDevice, .profileLibrary, .profileSeries, .other:
+        case .profileClient, .profileDevice, .profileLibrary, .profileSeries, .other:
             return true
         case .account, .profile:
             return false

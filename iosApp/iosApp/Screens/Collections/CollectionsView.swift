@@ -1,5 +1,17 @@
 import SwiftUI
 
+func libraryCollectionAccessibilityLabel(_ collection: LibraryCollection) -> String {
+    let type = collection.kind == .userCollections
+        ? "User collection"
+        : collection.collectionType?.capitalized ?? "Collection"
+    let count = if let itemCount = collection.itemCount {
+        "\(itemCount) item\(itemCount == 1 ? "" : "s")"
+    } else {
+        "Smart"
+    }
+    return [collection.name, type, count].joined(separator: ", ")
+}
+
 /// List of user-created collections, grouped into named buckets +
 /// "Ungrouped". Mirrors the web app's `Collections` page.
 struct CollectionsView: View {
@@ -264,10 +276,10 @@ private struct GroupActionSheet: View {
             VStack(spacing: ContinuumTheme.padding) {
                 Text("Delete “\(group.name)”?")
                     .font(.continuumTitle)
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundStyle(Color.continuumOnSurface)
                 Text("Collections in this group will move to Ungrouped. This cannot be undone.")
                     .font(.continuumBody)
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundStyle(Color.continuumSecondaryText)
                     .multilineTextAlignment(.center)
                 errorBanner
                 Spacer()
@@ -425,10 +437,14 @@ struct LibraryCollectionsView: View {
     let libraryId: Int
 
     @State private var viewModel = LibraryCollectionsViewModel()
+    @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(\.horizontalSizeClass) private var hSize
 
     private var columns: [GridItem] {
-        AdaptiveColumns.posters(for: hSize)
+        AdaptiveColumns.posters(
+            for: hSize,
+            posterSize: uiCustomization.cardPresentation.posterSize
+        )
     }
 
     var body: some View {
@@ -486,6 +502,8 @@ struct LibraryCollectionsView: View {
                     }
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(libraryCollectionAccessibilityLabel(collection))
                 }
             }
         }
@@ -494,9 +512,14 @@ struct LibraryCollectionsView: View {
 
 private struct LibraryCollectionCard: View {
     let collection: LibraryCollection
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
-    private var cardWidth: CGFloat { ContinuumTheme.posterCardWidth }
-    private var cardHeight: CGFloat { ContinuumTheme.posterCardHeight }
+    private var cardWidth: CGFloat {
+        ContinuumTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
+    }
+    private var cardHeight: CGFloat {
+        cardWidth * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -515,15 +538,19 @@ private struct LibraryCollectionCard: View {
             .frame(width: cardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius))
 
-            Text(collection.name)
-                .font(.continuumCaption)
-                .foregroundColor(.continuumOnSurface)
-                .lineLimit(2, reservesSpace: true)
+            if uiCustomization.cardPresentation.caption.showsTitle {
+                Text(collection.name)
+                    .font(.continuumCaption)
+                    .foregroundStyle(Color.continuumOnSurface)
+                    .lineLimit(2, reservesSpace: true)
+            }
 
-            Text(typeLabel)
-                .font(.continuumSmall)
-                .foregroundColor(.continuumSecondaryText)
-                .lineLimit(1)
+            if uiCustomization.cardPresentation.caption.showsMetadata {
+                Text(typeLabel)
+                    .font(.continuumSmall)
+                    .foregroundStyle(Color.continuumSecondaryText)
+                    .lineLimit(1)
+            }
         }
         .frame(width: cardWidth, alignment: .leading)
     }
@@ -551,7 +578,7 @@ private struct LibraryCollectionCard: View {
     }
 
     private var countLabel: String {
-        if let itemCount = collection.itemCount, itemCount > 0 {
+        if let itemCount = collection.itemCount {
             return "\(itemCount)"
         }
         return "Smart"

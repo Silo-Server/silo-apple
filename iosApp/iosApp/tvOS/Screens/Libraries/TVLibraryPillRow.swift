@@ -1,5 +1,8 @@
+import Foundation
+
 #if os(tvOS)
 import SwiftUI
+#endif
 
 /// Sub-destinations of a Skyline library-type tab (§3). The on-page pill
 /// row was removed, so these are now reached only through the top-bar
@@ -31,8 +34,43 @@ enum TVLibraryPill: String, Hashable, CaseIterable {
 
     /// Sections offered for every library type (§3): Recommended (the
     /// landing default, always first) · Collections · Browse.
+    #if os(tvOS)
     static func set(for type: TVLibraryTabType) -> [TVLibraryPill] {
         allCases
     }
+    #endif
 }
-#endif
+
+enum TVLibraryMenuRootKind {
+    case category
+    case directShortcut
+    case staticRoot
+
+    var hasSectionCascade: Bool {
+        switch self {
+        case .category, .directShortcut: return true
+        case .staticRoot: return false
+        }
+    }
+}
+
+func tvCustomizationMutationIsEnabled(
+    allowsEditing: Bool,
+    usesDeviceMenuOverride: Bool,
+    changesFamilyMenu: Bool
+) -> Bool {
+    allowsEditing && (!changesFamilyMenu || !usesDeviceMenuOverride)
+}
+
+/// Direct-library roots own a separate sub-destination value, so changing a
+/// Movies/Series cascade cannot alter a pinned library's landing. The direct
+/// value defaults to Recommended but remains writable by its one-library
+/// cascade. Keeping this policy pure makes the isolation contract testable by
+/// the cross-platform unit-test target.
+func resolvedLibraryRootPill(
+    categorySelection: TVLibraryPill,
+    directSelection: TVLibraryPill?,
+    isDirectLibraryShortcut: Bool
+) -> TVLibraryPill {
+    isDirectLibraryShortcut ? (directSelection ?? .recommended) : categorySelection
+}

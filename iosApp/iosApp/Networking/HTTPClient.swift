@@ -1,6 +1,47 @@
 import Foundation
 import OSLog
 
+/// Immutable routing identity for a request that must not follow the app's
+/// mutable active server/profile. Settings outbox work captures this before it
+/// enters a queue; ``TokenStore`` then verifies and snapshots matching auth in
+/// one actor turn before any bytes are sent.
+struct HTTPRequestIdentity: Equatable, Sendable {
+    let serverId: String
+    let serverURL: String
+    let profileId: String
+    let clientFamily: String
+}
+
+enum CapturedHTTPRequestCredentialOwner: Equatable, Sendable {
+    case persistentServer(serverId: String)
+    case temporary
+}
+
+struct CapturedHTTPRequestAuth: Sendable {
+    let serverURL: String
+    let accessToken: String?
+    let refreshToken: String?
+    let profileId: String
+    let profileToken: String?
+    let credentialOwner: CapturedHTTPRequestCredentialOwner
+
+    init(
+        serverURL: String,
+        accessValue: String?,
+        refreshValue value: String?,
+        profileId: String,
+        profileValue otherValue: String?,
+        credentialOwner: CapturedHTTPRequestCredentialOwner
+    ) {
+        self.serverURL = serverURL
+        accessToken = accessValue
+        refreshToken = value
+        self.profileId = profileId
+        profileToken = otherValue
+        self.credentialOwner = credentialOwner
+    }
+}
+
 /// URLSession-backed HTTP client for the Silo server.
 ///
 /// Responsibilities:
@@ -36,9 +77,16 @@ actor HTTPClient {
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
 
-    /// When non-nil, a refresh is in flight. Concurrent 401s await this task
-    /// instead of issuing their own refresh request.
-    private var inFlightRefresh: Task<Bool, Never>?
+    /// Refresh tokens rotate at server-account scope. Ordinary requests and
+    /// captured-identity settings requests therefore share this one keyed
+    /// flight registry; neither path may submit the same credential while the
+    /// other owns its rotation.
+    private var inFlightRefreshes: [RefreshAccountIdentity: RefreshFlight] = [:]
+
+    private struct RefreshFlight {
+        let id: UUID
+        let task: Task<Bool, Never>
+    }
 
     init(session: URLSession? = nil, tokenStore: TokenStore = .shared) {
         // An injected session (tests) serves both timeout classes so mocks
@@ -236,8 +284,45 @@ actor HTTPClient {
         contentType: String = "application/json",
         headers: [String: String] = [:],
         quietStatuses: Set<Int> = [],
-        timeout: HTTPTimeout = .standard
+        timeout: HTTPTimeout = .standard,
+        requestIdentity: HTTPRequestIdentity? = nil
     ) async throws -> HTTPRawResponse {
+        if let requestIdentity {
+            var auth = try await tokenStore.captureRequestAuth(expected: requestIdentity)
+            var request = try scopedRequest(
+                method: method,
+                path: path,
+                query: query,
+                body: body,
+                contentType: contentType,
+                headers: headers,
+                auth: auth
+            )
+            var (data, response) = try await perform(request: request, timeout: timeout)
+
+            if response.statusCode == 401,
+               shouldAttemptRefresh(path: path),
+               await refreshScopedTokens(auth: auth, expected: requestIdentity) {
+                auth = try await tokenStore.captureRequestAuth(expected: requestIdentity)
+                request = try scopedRequest(
+                    method: method,
+                    path: path,
+                    query: query,
+                    body: body,
+                    contentType: contentType,
+                    headers: headers,
+                    auth: auth
+                )
+                (data, response) = try await perform(request: request, timeout: timeout)
+            }
+            try ensureSuccess(data, response, method: method, quietStatuses: quietStatuses)
+            return HTTPRawResponse(
+                data: data,
+                statusCode: response.statusCode,
+                headers: response.allHeaderFields
+            )
+        }
+
         let (data, response) = try await performWithAuthRetry(
             method: method,
             path: path,
@@ -261,6 +346,31 @@ actor HTTPClient {
         return HTTPRawResponse(data: data, statusCode: response.statusCode, headers: response.allHeaderFields)
     }
 
+    private func scopedRequest(
+        method: String,
+        path: String,
+        query: [String: String],
+        body: Data?,
+        contentType: String,
+        headers: [String: String],
+        auth: CapturedHTTPRequestAuth
+    ) throws -> URLRequest {
+        var request = try buildRequest(
+            serverUrl: auth.serverURL,
+            method: method,
+            path: path,
+            query: query,
+            body: Optional<String>.none
+        )
+        if let body {
+            request.httpBody = body
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        }
+        attachCapturedAuthHeaders(&request, auth: auth)
+        Self.apply(headers, to: &request)
+        return request
+    }
+
     /// Cancel all in-flight tasks on the shared session and drop any
     /// pending refresh. Called by the registry *before* retargeting
     /// `TokenStore` on a server switch so a response from the old server
@@ -271,8 +381,8 @@ actor HTTPClient {
     /// bridge it with a continuation — the caller must be able to wait
     /// for cancellation to actually complete before retargeting.
     func cancelInFlightRequests() async {
-        inFlightRefresh?.cancel()
-        inFlightRefresh = nil
+        inFlightRefreshes.values.forEach { $0.task.cancel() }
+        inFlightRefreshes.removeAll()
         for session in [session, longWaitSession] {
             await withCheckedContinuation { continuation in
                 session.getAllTasks { tasks in
@@ -566,10 +676,32 @@ actor HTTPClient {
         request.setValue(device.id, forHTTPHeaderField: "X-Silo-Device-Id")
         request.setValue(device.name, forHTTPHeaderField: "X-Silo-Device-Name")
         request.setValue(device.platform, forHTTPHeaderField: "X-Silo-Device-Platform")
-        attached.append("device=\(device.platform)")
+        request.setValue(device.clientFamily, forHTTPHeaderField: "X-Silo-Client-Family")
+        attached.append("device=\(device.platform)/\(device.clientFamily)")
         let method = request.httpMethod ?? ""
         let attachedDesc = attached.joined(separator: ", ")
         Self.logger.debug("→ \(method, privacy: .public) \(path, privacy: .public) headers=[\(attachedDesc, privacy: .public)]")
+    }
+
+    /// Attach one actor-consistent auth snapshot. Scoped requests deliberately
+    /// do not use the global refresh path: after an identity switch, a 401 is
+    /// safer than refreshing or storing credentials in the wrong server slot.
+    private func attachCapturedAuthHeaders(
+        _ request: inout URLRequest,
+        auth: CapturedHTTPRequestAuth
+    ) {
+        if let token = auth.accessToken {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.setValue(auth.profileId, forHTTPHeaderField: "X-Profile-Id")
+        if let profileToken = auth.profileToken {
+            request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token")
+        }
+        let device = AppleDeviceIdentity.current
+        request.setValue(device.id, forHTTPHeaderField: "X-Silo-Device-Id")
+        request.setValue(device.name, forHTTPHeaderField: "X-Silo-Device-Name")
+        request.setValue(device.platform, forHTTPHeaderField: "X-Silo-Device-Platform")
+        request.setValue(device.clientFamily, forHTTPHeaderField: "X-Silo-Client-Family")
     }
 
     // MARK: - Response handling
@@ -625,6 +757,95 @@ actor HTTPClient {
         !path.hasSuffix("/auth/refresh") && !path.hasSuffix("/auth/login")
     }
 
+    private func refreshScopedTokens(
+        auth: CapturedHTTPRequestAuth,
+        expected: HTTPRequestIdentity
+    ) async -> Bool {
+        guard case .persistentServer(let credentialServerId) = auth.credentialOwner,
+              credentialServerId == expected.serverId,
+              let refreshValue = auth.refreshToken, !refreshValue.isEmpty,
+              URL(string: auth.serverURL + "/api/v1/auth/refresh") != nil else {
+            return false
+        }
+        if await scopedCredentialsChanged(since: auth, expected: expected) {
+            return true
+        }
+
+        let key = RefreshAccountIdentity(
+            serverId: expected.serverId,
+            serverURL: ServerRegistry.normalize(url: expected.serverURL)
+        )
+        if let existing = inFlightRefreshes[key] {
+            let refreshed = await existing.task.value
+            if refreshed { return true }
+            return await scopedCredentialsChanged(since: auth, expected: expected)
+        }
+
+        let task = Task<Bool, Never> { [tokenStore, session, decoder, encoder] in
+            await Self.performScopedRefresh(
+                auth: auth,
+                expected: expected,
+                tokenStore: tokenStore,
+                session: session,
+                decoder: decoder,
+                encoder: encoder
+            )
+        }
+        let flightId = UUID()
+        inFlightRefreshes[key] = .init(id: flightId, task: task)
+        let refreshed = await task.value
+        if inFlightRefreshes[key]?.id == flightId {
+            inFlightRefreshes.removeValue(forKey: key)
+        }
+        if refreshed { return true }
+        return await scopedCredentialsChanged(since: auth, expected: expected)
+    }
+
+    private func scopedCredentialsChanged(
+        since auth: CapturedHTTPRequestAuth,
+        expected: HTTPRequestIdentity
+    ) async -> Bool {
+        guard let current = try? await tokenStore.captureRequestAuth(expected: expected),
+              current.credentialOwner == auth.credentialOwner else { return false }
+        return current.accessToken != auth.accessToken
+            || current.refreshToken != auth.refreshToken
+    }
+
+    private static func performScopedRefresh(
+        auth: CapturedHTTPRequestAuth,
+        expected: HTTPRequestIdentity,
+        tokenStore: TokenStore,
+        session: URLSession,
+        decoder: JSONDecoder,
+        encoder: JSONEncoder
+    ) async -> Bool {
+        guard let refreshValue = auth.refreshToken,
+              let url = URL(string: auth.serverURL + "/api/v1/auth/refresh") else {
+            return false
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        do {
+            request.httpBody = try encoder.encode(RefreshRequest(refreshValue))
+            let (data, response) = try await session.data(for: request)
+            guard !Task.isCancelled,
+                  let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else { return false }
+            let tokens = try decoder.decode(RefreshResponse.self, from: data)
+            return await tokenStore.saveRefreshedTokens(
+                tokens.accessToken,
+                tokens.refreshToken,
+                replacing: refreshValue,
+                expected: expected,
+                credentialOwner: auth.credentialOwner
+            )
+        } catch {
+            return false
+        }
+    }
+
     // MARK: - Refresh (single-flight)
 
     /// Refresh tokens at most once per wave of concurrent 401s.
@@ -633,25 +854,29 @@ actor HTTPClient {
     /// 1. Check whether another caller already refreshed: if the token now
     ///    stored differs from the token this caller originally sent, it was
     ///    refreshed in the meantime and we can just signal "yes, retry."
-    /// 2. Otherwise, if no refresh is in flight, start one; every concurrent
-    ///    401 awaits the same `Task` so only one network call is made.
+    /// 2. Otherwise, if no account refresh is in flight, start one; ordinary
+    ///    and captured-identity 401s await the same `Task` so only one network
+    ///    call is made.
     /// 3. The in-flight task clears itself after completion so the next 401
     ///    wave can start a fresh refresh.
     ///
     /// Re-entrancy note: `await tokenStore.getAccessToken()` releases the
-    /// actor, so another 401'd caller may interleave and arrive at the
-    /// `inFlightRefresh` check before this caller does. The `inFlightRefresh`
-    /// slot is single-assignment per wave, and the `tokenAtRequestTime`
-    /// check catches the case where a second caller resumes *after* the
-    /// first caller's refresh has already completed and cleared the slot.
+    /// actor, so another 401'd caller may interleave. Capturing the account
+    /// key first, then double-checking the access token immediately before
+    /// the keyed slot, catches a refresh that completed during that await.
     private func refreshTokens(tokenAtRequestTime: String?) async -> Bool {
+        guard let key = await tokenStore.refreshAccountIdentity() else {
+            return false
+        }
         if let current = await tokenStore.getAccessToken(),
            current != tokenAtRequestTime {
             return true
         }
 
-        if let existing = inFlightRefresh {
-            return await existing.value
+        if let existing = inFlightRefreshes[key] {
+            let refreshed = await existing.task.value
+            if refreshed { return true }
+            return await tokenStore.getAccessToken() != tokenAtRequestTime
         }
 
         let task = Task<Bool, Never> { [tokenStore, session, decoder, encoder] in
@@ -662,10 +887,14 @@ actor HTTPClient {
                 encoder: encoder
             )
         }
-        inFlightRefresh = task
+        let flightId = UUID()
+        inFlightRefreshes[key] = .init(id: flightId, task: task)
         let result = await task.value
-        inFlightRefresh = nil
-        return result
+        if inFlightRefreshes[key]?.id == flightId {
+            inFlightRefreshes.removeValue(forKey: key)
+        }
+        if result { return true }
+        return await tokenStore.getAccessToken() != tokenAtRequestTime
     }
 
     private static func performRefresh(
@@ -808,6 +1037,7 @@ struct HTTPRawResponse: Sendable {
 
 enum HTTPError: LocalizedError, CustomStringConvertible {
     case serverUrlNotConfigured
+    case requestIdentityChanged
     case invalidURL(String)
     case invalidResponse
     case network(underlying: Error)
@@ -819,6 +1049,8 @@ enum HTTPError: LocalizedError, CustomStringConvertible {
         switch self {
         case .serverUrlNotConfigured:
             return "Server URL is not configured."
+        case .requestIdentityChanged:
+            return "The active server or profile changed before the request could start."
         case .invalidURL(let url):
             return "Invalid URL: \(url)"
         case .invalidResponse:
@@ -843,6 +1075,8 @@ enum HTTPError: LocalizedError, CustomStringConvertible {
         switch self {
         case .serverUrlNotConfigured:
             return "server_url_not_configured"
+        case .requestIdentityChanged:
+            return "request_identity_changed"
         case .invalidURL:
             return "invalid_url"
         case .invalidResponse:

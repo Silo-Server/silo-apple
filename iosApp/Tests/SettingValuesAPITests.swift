@@ -228,6 +228,21 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertNil(fromDefault.storedValue)
     }
 
+    func testProfileClientEnvelopeKeepsTheResolvedFamily() throws {
+        let effective = try SettingsWireCoding.makeDecoder()
+            .decode(EffectiveSettingValue.self, from: Data("""
+            {"key":"ui.card_presentation",
+             "value":{"poster_size":"large","caption":"artwork"},
+             "source":"profile_client","scope":"profile_client",
+             "profile_id":"p1","client_family":"tv"}
+            """.utf8))
+
+        XCTAssertEqual(effective.source, .scope(.profileClient))
+        XCTAssertEqual(effective.scope, .profileClient)
+        XCTAssertEqual(effective.clientFamily, "tv")
+        XCTAssertEqual(effective.storedAt, .profileClient)
+    }
+
     func testConstrainedValueKeepsTheAuthoredChoice() throws {
         // Mirrors a conformance case: policy caps a 4K preference at 1080p,
         // and the authored value is reported so the UI can say "capped" rather
@@ -289,6 +304,7 @@ final class SettingValuesAPITests: XCTestCase {
     func testScopeIdentitiesCarryTheirIdsInTheQuery() {
         XCTAssertEqual(SettingScopeIdentity.account.queryItems, ["scope": "account"])
         XCTAssertEqual(SettingScopeIdentity.profile.queryItems, ["scope": "profile"])
+        XCTAssertEqual(SettingScopeIdentity.profileClient.queryItems, ["scope": "profile_client"])
         // The device half comes from the X-Silo-Device-Id header the client
         // already attaches, never the query — sending it twice is the bug.
         XCTAssertEqual(SettingScopeIdentity.profileDevice.queryItems, ["scope": "profile_device"])
@@ -316,6 +332,10 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(capabilities.definitionCount, 48)
         XCTAssertTrue(capabilities.supportsBatchedEffective)
         XCTAssertTrue(capabilities.supportsIdempotentWrites)
+        XCTAssertFalse(
+            capabilities.supportsAtomicShortcuts,
+            "a missing revision-5 feature flag must decode fail-closed"
+        )
         XCTAssertEqual(capabilities.contractIsAheadOfServer, SettingKey.revision > 1)
     }
 
@@ -448,6 +468,7 @@ final class SettingValuesAPITests: XCTestCase {
         }
         XCTAssertEqual(capabilities.revision, SettingKey.revision)
         XCTAssertTrue(capabilities.supportsIdempotentWrites)
+        XCTAssertTrue(capabilities.supportsAtomicShortcuts)
     }
 
     func testGetContractCapabilitiesRequiresTheServersRevisionToBeCurrent() async throws {
@@ -482,6 +503,10 @@ final class SettingValuesAPITests: XCTestCase {
         // profile header, which the client previously never sent.
         XCTAssertEqual(recorded.header("X-Profile-Id"), Self.stubProfileId)
         XCTAssertEqual(recorded.header("X-Silo-Device-Id")?.isEmpty, false)
+        XCTAssertEqual(
+            recorded.header("X-Silo-Client-Family"),
+            AppleDeviceIdentity.current.clientFamily
+        )
         // And the body must carry the value's keys verbatim.
         let body = String(data: recorded.body ?? Data(), encoding: .utf8) ?? ""
         XCTAssertTrue(body.contains("\"fontSize\""), "body must keep camelCase value keys: \(body)")
@@ -506,6 +531,383 @@ final class SettingValuesAPITests: XCTestCase {
             "profile-captured-with-write",
             "the queued profile must override a newer session header"
         )
+    }
+
+    func testCapturedSettingsRequestRefusesToFollowANewActiveIdentity() async throws {
+        SettingsStubProtocol.reset(mode: .normal)
+        let suiteName = "settings-identity-race-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+        }
+        let tokenStore = TokenStore(
+            keychain: SharedKeychain(
+                service: "SettingValuesIdentityTests.\(UUID().uuidString)",
+                accessGroup: nil
+            ),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokenStore.switchActiveServer(serverId: "server-a")
+        await tokenStore.setServerUrl("http://settings-test.invalid")
+        await tokenStore.setProfileId("profile-a")
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SettingsStubProtocol.self]
+        let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
+        let captured = HTTPRequestIdentity(
+            serverId: "server-a",
+            serverURL: "http://settings-test.invalid",
+            profileId: "profile-a",
+            clientFamily: "mobile"
+        )
+
+        await tokenStore.switchActiveServer(serverId: "server-b")
+        await tokenStore.setServerUrl("http://server-b.invalid")
+        await tokenStore.setProfileId("profile-b")
+
+        do {
+            _ = try await http.requestData(
+                method: "GET",
+                path: "/api/v1/settings/contract/capabilities",
+                requestIdentity: captured
+            )
+            XCTFail("a captured server/profile request must fail rather than follow the new session")
+        } catch HTTPError.requestIdentityChanged {
+            // Expected: no URL request was built or sent.
+        }
+        XCTAssertNil(SettingsStubProtocol.state().lastRequest)
+    }
+
+    func testConcurrentScopedUnauthorizedResponsesShareOneRotatingRefresh() async throws {
+        SettingsStubProtocol.reset(mode: .concurrentScopedRefresh)
+        let suiteName = "settings-refresh-single-flight-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+        }
+        let tokenStore = TokenStore(
+            keychain: SharedKeychain(
+                service: "SettingValuesRefreshSingleFlightTests.\(UUID().uuidString)",
+                accessGroup: nil
+            ),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        let identity = HTTPRequestIdentity(
+            serverId: "server-a",
+            serverURL: "http://settings-test.invalid",
+            profileId: "profile-a",
+            clientFamily: "mobile"
+        )
+        await tokenStore.switchActiveServer(serverId: identity.serverId)
+        await tokenStore.setServerUrl(identity.serverURL)
+        await tokenStore.setProfileId(identity.profileId)
+        await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SettingsStubProtocol.self]
+        let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
+        async let first = http.requestData(
+            method: "GET",
+            path: "/api/v1/settings/contract/capabilities",
+            requestIdentity: identity
+        )
+        async let second = http.requestData(
+            method: "GET",
+            path: "/api/v1/settings/contract/capabilities",
+            requestIdentity: identity
+        )
+
+        let (firstResponse, secondResponse) = try await (first, second)
+
+        XCTAssertEqual(firstResponse.statusCode, 200)
+        XCTAssertEqual(secondResponse.statusCode, 200)
+        let state = SettingsStubProtocol.state()
+        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 4)
+        let accessToken = await tokenStore.getAccessToken()
+        let refreshToken = await tokenStore.getRefreshToken()
+        XCTAssertEqual(accessToken, "placeholder")
+        XCTAssertEqual(refreshToken, "redacted")
+    }
+
+    func testScopedAndOrdinaryUnauthorizedResponsesShareAccountRefreshFlight() async throws {
+        SettingsStubProtocol.reset(mode: .mixedRefreshScopedWins)
+        let suiteName = "settings-refresh-mixed-flight-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+        }
+        let tokenStore = TokenStore(
+            keychain: SharedKeychain(
+                service: "SettingValuesMixedRefreshTests.\(UUID().uuidString)",
+                accessGroup: nil
+            ),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        let identity = HTTPRequestIdentity(
+            serverId: "server-a",
+            serverURL: "http://settings-test.invalid",
+            profileId: "profile-a",
+            clientFamily: "mobile"
+        )
+        await tokenStore.switchActiveServer(serverId: identity.serverId)
+        await tokenStore.setServerUrl(identity.serverURL)
+        await tokenStore.setProfileId(identity.profileId)
+        await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SettingsStubProtocol.self]
+        let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
+        let sessionExpiredCount = LockedCounter()
+        let observer = NotificationCenter.default.addObserver(
+            forName: .continuumSessionExpired,
+            object: nil,
+            queue: nil
+        ) { _ in
+            sessionExpiredCount.increment()
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        async let scoped = http.requestData(
+            method: "GET",
+            path: "/api/v1/settings/contract/capabilities",
+            headers: ["X-Test-Refresh-Flow": "scoped"],
+            requestIdentity: identity
+        )
+        async let ordinary = http.requestData(
+            method: "GET",
+            path: "/api/v1/settings/contract/capabilities",
+            headers: ["X-Test-Refresh-Flow": "ordinary"]
+        )
+
+        let (scopedResponse, ordinaryResponse) = try await (scoped, ordinary)
+
+        XCTAssertEqual(scopedResponse.statusCode, 200)
+        XCTAssertEqual(ordinaryResponse.statusCode, 200)
+        let state = SettingsStubProtocol.state()
+        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 4)
+        let accessToken = await tokenStore.getAccessToken()
+        let refreshToken = await tokenStore.getRefreshToken()
+        XCTAssertEqual(accessToken, "placeholder")
+        XCTAssertEqual(refreshToken, "redacted")
+        XCTAssertEqual(sessionExpiredCount.value, 0)
+    }
+
+    func testScopedRefreshPersistsServerAccountRotationAcrossProfileChange() async throws {
+        let suiteName = "settings-refresh-profile-switch-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+        }
+        let keychain = SharedKeychain(
+            service: "SettingValuesRefreshProfileTests.\(UUID().uuidString)",
+            accessGroup: nil
+        )
+        let tokenStore = TokenStore(
+            keychain: keychain,
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        let identity = HTTPRequestIdentity(
+            serverId: "server-a",
+            serverURL: "http://settings-test.invalid",
+            profileId: "profile-a",
+            clientFamily: "mobile"
+        )
+
+        await tokenStore.switchActiveServer(serverId: identity.serverId)
+        await tokenStore.setServerUrl(identity.serverURL)
+        await tokenStore.setProfileId(identity.profileId)
+        await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
+        await tokenStore.setProfileToken("example")
+
+        // The account refresh began under profile A, but profile B became
+        // active before the server returned its rotated account credentials.
+        await tokenStore.setProfileId("profile-b")
+        await tokenStore.setProfileToken("sample")
+        let stored = await tokenStore.saveRefreshedTokens(
+            "placeholder",
+            "redacted",
+            replacing: "dummy",
+            expected: identity,
+            credentialOwner: .persistentServer(serverId: identity.serverId)
+        )
+
+        XCTAssertTrue(stored)
+        let currentAccess = await tokenStore.getAccessToken()
+        let currentRefresh = await tokenStore.getRefreshToken()
+        let currentProfileId = await tokenStore.getProfileId()
+        let currentProfileValue = await tokenStore.getProfileToken()
+        XCTAssertEqual(currentAccess, "placeholder")
+        XCTAssertEqual(currentRefresh, "redacted")
+        XCTAssertEqual(currentProfileId, "profile-b")
+        XCTAssertEqual(currentProfileValue, "sample")
+    }
+
+    func testScopedRefreshRejectsChangedServerAccountAndTemporaryScope() async throws {
+        let suiteName = "settings-refresh-account-boundary-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+        }
+        let keychain = SharedKeychain(
+            service: "SettingValuesRefreshBoundaryTests.\(UUID().uuidString)",
+            accessGroup: nil
+        )
+        let tokenStore = TokenStore(
+            keychain: keychain,
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        let identity = HTTPRequestIdentity(
+            serverId: "server-a",
+            serverURL: "http://settings-test.invalid",
+            profileId: "profile-a",
+            clientFamily: "mobile"
+        )
+
+        await tokenStore.switchActiveServer(serverId: identity.serverId)
+        await tokenStore.setServerUrl(identity.serverURL)
+        await tokenStore.setProfileId(identity.profileId)
+        await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
+
+        await tokenStore.setServerUrl("http://changed-url.invalid")
+        let wrongURLStored = await tokenStore.saveRefreshedTokens(
+            "example",
+            "sample",
+            replacing: "dummy",
+            expected: identity,
+            credentialOwner: .persistentServer(serverId: identity.serverId)
+        )
+        let refreshAfterWrongURL = await tokenStore.getRefreshToken()
+        XCTAssertFalse(wrongURLStored)
+        XCTAssertEqual(refreshAfterWrongURL, "dummy")
+
+        await tokenStore.setServerUrl(identity.serverURL)
+        await tokenStore.saveTokens(accessToken: "placeholder", refreshToken: "redacted")
+        let staleStored = await tokenStore.saveRefreshedTokens(
+            "not-a-real",
+            "changeme",
+            replacing: "dummy",
+            expected: identity,
+            credentialOwner: .persistentServer(serverId: identity.serverId)
+        )
+        let refreshAfterStale = await tokenStore.getRefreshToken()
+        XCTAssertFalse(staleStored)
+        XCTAssertEqual(refreshAfterStale, "redacted")
+
+        let temporary = TemporaryAuthScope(
+            serverId: identity.serverId,
+            serverURL: identity.serverURL,
+            accessToken: "test-auth-token",
+            // Match the persistent value so credential provenance, rather
+            // than value inequality, is what prevents the write.
+            refreshToken: "redacted",
+            profileId: "temporary-profile",
+            profileToken: "secret-token",
+            controllerDeviceId: "controller",
+            expiresAt: Date().addingTimeInterval(60)
+        )
+        await tokenStore.beginTemporaryScope(temporary)
+        let temporaryIdentity = HTTPRequestIdentity(
+            serverId: identity.serverId,
+            serverURL: identity.serverURL,
+            profileId: temporary.profileId,
+            clientFamily: identity.clientFamily
+        )
+        let capturedTemporary = try await tokenStore.captureRequestAuth(expected: temporaryIdentity)
+        _ = await tokenStore.endTemporaryScope()
+        let temporaryStored = await tokenStore.saveRefreshedTokens(
+            "test-token-placeholder",
+            "token-oversized",
+            replacing: "redacted",
+            expected: temporaryIdentity,
+            credentialOwner: capturedTemporary.credentialOwner
+        )
+        let refreshAfterTemporary = await tokenStore.getRefreshToken()
+        XCTAssertFalse(temporaryStored)
+        XCTAssertEqual(capturedTemporary.credentialOwner, .temporary)
+        XCTAssertEqual(
+            refreshAfterTemporary,
+            "redacted",
+            "credentials captured from a temporary scope must never redirect into persistent storage"
+        )
+
+        await tokenStore.switchActiveServer(serverId: "server-b")
+        await tokenStore.setServerUrl("http://server-b.invalid")
+        await tokenStore.setProfileId("profile-b")
+        await tokenStore.saveTokens(accessToken: "gateway-token", refreshToken: "decoy-token")
+        let crossServerStored = await tokenStore.saveRefreshedTokens(
+            "clawrouter-e2e-secret",
+            "very-long-browser-token-0123456789",
+            replacing: "redacted",
+            expected: identity,
+            credentialOwner: .persistentServer(serverId: identity.serverId)
+        )
+        let serverBAccess = await tokenStore.getAccessToken()
+        let serverBRefresh = await tokenStore.getRefreshToken()
+        XCTAssertFalse(crossServerStored)
+        XCTAssertEqual(serverBAccess, "gateway-token")
+        XCTAssertEqual(serverBRefresh, "decoy-token")
+    }
+
+    func testPutNavigationShortcutItemSendsAtomicBodyMutationAndProfileHeaders() async throws {
+        SettingsStubProtocol.reset(mode: .normal)
+        let api = await makeStubbedAPI()
+        let mutationId = newSettingMutationId()
+        let item = PrimaryMenuItem.section(
+            libraryId: 7,
+            sectionId: "recently-added",
+            label: "Recently Added"
+        )
+
+        let receipt = try await api.putNavigationShortcutItem(
+            item,
+            present: true,
+            mutationId: mutationId
+        )
+
+        XCTAssertEqual(receipt.value.settingKey, .navShortcuts)
+        XCTAssertEqual(
+            try receipt.value.value.decoded(as: NavigationShortcutsPreference.self),
+            NavigationShortcutsPreference(items: [item])
+        )
+
+        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
+        XCTAssertEqual(recorded.method, "PUT")
+        XCTAssertEqual(recorded.path, "/api/v1/settings/values/nav.shortcuts/item")
+        XCTAssertTrue(recorded.query.isEmpty)
+        XCTAssertEqual(recorded.header("X-Silo-Mutation-Id"), mutationId)
+        XCTAssertEqual(recorded.header("X-Profile-Id"), Self.stubProfileId)
+
+        let body = try XCTUnwrap(recorded.body)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        XCTAssertEqual(object["present"] as? Bool, true)
+        let encodedItem = try XCTUnwrap(object["item"] as? [String: Any])
+        XCTAssertEqual(encodedItem["type"] as? String, "section")
+        XCTAssertEqual(encodedItem["library_id"] as? Int, 7)
+        XCTAssertEqual(encodedItem["section_id"] as? String, "recently-added")
+        XCTAssertEqual(encodedItem["label"] as? String, "Recently Added")
+    }
+
+    func testPutNavigationShortcutItemRejectsBuiltinsBeforeSending() async throws {
+        SettingsStubProtocol.reset(mode: .normal)
+        let api = await makeStubbedAPI()
+
+        do {
+            _ = try await api.putNavigationShortcutItem(
+                .builtin(.home),
+                present: true,
+                mutationId: newSettingMutationId()
+            )
+            XCTFail("built-in destinations are not valid nav.shortcuts items")
+        } catch let error as SettingsAPIError {
+            guard case .invalidValue = error else {
+                return XCTFail("expected a local invalid-value error, got \(error)")
+            }
+        }
+
+        XCTAssertNil(SettingsStubProtocol.state().lastRequest)
     }
 
     func testPutValueSurfacesAnIdempotentReplay() async throws {
@@ -661,6 +1063,10 @@ final class SettingsStubProtocol: URLProtocol {
         case idempotentReplay
         /// A delete addressing a scope with no stored value.
         case nothingStored
+        /// Two expired scoped requests race one rotating account refresh.
+        case concurrentScopedRefresh
+        /// A scoped request owns refresh while an ordinary 401 joins it.
+        case mixedRefreshScopedWins
     }
 
     struct RecordedRequest {
@@ -680,14 +1086,21 @@ final class SettingsStubProtocol: URLProtocol {
     struct State {
         var mode: Mode = .normal
         var lastRequest: RecordedRequest?
+        var requestCounts: [String: Int] = [:]
     }
 
     private static let lock = NSLock()
     private static var current = State()
+    private static var pendingConcurrentUnauthorized: [SettingsStubProtocol] = []
+    private static var pendingMixedOrdinaryUnauthorized: SettingsStubProtocol?
+    private static var mixedRefreshStarted = false
 
     static func reset(mode: Mode) {
         lock.lock()
         current = State(mode: mode)
+        pendingConcurrentUnauthorized.removeAll()
+        pendingMixedOrdinaryUnauthorized = nil
+        mixedRefreshStarted = false
         lock.unlock()
     }
 
@@ -724,9 +1137,42 @@ final class SettingsStubProtocol: URLProtocol {
             headers: Self.lowercasedHeaders(request.allHTTPHeaderFields ?? [:]),
             body: Self.requestBody(of: request)
         )
-        Self.mutate { $0.lastRequest = recorded }
+        Self.mutate {
+            $0.lastRequest = recorded
+            $0.requestCounts[recorded.path, default: 0] += 1
+        }
 
         let mode = Self.state().mode
+        if mode == .concurrentScopedRefresh {
+            switch (recorded.method, recorded.path) {
+            case ("POST", "/api/v1/auth/refresh"):
+                respond(
+                    status: 200,
+                    body: #"{"access_token":"placeholder","refresh_token":"redacted","expires_in":3600}"#
+                )
+            case ("GET", "/api/v1/settings/contract/capabilities"):
+                if recorded.header("Authorization") == "Bearer placeholder" {
+                    respond(
+                        status: 200,
+                        body: """
+                        {"api_version":1,"revision":\(SettingKey.revision),"contract_etag":"\\"etag\\"","definition_count":48,
+                         "scopes":["account","profile","profile_device","profile_library","profile_series"],
+                         "supports_batched_effective":true,"supports_idempotent_writes":true,
+                         "supports_atomic_shortcuts":true}
+                        """
+                    )
+                } else {
+                    holdConcurrentUnauthorizedUntilBothExpiredRequestsArrive()
+                }
+            default:
+                respond(status: 404, body: #"{"error":"not_found"}"#)
+            }
+            return
+        }
+        if mode == .mixedRefreshScopedWins {
+            handleMixedRefreshScopedWins(recorded)
+            return
+        }
         if mode == .serverTooOld {
             // The chi router's own 404: plain text, no Silo error envelope.
             respond(status: 404, body: "404 page not found\n", contentType: "text/plain", headers: [:])
@@ -741,13 +1187,26 @@ final class SettingsStubProtocol: URLProtocol {
             respond(status: 200, body: """
             {"api_version":1,"revision":\(responseRevision),"contract_etag":"\\"etag\\"","definition_count":48,
              "scopes":["account","profile","profile_device","profile_library","profile_series"],
-             "supports_batched_effective":true,"supports_idempotent_writes":true}
+             "supports_batched_effective":true,"supports_idempotent_writes":true,
+             "supports_atomic_shortcuts":true}
             """)
         case ("GET", "/api/v1/settings/values/effective"):
             respond(status: 200, body: """
             {"settings":[{"key":"playback.auto_play_next","value":true,"source":"default"}],
              "revision":\(responseRevision)}
             """)
+        case ("PUT", "/api/v1/settings/values/nav.shortcuts/item"):
+            let value = Self.shortcutValueFromMutationBody(recorded.body) ?? #"{"items":[]}"#
+            let replay = mode == .idempotentReplay
+            respond(
+                status: 200,
+                body: """
+                {"key":"nav.shortcuts","scope":"profile",
+                 "value":\(value),"revision":\(replay ? 0 : 3)}
+                """,
+                contentType: "application/json",
+                headers: replay ? ["X-Silo-Idempotent-Replay": "true"] : [:]
+            )
         case ("PUT", let path) where path.hasPrefix("/api/v1/settings/values/"):
             let key = String(path.dropFirst("/api/v1/settings/values/".count))
             let value = Self.valueFromWriteBody(recorded.body) ?? "null"
@@ -774,6 +1233,82 @@ final class SettingsStubProtocol: URLProtocol {
 
     override func stopLoading() {}
 
+    /// Release both initial 401s together so the regression deterministically
+    /// exercises two already-sent requests joining the same refresh flight.
+    /// Retaining the protocol instances avoids blocking URLSession's loader
+    /// queue while waiting for the second request.
+    private func holdConcurrentUnauthorizedUntilBothExpiredRequestsArrive() {
+        let ready: [SettingsStubProtocol]
+        Self.lock.lock()
+        Self.pendingConcurrentUnauthorized.append(self)
+        if Self.pendingConcurrentUnauthorized.count >= 2 {
+            ready = Self.pendingConcurrentUnauthorized
+            Self.pendingConcurrentUnauthorized.removeAll()
+        } else {
+            ready = []
+        }
+        Self.lock.unlock()
+
+        for pending in ready {
+            pending.respond(status: 401, body: #"{"error":"unauthorized"}"#)
+        }
+    }
+
+    private func handleMixedRefreshScopedWins(_ recorded: RecordedRequest) {
+        switch (recorded.method, recorded.path) {
+        case ("GET", "/api/v1/settings/contract/capabilities"):
+            if recorded.header("Authorization") == "Bearer placeholder" {
+                respond(
+                    status: 200,
+                    body: """
+                    {"api_version":1,"revision":\(SettingKey.revision),"contract_etag":"\\"etag\\"","definition_count":48,
+                     "scopes":["account","profile","profile_device","profile_library","profile_series"],
+                     "supports_batched_effective":true,"supports_idempotent_writes":true,
+                     "supports_atomic_shortcuts":true}
+                    """
+                )
+                return
+            }
+            if recorded.header("X-Test-Refresh-Flow") == "scoped" {
+                respond(status: 401, body: #"{"error":"unauthorized"}"#)
+                return
+            }
+
+            let refreshAlreadyStarted: Bool
+            Self.lock.lock()
+            refreshAlreadyStarted = Self.mixedRefreshStarted
+            if !refreshAlreadyStarted {
+                Self.pendingMixedOrdinaryUnauthorized = self
+            }
+            Self.lock.unlock()
+            if refreshAlreadyStarted {
+                respond(status: 401, body: #"{"error":"unauthorized"}"#)
+            }
+
+        case ("POST", "/api/v1/auth/refresh"):
+            let pendingOrdinary: SettingsStubProtocol?
+            Self.lock.lock()
+            Self.mixedRefreshStarted = true
+            pendingOrdinary = Self.pendingMixedOrdinaryUnauthorized
+            Self.pendingMixedOrdinaryUnauthorized = nil
+            Self.lock.unlock()
+            pendingOrdinary?.respond(status: 401, body: #"{"error":"unauthorized"}"#)
+
+            // Keep the scoped-owned refresh in flight long enough for the
+            // ordinary 401 to reach HTTPClient's shared account slot.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(100))
+                self?.respond(
+                    status: 200,
+                    body: #"{"access_token":"placeholder","refresh_token":"redacted","expires_in":3600}"#
+                )
+            }
+
+        default:
+            respond(status: 404, body: #"{"error":"not_found"}"#)
+        }
+    }
+
     /// Pull the raw `value` back out of a `{"value": …}` body without
     /// re-encoding it, so a test can assert the stub echoed exactly what the
     /// client sent.
@@ -785,6 +1320,20 @@ final class SettingsStubProtocol: URLProtocol {
         guard let data = try? JSONSerialization.data(
             withJSONObject: value,
             options: [.fragmentsAllowed, .sortedKeys]
+        ) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func shortcutValueFromMutationBody(_ body: Data?) -> String? {
+        guard let body,
+              let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let item = object["item"] as? [String: Any],
+              let present = object["present"] as? Bool
+        else { return nil }
+        let value: [String: Any] = ["items": present ? [item] : []]
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: value,
+            options: [.sortedKeys]
         ) else { return nil }
         return String(data: data, encoding: .utf8)
     }
@@ -839,5 +1388,22 @@ final class SettingsStubProtocol: URLProtocol {
             client.urlProtocol(self, didLoad: Data(body.utf8))
         }
         client.urlProtocolDidFinishLoading(self)
+    }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func increment() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
     }
 }

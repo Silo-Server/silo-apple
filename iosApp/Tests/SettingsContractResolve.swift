@@ -219,6 +219,7 @@ enum SettingsContractSource {
     static let `default` = "default"
     static let account = "account"
     static let profile = "profile"
+    static let profileClient = "profile_client"
     static let profileDevice = "profile_device"
     static let profileLibrary = "profile_library"
     static let profileSeries = "profile_series"
@@ -229,6 +230,7 @@ struct StoredSettingRow {
     let key: String
     let scope: String
     var profileId: String?
+    var clientFamily: String?
     var deviceId: String?
     var libraryId: Int?
     var seriesId: String?
@@ -238,6 +240,7 @@ struct StoredSettingRow {
 /// The identity a resolution happens against. An absent field drops its scopes.
 struct SettingResolutionContext {
     var profileId: String?
+    var clientFamily: String?
     var deviceId: String?
     var libraryIds: [Int] = []
     var seriesIds: [String] = []
@@ -342,6 +345,7 @@ private func pickForScope(
     context: SettingResolutionContext
 ) -> StoredSettingRow? {
     let profileId = context.profileId ?? ""
+    let clientFamily = context.clientFamily ?? ""
     let deviceId = context.deviceId ?? ""
 
     let matches = candidates.filter { row in
@@ -351,6 +355,10 @@ private func pickForScope(
             return true
         case SettingsContractSource.profile:
             return (row.profileId ?? "") == profileId
+        case SettingsContractSource.profileClient:
+            return (row.profileId ?? "") == profileId
+                && (row.clientFamily ?? "") == clientFamily
+                && ["tv", "mobile", "tablet", "desktop", "web"].contains(clientFamily)
         case SettingsContractSource.profileDevice:
             return (row.profileId ?? "") == profileId
                 && (row.deviceId ?? "") == deviceId

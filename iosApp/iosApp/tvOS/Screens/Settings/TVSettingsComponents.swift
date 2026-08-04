@@ -513,6 +513,8 @@ struct TVSettingsPickerSheet: View {
     let options: [TVSettingsOption]
     @Binding var selection: String
     var subtitlePreviewAppearance: SubtitleAppearance? = nil
+    var allowsSelection = true
+    var disabledMessage: String? = nil
 
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focusedOptionID: String?
@@ -520,6 +522,10 @@ struct TVSettingsPickerSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 18) {
+                if let disabledMessage {
+                    TVSettingsFooter(disabledMessage)
+                }
+
                 if let subtitlePreviewAppearance {
                     TVSettingsSubtitlePreview(
                         appearance: previewAppearance(from: subtitlePreviewAppearance)
@@ -545,6 +551,18 @@ struct TVSettingsPickerSheet: View {
                     }
                     .scrollIndicators(options.count > 8 ? .automatic : .hidden)
                     .onAppear {
+                        guard allowsSelection else {
+                            focusedOptionID = nil
+                            return
+                        }
+                        focusSelection()
+                        scrollToFocusedOption(with: proxy, animated: false)
+                    }
+                    .onChange(of: allowsSelection) { _, enabled in
+                        guard enabled else {
+                            focusedOptionID = nil
+                            return
+                        }
                         focusSelection()
                         scrollToFocusedOption(with: proxy, animated: false)
                     }
@@ -555,6 +573,7 @@ struct TVSettingsPickerSheet: View {
                         scrollToFocusedOption(with: proxy)
                     }
                 }
+                .disabled(!allowsSelection)
             }
             .frame(maxWidth: 960)
             .navigationTitle(title)
@@ -563,7 +582,7 @@ struct TVSettingsPickerSheet: View {
         }
         .focusSection()
         .onChange(of: focusedOptionID) { _, value in
-            if value == nil {
+            if allowsSelection, value == nil {
                 focusSelection()
             }
         }
@@ -584,6 +603,7 @@ struct TVSettingsPickerSheet: View {
     }
 
     private func scrollToFocusedOption(with proxy: ScrollViewProxy, animated: Bool = true) {
+        guard allowsSelection else { return }
         let targetID = focusedOptionID ?? options.first { $0.id == selection }?.id ?? options.first?.id
         guard let targetID else { return }
         if animated {

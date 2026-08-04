@@ -17,6 +17,7 @@ struct TVLibraryCollectionsView: View {
 
     @State private var collectionSections: [LibraryCollectionSection] = []
     @State private var isLoadingCollections = true
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
     @State private var hasPendingFocusClaim = false
     @State private var lastShellFocusRequest = 0
@@ -89,7 +90,7 @@ struct TVLibraryCollectionsView: View {
                                     spacing: ContinuumTheme.Skyline.collectionGridColumnSpacing,
                                     alignment: .top
                                 ),
-                                count: ContinuumTheme.Skyline.collectionGridColumnCount
+                                count: resolvedColumnCount
                             ),
                             alignment: .leading,
                             spacing: ContinuumTheme.Skyline.collectionGridRowSpacing
@@ -187,6 +188,15 @@ struct TVLibraryCollectionsView: View {
             collectionSections = []
         }
         isLoadingCollections = false
+    }
+
+    private var resolvedColumnCount: Int {
+        let standard = ContinuumTheme.Skyline.collectionGridColumnCount
+        switch uiCustomization.cardPresentation.posterSize {
+        case .compact: return standard + 1
+        case .standard: return standard
+        case .large: return max(3, standard - 1)
+        }
     }
 }
 

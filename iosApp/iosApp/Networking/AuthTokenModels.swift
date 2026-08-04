@@ -44,6 +44,14 @@ struct ImpersonationInfo: Codable {
 /// Body for POST /api/v1/auth/refresh.
 struct RefreshRequest: Codable {
     let refreshToken: String
+
+    init(refreshToken value: String) {
+        refreshToken = value
+    }
+
+    init(_ value: String) {
+        refreshToken = value
+    }
 }
 
 /// Response from POST /api/v1/auth/refresh.

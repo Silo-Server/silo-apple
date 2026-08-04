@@ -261,6 +261,7 @@ extension SettingJSONValue: ExpressibleByBooleanLiteral,
 enum SettingScope: RawRepresentable, Hashable, Sendable {
     case account
     case profile
+    case profileClient
     case profileDevice
     case profileLibrary
     case profileSeries
@@ -270,6 +271,7 @@ enum SettingScope: RawRepresentable, Hashable, Sendable {
         switch rawValue {
         case "account": self = .account
         case "profile": self = .profile
+        case "profile_client": self = .profileClient
         case "profile_device": self = .profileDevice
         case "profile_library": self = .profileLibrary
         case "profile_series": self = .profileSeries
@@ -281,6 +283,7 @@ enum SettingScope: RawRepresentable, Hashable, Sendable {
         switch self {
         case .account: return "account"
         case .profile: return "profile"
+        case .profileClient: return "profile_client"
         case .profileDevice: return "profile_device"
         case .profileLibrary: return "profile_library"
         case .profileSeries: return "profile_series"
@@ -392,6 +395,7 @@ extension SettingConstraintKind: Codable {
 enum SettingScopeIdentity: Hashable, Sendable {
     case account
     case profile
+    case profileClient
     case profileDevice
     case profileLibrary(libraryId: Int)
     case profileSeries(seriesId: String)
@@ -400,6 +404,7 @@ enum SettingScopeIdentity: Hashable, Sendable {
         switch self {
         case .account: return .account
         case .profile: return .profile
+        case .profileClient: return .profileClient
         case .profileDevice: return .profileDevice
         case .profileLibrary: return .profileLibrary
         case .profileSeries: return .profileSeries
@@ -415,7 +420,7 @@ enum SettingScopeIdentity: Hashable, Sendable {
             query["library_id"] = String(libraryId)
         case .profileSeries(let seriesId):
             query["series_id"] = seriesId
-        case .account, .profile, .profileDevice:
+        case .account, .profile, .profileClient, .profileDevice:
             break
         }
         return query
@@ -429,6 +434,7 @@ struct StoredSettingValue: Codable, Hashable, Sendable {
     let key: String
     let scope: SettingScope
     let profileId: String?
+    let clientFamily: String?
     let deviceId: String?
     let libraryId: Int?
     let seriesId: String?
@@ -443,6 +449,7 @@ struct StoredSettingValue: Codable, Hashable, Sendable {
         case key
         case scope
         case profileId = "profile_id"
+        case clientFamily = "client_family"
         case deviceId = "device_id"
         case libraryId = "library_id"
         case seriesId = "series_id"
@@ -480,6 +487,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
     /// Absent for a contract default.
     let scope: SettingScope?
     let profileId: String?
+    let clientFamily: String?
     let deviceId: String?
     let libraryId: Int?
     let seriesId: String?
@@ -494,6 +502,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         case suggestedValues = "suggested_values"
         case scope
         case profileId = "profile_id"
+        case clientFamily = "client_family"
         case deviceId = "device_id"
         case libraryId = "library_id"
         case seriesId = "series_id"
@@ -514,6 +523,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         suggestedValues = try container.decodeIfPresent([String].self, forKey: .suggestedValues)
         scope = try container.decodeIfPresent(SettingScope.self, forKey: .scope)
         profileId = try container.decodeIfPresent(String.self, forKey: .profileId)
+        clientFamily = try container.decodeIfPresent(String.self, forKey: .clientFamily)
         deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
         libraryId = try container.decodeIfPresent(Int.self, forKey: .libraryId)
         seriesId = try container.decodeIfPresent(String.self, forKey: .seriesId)
@@ -529,6 +539,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         suggestedValues: [String]? = nil,
         scope: SettingScope? = nil,
         profileId: String? = nil,
+        clientFamily: String? = nil,
         deviceId: String? = nil,
         libraryId: Int? = nil,
         seriesId: String? = nil
@@ -542,6 +553,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         self.suggestedValues = suggestedValues
         self.scope = scope
         self.profileId = profileId
+        self.clientFamily = clientFamily
         self.deviceId = deviceId
         self.libraryId = libraryId
         self.seriesId = seriesId
@@ -558,6 +570,7 @@ struct EffectiveSettingValue: Codable, Hashable, Sendable {
         switch scope {
         case .account: return .account
         case .profile: return .profile
+        case .profileClient: return .profileClient
         case .profileDevice: return .profileDevice
         case .profileLibrary: return libraryId.map { .profileLibrary(libraryId: $0) }
         case .profileSeries: return seriesId.map { .profileSeries(seriesId: $0) }
@@ -614,6 +627,10 @@ struct SettingsContractCapabilities: Codable, Hashable, Sendable {
     let scopes: [String]
     let supportsBatchedEffective: Bool
     let supportsIdempotentWrites: Bool
+    /// Revision-5 semantic shortcut mutations. Whole-document shortcut PUTs
+    /// are intentionally not a safe fallback because concurrent clients can
+    /// otherwise replace one another's pins.
+    let supportsAtomicShortcuts: Bool
 
     enum CodingKeys: String, CodingKey {
         case apiVersion = "api_version"
@@ -623,6 +640,44 @@ struct SettingsContractCapabilities: Codable, Hashable, Sendable {
         case scopes
         case supportsBatchedEffective = "supports_batched_effective"
         case supportsIdempotentWrites = "supports_idempotent_writes"
+        case supportsAtomicShortcuts = "supports_atomic_shortcuts"
+    }
+
+    init(
+        apiVersion: Int,
+        revision: Int,
+        contractEtag: String,
+        definitionCount: Int,
+        scopes: [String],
+        supportsBatchedEffective: Bool,
+        supportsIdempotentWrites: Bool,
+        supportsAtomicShortcuts: Bool
+    ) {
+        self.apiVersion = apiVersion
+        self.revision = revision
+        self.contractEtag = contractEtag
+        self.definitionCount = definitionCount
+        self.scopes = scopes
+        self.supportsBatchedEffective = supportsBatchedEffective
+        self.supportsIdempotentWrites = supportsIdempotentWrites
+        self.supportsAtomicShortcuts = supportsAtomicShortcuts
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        apiVersion = try container.decode(Int.self, forKey: .apiVersion)
+        revision = try container.decode(Int.self, forKey: .revision)
+        contractEtag = try container.decode(String.self, forKey: .contractEtag)
+        definitionCount = try container.decode(Int.self, forKey: .definitionCount)
+        scopes = try container.decode([String].self, forKey: .scopes)
+        supportsBatchedEffective = try container.decode(Bool.self, forKey: .supportsBatchedEffective)
+        supportsIdempotentWrites = try container.decode(Bool.self, forKey: .supportsIdempotentWrites)
+        // Older capability payloads predate the flag. Missing must fail
+        // closed, never silently opt into the atomic-only UI.
+        supportsAtomicShortcuts = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .supportsAtomicShortcuts
+        ) ?? false
     }
 
     /// True when this build was generated from a newer manifest than the
@@ -630,6 +685,13 @@ struct SettingsContractCapabilities: Codable, Hashable, Sendable {
     /// know rather than offer a choice it will refuse.
     var contractIsAheadOfServer: Bool {
         SettingKey.revision > revision
+    }
+
+    var supportsUICustomizationRevision: Bool {
+        revision >= 5
+            && supportsBatchedEffective
+            && supportsIdempotentWrites
+            && supportsAtomicShortcuts
     }
 }
 

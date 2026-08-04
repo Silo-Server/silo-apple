@@ -169,6 +169,7 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         request.setValue(device.id, forHTTPHeaderField: "X-Silo-Device-Id")
         request.setValue(device.name, forHTTPHeaderField: "X-Silo-Device-Name")
         request.setValue(device.platform, forHTTPHeaderField: "X-Silo-Device-Platform")
+        request.setValue(device.clientFamily, forHTTPHeaderField: "X-Silo-Client-Family")
     }
 
     private func send<R: Decodable>(_ request: URLRequest) async throws -> R {

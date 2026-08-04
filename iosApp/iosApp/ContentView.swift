@@ -26,6 +26,10 @@ struct ContentView: View {
     /// the first .authenticated transition so cards stay visible during
     /// the brief window between sign-in and the overlay-config fetch.
     @StateObject private var overlayPrefs = OverlayPrefsStore.shared
+    /// Server-synced navigation and card presentation for this client family.
+    /// The store paints its offline cache first, then reconciles whenever the
+    /// authenticated server/profile boundary changes.
+    @State private var uiCustomization = UICustomizationPreferences.shared
     /// Used to retry overlay hydration on foreground transitions: if the
     /// initial fetch failed transiently, `hydrateIfNeeded()` will retry
     /// because the store left `hasHydrated == false`. Idempotent when
@@ -151,6 +155,7 @@ struct ContentView: View {
                 // failure-tolerant, so double-calling with `selectProfile` is safe.
                 await AICapabilities.shared.refresh()
                 await RequestsFeatureStore.shared.refresh()
+                await uiCustomization.refresh()
                 #if os(iOS)
                 await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
                 #endif
@@ -172,20 +177,24 @@ struct ContentView: View {
             )
             overlayPrefs.clear()
             if router.authState == .authenticated {
+                await uiCustomization.refresh()
                 await overlayPrefs.hydrateIfNeeded()
                 #if os(iOS) || os(tvOS)
                 await diagnosticsModel.handleForeground()
                 #endif
             }
         }
-        #if os(iOS) || os(tvOS)
         .task(id: serverRegistry.activeProfileId) {
+            #if os(iOS) || os(tvOS)
             diagnosticsModel.reset()
+            #endif
             if router.authState == .authenticated {
+                await uiCustomization.refresh()
+                #if os(iOS) || os(tvOS)
                 await diagnosticsModel.handleForeground()
+                #endif
             }
         }
-        #endif
         .onChange(of: scenePhase) { _, newPhase in
             #if os(iOS) || os(tvOS)
             DiagnosticsCoordinator.recordBreadcrumb(
@@ -247,6 +256,7 @@ struct ContentView: View {
             // happy path costs nothing.
             Task { await AICapabilities.shared.refresh() }
             Task { await RequestsFeatureStore.shared.refresh() }
+            Task { await uiCustomization.refresh() }
             #if os(iOS)
             Task {
                 await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
@@ -738,15 +748,194 @@ extension EnvironmentValues {
 
 // MARK: - Main Tab View
 
+enum MainTabDestinationID: Hashable {
+    case app(AppTab)
+    case libraryCategory(PrimaryMenuBuiltin)
+    case library(Int)
+}
+
+struct MainTabDestination: Identifiable, Equatable {
+    let id: MainTabDestinationID
+    let title: String
+    let icon: String
+    let selectedIcon: String
+
+    static func app(_ tab: AppTab) -> MainTabDestination {
+        .init(id: .app(tab), title: tab.rawValue, icon: tab.icon, selectedIcon: tab.selectedIcon)
+    }
+
+    static func library(id: Int, label: String) -> MainTabDestination {
+        .init(
+            id: .library(id),
+            title: label,
+            icon: "rectangle.stack",
+            selectedIcon: "rectangle.stack.fill"
+        )
+    }
+
+    static func libraryCategory(_ category: PrimaryMenuBuiltin) -> MainTabDestination {
+        let icon: String
+        switch category {
+        case .movies: icon = "film.stack"
+        case .series: icon = "tv"
+        case .audiobooks: icon = "book.closed"
+        default: icon = "rectangle.stack"
+        }
+        return .init(
+            id: .libraryCategory(category),
+            title: category.title,
+            icon: icon,
+            selectedIcon: icon
+        )
+    }
+}
+
+/// Projects the cross-client menu into roots this Apple shell can navigate
+/// without discarding destination identity. Sections and collections remain
+/// stored in the synced document, but stay hidden until this shell has a
+/// destination-specific root for them.
+func projectedMainTabDestinations(
+    primaryMenu: PrimaryMenuPreference?,
+    availableLibraries: [Library] = []
+) -> [MainTabDestination] {
+    guard let primaryMenu else {
+        return AppTab.visibleCases.map(MainTabDestination.app)
+    }
+
+    var destinations: [MainTabDestination] = []
+    for item in primaryMenu.items {
+        guard mainTabSupportsDestination(item, availableLibraries: availableLibraries) else {
+            continue
+        }
+        let destination: MainTabDestination?
+        switch item {
+        case .builtin(.home): destination = .app(.home)
+        case .builtin(.movies): destination = .libraryCategory(.movies)
+        case .builtin(.series): destination = .libraryCategory(.series)
+        case .builtin(.audiobooks): destination = .libraryCategory(.audiobooks)
+        case .builtin(.music): destination = nil
+        case .builtin(.forYou): destination = .app(.recommendations)
+        case .builtin(.calendar): destination = .app(.calendar)
+        case .library(let libraryId, let label):
+            destination = .library(id: libraryId, label: label)
+        case .section, .collection:
+            destination = nil
+        }
+        if let destination,
+           !destinations.contains(where: { $0.id == destination.id }) {
+            destinations.append(destination)
+        }
+    }
+    if !destinations.contains(where: { $0.id == .app(.home) }) {
+        destinations.insert(.app(.home), at: 0)
+    }
+    return destinations
+}
+
+/// Runtime/editor capability gate for the non-tvOS Apple main shell. The
+/// synced document remains untouched; roots that the active profile cannot
+/// currently open simply stay out of the rendered navigation and editor.
+func mainTabSupportsDestination(
+    _ item: PrimaryMenuItem,
+    availableLibraries: [Library]
+) -> Bool {
+    switch item {
+    case .builtin(.movies):
+        return availableLibraries.contains {
+            libraryMatchesPrimaryMenuCategory($0, category: .movies)
+        }
+    case .builtin(.series):
+        return availableLibraries.contains {
+            libraryMatchesPrimaryMenuCategory($0, category: .series)
+        }
+    case .builtin(.audiobooks):
+        return availableLibraries.contains {
+            libraryMatchesPrimaryMenuCategory($0, category: .audiobooks)
+        }
+    case .builtin(.music):
+        return false
+    case .builtin(.home), .builtin(.forYou), .builtin(.calendar):
+        return true
+    case .library(let libraryId, _):
+        return availableLibraries.contains { $0.id == libraryId }
+    case .section, .collection:
+        return false
+    }
+}
+
+func resolvedVisibleMainTabDestination(
+    _ requestedDestination: MainTabDestinationID,
+    visibleDestinations: [MainTabDestination]
+) -> MainTabDestinationID {
+    visibleDestinations.contains { $0.id == requestedDestination }
+        ? requestedDestination
+        : .app(.home)
+}
+
+func resolvedRequestedMainTabDestination(
+    _ requestedTab: AppTab,
+    visibleDestinations: [MainTabDestination]
+) -> MainTabDestinationID {
+    resolvedVisibleMainTabDestination(
+        .app(requestedTab),
+        visibleDestinations: visibleDestinations
+    )
+}
+
+struct MainTabLibraryAuthority: Hashable {
+    let serverId: String
+    let profileId: String
+
+    init?(serverId: String?, profileId: String?) {
+        guard let serverId, !serverId.isEmpty,
+              let profileId, !profileId.isEmpty else { return nil }
+        self.serverId = serverId
+        self.profileId = profileId
+    }
+}
+
+struct MainTabLibrarySnapshot: Equatable {
+    let authority: MainTabLibraryAuthority?
+    let libraries: [Library]
+
+    func availableLibraries(
+        for currentAuthority: MainTabLibraryAuthority?
+    ) -> [Library] {
+        guard let currentAuthority, authority == currentAuthority else { return [] }
+        return libraries
+    }
+
+    @MainActor
+    static func cachedForCurrentAuthority() -> Self {
+        let registry = ServerRegistry.shared
+        let authority = MainTabLibraryAuthority(
+            serverId: registry.activeServerId,
+            profileId: registry.activeProfileId
+        )
+        let libraries = ResponseCache.shared.get(
+            CacheKey.userLibraries,
+            as: LibrariesResponse.self
+        )?.libraries ?? []
+        return .init(authority: authority, libraries: libraries)
+    }
+}
+
 struct MainTabView: View {
     @Bindable var router: AppRouter
-    @State private var selectedTab: AppTab = .home
+    @State private var selectedDestinationID: MainTabDestinationID = .app(.home)
+    @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var serverRegistry = ServerRegistry.shared
+    /// Tagged with the server/profile that authorized the library list. A
+    /// profile transition fails direct roots closed immediately, even before
+    /// its cache invalidation and network refresh finish.
+    @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     /// Shared namespace for the poster → detail zoom transition. Injected into
     /// the environment (`\.zoomNamespace`) so both the cards and the central
     /// detail destination resolve the same identity.
     @Namespace private var zoomNamespace
     @Environment(AudioPlaybackStore.self) private var audioStore
+    @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
     #endif
@@ -763,6 +952,14 @@ struct MainTabView: View {
             }
         }
         .tint(.continuumOnSurface)
+        .task(id: currentLibraryAuthority) {
+            await loadVisibleLibraries(for: currentLibraryAuthority)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            let authority = currentLibraryAuthority
+            Task { await loadVisibleLibraries(for: authority) }
+        }
         #if !os(tvOS)
         // Mirror Android's offline start-destination: launching with no
         // network but playable local downloads lands on Downloads instead of
@@ -780,9 +977,9 @@ struct MainTabView: View {
                   DownloadManager.shared.records.contains(where: { $0.isPlayableOffline }),
                   // Don't clobber a tab the user (or a deep link) already
                   // selected while this task was waiting.
-                  selectedTab == .home, router.requestedTab == nil
+                  selectedDestinationID == .app(.home), router.requestedTab == nil
             else { return }
-            selectedTab = .downloads
+            selectedDestinationID = .app(.downloads)
         }
         #endif
         #if os(iOS)
@@ -794,8 +991,23 @@ struct MainTabView: View {
         #endif
         .onChange(of: router.requestedTab) { _, tab in
             guard let tab else { return }
-            selectedTab = tab
+            selectedDestinationID = resolvedRequestedMainTabDestination(
+                tab,
+                visibleDestinations: visibleDestinations
+            )
             router.requestedTab = nil
+        }
+        .onChange(of: uiCustomization.primaryMenu) { _, _ in
+            selectedDestinationID = resolvedVisibleMainTabDestination(
+                selectedDestinationID,
+                visibleDestinations: visibleDestinations
+            )
+        }
+        .onChange(of: librarySnapshot) { _, _ in
+            selectedDestinationID = resolvedVisibleMainTabDestination(
+                selectedDestinationID,
+                visibleDestinations: visibleDestinations
+            )
         }
         #if !os(macOS)
         .fullScreenCover(isPresented: Binding(
@@ -846,36 +1058,72 @@ struct MainTabView: View {
     /// downloads capability for this profile. Reading
     /// `DownloadManager.shared.downloadsEnabled` here registers the tab bar
     /// as an observer, so the tab appears as soon as capability loads.
-    private var visibleTabs: [AppTab] {
-        var tabs = AppTab.visibleCases
+    private var visibleDestinations: [MainTabDestination] {
+        var destinations = projectedMainTabDestinations(
+            primaryMenu: uiCustomization.primaryMenu,
+            availableLibraries: librarySnapshot.availableLibraries(
+                for: currentLibraryAuthority
+            )
+        )
         #if !os(tvOS)
-        if DownloadManager.shared.downloadsEnabled {
-            tabs.append(.downloads)
+        if DownloadManager.shared.downloadsEnabled,
+           !destinations.contains(where: { $0.id == .app(.downloads) }) {
+            destinations.append(.app(.downloads))
         }
         #endif
-        return tabs
+        return destinations
+    }
+
+    private var currentLibraryAuthority: MainTabLibraryAuthority? {
+        MainTabLibraryAuthority(
+            serverId: serverRegistry.activeServerId,
+            profileId: serverRegistry.activeProfileId
+        )
+    }
+
+    private func loadVisibleLibraries(for authority: MainTabLibraryAuthority?) async {
+        let retainedLibraries = librarySnapshot.authority == authority
+            ? librarySnapshot.libraries
+            : []
+        librarySnapshot = .init(authority: authority, libraries: retainedLibraries)
+        guard let authority else { return }
+        do {
+            let response = try await StartupContentPrefetcher.fetchUserLibraries()
+            guard !Task.isCancelled, currentLibraryAuthority == authority else { return }
+            librarySnapshot = .init(authority: authority, libraries: response.libraries)
+        } catch {
+            // Keep the active-profile cache, or fail closed with no direct
+            // library roots when there is no safe offline routing metadata.
+        }
+    }
+
+    private var selectedDestination: MainTabDestination {
+        visibleDestinations.first(where: { $0.id == selectedDestinationID })
+            ?? .app(.home)
     }
 
     /// iPhone + iPad compact width: bottom tab bar, single navigation stack.
     private var tabLayout: some View {
         NavigationStack(path: $router.path) {
-            TabView(selection: $selectedTab) {
-                ForEach(visibleTabs) { tab in
+            TabView(selection: $selectedDestinationID) {
+                ForEach(visibleDestinations) { destination in
                     #if os(tvOS)
                     // Text-only tabs on tvOS keep the top bar compact — adding an
                     // icon blows up each tab's focus pill. The value-based `Tab`
                     // initializer requires an image on tvOS, so this arm stays on
                     // the `.tabItem { Text }` form to preserve the text-only look.
-                    tabContent(for: tab)
-                        .tabItem { Text(tab.rawValue) }
-                        .tag(tab)
+                    destinationContent(for: destination)
+                        .tabItem { Text(destination.title) }
+                        .tag(destination.id)
                     #else
                     Tab(
-                        tab.rawValue,
-                        systemImage: selectedTab == tab ? tab.selectedIcon : tab.icon,
-                        value: tab
+                        destination.title,
+                        systemImage: selectedDestinationID == destination.id
+                            ? destination.selectedIcon
+                            : destination.icon,
+                        value: destination.id
                     ) {
-                        tabContent(for: tab)
+                        destinationContent(for: destination)
                     }
                     #endif
                 }
@@ -903,22 +1151,25 @@ struct MainTabView: View {
     /// `router.presentedPlayer` rather than pushed into the detail pane.
     private var sidebarLayout: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            List(selection: Binding<AppTab?>(
-                get: { selectedTab },
-                set: { if let v = $0 { selectedTab = v } }
+            List(selection: Binding<MainTabDestinationID?>(
+                get: { selectedDestinationID },
+                set: { if let value = $0 { selectedDestinationID = value } }
             )) {
-                ForEach(visibleTabs) { tab in
+                ForEach(visibleDestinations) { destination in
                     Label(
-                        tab.rawValue,
-                        systemImage: selectedTab == tab ? tab.selectedIcon : tab.icon
+                        destination.title,
+                        systemImage: selectedDestinationID == destination.id
+                            ? destination.selectedIcon
+                            : destination.icon
                     )
-                    .tag(tab)
+                    .tag(destination.id)
                 }
             }
             .navigationTitle("Silo")
         } detail: {
             NavigationStack(path: $router.path) {
-                tabContent(for: selectedTab)
+                destinationContent(for: selectedDestination)
+                    .id(selectedDestination.id)
                     .navigationDestination(for: Route.self) { route in
                         routeContent(for: route)
                     }
@@ -940,13 +1191,44 @@ struct MainTabView: View {
     }
 
     @ViewBuilder
+    private func destinationContent(for destination: MainTabDestination) -> some View {
+        switch destination.id {
+        case .app(let tab):
+            tabContent(for: tab)
+        case .libraryCategory(let category):
+            LibrariesTabView(
+                category: category,
+                libraryAuthority: currentLibraryAuthority,
+                onLibrariesLoaded: acceptLoadedLibraries
+            )
+        case .library(let libraryId):
+            LibrariesTabView(
+                fixedLibraryId: libraryId,
+                libraryAuthority: currentLibraryAuthority,
+                onLibrariesLoaded: acceptLoadedLibraries
+            )
+        }
+    }
+
+    private func acceptLoadedLibraries(
+        authority: MainTabLibraryAuthority?,
+        libraries: [Library]
+    ) {
+        guard let authority, authority == currentLibraryAuthority else { return }
+        librarySnapshot = .init(authority: authority, libraries: libraries)
+    }
+
+    @ViewBuilder
     private func tabContent(for tab: AppTab) -> some View {
         switch tab {
         case .home:
             HomeView()
 
         case .libraries:
-            LibrariesTabView()
+            LibrariesTabView(
+                libraryAuthority: currentLibraryAuthority,
+                onLibrariesLoaded: acceptLoadedLibraries
+            )
 
         case .search:
             SearchView()

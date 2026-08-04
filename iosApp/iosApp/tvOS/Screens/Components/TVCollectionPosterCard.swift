@@ -27,16 +27,22 @@ struct TVCollectionPosterCard: View {
     var focusContentId: String? = nil
 
     @FocusState private var isFocused: Bool
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
     // Standard 2:3 movie-poster aspect ratio — height tracks width.
-    private var cardHeight: CGFloat { cardWidth * 1.5 }
+    private var resolvedCardWidth: CGFloat {
+        cardWidth * uiCustomization.cardPresentation.posterSize.scale
+    }
+    private var cardHeight: CGFloat { resolvedCardWidth * 1.5 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             posterButton
-            caption
+            if uiCustomization.cardPresentation.caption.showsTitle {
+                caption
+            }
         }
-        .frame(width: cardWidth)
+        .frame(width: resolvedCardWidth)
     }
 
     private var posterButton: some View {
@@ -58,7 +64,7 @@ struct TVCollectionPosterCard: View {
             if let url = collection.posterUrl, !url.isEmpty {
                 CachedAsyncImage(
                     url: url,
-                    targetSize: CGSize(width: cardWidth, height: cardHeight),
+                    targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
                     thumbhash: collection.posterThumbhash,
                     contentMode: .fill
                 )
@@ -66,7 +72,7 @@ struct TVCollectionPosterCard: View {
                 placeholder
             }
         }
-        .frame(width: cardWidth, height: cardHeight)
+        .frame(width: resolvedCardWidth, height: cardHeight)
         .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
     }
 
@@ -102,7 +108,7 @@ struct TVCollectionPosterCard: View {
                 .truncationMode(.tail)
                 .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
 
-            if let countText {
+            if uiCustomization.cardPresentation.caption.showsMetadata, let countText {
                 Text(countText)
                     .font(.system(size: 18, weight: .regular))
                     .foregroundColor(.continuumSecondaryText)
@@ -110,7 +116,7 @@ struct TVCollectionPosterCard: View {
             }
         }
         .multilineTextAlignment(.center)
-        .frame(width: cardWidth, alignment: .center)
+        .frame(width: resolvedCardWidth, alignment: .center)
     }
 
     // MARK: - Derived

@@ -10,17 +10,27 @@ struct CatalogGrid: View {
     let onItemTap: (String) -> Void
     let onLoadMore: () -> Void
     @Environment(AppRouter.self) private var router
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
     #if os(tvOS)
-    private let columns = Array(
-        repeating: GridItem(.flexible(), spacing: 40, alignment: .top),
-        count: 6
-    )
+    private var columns: [GridItem] {
+        Array(
+            repeating: GridItem(.flexible(), spacing: 40, alignment: .top),
+            count: AdaptiveColumns.tvPosterCount(
+                standardCount: 6,
+                posterSize: uiCustomization.cardPresentation.posterSize
+            )
+        )
+    }
     private let rowSpacing: CGFloat = 60
     #else
     @Environment(\.horizontalSizeClass) private var hSize
     private var columns: [GridItem] {
-        AdaptiveColumns.posters(for: hSize, spacing: 8)
+        AdaptiveColumns.posters(
+            for: hSize,
+            posterSize: uiCustomization.cardPresentation.posterSize,
+            spacing: 8
+        )
     }
     private let rowSpacing: CGFloat = 12
     #endif

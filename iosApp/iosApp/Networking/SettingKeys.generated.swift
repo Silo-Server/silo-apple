@@ -27,12 +27,18 @@ public struct SettingPresentation: Hashable, Sendable {
 public enum SettingKey: String, CaseIterable, Sendable {
     /// Metadata language
     case catalogMetadataLanguage = "catalog.metadata_language"
+    /// Metadata language exceptions
+    case catalogMetadataLanguageOverrides = "catalog.metadata_language_overrides"
     /// Download quality
     case downloadsDefaultQuality = "downloads.default_quality"
     /// Keep watched downloads
     case downloadsKeepWatched = "downloads.keep_watched"
     /// Download over Wi-Fi only
     case downloadsWifiOnly = "downloads.wifi_only"
+    /// Primary menu
+    case navPrimaryMenu = "nav.primary_menu"
+    /// Navigation shortcuts
+    case navShortcuts = "nav.shortcuts"
     /// Show audiobooks
     case navShowAudiobooks = "nav.show_audiobooks"
     /// Preferred audio language
@@ -95,6 +101,8 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case subtitleMatchesDevice = "subtitle.matches_device"
     /// Poster badges
     case uiCardOverlays = "ui.card_overlays"
+    /// Media cards
+    case uiCardPresentation = "ui.card_presentation"
     /// Custom CSS
     case uiCustomCss = "ui.custom_css"
     /// Custom theme variables
@@ -126,11 +134,14 @@ public enum SettingKey: String, CaseIterable, Sendable {
 }
 
 public extension SettingKey {
-    static let revision = 2
+    static let revision = 5
 
     /// Keys the server stores. The rest never leave the device.
     static let remote: [SettingKey] = [
         .catalogMetadataLanguage,
+        .catalogMetadataLanguageOverrides,
+        .navPrimaryMenu,
+        .navShortcuts,
         .playbackAudioLanguage,
         .playbackAutoPlayNext,
         .playbackAutoPlayNextPreview,
@@ -157,6 +168,7 @@ public extension SettingKey {
         .playerVideoGravity,
         .searchMediaScope,
         .uiCardOverlays,
+        .uiCardPresentation,
         .uiCustomCss,
         .uiCustomThemeVars,
         .uiDateFormat,

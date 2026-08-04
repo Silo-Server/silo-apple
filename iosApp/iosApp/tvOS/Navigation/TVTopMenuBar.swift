@@ -82,13 +82,45 @@ enum TVRootDestination: Hashable {
     case home
     case recommendations
     case libraryType(TVLibraryTabType)
+    case libraryShortcut(libraryId: Int, label: String)
     case calendar
+
+    static func == (lhs: TVRootDestination, rhs: TVRootDestination) -> Bool {
+        switch (lhs, rhs) {
+        case (.home, .home), (.recommendations, .recommendations), (.calendar, .calendar):
+            return true
+        case (.libraryType(let lhsType), .libraryType(let rhsType)):
+            return lhsType == rhsType
+        case (.libraryShortcut(let lhsId, _), .libraryShortcut(let rhsId, _)):
+            return lhsId == rhsId
+        default:
+            return false
+        }
+    }
+
+    func hash(into hasher: inout Hasher) {
+        switch self {
+        case .home:
+            hasher.combine(0)
+        case .recommendations:
+            hasher.combine(1)
+        case .libraryType(let type):
+            hasher.combine(2)
+            hasher.combine(type)
+        case .libraryShortcut(let libraryId, _):
+            hasher.combine(3)
+            hasher.combine(libraryId)
+        case .calendar:
+            hasher.combine(4)
+        }
+    }
 
     var title: String {
         switch self {
         case .home: return "Home"
         case .recommendations: return "For You"
         case .libraryType(let type): return type.title
+        case .libraryShortcut(_, let label): return label
         case .calendar: return "Calendar"
         }
     }
@@ -298,18 +330,31 @@ struct TVTopMenuBar: View {
         HStack(spacing: ContinuumTheme.Skyline.tabSpacing) {
             searchButton
 
-            ForEach(Array(roots.enumerated()), id: \.element) { index, root in
-                rootButton(root, index: index, count: roots.count)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: ContinuumTheme.Skyline.tabSpacing) {
+                        ForEach(Array(roots.enumerated()), id: \.element) { index, root in
+                            rootButton(root, index: index, count: roots.count)
+                                .id(TVTopMenuFocus.root(root))
+                        }
+                    }
+                    .scrollTargetLayout()
+                }
+                .scrollClipDisabled()
+                .onChange(of: focusedItem) { _, item in
+                    guard let item, case .root = item else { return }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.fastDuration)) {
+                        proxy.scrollTo(item, anchor: .center)
+                    }
+                }
+                .onChange(of: selectedRoot) { _, root in
+                    proxy.scrollTo(TVTopMenuFocus.root(root), anchor: .center)
+                }
             }
-
-            // Invisible twin of the search button so the tab group itself
-            // stays centered on screen with search sitting to its left.
-            Color.clear
-                .frame(
-                    width: ContinuumTheme.Skyline.barIconSize,
-                    height: ContinuumTheme.Skyline.barIconSize
-                )
         }
+        // Search and Profile stay fixed while only the customizable roots
+        // scroll through the center lane.
+        .padding(.horizontal, 150)
         .frame(maxWidth: .infinity, alignment: .center)
         .frame(height: ContinuumTheme.Skyline.barHeight)
     }
@@ -335,6 +380,8 @@ struct TVTopMenuBar: View {
                 .font(.system(size: ContinuumTheme.Skyline.tabLabelSize, weight: .semibold))
                 .foregroundStyle(tabForeground(isSelected: isSelected, isFocused: isFocused))
                 .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 260)
                 .padding(.horizontal, ContinuumTheme.Skyline.tabPaddingHorizontal)
                 .padding(.vertical, ContinuumTheme.Skyline.tabPaddingVertical)
                 .modifier(TVTopMenuCapsuleChrome(isSelected: isSelected, isFocused: isFocused))
@@ -370,7 +417,11 @@ struct TVTopMenuBar: View {
 
     private func rootPanel(_ root: TVRootDestination) -> TVTopMenuPanel? {
         switch root {
-        case .libraryType, .recommendations:
+        case .libraryType:
+            return TVLibraryMenuRootKind.category.hasSectionCascade ? .root(root) : nil
+        case .libraryShortcut:
+            return TVLibraryMenuRootKind.directShortcut.hasSectionCascade ? .root(root) : nil
+        case .recommendations:
             return .root(root)
         case .home, .calendar:
             return nil
@@ -381,6 +432,8 @@ struct TVTopMenuBar: View {
         switch root {
         case .libraryType:
             return "Rest to choose a library"
+        case .libraryShortcut:
+            return "Rest to choose a section"
         case .recommendations:
             return "Rest to choose Watchlist, Favorites, or Recommendations"
         case .home, .calendar:
@@ -807,7 +860,7 @@ private enum TVForYouAction: Hashable {
 /// cascades.
 struct TVForYouDropdown: View {
     let entersPanel: Bool
-    let focusEntryToken: Int
+    let focusEntryGeneration: Int
     let onPanelFocusChanged: (Bool) -> Void
     let onClose: () -> Void
     let onExitToContent: () -> Void
@@ -816,11 +869,13 @@ struct TVForYouDropdown: View {
     let onRecommendations: () -> Void
 
     @FocusState private var focusedAction: TVForYouAction?
-    @State private var lastAppliedEntryToken = 0
+    @State private var lastAppliedEntryGeneration = 0
 
     var body: some View {
         panel
-            .onChange(of: focusEntryToken) { _, token in applyEntryToken(token) }
+            .onChange(of: focusEntryGeneration) { _, generation in
+                applyEntryGeneration(generation)
+            }
             .onChange(of: focusedAction) { _, newValue in
                 onPanelFocusChanged(newValue != nil)
             }
@@ -828,13 +883,15 @@ struct TVForYouDropdown: View {
                 if !entered { focusedAction = nil }
             }
             .onAppear {
-                if entersPanel { applyEntryToken(focusEntryToken) }
+                if entersPanel { applyEntryGeneration(focusEntryGeneration) }
             }
     }
 
-    private func applyEntryToken(_ token: Int) {
-        guard entersPanel, token > 0, token != lastAppliedEntryToken else { return }
-        lastAppliedEntryToken = token
+    private func applyEntryGeneration(_ generation: Int) {
+        guard entersPanel,
+              generation > 0,
+              generation != lastAppliedEntryGeneration else { return }
+        lastAppliedEntryGeneration = generation
         focusedAction = .watchlist
     }
 
@@ -964,7 +1021,7 @@ private enum TVProfileAction: Hashable {
 /// Anchored profile dropdown panel (§5.8): the same `glass.strong` level-1
 /// panel as the cascade, hosted by the shell under the avatar. The shell
 /// owns the scrim and Menu-to-close; this view owns only its rows and the
-/// focus hand-off when the host bumps `focusEntryToken`.
+/// focus hand-off when the host bumps `focusEntryGeneration`.
 struct TVProfileDropdown: View {
     let profileName: String
     let avatar: String?
@@ -974,7 +1031,7 @@ struct TVProfileDropdown: View {
     /// Whether focus has entered the panel.
     let entersPanel: Bool
     /// Bumped by the host when focus should enter — lands on the first row.
-    let focusEntryToken: Int
+    let focusEntryGeneration: Int
     /// Reports whether any row currently holds focus, so the host can drop
     /// the avatar's focus ring once focus descends (§5.8).
     let onPanelFocusChanged: (Bool) -> Void
@@ -988,7 +1045,7 @@ struct TVProfileDropdown: View {
     let onSignOut: () -> Void
 
     @FocusState private var focusedAction: TVProfileAction?
-    @State private var lastAppliedEntryToken = 0
+    @State private var lastAppliedEntryGeneration = 0
 
     /// Capability-gated: the Requests row only exists (and only takes a
     /// focus slot) when the server reports `requests_enabled`.
@@ -1000,7 +1057,9 @@ struct TVProfileDropdown: View {
         panel
             // Dwell previews render passive labels; rows become focusable
             // only after the host explicitly hands focus into the panel.
-            .onChange(of: focusEntryToken) { _, token in applyEntryToken(token) }
+            .onChange(of: focusEntryGeneration) { _, generation in
+                applyEntryGeneration(generation)
+            }
             .onChange(of: focusedAction) { _, newValue in
                 onPanelFocusChanged(newValue != nil)
             }
@@ -1008,13 +1067,15 @@ struct TVProfileDropdown: View {
                 if !entered { focusedAction = nil }
             }
             .onAppear {
-                if entersPanel { applyEntryToken(focusEntryToken) }
+                if entersPanel { applyEntryGeneration(focusEntryGeneration) }
             }
     }
 
-    private func applyEntryToken(_ token: Int) {
-        guard entersPanel, token > 0, token != lastAppliedEntryToken else { return }
-        lastAppliedEntryToken = token
+    private func applyEntryGeneration(_ generation: Int) {
+        guard entersPanel,
+              generation > 0,
+              generation != lastAppliedEntryGeneration else { return }
+        lastAppliedEntryGeneration = generation
         focusedAction = .switchProfile
     }
 

@@ -31,6 +31,7 @@ struct TVCatalogGrid: View {
     @Namespace private var gridFocusNamespace
     @FocusState private var focusedItemId: String?
     @State private var lastAppliedFocusRequest = 0
+    @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(AppRouter.self) private var router
 
     private let columnSpacing: CGFloat = 40
@@ -42,8 +43,15 @@ struct TVCatalogGrid: View {
     /// before the user reaches the bottom.
     private let prefetchRowsRemaining: Int = 8
 
+    private var resolvedColumnCount: Int {
+        AdaptiveColumns.tvPosterCount(
+            standardCount: columnCount,
+            posterSize: uiCustomization.cardPresentation.posterSize
+        )
+    }
+
     private var rowStartIndices: [Int] {
-        stride(from: 0, to: items.count, by: columnCount).map { $0 }
+        stride(from: 0, to: items.count, by: resolvedColumnCount).map { $0 }
     }
 
     var body: some View {
@@ -107,16 +115,16 @@ struct TVCatalogGrid: View {
     }
 
     private func rowItems(from rowStart: Int) -> [BrowseItem] {
-        Array(items[rowStart..<min(rowStart + columnCount, items.count)])
+        Array(items[rowStart..<min(rowStart + resolvedColumnCount, items.count)])
     }
 
     private func emptySlotCount(from rowStart: Int) -> Int {
-        columnCount - rowItems(from: rowStart).count
+        resolvedColumnCount - rowItems(from: rowStart).count
     }
 
     private func onCellAppear(index: Int) {
         guard hasMore else { return }
-        let threshold = items.count - (prefetchRowsRemaining * columnCount)
+        let threshold = items.count - (prefetchRowsRemaining * resolvedColumnCount)
         if index >= threshold {
             onNearEnd(index)
         }

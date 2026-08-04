@@ -13,6 +13,7 @@ struct HomeFeedRow: View {
     /// Long-press actions, forwarded to every card in the row.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
     private var isResume: Bool { HomeFeed.isResume(section) }
 
@@ -50,13 +51,19 @@ struct HomeFeedRow: View {
                         if usesStills {
                             HomeStillCard(
                                 item: item,
+                                width: HomeFeedMetrics.stillWidth
+                                    * uiCustomization.cardPresentation.posterSize.scale,
+                                showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
+                                showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 onRemoveFromContinueWatching: removalAction(for: item),
                                 onSetWatched: watchedAction(for: item)
                             )
                         } else {
                             HomePosterCard(
                                 item: item,
-                                width: posterWidth,
+                                width: posterWidth * uiCustomization.cardPresentation.posterSize.scale,
+                                showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
+                                showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 showsProgress: isResume,
                                 aspect: isAudiobookRow ? .square : .poster,
                                 episodeBadge: episodeBadge(for: item),

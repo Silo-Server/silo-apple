@@ -11,6 +11,7 @@ import SwiftUI
 /// with drill-in sub-screens tuned for the 10-foot experience.
 struct SettingsView: View {
     @State private var viewModel = SettingsViewModel()
+    @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(AppRouter.self) private var router
     @State private var showSignOutConfirm = false
     #if os(iOS)
@@ -153,6 +154,17 @@ struct SettingsView: View {
 
     private var preferencesSection: some View {
         Section {
+            NavigationLink {
+                InterfaceCustomizationView()
+            } label: {
+                SettingsRowLabel(
+                    title: "Interface",
+                    systemImage: "rectangle.3.group.fill",
+                    color: .indigo,
+                    value: uiCustomization.cardPresentation.preset?.title ?? "Custom"
+                )
+            }
+
             NavigationLink {
                 PlaybackSettingsView(viewModel: viewModel)
             } label: {

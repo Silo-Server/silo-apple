@@ -21,7 +21,7 @@ import SwiftUI
 /// Focus contract (the hard part — see §5.3/§7):
 /// - The host (`TVMainTabView`) keeps focus on the *tab* while dwell only
 ///   previews the panel. D-pad **down** flips `entersPanel` true and bumps
-///   `focusEntryToken`, landing on the current-scope library row.
+///   `focusEntryGeneration`, landing on the current-scope library row.
 /// - **Up/down** rolls libraries; the flyout follows. **Right** enters the
 ///   flyout (first section); **left** returns to the library row.
 /// - **Press** on a library row commits that scope → Browse landing.
@@ -41,7 +41,7 @@ struct TVCascadeSelector: View {
     let entersPanel: Bool
     /// Bumped by the host the moment focus should enter the panel — lands
     /// on the current-scope library row.
-    let focusEntryToken: Int
+    let focusEntryGeneration: Int
     /// Commit a library scope → its Browse landing.
     let onCommitLibrary: (Library) -> Void
     /// Commit a library scope + land on a specific section (pill).
@@ -69,7 +69,7 @@ struct TVCascadeSelector: View {
     @State private var flyoutAnchorId: Int?
     /// Debounce task for the flyout follow (§5.3).
     @State private var flyoutFollowTask: Task<Void, Never>?
-    @State private var lastAppliedEntryToken = 0
+    @State private var lastAppliedEntryGeneration = 0
     /// Each library row's vertical center in the level-1 HStack's coordinate
     /// space. The flyout offsets to align its first section with the anchored
     /// row, so the composite highlight does not visually jump on Right.
@@ -104,7 +104,9 @@ struct TVCascadeSelector: View {
         // The cascade is a composite tvOS control. Rows are rendered labels in
         // both preview and entered modes; only the panel container itself is
         // focusable, and D-pad movement updates the internal highlighted row.
-        .onChange(of: focusEntryToken) { _, token in applyEntryToken(token) }
+        .onChange(of: focusEntryGeneration) { _, generation in
+            applyEntryGeneration(generation)
+        }
         .onChange(of: focus) { _, newValue in handleFocusChange(newValue) }
         .onChange(of: panelFocused) { _, isFocused in handlePanelFocusedChange(isFocused) }
         .onChange(of: entersPanel) { _, entered in
@@ -115,7 +117,7 @@ struct TVCascadeSelector: View {
         }
         .onAppear {
             flyoutAnchorId = currentScopeId ?? libraries.first?.id
-            if entersPanel { applyEntryToken(focusEntryToken) }
+            if entersPanel { applyEntryGeneration(focusEntryGeneration) }
         }
         .onDisappear { flyoutFollowTask?.cancel() }
         .contentShape(Rectangle())
@@ -393,9 +395,11 @@ struct TVCascadeSelector: View {
 
     // MARK: - Focus plumbing
 
-    private func applyEntryToken(_ token: Int) {
-        guard entersPanel, token > 0, token != lastAppliedEntryToken else { return }
-        lastAppliedEntryToken = token
+    private func applyEntryGeneration(_ generation: Int) {
+        guard entersPanel,
+              generation > 0,
+              generation != lastAppliedEntryGeneration else { return }
+        lastAppliedEntryGeneration = generation
         if isSingleLibrary, let library = libraries.first {
             // Single-level: land on the first section (§5.3).
             focus = .section(library.id, pills.first ?? .recommended)

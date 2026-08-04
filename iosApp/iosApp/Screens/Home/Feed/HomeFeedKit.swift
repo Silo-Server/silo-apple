@@ -130,6 +130,7 @@ enum HomeFeedMeta {
 /// including the iOS 26 zoom transition the shipping `MediaCard` uses.
 private struct HomeCardTap<Label: View>: View {
     let contentId: String
+    let accessibilityLabel: String
     @ViewBuilder var label: () -> Label
 
     @Environment(AppRouter.self) private var router
@@ -145,6 +146,8 @@ private struct HomeCardTap<Label: View>: View {
                 .zoomTransitionSource(id: zoomInstanceID.uuidString, in: zoomNamespace)
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
     }
 }
 
@@ -279,6 +282,7 @@ struct HomePosterCard: View {
     let item: SectionItem
     var width: CGFloat = HomeFeedMetrics.posterWidth
     var showsCaption: Bool = true
+    var showsMetadata: Bool = true
     /// Draws the resume rail across the bottom of the artwork.
     var showsProgress: Bool = false
     /// Audiobook covers are square; stretching one into a 2:3 poster crops
@@ -307,7 +311,10 @@ struct HomePosterCard: View {
     }
 
     var body: some View {
-        HomeCardTap(contentId: item.contentId) {
+        HomeCardTap(
+            contentId: item.contentId,
+            accessibilityLabel: accessibilityDescription
+        ) {
             VStack(alignment: .leading, spacing: 7) {
                 artwork
                 if showsCaption { caption }
@@ -399,7 +406,7 @@ struct HomePosterCard: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
-            if let year = item.year {
+            if showsMetadata, let year = item.year {
                 Text(String(year))
                     .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(Color.continuumOnSurface.opacity(0.5))
@@ -407,6 +414,15 @@ struct HomePosterCard: View {
             }
         }
         .frame(width: width, alignment: .leading)
+    }
+
+    private var accessibilityDescription: String {
+        var components = [HomeFeedMeta.cardTitle(for: item)]
+        components.append(contentsOf: [episodeBadge, item.year.map(String.init)].compactMap { $0 })
+        if isPlayed {
+            components.append("Watched")
+        }
+        return components.joined(separator: ", ")
     }
 }
 
@@ -418,6 +434,8 @@ struct HomePosterCard: View {
 struct HomeStillCard: View {
     let item: SectionItem
     var width: CGFloat = HomeFeedMetrics.stillWidth
+    var showsCaption: Bool = true
+    var showsMetadata: Bool = true
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
 
@@ -441,10 +459,13 @@ struct HomeStillCard: View {
     }
 
     var body: some View {
-        HomeCardTap(contentId: item.contentId) {
+        HomeCardTap(
+            contentId: item.contentId,
+            accessibilityLabel: accessibilityDescription
+        ) {
             VStack(alignment: .leading, spacing: 8) {
                 artwork
-                caption
+                if showsCaption { caption }
             }
             .frame(width: width, alignment: .leading)
         }
@@ -538,7 +559,7 @@ struct HomeStillCard: View {
                 .foregroundStyle(Color.continuumOnSurface)
                 .lineLimit(1)
 
-            if let subtitle = HomeFeedMeta.resumeCaption(for: item) {
+            if showsMetadata, let subtitle = HomeFeedMeta.resumeCaption(for: item) {
                 Text(subtitle)
                     .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
@@ -546,6 +567,17 @@ struct HomeStillCard: View {
             }
         }
         .frame(width: width, alignment: .leading)
+    }
+
+    private var accessibilityDescription: String {
+        var components = [HomeFeedMeta.cardTitle(for: item)]
+        if let resumeCaption = HomeFeedMeta.resumeCaption(for: item) {
+            components.append(resumeCaption)
+        }
+        if isPlayed {
+            components.append("Watched")
+        }
+        return components.joined(separator: ", ")
     }
 }
 

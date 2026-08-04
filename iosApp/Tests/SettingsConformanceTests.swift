@@ -98,12 +98,14 @@ final class SettingsConformanceTests: XCTestCase {
 
     private struct ConformanceContext: Decodable {
         let profileId: String?
+        let clientFamily: String?
         let deviceId: String?
         let libraryIds: [Int]
         let seriesIds: [String]
 
         enum CodingKeys: String, CodingKey {
             case profileId = "profile_id"
+            case clientFamily = "client_family"
             case deviceId = "device_id"
             case libraryIds = "library_ids"
             case seriesIds = "series_ids"
@@ -112,6 +114,7 @@ final class SettingsConformanceTests: XCTestCase {
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             profileId = try container.decodeIfPresent(String.self, forKey: .profileId)
+            clientFamily = try container.decodeIfPresent(String.self, forKey: .clientFamily)
             deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
             libraryIds = try container.decodeIfPresent([Int].self, forKey: .libraryIds) ?? []
             seriesIds = try container.decodeIfPresent([String].self, forKey: .seriesIds) ?? []
@@ -122,6 +125,7 @@ final class SettingsConformanceTests: XCTestCase {
         let key: String
         let scope: String
         let profileId: String?
+        let clientFamily: String?
         let deviceId: String?
         let libraryId: Int?
         let seriesId: String?
@@ -134,6 +138,7 @@ final class SettingsConformanceTests: XCTestCase {
             case key
             case scope
             case profileId = "profile_id"
+            case clientFamily = "client_family"
             case deviceId = "device_id"
             case libraryId = "library_id"
             case seriesId = "series_id"
@@ -202,9 +207,12 @@ final class SettingsConformanceTests: XCTestCase {
             "name", "description", "keys", "context", "stored",
             "constraints", "constraint_bindings", "expected",
         ]
-        static let context = ["profile_id", "device_id", "library_ids", "series_ids"]
+        static let context = [
+            "profile_id", "client_family", "device_id", "library_ids", "series_ids",
+        ]
         static let row = [
-            "key", "scope", "profile_id", "device_id", "library_id", "series_id", "value",
+            "key", "scope", "profile_id", "client_family", "device_id", "library_id",
+            "series_id", "value",
         ]
         static let binding = ["key", "policy_input", "constraint"]
         static let expected = [
@@ -549,6 +557,7 @@ final class SettingsConformanceTests: XCTestCase {
                     key: row.key,
                     scope: row.scope,
                     profileId: row.profileId,
+                    clientFamily: row.clientFamily,
                     deviceId: row.deviceId,
                     libraryId: row.libraryId,
                     seriesId: row.seriesId,
@@ -557,6 +566,7 @@ final class SettingsConformanceTests: XCTestCase {
             },
             context: SettingResolutionContext(
                 profileId: testCase.context?.profileId,
+                clientFamily: testCase.context?.clientFamily,
                 deviceId: testCase.context?.deviceId,
                 libraryIds: testCase.context?.libraryIds ?? [],
                 seriesIds: testCase.context?.seriesIds ?? []

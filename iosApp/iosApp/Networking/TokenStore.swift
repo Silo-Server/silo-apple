@@ -1,5 +1,10 @@
 import Foundation
 
+struct RefreshAccountIdentity: Hashable, Sendable {
+    let serverId: String
+    let serverURL: String
+}
+
 struct TemporaryAuthScope: Equatable, Sendable {
     let serverId: String
     let serverURL: String
@@ -123,6 +128,20 @@ actor TokenStore {
     /// The current active server ID. Empty string if none.
     func getActiveServerId() -> String { temporaryScope?.serverId ?? activeServerId }
 
+    /// Atomically capture the account-level identity that owns refresh-token
+    /// rotation. Both ordinary and captured-identity HTTP requests use this
+    /// key to join one refresh flight.
+    func refreshAccountIdentity() -> RefreshAccountIdentity? {
+        let serverId = temporaryScope?.serverId ?? activeServerId
+        let serverURL = ServerRegistry.normalize(
+            url: temporaryScope?.serverURL
+                ?? defaults.string(forKey: serverUrlDefaultsKey)
+                ?? ""
+        )
+        guard !serverId.isEmpty, !serverURL.isEmpty else { return nil }
+        return RefreshAccountIdentity(serverId: serverId, serverURL: serverURL)
+    }
+
     func beginTemporaryScope(_ scope: TemporaryAuthScope) {
         temporaryScope = scope
     }
@@ -136,6 +155,89 @@ actor TokenStore {
     func getTemporaryScope() -> TemporaryAuthScope? { temporaryScope }
 
     func hasTemporaryScope() -> Bool { temporaryScope != nil }
+
+    /// Atomically verify a queued request's routing identity and snapshot the
+    /// matching credentials. No mutable global scope is installed: the caller
+    /// carries this value for one explicit request only.
+    func captureRequestAuth(expected: HTTPRequestIdentity) throws -> CapturedHTTPRequestAuth {
+        let expectedURL = ServerRegistry.normalize(url: expected.serverURL)
+        let currentServerId = temporaryScope?.serverId ?? activeServerId
+        let currentURL = ServerRegistry.normalize(
+            url: temporaryScope?.serverURL
+                ?? defaults.string(forKey: serverUrlDefaultsKey)
+                ?? ""
+        )
+        let currentProfileId = temporaryScope?.profileId
+            ?? defaults.string(forKey: profileIdDefaultsKey)
+
+        guard !expected.serverId.isEmpty,
+              !expectedURL.isEmpty,
+              !expected.profileId.isEmpty,
+              currentServerId == expected.serverId,
+              currentURL == expectedURL,
+              currentProfileId == expected.profileId else {
+            throw HTTPError.requestIdentityChanged
+        }
+
+        if let temporaryScope {
+            return CapturedHTTPRequestAuth(
+                serverURL: expectedURL,
+                accessValue: temporaryScope.accessToken,
+                refreshValue: temporaryScope.refreshToken,
+                profileId: expected.profileId,
+                profileValue: temporaryScope.profileToken,
+                credentialOwner: .temporary
+            )
+        }
+
+        ensureLoaded()
+        return CapturedHTTPRequestAuth(
+            serverURL: expectedURL,
+            accessValue: cachedAccessToken,
+            refreshValue: cachedRefreshToken,
+            profileId: expected.profileId,
+            profileValue: cachedProfileToken,
+            credentialOwner: .persistentServer(serverId: expected.serverId)
+        )
+    }
+
+    /// Store a scoped refresh only if the same server account and refresh
+    /// value are still active. Access/refresh credentials belong to the
+    /// server account, not one selected profile, so a profile switch must not
+    /// discard a successful rotation and strand that server's slot.
+    func saveRefreshedTokens(
+        _ accessValue: String,
+        _ value: String,
+        replacing previousValue: String?,
+        expected: HTTPRequestIdentity,
+        credentialOwner: CapturedHTTPRequestCredentialOwner
+    ) -> Bool {
+        let expectedURL = ServerRegistry.normalize(url: expected.serverURL)
+        let currentURL = ServerRegistry.normalize(
+            url: defaults.string(forKey: serverUrlDefaultsKey) ?? ""
+        )
+        guard temporaryScope == nil,
+              credentialOwner == .persistentServer(serverId: expected.serverId),
+              !expected.serverId.isEmpty,
+              !expectedURL.isEmpty,
+              let previousValue,
+              !previousValue.isEmpty,
+              activeServerId == expected.serverId,
+              currentURL == expectedURL else { return false }
+
+        ensureLoaded()
+        let expectedRefreshKey = Self.refreshTokenKey(for: expected.serverId)
+        guard cachedRefreshToken == previousValue else { return false }
+
+        cachedAccessToken = accessValue
+        cachedRefreshToken = value
+        keychain.set(accessValue, for: Self.accessTokenKey(for: expected.serverId))
+        keychain.set(value, for: expectedRefreshKey)
+        // Account refresh must not re-mirror a stale profile credential
+        // during an in-progress profile transition.
+        mirrorActiveAccessValueForExtension()
+        return true
+    }
 
     // MARK: - Tokens
 
@@ -314,6 +416,18 @@ actor TokenStore {
                 keychain.delete(SharedStorage.mirroredProfileTokenAccount)
             }
             lastMirroredProfileToken = cachedProfileToken
+        }
+    }
+
+    private func mirrorActiveAccessValueForExtension() {
+        if cachedAccessToken != lastMirroredAccessToken {
+            if let value = cachedAccessToken {
+                keychain.set(value, for: SharedStorage.mirroredAccessTokenAccount)
+                lastMirroredAccessToken = value
+            } else {
+                keychain.delete(SharedStorage.mirroredAccessTokenAccount)
+                lastMirroredAccessToken = nil
+            }
         }
     }
 

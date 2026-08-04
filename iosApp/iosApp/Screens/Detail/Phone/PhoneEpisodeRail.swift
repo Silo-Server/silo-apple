@@ -10,8 +10,12 @@ struct PhoneEpisodeRail: View {
     let onSelect: (String) -> Void
     var currentContentId: String? = nil
 
-    private let cardWidth: CGFloat = 240
-    private let stillHeight: CGFloat = 135   // 16:9 of 240
+    @State private var uiCustomization = UICustomizationPreferences.shared
+
+    private var cardWidth: CGFloat {
+        240 * uiCustomization.cardPresentation.posterSize.scale
+    }
+    private var stillHeight: CGFloat { cardWidth * 9 / 16 }
     private let cardSpacing: CGFloat = 14
     private let stillCornerRadius: CGFloat = 8
 
@@ -26,6 +30,7 @@ struct PhoneEpisodeRail: View {
                             cardWidth: cardWidth,
                             stillHeight: stillHeight,
                             stillCornerRadius: stillCornerRadius,
+                            captionStyle: uiCustomization.cardPresentation.caption,
                             onSelect: { onSelect(episode.contentId) }
                         )
                         .id(episode.contentId)
@@ -52,6 +57,7 @@ private struct PhoneEpisodeCard: View {
     let cardWidth: CGFloat
     let stillHeight: CGFloat
     let stillCornerRadius: CGFloat
+    let captionStyle: CardCaptionStyle
     let onSelect: () -> Void
 
     var body: some View {
@@ -62,39 +68,43 @@ private struct PhoneEpisodeCard: View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: 8) {
                 still
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(episodeNumberLabel)
-                            .font(.system(size: 10, weight: .bold))
-                            .tracking(1.0)
-                            .foregroundColor(.continuumOnSurface.opacity(0.55))
-                        if isCurrent {
-                            nowViewingTag
+                if captionStyle.showsTitle {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(episodeNumberLabel)
+                                .font(.system(size: 10, weight: .bold))
+                                .tracking(1.0)
+                                .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
+                            if isCurrent {
+                                nowViewingTag
+                            }
                         }
-                    }
 
-                    Text(episode.title ?? "Episode \(episode.episodeNumber)")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(titleColor)
-                        .lineLimit(1)
-                        .multilineTextAlignment(.leading)
-
-                    if let metadataLine = episodeMetadataLine {
-                        Text(metadataLine)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.continuumSecondaryText)
+                        Text(episode.title ?? "Episode \(episode.episodeNumber)")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(titleColor)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.85)
                             .multilineTextAlignment(.leading)
-                    }
 
-                    if let overview = episode.overview, !overview.isEmpty {
-                        Text(overview)
-                            .font(.system(size: 12, weight: .regular))
-                            .foregroundColor(.continuumSecondaryText)
-                            .lineLimit(3, reservesSpace: true)
-                            .lineSpacing(2)
-                            .multilineTextAlignment(.leading)
+                        if captionStyle.showsMetadata {
+                            if let metadataLine = episodeMetadataLine {
+                                Text(metadataLine)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Color.continuumSecondaryText)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.85)
+                                    .multilineTextAlignment(.leading)
+                            }
+
+                            if let overview = episode.overview, !overview.isEmpty {
+                                Text(overview)
+                                    .font(.system(size: 12, weight: .regular))
+                                    .foregroundStyle(Color.continuumSecondaryText)
+                                    .lineLimit(3, reservesSpace: true)
+                                    .lineSpacing(2)
+                                    .multilineTextAlignment(.leading)
+                            }
+                        }
                     }
                 }
             }
@@ -102,6 +112,8 @@ private struct PhoneEpisodeCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
     }
 
     private var titleColor: Color {
@@ -131,6 +143,17 @@ private struct PhoneEpisodeCard: View {
             parts.append(formatRuntime(runtime))
         }
         return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
+    }
+
+    private var accessibilityDescription: String {
+        episodeRailAccessibilityLabel(
+            seasonNumber: episode.seasonNumber,
+            episodeNumber: episode.episodeNumber,
+            title: episode.title,
+            metadata: episodeMetadataLine,
+            isCurrent: isCurrent,
+            isPlayed: episode.userData?.played == true
+        )
     }
 
     private var still: some View {
