@@ -22,41 +22,34 @@ enum ApplePlaybackV3Capabilities {
 
     static func snapshot() -> ApplePlaybackV3CapabilitySnapshot {
         let output = outputSnapshot()
-        let isSimulator: Bool = {
-            #if targetEnvironment(simulator)
-            true
-            #else
-            false
-            #endif
-        }()
+        let isSimulator = AppleDecodeCapabilities.isSimulator
 
-        let videoCodecs = isSimulator ? ["h264"] : ["h264", "hevc", "mpeg2video"]
-        let hardwareVideoCodecs = isSimulator ? ["h264"] : ["h264", "hevc"]
-        let audioCodecs = isSimulator
-            ? ["aac", "ac3", "eac3", "mp3", "opus", "flac"]
-            : [
-                "aac", "ac3", "eac3", "dts", "truehd", "flac", "alac", "mp3",
-                "opus", "vorbis", "pcm", "pcm_s16le", "pcm_s24le"
-            ]
-        let containers = isSimulator
-            ? ["mp4", "mov", "m4v", "mkv", "matroska", "ts", "m2ts", "mpegts"]
-            : ["mp4", "mov", "m4v", "mkv", "matroska", "webm", "avi", "ts", "m2ts", "mpegts"]
-        let maxWidth = isSimulator ? 1_920 : 3_840
-        let maxHeight = isSimulator ? 1_080 : 2_160
+        // This snapshot describes every route the plan can land on, including
+        // the software decoder, so it claims MPEG-2.
+        let videoCodecs = AppleDecodeCapabilities.videoCodecs(includingMPEG2: true)
+        let hardwareVideoCodecs = AppleDecodeCapabilities.hardwareVideoCodecs
+        let audioCodecs = AppleDecodeCapabilities.audioCodecs
+        let containers = AppleDecodeCapabilities.containers
+        let maxWidth = AppleDecodeCapabilities.maxDecodeWidth
+        let maxHeight = AppleDecodeCapabilities.maxDecodeHeight
 
         let capabilities = PlaybackV3CodecCapabilities(
             codecsVideo: videoCodecs,
             codecsVideoHardware: hardwareVideoCodecs,
             codecsAudio: audioCodecs,
             containers: containers,
-            maxResolution: isSimulator ? "1080p" : "2160p",
+            maxResolution: AppleDecodeCapabilities.maxResolutionToken,
             hdr: output.hdrDetails?.claimsAnyHDR ?? false,
             hdrDetails: output.hdrDetails,
             audioPassthrough: output.audioPassthrough,
             videoDecode: videoCodecs.map { codec in
-                PlaybackV3VideoDecodeCapability(
+                let hardware = hardwareVideoCodecs.contains(codec)
+                return PlaybackV3VideoDecodeCapability(
                     codec: codec,
-                    decoderName: codec == "mpeg2video" ? "VideoToolbox" : "VideoToolbox",
+                    // MPEG-2 is the one claimed codec PlayerCore routes to the
+                    // FFmpeg decoder (`videoDecodeMode = .software`); naming
+                    // VideoToolbox for it would contradict `hardware: false`.
+                    decoderName: hardware ? "VideoToolbox" : "FFmpeg",
                     profiles: [],
                     levels: [],
                     bitDepths: codec == "hevc" ? [8, 10] : [8],
@@ -64,7 +57,7 @@ enum ApplePlaybackV3Capabilities {
                     maxHeight: maxHeight,
                     maxFrameRate: 60,
                     maxBitrateKbps: isSimulator ? 25_000 : 120_000,
-                    hardware: hardwareVideoCodecs.contains(codec)
+                    hardware: hardware
                 )
             }
         )

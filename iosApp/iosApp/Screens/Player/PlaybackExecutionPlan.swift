@@ -2,19 +2,24 @@ import Foundation
 
 struct LoopbackSessionSpec {
     /// Base-layer color signaling for a Dolby Vision Profile 8 source.
-    /// 8.1 = HDR10 base (PQ, brand `db1p`); 8.4 = HLG base (brand `db4h`).
+    /// 8.1 = HDR10 base (PQ, brand `db1p`); 8.2 = SDR base (Rec.709, brand
+    /// `db2g`); 8.4 = HLG base (brand `db4h`).
     enum DVProfile8BaseLayer: Equatable {
         case hdr10
         case hlg
+        case sdr
 
-        /// The base layer a `dvcC`/`dvvC` compatibility ID names. Only ID 4
-        /// (Profile 8.4) is HLG. ID 2 is Profile 8.2, whose base layer is
-        /// SDR — this enum has no case for it because no route writes one,
-        /// and it falls in with the PQ default rather than being modelled;
-        /// see `ApplePlaybackRoutePlanner.dvProfile8BaseLayer` for the
-        /// server-metadata path that decides the same thing before decode.
+        /// The base layer a `dvcC`/`dvvC` compatibility ID names: 2 is
+        /// Profile 8.2's SDR base, 4 is Profile 8.4's HLG base, and
+        /// everything else (1 = HDR10, 0 = none) resolves to the PQ default.
+        /// Shared with `ApplePlaybackRoutePlanner.dvProfile8BaseLayer`, which
+        /// decides the same thing from server metadata before decode.
         init(dolbyVisionCompatibilityID: Int?) {
-            self = dolbyVisionCompatibilityID == 4 ? .hlg : .hdr10
+            switch dolbyVisionCompatibilityID {
+            case 2: self = .sdr
+            case 4: self = .hlg
+            default: self = .hdr10
+            }
         }
     }
 
@@ -48,6 +53,8 @@ struct LoopbackSessionSpec {
                 return "profile7_to81_base_layer"
             case .passthroughProfile8(.hdr10):
                 return "profile8_1_passthrough"
+            case .passthroughProfile8(.sdr):
+                return "profile8_2_passthrough"
             case .passthroughProfile8(.hlg):
                 return "profile8_4_passthrough"
             case .passthroughHEVC:

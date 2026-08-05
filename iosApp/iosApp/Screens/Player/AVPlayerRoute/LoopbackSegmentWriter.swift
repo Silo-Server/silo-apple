@@ -764,9 +764,10 @@ final class LoopbackSegmentWriter {
     /// stream (8 useful bytes matching FFmpeg's `AVDOVIDecoderConfigurationRecord`
     /// layout: version_major, version_minor, profile, level, rpu_flag, el_flag,
     /// bl_flag, bl_compat_id). Nil if the source isn't Dolby Vision. Used by
-    /// `writeInitSegment` to synthesise a `dvvC` box — FFmpeg's mp4 muxer in
-    /// our build doesn't emit one on its own, so AVPlayer can't see DV
-    /// signalling and paints the IPT samples as YCbCr (green/purple).
+    /// `writeInitSegment` to synthesise the configuration box the profile
+    /// names (`dvcC` up to 7, `dvvC` for 8+) — FFmpeg's mp4 muxer in our
+    /// build doesn't emit one on its own, so AVPlayer can't see DV signalling
+    /// and paints the IPT samples as YCbCr (green/purple).
     private var doviConfig: Data?
     private var doviRecord: DoviRecord?
     private var outputAudioCodecID: AVCodecID?
@@ -3058,6 +3059,7 @@ final class LoopbackSegmentWriter {
                 }
                 doviConfig = dovi
                 doviRecord = dovi.flatMap(parseDoviRecord(from:))
+                try requireUsableProfile5Record()
                 let codecTag = videoMode.sampleEntryCodec
                 let doviLog = dovi.flatMap(parseDoviRecord(from:))?.logLine ?? "none"
                 print("[CMP-AVP] out video codecpar tag=\(codecTag) initial extradataSize=\(edSize) nalLen=\(nalLengthSize) videoMode=\(videoMode.logToken) dovi=\(doviLog) removedDoviSideData=\(removedDoviSideData)")
@@ -3596,6 +3598,28 @@ final class LoopbackSegmentWriter {
         return Int(before - cp.pointee.nb_coded_side_data)
     }
 
+    /// Profile 5 is the one mode whose Dolby Vision signalling has no
+    /// fallback: the base layer is IPT-PQ-c2, so a `dvh1` sample entry
+    /// without a `dvcC` renders as garbage rather than as a lesser dynamic
+    /// range, and the CODECS token cannot repair it (Dolby derives both the
+    /// playlist profile and level from the configuration box, and its level
+    /// IDs start at 1 — there is no `dvh1.05.00` to fall back on). A source
+    /// whose DOVI record the demuxer never surfaced, or surfaced malformed,
+    /// therefore fails the session here so the route ladder falls back
+    /// immediately instead of publishing an unplayable presentation.
+    private func requireUsableProfile5Record() throws {
+        guard videoMode == .passthroughProfile5 else { return }
+        guard let record = doviRecord else {
+            throw LoopbackWriterError.profile5ConfigUnusable("no DOVI configuration record on the video track")
+        }
+        guard record.profile == 5 else {
+            throw LoopbackWriterError.profile5ConfigUnusable("record declares profile \(record.profile), not 5")
+        }
+        guard record.level > 0 else {
+            throw LoopbackWriterError.profile5ConfigUnusable("record declares level 0")
+        }
+    }
+
     private func parseDoviRecord(from data: Data) -> DoviRecord? {
         guard data.count >= 8 else { return nil }
         let bytes = Array(data.prefix(8))
@@ -3649,7 +3673,9 @@ final class LoopbackSegmentWriter {
         // Dolby form. Running it through the HEVC builder produces a `dvh1`
         // fourcc glued to HEVC profile/level fields — the `dvh1.2.4.L150`
         // shape AVPlayer rejects with -15517 — so the HEVC path below must
-        // never see a `dvh1` sample entry.
+        // never see a `dvh1` sample entry. The Dolby form is always available
+        // here: a P5 session without a usable record never reaches the mux
+        // (`requireUsableProfile5Record`), so the `hvc1` arm is inert.
         if videoMode == .passthroughProfile5 {
             return dolbyVisionRFC6381CodecString() ?? "hvc1"
         }
@@ -3666,9 +3692,20 @@ final class LoopbackSegmentWriter {
         String(format: "dvh1.%02d.%02d", profile, level)
     }
 
+    /// Nil when either field is unknown. Dolby derives the playlist profile
+    /// and level from the configuration box, and its published level IDs
+    /// begin at 01 — so a missing record cannot be papered over with a zero
+    /// level. Omitting the token entirely leaves the caller on its HEVC
+    /// fallback (Profile 8's base layer is viewable without the
+    /// SUPPLEMENTAL-CODECS claim); Profile 5 never gets this far, because
+    /// `requireUsableProfile5Record` fails the session at mux setup.
     private func dolbyVisionRFC6381CodecString() -> String? {
-        guard let profile = outputDolbyVisionProfile else { return nil }
-        return Self.dolbyVisionRFC6381CodecString(profile: profile, level: Int(doviRecord?.level ?? 0))
+        guard let profile = outputDolbyVisionProfile,
+              let level = doviRecord.map({ Int($0.level) }),
+              level > 0 else {
+            return nil
+        }
+        return Self.dolbyVisionRFC6381CodecString(profile: profile, level: level)
     }
 
     /// The Dolby Vision profile the written segments actually carry, which is
@@ -5555,20 +5592,26 @@ final class LoopbackSegmentWriter {
     }
 
     private func writeInitSegment() {
-        // FFmpeg's mp4 muxer in our build doesn't emit a dvvC box even when
-        // the video codec_tag is `dvh1` and DOVI side data is present on the
-        // track's codecpar. Without dvvC, AVPlayer has no DV signalling in
-        // the sample entry and decodes IPT-PQ-c2 as YCbCr → green/purple
-        // render. Inject the dvvC ourselves before writing init.mp4 to disk.
-        // Plain HEVC/HLG/HDR10 skips this and uses the muxer's normal hvcC.
+        // FFmpeg's mp4 muxer in our build doesn't emit a Dolby Vision
+        // configuration box even when the video codec_tag is `dvh1` and DOVI
+        // side data is present on the track's codecpar. Without it AVPlayer
+        // has no DV signalling in the sample entry and decodes IPT-PQ-c2 as
+        // YCbCr → green/purple render. Inject the box ourselves before
+        // writing init.mp4 to disk; the surgery picks `dvcC` or `dvvC` from
+        // the record's profile, which `outputDoviConfig` has already rewritten
+        // to the profile the segments actually carry. Plain HEVC/HLG/HDR10
+        // skips this and uses the muxer's normal hvcC.
         var bytes = initSegmentBytes
         if let dovi = doviConfig {
-            if let patched = ISOBoxSurgery.injectDvvC(into: bytes, doviBytes: dovi) {
+            if let patched = ISOBoxSurgery.injectDolbyVisionConfig(into: bytes, doviBytes: dovi) {
                 bytes = patched
+                // Injection succeeded, so the record parsed: the box type it
+                // chose is the one this profile names.
+                let boxType = ISOBoxSurgery.dolbyVisionConfigBoxType(profile: doviRecord?.profile ?? 0)
                 let doviLog = doviRecord?.logLine ?? "unknown"
-                print("[CMP-AVP] dvvC injected (init.mp4 grew by 32 bytes) \(doviLog)")
+                print("[CMP-AVP] \(boxType) injected (init.mp4 grew by 32 bytes) \(doviLog)")
             } else {
-                print("[CMP-AVP] dvvC injection failed — hvcC not found in init tree")
+                print("[CMP-AVP] DV config injection failed — hvcC not found in init tree, or record malformed")
             }
         }
         if selectedAudioIsAtmosJOC {
@@ -6619,6 +6662,12 @@ enum LoopbackWriterError: Error {
     /// the startup watchdog.
     case bootstrapFailed(String)
     case profile81ConversionFailed(String)
+    /// A Profile 5 session reached mux setup without a usable DOVI
+    /// configuration record. Neither the sample entry nor the CODECS token
+    /// can be written conformantly without one, and the IPT-PQ-c2 base layer
+    /// has no viewable fallback, so the session fails instead of publishing a
+    /// presentation that renders green/purple.
+    case profile5ConfigUnusable(String)
     /// `av_interleaved_write_frame` returned a negative code on three or more
     /// consecutive packets. The mux is no longer producing valid output; abort
     /// rather than continue writing a half-broken HLS presentation.

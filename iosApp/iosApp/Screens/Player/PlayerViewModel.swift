@@ -6748,6 +6748,8 @@ class PlayerViewModel {
             "db1p"
         case .passthroughProfile8(.hdr10):
             "db1p"
+        case .passthroughProfile8(.sdr):
+            "db2g"
         case .passthroughProfile8(.hlg):
             "db4h"
         case .passthroughHEVC, .passthroughH264:

@@ -422,6 +422,8 @@ struct ApplePlaybackRoutePlanner {
             "db1p"
         case .passthroughProfile8(.hdr10):
             "db1p"
+        case .passthroughProfile8(.sdr):
+            "db2g"
         case .passthroughProfile8(.hlg):
             "db4h"
         case .passthroughHEVC, .passthroughH264:
@@ -481,6 +483,25 @@ extension ApplePlaybackRoutePlanner {
     static func unambiguousColorRange(for version: FileVersion) -> String? {
         guard let tracks = version.videoTracks, tracks.count == 1 else { return nil }
         return tracks[0].colorRange
+    }
+
+    /// Decide which base layer a Dolby Vision Profile 8 source carries:
+    /// HDR10 (8.1, brand `db1p`), SDR (8.2, brand `db2g`), or HLG (8.4,
+    /// brand `db4h`). Defaults to HDR10 — by far the more common variant —
+    /// when signaling is missing or ambiguous. The decode-side counterpart is
+    /// `DVProfile8BaseLayer.init(dolbyVisionCompatibilityID:)`, which reads
+    /// the same distinction out of the parsed configuration record; the two
+    /// have to agree, so both are pinned together in
+    /// `HDRDisplayCriteriaPolicyTests`.
+    static func dvProfile8BaseLayer(
+        for version: FileVersion,
+        sourceMetadata: PlaybackSourceMetadata
+    ) -> LoopbackSessionSpec.DVProfile8BaseLayer {
+        switch transferKind(for: version) {
+        case "HLG": return .hlg
+        case "SDR": return .sdr
+        default: return .hdr10
+        }
     }
 }
 
@@ -771,6 +792,8 @@ private extension ApplePlaybackRoutePlanner {
             return "PQ"
         case .passthroughProfile8(.hdr10):
             return "PQ"
+        case .passthroughProfile8(.sdr):
+            return "SDR"
         case .passthroughProfile8(.hlg):
             return "HLG"
         case .passthroughHEVC:
@@ -809,20 +832,6 @@ private extension ApplePlaybackRoutePlanner {
         // "dolbyvision" is intentionally not handled here — without
         // color_transfer we can't tell PQ-base (8.1) from HLG-base (8.4).
         default: return nil
-        }
-    }
-
-    /// Decide whether a Dolby Vision Profile 8 source carries an HDR10 base
-    /// layer (8.1, brand `db1p`) or an HLG base layer (8.4, brand `db4h`).
-    /// Defaults to HDR10 — by far the more common variant — when signaling
-    /// is missing or ambiguous.
-    static func dvProfile8BaseLayer(
-        for version: FileVersion,
-        sourceMetadata: PlaybackSourceMetadata
-    ) -> LoopbackSessionSpec.DVProfile8BaseLayer {
-        switch transferKind(for: version) {
-        case "HLG": return .hlg
-        default: return .hdr10
         }
     }
 

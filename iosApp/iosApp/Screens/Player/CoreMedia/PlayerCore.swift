@@ -3781,19 +3781,26 @@ final class PlayerCore: NSObject {
             }
             extensions[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms] = atoms
         }
-        // Color attachments. Native-DV (P7/P8.x where the BL is HDR10/SDR/HLG)
-        // gets forced BT.2020/PQ/BT.2020_NCL because the DV atom tells the TV
-        // to remap, and VT needs a consistent HDR10 declaration on the BL.
+        // Color attachments. Native DV (P8.x / P9 / P10, whose base layer is
+        // HDR10/SDR/HLG-compatible) declares its base layer rather than the
+        // source VUI, which Profile 8 streams routinely tag for the DV layer
+        // instead. Which base layer that is comes from the compatibility ID,
+        // through the same mapping the tvOS HDMI criteria use, so the mode
+        // the panel is asked for and the frames it is handed agree: 8.1 is
+        // PQ, 8.2 is Rec.709 SDR, 8.4 is HLG.
+        //
         // For plain HEVC and for P5 passthrough we take the VUI values — the
         // helpers return nil on UNSPECIFIED, leaving the keys absent (standard
         // approach for P5).
         if isNativeDv {
-            extensions[kCVImageBufferColorPrimariesKey] =
-                kCVImageBufferColorPrimaries_ITU_R_2020 as String
-            extensions[kCVImageBufferTransferFunctionKey] =
-                kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String
-            extensions[kCVImageBufferYCbCrMatrixKey] =
-                kCVImageBufferYCbCrMatrix_ITU_R_2020 as String
+            let colorimetry = VideoColorMetadata.dolbyVisionBaseLayerColorimetry(
+                LoopbackSessionSpec.DVProfile8BaseLayer(
+                    dolbyVisionCompatibilityID: doviConfig.map { Int($0.compatId) }
+                )
+            )
+            extensions[kCVImageBufferColorPrimariesKey] = colorimetry.primaries as String
+            extensions[kCVImageBufferTransferFunctionKey] = colorimetry.transfer as String
+            extensions[kCVImageBufferYCbCrMatrixKey] = colorimetry.matrix as String
         } else {
             if let cp = VideoColorMetadata.colorPrimariesString(codecpar.color_primaries) {
                 extensions[kCVImageBufferColorPrimariesKey] = cp as String

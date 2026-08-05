@@ -2784,6 +2784,8 @@ final class AVPlayerBackend {
             return "Dolby Vision (Profile 7 → 8.1)"
         case .passthroughProfile8(.hdr10):
             return "Dolby Vision (Profile 8.1)"
+        case .passthroughProfile8(.sdr):
+            return "Dolby Vision (Profile 8.2)"
         case .passthroughProfile8(.hlg):
             return "Dolby Vision (Profile 8.4)"
         case .passthroughHEVC:

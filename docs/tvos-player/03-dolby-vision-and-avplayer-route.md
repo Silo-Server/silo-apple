@@ -114,13 +114,20 @@ The writer file is explicit about the design:
 - so the app produces fragmented MP4 output itself
 - Swift code splits the emitted BMFF boxes into `init.mp4` plus `.m4s` segments
 - the video track is forced to `dvh1`
-- a `dvvC` configuration box is injected into the visual sample entry when
-  the source carries a DV configuration record. The injection is
+- a Dolby Vision configuration box is injected into the visual sample entry
+  when the source carries a DV configuration record. Which box type is written
+  follows the record's *output* profile: `dvcC` up to Profile 7 (so Profile 5
+  gets the `dvh1` + `dvcC` pairing Apple requires) and `dvvC` for the
+  cross-compatible Profile 8 and above. The injection is
   **nil-on-box-tree-failure**: an unexpected MP4 box layout (no `hvcC` in the
   visual sample entry, etc.) returns `nil` and the original init segment is
   written as-is. It is not nil-on-every-failure — common cases like P7→8.1
   conversion synthesize a derived 8.1 DV record from the P7 input, and pure
   HEVC modes intentionally skip injection.
+- a Profile 5 session with no usable DV record never reaches the mux: its base
+  layer is IPT-PQ-c2, so a sample entry without a configuration box has no
+  viewable fallback, and the writer fails the session
+  (`LoopbackWriterError.profile5ConfigUnusable`) so the route ladder moves on.
 - AVPlayer then consumes the resulting local HLS presentation
 
 The goal is to get DV Profile 5 through AVPlayer's own Dolby Vision-capable

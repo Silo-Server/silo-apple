@@ -183,7 +183,10 @@ On tvOS, HDR is handled through `AVDisplayManager`, not EDR on the layer:
 - The criteria are built with the public
   `AVDisplayCriteria(refreshRate:formatDescription:)` (tvOS 17+). The compositor picks its HDMI mode from the codec fourcc plus the colour
   signalling, so Dolby Vision carries its base-layer transfer — PQ for
-  Profile 8.1, HLG for 8.4.
+  Profile 8.1, Rec.709 SDR for 8.2, HLG for 8.4. The same mapping
+  (`VideoColorMetadata.dolbyVisionBaseLayerColorimetry`) supplies the colour
+  attachments on the format description `PlayerCore` hands the decoder, so
+  the HDMI mode and the decoded frames describe one base layer.
 
 That means HDMI mode matching is part of the default `PlayerCore` path.
 

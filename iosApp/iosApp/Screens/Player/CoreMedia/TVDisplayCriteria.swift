@@ -16,8 +16,8 @@ import UIKit
 /// observation lifetime.
 enum TVDisplayCriteria {
     /// The color signaling the TV compositor needs to choose an HDMI mode.
-    /// Dolby Vision keeps its base-layer transfer because Profile 8.1 is PQ
-    /// while Profile 8.4 is HLG.
+    /// Dolby Vision keeps its base-layer transfer because Profile 8.1 is PQ,
+    /// 8.2 is SDR, and 8.4 is HLG.
     enum ContentFormat {
         case sdr
         case hdr10
@@ -110,15 +110,20 @@ enum TVDisplayCriteria {
             transferFunction = kCVImageBufferTransferFunction_ITU_R_2100_HLG
             yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_2020
         case .dolbyVision(let baseLayer):
-            // `dvh1` is the loopback writer's Dolby Vision sample entry.
-            // Its base-layer transfer must match the actual Profile 8 stream:
-            // 8.1 is PQ and 8.4 is HLG.
+            // `dvh1` is the loopback writer's Dolby Vision sample entry. The
+            // codec type asks for a Dolby Vision HDMI mode; the color triple
+            // must still describe the actual base layer, which differs by
+            // Profile 8 variant (8.1 PQ, 8.2 Rec.709 SDR, 8.4 HLG) — asking
+            // for PQ on an SDR base negotiates a mode the base-layer pixels
+            // are not graded for. Shared with the format description
+            // `PlayerCore` hands the decoder, so the mode the panel is asked
+            // for and the frames it is handed cannot describe different
+            // transfers.
             codecType = kCMVideoCodecType_DolbyVisionHEVC
-            colorPrimaries = kCVImageBufferColorPrimaries_ITU_R_2020
-            transferFunction = baseLayer == .hlg
-                ? kCVImageBufferTransferFunction_ITU_R_2100_HLG
-                : kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
-            yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_2020
+            let colorimetry = VideoColorMetadata.dolbyVisionBaseLayerColorimetry(baseLayer)
+            colorPrimaries = colorimetry.primaries
+            transferFunction = colorimetry.transfer
+            yCbCrMatrix = colorimetry.matrix
         }
         let colorExtensions: NSDictionary = [
             kCMFormatDescriptionExtension_ColorPrimaries: colorPrimaries,

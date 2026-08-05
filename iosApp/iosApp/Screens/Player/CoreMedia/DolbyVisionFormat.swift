@@ -147,10 +147,21 @@ enum DolbyVisionFormat {
             return .strippedHdr10
         case 8, 9:
             // 8.x compat: 1=HDR10, 2=SDR, 4=HLG. The base layer is valid in
-            // the advertised compat mode, so DV→fallback is always safe.
+            // the advertised compat mode, so DV→fallback is always safe; the
+            // stripped path keeps whatever dynamic range the VUI declares,
+            // which is the base layer's own.
             guard resolution != .dolbyVisionDisabled else {
                 return .strippedHdr10
             }
+            // `dvcC`, deliberately, even though the box-type rule the muxing
+            // side follows (`ISOBoxSurgery.dolbyVisionConfigBoxType`) would
+            // say `dvvC` above Profile 7. This key is not written to a file —
+            // it goes into `kCMFormatDescriptionExtension_SampleDescription`
+            // `ExtensionAtoms`, where VideoToolbox is the only authority on
+            // what it accepts, and this is the combination Profile 8 decode
+            // was brought up on (see PlayerCore's `hvc1`-session note). Do not
+            // align it with the writer without validating P8 playback on an
+            // Apple TV first; the two are not the same contract.
             return .native(boxKey: "dvcC", dr: .dolbyVision, requiresDvDisplay: false)
         case 10:
             // AV1 DV. Only on A15+ Apple TV 4K hardware.

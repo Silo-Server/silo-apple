@@ -1571,47 +1571,24 @@ actor PlaybackSessionBridge {
     /// server. iPhone HDR files may still switch off PlayerCore later if VT
     /// rejects the stream, but that backend handoff needs the original direct
     /// source URL first, so we keep capability reporting truthful here.
-    private func makeClientCaps(avoidDirectHDRPlayback: Bool) -> (
+    ///
+    /// The lists themselves come from `AppleDecodeCapabilities` — the same
+    /// ones the V3 snapshot and download creation report, so the server sees
+    /// one client whichever door a request arrives through.
+    private func makeClientCaps(includingMPEG2: Bool = false) -> (
         codecsVideo: [String],
         codecsAudio: [String],
         containers: [String],
         maxResolution: String?,
         hdr: Bool
     ) {
-        #if targetEnvironment(simulator)
-        return (
-            codecsVideo: ["h264"],
-            codecsAudio: ["aac", "ac3", "eac3", "mp3", "opus", "flac"],
-            containers: ["mp4", "mov", "m4v", "mkv"],
-            maxResolution: "1080p",
-            hdr: false
+        (
+            codecsVideo: AppleDecodeCapabilities.videoCodecs(includingMPEG2: includingMPEG2),
+            codecsAudio: AppleDecodeCapabilities.audioCodecs,
+            containers: AppleDecodeCapabilities.containers,
+            maxResolution: AppleDecodeCapabilities.maxResolution,
+            hdr: !AppleDecodeCapabilities.isSimulator
         )
-        #else
-        return (
-            codecsVideo: avoidDirectHDRPlayback ? ["h264"] : ["h264", "hevc"],
-            codecsAudio: [
-                "aac", "ac3", "eac3", "dts", "truehd", "flac", "alac", "mp3",
-                "opus", "vorbis", "pcm", "pcm_s16le", "pcm_s24le"
-            ],
-            containers: ["mkv", "mp4", "mov", "m4v", "webm", "avi", "ts", "m2ts"],
-            maxResolution: avoidDirectHDRPlayback ? "1080p" : nil,
-            hdr: !avoidDirectHDRPlayback
-        )
-        #endif
-    }
-
-    private func makeMPEG2DirectClientCaps() -> (
-        codecsVideo: [String],
-        codecsAudio: [String],
-        containers: [String],
-        maxResolution: String?,
-        hdr: Bool
-    ) {
-        var caps = makeClientCaps(avoidDirectHDRPlayback: false)
-        if !caps.codecsVideo.contains(where: { $0.caseInsensitiveCompare("mpeg2video") == .orderedSame }) {
-            caps.codecsVideo.append("mpeg2video")
-        }
-        return caps
     }
 
     private func planClientPlayback(
@@ -1631,9 +1608,9 @@ actor PlaybackSessionBridge {
                 ? PlaybackDeliveryStrategy.transcode.name
                 : PlaybackDeliveryStrategy.direct.name,
             prefersSDRTranscode: false,
-            capabilities: isMPEG2Video(initiallySelectedVersion)
-                ? makeMPEG2DirectClientCaps()
-                : makeClientCaps(avoidDirectHDRPlayback: false)
+            capabilities: makeClientCaps(
+                includingMPEG2: isMPEG2Video(initiallySelectedVersion)
+            )
         )
     }
 
