@@ -16,6 +16,13 @@ struct DownloadsSettingsView: View {
 
     var body: some View {
         Form {
+            SettingsPageHeader(
+                title: "Downloads",
+                subtitle: "Offline quality, cleanup, and storage preferences.",
+                systemImage: "arrow.down.circle.fill"
+            )
+            .settingsPageHeaderRow()
+
             Section {
                 Toggle("Download over Wi-Fi only", isOn: $settings.wifiOnly)
                     .tint(.continuumAccent)
@@ -36,6 +43,7 @@ struct DownloadsSettingsView: View {
                     Text("Original prefers source quality and may prepare a compatibility file if this device needs one. Bitrate presets are prepared on the server before download starts.")
                 }
             }
+            .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
 
             Section("Series Monitoring Defaults") {
                 Toggle("Delete watched episodes", isOn: $settings.defaultDeleteWatched)
@@ -49,6 +57,7 @@ struct DownloadsSettingsView: View {
                     step: 5
                 )
             }
+            .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
 
             Section {
                 Toggle("Keep watched downloads", isOn: $settings.keepWatchedDownloads)
@@ -58,6 +67,7 @@ struct DownloadsSettingsView: View {
             } footer: {
                 Text("When off, the Downloads tab suggests freeing up space by removing items you've finished watching.")
             }
+            .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
 
             Section("Storage") {
                 HStack {
@@ -74,8 +84,9 @@ struct DownloadsSettingsView: View {
                     }
                 }
             }
+            .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
         }
-        .navigationTitle("Downloads")
+        .navigationTitle("")
         .task {
             // The quality picker is hidden when the cached capability only
             // offers one preset; re-fetch so permission changes show up here
@@ -85,8 +96,7 @@ struct DownloadsSettingsView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .continuumScrollContentBackgroundHidden()
-        .background(Color.continuumBackground)
+        .settingsListChrome()
         .continuumToolbarColorSchemeDark()
         .confirmationDialog(
             "Remove all downloaded files?",

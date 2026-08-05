@@ -2,21 +2,18 @@
 import SwiftUI
 
 /// Playback pane of tvOS Settings, rendered inline in the right pane of
-/// the two-pane `TVSettingsView`. Option pickers present as full-screen
-/// covers (plain sheets render as narrow clipped cards on tvOS 26).
+/// the two-pane `TVSettingsView`. The root view owns modal picker
+/// presentation so only one focus graph is active at a time.
 struct TVPlaybackSettingsPane: View {
     @Bindable var viewModel: TVSettingsViewModel
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
-    @State private var activePicker: PickerKind?
+    let presentPicker: (TVSettingsPickerRequest) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             streamingSection
             episodesSection
             resetSection
-        }
-        .fullScreenCover(item: $activePicker) { kind in
-            pickerSheet(for: kind)
         }
     }
 
@@ -29,7 +26,7 @@ struct TVPlaybackSettingsPane: View {
         TVSettingsPickerRow(
             title: "Quality",
             value: viewModel.preferredQualityLabel
-        ) { activePicker = .quality }
+        ) { showPicker(.quality) }
         .focused(detailFocus, equals: .top)
 
         TVSettingsPickerRow(
@@ -38,7 +35,8 @@ struct TVPlaybackSettingsPane: View {
                 for: viewModel.preferredAudioLanguage,
                 in: TVSettingsOptions.audioLanguage(viewModel.audioLanguageOptions)
             )
-        ) { activePicker = .audioLanguage }
+        ) { showPicker(.audioLanguage) }
+        .focused(detailFocus, equals: .playbackAudioLanguage)
 
         TVSettingsToggleRow(
             title: "Dolby Vision",
@@ -103,7 +101,8 @@ struct TVPlaybackSettingsPane: View {
         TVSettingsPickerRow(
             title: "Show Next Up",
             value: TVSettingsOptions.label(for: String(viewModel.nextUpPromptSeconds), in: TVSettingsOptions.nextUpPrompt)
-        ) { activePicker = .nextUpPrompt }
+        ) { showPicker(.nextUpPrompt) }
+        .focused(detailFocus, equals: .playbackNextUpPrompt)
 
         TVSettingsToggleRow(
             title: "Skip Intros",
@@ -146,11 +145,15 @@ struct TVPlaybackSettingsPane: View {
 
     // MARK: - Pickers
 
-    @ViewBuilder
-    private func pickerSheet(for kind: PickerKind) -> some View {
+    private func showPicker(_ kind: PickerKind) {
+        presentPicker(pickerRequest(for: kind))
+    }
+
+    private func pickerRequest(for kind: PickerKind) -> TVSettingsPickerRequest {
         switch kind {
         case .quality:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Quality",
                 options: TVSettingsOptions.quality(
                     // A stored pair no preset covers gets its own entry
@@ -166,10 +169,12 @@ struct TVPlaybackSettingsPane: View {
                         guard value != TVSettingsOptions.customQualityId else { return }
                         Task { await viewModel.setQualityPreset(value) }
                     }
-                )
+                ),
+                returnFocus: .top
             )
         case .audioLanguage:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Audio Language",
                 options: TVSettingsOptions.audioLanguage(viewModel.audioLanguageOptions),
                 selection: Binding(
@@ -178,10 +183,12 @@ struct TVPlaybackSettingsPane: View {
                         viewModel.preferredAudioLanguage = value
                         Task { await viewModel.setPreferredAudioLanguage(value) }
                     }
-                )
+                ),
+                returnFocus: .playbackAudioLanguage
             )
         case .nextUpPrompt:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Show Next Up",
                 options: TVSettingsOptions.nextUpPrompt,
                 selection: Binding(
@@ -191,7 +198,8 @@ struct TVPlaybackSettingsPane: View {
                         viewModel.nextUpPromptSeconds = seconds
                         Task { await viewModel.setNextUpPromptSeconds(seconds) }
                     }
-                )
+                ),
+                returnFocus: .playbackNextUpPrompt
             )
         }
     }

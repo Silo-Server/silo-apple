@@ -160,7 +160,18 @@ private struct TVSettingsRailRowBody: View {
                         lineWidth: 1
                     )
             )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(Color.continuumAccent)
+                    .frame(width: 4)
+                    .padding(.vertical, 12)
+                    .opacity(isSelected && !isFocused ? 1 : 0)
+            }
+            .scaleEffect(configuration.isPressed ? 0.98 : (isFocused ? 1.012 : 1))
+            .shadow(
+                color: isFocused ? Color.continuumAccent.opacity(0.14) : .clear,
+                radius: 18
+            )
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
     }
 
@@ -174,7 +185,7 @@ private struct TVSettingsRailRowBody: View {
     private var fill: Color {
         if isDestructive && isFocused { return .continuumError }
         if isFocused { return .continuumOnSurface }
-        if isSelected { return .continuumChromeSelectedFill }
+        if isSelected { return .continuumSurfaceElevated.opacity(0.92) }
         return .clear
     }
 }
@@ -185,15 +196,21 @@ private struct TVSettingsRailRowBody: View {
 /// platter with dark content on focus.
 struct TVSettingsPaneRowStyle: ButtonStyle {
     var isDestructive: Bool = false
+    var isSelected: Bool = false
 
     func makeBody(configuration: Configuration) -> some View {
-        TVSettingsPaneRowBody(configuration: configuration, isDestructive: isDestructive)
+        TVSettingsPaneRowBody(
+            configuration: configuration,
+            isDestructive: isDestructive,
+            isSelected: isSelected
+        )
     }
 }
 
 private struct TVSettingsPaneRowBody: View {
     let configuration: ButtonStyleConfiguration
     let isDestructive: Bool
+    let isSelected: Bool
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
@@ -204,16 +221,21 @@ private struct TVSettingsPaneRowBody: View {
             .foregroundColor(foreground)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(isFocused ? Color.continuumOnSurface : Color.continuumChromeRestingFill)
+                    .fill(backgroundFill)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .strokeBorder(
-                        isFocused ? Color.clear : Color.continuumChromeRestingBorder,
+                        borderColor,
                         lineWidth: 1
                     )
             )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .scaleEffect(configuration.isPressed ? 0.98 : (isFocused ? 1.012 : 1))
+            .shadow(
+                color: isFocused ? Color.continuumAccent.opacity(0.16) : .clear,
+                radius: 18
+            )
+            .focusEffectDisabled()
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
     }
 
@@ -222,6 +244,18 @@ private struct TVSettingsPaneRowBody: View {
             return isFocused ? Color(hex: "#D22F3F") : .continuumError
         }
         return isFocused ? .continuumBackground : .continuumOnSurface
+    }
+
+    private var backgroundFill: Color {
+        if isFocused { return .continuumOnSurface }
+        if isSelected { return .continuumChromeSelectedFill }
+        return .continuumSurfaceElevated.opacity(0.84)
+    }
+
+    private var borderColor: Color {
+        if isFocused { return .clear }
+        if isSelected { return .continuumChromeSelectedBorder }
+        return .continuumChromeRestingBorder
     }
 }
 
@@ -336,7 +370,7 @@ struct TVSettingsInfoRow: View {
         .foregroundColor(.continuumOnSurface)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.continuumChromeRestingFill)
+                .fill(Color.continuumSurfaceElevated.opacity(0.84))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -359,7 +393,7 @@ struct TVSettingsSectionHeader: View {
         Text(title)
             .font(.system(size: 15, weight: .semibold, design: .monospaced))
             .tracking(2)
-            .foregroundColor(.continuumSecondaryText)
+            .foregroundStyle(Color.continuumAccent.opacity(0.86))
             .padding(.horizontal, 24)
             .padding(.top, 26)
             .padding(.bottom, 6)
@@ -503,11 +537,10 @@ struct TVSettingsConfirmationOverlay: View {
 
 // MARK: - Picker sheet
 
-/// Modal option picker presented by `.fullScreenCover(item:)` (tvOS 26
-/// renders plain sheets as narrow centered cards that clip content).
-/// Contains its own `NavigationStack` so it has a title regardless of
-/// where it was presented from. Selecting an option updates the
-/// binding and dismisses.
+/// Compact modal option menu mounted by the root Settings view.
+/// The menu stays compact while a full-screen scrim cleanly separates it
+/// from the disabled two-pane settings focus graph beneath it.
+/// Selecting an option updates the binding and dismisses; Menu cancels.
 struct TVSettingsPickerSheet: View {
     let title: String
     let options: [TVSettingsOption]
@@ -515,81 +548,194 @@ struct TVSettingsPickerSheet: View {
     var subtitlePreviewAppearance: SubtitleAppearance? = nil
     var allowsSelection = true
     var disabledMessage: String? = nil
+    var onDismiss: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.resetFocus) private var resetFocus
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var pickerFocusScope
     @FocusState private var focusedOptionID: String?
+    @State private var isClosing = false
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 18) {
-                if let disabledMessage {
-                    TVSettingsFooter(disabledMessage)
-                }
+        GeometryReader { geometry in
+            ZStack {
+                Color.continuumBackground.opacity(0.88)
+                    .ignoresSafeArea()
 
-                if let subtitlePreviewAppearance {
-                    TVSettingsSubtitlePreview(
-                        appearance: previewAppearance(from: subtitlePreviewAppearance)
+                RadialGradient(
+                    colors: [
+                        Color.continuumAccent.opacity(0.08),
+                        Color.clear,
+                    ],
+                    center: .center,
+                    startRadius: 40,
+                    endRadius: 680
+                )
+                .ignoresSafeArea()
+
+                pickerCard(
+                    width: min(760, geometry.size.width - 240),
+                    height: min(
+                        max(preferredCardHeight, 390),
+                        min(760, geometry.size.height - 160)
                     )
-                }
-
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 10) {
-                            ForEach(options) { option in
-                                TVSettingsPickerOptionRow(
-                                    option: option,
-                                    isSelected: option.id == selection,
-                                    focusedOptionID: $focusedOptionID
-                                ) {
-                                    selection = option.id
-                                    dismiss()
-                                }
-                                .id(option.id)
-                            }
-                        }
-                        .padding(.vertical, 16)
-                    }
-                    .scrollIndicators(options.count > 8 ? .automatic : .hidden)
-                    .onAppear {
-                        guard allowsSelection else {
-                            focusedOptionID = nil
-                            return
-                        }
-                        focusSelection()
-                        scrollToFocusedOption(with: proxy, animated: false)
-                    }
-                    .onChange(of: allowsSelection) { _, enabled in
-                        guard enabled else {
-                            focusedOptionID = nil
-                            return
-                        }
-                        focusSelection()
-                        scrollToFocusedOption(with: proxy, animated: false)
-                    }
-                    .onChange(of: focusedOptionID) { _, _ in
-                        scrollToFocusedOption(with: proxy)
-                    }
-                    .onChange(of: selection) { _, _ in
-                        scrollToFocusedOption(with: proxy)
-                    }
-                }
-                .disabled(!allowsSelection)
+                )
             }
-            .frame(maxWidth: 960)
-            .navigationTitle(title)
-            .safeAreaPadding(.vertical, ContinuumTheme.safePadding / 2)
-            .background(Color.continuumBackground.ignoresSafeArea())
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .preferredColorScheme(.dark)
+        .focusScope(pickerFocusScope)
         .focusSection()
+        .onExitCommand(perform: close)
+        .onDisappear { isClosing = true }
         .onChange(of: focusedOptionID) { _, value in
-            if allowsSelection, value == nil {
-                focusSelection()
+            if allowsSelection, value == nil, !isClosing {
+                claimFocus()
             }
         }
     }
 
+    private func pickerCard(width: CGFloat, height: CGFloat) -> some View {
+        let cardShape = RoundedRectangle(cornerRadius: 30, style: .continuous)
+
+        return VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 24) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 42, weight: .bold))
+                        .foregroundStyle(Color.continuumOnSurface)
+                        .accessibilityAddTraits(.isHeader)
+
+                    Text("Choose an option")
+                        .font(.system(size: 19))
+                        .foregroundStyle(Color.continuumSecondaryText)
+                }
+
+                Spacer(minLength: 12)
+
+                Label("Menu to close", systemImage: "arrow.uturn.backward")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(Color.continuumSecondaryText)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 10)
+                    .background(Color.white.opacity(0.055), in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+                }
+            }
+
+            if let disabledMessage {
+                TVSettingsFooter(disabledMessage)
+            }
+
+            if let subtitlePreviewAppearance {
+                TVSettingsSubtitlePreview(
+                    appearance: previewAppearance(from: subtitlePreviewAppearance)
+                )
+            }
+
+            Rectangle()
+                .fill(Color.continuumChromeRestingBorder)
+                .frame(height: 1)
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(options) { option in
+                            TVSettingsPickerOptionRow(
+                                option: option,
+                                isSelected: option.id == selection,
+                                focusedOptionID: $focusedOptionID
+                            ) {
+                                selection = option.id
+                                close()
+                            }
+                            .id(option.id)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                }
+                .contentMargins(.vertical, 8, for: .scrollContent)
+                .scrollIndicators(options.count > 7 ? .automatic : .hidden)
+                // Picker rows scale and cast a small shadow on focus. Keep
+                // those layers inside the list viewport so scrolling cannot
+                // paint over the header or beyond the card.
+                .clipped()
+                .onAppear {
+                    guard allowsSelection else {
+                        focusedOptionID = nil
+                        return
+                    }
+                    claimFocus()
+                    scrollToFocusedOption(with: proxy, animated: false)
+                }
+                .onChange(of: allowsSelection) { _, enabled in
+                    guard enabled else {
+                        focusedOptionID = nil
+                        return
+                    }
+                    claimFocus()
+                    scrollToFocusedOption(with: proxy, animated: false)
+                }
+                .onChange(of: focusedOptionID) { _, _ in
+                    scrollToFocusedOption(with: proxy)
+                }
+                .onChange(of: selection) { _, _ in
+                    scrollToFocusedOption(with: proxy)
+                }
+            }
+            .disabled(!allowsSelection)
+        }
+        .padding(30)
+        .frame(width: width, height: height, alignment: .top)
+        .background(cardShape.fill(Color.continuumSurfaceElevated.opacity(0.98)))
+        // Clip child layers first, then add the border and outer card shadow.
+        // This preserves the floating dialog while containing scroll content.
+        .clipShape(cardShape)
+        .overlay {
+            cardShape.strokeBorder(
+                Color.continuumChromeSelectedBorder.opacity(0.9),
+                lineWidth: 1
+            )
+        }
+        .shadow(color: .black.opacity(0.58), radius: 48, y: 22)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(title) options")
+    }
+
+    private var preferredCardHeight: CGFloat {
+        let rowHeight: CGFloat = options.contains { $0.previewFontName != nil } ? 88 : 72
+        let chromeHeight: CGFloat = subtitlePreviewAppearance == nil ? 158 : 344
+        let disabledMessageHeight: CGFloat = disabledMessage == nil ? 0 : 72
+        return chromeHeight + disabledMessageHeight + CGFloat(options.count) * rowHeight
+    }
+
     private func focusSelection() {
         focusedOptionID = options.first { $0.id == selection }?.id ?? options.first?.id
+    }
+
+    private func claimFocus() {
+        guard allowsSelection, !isClosing else { return }
+        focusSelection()
+        Task { @MainActor in
+            await Task.yield()
+            guard allowsSelection, !isClosing else { return }
+            resetFocus(in: pickerFocusScope)
+            focusSelection()
+        }
+    }
+
+    private func close() {
+        guard !isClosing else { return }
+        isClosing = true
+        if let onDismiss {
+            onDismiss()
+        } else {
+            dismiss()
+        }
     }
 
     private func previewAppearance(from base: SubtitleAppearance) -> SubtitleAppearance {
@@ -606,7 +752,7 @@ struct TVSettingsPickerSheet: View {
         guard allowsSelection else { return }
         let targetID = focusedOptionID ?? options.first { $0.id == selection }?.id ?? options.first?.id
         guard let targetID else { return }
-        if animated {
+        if animated, !reduceMotion {
             withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
                 proxy.scrollTo(targetID, anchor: .center)
             }
@@ -622,63 +768,33 @@ private struct TVSettingsPickerOptionRow: View {
     @FocusState.Binding var focusedOptionID: String?
     let onSelect: () -> Void
 
-    private var isFocused: Bool { focusedOptionID == option.id }
-
     var body: some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(option.label)
-                    .font(.system(size: 28, weight: isSelected ? .semibold : .medium))
-                    .lineLimit(1)
-
-                if let previewFontName = option.previewFontName {
-                    Text("Subtitle sample")
-                        .font(.custom(previewFontName, size: 22))
+        Button(action: onSelect) {
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(option.label)
+                        .font(.system(size: 27, weight: isSelected ? .semibold : .medium))
                         .lineLimit(1)
-                        .opacity(0.72)
+
+                    if let previewFontName = option.previewFontName {
+                        Text("Subtitle sample")
+                            .font(.custom(previewFontName, size: 22))
+                            .lineLimit(1)
+                            .opacity(0.72)
+                    }
                 }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .opacity(isSelected ? 1 : 0)
             }
-
-            Spacer(minLength: 0)
-
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 24, weight: .semibold))
-                .opacity(isSelected ? 1 : 0)
         }
-        .foregroundStyle(isFocused ? Color.continuumBackground : .continuumOnSurface)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 15)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(backgroundFill)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(
-                    borderColor,
-                    lineWidth: 1
-                )
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 14))
-        .focusable(true)
+        .buttonStyle(TVSettingsPaneRowStyle(isSelected: isSelected))
         .focused($focusedOptionID, equals: option.id)
-        .onTapGesture(perform: onSelect)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-        .accessibilityAddTraits(.isButton)
         .accessibilityLabel(option.label)
         .accessibilityValue(isSelected ? "Selected" : "")
-    }
-
-    private var backgroundFill: Color {
-        if isFocused { return .continuumOnSurface }
-        if isSelected { return .continuumChromeSelectedFill }
-        return .continuumChromeRestingFill
-    }
-
-    private var borderColor: Color {
-        if isFocused { return .clear }
-        if isSelected { return .continuumChromeSelectedBorder }
-        return .continuumChromeRestingBorder
     }
 }
 

@@ -13,16 +13,22 @@ struct SubtitleSettingsView: View {
 
     var body: some View {
         List {
+            SettingsPageHeader(
+                title: "Subtitles",
+                subtitle: "Language, behavior, and on-screen appearance.",
+                systemImage: "captions.bubble.fill",
+                tint: .pink
+            )
+            .settingsPageHeaderRow()
+
             profileBackedSection
             if AICapabilities.shared.metadataEnabled {
                 metadataLanguageSection
             }
             appearanceSection
         }
-        .continuumGroupedListStyle()
-        .continuumScrollContentBackgroundHidden()
-        .background(Color.continuumBackground.ignoresSafeArea())
-        .navigationTitle("Subtitles")
+        .settingsListChrome()
+        .navigationTitle("")
         .continuumNavigationTitleDisplayMode(.inline)
         .continuumToolbarColorSchemeDark()
         .onChange(of: viewModel.editorSubtitleLanguage) { _, _ in

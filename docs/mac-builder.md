@@ -219,8 +219,11 @@ Use the MCP tools; they parse errors and return structured results.
 
 `build_run_sim` in one call beats `build_sim` then `launch_app_sim` — fewer round trips over SSH.
 
-Simulator builds need no signing at all, which is why they are the default for verifying a change
-compiles and its tests pass.
+Simulator builds need no developer signing identity, which is why they are the default for
+verifying a change. Xcode still signs normal simulator products locally and embeds simulated
+entitlements. Preserve that local signature for authenticated runs: Silo's tokens live in the
+Keychain, and installing a `CODE_SIGNING_ALLOWED=NO` product removes the entitlement needed to
+persist them across process launches.
 
 ### Compile-only check without signing
 
@@ -234,6 +237,12 @@ ssh mac-builder 'cd ~/silo-apple-deploy/iosApp && \
 ```
 
 Swap `-scheme SiloMac -destination "platform=macOS"` for the Mac app.
+
+Treat the output above as **compile-only**. Do not install or launch it for authenticated UI
+testing. Use `build_run_sim` or normal simulator `xcodebuild` without
+`CODE_SIGNING_ALLOWED=NO`, keep the existing simulator, and confirm the product's simulated
+entitlements include `application-identifier` and `keychain-access-groups` before the user signs
+in. After login, use stop/launch for repeat checks when no new binary needs installation.
 
 ### Physical device
 
@@ -296,7 +305,10 @@ cause (`User interaction is not allowed`) is buried in the raw log.
 
 Consequences:
 
-- **Simulator and `CODE_SIGNING_ALLOWED=NO` builds** — unaffected. Use MCP tools freely.
+- **Normally signed simulator builds** — unaffected. Xcode's "Sign to Run Locally" path does not
+  need the developer login keychain and preserves Silo's Keychain-backed session.
+- **`CODE_SIGNING_ALLOWED=NO` builds** — compile-only. Installing one makes authentication
+  process-local because the product has no Keychain entitlement.
 - **Device builds** — either unlock inside the same `ssh` command as `xcodebuild` (the recipe
   above), or unlock the keychain out-of-band and keep it unlocked for the MCP server's session.
 
@@ -359,6 +371,8 @@ buried under thousands of lines of Swift toolchain noise.
 - **Simulator versus device destinations produce different product directories**
   (`Debug-appletvsimulator` versus `Debug-appletvos`). `devicectl install` silently rejects a
   simulator bundle.
+- **Do not install `CODE_SIGNING_ALLOWED=NO` products for authenticated simulator work.** Reuse a
+  normally signed build and the existing simulator so Keychain login survives relaunches.
 - **Run `xcodegen generate` after syncing.** `Silo.xcodeproj` is generated; a stale one omits new
   files and the build fails with confusing "cannot find type" errors.
 - **SourceKit "No such module" errors are IDE index artifacts.** If `xcodebuild` says

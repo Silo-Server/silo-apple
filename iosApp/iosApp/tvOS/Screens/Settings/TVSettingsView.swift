@@ -7,27 +7,38 @@ import SwiftUI
 /// controls inline. The pane follows rail focus live (like the system
 /// Settings app's split screens), so there is no drill-in navigation —
 /// which also sidesteps the tvOS 26 push-from-tab-Form problem that used
-/// to force every sub-screen through a `fullScreenCover`. Only option
-/// pickers still present as covers (`TVSettingsPickerSheet`).
+/// to force every sub-screen through a `fullScreenCover`. Option pickers
+/// mount as root overlays so their focus graph is fully isolated.
 ///
-/// Focus model: one native graph. Each pane is a `.focusSection()`;
-/// vertical movement stays in-pane and Left/Right bridges panes
-/// geometrically. User-initiated default focus makes each pane's anchor
-/// win during that native resolution; Select/Menu use the same anchors
-/// explicitly (see docs/tvos-focus.md).
+/// Focus model: one native graph with one preferred owner. Each pane is a
+/// `.focusSection()`; vertical movement stays in-pane and Left/Right bridges
+/// panes natively. The detail pane gives its preferred row user-initiated
+/// default priority so it wins the initial cross-pane focus resolution before
+/// geometric proximity can select a lower row. The outer scope still chooses
+/// the active pane for page entry and modal restoration (see docs/tvos-focus.md).
 struct TVSettingsView: View {
     @State private var viewModel = TVSettingsViewModel()
     @State private var diagnosticsModel = DiagnosticsViewModel()
     @State private var showSignOutConfirm = false
     @State private var selectedCategory: TVSettingsCategory = .general
+    @State private var activePicker: TVSettingsPickerRequest?
+    @State private var pendingPickerFocus: TVSettingsDetailFocus?
+    @State private var isRestoringDetailFocus = false
+    @State private var preferredFocusOwner: FocusOwner = .rail
+    @State private var preferredDetailFocus: TVSettingsDetailFocus = .top
     @FocusState private var railFocus: RailItem?
     @FocusState private var detailFocus: TVSettingsDetailFocus?
+    @Environment(\.resetFocus) private var resetFocus
+    @Namespace private var settingsFocusScope
+    @Namespace private var railFocusScope
+    @Namespace private var detailFocusScope
     @Environment(AppRouter.self) private var router
 
     var body: some View {
         ZStack {
+            SettingsBackdrop()
+
             settingsContent
-                .disabled(showSignOutConfirm)
 
             if showSignOutConfirm {
                 TVSettingsConfirmationOverlay(
@@ -42,21 +53,51 @@ struct TVSettingsView: View {
                 .transition(.opacity)
                 .zIndex(1)
             }
+
+            if let activePicker {
+                TVSettingsPickerSheet(
+                    title: activePicker.title,
+                    options: activePicker.options,
+                    selection: activePicker.selection,
+                    subtitlePreviewAppearance: activePicker.subtitlePreviewAppearance,
+                    onDismiss: dismissPicker
+                )
+                .onDisappear(perform: restorePickerFocus)
+                .zIndex(2)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSignOutConfirm)
-        .defaultFocus($railFocus, .category(selectedCategory))
         .task {
             await viewModel.load()
             await diagnosticsModel.load(profile: viewModel.activeProfile)
         }
         .onChange(of: railFocus) { _, focus in
+            if focus != nil,
+               activePicker == nil,
+               !showSignOutConfirm,
+               !isRestoringDetailFocus {
+                preferredFocusOwner = .rail
+            }
+
             // The pane previews whatever category the rail focus rests on.
             // Profile / Sign Out keep the last category visible.
-            if case .category(let category) = focus, category != selectedCategory {
-                withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
-                    selectedCategory = category
+            if case .category(let category) = focus {
+                preferredDetailFocus = .top
+                if category != selectedCategory {
+                    withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
+                        selectedCategory = category
+                    }
                 }
+            }
+        }
+        .onChange(of: detailFocus) { _, focus in
+            if let focus,
+               activePicker == nil,
+               !showSignOutConfirm,
+               !isRestoringDetailFocus {
+                preferredDetailFocus = focus
+                preferredFocusOwner = .detail
             }
         }
         .onChange(of: viewModel.editorSubtitleLanguage) { _, _ in
@@ -79,37 +120,68 @@ struct TVSettingsView: View {
     }
 
     private var settingsContent: some View {
-        HStack(alignment: .top, spacing: 64) {
+        HStack(alignment: .top, spacing: 52) {
             rail
-                .frame(width: 430)
-                .focusSection()
+                .padding(24)
+                .background(
+                    RoundedRectangle(cornerRadius: 26)
+                        .fill(Color.continuumSurface.opacity(0.74))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 26)
+                        .strokeBorder(Color.continuumOutline, lineWidth: 1)
+                }
+                .frame(width: 490)
+                .disabled(
+                    showSignOutConfirm
+                        || activePicker != nil
+                        || isRestoringDetailFocus
+                )
                 .defaultFocus(
                     $railFocus,
                     .category(selectedCategory),
-                    priority: .userInitiated
+                    priority: preferredFocusOwner == .rail ? .userInitiated : .automatic
                 )
+                .prefersDefaultFocus(preferredFocusOwner == .rail, in: settingsFocusScope)
+                .focusSection()
+                .focusScope(railFocusScope)
                 .onExitCommand(perform: exitSettingsToHome)
 
             detailPane
                 .frame(maxWidth: .infinity, alignment: .topLeading)
+                .disabled(showSignOutConfirm || activePicker != nil)
+                .defaultFocus(
+                    $detailFocus,
+                    preferredDetailFocus,
+                    priority: .userInitiated
+                )
+                .prefersDefaultFocus(preferredFocusOwner == .detail, in: settingsFocusScope)
                 .focusSection()
-                .defaultFocus($detailFocus, .top, priority: .userInitiated)
+                .focusScope(detailFocusScope)
                 .onExitCommand(perform: returnFocusToRail)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .focusScope(settingsFocusScope)
         .safeAreaPadding(.horizontal, ContinuumTheme.Skyline.safeAreaX)
-        .safeAreaPadding(.top, 64)
+        .safeAreaPadding(.top, 48)
+        .safeAreaPadding(.bottom, 44)
     }
 
     // MARK: - Left rail
 
     private var rail: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Settings")
-                .font(.system(size: 44, weight: .bold))
-                .foregroundColor(.continuumOnSurface)
-                .padding(.leading, 20)
-                .padding(.bottom, 26)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Settings")
+                    .font(.system(size: 42, weight: .bold))
+                    .foregroundStyle(Color.continuumOnSurface)
+
+                Text("Make Silo work the way you like.")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Color.continuumSecondaryText)
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 20)
 
             profileRow
                 .padding(.bottom, 22)
@@ -171,8 +243,17 @@ struct TVSettingsView: View {
                 Image(systemName: category.icon)
                     .font(.system(size: 22, weight: .medium))
                     .frame(width: 34)
-                Text(category.title)
-                    .font(.system(size: 27, weight: .medium))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(category.title)
+                        .font(.system(size: 25, weight: .medium))
+
+                    Text(category.railDescription)
+                        .font(.system(size: 16))
+                        .opacity(0.62)
+                        .lineLimit(1)
+                }
+
                 Spacer(minLength: 0)
             }
         }
@@ -206,19 +287,89 @@ struct TVSettingsView: View {
 
     private func enterDetailPane(for category: TVSettingsCategory) {
         selectedCategory = category
+        preferredFocusOwner = .detail
+        preferredDetailFocus = .top
+        isRestoringDetailFocus = true
+        railFocus = nil
         detailFocus = .top
+        Task { @MainActor in
+            await Task.yield()
+            resetFocus(in: settingsFocusScope)
+            resetFocus(in: detailFocusScope)
+            detailFocus = .top
+            try? await Task.sleep(for: .milliseconds(120))
+            isRestoringDetailFocus = false
+        }
     }
 
     private func returnFocusToRail() {
+        guard activePicker == nil,
+              !showSignOutConfirm,
+              !isRestoringDetailFocus else {
+            return
+        }
+        preferredFocusOwner = .rail
         detailFocus = nil
         railFocus = .category(selectedCategory)
+        resetFocus(in: railFocusScope)
     }
 
     private func dismissSignOutConfirmation() {
         showSignOutConfirm = false
+        preferredFocusOwner = .rail
+        railFocus = .signOut
         Task { @MainActor in
             await Task.yield()
+            resetFocus(in: railFocusScope)
             railFocus = .signOut
+        }
+    }
+
+    private func presentPicker(_ request: TVSettingsPickerRequest) {
+        // Remove every underlying focus candidate in the same update that
+        // mounts the modal. The picker then becomes the sole focus owner.
+        preferredFocusOwner = .detail
+        preferredDetailFocus = request.returnFocus
+        railFocus = nil
+        detailFocus = nil
+        activePicker = request
+    }
+
+    private func dismissPicker() {
+        guard let target = activePicker?.returnFocus else {
+            activePicker = nil
+            return
+        }
+
+        // Keep the rail out of the graph while SwiftUI removes the modal.
+        // The exact row is restored from the overlay's onDisappear callback,
+        // after its focus subtree has actually left the hierarchy.
+        preferredFocusOwner = .detail
+        preferredDetailFocus = target
+        pendingPickerFocus = target
+        isRestoringDetailFocus = true
+        activePicker = nil
+    }
+
+    private func restorePickerFocus() {
+        guard let target = pendingPickerFocus else { return }
+
+        preferredFocusOwner = .detail
+        preferredDetailFocus = target
+        railFocus = nil
+        detailFocus = nil
+        resetFocus(in: settingsFocusScope)
+        Task { @MainActor in
+            await Task.yield()
+            railFocus = nil
+            resetFocus(in: settingsFocusScope)
+            await Task.yield()
+            detailFocus = nil
+            await Task.yield()
+            detailFocus = target
+            try? await Task.sleep(for: .milliseconds(120))
+            pendingPickerFocus = nil
+            isRestoringDetailFocus = false
         }
     }
 
@@ -240,6 +391,10 @@ struct TVSettingsView: View {
             .frame(maxWidth: 1080, alignment: .leading)
             .padding(.bottom, 64)
         }
+        // Keep focused row scaling and shadows inside a deliberate gutter
+        // instead of letting the scroll view trim their rounded edges.
+        .contentMargins(.horizontal, 18, for: .scrollContent)
+        .scrollClipDisabled()
         // Rebuild the scroll view per category so it opens at the top.
         // Safe: selection only changes while focus is in the rail.
         .id(selectedCategory)
@@ -247,21 +402,35 @@ struct TVSettingsView: View {
     }
 
     private var paneHeader: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(selectedCategory.eyebrow)
-                .font(.system(size: 15, weight: .semibold, design: .monospaced))
-                .tracking(2)
-                .foregroundColor(.continuumSecondaryText)
+        HStack(alignment: .center, spacing: 20) {
+            Image(systemName: selectedCategory.icon)
+                .font(.system(size: 27, weight: .medium))
+                .foregroundStyle(selectedCategory.tint)
+                .frame(width: 62, height: 62)
+                .background(selectedCategory.tint.opacity(0.13), in: Circle())
+                .overlay {
+                    Circle()
+                        .strokeBorder(selectedCategory.tint.opacity(0.22), lineWidth: 1)
+                }
+                .accessibilityHidden(true)
 
-            Text(selectedCategory.title)
-                .font(.system(size: 38, weight: .semibold))
-                .foregroundColor(.continuumOnSurface)
+            VStack(alignment: .leading, spacing: 7) {
+                Text(selectedCategory.eyebrow)
+                    .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                    .tracking(2)
+                    .foregroundStyle(selectedCategory.tint)
 
-            Text(selectedCategory.blurb)
-                .font(.system(size: 20))
-                .foregroundColor(.continuumSecondaryText)
+                Text(selectedCategory.title)
+                    .font(.system(size: 38, weight: .semibold))
+                    .foregroundStyle(Color.continuumOnSurface)
+
+                Text(selectedCategory.blurb)
+                    .font(.system(size: 20))
+                    .foregroundStyle(Color.continuumSecondaryText)
+            }
         }
         .padding(.horizontal, 24)
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
@@ -270,9 +439,17 @@ struct TVSettingsView: View {
         case .general:
             TVGeneralSettingsPane(detailFocus: $detailFocus)
         case .playback:
-            TVPlaybackSettingsPane(viewModel: viewModel, detailFocus: $detailFocus)
+            TVPlaybackSettingsPane(
+                viewModel: viewModel,
+                detailFocus: $detailFocus,
+                presentPicker: presentPicker
+            )
         case .subtitles:
-            TVSubtitleSettingsPane(viewModel: viewModel, detailFocus: $detailFocus)
+            TVSubtitleSettingsPane(
+                viewModel: viewModel,
+                detailFocus: $detailFocus,
+                presentPicker: presentPicker
+            )
         case .diagnostics:
             TVDiagnosticsSettingsPane(model: diagnosticsModel, detailFocus: $detailFocus)
         case .server:
@@ -328,6 +505,11 @@ struct TVSettingsView: View {
         case signOut
     }
 
+    private enum FocusOwner {
+        case rail
+        case detail
+    }
+
     private var visibleCategories: [TVSettingsCategory] {
         TVSettingsCategory.allCases.filter { category in
             category != .diagnostics || diagnosticsModel.shouldShowSettings
@@ -348,6 +530,18 @@ struct TVSettingsView: View {
 
 enum TVSettingsDetailFocus: Hashable {
     case top
+    case playbackAudioLanguage
+    case playbackNextUpPrompt
+    case subtitleBehavior
+    case subtitleMetadataLanguage
+    case subtitleFontSize
+    case subtitleFontFamily
+    case subtitleFontColor
+    case subtitleOutlineColor
+    case subtitleBackgroundStyle
+    case subtitleBackgroundOpacity
+    case subtitleBackgroundColor
+    case subtitlePosition
 }
 
 // MARK: - Categories
@@ -401,6 +595,27 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
             return "Review and send diagnostics to this Silo server."
         case .server:
             return "The Silo server this Apple TV is connected to."
+        }
+    }
+
+    var railDescription: String {
+        switch self {
+        case .general: return "App and navigation"
+        case .playback: return "Quality and episodes"
+        case .subtitles: return "Language and appearance"
+        case .diagnostics: return "Reports and support"
+        case .server: return "Connection and version"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .general, .playback, .subtitles:
+            return .continuumAccent
+        case .diagnostics:
+            return .orange
+        case .server:
+            return .teal
         }
     }
 }

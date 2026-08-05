@@ -8,7 +8,7 @@ import SwiftUI
 struct TVSubtitleSettingsPane: View {
     @Bindable var viewModel: TVSettingsViewModel
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
-    @State private var activePicker: PickerKind?
+    let presentPicker: (TVSettingsPickerRequest) -> Void
     @State private var showResetConfirmation = false
 
     var body: some View {
@@ -18,9 +18,6 @@ struct TVSubtitleSettingsPane: View {
                 metadataLanguageSection
             }
             appearanceSection
-        }
-        .fullScreenCover(item: $activePicker) { kind in
-            pickerSheet(for: kind)
         }
         .alert("Reset Custom Appearance?", isPresented: $showResetConfirmation) {
             Button("Reset", role: .destructive) {
@@ -45,7 +42,7 @@ struct TVSubtitleSettingsPane: View {
                     for: viewModel.editorSubtitleLanguage,
                     in: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions)
                 )
-            ) { activePicker = .language }
+            ) { showPicker(.language) }
             .disabled(true)
         } else {
             TVSettingsPickerRow(
@@ -54,14 +51,15 @@ struct TVSubtitleSettingsPane: View {
                     for: viewModel.editorSubtitleLanguage,
                     in: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions)
                 )
-            ) { activePicker = .language }
+            ) { showPicker(.language) }
             .focused(detailFocus, equals: .top)
         }
 
         TVSettingsPickerRow(
             title: "Behavior",
             value: TVSettingsOptions.label(for: viewModel.editorSubtitleMode, in: TVSettingsOptions.subtitleMode)
-        ) { activePicker = .mode }
+        ) { showPicker(.mode) }
+        .focused(detailFocus, equals: .subtitleBehavior)
         .disabled(viewModel.settingsServerUpgradeRequired)
 
         TVSettingsToggleRow(
@@ -94,7 +92,8 @@ struct TVSubtitleSettingsPane: View {
                 for: viewModel.editorPreferredMetadataLanguage,
                 in: TVSettingsOptions.metadataLanguage(viewModel.metadataLanguageOptions)
             )
-        ) { activePicker = .metadataLanguage }
+        ) { showPicker(.metadataLanguage) }
+        .focused(detailFocus, equals: .subtitleMetadataLanguage)
         .disabled(viewModel.settingsServerUpgradeRequired)
 
         TVSettingsFooter("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
@@ -169,8 +168,9 @@ struct TVSubtitleSettingsPane: View {
                     : "—"
             ) {
                 guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
-                activePicker = .outlineColor
+                showPicker(.outlineColor)
             }
+            .focused(detailFocus, equals: .subtitleOutlineColor)
 
             pickerRow("Background Style", options: TVSettingsOptions.backgroundStyle,
                       selection: viewModel.subtitleAppearance.backgroundStyle.rawValue, kind: .backgroundStyle)
@@ -182,8 +182,9 @@ struct TVSubtitleSettingsPane: View {
                     : "—"
             ) {
                 guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
-                activePicker = .backgroundOpacity
+                showPicker(.backgroundOpacity)
             }
+            .focused(detailFocus, equals: .subtitleBackgroundOpacity)
 
             TVSettingsPickerRow(
                 title: "Background Color",
@@ -195,8 +196,9 @@ struct TVSubtitleSettingsPane: View {
                     : "—"
             ) {
                 guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
-                activePicker = .backgroundColor
+                showPicker(.backgroundColor)
             }
+            .focused(detailFocus, equals: .subtitleBackgroundColor)
 
             pickerRow("Position", options: TVSettingsOptions.position,
                       selection: viewModel.subtitleAppearance.position.rawValue, kind: .position)
@@ -253,81 +255,107 @@ struct TVSubtitleSettingsPane: View {
             value: TVSettingsOptions.label(for: selection, in: options)
         ) {
             guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
-            activePicker = kind
+            showPicker(kind)
         }
+        .focused(detailFocus, equals: kind.returnFocus)
     }
 
     // MARK: - Pickers
 
-    @ViewBuilder
-    private func pickerSheet(for kind: PickerKind) -> some View {
+    private func showPicker(_ kind: PickerKind) {
+        presentPicker(pickerRequest(for: kind))
+    }
+
+    private func pickerRequest(for kind: PickerKind) -> TVSettingsPickerRequest {
         switch kind {
         case .language:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Language",
                 options: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions),
-                selection: $viewModel.editorSubtitleLanguage
+                selection: $viewModel.editorSubtitleLanguage,
+                returnFocus: kind.returnFocus
             )
         case .mode:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Behavior",
                 options: TVSettingsOptions.subtitleMode,
-                selection: $viewModel.editorSubtitleMode
+                selection: $viewModel.editorSubtitleMode,
+                returnFocus: kind.returnFocus
             )
         case .metadataLanguage:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Metadata Language",
                 options: TVSettingsOptions.metadataLanguage(viewModel.metadataLanguageOptions),
-                selection: $viewModel.editorPreferredMetadataLanguage
+                selection: $viewModel.editorPreferredMetadataLanguage,
+                returnFocus: kind.returnFocus
             )
         case .fontSize:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Font Size",
                 options: TVSettingsOptions.subtitleSize,
-                selection: appearanceEnumBinding(\.fontSize, SubtitleFontSizePreset.self)
+                selection: appearanceEnumBinding(\.fontSize, SubtitleFontSizePreset.self),
+                returnFocus: kind.returnFocus
             )
         case .fontFamily:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Font Family",
                 options: TVSettingsOptions.fontFamily,
                 selection: appearanceEnumBinding(\.fontFamily, SubtitleFontFamilyPreset.self),
-                subtitlePreviewAppearance: viewModel.subtitleAppearance
+                subtitlePreviewAppearance: viewModel.subtitleAppearance,
+                returnFocus: kind.returnFocus
             )
         case .fontColor:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Font Color",
                 options: TVSettingsOptions.fontColor,
-                selection: appearanceStringBinding(\.fontColor)
+                selection: appearanceStringBinding(\.fontColor),
+                returnFocus: kind.returnFocus
             )
         case .outlineColor:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Outline Color",
                 options: TVSettingsOptions.outlineColor,
-                selection: outlineColorBinding
+                selection: outlineColorBinding,
+                returnFocus: kind.returnFocus
             )
         case .backgroundStyle:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Background Style",
                 options: TVSettingsOptions.backgroundStyle,
-                selection: backgroundStyleBinding
+                selection: backgroundStyleBinding,
+                returnFocus: kind.returnFocus
             )
         case .backgroundOpacity:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Background Opacity",
                 options: TVSettingsOptions.backgroundOpacity,
-                selection: backgroundOpacityBinding
+                selection: backgroundOpacityBinding,
+                returnFocus: kind.returnFocus
             )
         case .backgroundColor:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Background Color",
                 options: TVSettingsOptions.backgroundColor,
-                selection: backgroundColorBinding
+                selection: backgroundColorBinding,
+                returnFocus: kind.returnFocus
             )
         case .position:
-            TVSettingsPickerSheet(
+            TVSettingsPickerRequest(
+                id: kind.id,
                 title: "Position",
                 options: TVSettingsOptions.position,
-                selection: appearanceEnumBinding(\.position, SubtitlePositionPreset.self)
+                selection: appearanceEnumBinding(\.position, SubtitlePositionPreset.self),
+                returnFocus: kind.returnFocus
             )
         }
     }
@@ -346,6 +374,22 @@ struct TVSubtitleSettingsPane: View {
         case position
 
         var id: String { rawValue }
+
+        var returnFocus: TVSettingsDetailFocus {
+            switch self {
+            case .language: .top
+            case .mode: .subtitleBehavior
+            case .metadataLanguage: .subtitleMetadataLanguage
+            case .fontSize: .subtitleFontSize
+            case .fontFamily: .subtitleFontFamily
+            case .fontColor: .subtitleFontColor
+            case .outlineColor: .subtitleOutlineColor
+            case .backgroundStyle: .subtitleBackgroundStyle
+            case .backgroundOpacity: .subtitleBackgroundOpacity
+            case .backgroundColor: .subtitleBackgroundColor
+            case .position: .subtitlePosition
+            }
+        }
     }
 
     // MARK: - Appearance bindings

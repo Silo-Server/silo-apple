@@ -11,7 +11,7 @@ struct TVDiagnosticsPromptScreen: View {
 
     var body: some View {
         ZStack {
-            Color.continuumBackground.ignoresSafeArea()
+            SettingsBackdrop()
 
             VStack(alignment: .leading, spacing: 28) {
                 Text(isReviewing ? "Report Summary" : prompt.title)

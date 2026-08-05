@@ -35,14 +35,12 @@ struct ServerListView: View {
                 .zIndex(1)
             }
         }
-        .continuumBackground()
+        .background(SettingsBackdrop())
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: removeTarget)
         #else
         contentList
-            .navigationTitle("Servers")
+            .navigationTitle("")
             .continuumNavigationTitleDisplayMode(.inline)
-            .continuumBackground()
-            .continuumScrollContentBackgroundHidden()
             .alert(
                 "Remove this server?",
                 isPresented: Binding(
@@ -173,8 +171,17 @@ struct ServerListView: View {
     }
     #endif
 
+    #if !os(tvOS)
     private var contentList: some View {
         List {
+            SettingsPageHeader(
+                title: "Servers",
+                subtitle: "Manage saved Silo connections for this device.",
+                systemImage: "server.rack",
+                tint: .teal
+            )
+            .settingsPageHeaderRow()
+
             Section {
                 ForEach(registry.sortedEntries) { entry in
                     row(for: entry)
@@ -195,7 +202,7 @@ struct ServerListView: View {
             }
             .listRowBackground(Color.continuumSurfaceElevated)
         }
-        .continuumGroupedListStyle()
+        .settingsListChrome()
     }
 
     @ViewBuilder
@@ -226,7 +233,6 @@ struct ServerListView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        #if !os(tvOS)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
                 removeTarget = entry
@@ -234,8 +240,8 @@ struct ServerListView: View {
                 Label("Remove", systemImage: "trash")
             }
         }
-        #endif
     }
+    #endif
 
     private func switchTo(_ entry: ServerEntry) {
         guard entry.id != registry.activeServerId else {

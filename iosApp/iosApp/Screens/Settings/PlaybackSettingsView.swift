@@ -9,14 +9,19 @@ struct PlaybackSettingsView: View {
 
     var body: some View {
         List {
+            SettingsPageHeader(
+                title: "Playback",
+                subtitle: "Quality, language, and episode behavior for this device.",
+                systemImage: "play.fill"
+            )
+            .settingsPageHeaderRow()
+
             streamingSection
             behaviorSection
             resetSection
         }
-        .continuumGroupedListStyle()
-        .continuumScrollContentBackgroundHidden()
-        .background(Color.continuumBackground.ignoresSafeArea())
-        .navigationTitle("Playback")
+        .settingsListChrome()
+        .navigationTitle("")
         .continuumNavigationTitleDisplayMode(.inline)
         .continuumToolbarColorSchemeDark()
     }
