@@ -714,6 +714,26 @@ final class SubtitleRenderer {
         frameSizeDirty = false
         lastCompositedImageFingerprint = imageFingerprint
 
+        // BorderStyle 4 backgrounds are the largest libass masks in a cue.
+        // Classify each bitmap once for this dirty frame and pass the identity
+        // set through every grouping and compositor pass; uniform edges alone
+        // redraw the image list eight times.
+        var glyphBackgroundBitmaps: Set<UInt> = []
+        for head in [imgPrimary, imgSecondary] {
+            var node = head
+            while let current = node {
+                let image = current.pointee
+                if Self.isGlyphBackgroundImage(image), let bitmap = image.bitmap {
+                    glyphBackgroundBitmaps.insert(UInt(bitPattern: UnsafeRawPointer(bitmap)))
+                }
+                node = image.next
+            }
+        }
+        func isGlyphBackground(_ image: ASS_Image) -> Bool {
+            guard let bitmap = image.bitmap else { return false }
+            return glyphBackgroundBitmaps.contains(UInt(bitPattern: UnsafeRawPointer(bitmap)))
+        }
+
         // Composite only the union of the rects libass painted. The
         // full-frame canvas was the dominant render cost on tvOS: at 4K
         // (scale 2) every cue change cleared, copied (`makeImage`), and
@@ -727,7 +747,7 @@ final class SubtitleRenderer {
             var node = head
             while let cur = node {
                 let img = cur.pointee
-                let isCharacter = !Self.isGlyphBackgroundImage(img)
+                let isCharacter = !isGlyphBackground(img)
                     && img.type == IMAGE_TYPE_CHARACTER
                 if (!charactersOnly || isCharacter),
                    img.w > 0, img.h > 0, img.bitmap != nil {
@@ -776,7 +796,7 @@ final class SubtitleRenderer {
         func hasAuthoredGlyphBackground(_ head: UnsafeMutablePointer<ASS_Image>?) -> Bool {
             var node = head
             while let current = node {
-                if Self.isGlyphBackgroundImage(current.pointee) { return true }
+                if isGlyphBackground(current.pointee) { return true }
                 node = current.pointee.next
             }
             return false
@@ -963,7 +983,8 @@ final class SubtitleRenderer {
                     selection: .excludingCharacters,
                     suppressAuthoredEdges: replacesAuthoredEdge,
                     glyphBackgroundColorOverride: backgroundColor,
-                    glyphBackgroundAlphaOverride: backgroundAlpha
+                    glyphBackgroundAlphaOverride: backgroundAlpha,
+                    glyphBackgroundBitmaps: glyphBackgroundBitmaps
                 )
                 for edge in edgeLayers {
                     canvas.draw(
@@ -974,7 +995,8 @@ final class SubtitleRenderer {
                         translationY: edge.offsetY,
                         selection: .charactersOnly,
                         characterColorOverride: edge.color,
-                        characterAlphaOverride: edge.alpha
+                        characterAlphaOverride: edge.alpha,
+                        glyphBackgroundBitmaps: glyphBackgroundBitmaps
                     )
                 }
                 canvas.draw(
@@ -983,7 +1005,8 @@ final class SubtitleRenderer {
                     offsetY: frameOffsetY,
                     selection: .charactersOnly,
                     characterColorOverride: characterColor,
-                    characterAlphaOverride: characterAlpha
+                    characterAlphaOverride: characterAlpha,
+                    glyphBackgroundBitmaps: glyphBackgroundBitmaps
                 )
             } else {
                 canvas.draw(
@@ -993,7 +1016,8 @@ final class SubtitleRenderer {
                     characterColorOverride: characterColor,
                     characterAlphaOverride: characterAlpha,
                     glyphBackgroundColorOverride: backgroundColor,
-                    glyphBackgroundAlphaOverride: backgroundAlpha
+                    glyphBackgroundAlphaOverride: backgroundAlpha,
+                    glyphBackgroundBitmaps: glyphBackgroundBitmaps
                 )
             }
         }
@@ -1380,12 +1404,15 @@ private final class CompositorCanvas {
         characterAlphaOverride: UInt8? = nil,
         suppressAuthoredEdges: Bool = false,
         glyphBackgroundColorOverride: (UInt8, UInt8, UInt8)? = nil,
-        glyphBackgroundAlphaOverride: UInt8? = nil
+        glyphBackgroundAlphaOverride: UInt8? = nil,
+        glyphBackgroundBitmaps: Set<UInt> = []
     ) {
         var current: UnsafeMutablePointer<ASS_Image>? = head
         while let node = current {
             let img = node.pointee
-            let isGlyphBackground = SubtitleRenderer.isGlyphBackgroundImage(img)
+            let isGlyphBackground = img.bitmap.map {
+                glyphBackgroundBitmaps.contains(UInt(bitPattern: UnsafeRawPointer($0)))
+            } ?? false
             let isCharacter = !isGlyphBackground && img.type == IMAGE_TYPE_CHARACTER
             let shouldDraw = switch selection {
             case .all: true

@@ -68,6 +68,7 @@ private struct ItemDetailPhoneContent: View {
     @State private var preferredVersionFileId: Int?
     @State private var preferredAudioTrackIndex: Int?
     @State private var preferredSubtitleTrackIndex: Int?
+    @State private var preferredSubtitleTrackWasManuallySelected = false
     @State private var preferredNextUpFileId: Int?
     @State private var preferredNextUpAudioTrackIndex: Int?
     @State private var preferredNextUpSubtitleTrackIndex: Int?
@@ -98,6 +99,7 @@ private struct ItemDetailPhoneContent: View {
             preferredVersionFileId = nil
             preferredAudioTrackIndex = nil
             preferredSubtitleTrackIndex = nil
+            preferredSubtitleTrackWasManuallySelected = false
             preferredNextUpFileId = nil
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
@@ -112,6 +114,7 @@ private struct ItemDetailPhoneContent: View {
             // already spent the item's weekly slot. Precedent:
             // `PersonDetailView.resumeMetadataRefreshIfNeeded`.
             viewModel.resumeTrailerFetchIfNeeded()
+            seedSubtitleOverrideIfNeeded()
         }
         .onDisappear {
             // The trailer poll isn't owned by `.task`, so it would otherwise
@@ -128,6 +131,7 @@ private struct ItemDetailPhoneContent: View {
                 // drop the pre-play selector state so the reloaded pref
                 // re-seeds and the selector reflects the latest pick.
                 preferredSubtitleTrackIndex = nil
+                preferredSubtitleTrackWasManuallySelected = false
                 seedSubtitleOverrideIfNeeded()
             }
         }
@@ -540,6 +544,7 @@ private struct ItemDetailPhoneContent: View {
                     )
                 },
                 onSelectSubtitleTrack: { index in
+                    preferredSubtitleTrackWasManuallySelected = true
                     preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: detail,
                         versionFileId: preferredVersionFileId,
@@ -760,7 +765,15 @@ private struct ItemDetailPhoneContent: View {
     /// the pick was persisted; audio doesn't need an equivalent because
     /// `resolvedAudioOrdinal` falls back to `effectiveAudioTrackIndex`.
     private func seedSubtitleOverrideIfNeeded() {
-        guard preferredSubtitleTrackIndex == nil, let detail = viewModel.detail else { return }
+        if PlayerSettings.shared.subtitleMatchesSystemAppearance {
+            if !preferredSubtitleTrackWasManuallySelected {
+                preferredSubtitleTrackIndex = nil
+            }
+            return
+        }
+        guard !preferredSubtitleTrackWasManuallySelected,
+              preferredSubtitleTrackIndex == nil,
+              let detail = viewModel.detail else { return }
         preferredSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
             version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
             signature: detail.effectiveSubtitleTrackSignature,

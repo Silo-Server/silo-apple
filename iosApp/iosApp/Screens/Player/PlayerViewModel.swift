@@ -7419,7 +7419,6 @@ class PlayerViewModel {
         }
 
         let allSubs = subtitleTracks
-        guard !allSubs.isEmpty else { return }
 
         let audioLang = audioTracks
             .first(where: { $0.trackId == selectedAudioId })?
@@ -7436,7 +7435,10 @@ class PlayerViewModel {
             availableSubtitles: allSubs,
             currentAudioLanguage: audioLang
         ))
-        prefsResolvedForCurrentItem = true
+        // An empty callback still has to clear a server-seeded automatic
+        // selection in device-settings mode, but it must not latch the
+        // resolver: embedded or sidecar tracks can arrive in a later update.
+        prefsResolvedForCurrentItem = !allSubs.isEmpty
         applyAutoSubtitle(pick)
     }
 

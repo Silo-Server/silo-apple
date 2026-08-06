@@ -250,6 +250,18 @@ final class SubtitleAutoResolverTests: XCTestCase {
         XCTAssertEqual(result, .disable)
     }
 
+    func testSystemPolicyDisablesWhenNoSubtitleTracksAreAvailable() {
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "en",
+            mode: .always,
+            showForced: false,
+            tracks: [],
+            audioLanguage: "eng",
+            disableWhenNoLanguageMatch: true
+        ))
+        XCTAssertEqual(result, .disable)
+    }
+
     func testSystemForcedOnlyDoesNotSelectUnrequestedLanguage() {
         let frenchForced = track(id: 11, lang: "fra", forced: true)
         let result = SubtitleAutoResolver.resolve(inputs(
