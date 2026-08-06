@@ -29,6 +29,9 @@ enum SystemCaptionAppearance {
         var backgroundColorHex: String?
         /// 0.0–1.0.
         var backgroundOpacity: Double?
+        var windowColorHex: String?
+        /// 0.0–1.0.
+        var windowOpacity: Double?
         var edgeStyle: MACaptionAppearanceTextEdgeStyle?
         /// Multiplier around 1.0 (system slider spans roughly 0.5–2.0).
         var relativeCharacterSize: Double?
@@ -70,6 +73,22 @@ enum SystemCaptionAppearance {
         let backgroundOpacity = MACaptionAppearanceGetBackgroundOpacity(.user, &behavior)
         result.backgroundOpacity = valueForMatchingDeviceSettings(
             Double(backgroundOpacity),
+            behavior: behavior
+        )
+
+        behavior = .useValue
+        let window = MACaptionAppearanceCopyWindowColor(.user, &behavior).takeRetainedValue()
+        if let windowHex = hexString(from: window) {
+            result.windowColorHex = valueForMatchingDeviceSettings(
+                windowHex,
+                behavior: behavior
+            )
+        }
+
+        behavior = .useValue
+        let windowOpacity = MACaptionAppearanceGetWindowOpacity(.user, &behavior)
+        result.windowOpacity = valueForMatchingDeviceSettings(
+            Double(windowOpacity),
             behavior: behavior
         )
 
@@ -130,16 +149,24 @@ enum SystemCaptionAppearance {
     ) -> SubtitleAppearance {
         var result = base
 
-        if let opacity = snapshot.backgroundOpacity {
-            if opacity > 0.01 {
-                result.backgroundStyle = .box
-                result.backgroundOpacity = Int((opacity * 100).rounded())
-            } else {
-                result.backgroundStyle = SubtitleBackgroundStylePreset.none
+        // Apple's background is behind each glyph, while its window is the
+        // box behind the whole caption. Silo has one box layer, so a visible
+        // window is the closest match and takes precedence; the glyph
+        // background remains the fallback when the window is transparent.
+        if let opacity = snapshot.windowOpacity, opacity > 0.01 {
+            result.backgroundStyle = .box
+            result.backgroundOpacity = Int((opacity * 100).rounded())
+            if let window = snapshot.windowColorHex {
+                result.backgroundColor = window
             }
-        }
-        if let background = snapshot.backgroundColorHex {
-            result.backgroundColor = background
+        } else if let opacity = snapshot.backgroundOpacity, opacity > 0.01 {
+            result.backgroundStyle = .box
+            result.backgroundOpacity = Int((opacity * 100).rounded())
+            if let background = snapshot.backgroundColorHex {
+                result.backgroundColor = background
+            }
+        } else if snapshot.windowOpacity != nil || snapshot.backgroundOpacity != nil {
+            result.backgroundStyle = SubtitleBackgroundStylePreset.none
         }
 
         if let edge = snapshot.edgeStyle {

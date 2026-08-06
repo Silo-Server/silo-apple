@@ -24,6 +24,29 @@ final class SystemCaptionAppearanceTests: XCTestCase {
         XCTAssertEqual(mapped.backgroundColor, "#123456")
     }
 
+    func testWindowOpacityMapsToBox() {
+        var snapshot = SystemCaptionAppearance.Snapshot()
+        snapshot.windowOpacity = 0.5
+        snapshot.windowColorHex = "#ff00ff"
+
+        let mapped = SystemCaptionAppearance.appearance(from: snapshot)
+        XCTAssertEqual(mapped.backgroundStyle, .box)
+        XCTAssertEqual(mapped.backgroundOpacity, 50)
+        XCTAssertEqual(mapped.backgroundColor, "#ff00ff")
+    }
+
+    func testWindowTakesPrecedenceOverGlyphBackground() {
+        var snapshot = SystemCaptionAppearance.Snapshot()
+        snapshot.backgroundOpacity = 0.8
+        snapshot.backgroundColorHex = "#000000"
+        snapshot.windowOpacity = 0.5
+        snapshot.windowColorHex = "#ff00ff"
+
+        let mapped = SystemCaptionAppearance.appearance(from: snapshot)
+        XCTAssertEqual(mapped.backgroundOpacity, 50)
+        XCTAssertEqual(mapped.backgroundColor, "#ff00ff")
+    }
+
     func testZeroBackgroundOpacityRemovesBackground() {
         var snapshot = SystemCaptionAppearance.Snapshot()
         snapshot.backgroundOpacity = 0
