@@ -138,6 +138,17 @@ final class SystemCaptionAppearanceTests: XCTestCase {
         XCTAssertEqual(mapped.systemContentOverrides, snapshot.contentOverrides)
     }
 
+    func testColorOverridePrecedenceRemainsPerProperty() {
+        var snapshot = SystemCaptionAppearance.Snapshot()
+        snapshot.contentOverrides = [.foregroundColor, .backgroundOpacity]
+
+        let overrides = SystemCaptionAppearance.appearance(from: snapshot).systemContentOverrides
+        XCTAssertTrue(overrides.contains(.foregroundColor))
+        XCTAssertFalse(overrides.contains(.foregroundOpacity))
+        XCTAssertFalse(overrides.contains(.backgroundColor))
+        XCTAssertTrue(overrides.contains(.backgroundOpacity))
+    }
+
     func testRelativeSizeAnchorsDefaultAtSiloDefaultPreset() {
         XCTAssertEqual(SystemCaptionAppearance.fontSizePreset(forRelativeSize: 1.0), .large)
         XCTAssertEqual(SystemCaptionAppearance.fontSizePreset(forRelativeSize: 0.5), .small)

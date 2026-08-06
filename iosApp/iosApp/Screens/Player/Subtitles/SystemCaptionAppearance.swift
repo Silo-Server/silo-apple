@@ -63,7 +63,7 @@ enum SystemCaptionAppearance {
                 behavior: behavior
             )
         }
-        if behavior == .useValue { result.contentOverrides.insert(.colors) }
+        if behavior == .useValue { result.contentOverrides.insert(.foregroundColor) }
 
         behavior = .useValue
         let foregroundOpacity = MACaptionAppearanceGetForegroundOpacity(.user, &behavior)
@@ -71,7 +71,7 @@ enum SystemCaptionAppearance {
             Double(foregroundOpacity),
             behavior: behavior
         )
-        if behavior == .useValue { result.contentOverrides.insert(.colors) }
+        if behavior == .useValue { result.contentOverrides.insert(.foregroundOpacity) }
 
         behavior = .useValue
         let background = MACaptionAppearanceCopyBackgroundColor(.user, &behavior).takeRetainedValue()
@@ -81,7 +81,7 @@ enum SystemCaptionAppearance {
                 behavior: behavior
             )
         }
-        if behavior == .useValue { result.contentOverrides.insert(.colors) }
+        if behavior == .useValue { result.contentOverrides.insert(.backgroundColor) }
 
         behavior = .useValue
         let backgroundOpacity = MACaptionAppearanceGetBackgroundOpacity(.user, &behavior)
@@ -89,7 +89,7 @@ enum SystemCaptionAppearance {
             Double(backgroundOpacity),
             behavior: behavior
         )
-        if behavior == .useValue { result.contentOverrides.insert(.colors) }
+        if behavior == .useValue { result.contentOverrides.insert(.backgroundOpacity) }
 
         behavior = .useValue
         let window = MACaptionAppearanceCopyWindowColor(.user, &behavior).takeRetainedValue()
@@ -99,7 +99,7 @@ enum SystemCaptionAppearance {
                 behavior: behavior
             )
         }
-        if behavior == .useValue { result.contentOverrides.insert(.window) }
+        if behavior == .useValue { result.contentOverrides.insert(.windowColor) }
 
         behavior = .useValue
         let windowOpacity = MACaptionAppearanceGetWindowOpacity(.user, &behavior)
@@ -107,7 +107,7 @@ enum SystemCaptionAppearance {
             Double(windowOpacity),
             behavior: behavior
         )
-        if behavior == .useValue { result.contentOverrides.insert(.window) }
+        if behavior == .useValue { result.contentOverrides.insert(.windowOpacity) }
 
         behavior = .useValue
         let windowCornerRadius = MACaptionAppearanceGetWindowRoundedCornerRadius(.user, &behavior)
@@ -115,7 +115,7 @@ enum SystemCaptionAppearance {
             Double(windowCornerRadius),
             behavior: behavior
         )
-        if behavior == .useValue { result.contentOverrides.insert(.window) }
+        if behavior == .useValue { result.contentOverrides.insert(.windowCornerRadius) }
 
         behavior = .useValue
         let edge = MACaptionAppearanceGetTextEdgeStyle(.user, &behavior)

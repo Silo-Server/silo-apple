@@ -47,6 +47,10 @@ struct SubtitleAutoResolver {
         /// Prefer CC/SDH over plain subtitles when Apple requests the
         /// accessibility media characteristics.
         let preferAccessibilityTracks: Bool
+        /// An explicit device language stack is authoritative. If none of
+        /// those languages exists, clear any server-selected subtitle rather
+        /// than leaking the server profile back into device-settings mode.
+        let disableWhenNoLanguageMatch: Bool
         /// Per-series sticky pick. Highest priority signal — if a track
         /// matches the signature, select it regardless of language /
         /// mode.
@@ -67,6 +71,7 @@ struct SubtitleAutoResolver {
             showForced: Bool,
             forcedOnly: Bool = false,
             preferAccessibilityTracks: Bool = false,
+            disableWhenNoLanguageMatch: Bool = false,
             trackSignature: SubtitleTrackSignature?,
             availableSubtitles: [PlayerTrack],
             currentAudioLanguage: String?
@@ -77,6 +82,7 @@ struct SubtitleAutoResolver {
             self.showForced = showForced
             self.forcedOnly = forcedOnly
             self.preferAccessibilityTracks = preferAccessibilityTracks
+            self.disableWhenNoLanguageMatch = disableWhenNoLanguageMatch
             self.trackSignature = trackSignature
             self.availableSubtitles = availableSubtitles
             self.currentAudioLanguage = currentAudioLanguage
@@ -88,7 +94,7 @@ struct SubtitleAutoResolver {
     /// arguments) — the resolver is for the "no override" case.
     static func resolve(_ inputs: Inputs) -> SubtitleAutoSelection {
         if inputs.availableSubtitles.isEmpty {
-            return .noChange
+            return inputs.disableWhenNoLanguageMatch ? .disable : .noChange
         }
 
         let mode = inputs.mode ?? .auto
@@ -109,14 +115,6 @@ struct SubtitleAutoResolver {
                 ) {
                     return .select(forced)
                 }
-            }
-            if let forced = bestLanguageMatch(
-                nil,
-                in: inputs.availableSubtitles.filter(\.isForced),
-                preferForced: true,
-                preferAccessibility: inputs.preferAccessibilityTracks
-            ) {
-                return .select(forced)
             }
             return .disable
         }
@@ -183,10 +181,12 @@ struct SubtitleAutoResolver {
         // No matching language. `always` could fall back to anything,
         // but unless forced subs are wanted we'd rather show nothing
         // than a random language the user can't read.
-        if inputs.showForced, let forced = inputs.availableSubtitles.first(where: { $0.isForced }) {
+        if !inputs.disableWhenNoLanguageMatch,
+           inputs.showForced,
+           let forced = inputs.availableSubtitles.first(where: { $0.isForced }) {
             return .select(forced)
         }
-        return .noChange
+        return inputs.disableWhenNoLanguageMatch ? .disable : .noChange
     }
 
     // MARK: - Matching helpers

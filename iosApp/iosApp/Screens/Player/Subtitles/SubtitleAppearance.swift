@@ -194,9 +194,26 @@ struct SystemCaptionContentOverrides: OptionSet, Equatable {
 
     static let font = SystemCaptionContentOverrides(rawValue: 1 << 0)
     static let size = SystemCaptionContentOverrides(rawValue: 1 << 1)
-    static let colors = SystemCaptionContentOverrides(rawValue: 1 << 2)
-    static let edge = SystemCaptionContentOverrides(rawValue: 1 << 3)
-    static let window = SystemCaptionContentOverrides(rawValue: 1 << 4)
+    static let foregroundColor = SystemCaptionContentOverrides(rawValue: 1 << 2)
+    static let foregroundOpacity = SystemCaptionContentOverrides(rawValue: 1 << 3)
+    static let backgroundColor = SystemCaptionContentOverrides(rawValue: 1 << 4)
+    static let backgroundOpacity = SystemCaptionContentOverrides(rawValue: 1 << 5)
+    static let edge = SystemCaptionContentOverrides(rawValue: 1 << 6)
+    static let windowColor = SystemCaptionContentOverrides(rawValue: 1 << 7)
+    static let windowOpacity = SystemCaptionContentOverrides(rawValue: 1 << 8)
+    static let windowCornerRadius = SystemCaptionContentOverrides(rawValue: 1 << 9)
+
+    static let colors: SystemCaptionContentOverrides = [
+        .foregroundColor,
+        .foregroundOpacity,
+        .backgroundColor,
+        .backgroundOpacity,
+    ]
+    static let window: SystemCaptionContentOverrides = [
+        .windowColor,
+        .windowOpacity,
+        .windowCornerRadius,
+    ]
 }
 
 struct SubtitleAppearance: Codable, Equatable {

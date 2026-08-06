@@ -37,7 +37,8 @@ final class SubtitleAutoResolverTests: XCTestCase {
         audioLanguage: String?,
         additionalLanguages: [String] = [],
         forcedOnly: Bool = false,
-        preferAccessibility: Bool = false
+        preferAccessibility: Bool = false,
+        disableWhenNoLanguageMatch: Bool = false
     ) -> SubtitleAutoResolver.Inputs {
         SubtitleAutoResolver.Inputs(
             preferredLanguage: preferredLanguage,
@@ -46,6 +47,7 @@ final class SubtitleAutoResolverTests: XCTestCase {
             showForced: showForced,
             forcedOnly: forcedOnly,
             preferAccessibilityTracks: preferAccessibility,
+            disableWhenNoLanguageMatch: disableWhenNoLanguageMatch,
             trackSignature: nil,
             availableSubtitles: tracks,
             currentAudioLanguage: audioLanguage
@@ -193,5 +195,44 @@ final class SubtitleAutoResolverTests: XCTestCase {
             forcedOnly: true
         ))
         XCTAssertEqual(result, .disable)
+    }
+
+    func testSystemForcedOnlyDoesNotSelectUnrequestedLanguage() {
+        let frenchForced = track(id: 11, lang: "fra", forced: true)
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "en",
+            mode: .auto,
+            showForced: true,
+            tracks: [frenchForced],
+            audioLanguage: "eng",
+            forcedOnly: true,
+            disableWhenNoLanguageMatch: true
+        ))
+        XCTAssertEqual(result, .disable)
+    }
+
+    func testSystemLanguageMissClearsExistingServerSelection() {
+        let english = track(id: 10, lang: "eng")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "es",
+            mode: .always,
+            showForced: false,
+            tracks: [english],
+            audioLanguage: "eng",
+            disableWhenNoLanguageMatch: true
+        ))
+        XCTAssertEqual(result, .disable)
+    }
+
+    func testServerLanguageMissStillLeavesExistingSelectionAlone() {
+        let english = track(id: 10, lang: "eng")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "es",
+            mode: .always,
+            showForced: false,
+            tracks: [english],
+            audioLanguage: "eng"
+        ))
+        XCTAssertEqual(result, .noChange)
     }
 }

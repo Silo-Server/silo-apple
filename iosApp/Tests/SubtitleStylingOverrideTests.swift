@@ -132,6 +132,64 @@ final class SubtitleStylingOverrideTests: XCTestCase {
         XCTAssertFalse(json.contains("systemContentOverrides"))
     }
 
+    func testNativeColorOverridesRemainPerProperty() {
+        var appearance = SubtitleAppearance.default
+        appearance.fontColor = "#22c55e"
+        appearance.fontOpacity = 40
+        appearance.backgroundColor = "#ff00ff"
+        appearance.backgroundOpacity = 50
+        appearance.systemContentOverrides = [.foregroundColor, .backgroundOpacity]
+
+        let params = SubtitleStylingOverride.Parameters.from(appearance: appearance, syncOffsetMs: 0)
+        XCTAssertEqual(params.nativeForegroundColorOverride?.0, 0x22)
+        XCTAssertEqual(params.nativeForegroundColorOverride?.1, 0xC5)
+        XCTAssertEqual(params.nativeForegroundColorOverride?.2, 0x5E)
+        XCTAssertNil(params.nativeForegroundAlphaOverride)
+        XCTAssertNil(params.nativeBackgroundColorOverride)
+        XCTAssertEqual(params.nativeBackgroundAlphaOverride, 127)
+    }
+
+    func testDropShadowWithGlyphBoxUsesIndependentCompositorEdge() {
+        var params = SubtitleStylingOverride.Parameters.default
+        params.backgroundStyle = .box
+        params.backgroundOpacityPercent = 80
+        params.systemTextEdgeStyle = .dropShadow
+
+        XCTAssertEqual(params.assBorderStyle, 4)
+        XCTAssertEqual(params.assShadow, params.boxPadding)
+        XCTAssertNotNil(params.compositedEdgeShadow)
+    }
+
+    func testRaisedAndDepressedEdgesUseVisibleBackColours() {
+        var raised = SubtitleStylingOverride.Parameters.default
+        raised.backgroundStyle = SubtitleBackgroundStylePreset.none
+        raised.systemTextEdgeStyle = .raised
+        XCTAssertEqual(raised.effectiveBackColorHex, "#FFFFFF")
+        XCTAssertNotEqual(raised.backgroundAlphaByte, 0xFF)
+
+        var depressed = raised
+        depressed.systemTextEdgeStyle = .depressed
+        XCTAssertEqual(depressed.effectiveBackColorHex, "#000000")
+        XCTAssertNotEqual(depressed.backgroundAlphaByte, 0xFF)
+    }
+
+    func testCaptionWindowGroupingSeparatesDistantSimultaneousCues() {
+        let leftCue = [
+            CGRect(x: 20, y: 400, width: 80, height: 30),
+            CGRect(x: 110, y: 400, width: 70, height: 30),
+        ]
+        let positionedSign = CGRect(x: 700, y: 80, width: 120, height: 40)
+
+        let groups = SubtitleRenderer.groupedPaintedBounds(
+            leftCue + [positionedSign],
+            joiningDistance: 20
+        )
+
+        XCTAssertEqual(groups.count, 2)
+        XCTAssertTrue(groups.contains(where: { $0.contains(CGPoint(x: 50, y: 410)) }))
+        XCTAssertTrue(groups.contains(where: { $0.contains(CGPoint(x: 750, y: 90)) }))
+    }
+
     // MARK: - Struct color packing (libass internal RRGGBBAA)
 
     func testStructColorPackingIsInternalRGBA() {

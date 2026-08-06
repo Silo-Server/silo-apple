@@ -510,6 +510,39 @@ final class SubtitleRenderer {
 
     // MARK: - Render + composite
 
+    /// Merge nearby libass image rectangles into cue-sized regions. libass
+    /// does not expose an event identifier on `ASS_Image`, but images for one
+    /// cue are spatially adjacent while simultaneous dialogue/sign events at
+    /// different positions are not. Connected-component merging preserves
+    /// those independent regions instead of spanning the empty space between
+    /// them with one caption window.
+    static func groupedPaintedBounds(
+        _ rects: [CGRect],
+        joiningDistance: CGFloat
+    ) -> [CGRect] {
+        let distance = max(0, joiningDistance)
+        var groups: [CGRect] = []
+
+        for rect in rects where !rect.isNull && !rect.isEmpty {
+            var merged = rect
+            var index = 0
+            while index < groups.count {
+                let mergeRegion = merged.insetBy(dx: -distance, dy: -distance)
+                if mergeRegion.intersects(groups[index]) {
+                    merged = merged.union(groups.remove(at: index))
+                    index = 0
+                } else {
+                    index += 1
+                }
+            }
+            groups.append(merged)
+        }
+
+        return groups.sorted {
+            $0.minY == $1.minY ? $0.minX < $1.minX : $0.minY < $1.minY
+        }
+    }
+
     /// Render the current frame. Callable only from `sessionQueue`. The
     /// caller is responsible for hopping back to main to assign the
     /// returned image to the overlay layer's `contents`.
@@ -628,53 +661,108 @@ final class SubtitleRenderer {
         // (scale 2) every cue change cleared, copied (`makeImage`), and
         // re-uploaded a 33 MiB buffer when the painted region is
         // typically 1-2 MiB. Clipped to the frame like `draw` does.
-        func paintedBounds(
-            _ head: UnsafeMutablePointer<ASS_Image>?
-        ) -> (minX: Int, minY: Int, maxX: Int, maxY: Int)? {
-            var result = (minX: widthPx, minY: heightPx, maxX: 0, maxY: 0)
+        func paintedRects(
+            _ head: UnsafeMutablePointer<ASS_Image>?,
+            charactersOnly: Bool = false
+        ) -> [CGRect] {
+            var result: [CGRect] = []
             var node = head
             while let cur = node {
                 let img = cur.pointee
-                if img.w > 0, img.h > 0, img.bitmap != nil {
-                    result.minX = min(result.minX, max(0, Int(img.dst_x)))
-                    result.minY = min(result.minY, max(0, Int(img.dst_y)))
-                    result.maxX = max(result.maxX, min(widthPx, Int(img.dst_x) + Int(img.w)))
-                    result.maxY = max(result.maxY, min(heightPx, Int(img.dst_y) + Int(img.h)))
+                if (!charactersOnly || img.type == IMAGE_TYPE_CHARACTER),
+                   img.w > 0, img.h > 0, img.bitmap != nil {
+                    let minX = max(0, Int(img.dst_x))
+                    let minY = max(0, Int(img.dst_y))
+                    let maxX = min(widthPx, Int(img.dst_x) + Int(img.w))
+                    let maxY = min(heightPx, Int(img.dst_y) + Int(img.h))
+                    if maxX > minX, maxY > minY {
+                        result.append(CGRect(
+                            x: minX,
+                            y: minY,
+                            width: maxX - minX,
+                            height: maxY - minY
+                        ))
+                    }
                 }
                 node = img.next
             }
-            return result.maxX > result.minX && result.maxY > result.minY ? result : nil
+            return result
         }
 
-        let primaryBounds = paintedBounds(imgPrimary)
-        let secondaryBounds = paintedBounds(imgSecondary)
         let playfieldScale = Double(heightPx) / 1080.0
         let windowPadding = max(2, Int((currentParams.fontSize * 0.12 * playfieldScale).rounded()))
+        let cueJoiningDistance = max(
+            CGFloat(windowPadding * 2),
+            CGFloat(currentParams.fontSize * 0.35 * playfieldScale)
+        )
+        let primaryRects = paintedRects(imgPrimary)
+        let secondaryRects = paintedRects(imgSecondary)
+        let primaryGroups = Self.groupedPaintedBounds(
+            primaryRects,
+            joiningDistance: cueJoiningDistance
+        )
+        let secondaryGroups = Self.groupedPaintedBounds(
+            secondaryRects,
+            joiningDistance: cueJoiningDistance
+        )
         func captionWindowBounds(
-            _ bounds: (minX: Int, minY: Int, maxX: Int, maxY: Int)?,
+            _ groups: [CGRect],
             for handle: ASSTrackHandle?
-        ) -> (minX: Int, minY: Int, maxX: Int, maxY: Int)? {
+        ) -> [CGRect] {
             guard currentParams.captionWindowEnabled,
                   let handle,
                   !handle.isNativeASS
-                    || currentParams.systemContentOverrides.contains(.window),
-                  let bounds else { return nil }
+                    || !currentParams.systemContentOverrides.intersection(.window).isEmpty
+                    else { return [] }
+            return groups.map { bounds in
+                CGRect(
+                    x: max(0, Int(bounds.minX) - windowPadding),
+                    y: max(0, Int(bounds.minY) - windowPadding),
+                    width: min(widthPx, Int(bounds.maxX) + windowPadding)
+                        - max(0, Int(bounds.minX) - windowPadding),
+                    height: min(heightPx, Int(bounds.maxY) + windowPadding)
+                        - max(0, Int(bounds.minY) - windowPadding)
+                )
+            }
+        }
+        let primaryWindowBounds = captionWindowBounds(primaryGroups, for: primaryHandle)
+        let secondaryWindowBounds = captionWindowBounds(secondaryGroups, for: secondaryHandle)
+
+        func compositedEdgeShadow(
+            for handle: ASSTrackHandle?
+        ) -> (offsetX: Int, offsetY: Int, color: (UInt8, UInt8, UInt8), alpha: UInt8)? {
+            guard let shadow = currentParams.compositedEdgeShadow,
+                  let handle,
+                  !handle.isNativeASS || currentParams.systemContentOverrides.contains(.edge)
+                    else { return nil }
             return (
-                max(0, bounds.minX - windowPadding),
-                max(0, bounds.minY - windowPadding),
-                min(widthPx, bounds.maxX + windowPadding),
-                min(heightPx, bounds.maxY + windowPadding)
+                Int((shadow.offsetX * playfieldScale).rounded()),
+                Int((shadow.offsetY * playfieldScale).rounded()),
+                SubtitleStylingOverride.rgbBytes(fromHex: shadow.colorHex),
+                UInt8(max(0, min(255, shadow.opacityPercent * 255 / 100)))
             )
         }
-        let primaryWindowBounds = captionWindowBounds(primaryBounds, for: primaryHandle)
-        let secondaryWindowBounds = captionWindowBounds(secondaryBounds, for: secondaryHandle)
+        let primaryEdgeShadow = compositedEdgeShadow(for: primaryHandle)
+        let secondaryEdgeShadow = compositedEdgeShadow(for: secondaryHandle)
+        func shadowBounds(
+            _ head: UnsafeMutablePointer<ASS_Image>?,
+            shadow: (offsetX: Int, offsetY: Int, color: (UInt8, UInt8, UInt8), alpha: UInt8)?
+        ) -> [CGRect] {
+            guard let shadow else { return [] }
+            return paintedRects(head, charactersOnly: true).map {
+                $0.offsetBy(dx: CGFloat(shadow.offsetX), dy: CGFloat(shadow.offsetY))
+            }
+        }
+        let primaryShadowBounds = shadowBounds(imgPrimary, shadow: primaryEdgeShadow)
+        let secondaryShadowBounds = shadowBounds(imgSecondary, shadow: secondaryEdgeShadow)
 
-        let allBounds = [primaryBounds, secondaryBounds, primaryWindowBounds, secondaryWindowBounds]
-            .compactMap { $0 }
-        let minX = allBounds.map { $0.minX }.min() ?? widthPx
-        let minY = allBounds.map { $0.minY }.min() ?? heightPx
-        let maxX = allBounds.map { $0.maxX }.max() ?? 0
-        let maxY = allBounds.map { $0.maxY }.max() ?? 0
+        let allBounds = primaryRects + secondaryRects
+            + primaryWindowBounds + secondaryWindowBounds
+            + primaryShadowBounds + secondaryShadowBounds
+        let minX = max(0, Int(allBounds.map(\.minX).min() ?? CGFloat(widthPx)))
+        let minY = max(0, Int(allBounds.map(\.minY).min() ?? CGFloat(heightPx)))
+        let maxX = min(widthPx, Int(ceil(allBounds.map(\.maxX).max() ?? 0)))
+        let maxY = min(heightPx, Int(ceil(allBounds.map(\.maxY).max() ?? 0)))
         guard maxX > minX, maxY > minY else {
             // Cue ended (or everything rasterized off-frame): dirty with a
             // nil image so the overlay clears without a full-frame pass.
@@ -685,6 +773,68 @@ final class SubtitleRenderer {
                 diagImageCount: diagImageCount, diagImageBytes: diagImageBytes,
                 diagTrackEvents: diagTrackEvents
             )
+        }
+
+        func draw(
+            _ imageList: UnsafeMutablePointer<ASS_Image>,
+            on canvas: CompositorCanvas,
+            frameOffsetX: Int,
+            frameOffsetY: Int,
+            handle: ASSTrackHandle?,
+            edgeShadow: (
+                offsetX: Int,
+                offsetY: Int,
+                color: (UInt8, UInt8, UInt8),
+                alpha: UInt8
+            )?
+        ) {
+            let isNativeASS = handle?.isNativeASS == true
+            let characterColor = isNativeASS ? currentParams.nativeForegroundColorOverride : nil
+            let characterAlpha = isNativeASS ? currentParams.nativeForegroundAlphaOverride : nil
+            let backgroundColor = isNativeASS ? currentParams.nativeBackgroundColorOverride : nil
+            let backgroundAlpha = isNativeASS ? currentParams.nativeBackgroundAlphaOverride : nil
+
+            if let edgeShadow {
+                // BorderStyle 4 emits the box through the non-character image
+                // layers. Draw those first, then the independent system edge,
+                // then the foreground glyphs so neither layer hides another.
+                canvas.draw(
+                    imageList: imageList,
+                    offsetX: frameOffsetX,
+                    offsetY: frameOffsetY,
+                    selection: .excludingCharacters,
+                    backgroundColorOverride: backgroundColor,
+                    backgroundAlphaOverride: backgroundAlpha
+                )
+                canvas.draw(
+                    imageList: imageList,
+                    offsetX: frameOffsetX,
+                    offsetY: frameOffsetY,
+                    translationX: edgeShadow.offsetX,
+                    translationY: edgeShadow.offsetY,
+                    selection: .charactersOnly,
+                    characterColorOverride: edgeShadow.color,
+                    characterAlphaOverride: edgeShadow.alpha
+                )
+                canvas.draw(
+                    imageList: imageList,
+                    offsetX: frameOffsetX,
+                    offsetY: frameOffsetY,
+                    selection: .charactersOnly,
+                    characterColorOverride: characterColor,
+                    characterAlphaOverride: characterAlpha
+                )
+            } else {
+                canvas.draw(
+                    imageList: imageList,
+                    offsetX: frameOffsetX,
+                    offsetY: frameOffsetY,
+                    characterColorOverride: characterColor,
+                    characterAlphaOverride: characterAlpha,
+                    backgroundColorOverride: backgroundColor,
+                    backgroundAlphaOverride: backgroundAlpha
+                )
+            }
         }
 
         // Secondary first so primary draws on top if they overlap. Apple's
@@ -698,30 +848,48 @@ final class SubtitleRenderer {
             max(0, min(255, currentParams.captionWindowOpacityPercent * 255 / 100))
         )
         let windowRadius = currentParams.captionWindowCornerRadius * playfieldScale
-        if let secondaryWindowBounds {
+        for bounds in secondaryWindowBounds {
             canvas.drawRoundedRect(
-                x: secondaryWindowBounds.minX - minX,
-                y: secondaryWindowBounds.minY - minY,
-                width: secondaryWindowBounds.maxX - secondaryWindowBounds.minX,
-                height: secondaryWindowBounds.maxY - secondaryWindowBounds.minY,
+                x: Int(bounds.minX) - minX,
+                y: Int(bounds.minY) - minY,
+                width: Int(bounds.width),
+                height: Int(bounds.height),
                 radius: windowRadius,
                 color: windowColor,
                 alpha: windowAlpha
             )
         }
-        if let imgSecondary { canvas.draw(imageList: imgSecondary, offsetX: minX, offsetY: minY) }
-        if let primaryWindowBounds {
+        if let imgSecondary {
+            draw(
+                imgSecondary,
+                on: canvas,
+                frameOffsetX: minX,
+                frameOffsetY: minY,
+                handle: secondaryHandle,
+                edgeShadow: secondaryEdgeShadow
+            )
+        }
+        for bounds in primaryWindowBounds {
             canvas.drawRoundedRect(
-                x: primaryWindowBounds.minX - minX,
-                y: primaryWindowBounds.minY - minY,
-                width: primaryWindowBounds.maxX - primaryWindowBounds.minX,
-                height: primaryWindowBounds.maxY - primaryWindowBounds.minY,
+                x: Int(bounds.minX) - minX,
+                y: Int(bounds.minY) - minY,
+                width: Int(bounds.width),
+                height: Int(bounds.height),
                 radius: windowRadius,
                 color: windowColor,
                 alpha: windowAlpha
             )
         }
-        if let imgPrimary { canvas.draw(imageList: imgPrimary, offsetX: minX, offsetY: minY) }
+        if let imgPrimary {
+            draw(
+                imgPrimary,
+                on: canvas,
+                frameOffsetX: minX,
+                frameOffsetY: minY,
+                handle: primaryHandle,
+                edgeShadow: primaryEdgeShadow
+            )
+        }
 
         let cgImage = canvas.snapshot(scale: scale)
         // Canvas pixels map to points through the (possibly capped) render
@@ -881,6 +1049,12 @@ final class SubtitleRenderer {
 /// `clear()`), and produce a fresh `CGImage` per dirty frame so
 /// CoreAnimation can retain the image while we write the next one.
 private final class CompositorCanvas {
+    enum ImageSelection {
+        case all
+        case charactersOnly
+        case excludingCharacters
+    }
+
     let widthPx: Int
     let heightPx: Int
 
@@ -993,15 +1167,36 @@ private final class CompositorCanvas {
     /// channels are premultiplied by that effective alpha and blended
     /// over the existing canvas contents using straightforward `over`
     /// compositing.
-    func draw(imageList head: UnsafeMutablePointer<ASS_Image>, offsetX: Int = 0, offsetY: Int = 0) {
+    func draw(
+        imageList head: UnsafeMutablePointer<ASS_Image>,
+        offsetX: Int = 0,
+        offsetY: Int = 0,
+        translationX: Int = 0,
+        translationY: Int = 0,
+        selection: ImageSelection = .all,
+        characterColorOverride: (UInt8, UInt8, UInt8)? = nil,
+        characterAlphaOverride: UInt8? = nil,
+        backgroundColorOverride: (UInt8, UInt8, UInt8)? = nil,
+        backgroundAlphaOverride: UInt8? = nil
+    ) {
         var current: UnsafeMutablePointer<ASS_Image>? = head
         while let node = current {
             let img = node.pointee
+            let isCharacter = img.type == IMAGE_TYPE_CHARACTER
+            let shouldDraw = switch selection {
+            case .all: true
+            case .charactersOnly: isCharacter
+            case .excludingCharacters: !isCharacter
+            }
+            if !shouldDraw {
+                current = img.next
+                continue
+            }
             let w = Int(img.w)
             let h = Int(img.h)
             let stride = Int(img.stride)
-            let dstX = Int(img.dst_x) - offsetX
-            let dstY = Int(img.dst_y) - offsetY
+            let dstX = Int(img.dst_x) - offsetX + translationX
+            let dstY = Int(img.dst_y) - offsetY + translationY
             guard w > 0, h > 0, let bitmap = img.bitmap else {
                 current = img.next
                 continue
@@ -1014,7 +1209,26 @@ private final class CompositorCanvas {
             // from SubtitleStylingOverride, and it resurrected genuinely
             // faded-out glyphs as opaque. Both are fixed; trust the
             // documented order.)
-            let rgba = unpackDocumentedRenderColor(img.color)
+            var rgba = unpackDocumentedRenderColor(img.color)
+            if isCharacter {
+                if let characterColorOverride {
+                    rgba.r = characterColorOverride.0
+                    rgba.g = characterColorOverride.1
+                    rgba.b = characterColorOverride.2
+                }
+                if let characterAlphaOverride {
+                    rgba.alpha = characterAlphaOverride
+                }
+            } else if img.type == IMAGE_TYPE_SHADOW {
+                if let backgroundColorOverride {
+                    rgba.r = backgroundColorOverride.0
+                    rgba.g = backgroundColorOverride.1
+                    rgba.b = backgroundColorOverride.2
+                }
+                if let backgroundAlphaOverride {
+                    rgba.alpha = backgroundAlphaOverride
+                }
+            }
             if rgba.alpha == 0 {
                 current = img.next
                 continue

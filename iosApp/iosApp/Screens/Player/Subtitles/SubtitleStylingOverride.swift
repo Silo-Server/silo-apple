@@ -103,28 +103,101 @@ enum SubtitleStylingOverride {
         /// Value for the ASS `Shadow` field: drop-shadow depth for the
         /// shadow style, box padding for the box style (see `boxPadding`).
         var assShadow: Double {
+            // BorderStyle 4 consumes Shadow as box padding and never draws
+            // the shadow. The compositor adds Apple's requested edge behind
+            // the glyphs separately in this combination.
+            if boxEnabled { return boxPadding }
             if systemTextEdgeStyle == .dropShadow { return 1.5 }
             if systemTextEdgeStyle == .raised { return 1.0 }
             if systemTextEdgeStyle == .depressed { return -1.0 }
-            return backgroundStyle == .shadow ? 1.5 : boxPadding
+            return backgroundStyle == .shadow ? 1.5 : 0
         }
 
         var textAlphaByte: UInt8 {
             UInt8(max(0, min(255, (100 - textOpacityPercent) * 255 / 100)))
         }
 
-        /// Inverted ASS alpha byte for `BackColour` (0x00 opaque … 0xFF
-        /// transparent). Box: user opacity. Shadow: 50% black so the drop
-        /// shadow is actually visible. Otherwise fully transparent.
-        var backgroundAlphaByte: UInt8 {
-            switch backgroundStyle {
-            case .box:
-                return UInt8(max(0, min(255, (100 - backgroundOpacityPercent) * 255 / 100)))
-            case .shadow:
-                return 0x80
-            case .outline, .none:
-                return systemTextEdgeStyle == .dropShadow ? 0x80 : 0xFF
+        /// BackColour is the glyph box under BorderStyle 4 and the edge
+        /// shadow under BorderStyle 1. Keep those meanings separate so every
+        /// Apple edge remains visible when no glyph box is active.
+        var effectiveBackColorHex: String {
+            if boxEnabled { return backgroundColorHex }
+            switch systemTextEdgeStyle {
+            case .some(.raised):
+                return "#FFFFFF"
+            case .some(.depressed), .some(.dropShadow):
+                return "#000000"
+            case .some(.none), .some(.uniform), nil:
+                return backgroundColorHex
             }
+        }
+
+        /// Inverted ASS alpha byte for `BackColour` (0x00 opaque … 0xFF
+        /// transparent).
+        var backgroundAlphaByte: UInt8 {
+            if boxEnabled {
+                return UInt8(max(0, min(255, (100 - backgroundOpacityPercent) * 255 / 100)))
+            }
+            switch systemTextEdgeStyle {
+            case .some(.raised):
+                return 0x33
+            case .some(.depressed):
+                return 0x1A
+            case .some(.dropShadow):
+                return 0x80
+            case .some(.none), .some(.uniform), nil:
+                break
+            }
+            if backgroundStyle == .shadow {
+                return 0x80
+            }
+            return 0xFF
+        }
+
+        /// BorderStyle 4 cannot combine its glyph box with a libass shadow.
+        /// The compositor draws this edge from the character masks before it
+        /// composites the regular libass image list.
+        var compositedEdgeShadow: (
+            offsetX: Double,
+            offsetY: Double,
+            colorHex: String,
+            opacityPercent: Int
+        )? {
+            guard boxEnabled else { return nil }
+            switch systemTextEdgeStyle {
+            case .some(.raised):
+                return (-1, -1, "#FFFFFF", 80)
+            case .some(.depressed):
+                return (1, 1, "#000000", 90)
+            case .some(.dropShadow):
+                return (1.5, 1.5, "#000000", 50)
+            case .some(.none), .some(.uniform), nil:
+                return nil
+            }
+        }
+
+        var nativeForegroundColorOverride: (UInt8, UInt8, UInt8)? {
+            systemContentOverrides.contains(.foregroundColor)
+                ? SubtitleStylingOverride.rgbBytes(fromHex: textColorHex)
+                : nil
+        }
+
+        var nativeForegroundAlphaOverride: UInt8? {
+            systemContentOverrides.contains(.foregroundOpacity)
+                ? UInt8(max(0, min(255, textOpacityPercent * 255 / 100)))
+                : nil
+        }
+
+        var nativeBackgroundColorOverride: (UInt8, UInt8, UInt8)? {
+            systemContentOverrides.contains(.backgroundColor)
+                ? SubtitleStylingOverride.rgbBytes(fromHex: backgroundColorHex)
+                : nil
+        }
+
+        var nativeBackgroundAlphaOverride: UInt8? {
+            systemContentOverrides.contains(.backgroundOpacity)
+                ? UInt8(max(0, min(255, backgroundOpacityPercent * 255 / 100)))
+                : nil
         }
 
         var captionWindowEnabled: Bool {
@@ -196,7 +269,7 @@ enum SubtitleStylingOverride {
     ) -> String {
         let primary = assColor(hexRGB: params.textColorHex, alphaByte: params.textAlphaByte)
         let outline = assColor(hexRGB: params.effectiveOutlineColorHex, alphaByte: 0x00)
-        let back = assColor(hexRGB: params.backgroundColorHex, alphaByte: params.backgroundAlphaByte)
+        let back = assColor(hexRGB: params.effectiveBackColorHex, alphaByte: params.backgroundAlphaByte)
         let alignment = (slot == .secondary) ? 8 : primaryHeaderAlignment(for: params)
 
         // BorderStyle 1 = outline + shadow; BorderStyle 4 = per-event
@@ -335,7 +408,7 @@ enum SubtitleStylingOverride {
         style.SecondaryColour = 0xFFFFFF00 // opaque white, internal RRGGBBAA
         style.OutlineColour = assColor(hexRGBUInt: params.effectiveOutlineColorHex, alphaByte: 0x00)
         style.BackColour = assColor(
-            hexRGBUInt: params.backgroundColorHex,
+            hexRGBUInt: params.effectiveBackColorHex,
             alphaByte: params.backgroundAlphaByte
         )
         // ScaleX/Y are doubles where 1.0 = 100%. The integer 100 here
@@ -372,9 +445,11 @@ enum SubtitleStylingOverride {
             if params.systemContentOverrides.contains(.size) {
                 systemBits |= Int32(ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE.rawValue)
             }
-            if params.systemContentOverrides.contains(.colors) {
-                systemBits |= Int32(ASS_OVERRIDE_BIT_COLORS.rawValue)
-            }
+            // libass exposes color override as one atomic bit spanning
+            // Primary, Secondary, Outline, and BackColour. Apple exposes
+            // foreground/background color and opacity precedence separately,
+            // so native ASS colors are transformed per image type by the
+            // compositor instead of enabling the lossy category-wide bit.
             if params.systemContentOverrides.contains(.edge) {
                 systemBits |= Int32(ASS_OVERRIDE_BIT_BORDER.rawValue)
             }

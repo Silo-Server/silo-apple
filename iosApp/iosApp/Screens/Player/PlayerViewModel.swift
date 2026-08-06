@@ -954,6 +954,7 @@ class PlayerViewModel {
         let showForced: Bool
         let forcedOnly: Bool
         let preferAccessibilityTracks: Bool
+        let disableWhenNoLanguageMatch: Bool
         let trackSignature: SubtitleTrackSignature?
     }
     /// Set after the resolver has fired once for the current item so we
@@ -7414,6 +7415,7 @@ class PlayerViewModel {
             showForced: prefs.showForced,
             forcedOnly: prefs.forcedOnly,
             preferAccessibilityTracks: prefs.preferAccessibilityTracks,
+            disableWhenNoLanguageMatch: prefs.disableWhenNoLanguageMatch,
             trackSignature: prefs.trackSignature,
             availableSubtitles: allSubs,
             currentAudioLanguage: audioLang
@@ -7435,6 +7437,7 @@ class PlayerViewModel {
                 showForced: true,
                 forcedOnly: true,
                 preferAccessibilityTracks: system.prefersAccessibilityTracks,
+                disableWhenNoLanguageMatch: true,
                 trackSignature: nil
             )
         case .automatic:
@@ -7445,6 +7448,7 @@ class PlayerViewModel {
                 showForced: true,
                 forcedOnly: false,
                 preferAccessibilityTracks: system.prefersAccessibilityTracks,
+                disableWhenNoLanguageMatch: true,
                 trackSignature: nil
             )
         case .alwaysOn:
@@ -7455,6 +7459,7 @@ class PlayerViewModel {
                 showForced: false,
                 forcedOnly: false,
                 preferAccessibilityTracks: system.prefersAccessibilityTracks,
+                disableWhenNoLanguageMatch: true,
                 trackSignature: nil
             )
         }
@@ -7468,6 +7473,7 @@ class PlayerViewModel {
             showForced: watchDetail.effectiveShowForcedSubtitles ?? false,
             forcedOnly: false,
             preferAccessibilityTracks: false,
+            disableWhenNoLanguageMatch: false,
             trackSignature: watchDetail.effectiveSubtitleTrackSignature
         )
     }
