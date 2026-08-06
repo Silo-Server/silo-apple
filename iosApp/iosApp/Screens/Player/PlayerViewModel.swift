@@ -5506,11 +5506,14 @@ class PlayerViewModel {
     /// the controller treats `nil` as a soft failure so the user isn't left on
     /// a dismissed menu with no track.
     ///
-    /// `baseTrackCount` mirrors Android's `SubtitleTrackMerge` `baseIndex`:
-    /// `(max combined index over the session's non-downloaded subtitle_urls) + 1`
-    /// — computed `+1` over the max, not the count, so server-side burn-in
-    /// skipping (which can leave index gaps) is honored and the synthesized
-    /// stream URL still resolves on the combined-index stream mount.
+    /// `baseTrackCount` is the combined ordinal the **first** downloaded track
+    /// occupies. The V3 plan's subtitle inventory is the authoritative track
+    /// list — it publishes every track, including burn-in-only bitmap streams
+    /// that carry no fetchable URL, over one dense ordinal space ordered
+    /// externals → embedded → downloaded. So the first downloaded ordinal is
+    /// exactly the number of non-downloaded inventory entries. Never derive
+    /// this by counting or max-ing the delivered sidecar URLs: those omit
+    /// burn-in-only tracks and would address the wrong track.
     @MainActor
     private func makeSubtitleHandoffContext() -> SubtitleAIController.HandoffContext? {
         guard backendCapabilities.supportsExternalPrimarySubtitles else {
@@ -5524,26 +5527,13 @@ class PlayerViewModel {
             return nil
         }
         let serverUrl = resolvedServerUrl
-        // KNOWN LIMITATION (intentionally inherited from Android's
-        // `SubtitleTrackMerge`; do NOT "fix" Apple-side — no purely-client fix is
-        // correct). The server's `buildSubtitleURLs` (`playback.go:1503`) OMITS
-        // non-PGS burn-in subtitle tracks from `subtitle_urls`, yet still counts
-        // them in the downloaded combined-index offset (`downloadedOffset` at
-        // `playback.go:1520`, served by the combined-index stream mount in
-        // `stream.go:244`). So `max(visible index) + 1` here UNDERCOUNTS whenever
-        // the LAST embedded track is a non-PGS bitmap sub: the synthesized stream
-        // URL then targets the wrong combined index and the live→persisted handoff
-        // SOFT-FAILS. This is graceful — the job already completed server-side, and
-        // a fresh playback session re-indexes the persisted track correctly. The
-        // robust fix is cross-repo: have the server carry the combined index (or a
-        // ready-to-use stream URL) in `subtitle_translation_completed` /
-        // `subtitle_ready` so the client never has to reconstruct it.
-        let baseTrackCount = (
-            knownExternalSubtitles
-                .filter { ($0.source ?? "").caseInsensitiveCompare("downloaded") != .orderedSame }
-                .map(\.index)
-                .max() ?? -1
-        ) + 1
+        guard let inventory = activePreparedProtocolV3?.plan.subtitle.inventory, !inventory.isEmpty else {
+            Self.logger.warning("[AI-SUB] no V3 subtitle inventory for subtitle handoff")
+            return nil
+        }
+        let baseTrackCount = inventory
+            .filter { $0.source.caseInsensitiveCompare("downloaded") != .orderedSame }
+            .count
         return SubtitleAIController.HandoffContext(
             sessionId: sessionId,
             baseTrackCount: baseTrackCount,

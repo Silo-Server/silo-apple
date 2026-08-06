@@ -146,10 +146,11 @@ final class SubtitleAIController {
     /// current track list. Nil when no session is active (then the handoff is
     /// reported as a soft failure rather than silently dropped).
     ///
-    /// Mirrors Android's `SubtitleTrackMerge`: `sessionId` scopes the stream
-    /// mount, `baseTrackCount` is `(max(existing non-downloaded index) + 1)`,
-    /// and `resolveURL` turns the synthesized API-relative path into an
-    /// absolute URL against the active server base.
+    /// `sessionId` scopes the stream mount, `baseTrackCount` is the combined
+    /// ordinal the first downloaded track occupies (the count of non-downloaded
+    /// entries in the plan's authoritative subtitle inventory), and
+    /// `resolveURL` turns the synthesized API-relative path into an absolute
+    /// URL against the active server base.
     struct HandoffContext {
         let sessionId: String
         let baseTrackCount: Int

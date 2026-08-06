@@ -3,13 +3,45 @@ import Foundation
 enum PlaybackProtocolV3 {
     static let version = 3
     static let planFeature = "playback_plan_v3"
-    static let detailedDecodeFeature = "detailed_decode_capabilities"
     static let layoutPassthroughFeature = "layout_aware_passthrough"
     static let clientTransformFeature = "client_video_transformations_v1"
     static let routeDiagnosticsFeature = "playback_route_diagnostics"
     static let deviceQuirksFeature = "device_quirks_v1"
     static let seekReanchorFeature = "seek_reanchor_v1"
     static let directStreamResumeFeature = "direct_stream_resume_v1"
+    static let planSourceDurationFeature = "plan_source_duration_v1"
+
+    /// Delivery classes are the unit a client negotiates in
+    /// `client_playback_context.deliveries`. They are deliberately coarser than
+    /// the four plan-level `delivery` outcomes the server reports back: the
+    /// server folds `server_remux_hls` and `server_transcode_hls` onto `hls`,
+    /// and `server_remux_progressive` onto `progressive`.
+    enum DeliveryClass {
+        static let originalHTTP = "original_http"
+        static let progressive = "progressive"
+        static let hls = "hls"
+    }
+
+    /// How much the client actually knows about its own decoders. The server
+    /// gates direct/copy routes on this: `exact` and `platformAttested` are
+    /// matched against `video_decode` entries, `declared` only against the flat
+    /// codec list.
+    enum Evidence {
+        static let exact = "exact"
+        static let platformAttested = "platform_attested"
+        static let declared = "declared"
+    }
+
+    /// Why the client is asking for a new plan. `failureRecovery` is the
+    /// server's default when the field is absent; the two intent operations
+    /// carry no `failure`.
+    enum ReplanOperation {
+        static let failureRecovery = "failure_recovery"
+        static let seekReanchor = "seek_reanchor"
+        static let seekFailureRecovery = "seek_failure_recovery"
+        static let trackChange = "track_change"
+        static let qualityChange = "quality_change"
+    }
 }
 
 struct PlaybackV3HDRCapabilities: Codable, Equatable {
@@ -52,6 +84,12 @@ struct PlaybackV3VideoDecodeCapability: Codable, Equatable {
 }
 
 struct PlaybackV3CodecCapabilities: Codable, Equatable {
+    /// How this client knows what it can decode. Apple attests through
+    /// VideoToolbox rather than enumerating a decoder registry, so it claims
+    /// `platform_attested`: codec, bit depth and dimension bounds are real,
+    /// profile/level are not enumerable and the server skips matching them.
+    let videoEvidence: String
+    let audioEvidence: String
     let codecsVideo: [String]
     let codecsVideoHardware: [String]
     let codecsAudio: [String]
@@ -64,18 +102,13 @@ struct PlaybackV3CodecCapabilities: Codable, Equatable {
 }
 
 struct PlaybackV3DeviceContext: Codable, Equatable {
+    let platform: String
+    let osVersion: String?
     let manufacturer: String?
     let model: String?
-    let brand: String?
-    let device: String?
-    let product: String?
-    let socManufacturer: String?
-    let socModel: String?
-    let buildId: String?
-    let buildDisplay: String?
-    let securityPatch: String?
-    let sdkInt: Int?
-    let abis: [String]
+    /// Free-form platform-specific detail. Bounded by the server at 16 entries
+    /// with keys and values of at most 128 characters each.
+    let platformDetails: [String: String]
 }
 
 struct PlaybackV3OutputContext: Codable, Equatable {
@@ -83,10 +116,12 @@ struct PlaybackV3OutputContext: Codable, Equatable {
     let audioPassthrough: PlaybackV3AudioPassthrough?
     let currentSink: String?
     let sinkType: String?
-    let outputRouteGeneration: Int64
+    /// Opaque token identifying the current output route. The server only ever
+    /// compares it for equality, so any stable platform-native identity works.
+    let outputContextId: String?
 }
 
-struct PlaybackV3EngineSubtitleCapabilities: Codable, Equatable {
+struct PlaybackV3DeliverySubtitleCapabilities: Codable, Equatable {
     let embeddedText: Bool
     let sidecarText: Bool
     let assStyling: Bool
@@ -102,7 +137,7 @@ struct PlaybackV3Transformation: Codable, Equatable {
     let validatedClaims: [String]
 }
 
-struct PlaybackV3EngineCapability: Codable, Equatable {
+struct PlaybackV3DeliveryCapability: Codable, Equatable {
     let enabled: Bool
     let supportedOnDevice: Bool
     let failureReason: String?
@@ -112,7 +147,7 @@ struct PlaybackV3EngineCapability: Codable, Equatable {
     let audioPassthroughCodecs: [String]
     let maxChannels: Int?
     let hdrDetails: PlaybackV3HDRCapabilities?
-    let subtitles: PlaybackV3EngineSubtitleCapabilities
+    let subtitles: PlaybackV3DeliverySubtitleCapabilities
     let features: [String]
     let authHeaderRefresh: Bool
     let validatedClaims: [String]
@@ -121,13 +156,12 @@ struct PlaybackV3EngineCapability: Codable, Equatable {
 
 struct PlaybackV3ClientContext: Codable, Equatable {
     let protocolVersion: Int
-    let features: [String]
-    let platform: String
     let formFactor: String
     let appVersion: String
     let device: PlaybackV3DeviceContext
     let output: PlaybackV3OutputContext
-    let engines: [String: PlaybackV3EngineCapability]
+    /// Keyed by delivery class, never by an engine name.
+    let deliveries: [String: PlaybackV3DeliveryCapability]
 }
 
 struct PlaybackV3StartRequest: Codable, Equatable {
@@ -143,7 +177,6 @@ struct PlaybackV3StartRequest: Codable, Equatable {
     let audioTrackIndex: Int?
     let subtitleTrackId: String?
     let subtitleTrackIndex: Int?
-    let outputRouteGeneration: Int64
     let metered: Bool
     let bandwidthEstimateKbps: Int?
     let bandwidthCapKbps: Int?
@@ -169,22 +202,29 @@ struct PlaybackV3Failure: Codable, Equatable {
 
 struct PlaybackV3ReplanRequest: Codable, Equatable {
     let protocolVersion: Int
+    let clientFeatures: [String]
     let operation: String
     let playbackAttemptId: String
     let replanRequestId: String
     let failedPlanId: String
     let planAttemptId: String
+    /// The key the server minted for the plan being replaced, echoed verbatim.
+    /// Clients never compute one.
     let planAttemptKey: String
     let attemptedPlanKeys: [String]
     let attemptCount: Int
     let qualityPreference: String
     let positionSeconds: Double
-    let outputRouteGeneration: Int64
     let metered: Bool
     let bandwidthEstimateKbps: Int?
     let bandwidthCapKbps: Int?
     let selectedTracks: PlaybackV3SelectedTracks
-    let failure: PlaybackV3Failure
+    /// Absent for the intent operations (`track_change`, `quality_change`),
+    /// which replan because the user asked, not because playback broke.
+    let failure: PlaybackV3Failure?
+    /// Client-side state the server should fold into the next attempt key, so
+    /// a locally-mutated route does not collide with the plan it replaced.
+    let localMutations: [String]
     let clientCapabilities: PlaybackV3CodecCapabilities
     let clientPlaybackContext: PlaybackV3ClientContext
 }
@@ -201,7 +241,7 @@ struct PlaybackV3RouteEvent: Codable, Equatable {
     let fallbackReason: String?
     let appliedQuirkIds: [String]
     let quirkRegistryRevision: String?
-    let outputRouteGeneration: Int64
+    let outputContextId: String?
     let diagnostics: [String: String]
 }
 
@@ -306,10 +346,34 @@ struct PlaybackV3SubtitleArtifact: Codable, Equatable {
     let timingOriginSeconds: Double
 }
 
+/// One selectable subtitle track, as the server sees it.
+///
+/// `combinedIndex` is a dense server-assigned ordinal over embedded, external
+/// and downloaded tracks together. It is not an index into any client-side
+/// array.
+struct PlaybackV3SubtitleInventoryItem: Codable, Equatable {
+    let trackId: String
+    let combinedIndex: Int
+    let source: String
+    let codec: String?
+    let language: String?
+    let label: String?
+    let forced: Bool
+    let `default`: Bool
+    let hearingImpaired: Bool
+    let delivery: String
+    let url: String?
+    let fontBundleUrl: String?
+}
+
 struct PlaybackV3SubtitleDecision: Codable, Equatable {
     let mode: String
     let trackId: String?
     let artifact: PlaybackV3SubtitleArtifact?
+    /// Authoritative list of every subtitle track for this plan. Select a track
+    /// by echoing an entry's `trackId` or `combinedIndex` — never by counting
+    /// tracks, summing arrays, or taking max(index) + 1.
+    let inventory: [PlaybackV3SubtitleInventoryItem]
 }
 
 struct PlaybackV3AppliedQuirk: Codable, Equatable {
@@ -324,13 +388,22 @@ struct PlaybackV3DegradationWarning: Codable, Equatable {
     let message: String
 }
 
+struct PlaybackV3AvailableQuality: Codable, Equatable {
+    let label: String
+    let height: Int
+    let bitrateKbps: Int
+    let preservesSource: Bool
+}
+
 struct PlaybackV3Plan: Codable, Equatable {
     let protocolVersion: Int
     let planId: String
     let sessionId: String?
     let expiresAt: String?
     let delivery: String
-    let engine: String
+    /// Server-minted identity for this attempt. Echo it on replan and route
+    /// events; the client never computes one.
+    let planAttemptKey: String
     let stream: PlaybackV3Stream
     let timeline: PlaybackV3Timeline
     let selectedTracks: PlaybackV3SelectedTracks
@@ -346,39 +419,8 @@ struct PlaybackV3Plan: Codable, Equatable {
     let effectiveMediaFileId: Int
     let source: PlaybackV3SourceDescriptor
     let subtitleFidelityPolicy: String
-
-    func attemptKey(outputRouteGeneration: Int64, localMutations: [String] = []) -> String {
-        let transformations = transformations
-            .map { "\($0.executor.lowercased()):\($0.name):\($0.recipeVersion)" }
-            .sorted()
-            .joined(separator: ",")
-        var parts = [
-            planId,
-            delivery.uppercased(),
-            stream.protocol.uppercased(),
-            (stream.container ?? "").lowercased(),
-            (effectiveRecipe.videoCodec ?? "").lowercased(),
-            (effectiveRecipe.audioCodec ?? "").lowercased(),
-            "\(effectiveRecipe.width ?? 0)x\(effectiveRecipe.height ?? 0)",
-            "\(effectiveRecipe.bitrateKbps ?? 0)",
-            (effectiveRecipe.dynamicRange ?? "").lowercased(),
-            subtitle.mode.uppercased(),
-            transformations
-        ]
-        if !appliedQuirks.isEmpty || !runtimeCorrections.isEmpty {
-            parts.append(appliedQuirks.map { "\($0.registryRevision):\($0.id)" }.sorted().joined(separator: ","))
-            parts.append(runtimeCorrections.sorted().joined(separator: ","))
-        }
-        parts.append(String(outputRouteGeneration))
-        parts.append(localMutations.sorted().joined(separator: ","))
-
-        var hash: UInt64 = 0xcbf29ce484222325
-        for byte in parts.joined(separator: "|").utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 0x100000001b3
-        }
-        return String(format: "v3:%016llx", hash)
-    }
+    /// Quality rungs the server will honour for a `quality_change` replan.
+    let availableQualities: [PlaybackV3AvailableQuality]
 }
 
 struct PlaybackV3Terminal: Codable, Equatable {
@@ -437,8 +479,7 @@ extension PlaybackV3DecisionResponse {
         let supportedDelivery = [
             "original_http", "server_remux_hls", "server_remux_progressive", "server_transcode_hls"
         ].contains(plan.delivery)
-        let supportedEngine = ["media3_direct", "media3_progressive_remux", "media3_hls"].contains(plan.engine)
-        guard supportedDelivery, supportedEngine else {
+        guard supportedDelivery else {
             return .incompatible(allocatedSessionId: sessionId)
         }
         return .playable(plan: plan, sessionId: sessionId)

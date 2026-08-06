@@ -4,14 +4,13 @@ struct PreparedPlaybackV3: Equatable {
     let playbackAttemptId: String
     let planAttemptId: String
     let planAttemptKey: String
-    let outputRouteGeneration: Int64
+    let outputContextId: String?
     let serverFeatures: [String]
     let plan: PlaybackV3Plan
 }
 
 enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
     case unsupportedDelivery(String)
-    case unsupportedEngine(String)
     case invalidTransport(String)
     case unsupportedClientTransformation(String)
     case invalidClientTransformation(String)
@@ -21,8 +20,6 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
         switch self {
         case .unsupportedDelivery(let value):
             return "The server selected an unsupported V3 delivery: \(value)."
-        case .unsupportedEngine(let value):
-            return "The server selected an unsupported V3 execution engine: \(value)."
         case .invalidTransport(let value):
             return "The V3 playback transport is invalid: \(value)."
         case .unsupportedClientTransformation(let value):
@@ -48,19 +45,6 @@ enum ApplePlaybackV3PlanAdapter {
             "original_http", "server_remux_hls", "server_remux_progressive", "server_transcode_hls"
         ].contains(plan.delivery) else {
             throw ApplePlaybackV3PlanError.unsupportedDelivery(plan.delivery)
-        }
-        guard ["media3_direct", "media3_progressive_remux", "media3_hls"].contains(plan.engine) else {
-            throw ApplePlaybackV3PlanError.unsupportedEngine(plan.engine)
-        }
-        let expectedEngine: String = switch plan.delivery {
-        case "original_http": "media3_direct"
-        case "server_remux_progressive": "media3_progressive_remux"
-        default: "media3_hls"
-        }
-        guard plan.engine == expectedEngine else {
-            throw ApplePlaybackV3PlanError.invalidTransport(
-                "delivery \(plan.delivery) requires engine \(expectedEngine)"
-            )
         }
         guard !plan.stream.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ApplePlaybackV3PlanError.invalidTransport("empty stream URL")
@@ -92,10 +76,9 @@ enum ApplePlaybackV3PlanAdapter {
                 "multiple mutually exclusive client transformations"
             )
         }
-        if !selectedClientTransformations.isEmpty
-            && (plan.delivery != "original_http" || plan.engine != "media3_direct") {
+        if !selectedClientTransformations.isEmpty && plan.delivery != "original_http" {
             throw ApplePlaybackV3PlanError.invalidClientTransformation(
-                "client transformations require original_http/media3_direct"
+                "client transformations require the original_http delivery"
             )
         }
         if let unsupported = plan.runtimeCorrections.first(where: { !runtimeCorrections.contains($0) }) {
@@ -257,7 +240,7 @@ enum ApplePlaybackV3PlanAdapter {
             featureFlagEnabled: true,
             parityBlockers: routeCapabilities.blockingReasons(for: routeRequirements),
             decisionTrace: basePlan.decisionTrace + [
-                "protocol_v3", "v3_plan_\(plan.planId)", "v3_engine_\(plan.engine)", "v3_delivery_\(plan.delivery)"
+                "protocol_v3", "v3_plan_\(plan.planId)", "v3_delivery_\(plan.delivery)"
             ] + transformationTokens + quirkTokens + correctionTokens,
             degradationWarnings: warnings + routeCapabilities.degradationNotes(for: routeRequirements),
             reason: "v3_\(plan.decisionReason)",
