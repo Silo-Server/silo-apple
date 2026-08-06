@@ -1125,7 +1125,7 @@ private struct SubtitleAppearanceDialog: View {
                 ScrollView(showsIndicators: true) {
                     VStack(spacing: 2) {
                         HUDToggleRow(
-                            label: "Match device style",
+                            label: "Use device settings",
                             isOn: viewModel.settings.subtitleMatchesSystemAppearance
                         ) { enabled in
                             viewModel.setSubtitleMatchesSystemAppearance(enabled)

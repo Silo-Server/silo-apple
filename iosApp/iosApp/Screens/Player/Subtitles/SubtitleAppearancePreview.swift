@@ -54,33 +54,40 @@ struct SubtitleAppearancePreview: View {
     }
 
     private var sampleText: some View {
-        let size = appearance.fontSize.pointSize * Self.fontScale
-        let font: Font = {
-            switch appearance.fontFamily {
-            case .serif: return .system(size: size, weight: .semibold, design: .serif)
-            case .monospace: return .system(size: size, weight: .semibold, design: .monospaced)
-            case .sansSerif: return .system(size: size, weight: .semibold)
-            default: return .custom(appearance.fontFamily.assFontName, size: size)
-            }
-        }()
+        glyphText
+            .padding(.horizontal, appearance.captionWindowOpacity > 0 ? 6 : 0)
+            .padding(.vertical, appearance.captionWindowOpacity > 0 ? 4 : 0)
+            .background { captionWindowBackground }
+    }
+
+    private var glyphText: some View {
+        let systemEdge = appearance.systemTextEdgeStyle
         let hasOutline = appearance.textOutline || appearance.backgroundStyle == .outline
+            || systemEdge == .uniform
         let outlineColor = hasOutline ? Color(hex: appearance.textOutlineColor) : .clear
         // Four hard directional shadows fake libass's uniform glyph
         // outline; a soft radius reads as a glow instead.
-        let outlineOffset: CGFloat = max(1, size * 0.04)
+        let outlineOffset: CGFloat = max(1, sampleFontSize * 0.04)
+
+        let raisedColor = systemEdge == .raised ? Color.white.opacity(0.8) : .clear
+        let depressedColor = systemEdge == .depressed ? Color.black.opacity(0.9) : .clear
+        let dropShadowColor = systemEdge == .dropShadow
+            || appearance.backgroundStyle == .shadow ? Color.black.opacity(0.85) : .clear
 
         return Text(Self.sampleLine)
-            .font(font)
+            .font(sampleFont)
             .multilineTextAlignment(.center)
-            .foregroundStyle(Color(hex: appearance.fontColor))
+            .foregroundStyle(
+                Color(hex: appearance.fontColor)
+                    .opacity(Double(appearance.fontOpacity) / 100)
+            )
             .shadow(color: outlineColor, radius: 0, x: outlineOffset, y: outlineOffset)
             .shadow(color: outlineColor, radius: 0, x: -outlineOffset, y: outlineOffset)
             .shadow(color: outlineColor, radius: 0, x: outlineOffset, y: -outlineOffset)
             .shadow(color: outlineColor, radius: 0, x: -outlineOffset, y: -outlineOffset)
-            .shadow(
-                color: appearance.backgroundStyle == .shadow ? .black.opacity(0.85) : .clear,
-                radius: 3, y: 2
-            )
+            .shadow(color: raisedColor, radius: 0, x: -outlineOffset, y: -outlineOffset)
+            .shadow(color: depressedColor, radius: 0, x: outlineOffset, y: outlineOffset)
+            .shadow(color: dropShadowColor, radius: 3, y: 2)
             .padding(.horizontal, appearance.backgroundStyle == .box ? 10 : 0)
             .padding(.vertical, appearance.backgroundStyle == .box ? 4 : 0)
             .background {
@@ -90,5 +97,34 @@ struct SubtitleAppearancePreview: View {
                             .opacity(Double(appearance.backgroundOpacity) / 100))
                 }
             }
+    }
+
+    @ViewBuilder
+    private var captionWindowBackground: some View {
+        if appearance.captionWindowOpacity > 0 {
+            RoundedRectangle(
+                cornerRadius: appearance.captionWindowCornerRadius * Self.fontScale,
+                style: .continuous
+            )
+            .fill(
+                Color(hex: appearance.captionWindowColor)
+                    .opacity(Double(appearance.captionWindowOpacity) / 100)
+            )
+        }
+    }
+
+    private var sampleFontSize: CGFloat {
+        (appearance.systemRelativeFontScale.map {
+            SubtitleStylingOverride.Parameters.referenceFontSize * $0
+        } ?? appearance.fontSize.pointSize) * Self.fontScale
+    }
+
+    private var sampleFont: Font {
+        switch appearance.fontFamily {
+        case .serif: return .system(size: sampleFontSize, weight: .semibold, design: .serif)
+        case .monospace: return .system(size: sampleFontSize, weight: .semibold, design: .monospaced)
+        case .sansSerif: return .system(size: sampleFontSize, weight: .semibold)
+        default: return .custom(appearance.fontFamily.assFontName, size: sampleFontSize)
+        }
     }
 }

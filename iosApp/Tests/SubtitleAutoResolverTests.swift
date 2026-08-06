@@ -34,12 +34,18 @@ final class SubtitleAutoResolverTests: XCTestCase {
         mode: SubtitleMode?,
         showForced: Bool,
         tracks: [PlayerTrack],
-        audioLanguage: String?
+        audioLanguage: String?,
+        additionalLanguages: [String] = [],
+        forcedOnly: Bool = false,
+        preferAccessibility: Bool = false
     ) -> SubtitleAutoResolver.Inputs {
         SubtitleAutoResolver.Inputs(
             preferredLanguage: preferredLanguage,
+            additionalPreferredLanguages: additionalLanguages,
             mode: mode,
             showForced: showForced,
+            forcedOnly: forcedOnly,
+            preferAccessibilityTracks: preferAccessibility,
             trackSignature: nil,
             availableSubtitles: tracks,
             currentAudioLanguage: audioLanguage
@@ -132,5 +138,60 @@ final class SubtitleAutoResolverTests: XCTestCase {
         XCTAssertTrue(SubtitleAutoResolver.titleIndicatesHearingImpaired("English [SDH]"))
         XCTAssertTrue(SubtitleAutoResolver.titleIndicatesHearingImpaired("Closed Captions"))
         XCTAssertFalse(SubtitleAutoResolver.titleIndicatesHearingImpaired(nil))
+    }
+
+    func testSystemLanguageStackFallsBackInOrder() {
+        let french = track(id: 10, lang: "fra")
+        let spanish = track(id: 11, lang: "spa")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "de-DE",
+            mode: .always,
+            showForced: false,
+            tracks: [spanish, french],
+            audioLanguage: "eng",
+            additionalLanguages: ["es-ES", "fr-FR"]
+        ))
+        XCTAssertEqual(result, .select(spanish))
+    }
+
+    func testSystemAccessibilityCharacteristicPrefersSDH() {
+        let plain = track(id: 10, lang: "eng", title: "English")
+        let sdh = track(id: 11, lang: "eng", hearingImpaired: true, title: "English SDH")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "en",
+            mode: .always,
+            showForced: false,
+            tracks: [plain, sdh],
+            audioLanguage: "eng",
+            preferAccessibility: true
+        ))
+        XCTAssertEqual(result, .select(sdh))
+    }
+
+    func testSystemForcedOnlyNeverSelectsFullDialogueTrack() {
+        let full = track(id: 10, lang: "eng")
+        let forcedSpanish = track(id: 11, lang: "spa", forced: true)
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "en",
+            mode: .auto,
+            showForced: true,
+            tracks: [full, forcedSpanish],
+            audioLanguage: "eng",
+            additionalLanguages: ["es"],
+            forcedOnly: true
+        ))
+        XCTAssertEqual(result, .select(forcedSpanish))
+    }
+
+    func testSystemForcedOnlyDisablesWhenNoForcedTrackExists() {
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "en",
+            mode: .auto,
+            showForced: true,
+            tracks: [track(id: 10, lang: "eng")],
+            audioLanguage: "eng",
+            forcedOnly: true
+        ))
+        XCTAssertEqual(result, .disable)
     }
 }

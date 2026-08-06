@@ -123,7 +123,9 @@ struct SubtitleSettingsView: View {
                 .foregroundStyle(Color.continuumSecondaryText)
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
-                if viewModel.settingsServerUpgradeRequired {
+                if viewModel.subtitleMatchesSystemAppearance {
+                    Text("Language, display behavior, forced captions, and CC/SDH preference follow this device's Accessibility settings.")
+                } else if viewModel.settingsServerUpgradeRequired {
                     Text(ProfilePrefsEditor.serverUpgradeMessage)
                         .foregroundStyle(Color.continuumError)
                 } else {
@@ -140,7 +142,7 @@ struct SubtitleSettingsView: View {
             }
             .foregroundStyle(Color.continuumSecondaryText)
         }
-        .disabled(viewModel.settingsServerUpgradeRequired)
+        .disabled(viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
         .listRowBackground(Color.continuumSurfaceElevated)
     }
 
@@ -168,7 +170,7 @@ struct SubtitleSettingsView: View {
 
         Section {
             Toggle(
-                "Match Device Settings",
+                "Use Device Settings",
                 isOn: Binding(
                     get: { viewModel.subtitleMatchesSystemAppearance },
                     set: { enabled in
@@ -194,13 +196,17 @@ struct SubtitleSettingsView: View {
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 if viewModel.subtitleMatchesSystemAppearance {
-                    Text("Following this device's caption style from Accessibility settings (Subtitles & Captioning). Editing any option below switches back to Silo styling.")
+                    Text("Following this device's caption language, display behavior, CC/SDH preference, font, colors, opacity, edges, size, and caption window from Accessibility → Subtitles & Captioning.")
                 } else if viewModel.subtitleUsesDeviceAppearanceOverride {
                     Text("Saved on the server for this profile on this device. An admin can reset it.")
                 } else {
                     Text("Using the server fallback for this profile on this device. Turn on Custom Appearance to save your own here.")
                 }
-                Text("Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings.")
+                if viewModel.subtitleMatchesSystemAppearance {
+                    Text("Subtitles with built-in styling follow each device caption option's Video Overrides Style choice.")
+                } else {
+                    Text("Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings.")
+                }
             }
             .foregroundStyle(Color.continuumSecondaryText)
         }

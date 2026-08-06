@@ -269,6 +269,7 @@ final class PlayerSettings {
     /// Latest mapping of the system caption preferences. Refreshed when
     /// MediaAccessibility posts its settings-changed notification.
     var subtitleSystemAppearance: SubtitleAppearance = SystemCaptionAppearance.current()
+    var subtitleSystemSelectionPreferences = SystemCaptionSelectionPreferences.current()
 
     /// The appearance the player should actually render with.
     var effectiveSubtitleAppearance: SubtitleAppearance {
@@ -452,6 +453,7 @@ final class PlayerSettings {
     /// re-application never races this class's own observer.
     func refreshSubtitleSystemAppearance() {
         subtitleSystemAppearance = SystemCaptionAppearance.current()
+        subtitleSystemSelectionPreferences = SystemCaptionSelectionPreferences.current()
     }
 
     var subtitleBackgroundColorHex: String {
@@ -642,6 +644,7 @@ final class PlayerSettings {
         guard enabled != subtitleMatchesSystemAppearance else { return }
         if enabled {
             subtitleSystemAppearance = SystemCaptionAppearance.current()
+            subtitleSystemSelectionPreferences = SystemCaptionSelectionPreferences.current()
         }
         subtitleMatchesSystemAppearance = enabled
     }

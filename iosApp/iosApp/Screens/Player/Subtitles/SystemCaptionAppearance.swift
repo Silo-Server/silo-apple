@@ -4,12 +4,12 @@
 //
 //  Maps Apple's Media Accessibility caption preferences (Settings →
 //  Accessibility → Subtitles & Captioning) onto `SubtitleAppearance` so
-//  the player can offer a "match device settings" appearance source.
+//  the player can offer a "use device settings" appearance source.
 //
 //  Every value returned by MediaAccessibility participates in the mapped
 //  appearance. Apple's `.useContentIfAvailable` behavior still requires the
 //  returned value when content does not supply one. Silo-controlled text
-//  tracks intentionally have no competing authored style while "Match Device
+//  tracks intentionally have no competing authored style while "Use Device
 //  Settings" is enabled, so dropping those fallback values would replace the
 //  selected system profile with Silo's defaults.
 //
@@ -26,16 +26,20 @@ enum SystemCaptionAppearance {
     /// exercise the mapping without touching process-wide accessibility state.
     struct Snapshot: Equatable {
         var foregroundColorHex: String?
+        /// 0.0–1.0.
+        var foregroundOpacity: Double?
         var backgroundColorHex: String?
         /// 0.0–1.0.
         var backgroundOpacity: Double?
         var windowColorHex: String?
         /// 0.0–1.0.
         var windowOpacity: Double?
+        var windowCornerRadius: Double?
         var edgeStyle: MACaptionAppearanceTextEdgeStyle?
         /// Multiplier around 1.0 (system slider spans roughly 0.5–2.0).
         var relativeCharacterSize: Double?
         var fontFamilyName: String?
+        var contentOverrides: SystemCaptionContentOverrides = []
     }
 
     static let settingsChangedNotification =
@@ -59,6 +63,15 @@ enum SystemCaptionAppearance {
                 behavior: behavior
             )
         }
+        if behavior == .useValue { result.contentOverrides.insert(.colors) }
+
+        behavior = .useValue
+        let foregroundOpacity = MACaptionAppearanceGetForegroundOpacity(.user, &behavior)
+        result.foregroundOpacity = valueForMatchingDeviceSettings(
+            Double(foregroundOpacity),
+            behavior: behavior
+        )
+        if behavior == .useValue { result.contentOverrides.insert(.colors) }
 
         behavior = .useValue
         let background = MACaptionAppearanceCopyBackgroundColor(.user, &behavior).takeRetainedValue()
@@ -68,6 +81,7 @@ enum SystemCaptionAppearance {
                 behavior: behavior
             )
         }
+        if behavior == .useValue { result.contentOverrides.insert(.colors) }
 
         behavior = .useValue
         let backgroundOpacity = MACaptionAppearanceGetBackgroundOpacity(.user, &behavior)
@@ -75,6 +89,7 @@ enum SystemCaptionAppearance {
             Double(backgroundOpacity),
             behavior: behavior
         )
+        if behavior == .useValue { result.contentOverrides.insert(.colors) }
 
         behavior = .useValue
         let window = MACaptionAppearanceCopyWindowColor(.user, &behavior).takeRetainedValue()
@@ -84,6 +99,7 @@ enum SystemCaptionAppearance {
                 behavior: behavior
             )
         }
+        if behavior == .useValue { result.contentOverrides.insert(.window) }
 
         behavior = .useValue
         let windowOpacity = MACaptionAppearanceGetWindowOpacity(.user, &behavior)
@@ -91,10 +107,20 @@ enum SystemCaptionAppearance {
             Double(windowOpacity),
             behavior: behavior
         )
+        if behavior == .useValue { result.contentOverrides.insert(.window) }
+
+        behavior = .useValue
+        let windowCornerRadius = MACaptionAppearanceGetWindowRoundedCornerRadius(.user, &behavior)
+        result.windowCornerRadius = valueForMatchingDeviceSettings(
+            Double(windowCornerRadius),
+            behavior: behavior
+        )
+        if behavior == .useValue { result.contentOverrides.insert(.window) }
 
         behavior = .useValue
         let edge = MACaptionAppearanceGetTextEdgeStyle(.user, &behavior)
         result.edgeStyle = valueForMatchingDeviceSettings(edge, behavior: behavior)
+        if behavior == .useValue { result.contentOverrides.insert(.edge) }
 
         behavior = .useValue
         let size = MACaptionAppearanceGetRelativeCharacterSize(.user, &behavior)
@@ -102,6 +128,7 @@ enum SystemCaptionAppearance {
             Double(size),
             behavior: behavior
         )
+        if behavior == .useValue { result.contentOverrides.insert(.size) }
 
         behavior = .useValue
         let descriptor = MACaptionAppearanceCopyFontDescriptorForStyle(
@@ -111,18 +138,19 @@ enum SystemCaptionAppearance {
            !family.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             result.fontFamilyName = valueForMatchingDeviceSettings(family, behavior: behavior)
         }
+        if behavior == .useValue { result.contentOverrides.insert(.font) }
 
         return result
     }
 
-    /// Resolve a value for Silo's explicit "Match Device Settings" mode.
+    /// Resolve a value for Silo's explicit "Use Device Settings" mode.
     ///
     /// `.useContentIfAvailable` is a precedence rule, not an absent value:
     /// Apple's contract says to use the returned preference when the content
     /// has no competing style. Plain SRT/VTT and other controlled text tracks
     /// have no authored appearance, so both known behaviors resolve to the
-    /// system value. Native ASS continues to preserve its authored styling in
-    /// `SubtitleStylingOverride`, downstream from this mapper.
+    /// system value. Native ASS uses each returned behavior downstream to
+    /// preserve authored styling or apply the system category as requested.
     static func valueForMatchingDeviceSettings<Value>(
         _ value: Value,
         behavior: MACaptionAppearanceBehavior
@@ -140,59 +168,72 @@ enum SystemCaptionAppearance {
     /// Fold a system snapshot over a base appearance. Field-by-field:
     /// customized values win, everything else keeps the base.
     ///
-    /// The system model has no combined shadow-plus-box: a drop-shadow
-    /// edge maps to our Drop Shadow style only when the user has no
-    /// background, since Box occupies the same `backgroundStyle` slot.
     static func appearance(
         from snapshot: Snapshot,
         base: SubtitleAppearance = .default
     ) -> SubtitleAppearance {
         var result = base
 
-        // Apple's background is behind each glyph, while its window is the
-        // box behind the whole caption. Silo has one box layer, so a visible
-        // window is the closest match and takes precedence; the glyph
-        // background remains the fallback when the window is transparent.
-        if let opacity = snapshot.windowOpacity, opacity > 0.01 {
-            result.backgroundStyle = .box
-            result.backgroundOpacity = Int((opacity * 100).rounded())
-            if let window = snapshot.windowColorHex {
-                result.backgroundColor = window
-            }
-        } else if let opacity = snapshot.backgroundOpacity, opacity > 0.01 {
+        // Apple's glyph background and caption window are independent
+        // layers. Keep both rather than folding the window over the glyph
+        // background (which previously lost one of the user's colors).
+        if let opacity = snapshot.backgroundOpacity, opacity > 0.01 {
             result.backgroundStyle = .box
             result.backgroundOpacity = Int((opacity * 100).rounded())
             if let background = snapshot.backgroundColorHex {
                 result.backgroundColor = background
             }
-        } else if snapshot.windowOpacity != nil || snapshot.backgroundOpacity != nil {
+        } else if snapshot.backgroundOpacity != nil {
             result.backgroundStyle = SubtitleBackgroundStylePreset.none
+        }
+
+        if let window = snapshot.windowColorHex {
+            result.captionWindowColor = window
+        }
+        if let opacity = snapshot.windowOpacity {
+            result.captionWindowOpacity = Int((opacity * 100).rounded())
+        }
+        if let radius = snapshot.windowCornerRadius {
+            result.captionWindowCornerRadius = radius
         }
 
         if let edge = snapshot.edgeStyle {
             switch edge {
-            case .uniform, .raised, .depressed:
+            case .uniform:
+                result.systemTextEdgeStyle = .uniform
+                result.textOutline = true
+            case .raised:
+                result.systemTextEdgeStyle = .raised
+                result.textOutline = true
+            case .depressed:
+                result.systemTextEdgeStyle = .depressed
                 result.textOutline = true
             case .dropShadow:
+                result.systemTextEdgeStyle = .dropShadow
                 result.textOutline = false
-                if result.backgroundStyle != .box {
-                    result.backgroundStyle = .shadow
-                }
-            default:
+            case .none, .undefined:
+                result.systemTextEdgeStyle = SystemCaptionTextEdgeStyle.none
                 result.textOutline = false
+            @unknown default:
+                result.systemTextEdgeStyle = nil
             }
         }
 
         if let foreground = snapshot.foregroundColorHex {
             result.fontColor = foreground
         }
+        if let opacity = snapshot.foregroundOpacity {
+            result.fontOpacity = Int((opacity * 100).rounded())
+        }
         if let relativeSize = snapshot.relativeCharacterSize {
+            result.systemRelativeFontScale = relativeSize
             result.fontSize = fontSizePreset(forRelativeSize: relativeSize)
         }
         if let family = snapshot.fontFamilyName,
            let preset = SubtitleFontFamilyPreset(rawValue: family) {
             result.fontFamily = preset
         }
+        result.systemContentOverrides = snapshot.contentOverrides
 
         return result.sanitized()
     }

@@ -69,6 +69,69 @@ final class SubtitleStylingOverrideTests: XCTestCase {
         XCTAssertEqual(fields[6], "&H80000000")
     }
 
+    func testSystemForegroundOpacityReachesASSPrimaryColour() {
+        var appearance = SubtitleAppearance.default
+        appearance.fontColor = "#ffffff"
+        appearance.fontOpacity = 40
+        let params = SubtitleStylingOverride.Parameters.from(appearance: appearance, syncOffsetMs: 0)
+
+        XCTAssertEqual(styleFields(params: params)[3], "&H99FFFFFF")
+        XCTAssertEqual(
+            SubtitleStylingOverride.assColor(
+                hexRGBUInt: params.textColorHex,
+                alphaByte: params.textAlphaByte
+            ),
+            0xFFFFFF99
+        )
+    }
+
+    func testSystemRelativeSizeDoesNotQuantizeToPresetLadder() {
+        var appearance = SubtitleAppearance.default
+        appearance.systemRelativeFontScale = 1.75
+        let params = SubtitleStylingOverride.Parameters.from(appearance: appearance, syncOffsetMs: 0)
+
+        XCTAssertEqual(
+            params.fontSize,
+            SubtitleStylingOverride.Parameters.referenceFontSize * 1.75,
+            accuracy: 0.001
+        )
+    }
+
+    func testSystemWindowParametersRemainSeparateFromGlyphBackground() {
+        var appearance = SubtitleAppearance.default
+        appearance.backgroundColor = "#000000"
+        appearance.backgroundOpacity = 80
+        appearance.captionWindowColor = "#ff00ff"
+        appearance.captionWindowOpacity = 50
+        appearance.captionWindowCornerRadius = 8
+        appearance.systemContentOverrides = [.font, .window]
+        let params = SubtitleStylingOverride.Parameters.from(appearance: appearance, syncOffsetMs: 0)
+
+        XCTAssertEqual(params.backgroundColorHex, "#000000")
+        XCTAssertEqual(params.backgroundOpacityPercent, 80)
+        XCTAssertEqual(params.captionWindowColorHex, "#ff00ff")
+        XCTAssertEqual(params.captionWindowOpacityPercent, 50)
+        XCTAssertEqual(params.captionWindowCornerRadius, 8)
+        XCTAssertEqual(params.systemContentOverrides, [.font, .window])
+    }
+
+    func testSystemOnlyAppearanceFieldsAreNotServerEncoded() {
+        var appearance = SubtitleAppearance.default
+        appearance.fontOpacity = 25
+        appearance.systemRelativeFontScale = 1.75
+        appearance.systemTextEdgeStyle = .raised
+        appearance.captionWindowColor = "#ff00ff"
+        appearance.captionWindowOpacity = 50
+        appearance.captionWindowCornerRadius = 8
+        appearance.systemContentOverrides = [.font, .window]
+
+        let json = appearance.jsonString
+        XCTAssertFalse(json.contains("fontOpacity"))
+        XCTAssertFalse(json.contains("systemRelativeFontScale"))
+        XCTAssertFalse(json.contains("captionWindow"))
+        XCTAssertFalse(json.contains("systemContentOverrides"))
+    }
+
     // MARK: - Struct color packing (libass internal RRGGBBAA)
 
     func testStructColorPackingIsInternalRGBA() {

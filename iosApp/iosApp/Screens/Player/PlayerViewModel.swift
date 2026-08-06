@@ -949,8 +949,11 @@ class PlayerViewModel {
     private var prefsForCurrentItem: PrefsSnapshot?
     private struct PrefsSnapshot {
         let preferredLanguage: String?
+        let additionalPreferredLanguages: [String]
         let mode: SubtitleMode?
         let showForced: Bool
+        let forcedOnly: Bool
+        let preferAccessibilityTracks: Bool
         let trackSignature: SubtitleTrackSignature?
     }
     /// Set after the resolver has fired once for the current item so we
@@ -1172,6 +1175,10 @@ class PlayerViewModel {
             guard let self, self.settings.subtitleMatchesSystemAppearance else { return }
             self.settings.refreshSubtitleSystemAppearance()
             self.applySubtitleAppearanceToPlayer()
+            guard !self.hasExplicitSubtitleChoice else { return }
+            self.prefsForCurrentItem = self.systemCaptionPrefsSnapshot()
+            self.prefsResolvedForCurrentItem = false
+            self.applyAutoSubtitlePreferencesIfNeeded(forceWhenNoSelection: true)
         }
         #if !os(macOS)
         outputRouteObserverToken = NotificationCenter.default.addObserver(
@@ -2852,6 +2859,12 @@ class PlayerViewModel {
     func setSubtitleMatchesSystemAppearance(_ enabled: Bool) {
         settings.setSubtitleMatchesSystemAppearance(enabled)
         applySubtitleAppearanceToPlayer()
+        hasExplicitSubtitleChoice = false
+        prefsForCurrentItem = enabled
+            ? systemCaptionPrefsSnapshot()
+            : currentWatchDetail.map(serverSubtitlePrefsSnapshot)
+        prefsResolvedForCurrentItem = false
+        applyAutoSubtitlePreferencesIfNeeded(forceWhenNoSelection: true)
     }
 
     func setPlaybackSpeed(_ rate: Double) {
@@ -3392,13 +3405,9 @@ class PlayerViewModel {
                 // entirely if the caller already passed an explicit
                 // subtitle index — manual override always wins.
                 if !self.hasExplicitSubtitleChoice {
-                    let modeRaw = prepared.watchDetail.effectiveSubtitleMode ?? ""
-                    self.prefsForCurrentItem = PrefsSnapshot(
-                        preferredLanguage: prepared.watchDetail.effectiveSubtitleLanguage,
-                        mode: SubtitleMode(rawValue: modeRaw),
-                        showForced: prepared.watchDetail.effectiveShowForcedSubtitles ?? false,
-                        trackSignature: prepared.watchDetail.effectiveSubtitleTrackSignature
-                    )
+                    self.prefsForCurrentItem = self.settings.subtitleMatchesSystemAppearance
+                        ? self.systemCaptionPrefsSnapshot()
+                        : self.serverSubtitlePrefsSnapshot(prepared.watchDetail)
                 }
 
                 self.title = prepared.displayTitle
@@ -5251,6 +5260,7 @@ class PlayerViewModel {
 
     func selectSubtitle(_ track: PlayerTrack) {
         guard !isBackgroundSuspended else { return }
+        hasExplicitSubtitleChoice = true
         pendingSubtitleFfIndex = nil
         if selectedSecondarySubtitleId == track.trackId {
             selectedSecondarySubtitleId = nil
@@ -5277,6 +5287,7 @@ class PlayerViewModel {
 
     func disableSubtitles() {
         guard !isBackgroundSuspended else { return }
+        hasExplicitSubtitleChoice = true
         pendingSubtitleFfIndex = nil
         if selectedSecondarySubtitleId != nil {
             selectedSecondarySubtitleId = nil
@@ -7398,14 +7409,67 @@ class PlayerViewModel {
             .lang
         let pick = SubtitleAutoResolver.resolve(.init(
             preferredLanguage: prefs.preferredLanguage,
+            additionalPreferredLanguages: prefs.additionalPreferredLanguages,
             mode: prefs.mode,
             showForced: prefs.showForced,
+            forcedOnly: prefs.forcedOnly,
+            preferAccessibilityTracks: prefs.preferAccessibilityTracks,
             trackSignature: prefs.trackSignature,
             availableSubtitles: allSubs,
             currentAudioLanguage: audioLang
         ))
         prefsResolvedForCurrentItem = true
         applyAutoSubtitle(pick)
+    }
+
+    private func systemCaptionPrefsSnapshot() -> PrefsSnapshot {
+        let system = settings.subtitleSystemSelectionPreferences
+        let firstLanguage = system.preferredLanguages.first
+        let remainingLanguages = Array(system.preferredLanguages.dropFirst())
+        switch system.displayMode {
+        case .forcedOnly:
+            return PrefsSnapshot(
+                preferredLanguage: firstLanguage,
+                additionalPreferredLanguages: remainingLanguages,
+                mode: .auto,
+                showForced: true,
+                forcedOnly: true,
+                preferAccessibilityTracks: system.prefersAccessibilityTracks,
+                trackSignature: nil
+            )
+        case .automatic:
+            return PrefsSnapshot(
+                preferredLanguage: firstLanguage,
+                additionalPreferredLanguages: remainingLanguages,
+                mode: .auto,
+                showForced: true,
+                forcedOnly: false,
+                preferAccessibilityTracks: system.prefersAccessibilityTracks,
+                trackSignature: nil
+            )
+        case .alwaysOn:
+            return PrefsSnapshot(
+                preferredLanguage: firstLanguage,
+                additionalPreferredLanguages: remainingLanguages,
+                mode: .always,
+                showForced: false,
+                forcedOnly: false,
+                preferAccessibilityTracks: system.prefersAccessibilityTracks,
+                trackSignature: nil
+            )
+        }
+    }
+
+    private func serverSubtitlePrefsSnapshot(_ watchDetail: WatchDetail) -> PrefsSnapshot {
+        PrefsSnapshot(
+            preferredLanguage: watchDetail.effectiveSubtitleLanguage,
+            additionalPreferredLanguages: [],
+            mode: SubtitleMode(rawValue: watchDetail.effectiveSubtitleMode ?? ""),
+            showForced: watchDetail.effectiveShowForcedSubtitles ?? false,
+            forcedOnly: false,
+            preferAccessibilityTracks: false,
+            trackSignature: watchDetail.effectiveSubtitleTrackSignature
+        )
     }
 
     /// Apply a resolver verdict. `noChange` is the "leave the player

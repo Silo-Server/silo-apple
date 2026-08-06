@@ -628,20 +628,53 @@ final class SubtitleRenderer {
         // (scale 2) every cue change cleared, copied (`makeImage`), and
         // re-uploaded a 33 MiB buffer when the painted region is
         // typically 1-2 MiB. Clipped to the frame like `draw` does.
-        var minX = widthPx, minY = heightPx, maxX = 0, maxY = 0
-        for head in [imgSecondary, imgPrimary] {
+        func paintedBounds(
+            _ head: UnsafeMutablePointer<ASS_Image>?
+        ) -> (minX: Int, minY: Int, maxX: Int, maxY: Int)? {
+            var result = (minX: widthPx, minY: heightPx, maxX: 0, maxY: 0)
             var node = head
             while let cur = node {
                 let img = cur.pointee
                 if img.w > 0, img.h > 0, img.bitmap != nil {
-                    minX = min(minX, max(0, Int(img.dst_x)))
-                    minY = min(minY, max(0, Int(img.dst_y)))
-                    maxX = max(maxX, min(widthPx, Int(img.dst_x) + Int(img.w)))
-                    maxY = max(maxY, min(heightPx, Int(img.dst_y) + Int(img.h)))
+                    result.minX = min(result.minX, max(0, Int(img.dst_x)))
+                    result.minY = min(result.minY, max(0, Int(img.dst_y)))
+                    result.maxX = max(result.maxX, min(widthPx, Int(img.dst_x) + Int(img.w)))
+                    result.maxY = max(result.maxY, min(heightPx, Int(img.dst_y) + Int(img.h)))
                 }
                 node = img.next
             }
+            return result.maxX > result.minX && result.maxY > result.minY ? result : nil
         }
+
+        let primaryBounds = paintedBounds(imgPrimary)
+        let secondaryBounds = paintedBounds(imgSecondary)
+        let playfieldScale = Double(heightPx) / 1080.0
+        let windowPadding = max(2, Int((currentParams.fontSize * 0.12 * playfieldScale).rounded()))
+        func captionWindowBounds(
+            _ bounds: (minX: Int, minY: Int, maxX: Int, maxY: Int)?,
+            for handle: ASSTrackHandle?
+        ) -> (minX: Int, minY: Int, maxX: Int, maxY: Int)? {
+            guard currentParams.captionWindowEnabled,
+                  let handle,
+                  !handle.isNativeASS
+                    || currentParams.systemContentOverrides.contains(.window),
+                  let bounds else { return nil }
+            return (
+                max(0, bounds.minX - windowPadding),
+                max(0, bounds.minY - windowPadding),
+                min(widthPx, bounds.maxX + windowPadding),
+                min(heightPx, bounds.maxY + windowPadding)
+            )
+        }
+        let primaryWindowBounds = captionWindowBounds(primaryBounds, for: primaryHandle)
+        let secondaryWindowBounds = captionWindowBounds(secondaryBounds, for: secondaryHandle)
+
+        let allBounds = [primaryBounds, secondaryBounds, primaryWindowBounds, secondaryWindowBounds]
+            .compactMap { $0 }
+        let minX = allBounds.map { $0.minX }.min() ?? widthPx
+        let minY = allBounds.map { $0.minY }.min() ?? heightPx
+        let maxX = allBounds.map { $0.maxX }.max() ?? 0
+        let maxY = allBounds.map { $0.maxY }.max() ?? 0
         guard maxX > minX, maxY > minY else {
             // Cue ended (or everything rasterized off-frame): dirty with a
             // nil image so the overlay clears without a full-frame pass.
@@ -654,11 +687,41 @@ final class SubtitleRenderer {
             )
         }
 
-        // Secondary first so primary draws on top if they overlap.
+        // Secondary first so primary draws on top if they overlap. Apple's
+        // caption window is a separate layer behind the complete cue; native
+        // ASS receives it only when Apple says the system value overrides
+        // authored content.
         let canvas = ensureCanvas(widthPx: maxX - minX, heightPx: maxY - minY)
         canvas.clear()
+        let windowColor = SubtitleStylingOverride.rgbBytes(fromHex: currentParams.captionWindowColorHex)
+        let windowAlpha = UInt8(
+            max(0, min(255, currentParams.captionWindowOpacityPercent * 255 / 100))
+        )
+        let windowRadius = currentParams.captionWindowCornerRadius * playfieldScale
+        if let secondaryWindowBounds {
+            canvas.drawRoundedRect(
+                x: secondaryWindowBounds.minX - minX,
+                y: secondaryWindowBounds.minY - minY,
+                width: secondaryWindowBounds.maxX - secondaryWindowBounds.minX,
+                height: secondaryWindowBounds.maxY - secondaryWindowBounds.minY,
+                radius: windowRadius,
+                color: windowColor,
+                alpha: windowAlpha
+            )
+        }
         if let imgSecondary { canvas.draw(imageList: imgSecondary, offsetX: minX, offsetY: minY) }
-        if let imgPrimary   { canvas.draw(imageList: imgPrimary, offsetX: minX, offsetY: minY) }
+        if let primaryWindowBounds {
+            canvas.drawRoundedRect(
+                x: primaryWindowBounds.minX - minX,
+                y: primaryWindowBounds.minY - minY,
+                width: primaryWindowBounds.maxX - primaryWindowBounds.minX,
+                height: primaryWindowBounds.maxY - primaryWindowBounds.minY,
+                radius: windowRadius,
+                color: windowColor,
+                alpha: windowAlpha
+            )
+        }
+        if let imgPrimary { canvas.draw(imageList: imgPrimary, offsetX: minX, offsetY: minY) }
 
         let cgImage = canvas.snapshot(scale: scale)
         // Canvas pixels map to points through the (possibly capped) render
@@ -861,6 +924,62 @@ private final class CompositorCanvas {
 
     func clear() {
         buffer.initialize(repeating: 0, count: bufferLength)
+    }
+
+    /// Draw Apple's caption-window layer behind a complete cue. Coordinates
+    /// are in this cropped canvas's top-left pixel space.
+    func drawRoundedRect(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        radius: Double,
+        color: (UInt8, UInt8, UInt8),
+        alpha: UInt8
+    ) {
+        guard width > 0, height > 0, alpha > 0 else { return }
+        let startX = max(0, x)
+        let startY = max(0, y)
+        let endX = min(widthPx, x + width)
+        let endY = min(heightPx, y + height)
+        guard startX < endX, startY < endY else { return }
+
+        let r = max(0, min(radius, Double(min(width, height)) / 2))
+        let rSquared = r * r
+        let leftCenter = Double(x) + r
+        let rightCenter = Double(x + width) - r
+        let topCenter = Double(y) + r
+        let bottomCenter = Double(y + height) - r
+        let srcAlpha = UInt32(alpha)
+        let srcR = (UInt32(color.0) * srcAlpha) / 255
+        let srcG = (UInt32(color.1) * srcAlpha) / 255
+        let srcB = (UInt32(color.2) * srcAlpha) / 255
+        let invA = 255 - srcAlpha
+
+        for py in startY..<endY {
+            let canvasRow = buffer.advanced(by: py * bytesPerRow)
+            for px in startX..<endX {
+                if r > 0 {
+                    let sampleX = Double(px) + 0.5
+                    let sampleY = Double(py) + 0.5
+                    let centerX = min(max(sampleX, leftCenter), rightCenter)
+                    let centerY = min(max(sampleY, topCenter), bottomCenter)
+                    let dx = sampleX - centerX
+                    let dy = sampleY - centerY
+                    if (dx * dx) + (dy * dy) > rSquared { continue }
+                }
+
+                let offset = px * 4
+                let dstB = UInt32(canvasRow[offset])
+                let dstG = UInt32(canvasRow[offset + 1])
+                let dstR = UInt32(canvasRow[offset + 2])
+                let dstA = UInt32(canvasRow[offset + 3])
+                canvasRow[offset] = UInt8(min(255, srcB + (dstB * invA) / 255))
+                canvasRow[offset + 1] = UInt8(min(255, srcG + (dstG * invA) / 255))
+                canvasRow[offset + 2] = UInt8(min(255, srcR + (dstR * invA) / 255))
+                canvasRow[offset + 3] = UInt8(min(255, srcAlpha + (dstA * invA) / 255))
+            }
+        }
     }
 
     /// Walk a libass `ASS_Image*` linked list and composite each rect's
