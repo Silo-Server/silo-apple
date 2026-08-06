@@ -156,6 +156,19 @@ final class SubtitleAutoResolverTests: XCTestCase {
         XCTAssertEqual(result, .select(spanish))
     }
 
+    func testExactRegionalLanguageWinsBeforePrimarySubtagFallback() {
+        let brazilianPortuguese = track(id: 10, lang: "pt-BR")
+        let portugalPortuguese = track(id: 11, lang: "pt-PT")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "pt-PT",
+            mode: .always,
+            showForced: false,
+            tracks: [brazilianPortuguese, portugalPortuguese],
+            audioLanguage: "eng"
+        ))
+        XCTAssertEqual(result, .select(portugalPortuguese))
+    }
+
     func testSystemAccessibilityCharacteristicPrefersSDH() {
         let plain = track(id: 10, lang: "eng", title: "English")
         let sdh = track(id: 11, lang: "eng", hearingImpaired: true, title: "English SDH")

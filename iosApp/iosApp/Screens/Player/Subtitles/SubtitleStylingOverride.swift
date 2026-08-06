@@ -108,7 +108,9 @@ enum SubtitleStylingOverride {
             // the glyphs separately in this combination.
             if boxEnabled { return boxPadding }
             if systemTextEdgeStyle == .dropShadow { return 1.5 }
-            if systemTextEdgeStyle == .raised { return -1.0 }
+            // Parsed V4+ Style Shadow is a non-negative depth. Raised needs
+            // an up/left offset, so the compositor supplies that direction.
+            if systemTextEdgeStyle == .raised { return 0 }
             if systemTextEdgeStyle == .depressed { return 1.0 }
             return backgroundStyle == .shadow ? 1.5 : 0
         }
@@ -163,14 +165,13 @@ enum SubtitleStylingOverride {
             colorHex: String,
             opacityPercent: Int
         )? {
-            guard boxEnabled else { return nil }
             switch systemTextEdgeStyle {
             case .some(.raised):
                 return (-1, -1, "#FFFFFF", 80)
             case .some(.depressed):
-                return (1, 1, "#000000", 90)
+                return boxEnabled ? (1, 1, "#000000", 90) : nil
             case .some(.dropShadow):
-                return (1.5, 1.5, "#000000", 50)
+                return boxEnabled ? (1.5, 1.5, "#000000", 50) : nil
             case .some(.none), .some(.uniform), nil:
                 return nil
             }

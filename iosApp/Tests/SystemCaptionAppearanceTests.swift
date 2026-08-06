@@ -24,7 +24,7 @@ final class SystemCaptionAppearanceTests: XCTestCase {
         XCTAssertEqual(mapped.backgroundColor, "#123456")
     }
 
-    func testWindowOpacityMapsToBox() {
+    func testWindowPropertiesMapToCaptionWindow() {
         var snapshot = SystemCaptionAppearance.Snapshot()
         snapshot.windowOpacity = 0.5
         snapshot.windowColorHex = "#ff00ff"

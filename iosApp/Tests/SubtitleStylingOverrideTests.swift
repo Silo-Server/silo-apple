@@ -164,7 +164,9 @@ final class SubtitleStylingOverrideTests: XCTestCase {
         raised.systemTextEdgeStyle = .raised
         XCTAssertEqual(raised.effectiveBackColorHex, "#FFFFFF")
         XCTAssertNotEqual(raised.backgroundAlphaByte, 0xFF)
-        XCTAssertLessThan(raised.assShadow, 0)
+        XCTAssertEqual(raised.assShadow, 0)
+        XCTAssertEqual(raised.compositedEdgeShadow?.offsetX, -1)
+        XCTAssertEqual(raised.compositedEdgeShadow?.offsetY, -1)
 
         var depressed = raised
         depressed.systemTextEdgeStyle = .depressed

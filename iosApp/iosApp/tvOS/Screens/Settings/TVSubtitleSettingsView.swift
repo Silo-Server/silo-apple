@@ -35,25 +35,15 @@ struct TVSubtitleSettingsPane: View {
     private var profileSection: some View {
         TVSettingsSectionHeader("PROFILE")
 
-        if viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance {
-            TVSettingsPickerRow(
-                title: "Language",
-                value: TVSettingsOptions.label(
-                    for: viewModel.editorSubtitleLanguage,
-                    in: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions)
-                )
-            ) { showPicker(.language) }
-            .disabled(true)
-        } else {
-            TVSettingsPickerRow(
-                title: "Language",
-                value: TVSettingsOptions.label(
-                    for: viewModel.editorSubtitleLanguage,
-                    in: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions)
-                )
-            ) { showPicker(.language) }
-            .focused(detailFocus, equals: .top)
-        }
+        TVSettingsPickerRow(
+            title: "Language",
+            value: TVSettingsOptions.label(
+                for: viewModel.editorSubtitleLanguage,
+                in: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions)
+            )
+        ) { showPicker(.language) }
+        .focused(detailFocus, equals: .top)
+        .disabled(viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
 
         TVSettingsPickerRow(
             title: "Behavior",
@@ -114,24 +104,14 @@ struct TVSubtitleSettingsPane: View {
             TVSettingsFooter("Low contrast — dark text without a box or outline can be hard to read.")
         }
 
-        if viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance {
-            TVSettingsToggleRow(
-                title: "Use Device Settings",
-                isOn: viewModel.subtitleMatchesSystemAppearance
-            ) {
-                let enabled = !viewModel.subtitleMatchesSystemAppearance
-                Task { await viewModel.setSubtitleMatchesSystemAppearance(enabled) }
-            }
-            .focused(detailFocus, equals: .top)
-        } else {
-            TVSettingsToggleRow(
-                title: "Use Device Settings",
-                isOn: viewModel.subtitleMatchesSystemAppearance
-            ) {
-                let enabled = !viewModel.subtitleMatchesSystemAppearance
-                Task { await viewModel.setSubtitleMatchesSystemAppearance(enabled) }
-            }
+        TVSettingsToggleRow(
+            title: "Use Device Settings",
+            isOn: viewModel.subtitleMatchesSystemAppearance
+        ) {
+            let enabled = !viewModel.subtitleMatchesSystemAppearance
+            Task { await viewModel.setSubtitleMatchesSystemAppearance(enabled) }
         }
+        .focused(detailFocus, equals: .subtitleUseDeviceSettings)
 
         TVSettingsToggleRow(
             title: "Custom Subtitle Appearance",

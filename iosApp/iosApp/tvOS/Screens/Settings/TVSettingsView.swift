@@ -83,7 +83,7 @@ struct TVSettingsView: View {
             // The pane previews whatever category the rail focus rests on.
             // Profile / Sign Out keep the last category visible.
             if case .category(let category) = focus {
-                preferredDetailFocus = .top
+                preferredDetailFocus = initialDetailFocus(for: category)
                 if category != selectedCategory {
                     withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
                         selectedCategory = category
@@ -288,18 +288,27 @@ struct TVSettingsView: View {
     private func enterDetailPane(for category: TVSettingsCategory) {
         selectedCategory = category
         preferredFocusOwner = .detail
-        preferredDetailFocus = .top
+        let initialFocus = initialDetailFocus(for: category)
+        preferredDetailFocus = initialFocus
         isRestoringDetailFocus = true
         railFocus = nil
-        detailFocus = .top
+        detailFocus = initialFocus
         Task { @MainActor in
             await Task.yield()
             resetFocus(in: settingsFocusScope)
             resetFocus(in: detailFocusScope)
-            detailFocus = .top
+            detailFocus = initialFocus
             try? await Task.sleep(for: .milliseconds(120))
             isRestoringDetailFocus = false
         }
+    }
+
+    private func initialDetailFocus(for category: TVSettingsCategory) -> TVSettingsDetailFocus {
+        if category == .subtitles,
+           viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance {
+            return .subtitleUseDeviceSettings
+        }
+        return .top
     }
 
     private func returnFocusToRail() {
@@ -533,6 +542,7 @@ enum TVSettingsDetailFocus: Hashable {
     case playbackAudioLanguage
     case playbackNextUpPrompt
     case subtitleBehavior
+    case subtitleUseDeviceSettings
     case subtitleMetadataLanguage
     case subtitleFontSize
     case subtitleFontFamily

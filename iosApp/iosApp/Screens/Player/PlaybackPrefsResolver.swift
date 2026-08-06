@@ -244,10 +244,15 @@ struct SubtitleAutoResolver {
     ) -> PlayerTrack? {
         let pool: [PlayerTrack]
         if let lang = language {
-            pool = tracks.filter {
-                guard let trackLang = $0.lang else { return false }
-                return languagesMatch(trackLang, lang)
+            let exactMatches = tracks.filter {
+                $0.lang?.caseInsensitiveCompare(lang) == .orderedSame
             }
+            pool = exactMatches.isEmpty
+                ? tracks.filter {
+                    guard let trackLang = $0.lang else { return false }
+                    return languagesMatch(trackLang, lang)
+                }
+                : exactMatches
         } else {
             pool = tracks
         }

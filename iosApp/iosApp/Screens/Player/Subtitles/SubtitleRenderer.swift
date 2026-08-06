@@ -543,6 +543,8 @@ final class SubtitleRenderer {
         }
     }
 
+    /// Native ASS receives a compositor window only when Apple says the
+    /// window opacity itself overrides authored content.
     static func shouldDrawCaptionWindow(
         isNativeASS: Bool,
         opacityPercent: Int,
@@ -552,6 +554,8 @@ final class SubtitleRenderer {
         return !isNativeASS || overrides.contains(.windowOpacity)
     }
 
+    /// Native ASS needs an explicit compositor box because changing a libass
+    /// shadow bitmap cannot create a background when the track authored none.
     static func shouldSynthesizeGlyphBackground(
         isNativeASS: Bool,
         opacityPercent: Int,
@@ -563,7 +567,7 @@ final class SubtitleRenderer {
         ]
         return isNativeASS
             && opacityPercent > 0
-            && !overrides.intersection(backgroundOverrides).isEmpty
+            && !overrides.isDisjoint(with: backgroundOverrides)
     }
 
     /// Render the current frame. Callable only from `sessionQueue`. The
