@@ -245,7 +245,9 @@ struct SubtitleAutoResolver {
         let pool: [PlayerTrack]
         if let lang = language {
             let exactMatches = tracks.filter {
-                $0.lang?.caseInsensitiveCompare(lang) == .orderedSame
+                guard let trackLanguage = $0.lang else { return false }
+                return normalizedLanguageIdentifier(trackLanguage)
+                    == normalizedLanguageIdentifier(lang)
             }
             pool = exactMatches.isEmpty
                 ? tracks.filter {
@@ -301,41 +303,30 @@ struct SubtitleAutoResolver {
         return tokens.contains("cc") || tokens.contains("sdh")
     }
 
-    /// Loose ISO 639 comparison. Accepts mixed 2-letter / 3-letter
-    /// codes by mapping known pairs ("en"↔"eng", "es"↔"spa", etc.).
-    /// Falls back to case-insensitive prefix match for codes outside
-    /// the table.
+    /// Loose ISO 639 comparison. Foundation canonicalizes arbitrary alpha-2,
+    /// alpha-3 terminology, and alpha-3 bibliographic spellings before the
+    /// primary language subtags are compared. This keeps Apple locale tags
+    /// such as `nl-NL` equivalent to mux metadata such as `nld` without a
+    /// hand-maintained language allowlist.
     static func languagesMatch(_ a: String, _ b: String) -> Bool {
-        let la = a.lowercased()
-        let lb = b.lowercased()
+        let la = normalizedLanguageIdentifier(a)
+        let lb = normalizedLanguageIdentifier(b)
         if la == lb { return true }
-        if let alt = isoEquivalent[la], alt == lb { return true }
-        if let alt = isoEquivalent[lb], alt == la { return true }
-        // Some mux tools emit hyphenated forms like "en-us"; compare on
-        // the primary subtag.
-        let primaryA = la.split(separator: "-").first.map(String.init) ?? la
-        let primaryB = lb.split(separator: "-").first.map(String.init) ?? lb
-        if primaryA == primaryB { return true }
-        if let alt = isoEquivalent[primaryA], alt == primaryB { return true }
-        if let alt = isoEquivalent[primaryB], alt == primaryA { return true }
-        return false
+        return canonicalPrimaryLanguage(la) == canonicalPrimaryLanguage(lb)
     }
 
-    /// 2-letter ↔ 3-letter ISO 639 mapping for the languages our prefs
-    /// editor exposes. Server uses both forms interchangeably depending
-    /// on the source codec metadata, so the client has to match either.
-    private static let isoEquivalent: [String: String] = [
-        "en": "eng", "eng": "en",
-        "es": "spa", "spa": "es",
-        "fr": "fre", "fre": "fr", "fra": "fr",
-        "de": "ger", "ger": "de", "deu": "de",
-        "it": "ita", "ita": "it",
-        "pt": "por", "por": "pt",
-        "ja": "jpn", "jpn": "ja",
-        "ko": "kor", "kor": "ko",
-        "zh": "chi", "chi": "zh", "zho": "zh",
-        "ru": "rus", "rus": "ru",
-        "ar": "ara", "ara": "ar",
-        "hi": "hin", "hin": "hi",
-    ]
+    private static func normalizedLanguageIdentifier(_ identifier: String) -> String {
+        identifier
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+    }
+
+    private static func canonicalPrimaryLanguage(_ identifier: String) -> String {
+        let primary = identifier.split(separator: "-").first.map(String.init) ?? identifier
+        let languageCode = Locale(identifier: primary).language.languageCode
+        return languageCode?.identifier(.alpha2)
+            ?? languageCode?.identifier(.alpha3)
+            ?? primary
+    }
 }

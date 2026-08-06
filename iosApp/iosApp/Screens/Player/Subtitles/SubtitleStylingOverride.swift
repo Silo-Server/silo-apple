@@ -189,6 +189,18 @@ enum SubtitleStylingOverride {
                 : nil
         }
 
+        var nativeBackgroundColorOverride: (UInt8, UInt8, UInt8)? {
+            systemContentOverrides.contains(.backgroundColor)
+                ? SubtitleStylingOverride.rgbBytes(fromHex: backgroundColorHex)
+                : nil
+        }
+
+        var nativeBackgroundAlphaOverride: UInt8? {
+            systemContentOverrides.contains(.backgroundOpacity)
+                ? UInt8(max(0, min(255, backgroundOpacityPercent * 255 / 100)))
+                : nil
+        }
+
         static let referenceFontSize: Double = SubtitleAppearance.default.fontSize.pointSize
 
         static let `default` = Parameters(
@@ -435,9 +447,11 @@ enum SubtitleStylingOverride {
             // foreground/background color and opacity precedence separately,
             // so native ASS colors are transformed per image type by the
             // compositor instead of enabling the lossy category-wide bit.
-            if params.systemContentOverrides.contains(.edge) {
-                systemBits |= Int32(ASS_OVERRIDE_BIT_BORDER.rawValue)
-            }
+            // Border is another atomic libass category: BorderStyle,
+            // Outline, and Shadow are replaced together. Apple gives the
+            // edge its own precedence, independent of the caption
+            // background. Native ASS edge overrides are therefore composed
+            // from glyph masks after rendering instead of enabling this bit.
             bits = systemBits
         } else {
             bits =

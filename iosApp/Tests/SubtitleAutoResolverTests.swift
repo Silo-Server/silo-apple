@@ -169,6 +169,19 @@ final class SubtitleAutoResolverTests: XCTestCase {
         XCTAssertEqual(result, .select(portugalPortuguese))
     }
 
+    func testSystemLanguageMatchesArbitraryISOThreeLetterMetadata() {
+        let dutch = track(id: 10, lang: "nld")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "nl-NL",
+            mode: .always,
+            showForced: false,
+            tracks: [dutch],
+            audioLanguage: "eng"
+        ))
+        XCTAssertEqual(result, .select(dutch))
+        XCTAssertTrue(SubtitleAutoResolver.languagesMatch("dut", "nl-NL"))
+    }
+
     func testSystemAccessibilityCharacteristicPrefersSDH() {
         let plain = track(id: 10, lang: "eng", title: "English")
         let sdh = track(id: 11, lang: "eng", hearingImpaired: true, title: "English SDH")

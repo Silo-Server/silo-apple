@@ -145,6 +145,8 @@ final class SubtitleStylingOverrideTests: XCTestCase {
         XCTAssertEqual(params.nativeForegroundColorOverride?.1, 0xC5)
         XCTAssertEqual(params.nativeForegroundColorOverride?.2, 0x5E)
         XCTAssertNil(params.nativeForegroundAlphaOverride)
+        XCTAssertNil(params.nativeBackgroundColorOverride)
+        XCTAssertEqual(params.nativeBackgroundAlphaOverride, 127)
     }
 
     func testDropShadowWithGlyphBoxUsesIndependentCompositorEdge() {
@@ -209,18 +211,50 @@ final class SubtitleStylingOverrideTests: XCTestCase {
         XCTAssertTrue(SubtitleRenderer.shouldSynthesizeGlyphBackground(
             isNativeASS: true,
             opacityPercent: 50,
-            overrides: [.backgroundColor]
+            overrides: [.backgroundColor],
+            hasAuthoredBackground: false
         ))
         XCTAssertTrue(SubtitleRenderer.shouldSynthesizeGlyphBackground(
             isNativeASS: true,
             opacityPercent: 50,
-            overrides: [.backgroundOpacity]
+            overrides: [.backgroundOpacity],
+            hasAuthoredBackground: false
+        ))
+        XCTAssertFalse(SubtitleRenderer.shouldSynthesizeGlyphBackground(
+            isNativeASS: true,
+            opacityPercent: 50,
+            overrides: [.backgroundColor],
+            hasAuthoredBackground: true
         ))
         XCTAssertFalse(SubtitleRenderer.shouldSynthesizeGlyphBackground(
             isNativeASS: false,
             opacityPercent: 50,
-            overrides: [.backgroundOpacity]
+            overrides: [.backgroundOpacity],
+            hasAuthoredBackground: false
         ))
+    }
+
+    func testSolidBackgroundMaskDetectionRejectsGlyphMasks() {
+        let solid = [UInt8](repeating: 0xFF, count: 12)
+        var glyph = solid
+        glyph[5] = 0
+
+        solid.withUnsafeBufferPointer {
+            XCTAssertTrue(SubtitleRenderer.isSolidBackgroundMask(
+                $0.baseAddress,
+                width: 4,
+                height: 3,
+                stride: 4
+            ))
+        }
+        glyph.withUnsafeBufferPointer {
+            XCTAssertFalse(SubtitleRenderer.isSolidBackgroundMask(
+                $0.baseAddress,
+                width: 4,
+                height: 3,
+                stride: 4
+            ))
+        }
     }
 
     // MARK: - Struct color packing (libass internal RRGGBBAA)

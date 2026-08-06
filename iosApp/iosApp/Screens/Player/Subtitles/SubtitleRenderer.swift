@@ -559,7 +559,8 @@ final class SubtitleRenderer {
     static func shouldSynthesizeGlyphBackground(
         isNativeASS: Bool,
         opacityPercent: Int,
-        overrides: SystemCaptionContentOverrides
+        overrides: SystemCaptionContentOverrides,
+        hasAuthoredBackground: Bool = false
     ) -> Bool {
         let backgroundOverrides: SystemCaptionContentOverrides = [
             .backgroundColor,
@@ -567,7 +568,37 @@ final class SubtitleRenderer {
         ]
         return isNativeASS
             && opacityPercent > 0
+            && !hasAuthoredBackground
             && !overrides.isDisjoint(with: backgroundOverrides)
+    }
+
+    /// libass represents a BorderStyle 4 caption background as an entirely
+    /// filled bitmap but does not assign it a distinct image type. Detect the
+    /// exact mask so background and edge precedence can be applied
+    /// independently for native ASS cues.
+    static func isSolidBackgroundMask(
+        _ bitmap: UnsafePointer<UInt8>?,
+        width: Int,
+        height: Int,
+        stride: Int
+    ) -> Bool {
+        guard let bitmap, width > 0, height > 0, stride >= width else { return false }
+        for y in 0..<height {
+            let row = bitmap.advanced(by: y * stride)
+            for x in 0..<width where row[x] != 0xFF {
+                return false
+            }
+        }
+        return true
+    }
+
+    fileprivate static func isGlyphBackgroundImage(_ image: ASS_Image) -> Bool {
+        isSolidBackgroundMask(
+            image.bitmap,
+            width: Int(image.w),
+            height: Int(image.h),
+            stride: Int(image.stride)
+        )
     }
 
     /// Render the current frame. Callable only from `sessionQueue`. The
@@ -696,7 +727,9 @@ final class SubtitleRenderer {
             var node = head
             while let cur = node {
                 let img = cur.pointee
-                if (!charactersOnly || img.type == IMAGE_TYPE_CHARACTER),
+                let isCharacter = !Self.isGlyphBackgroundImage(img)
+                    && img.type == IMAGE_TYPE_CHARACTER
+                if (!charactersOnly || isCharacter),
                    img.w > 0, img.h > 0, img.bitmap != nil {
                     let minX = max(0, Int(img.dst_x))
                     let minY = max(0, Int(img.dst_y))
@@ -740,6 +773,14 @@ final class SubtitleRenderer {
             paintedRects(imgSecondary, charactersOnly: true),
             joiningDistance: cueJoiningDistance
         )
+        func hasAuthoredGlyphBackground(_ head: UnsafeMutablePointer<ASS_Image>?) -> Bool {
+            var node = head
+            while let current = node {
+                if Self.isGlyphBackgroundImage(current.pointee) { return true }
+                node = current.pointee.next
+            }
+            return false
+        }
         func captionWindowBounds(
             _ groups: [CGRect],
             for handle: ASSTrackHandle?
@@ -770,13 +811,15 @@ final class SubtitleRenderer {
         )
         func nativeGlyphBackgroundBounds(
             _ groups: [CGRect],
+            imageList: UnsafeMutablePointer<ASS_Image>?,
             for handle: ASSTrackHandle?
         ) -> [CGRect] {
             guard let handle,
                   Self.shouldSynthesizeGlyphBackground(
                       isNativeASS: handle.isNativeASS,
                       opacityPercent: currentParams.backgroundOpacityPercent,
-                      overrides: currentParams.systemContentOverrides
+                      overrides: currentParams.systemContentOverrides,
+                      hasAuthoredBackground: hasAuthoredGlyphBackground(imageList)
                   )
                     else { return [] }
             return groups.map { bounds in
@@ -792,40 +835,86 @@ final class SubtitleRenderer {
         }
         let primaryGlyphBackgroundBounds = nativeGlyphBackgroundBounds(
             primaryCharacterGroups,
+            imageList: imgPrimary,
             for: primaryHandle
         )
         let secondaryGlyphBackgroundBounds = nativeGlyphBackgroundBounds(
             secondaryCharacterGroups,
+            imageList: imgSecondary,
             for: secondaryHandle
         )
 
-        func compositedEdgeShadow(
+        typealias EdgeLayer = (
+            offsetX: Int,
+            offsetY: Int,
+            color: (UInt8, UInt8, UInt8),
+            alpha: UInt8
+        )
+        func compositedEdgeLayers(
             for handle: ASSTrackHandle?
-        ) -> (offsetX: Int, offsetY: Int, color: (UInt8, UInt8, UInt8), alpha: UInt8)? {
-            guard let shadow = currentParams.compositedEdgeShadow,
-                  let handle,
-                  !handle.isNativeASS || currentParams.systemContentOverrides.contains(.edge)
-                    else { return nil }
-            return (
+        ) -> [EdgeLayer] {
+            guard let handle else { return [] }
+            if handle.isNativeASS,
+               currentParams.systemContentOverrides.contains(.edge) {
+                let single: (Double, Double, String, Int)?
+                switch currentParams.systemTextEdgeStyle {
+                case .some(.none), nil:
+                    return []
+                case .some(.raised):
+                    single = (-1, -1, "#FFFFFF", 80)
+                case .some(.depressed):
+                    single = (1, 1, "#000000", 90)
+                case .some(.dropShadow):
+                    single = (1.5, 1.5, "#000000", 50)
+                case .some(.uniform):
+                    let radius = max(
+                        1,
+                        Int((currentParams.effectiveBorderSize * playfieldScale).rounded())
+                    )
+                    let color = SubtitleStylingOverride.rgbBytes(
+                        fromHex: currentParams.effectiveOutlineColorHex
+                    )
+                    return [
+                        (-radius, -radius, color, 255),
+                        (0, -radius, color, 255),
+                        (radius, -radius, color, 255),
+                        (-radius, 0, color, 255),
+                        (radius, 0, color, 255),
+                        (-radius, radius, color, 255),
+                        (0, radius, color, 255),
+                        (radius, radius, color, 255),
+                    ]
+                }
+                guard let single else { return [] }
+                return [(
+                    Int((single.0 * playfieldScale).rounded()),
+                    Int((single.1 * playfieldScale).rounded()),
+                    SubtitleStylingOverride.rgbBytes(fromHex: single.2),
+                    UInt8(max(0, min(255, single.3 * 255 / 100)))
+                )]
+            }
+            guard let shadow = currentParams.compositedEdgeShadow else { return [] }
+            return [(
                 Int((shadow.offsetX * playfieldScale).rounded()),
                 Int((shadow.offsetY * playfieldScale).rounded()),
                 SubtitleStylingOverride.rgbBytes(fromHex: shadow.colorHex),
                 UInt8(max(0, min(255, shadow.opacityPercent * 255 / 100)))
-            )
+            )]
         }
-        let primaryEdgeShadow = compositedEdgeShadow(for: primaryHandle)
-        let secondaryEdgeShadow = compositedEdgeShadow(for: secondaryHandle)
+        let primaryEdgeLayers = compositedEdgeLayers(for: primaryHandle)
+        let secondaryEdgeLayers = compositedEdgeLayers(for: secondaryHandle)
         func shadowBounds(
             _ head: UnsafeMutablePointer<ASS_Image>?,
-            shadow: (offsetX: Int, offsetY: Int, color: (UInt8, UInt8, UInt8), alpha: UInt8)?
+            edges: [EdgeLayer]
         ) -> [CGRect] {
-            guard let shadow else { return [] }
-            return paintedRects(head, charactersOnly: true).map {
-                $0.offsetBy(dx: CGFloat(shadow.offsetX), dy: CGFloat(shadow.offsetY))
+            paintedRects(head, charactersOnly: true).flatMap { bounds in
+                edges.map {
+                    bounds.offsetBy(dx: CGFloat($0.offsetX), dy: CGFloat($0.offsetY))
+                }
             }
         }
-        let primaryShadowBounds = shadowBounds(imgPrimary, shadow: primaryEdgeShadow)
-        let secondaryShadowBounds = shadowBounds(imgSecondary, shadow: secondaryEdgeShadow)
+        let primaryShadowBounds = shadowBounds(imgPrimary, edges: primaryEdgeLayers)
+        let secondaryShadowBounds = shadowBounds(imgSecondary, edges: secondaryEdgeLayers)
 
         let allBounds = primaryRects + secondaryRects
             + primaryWindowBounds + secondaryWindowBounds
@@ -853,18 +942,17 @@ final class SubtitleRenderer {
             frameOffsetX: Int,
             frameOffsetY: Int,
             handle: ASSTrackHandle?,
-            edgeShadow: (
-                offsetX: Int,
-                offsetY: Int,
-                color: (UInt8, UInt8, UInt8),
-                alpha: UInt8
-            )?
+            edgeLayers: [EdgeLayer]
         ) {
             let isNativeASS = handle?.isNativeASS == true
             let characterColor = isNativeASS ? currentParams.nativeForegroundColorOverride : nil
             let characterAlpha = isNativeASS ? currentParams.nativeForegroundAlphaOverride : nil
+            let backgroundColor = isNativeASS ? currentParams.nativeBackgroundColorOverride : nil
+            let backgroundAlpha = isNativeASS ? currentParams.nativeBackgroundAlphaOverride : nil
+            let replacesAuthoredEdge = isNativeASS
+                && currentParams.systemContentOverrides.contains(.edge)
 
-            if let edgeShadow {
+            if !edgeLayers.isEmpty || replacesAuthoredEdge {
                 // BorderStyle 4 emits the box through the non-character image
                 // layers. Draw those first, then the independent system edge,
                 // then the foreground glyphs so neither layer hides another.
@@ -872,18 +960,23 @@ final class SubtitleRenderer {
                     imageList: imageList,
                     offsetX: frameOffsetX,
                     offsetY: frameOffsetY,
-                    selection: .excludingCharacters
+                    selection: .excludingCharacters,
+                    suppressAuthoredEdges: replacesAuthoredEdge,
+                    glyphBackgroundColorOverride: backgroundColor,
+                    glyphBackgroundAlphaOverride: backgroundAlpha
                 )
-                canvas.draw(
-                    imageList: imageList,
-                    offsetX: frameOffsetX,
-                    offsetY: frameOffsetY,
-                    translationX: edgeShadow.offsetX,
-                    translationY: edgeShadow.offsetY,
-                    selection: .charactersOnly,
-                    characterColorOverride: edgeShadow.color,
-                    characterAlphaOverride: edgeShadow.alpha
-                )
+                for edge in edgeLayers {
+                    canvas.draw(
+                        imageList: imageList,
+                        offsetX: frameOffsetX,
+                        offsetY: frameOffsetY,
+                        translationX: edge.offsetX,
+                        translationY: edge.offsetY,
+                        selection: .charactersOnly,
+                        characterColorOverride: edge.color,
+                        characterAlphaOverride: edge.alpha
+                    )
+                }
                 canvas.draw(
                     imageList: imageList,
                     offsetX: frameOffsetX,
@@ -898,7 +991,9 @@ final class SubtitleRenderer {
                     offsetX: frameOffsetX,
                     offsetY: frameOffsetY,
                     characterColorOverride: characterColor,
-                    characterAlphaOverride: characterAlpha
+                    characterAlphaOverride: characterAlpha,
+                    glyphBackgroundColorOverride: backgroundColor,
+                    glyphBackgroundAlphaOverride: backgroundAlpha
                 )
             }
         }
@@ -961,7 +1056,7 @@ final class SubtitleRenderer {
                 frameOffsetX: minX,
                 frameOffsetY: minY,
                 handle: secondaryHandle,
-                edgeShadow: secondaryEdgeShadow
+                edgeLayers: secondaryEdgeLayers
             )
         }
         let primaryWindowStyle = captionWindowStyle(for: primaryHandle)
@@ -994,7 +1089,7 @@ final class SubtitleRenderer {
                 frameOffsetX: minX,
                 frameOffsetY: minY,
                 handle: primaryHandle,
-                edgeShadow: primaryEdgeShadow
+                edgeLayers: primaryEdgeLayers
             )
         }
 
@@ -1282,18 +1377,26 @@ private final class CompositorCanvas {
         translationY: Int = 0,
         selection: ImageSelection = .all,
         characterColorOverride: (UInt8, UInt8, UInt8)? = nil,
-        characterAlphaOverride: UInt8? = nil
+        characterAlphaOverride: UInt8? = nil,
+        suppressAuthoredEdges: Bool = false,
+        glyphBackgroundColorOverride: (UInt8, UInt8, UInt8)? = nil,
+        glyphBackgroundAlphaOverride: UInt8? = nil
     ) {
         var current: UnsafeMutablePointer<ASS_Image>? = head
         while let node = current {
             let img = node.pointee
-            let isCharacter = img.type == IMAGE_TYPE_CHARACTER
+            let isGlyphBackground = SubtitleRenderer.isGlyphBackgroundImage(img)
+            let isCharacter = !isGlyphBackground && img.type == IMAGE_TYPE_CHARACTER
             let shouldDraw = switch selection {
             case .all: true
             case .charactersOnly: isCharacter
             case .excludingCharacters: !isCharacter
             }
             if !shouldDraw {
+                current = img.next
+                continue
+            }
+            if suppressAuthoredEdges && !isCharacter && !isGlyphBackground {
                 current = img.next
                 continue
             }
@@ -1323,6 +1426,15 @@ private final class CompositorCanvas {
                 }
                 if let characterAlphaOverride {
                     rgba.alpha = characterAlphaOverride
+                }
+            } else if isGlyphBackground {
+                if let glyphBackgroundColorOverride {
+                    rgba.r = glyphBackgroundColorOverride.0
+                    rgba.g = glyphBackgroundColorOverride.1
+                    rgba.b = glyphBackgroundColorOverride.2
+                }
+                if let glyphBackgroundAlphaOverride {
+                    rgba.alpha = glyphBackgroundAlphaOverride
                 }
             }
             if rgba.alpha == 0 {
