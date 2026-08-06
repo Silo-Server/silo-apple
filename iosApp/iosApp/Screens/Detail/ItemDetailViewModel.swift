@@ -48,6 +48,9 @@ class ItemDetailViewModel {
     var preferredVersionFileId: Int?
     var preferredAudioTrackIndex: Int?
     var preferredSubtitleTrackIndex: Int?
+    /// Distinguishes a selector choice from a server-derived launch seed so
+    /// enabling device caption settings can discard only the latter.
+    var preferredSubtitleTrackWasManuallySelected = false
     var preferredNextUpFileId: Int?
     var preferredNextUpAudioTrackIndex: Int?
     var preferredNextUpSubtitleTrackIndex: Int?

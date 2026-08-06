@@ -1176,6 +1176,8 @@ class PlayerViewModel {
             guard let self, self.settings.subtitleMatchesSystemAppearance else { return }
             self.settings.refreshSubtitleSystemAppearance()
             self.applySubtitleAppearanceToPlayer()
+            self.subtitleOrderingLanguage = self.settings
+                .subtitleSystemSelectionPreferences.preferredLanguages.first
             guard !self.hasExplicitSubtitleChoice else { return }
             self.prefsForCurrentItem = self.systemCaptionPrefsSnapshot()
             self.prefsResolvedForCurrentItem = false
@@ -2859,6 +2861,9 @@ class PlayerViewModel {
     func setSubtitleMatchesSystemAppearance(_ enabled: Bool) {
         settings.setSubtitleMatchesSystemAppearance(enabled)
         applySubtitleAppearanceToPlayer()
+        subtitleOrderingLanguage = enabled
+            ? settings.subtitleSystemSelectionPreferences.preferredLanguages.first
+            : currentWatchDetail?.effectiveSubtitleLanguage
         hasExplicitSubtitleChoice = false
         prefsForCurrentItem = enabled
             ? systemCaptionPrefsSnapshot()
@@ -3397,7 +3402,9 @@ class PlayerViewModel {
                 // Snapshot the preferred language for track-list ordering
                 // unconditionally (even with an explicit choice) so the
                 // displayed groups float the user's language to the top.
-                self.subtitleOrderingLanguage = prepared.watchDetail.effectiveSubtitleLanguage
+                self.subtitleOrderingLanguage = self.settings.subtitleMatchesSystemAppearance
+                    ? self.settings.subtitleSystemSelectionPreferences.preferredLanguages.first
+                    : prepared.watchDetail.effectiveSubtitleLanguage
 
                 // Snapshot the server-resolved subtitle policy so the
                 // track-list callback (which fires post-FFmpeg-open)
@@ -7435,6 +7442,8 @@ class PlayerViewModel {
 
     private func reapplySystemSubtitlePolicy() {
         guard settings.subtitleMatchesSystemAppearance, !hasExplicitSubtitleChoice else { return }
+        subtitleOrderingLanguage = settings.subtitleSystemSelectionPreferences
+            .preferredLanguages.first
         prefsForCurrentItem = systemCaptionPrefsSnapshot()
         prefsResolvedForCurrentItem = false
         applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: true)

@@ -106,15 +106,13 @@ struct SubtitleAutoResolver {
         let preferredLanguages = orderedLanguages(from: inputs)
 
         if inputs.forcedOnly {
-            for language in preferredLanguages {
-                if let forced = bestLanguageMatch(
-                    language,
-                    in: inputs.availableSubtitles.filter(\.isForced),
-                    preferForced: true,
-                    preferAccessibility: inputs.preferAccessibilityTracks
-                ) {
-                    return .select(forced)
-                }
+            if let forced = bestLanguageMatch(
+                preferredLanguages,
+                in: inputs.availableSubtitles.filter(\.isForced),
+                preferForced: true,
+                preferAccessibility: inputs.preferAccessibilityTracks
+            ) {
+                return .select(forced)
             }
             return .disable
         }
@@ -151,7 +149,9 @@ struct SubtitleAutoResolver {
         if mode == .auto, let audio = inputs.currentAudioLanguage,
            preferredLanguages.contains(where: { languagesMatch(audio, $0) }) {
             if inputs.showForced,
-               let matchingLanguage = preferredLanguages.first(where: { languagesMatch(audio, $0) }),
+               let matchingLanguage = preferredLanguages.first(where: {
+                   normalizedLanguageIdentifier(audio) == normalizedLanguageIdentifier($0)
+               }) ?? preferredLanguages.first(where: { languagesMatch(audio, $0) }),
                let forced = bestLanguageMatch(
                    matchingLanguage,
                    in: inputs.availableSubtitles.filter(\.isForced),
@@ -167,15 +167,13 @@ struct SubtitleAutoResolver {
         // full-dialogue track. `showForced` must NOT steal this pick —
         // a forced track is signs-only and reads as "subtitles stopped
         // working" minutes into any dialogue scene.
-        for language in preferredLanguages {
-            if let pick = bestLanguageMatch(
-                language,
-                in: inputs.availableSubtitles,
-                preferForced: false,
-                preferAccessibility: inputs.preferAccessibilityTracks
-            ) {
-                return .select(pick)
-            }
+        if let pick = bestLanguageMatch(
+            preferredLanguages,
+            in: inputs.availableSubtitles,
+            preferForced: false,
+            preferAccessibility: inputs.preferAccessibilityTracks
+        ) {
+            return .select(pick)
         }
 
         // No matching language. `always` could fall back to anything,
@@ -242,47 +240,94 @@ struct SubtitleAutoResolver {
         preferForced: Bool,
         preferAccessibility: Bool = false
     ) -> PlayerTrack? {
-        let pool: [PlayerTrack]
-        if let lang = language {
-            let exactMatches = tracks.filter {
-                guard let trackLanguage = $0.lang else { return false }
-                return normalizedLanguageIdentifier(trackLanguage)
-                    == normalizedLanguageIdentifier(lang)
-            }
-            pool = exactMatches.isEmpty
-                ? tracks.filter {
-                    guard let trackLang = $0.lang else { return false }
-                    return languagesMatch(trackLang, lang)
+        guard let language else {
+            return bestTrackClass(in: tracks, preferForced: preferForced,
+                                  preferAccessibility: preferAccessibility)
+        }
+        return bestLanguageMatch(
+            [language],
+            in: tracks,
+            preferForced: preferForced,
+            preferAccessibility: preferAccessibility
+        )
+    }
+
+    /// Apply track-class priority before regional exactness: a full-dialogue
+    /// generic-language track must beat an exact signs-only track. Within the
+    /// same class, exhaust Apple's ordered exact locale matches before falling
+    /// back to primary-language equivalence.
+    private static func bestLanguageMatch(
+        _ languages: [String],
+        in tracks: [PlayerTrack],
+        preferForced: Bool,
+        preferAccessibility: Bool
+    ) -> PlayerTrack? {
+        let predicates = trackClassPredicates(
+            preferForced: preferForced,
+            preferAccessibility: preferAccessibility
+        )
+        for predicate in predicates {
+            for language in languages {
+                let normalized = normalizedLanguageIdentifier(language)
+                if let exact = tracks.first(where: { track in
+                    predicate(track)
+                        && track.lang.map(normalizedLanguageIdentifier) == normalized
+                }) {
+                    return exact
                 }
-                : exactMatches
-        } else {
-            pool = tracks
+            }
+            for language in languages {
+                if let fallback = tracks.first(where: { track in
+                    predicate(track)
+                        && track.lang.map { languagesMatch($0, language) } == true
+                }) {
+                    return fallback
+                }
+            }
         }
-        guard !pool.isEmpty else { return nil }
-        if preferForced, let forced = pool.first(where: { $0.isForced }) {
-            return forced
+        return nil
+    }
+
+    private static func bestTrackClass(
+        in tracks: [PlayerTrack],
+        preferForced: Bool,
+        preferAccessibility: Bool
+    ) -> PlayerTrack? {
+        for predicate in trackClassPredicates(
+            preferForced: preferForced,
+            preferAccessibility: preferAccessibility
+        ) {
+            if let track = tracks.first(where: predicate) { return track }
         }
-        if preferAccessibility, let accessible = pool.first(where: {
+        return nil
+    }
+
+    private static func trackClassPredicates(
+        preferForced: Bool,
+        preferAccessibility: Bool
+    ) -> [(PlayerTrack) -> Bool] {
+        let accessible: (PlayerTrack) -> Bool = {
             !$0.isForced && ($0.isHearingImpaired || titleIndicatesHearingImpaired($0.title))
-        }) {
-            return accessible
         }
-        if let nonForced = pool.first(where: {
+        let plain: (PlayerTrack) -> Bool = {
             !$0.isForced && !$0.isHearingImpaired && !titleIndicatesHearingImpaired($0.title)
-        }) {
-            return nonForced
         }
-        if let nonForced = pool.first(where: { !$0.isForced }) {
-            return nonForced
-        }
-        return pool.first
+        let nonForced: (PlayerTrack) -> Bool = { !$0.isForced }
+        let forced: (PlayerTrack) -> Bool = { $0.isForced }
+
+        if preferForced { return [forced, accessible, plain, nonForced, { _ in true }] }
+        if preferAccessibility { return [accessible, plain, nonForced, forced, { _ in true }] }
+        return [plain, nonForced, forced, { _ in true }]
     }
 
     private static func orderedLanguages(from inputs: Inputs) -> [String] {
         guard let first = inputs.preferredLanguage, !first.isEmpty else { return [] }
         var result: [String] = []
         for language in [first] + inputs.additionalPreferredLanguages where !language.isEmpty {
-            if !result.contains(where: { languagesMatch($0, language) }) {
+            let normalized = normalizedLanguageIdentifier(language)
+            if !result.contains(where: {
+                normalizedLanguageIdentifier($0) == normalized
+            }) {
                 result.append(language)
             }
         }

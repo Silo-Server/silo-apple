@@ -169,6 +169,33 @@ final class SubtitleAutoResolverTests: XCTestCase {
         XCTAssertEqual(result, .select(portugalPortuguese))
     }
 
+    func testFullDialogueTrackBeatsExactRegionalForcedTrack() {
+        let exactForced = track(id: 10, lang: "pt-PT", forced: true)
+        let genericFull = track(id: 11, lang: "pt")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "pt-PT",
+            mode: .always,
+            showForced: true,
+            tracks: [exactForced, genericFull],
+            audioLanguage: "eng"
+        ))
+        XCTAssertEqual(result, .select(genericFull))
+    }
+
+    func testRegionalLanguageStackExhaustsExactMatchesBeforeFallback() {
+        let arbitraryFallback = track(id: 10, lang: "pt-AO")
+        let exactSecondPreference = track(id: 11, lang: "pt-PT")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "pt-BR",
+            mode: .always,
+            showForced: false,
+            tracks: [arbitraryFallback, exactSecondPreference],
+            audioLanguage: "eng",
+            additionalLanguages: ["pt-PT"]
+        ))
+        XCTAssertEqual(result, .select(exactSecondPreference))
+    }
+
     func testSystemLanguageMatchesArbitraryISOThreeLetterMetadata() {
         let dutch = track(id: 10, lang: "nld")
         let result = SubtitleAutoResolver.resolve(inputs(
