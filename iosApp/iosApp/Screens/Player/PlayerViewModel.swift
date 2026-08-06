@@ -1179,7 +1179,7 @@ class PlayerViewModel {
             guard !self.hasExplicitSubtitleChoice else { return }
             self.prefsForCurrentItem = self.systemCaptionPrefsSnapshot()
             self.prefsResolvedForCurrentItem = false
-            self.applyAutoSubtitlePreferencesIfNeeded(forceWhenNoSelection: true)
+            self.applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: true)
         }
         #if !os(macOS)
         outputRouteObserverToken = NotificationCenter.default.addObserver(
@@ -2172,6 +2172,7 @@ class PlayerViewModel {
                 SubtitleTrackIdSpace.isSyntheticNonEmbedded(track.trackId) ? nil : TrackSelectionSnapshot(track: track)
             }
         let secondarySubtitleSelectionSnapshot = selectedSecondarySubtitleId
+        let explicitSubtitleChoiceSnapshot = hasExplicitSubtitleChoice
         resetPublishedLoadState(
             preferredAudioTrackIndex: preferredAudioTrackIndex,
             preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
@@ -2187,9 +2188,7 @@ class PlayerViewModel {
         pendingRecoveredAudioSelection = audioSelectionSnapshot
         pendingRecoveredSubtitleSelection = subtitleSelectionSnapshot
         pendingRecoveredSecondarySubtitleId = secondarySubtitleSelectionSnapshot
-        if subtitleSelectionSnapshot != nil {
-            hasExplicitSubtitleChoice = true
-        }
+        hasExplicitSubtitleChoice = explicitSubtitleChoiceSnapshot
         activePlayer.dispose()
         logExecutionPlan(fallbackPlan)
         Task { @MainActor [weak self] in
@@ -2865,7 +2864,7 @@ class PlayerViewModel {
             ? systemCaptionPrefsSnapshot()
             : currentWatchDetail.map(serverSubtitlePrefsSnapshot)
         prefsResolvedForCurrentItem = false
-        applyAutoSubtitlePreferencesIfNeeded(forceWhenNoSelection: true)
+        applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: true)
     }
 
     func setPlaybackSpeed(_ rate: Double) {
@@ -4858,6 +4857,7 @@ class PlayerViewModel {
         let externalSubtitleSnapshot = knownExternalSubtitles
         let selectedSubtitleSnapshot = selectedSubtitleId
         let selectedSecondarySubtitleSnapshot = selectedSecondarySubtitleId
+        let explicitSubtitleChoiceSnapshot = hasExplicitSubtitleChoice
         // An embedded selection can't be re-established by trackId across
         // the backend rebuild (ids aren't stable), and after a switch to
         // transcode the same stream may resurface as a sidecar instead.
@@ -4946,9 +4946,7 @@ class PlayerViewModel {
                     self.pendingSidecarSubtitleTrackId = selectedSubtitleSnapshot
                 }
                 self.pendingRecoveredSubtitleSelection = embeddedSubtitleSelectionSnapshot
-                if embeddedSubtitleSelectionSnapshot != nil {
-                    self.hasExplicitSubtitleChoice = true
-                }
+                self.hasExplicitSubtitleChoice = explicitSubtitleChoiceSnapshot
                 self.pendingRecoveredSecondarySubtitleId = selectedSecondarySubtitleSnapshot
                 self.duration = session.durationSeconds ?? selectedVersion.duration ?? self.duration
                 self.currentTime = self.movieTime(for: session)
@@ -5246,6 +5244,7 @@ class PlayerViewModel {
         pendingAudioFfIndex = nil
         selectedAudioId = track.trackId
         persistAudioSelection(track)
+        reapplySystemSubtitlePolicy()
         if activePreparedProtocolV3 != nil {
             attemptProtocolV3Replan(
                 position: currentTime,
@@ -7254,7 +7253,10 @@ class PlayerViewModel {
             }
         }
 
-        if restoredPrimarySidecar { return }
+        if restoredPrimarySidecar,
+           !settings.subtitleMatchesSystemAppearance || hasExplicitSubtitleChoice {
+            return
+        }
 
         // A pre-restart embedded selection can resurface as a sidecar when
         // the new route has the server extract embedded streams into
@@ -7271,13 +7273,18 @@ class PlayerViewModel {
                 selectedSubtitleId = match.trackId
                 applySubtitleTrackSelection(match.trackId)
             }
-            return
+            if !settings.subtitleMatchesSystemAppearance || hasExplicitSubtitleChoice {
+                return
+            }
         }
 
         // If a forced sidecar is present, auto-select it. Forced tracks
         // (for non-native dialogue or song lyrics in anime) are meant
-        // to display regardless of the user's subtitle preference.
-        if selectedSubtitleId == nil,
+        // to display regardless of the Silo subtitle preference. Device
+        // settings mode instead routes every sidecar through Apple's ordered
+        // language policy, including Forced Only.
+        if !settings.subtitleMatchesSystemAppearance,
+           selectedSubtitleId == nil,
            let forced = descriptors.first(where: { $0.forced == true }) {
             let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: forced.index)
             selectedSubtitleId = trackId
@@ -7285,7 +7292,9 @@ class PlayerViewModel {
             return
         }
 
-        applyAutoSubtitlePreferencesIfNeeded(forceWhenNoSelection: true)
+        applyAutoSubtitlePreferencesIfNeeded(
+            forceReevaluation: settings.subtitleMatchesSystemAppearance || selectedSubtitleId == nil
+        )
     }
 
     /// Called on every `track-list` change. Updates the published track lists,
@@ -7396,9 +7405,9 @@ class PlayerViewModel {
         return best.track
     }
 
-    private func applyAutoSubtitlePreferencesIfNeeded(forceWhenNoSelection: Bool = false) {
+    private func applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: Bool = false) {
         guard !hasExplicitSubtitleChoice, let prefs = prefsForCurrentItem else { return }
-        if prefsResolvedForCurrentItem && !(forceWhenNoSelection && selectedSubtitleId == nil) {
+        if prefsResolvedForCurrentItem && !forceReevaluation {
             return
         }
 
@@ -7422,6 +7431,13 @@ class PlayerViewModel {
         ))
         prefsResolvedForCurrentItem = true
         applyAutoSubtitle(pick)
+    }
+
+    private func reapplySystemSubtitlePolicy() {
+        guard settings.subtitleMatchesSystemAppearance, !hasExplicitSubtitleChoice else { return }
+        prefsForCurrentItem = systemCaptionPrefsSnapshot()
+        prefsResolvedForCurrentItem = false
+        applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: true)
     }
 
     private func systemCaptionPrefsSnapshot() -> PrefsSnapshot {

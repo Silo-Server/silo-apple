@@ -145,8 +145,6 @@ final class SubtitleStylingOverrideTests: XCTestCase {
         XCTAssertEqual(params.nativeForegroundColorOverride?.1, 0xC5)
         XCTAssertEqual(params.nativeForegroundColorOverride?.2, 0x5E)
         XCTAssertNil(params.nativeForegroundAlphaOverride)
-        XCTAssertNil(params.nativeBackgroundColorOverride)
-        XCTAssertEqual(params.nativeBackgroundAlphaOverride, 127)
     }
 
     func testDropShadowWithGlyphBoxUsesIndependentCompositorEdge() {
@@ -166,11 +164,13 @@ final class SubtitleStylingOverrideTests: XCTestCase {
         raised.systemTextEdgeStyle = .raised
         XCTAssertEqual(raised.effectiveBackColorHex, "#FFFFFF")
         XCTAssertNotEqual(raised.backgroundAlphaByte, 0xFF)
+        XCTAssertLessThan(raised.assShadow, 0)
 
         var depressed = raised
         depressed.systemTextEdgeStyle = .depressed
         XCTAssertEqual(depressed.effectiveBackColorHex, "#000000")
         XCTAssertNotEqual(depressed.backgroundAlphaByte, 0xFF)
+        XCTAssertGreaterThan(depressed.assShadow, 0)
     }
 
     func testCaptionWindowGroupingSeparatesDistantSimultaneousCues() {
@@ -188,6 +188,37 @@ final class SubtitleStylingOverrideTests: XCTestCase {
         XCTAssertEqual(groups.count, 2)
         XCTAssertTrue(groups.contains(where: { $0.contains(CGPoint(x: 50, y: 410)) }))
         XCTAssertTrue(groups.contains(where: { $0.contains(CGPoint(x: 750, y: 90)) }))
+    }
+
+    func testNativeCaptionWindowRequiresItsOwnOpacityOverride() {
+        XCTAssertFalse(SubtitleRenderer.shouldDrawCaptionWindow(
+            isNativeASS: true,
+            opacityPercent: 50,
+            overrides: [.windowCornerRadius]
+        ))
+        XCTAssertTrue(SubtitleRenderer.shouldDrawCaptionWindow(
+            isNativeASS: true,
+            opacityPercent: 50,
+            overrides: [.windowOpacity]
+        ))
+    }
+
+    func testNativeBackgroundIsSynthesizedWhenEitherPropertyOverridesContent() {
+        XCTAssertTrue(SubtitleRenderer.shouldSynthesizeGlyphBackground(
+            isNativeASS: true,
+            opacityPercent: 50,
+            overrides: [.backgroundColor]
+        ))
+        XCTAssertTrue(SubtitleRenderer.shouldSynthesizeGlyphBackground(
+            isNativeASS: true,
+            opacityPercent: 50,
+            overrides: [.backgroundOpacity]
+        ))
+        XCTAssertFalse(SubtitleRenderer.shouldSynthesizeGlyphBackground(
+            isNativeASS: false,
+            opacityPercent: 50,
+            overrides: [.backgroundOpacity]
+        ))
     }
 
     // MARK: - Struct color packing (libass internal RRGGBBAA)

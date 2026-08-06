@@ -108,8 +108,8 @@ enum SubtitleStylingOverride {
             // the glyphs separately in this combination.
             if boxEnabled { return boxPadding }
             if systemTextEdgeStyle == .dropShadow { return 1.5 }
-            if systemTextEdgeStyle == .raised { return 1.0 }
-            if systemTextEdgeStyle == .depressed { return -1.0 }
+            if systemTextEdgeStyle == .raised { return -1.0 }
+            if systemTextEdgeStyle == .depressed { return 1.0 }
             return backgroundStyle == .shadow ? 1.5 : 0
         }
 
@@ -186,22 +186,6 @@ enum SubtitleStylingOverride {
             systemContentOverrides.contains(.foregroundOpacity)
                 ? UInt8(max(0, min(255, textOpacityPercent * 255 / 100)))
                 : nil
-        }
-
-        var nativeBackgroundColorOverride: (UInt8, UInt8, UInt8)? {
-            systemContentOverrides.contains(.backgroundColor)
-                ? SubtitleStylingOverride.rgbBytes(fromHex: backgroundColorHex)
-                : nil
-        }
-
-        var nativeBackgroundAlphaOverride: UInt8? {
-            systemContentOverrides.contains(.backgroundOpacity)
-                ? UInt8(max(0, min(255, backgroundOpacityPercent * 255 / 100)))
-                : nil
-        }
-
-        var captionWindowEnabled: Bool {
-            captionWindowOpacityPercent > 0
         }
 
         static let referenceFontSize: Double = SubtitleAppearance.default.fontSize.pointSize
