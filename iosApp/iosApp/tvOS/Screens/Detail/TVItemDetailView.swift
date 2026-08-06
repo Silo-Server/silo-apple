@@ -666,10 +666,11 @@ struct TVItemDetailView: View {
     /// `resolvedAudioOrdinal` falls back to `effectiveAudioTrackIndex`.
     private func seedSubtitleOverrideIfNeeded() {
         guard preferredSubtitleTrackIndex == nil, let detail = viewModel.detail else { return }
-        preferredSubtitleTrackIndex = DetailPlaybackFormatting.serverPreferredSubtitleIndex(
+        preferredSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
             version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
             signature: detail.effectiveSubtitleTrackSignature,
-            mode: detail.effectiveSubtitleMode
+            mode: detail.effectiveSubtitleMode,
+            usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
         )
     }
 
@@ -758,10 +759,11 @@ struct TVItemDetailView: View {
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             nextUpPlaybackDetail = enriched
-            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.serverPreferredSubtitleIndex(
+            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
                 version: effectiveVersion(for: enriched, versionFileId: nil),
                 signature: enriched.effectiveSubtitleTrackSignature,
-                mode: enriched.effectiveSubtitleMode
+                mode: enriched.effectiveSubtitleMode,
+                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
             )
             didLoadNextUpPlaybackDetail = true
         } catch {
@@ -813,10 +815,11 @@ struct TVItemDetailView: View {
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             nextUpPlaybackDetail = enriched
-            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.serverPreferredSubtitleIndex(
+            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
                 version: effectiveVersion(for: enriched, versionFileId: nil),
                 signature: enriched.effectiveSubtitleTrackSignature,
-                mode: enriched.effectiveSubtitleMode
+                mode: enriched.effectiveSubtitleMode,
+                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
             )
             didLoadNextUpPlaybackDetail = true
         } catch {

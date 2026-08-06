@@ -761,10 +761,11 @@ private struct ItemDetailPhoneContent: View {
     /// `resolvedAudioOrdinal` falls back to `effectiveAudioTrackIndex`.
     private func seedSubtitleOverrideIfNeeded() {
         guard preferredSubtitleTrackIndex == nil, let detail = viewModel.detail else { return }
-        preferredSubtitleTrackIndex = DetailPlaybackFormatting.serverPreferredSubtitleIndex(
+        preferredSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
             version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
             signature: detail.effectiveSubtitleTrackSignature,
-            mode: detail.effectiveSubtitleMode
+            mode: detail.effectiveSubtitleMode,
+            usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
         )
     }
 
@@ -849,10 +850,11 @@ private struct ItemDetailPhoneContent: View {
             let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             nextUpWatchDetail = watchDetail
-            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.serverPreferredSubtitleIndex(
+            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
                 version: effectiveVersion(for: watchDetail, versionFileId: nil),
                 signature: watchDetail.effectiveSubtitleTrackSignature,
-                mode: watchDetail.effectiveSubtitleMode
+                mode: watchDetail.effectiveSubtitleMode,
+                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
             )
         } catch {
             guard !Task.isCancelled else { return }
