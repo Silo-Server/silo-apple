@@ -79,6 +79,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             title: detail.title,
             seriesTitle: nil,
             logoUrl: detail.logoUrl,
+            posterUrl: detail.posterUrl,
+            posterThumbhash: detail.posterThumbhash,
             backdropUrl: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
             eyebrow: PhoneHeroMetadata.eyebrow(from: detail),

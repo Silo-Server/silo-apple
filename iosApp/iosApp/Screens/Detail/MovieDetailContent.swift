@@ -80,6 +80,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
             title: detail.title,
             seriesTitle: detail.type == "episode" ? detail.seriesTitle : nil,
             logoUrl: detail.logoUrl,
+            posterUrl: detail.posterUrl,
+            posterThumbhash: detail.posterThumbhash,
             backdropUrl: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
             eyebrow: detail.type == "episode" ? nil : PhoneHeroMetadata.eyebrow(from: detail),

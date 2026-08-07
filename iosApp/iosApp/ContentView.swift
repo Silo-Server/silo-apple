@@ -1200,6 +1200,7 @@ struct MainTabView: View {
                 }
             }
             .navigationTitle("Silo")
+            .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 280)
         } detail: {
             NavigationStack(path: $router.path) {
                 destinationContent(for: selectedDestination)

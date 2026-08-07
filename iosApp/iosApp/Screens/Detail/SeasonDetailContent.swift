@@ -67,6 +67,8 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             title: detail.title,
             seriesTitle: nil,
             logoUrl: nil,
+            posterUrl: detail.posterUrl,
+            posterThumbhash: detail.posterThumbhash,
             backdropUrl: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
             eyebrow: detail.seriesTitle,

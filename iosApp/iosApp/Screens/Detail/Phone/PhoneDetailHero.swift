@@ -1,20 +1,19 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Phone detail hero, Apple-TV-style. The backdrop occupies the upper
-/// portion of the viewport and is intentionally clean — no overlay
-/// chrome — fading softly into the background. Below the fade sits a
-/// centered editorial column (eyebrow → title → source → actions →
-/// overview → facts) on the dark surface.
+/// Adaptive iOS detail hero. Compact containers retain the phone's
+/// backdrop-first, centered editorial composition. At regular iPad detail
+/// widths, poster art and a left-aligned editorial column share a single
+/// backdrop-backed stage so actions and context stay above the fold.
 ///
-/// Why this composition: leaving the backdrop unobstructed lets the
-/// artwork breathe; centering the metadata column matches the Apple TV
-/// app's identity-first layout and gives every CTA a strong horizontal
-/// anchor (especially the full-width Play button).
+/// The breakpoint is based on this view's actual container rather than the
+/// device size class, so split view and resizable windows fall back cleanly.
 struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     let title: String
     let seriesTitle: String?
     let logoUrl: String?
+    let posterUrl: String?
+    let posterThumbhash: String?
     let backdropUrl: String?
     let backdropThumbhash: String?
     let eyebrow: String?
@@ -32,21 +31,161 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var availableWidth: CGFloat = 0
     @State private var showFullOverview = false
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
+
+    private let expandedLayoutBreakpoint: CGFloat = 640
 
     private var backdropHeight: CGFloat {
         horizontalSizeClass == .regular ? 420 : 360
     }
 
     var body: some View {
+        Group {
+            if usesExpandedLayout {
+                expandedHero
+            } else {
+                compactHero
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            guard abs(width - availableWidth) > 1 else { return }
+            availableWidth = width
+        }
+    }
+
+    private var usesExpandedLayout: Bool {
+        if availableWidth > 0 {
+            return availableWidth >= expandedLayoutBreakpoint
+        }
+        return horizontalSizeClass == .regular
+    }
+
+    private var compactHero: some View {
         VStack(spacing: 0) {
             backdropBlock
-            editorialColumn
-                .padding(.horizontal, ContinuumTheme.safePadding)
-                .padding(.top, 4)
-                .padding(.bottom, 8)
+            editorialColumn(
+                alignment: .center,
+                textAlignment: .center,
+                factsAlignment: .center,
+                logoHeight: compactLogoHeight
+            )
+            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
         }
+    }
+
+    // MARK: - Expanded iPad hero
+
+    private var expandedHero: some View {
+        HStack(alignment: .top, spacing: expandedColumnSpacing) {
+            poster
+                .padding(.top, 8)
+
+            editorialColumn(
+                alignment: .leading,
+                textAlignment: .leading,
+                factsAlignment: .leading,
+                logoHeight: 144
+            )
+            .frame(maxWidth: 620, alignment: .leading)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, expandedHorizontalPadding)
+        .padding(.top, 92)
+        .padding(.bottom, 44)
+        .frame(maxWidth: .infinity, minHeight: 620, alignment: .topLeading)
+        .background {
+            expandedBackdrop
+        }
+    }
+
+    @ViewBuilder
+    private var poster: some View {
+        if let posterUrl, !posterUrl.isEmpty {
+            AsyncImageView(
+                url: posterUrl,
+                thumbhash: posterThumbhash,
+                targetSize: CGSize(width: posterWidth, height: posterHeight),
+                contentMode: .fill
+            )
+            .frame(width: posterWidth, height: posterHeight)
+            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+            .shadow(color: .black.opacity(0.4), radius: 18, y: 10)
+            .accessibilityHidden(true)
+        }
+    }
+
+    private var expandedBackdrop: some View {
+        ZStack {
+            Group {
+                if let url = backdropUrl, !url.isEmpty {
+                    AsyncImageView(
+                        url: url,
+                        thumbhash: backdropThumbhash,
+                        contentMode: .fill
+                    )
+                } else {
+                    Color.continuumSurface
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+
+            Color.black.opacity(0.18)
+
+            LinearGradient(
+                stops: [
+                    .init(color: Color.continuumBackground.opacity(0.78), location: 0),
+                    .init(color: Color.continuumBackground.opacity(0.38), location: 0.48),
+                    .init(color: Color.continuumBackground.opacity(0.62), location: 1),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+
+            LinearGradient(
+                stops: [
+                    .init(color: Color.continuumBackground.opacity(0.18), location: 0),
+                    .init(color: Color.continuumBackground.opacity(0.28), location: 0.52),
+                    .init(color: Color.continuumBackground, location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            if let overlayData, overlayStore.enabled {
+                CardOverlays(
+                    data: overlayData,
+                    prefs: overlayStore.prefs,
+                    variant: .hero
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .backgroundExtensionEffect()
+        .allowsHitTesting(false)
+    }
+
+    private var expandedHorizontalPadding: CGFloat {
+        availableWidth >= 840 ? 48 : 32
+    }
+
+    private var expandedColumnSpacing: CGFloat {
+        availableWidth >= 840 ? 36 : 28
+    }
+
+    private var posterWidth: CGFloat {
+        min(max(availableWidth * 0.25, 164), 224)
+    }
+
+    private var posterHeight: CGFloat {
+        posterWidth / ContinuumTheme.posterAspectRatio
     }
 
     // MARK: - Backdrop
@@ -109,33 +248,45 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     // MARK: - Editorial column
 
-    private var editorialColumn: some View {
-        VStack(spacing: 14) {
+    private func editorialColumn(
+        alignment: HorizontalAlignment,
+        textAlignment: TextAlignment,
+        factsAlignment: HorizontalAlignment,
+        logoHeight: CGFloat
+    ) -> some View {
+        VStack(alignment: alignment, spacing: 14) {
             if let eyebrow, !eyebrow.isEmpty {
                 PhoneHeroEyebrow(text: eyebrow)
             }
-            titleBlock
-            sourceRow
+            titleBlock(textAlignment: textAlignment, logoHeight: logoHeight)
+            sourceRow(textAlignment: textAlignment)
             actions()
                 .padding(.top, 6)
             overviewBlock
             belowOverview()
-            factsRow
+            factsRow(alignment: factsAlignment)
         }
         .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder
-    private var titleBlock: some View {
+    private func titleBlock(textAlignment: TextAlignment, logoHeight: CGFloat) -> some View {
         if let episodeSeriesTitle {
-            PhoneEpisodeHierarchyTitle(seriesTitle: episodeSeriesTitle, episodeTitle: title)
+            PhoneEpisodeHierarchyTitle(
+                seriesTitle: episodeSeriesTitle,
+                episodeTitle: title,
+                textAlignment: textAlignment
+            )
         } else if let logoUrl, !logoUrl.isEmpty {
             AsyncImageView(url: logoUrl, contentMode: .fit, placeholderStyle: .clear)
-                .frame(height: logoHeight)
-                .frame(maxWidth: .infinity)
+                .frame(
+                    width: textAlignment == .leading ? expandedLogoWidth : nil,
+                    height: logoHeight
+                )
+                .frame(maxWidth: .infinity, alignment: frameAlignment(for: textAlignment))
                 .accessibilityLabel(title)
         } else {
-            PhoneHeroTitle(title: title)
+            PhoneHeroTitle(title: title, textAlignment: textAlignment)
         }
     }
 
@@ -151,12 +302,12 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// wordmark like "SCARY MOVIE" claimed a third of the editorial column
     /// and pushed Play toward the fold. This keeps the logo dominant without
     /// crowding out the actions it exists to introduce.
-    private var logoHeight: CGFloat {
+    private var compactLogoHeight: CGFloat {
         horizontalSizeClass == .regular ? 168 : 132
     }
 
     @ViewBuilder
-    private var sourceRow: some View {
+    private func sourceRow(textAlignment: TextAlignment) -> some View {
         if !sourceTokens.isEmpty || ratingChip != nil {
             HStack(spacing: 8) {
                 ForEach(Array(sourceTokens.enumerated()), id: \.offset) { index, token in
@@ -184,8 +335,21 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                         .padding(.leading, 2)
                 }
             }
-            .multilineTextAlignment(.center)
+            .multilineTextAlignment(textAlignment)
+            .frame(maxWidth: .infinity, alignment: frameAlignment(for: textAlignment))
         }
+    }
+
+    private var expandedLogoWidth: CGFloat {
+        let editorialWidth = availableWidth
+            - (expandedHorizontalPadding * 2)
+            - posterWidth
+            - expandedColumnSpacing
+        return min(max(editorialWidth, 220), 360)
+    }
+
+    private func frameAlignment(for textAlignment: TextAlignment) -> Alignment {
+        textAlignment == .leading ? .leading : .center
     }
 
     // MARK: - Overview with inline MORE pill
@@ -243,9 +407,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     // MARK: - Facts row
 
     @ViewBuilder
-    private var factsRow: some View {
+    private func factsRow(alignment: HorizontalAlignment) -> some View {
         if !factsLine.isEmpty {
-            FlowingFactsRow(tokens: factsLine)
+            FlowingFactsRow(tokens: factsLine, alignment: alignment)
                 .padding(.top, 4)
         }
     }
@@ -255,6 +419,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
 private struct PhoneHeroTitle: View {
     let title: String
+    let textAlignment: TextAlignment
 
     var body: some View {
         let parts = PhoneHeroMetadata.splitTitle(title)
@@ -263,7 +428,7 @@ private struct PhoneHeroTitle: View {
                 .font(.system(size: 30, weight: .heavy))
                 .foregroundColor(.continuumOnSurface)
                 .lineLimit(2)
-                .multilineTextAlignment(.center)
+                .multilineTextAlignment(textAlignment)
                 .fixedSize(horizontal: false, vertical: true)
             if let subtitle = parts.subtitle {
                 Text(subtitle.uppercased())
@@ -271,16 +436,21 @@ private struct PhoneHeroTitle: View {
                     .tracking(1.2)
                     .foregroundColor(.continuumOnSurface.opacity(0.8))
                     .lineLimit(2)
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(textAlignment)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .frame(
+            maxWidth: .infinity,
+            alignment: textAlignment == .leading ? .leading : .center
+        )
     }
 }
 
 private struct PhoneEpisodeHierarchyTitle: View {
     let seriesTitle: String
     let episodeTitle: String
+    let textAlignment: TextAlignment
 
     var body: some View {
         let parts = PhoneHeroMetadata.splitTitle(episodeTitle)
@@ -289,13 +459,13 @@ private struct PhoneEpisodeHierarchyTitle: View {
                 .font(.system(size: 34, weight: .heavy))
                 .foregroundColor(.continuumOnSurface)
                 .lineLimit(2)
-                .multilineTextAlignment(.center)
+                .multilineTextAlignment(textAlignment)
                 .fixedSize(horizontal: false, vertical: true)
             Text(parts.primary)
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundColor(.continuumOnSurface.opacity(0.9))
                 .lineLimit(2)
-                .multilineTextAlignment(.center)
+                .multilineTextAlignment(textAlignment)
                 .fixedSize(horizontal: false, vertical: true)
             if let subtitle = parts.subtitle {
                 Text(subtitle.uppercased())
@@ -303,10 +473,14 @@ private struct PhoneEpisodeHierarchyTitle: View {
                     .tracking(1.0)
                     .foregroundColor(.continuumOnSurface.opacity(0.76))
                     .lineLimit(2)
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(textAlignment)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .frame(
+            maxWidth: .infinity,
+            alignment: textAlignment == .leading ? .leading : .center
+        )
     }
 }
 
@@ -337,9 +511,10 @@ private struct PhoneHeroEyebrow: View {
 /// quality-badge row beneath the overview.
 private struct FlowingFactsRow: View {
     let tokens: [PhoneHeroFactToken]
+    let alignment: HorizontalAlignment
 
     var body: some View {
-        PhoneFactsFlowLayout(spacing: 8, lineSpacing: 6, alignment: .center) {
+        PhoneFactsFlowLayout(spacing: 8, lineSpacing: 6, alignment: alignment) {
             ForEach(Array(tokens.enumerated()), id: \.offset) { index, token in
                 if index > 0,
                    case .text = token,
