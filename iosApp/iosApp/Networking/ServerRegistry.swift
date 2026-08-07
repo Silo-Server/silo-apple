@@ -14,8 +14,8 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// Normalized base URL (trailing slash stripped, whitespace trimmed).
     var url: String
 
-    /// Advertised by the server at `GET /api/v1/health` (`server_name`).
-    /// Filled on first successful connect and refreshed opportunistically.
+    /// Advertised by native branding, with a legacy health-name fallback.
+    /// Filled on first successful connect and refreshed on server activation.
     var fetchedName: String?
 
     /// Remembered profile for this server. Set after `selectProfile`.

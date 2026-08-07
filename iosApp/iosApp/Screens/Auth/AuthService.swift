@@ -11,6 +11,7 @@ import Foundation
 final class AuthService: @unchecked Sendable {
     static let shared = AuthService()
     private let defaults = SharedDefaults.shared
+    private let serverIdentityResolver = ServerIdentityResolver()
 
     enum SignOutAuthorization: Equatable, Sendable {
         case allowed(account: RefreshAccountIdentity?)
@@ -77,14 +78,15 @@ final class AuthService: @unchecked Sendable {
     // MARK: - Server Check
 
     /// Probe a candidate server: set it as the active server URL,
-    /// identify it via `GET /api/v1/health`, register the entry, and
+    /// identify it via native branding (with a legacy health fallback),
+    /// register the entry, and
     /// return the setup status so the caller can decide between initial
     /// setup and login.
     ///
     /// Candidate probes use their explicit URL and no active credentials.
     /// Global registry/default/token routing changes only after setup status
-    /// succeeds. If the optional health probe fails, the display name falls
-    /// back to the URL.
+    /// succeeds. If both optional identity probes fail, the display name
+    /// falls back to the URL.
     func checkServer(url: String) async throws -> SetupStatus {
         let normalized = ServerRegistry.normalize(url: url)
         let id = ServerRegistry.serverId(for: normalized)
@@ -92,13 +94,7 @@ final class AuthService: @unchecked Sendable {
         // Probe the candidate by explicit URL without touching the active
         // defaults or credential slot. This prevents candidate discovery from
         // exposing a global A/B routing mixture to unrelated requests.
-        var fetchedName: String?
-        if let health: HealthStatus = try? await HTTPClient.shared.getUnauthenticated(
-            serverURL: normalized,
-            path: "/api/v1/health"
-        ) {
-            fetchedName = health.serverName
-        }
+        let fetchedName = await serverIdentityResolver.fetchServerName(serverURL: normalized)
 
         // Commit only after the candidate proves it can serve setup status.
         let status: SetupStatus = try await HTTPClient.shared.getUnauthenticated(
@@ -120,6 +116,19 @@ final class AuthService: @unchecked Sendable {
         }
 
         return status
+    }
+
+    /// Refreshes the active registry entry from the server's native branding.
+    /// The identity check prevents a slow response from one server renaming a
+    /// different server after the user switches destinations.
+    func refreshActiveServerName() async {
+        guard let server = ServerRegistry.shared.activeServer else { return }
+        let serverId = server.id
+        guard let name = await serverIdentityResolver.fetchServerName(serverURL: server.url),
+              ServerRegistry.shared.activeServerId == serverId else {
+            return
+        }
+        ServerRegistry.shared.updateFetchedName(for: serverId, fetchedName: name)
     }
 
     // MARK: - Authentication

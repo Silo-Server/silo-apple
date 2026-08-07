@@ -185,6 +185,8 @@ struct ContentView: View {
             // queued and must perform no work for the stale destination.
             guard await HTTPClient.shared.waitForRequestDispatchOpen() else { return }
             guard !Task.isCancelled else { return }
+            await AuthService.shared.refreshActiveServerName()
+            guard !Task.isCancelled else { return }
             #if os(iOS) || os(tvOS)
             diagnosticsModel.reset()
             #endif

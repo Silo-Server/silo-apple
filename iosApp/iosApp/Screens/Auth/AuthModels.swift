@@ -22,3 +22,11 @@ struct HealthStatus: Codable {
     let serverName: String?
     let serverId: String?
 }
+
+/// Public native identity from GET /api/v1/theme/branding.
+///
+/// The endpoint predates native multi-server clients, so only the server name
+/// is required here. Additional white-label fields remain forward-compatible.
+struct ServerBrandingStatus: Codable {
+    let serverName: String?
+}
