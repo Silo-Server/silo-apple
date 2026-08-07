@@ -204,9 +204,7 @@ final class ExitSentinel {
     }
 
     init(markerURL: URL? = nil, fileManager: FileManager = .default) {
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        let resolvedMarkerURL = markerURL ?? appSupport
+        let resolvedMarkerURL = markerURL ?? DiagnosticsStorageRoot.baseDirectory(fileManager: fileManager)
             .appendingPathComponent("Diagnostics", isDirectory: true)
             .appendingPathComponent("exit-sentinel.json", isDirectory: false)
         self.store = ExitSentinelMarkerStore(currentURL: resolvedMarkerURL, fileManager: fileManager)
