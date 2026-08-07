@@ -10,6 +10,8 @@ struct PhoneSeasonChips: View {
     let selected: Season?
     let onSelect: (Season) -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
@@ -22,12 +24,27 @@ struct PhoneSeasonChips: View {
                 .padding(.horizontal, ContinuumTheme.safePadding)
                 .padding(.vertical, 4)
             }
-            .onChange(of: selected?.id) { _, newId in
-                guard let newId else { return }
-                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
-                    proxy.scrollTo(newId, anchor: .center)
-                }
+            .onAppear {
+                scrollToSelection(selected?.id, using: proxy, animated: false)
             }
+            .onChange(of: selected?.id) { _, newId in
+                scrollToSelection(newId, using: proxy, animated: !reduceMotion)
+            }
+        }
+    }
+
+    private func scrollToSelection(
+        _ id: String?,
+        using proxy: ScrollViewProxy,
+        animated: Bool
+    ) {
+        guard let id else { return }
+        if animated {
+            withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        } else {
+            proxy.scrollTo(id, anchor: .center)
         }
     }
 

@@ -20,7 +20,10 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let seasons: [Season]
     let selectedSeason: Season?
     let seasonEpisodes: [EpisodeListItem]
+    let seasonEpisodesBySeason: [Int: [EpisodeListItem]]
     let isLoadingEpisodes: Bool
+    let episodeSeriesPosterUrl: String?
+    let episodeSeriesPosterThumbhash: String?
     let onPlay: (_ startFromBeginning: Bool) -> Void
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
@@ -49,6 +52,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showResumeDialog = false
     /// Presents the DownloadActionButton's options sheet; lives here so the
     /// overflow menu can open it now that a plain tap downloads directly.
@@ -56,7 +60,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 32) {
+            VStack(alignment: .leading, spacing: heroToContentSpacing) {
                 hero
                 belowFold
             }
@@ -73,15 +77,20 @@ struct MovieDetailContent<BelowOverview: View>: View {
         }
     }
 
+    private var heroToContentSpacing: CGFloat {
+        horizontalSizeClass == .regular ? 16 : 32
+    }
+
     // MARK: - Hero
 
     private var hero: some View {
-        PhoneDetailHero(
+        let posterArtwork = heroPosterArtwork
+        return PhoneDetailHero(
             title: detail.title,
             seriesTitle: detail.type == "episode" ? detail.seriesTitle : nil,
             logoUrl: detail.logoUrl,
-            posterUrl: detail.posterUrl,
-            posterThumbhash: detail.posterThumbhash,
+            posterUrl: posterArtwork.url,
+            posterThumbhash: posterArtwork.thumbhash,
             backdropUrl: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
             eyebrow: detail.type == "episode" ? nil : PhoneHeroMetadata.eyebrow(from: detail),
@@ -93,6 +102,35 @@ struct MovieDetailContent<BelowOverview: View>: View {
             actions: { actionStack },
             belowOverview: belowOverview
         )
+    }
+
+    /// Episodes carry wide stills as their own artwork. The portrait slot
+    /// instead follows the episode hierarchy: its season poster, then the
+    /// parent series poster. Browsing another season below the hero does not
+    /// change this because the lookup stays anchored to `detail.seasonNumber`.
+    private var heroPosterArtwork: (url: String?, thumbhash: String?) {
+        guard detail.type == "episode" else {
+            return (detail.posterUrl, detail.posterThumbhash)
+        }
+
+        if let seasonNumber = detail.seasonNumber,
+           let season = seasons.first(where: { $0.seasonNumber == seasonNumber }),
+           let url = nonEmptyArtworkURL(season.posterUrl) {
+            return (url, season.posterThumbhash)
+        }
+
+        if let url = nonEmptyArtworkURL(episodeSeriesPosterUrl) {
+            return (url, episodeSeriesPosterThumbhash)
+        }
+
+        return (nil, nil)
+    }
+
+    private func nonEmptyArtworkURL(_ value: String?) -> String? {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return value
     }
 
     /// Play, then the named secondary actions, then the playback
@@ -288,7 +326,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     // MARK: - Episode rail (episode detail page)
 
     private var showsEpisodeRail: Bool {
-        detail.type == "episode" && !seasonEpisodes.isEmpty
+        detail.type == "episode"
+            && (!seasons.isEmpty || !seasonEpisodes.isEmpty || isLoadingEpisodes)
     }
 
     @ViewBuilder
@@ -297,27 +336,16 @@ struct MovieDetailContent<BelowOverview: View>: View {
             PhoneSectionHeader(label: episodeRailEyebrow, title: "Episodes")
                 .padding(.horizontal, ContinuumTheme.safePadding)
 
-            if seasons.count > 1 {
-                PhoneSeasonChips(
-                    seasons: seasons,
-                    selected: selectedSeason,
-                    onSelect: onSelectSeason
-                )
-            }
-
-            if isLoadingEpisodes {
-                HStack {
-                    Spacer()
-                    ProgressView().tint(.continuumOnSurface).padding()
-                    Spacer()
-                }
-            } else {
-                PhoneEpisodeRail(
-                    episodes: seasonEpisodes,
-                    onSelect: onEpisodeTap,
-                    currentContentId: detail.contentId
-                )
-            }
+            PhoneSeasonEpisodeBrowser(
+                seasons: seasons,
+                selectedSeason: selectedSeason,
+                episodes: seasonEpisodes,
+                episodesBySeason: seasonEpisodesBySeason,
+                isLoadingEpisodes: isLoadingEpisodes,
+                onSelectSeason: onSelectSeason,
+                onSelectEpisode: onEpisodeTap,
+                currentContentId: detail.contentId
+            )
         }
     }
 

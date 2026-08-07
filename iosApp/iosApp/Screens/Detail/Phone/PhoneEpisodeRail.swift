@@ -71,7 +71,7 @@ private struct PhoneEpisodeCard: View {
                 if captionStyle.showsTitle {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
-                            Text(episodeNumberLabel)
+                            Text(PhoneEpisodeFormatting.cardNumberLabel(for: episode))
                                 .font(.system(size: 10, weight: .bold))
                                 .tracking(1.0)
                                 .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
@@ -80,14 +80,14 @@ private struct PhoneEpisodeCard: View {
                             }
                         }
 
-                        Text(episode.title ?? "Episode \(episode.episodeNumber)")
+                        Text(PhoneEpisodeFormatting.title(for: episode))
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(titleColor)
                             .lineLimit(1)
                             .multilineTextAlignment(.leading)
 
                         if captionStyle.showsMetadata {
-                            if let metadataLine = episodeMetadataLine {
+                            if let metadataLine = PhoneEpisodeFormatting.metadataLine(for: episode) {
                                 Text(metadataLine)
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(Color.continuumSecondaryText)
@@ -130,30 +130,8 @@ private struct PhoneEpisodeCard: View {
             .background(Capsule().fill(Color.white))
     }
 
-    private var episodeNumberLabel: String {
-        "EPISODE \(episode.episodeNumber)"
-    }
-
-    private var episodeMetadataLine: String? {
-        var parts: [String] = []
-        if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
-            parts.append(airDate)
-        }
-        if let runtime = episode.runtime, runtime > 0 {
-            parts.append(formatRuntime(runtime))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
-    }
-
     private var accessibilityDescription: String {
-        episodeRailAccessibilityLabel(
-            seasonNumber: episode.seasonNumber,
-            episodeNumber: episode.episodeNumber,
-            title: episode.title,
-            metadata: episodeMetadataLine,
-            isCurrent: isCurrent,
-            isPlayed: episode.userData?.played == true
-        )
+        PhoneEpisodeFormatting.accessibilityDescription(for: episode, isCurrent: isCurrent)
     }
 
     private var still: some View {
@@ -229,17 +207,7 @@ private struct PhoneEpisodeCard: View {
     }
 
     private var progressFraction: Double? {
-        guard let userData = episode.userData,
-              let pos = userData.positionSeconds,
-              let dur = userData.durationSeconds,
-              dur > 0, pos > 0, pos < dur
-        else { return nil }
-        return pos / dur
-    }
-
-    private func formatRuntime(_ minutes: Int) -> String {
-        if minutes >= 60 { return "\(minutes / 60)h \(minutes % 60)m" }
-        return "\(minutes)m"
+        PhoneEpisodeFormatting.progressFraction(for: episode)
     }
 }
 #endif

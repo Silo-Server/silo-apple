@@ -15,6 +15,15 @@ class ItemDetailViewModel {
     var seasons: [Season] = []
     var selectedSeason: Season?
     var episodes: [EpisodeListItem] = []
+    /// Parent-series portrait artwork used only when an episode's season has
+    /// no poster of its own. Episode artwork is normally a landscape still,
+    /// so it must not be stretched into the iPad hero's portrait slot.
+    var episodeSeriesPosterUrl: String?
+    var episodeSeriesPosterThumbhash: String?
+    /// Route-scoped pages already loaded while browsing seasons. This keeps
+    /// chip taps and iPad page swipes instant when the user comes back to a
+    /// season, while `ResponseCache` remains the longer-lived cold-start tier.
+    var episodesBySeason: [Int: [EpisodeListItem]] = [:]
     var episodeFavoriteStates: [String: Bool] = [:]
     var isLoadingEpisodes = false
 
@@ -22,6 +31,12 @@ class ItemDetailViewModel {
     /// finish after the user has already changed an episode's state.
     private var episodeFavoriteMutationVersions: [String: Int] = [:]
     private var episodeFavoriteRefreshGeneration = 0
+    /// Cancels publication from an older season request after the user has
+    /// already moved to another page.
+    private var episodeLoadGeneration = 0
+    /// Season whose episodes are actually painted. Used to roll back an
+    /// optimistic chip/page selection if its request fails.
+    private var loadedSeasonNumber: Int?
 
     /// Bumped by every writer of `detail` + `CacheKey.itemDetail`, so a load
     /// that started earlier but finishes later cannot publish over a newer
@@ -66,6 +81,11 @@ class ItemDetailViewModel {
     ///   the user — under focus, on tvOS. Entry loads and the player-dismiss
     ///   reload leave it false: there, re-picking the season is the point.
     func loadDetail(contentId: String, preserveSeasonSelection: Bool = false) async {
+        if detail?.contentId != contentId {
+            episodeSeriesPosterUrl = nil
+            episodeSeriesPosterThumbhash = nil
+        }
+
         // Stage 1 — hydrate from cache synchronously so the view paints
         // the last-known detail immediately. Anything missing (e.g.
         // first-ever visit) leaves the corresponding fields nil and the
@@ -202,10 +222,35 @@ class ItemDetailViewModel {
             // detail page can render the horizontal episode rail with
             // the current episode highlighted + scrolled into view.
             seriesContentId = seriesId
-            await loadEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
+            async let episodeLoad: Void = loadEpisodes(
+                seriesId: seriesId,
+                seasonNumber: seasonNumber
+            )
             await loadSeasons(seriesId: seriesId, autoSelectInitial: false)
             selectedSeason = seasons.first(where: { $0.seasonNumber == seasonNumber })
+            // Resolve the season first so its more-specific poster paints
+            // immediately. The series detail is an optional fallback only.
+            await loadEpisodeSeriesArtwork(seriesId: seriesId)
+            await episodeLoad
         }
+    }
+
+    private func loadEpisodeSeriesArtwork(seriesId: String) async {
+        let seriesDetail: ItemDetail
+        if let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(seriesId)) {
+            seriesDetail = cached
+        } else {
+            do {
+                seriesDetail = try await ContinuumAPI.shared.itemDetail(contentId: seriesId)
+                ResponseCache.shared.set(seriesDetail, for: CacheKey.itemDetail(seriesId))
+            } catch {
+                return
+            }
+        }
+
+        guard detail?.type == "episode", detail?.seriesId == seriesId else { return }
+        episodeSeriesPosterUrl = seriesDetail.posterUrl
+        episodeSeriesPosterThumbhash = seriesDetail.posterThumbhash
     }
 
     /// Adopt a detail payload the caller already has in hand, taking the
@@ -274,7 +319,10 @@ class ItemDetailViewModel {
            let cached: EpisodesResponse = ResponseCache.shared.get(
                CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
            ) {
-            episodes = cached.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
+            let sorted = cached.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
+            episodes = sorted
+            episodesBySeason[seasonNumber] = sorted
+            loadedSeasonNumber = seasonNumber
         }
     }
 
@@ -469,7 +517,7 @@ class ItemDetailViewModel {
             ResponseCache.shared.set(response, for: CacheKey.itemSeasons(seriesId))
             seasons = response.seasons.sortedForDisplay()
             if autoSelectInitial, let target = preferredInitialSeason(seasons: seasons) {
-                await selectSeason(target)
+                await selectSeason(target, forceRefresh: true)
             }
         } catch {
             // Seasons loading failure is non-fatal — keep whatever
@@ -498,40 +546,93 @@ class ItemDetailViewModel {
         return seasons.first
     }
 
-    func selectSeason(_ season: Season) async {
+    func selectSeason(_ season: Season, forceRefresh: Bool = false) async {
+        let fallbackSeasonNumber = loadedSeasonNumber ?? selectedSeason?.seasonNumber
         selectedSeason = season
         guard let seriesId = seriesContentId else { return }
-        await loadEpisodes(seriesId: seriesId, seasonNumber: season.seasonNumber)
+
+        if !forceRefresh, let cached = episodesBySeason[season.seasonNumber] {
+            // Invalidate any older in-flight request before publishing the
+            // cached page. Otherwise it could finish later and replace this
+            // selection with stale content.
+            episodeLoadGeneration += 1
+            episodes = cached
+            loadedSeasonNumber = season.seasonNumber
+            isLoadingEpisodes = false
+            return
+        }
+
+        await loadEpisodes(
+            seriesId: seriesId,
+            seasonNumber: season.seasonNumber,
+            fallbackSeasonNumber: fallbackSeasonNumber
+        )
     }
 
     func loadEpisodes(
         seriesId: String,
         seasonNumber: Int,
-        refreshFavoriteStates: Bool = true
+        refreshFavoriteStates: Bool = true,
+        fallbackSeasonNumber: Int? = nil
     ) async {
+        episodeLoadGeneration += 1
+        let generation = episodeLoadGeneration
         let key = CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
-        // Hydrate from cache so the rail paints immediately, then
-        // refresh silently in the background.
-        if episodes.isEmpty,
+
+        // Hydrate this page from either route memory or ResponseCache, then
+        // refresh silently. Never leave the previous season's rows under a
+        // newly-selected chip.
+        var cachedEpisodes = episodesBySeason[seasonNumber]
+        if cachedEpisodes == nil,
            let cached: EpisodesResponse = ResponseCache.shared.get(key) {
-            episodes = cached.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
+            let sorted = cached.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
+            episodesBySeason[seasonNumber] = sorted
+            cachedEpisodes = sorted
         }
-        if episodes.isEmpty {
+
+        let shouldPublish = selectedSeason == nil || selectedSeason?.seasonNumber == seasonNumber
+        if shouldPublish, let cachedEpisodes {
+            episodes = cachedEpisodes
+            loadedSeasonNumber = seasonNumber
+        } else if shouldPublish {
+            episodes = []
             isLoadingEpisodes = true
         }
+
         do {
             let response: EpisodesResponse = try await ContinuumAPI.shared.get(
                 "/api/v1/catalog/series/\(seriesId)/seasons/\(seasonNumber)/episodes"
             )
             ResponseCache.shared.set(response, for: key)
-            episodes = response.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
+            let sorted = response.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
+            guard generation == episodeLoadGeneration else { return }
+            episodesBySeason[seasonNumber] = sorted
+            if selectedSeason == nil || selectedSeason?.seasonNumber == seasonNumber {
+                episodes = sorted
+                loadedSeasonNumber = seasonNumber
+                isLoadingEpisodes = false
+            }
         } catch {
-            // Episode loading failure is non-fatal — keep whatever
-            // we hydrated from cache.
+            guard generation == episodeLoadGeneration else { return }
+            if selectedSeason == nil || selectedSeason?.seasonNumber == seasonNumber {
+                if cachedEpisodes == nil,
+                   let fallbackSeasonNumber,
+                   let fallbackEpisodes = episodesBySeason[fallbackSeasonNumber],
+                   let fallbackSeason = seasons.first(where: {
+                       $0.seasonNumber == fallbackSeasonNumber
+                   }) {
+                    selectedSeason = fallbackSeason
+                    episodes = fallbackEpisodes
+                    loadedSeasonNumber = fallbackSeasonNumber
+                }
+                isLoadingEpisodes = false
+            }
         }
-        isLoadingEpisodes = false
-        if refreshFavoriteStates {
-            await refreshEpisodeFavoriteStates(for: episodes)
+
+        if refreshFavoriteStates,
+           generation == episodeLoadGeneration,
+           (selectedSeason?.seasonNumber == seasonNumber || selectedSeason == nil) {
+            await refreshEpisodeFavoriteStates(for: episodesBySeason[seasonNumber] ?? episodes)
         }
     }
 

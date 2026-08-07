@@ -98,8 +98,11 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         }
         .padding(.horizontal, expandedHorizontalPadding)
         .padding(.top, 92)
-        .padding(.bottom, 44)
-        .frame(maxWidth: .infinity, minHeight: 620, alignment: .topLeading)
+        // The page adds its own hero-to-section spacing. A smaller trailing
+        // inset keeps the first detail section within reach on iPad without
+        // changing the more generous compact-phone composition.
+        .padding(.bottom, 24)
+        .frame(maxWidth: .infinity, minHeight: 560, alignment: .topLeading)
         .background {
             expandedBackdrop
         }

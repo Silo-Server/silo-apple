@@ -284,6 +284,7 @@ private struct ItemDetailPhoneContent: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
+                episodesBySeason: viewModel.episodesBySeason,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 selectedNextUpFileId: preferredNextUpFileId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
@@ -389,6 +390,7 @@ private struct ItemDetailPhoneContent: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
+                episodesBySeason: viewModel.episodesBySeason,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 selectedNextUpFileId: preferredNextUpFileId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
@@ -497,7 +499,10 @@ private struct ItemDetailPhoneContent: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 seasonEpisodes: viewModel.episodes,
+                seasonEpisodesBySeason: viewModel.episodesBySeason,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
+                episodeSeriesPosterUrl: viewModel.episodeSeriesPosterUrl,
+                episodeSeriesPosterThumbhash: viewModel.episodeSeriesPosterThumbhash,
                 onPlay: { startFromBeginning in
                     let resumePosition = startFromBeginning ? nil : playableResumePosition(for: detail)
                     if let fileId = playbackFileId(for: detail) {
@@ -559,8 +564,7 @@ private struct ItemDetailPhoneContent: View {
                     )
                 },
                 onSelectSeason: { season in
-                    guard season.id != detail.contentId else { return }
-                    router.navigate(to: .itemDetail(contentId: season.contentId))
+                    Task { await viewModel.selectSeason(season) }
                 },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },

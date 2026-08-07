@@ -38,6 +38,9 @@ struct PhonePlaybackSelectorRow: View {
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
 
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
     @State private var activeSelector: PhonePlaybackSelectorKind?
 
     private var editions: [PlaybackEditions.Edition] {
@@ -46,21 +49,47 @@ struct PhonePlaybackSelectorRow: View {
 
     var body: some View {
         if currentVersion != nil, !selectorKinds.isEmpty {
+            #if os(iOS)
+            selectorCard
+                .popover(
+                    item: $activeSelector,
+                    attachmentAnchor: .rect(.bounds),
+                    arrowEdge: .top
+                ) { kind in
+                    selectorPresentation(for: kind)
+                }
+            #else
             selectorCard
                 .sheet(item: $activeSelector) { kind in
-                    PhonePlaybackSelectorSheet(
-                        kinds: [kind],
-                        versions: versions,
-                        currentVersion: currentVersion,
-                        selectedVersionFileId: selectedVersionFileId,
-                        selectedAudioTrackIndex: selectedAudioTrackIndex,
-                        selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
-                        onSelectVersion: onSelectVersion,
-                        onSelectAudioTrack: onSelectAudioTrack,
-                        onSelectSubtitleTrack: onSelectSubtitleTrack
-                    )
+                    selectorPresentation(for: kind)
                 }
+            #endif
         }
+    }
+
+    private func selectorPresentation(
+        for kind: PhonePlaybackSelectorKind
+    ) -> PhonePlaybackSelectorSheet {
+        PhonePlaybackSelectorSheet(
+            kinds: [kind],
+            versions: versions,
+            currentVersion: currentVersion,
+            selectedVersionFileId: selectedVersionFileId,
+            selectedAudioTrackIndex: selectedAudioTrackIndex,
+            selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+            usesPopoverLayout: usesPopoverLayout,
+            onSelectVersion: onSelectVersion,
+            onSelectAudioTrack: onSelectAudioTrack,
+            onSelectSubtitleTrack: onSelectSubtitleTrack
+        )
+    }
+
+    private var usesPopoverLayout: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .regular
+        #else
+        false
+        #endif
     }
 
     /// Settings-style rows: icon and label lead, value trails, chevron last.
@@ -233,6 +262,7 @@ private struct PhonePlaybackSelectorSheet: View {
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
+    let usesPopoverLayout: Bool
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
@@ -285,6 +315,15 @@ private struct PhonePlaybackSelectorSheet: View {
                 #endif
             }
         }
+        #if os(iOS)
+        // Regular-width iPad uses this view as an anchored popover instead
+        // of forcing a phone detent into the split-view detail column.
+        .frame(
+            width: usesPopoverLayout ? 440 : nil,
+            height: usesPopoverLayout ? 480 : nil
+        )
+        .presentationCompactAdaptation(.sheet)
+        #endif
         #if !os(macOS)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)

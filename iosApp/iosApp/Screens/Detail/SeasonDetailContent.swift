@@ -17,6 +17,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
+    let episodesBySeason: [Int: [EpisodeListItem]]
     let isLoadingEpisodes: Bool
     let selectedNextUpFileId: Int?
     let selectedNextUpAudioTrackIndex: Int?
@@ -37,11 +38,12 @@ struct SeasonDetailContent<BelowOverview: View>: View {
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showResumeDialog = false
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 32) {
+            VStack(alignment: .leading, spacing: heroToContentSpacing) {
                 hero
                 belowFold
             }
@@ -58,6 +60,10 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             guard let nextUp = nextUpEpisode else { return }
             onPlayEpisode(nextUp.contentId, selectedNextUpFileId, true)
         }
+    }
+
+    private var heroToContentSpacing: CGFloat {
+        horizontalSizeClass == .regular ? 16 : 32
     }
 
     // MARK: - Hero
@@ -227,31 +233,16 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             PhoneSectionHeader(label: "This Season", title: "Episodes")
                 .padding(.horizontal, ContinuumTheme.safePadding)
 
-            if seasons.count > 1 {
-                PhoneSeasonChips(
-                    seasons: seasons,
-                    selected: selectedSeason,
-                    onSelect: onSelectSeason
-                )
-            }
-
-            if isLoadingEpisodes {
-                HStack {
-                    Spacer()
-                    ProgressView().tint(.continuumOnSurface).padding()
-                    Spacer()
-                }
-            } else if episodes.isEmpty {
-                Text("No episodes available")
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
-                    .padding(.horizontal, ContinuumTheme.safePadding)
-            } else {
-                PhoneEpisodeRail(
-                    episodes: episodes,
-                    onSelect: onEpisodeTap
-                )
-            }
+            PhoneSeasonEpisodeBrowser(
+                seasons: seasons,
+                selectedSeason: selectedSeason,
+                episodes: episodes,
+                episodesBySeason: episodesBySeason,
+                isLoadingEpisodes: isLoadingEpisodes,
+                onSelectSeason: onSelectSeason,
+                onSelectEpisode: onEpisodeTap,
+                allowsSeasonPaging: false
+            )
         }
     }
 

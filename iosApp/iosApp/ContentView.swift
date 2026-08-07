@@ -1187,7 +1187,7 @@ struct MainTabView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             List(selection: Binding<MainTabDestinationID?>(
                 get: { selectedDestinationID },
-                set: { if let value = $0 { selectedDestinationID = value } }
+                set: { if let value = $0 { selectSidebarDestination(value) } }
             )) {
                 ForEach(visibleDestinations) { destination in
                     Label(
@@ -1223,6 +1223,14 @@ struct MainTabView: View {
         withAnimation(.easeInOut(duration: 0.25)) {
             columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
         }
+    }
+
+    /// Sidebar rows are root destinations, even when the same row is already
+    /// selected beneath a pushed screen. Clear the detail stack first so, for
+    /// example, tapping Home while Search is open actually returns to Home.
+    private func selectSidebarDestination(_ destinationID: MainTabDestinationID) {
+        router.popToRoot()
+        selectedDestinationID = destinationID
     }
 
     @ViewBuilder
