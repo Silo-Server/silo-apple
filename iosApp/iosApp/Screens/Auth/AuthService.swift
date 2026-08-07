@@ -11,14 +11,21 @@ import Foundation
 final class AuthService: @unchecked Sendable {
     static let shared = AuthService()
     private let defaults = SharedDefaults.shared
-    private let serverIdentityResolver = ServerIdentityResolver()
+    private let serverIdentityResolver: ServerIdentityResolver
+    private let serverRegistry: ServerRegistry
 
     enum SignOutAuthorization: Equatable, Sendable {
         case allowed(account: RefreshAccountIdentity?)
         case refused
     }
 
-    private init() {}
+    init(
+        serverIdentityResolver: ServerIdentityResolver = ServerIdentityResolver(),
+        serverRegistry: ServerRegistry = .shared
+    ) {
+        self.serverIdentityResolver = serverIdentityResolver
+        self.serverRegistry = serverRegistry
+    }
 
     // MARK: - Stored State Accessors
 
@@ -122,13 +129,13 @@ final class AuthService: @unchecked Sendable {
     /// The identity check prevents a slow response from one server renaming a
     /// different server after the user switches destinations.
     func refreshActiveServerName() async {
-        guard let server = ServerRegistry.shared.activeServer else { return }
+        guard let server = serverRegistry.activeServer else { return }
         let serverId = server.id
         guard let name = await serverIdentityResolver.fetchServerName(serverURL: server.url),
-              ServerRegistry.shared.activeServerId == serverId else {
+              serverRegistry.activeServerId == serverId else {
             return
         }
-        ServerRegistry.shared.updateFetchedName(for: serverId, fetchedName: name)
+        serverRegistry.updateFetchedName(for: serverId, fetchedName: name)
     }
 
     // MARK: - Authentication

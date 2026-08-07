@@ -267,6 +267,9 @@ struct TVMainTabView: View {
         .onChange(of: ServerRegistry.shared.activeServerId) {
             controlReceiver.start(router: router)
         }
+        .onChange(of: ServerRegistry.shared.activeServer?.displayName) {
+            controlReceiver.start(router: router)
+        }
         .onChange(of: scenePhase) { _, newPhase in
             // Returning from a suspension can leave the Bonjour listener dead
             // (its state handler nils it out); restart so phones can still

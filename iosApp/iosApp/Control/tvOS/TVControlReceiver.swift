@@ -10,6 +10,7 @@ final class TVControlReceiver {
 
     private var listener: NWListener?
     private var advertisedServerId: String?
+    private var advertisedServerName: String?
     /// Bumped whenever we intentionally cancel/replace the listener, so its
     /// state handler can tell a system-initiated failure (restart) from our
     /// own teardown (ignore).
@@ -65,7 +66,9 @@ final class TVControlReceiver {
         }
         let serverId = RemotePlaybackIdentityManager.shared.effectiveServerId ?? server.id
         let serverName = RemotePlaybackIdentityManager.shared.effectiveServerName ?? server.displayName
-        if listener != nil, advertisedServerId == serverId {
+        if listener != nil,
+           advertisedServerId == serverId,
+           advertisedServerName == serverName {
             return
         }
 
@@ -119,6 +122,7 @@ final class TVControlReceiver {
             listener.start(queue: .main)
             self.listener = listener
             advertisedServerId = serverId
+            advertisedServerName = serverName
         } catch {
             Self.logger.error("failed to start control listener: \(String(describing: error), privacy: .public)")
         }
@@ -127,6 +131,7 @@ final class TVControlReceiver {
     private func scheduleListenerRestart() {
         listener = nil
         advertisedServerId = nil
+        advertisedServerName = nil
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard let self, self.listener == nil, let router = self.router else { return }
@@ -157,6 +162,7 @@ final class TVControlReceiver {
         listener?.cancel()
         listener = nil
         advertisedServerId = nil
+        advertisedServerName = nil
         closeActiveSession(sendClose: false)
     }
 

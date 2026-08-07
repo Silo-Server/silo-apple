@@ -239,7 +239,8 @@ actor HTTPClient {
     /// attaching credentials from the currently active server.
     func getUnauthenticated<T: Decodable>(
         serverURL: String,
-        path: String
+        path: String,
+        quietStatuses: Set<Int> = []
     ) async throws -> T {
         let dispatchRevision = try captureRequestDispatchRevision()
         let request = try buildRequest(
@@ -254,7 +255,7 @@ actor HTTPClient {
             dispatchRevision: dispatchRevision,
             reportReachability: false
         )
-        try ensureSuccess(data, response, method: "GET")
+        try ensureSuccess(data, response, method: "GET", quietStatuses: quietStatuses)
         do {
             return try decoder.decode(T.self, from: data)
         } catch {

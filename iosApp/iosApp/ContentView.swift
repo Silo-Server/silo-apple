@@ -185,8 +185,6 @@ struct ContentView: View {
             // queued and must perform no work for the stale destination.
             guard await HTTPClient.shared.waitForRequestDispatchOpen() else { return }
             guard !Task.isCancelled else { return }
-            await AuthService.shared.refreshActiveServerName()
-            guard !Task.isCancelled else { return }
             #if os(iOS) || os(tvOS)
             diagnosticsModel.reset()
             #endif
@@ -198,6 +196,8 @@ struct ContentView: View {
                 serverId: serverRegistry.activeServerId ?? ""
             )
             overlayPrefs.clear()
+            guard !Task.isCancelled else { return }
+            Task { await AuthService.shared.refreshActiveServerName() }
             if router.authState == .authenticated {
                 await uiCustomization.refresh()
                 await overlayPrefs.hydrateIfNeeded()
