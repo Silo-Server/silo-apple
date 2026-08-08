@@ -2359,12 +2359,46 @@ final class LoopbackSegmentWriter {
         // source on every producer restart.
     }
 
+    /// Which input stream supplies the selected audio track, or nil when the
+    /// selection names no audio stream in this context.
+    ///
+    /// An explicit `ffIndex` wins only when it actually points at an audio
+    /// stream here. A stale index — or an ordinal-shaped one, as offline
+    /// manifests carry (the server writes the audio-list ordinal and drops the
+    /// real ffmpeg stream index) — falls through to the ordinal scan instead
+    /// of naming a video stream or nothing at all.
+    ///
+    /// Both the demuxer discard pass and the mux setup resolve through this so
+    /// they cannot disagree: when they did, the discard pass dropped the audio
+    /// the muxer then waited forever to receive, surfacing as `vodMoovBlocked`
+    /// with nothing naming the real cause.
+    private static func audioStreamIndex(
+        in ctx: UnsafeMutablePointer<AVFormatContext>,
+        ffIndex: Int?,
+        ordinal: Int
+    ) -> Int? {
+        let nb = Int(ctx.pointee.nb_streams)
+        func isAudio(_ index: Int) -> Bool {
+            guard index >= 0, index < nb,
+                  let stream = ctx.pointee.streams?[index] else { return false }
+            return stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO
+        }
+        if let ffIndex, isAudio(ffIndex) { return ffIndex }
+        guard ordinal >= 0 else { return nil }
+        var audioOrdinal = 0
+        for i in 0..<nb where isAudio(i) {
+            if audioOrdinal == ordinal { return i }
+            audioOrdinal += 1
+        }
+        return nil
+    }
+
     /// Marks every stream we won't mux as `AVDISCARD_ALL` so libavformat
     /// skips them during `find_stream_info` and `av_read_frame`. Discards
     /// (a) all non-audio / non-video streams unconditionally and (b) every
-    /// audio stream other than the one selected by ordinal `keepAudioOrdinal`
-    /// or explicit `keepAudioFfIndex`. Pass `keepAudioOrdinal=-1` to drop
-    /// audio entirely.
+    /// audio stream other than the one `audioStreamIndex` resolves
+    /// from `keepAudioFfIndex`/`keepAudioOrdinal`. Pass `keepAudioOrdinal=-1`
+    /// with no `keepAudioFfIndex` to drop audio entirely.
     private static func discardUnusedStreamsForMux(
         in ctx: UnsafeMutablePointer<AVFormatContext>,
         keepVideoIndex: Int,
@@ -2373,6 +2407,11 @@ final class LoopbackSegmentWriter {
         keepSubtitleIndices: Set<Int>
     ) {
         let nb = Int(ctx.pointee.nb_streams)
+        let keepAudioIndex = audioStreamIndex(
+            in: ctx,
+            ffIndex: keepAudioFfIndex,
+            ordinal: keepAudioOrdinal
+        )
         var discardedSubtitles = 0
         var discardedOther = 0
         var discardedExtraVideo = 0
@@ -2380,7 +2419,6 @@ final class LoopbackSegmentWriter {
         var keptVideo = 0
         var keptAudio = 0
         var keptSubtitles = 0
-        var audioOrdinal = 0
         if let streams = ctx.pointee.streams {
             for i in 0..<nb {
                 guard let stream = streams[i] else { continue }
@@ -2395,16 +2433,7 @@ final class LoopbackSegmentWriter {
                     continue
                 }
                 if mediaType == AVMEDIA_TYPE_AUDIO {
-                    let isSelected: Bool
-                    if let ff = keepAudioFfIndex, ff >= 0 {
-                        isSelected = (i == ff)
-                    } else if keepAudioOrdinal >= 0 {
-                        isSelected = (audioOrdinal == keepAudioOrdinal)
-                    } else {
-                        isSelected = false
-                    }
-                    audioOrdinal += 1
-                    if isSelected {
+                    if i == keepAudioIndex {
                         keptAudio += 1
                     } else {
                         stream.pointee.discard = AVDISCARD_ALL
@@ -3126,27 +3155,16 @@ final class LoopbackSegmentWriter {
     private func resolveSelectedAudioStreamIndex(
         in inputCtx: UnsafeMutablePointer<AVFormatContext>
     ) throws -> Int {
-        if let explicitStreamIndex = sessionSpec.selectedAudio.ffIndex,
-           explicitStreamIndex >= 0,
-           explicitStreamIndex < Int(inputCtx.pointee.nb_streams),
-           let stream = inputCtx.pointee.streams?[explicitStreamIndex],
-           stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO {
-            return explicitStreamIndex
+        guard let index = Self.audioStreamIndex(
+            in: inputCtx,
+            ffIndex: sessionSpec.selectedAudio.ffIndex,
+            ordinal: selectedAudioTrackIndex
+        ) else {
+            throw LoopbackWriterError.audioTranscodeSetup(
+                "selected audio track \(selectedAudioTrackIndex) was not found in source stream map"
+            )
         }
-
-        var audioOrdinal = 0
-        for i in 0 ..< Int(inputCtx.pointee.nb_streams) {
-            guard let stream = inputCtx.pointee.streams?[i] else { continue }
-            guard stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO else { continue }
-            if audioOrdinal == selectedAudioTrackIndex {
-                return i
-            }
-            audioOrdinal += 1
-        }
-
-        throw LoopbackWriterError.audioTranscodeSetup(
-            "selected audio track \(selectedAudioTrackIndex) was not found in source stream map"
-        )
+        return index
     }
 
     /// Drain a queue of prefetched packets to the muxer. Each packet's

@@ -2478,7 +2478,6 @@ class PlayerViewModel {
     private enum SourceProxyPreparationError: LocalizedError {
         case missingLocalURL
         case missingLoopbackSession
-        case unsupportedSourceURL
 
         var errorDescription: String? {
             switch self {
@@ -2486,8 +2485,6 @@ class PlayerViewModel {
                 return "local proxy URL was unavailable"
             case .missingLoopbackSession:
                 return "loopback session was unavailable"
-            case .unsupportedSourceURL:
-                return "loopback source URL is not HTTP(S)"
             }
         }
     }
@@ -2502,10 +2499,13 @@ class PlayerViewModel {
             // This load runs without a proxy, so any stashed cache has no
             // adopter — release it rather than hold its disk spans for the
             // rest of playback.
+            //
+            // Loopback included: the proxy exists to give the segment writer a
+            // cached, resumable HTTP origin, and a local `file://` source
+            // (offline downloads) needs neither — it is already seekable on
+            // disk and `LoopbackSegmentWriter` opens the path directly. The
+            // plan travels through unproxied, still pointing at the file.
             discardSourceCacheHandoff()
-            if plan.engine == .siloPlayerLoopback {
-                throw SourceProxyPreparationError.unsupportedSourceURL
-            }
             return SourceProxyPreparation(plan: plan, proxy: nil)
         }
         let cacheBudget = sourceCacheBudget(for: plan)

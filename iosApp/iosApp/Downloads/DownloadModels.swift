@@ -435,18 +435,37 @@ struct OfflineManifest: Codable, Hashable, Sendable {
     }
 }
 
+/// An audio track described by an offline manifest.
+///
+/// `index` is the ordinal within this list, not the ffmpeg stream index — the
+/// server writes the loop counter and drops the probed index, so it must never
+/// be handed to code that means "stream index" by it.
+///
+/// `title` is already the server's collapse of the cleaned title and the raw
+/// embedded title, so the two cannot be told apart again on this side.
 struct OfflineAudioTrack: Codable, Hashable, Sendable {
     let index: Int?
+    let title: String?
     let language: String?
     let codec: String?
+    let layout: String?
     let channels: Int?
+    let bitrate: Int?
+    let sampleRate: Int?
     let isDefault: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case index
+        case title
         case language
         case codec
+        case layout
         case channels
+        case bitrate
+        // Wire key is `sample_rate`; the API decoder's `.convertFromSnakeCase`
+        // has already rewritten it by the time these keys are matched, and the
+        // bare on-disk coder round-trips this camelCase form unchanged.
+        case sampleRate
         case isDefault = "default"
     }
 }
