@@ -115,6 +115,47 @@ enum ApplePlaybackQuality {
         settingsOptions
     }
 
+    /// Build the in-player menu from the server's V3 plan. The server owns
+    /// which rungs are executable for this source; showing the wider Settings
+    /// catalog here would let the user request qualities the active plan never
+    /// offered.
+    static func playbackOptions(
+        serverQualities: [PlaybackV3AvailableQuality],
+        fallbackVersion: FileVersion?
+    ) -> [ApplePlaybackQualityOption] {
+        guard !serverQualities.isEmpty else {
+            return playbackOptions(for: fallbackVersion)
+        }
+        var seen = Set<String>()
+        let planned = serverQualities.compactMap { quality -> ApplePlaybackQualityOption? in
+            let id = normalizeStoredId(quality.label)
+            guard id != autoId, seen.insert(id).inserted else { return nil }
+            let isOriginal = quality.preservesSource || id == originalId
+            return ApplePlaybackQualityOption(
+                id: id,
+                label: playbackLabel(id: id, height: quality.height, isOriginal: isOriginal),
+                resolution: isOriginal || quality.height <= 0 ? "" : "\(quality.height)p",
+                bitrateKbps: max(0, quality.bitrateKbps),
+                isOriginal: isOriginal,
+                isAuto: false
+            )
+        }
+        return [auto] + planned
+    }
+
+    private static func playbackLabel(id: String, height: Int, isOriginal: Bool) -> String {
+        if isOriginal { return "Original" }
+        switch height {
+        case 2_160: return "Up to 4K"
+        case 1_080: return "Up to 1080p HD"
+        case 720: return "Up to 720p HD"
+        case 480: return "Up to 480p"
+        default:
+            return settingsOptions.first(where: { $0.id == id })?.label
+                ?? (height > 0 ? "Up to \(height)p" : id)
+        }
+    }
+
     static func resolvedRequestOption(
         preferredQualityId: String?,
         selectedVersion: FileVersion,

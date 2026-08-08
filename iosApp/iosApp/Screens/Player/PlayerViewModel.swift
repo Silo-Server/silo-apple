@@ -982,6 +982,10 @@ class PlayerViewModel {
         let preferredSubtitleTrackIndex: Int?
         let preferredSidecarSubtitleTrackId: Int64?
         let startFromBeginning: Bool
+        /// Authoritative protocol-v3 combined ordinal. Unlike
+        /// `preferredSubtitleTrackIndex`, this also represents external,
+        /// downloaded, and server-extracted subtitle rows.
+        var preferredProtocolV3SubtitleIndex: Int? = nil
         /// Set for local playback of a completed download. Routes the
         /// prepare through `OfflinePlaybackBuilder` instead of a server
         /// session, so retry after an error stays on the offline path.
@@ -1000,7 +1004,7 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: Int64?,
             offlineDownloadId: String?
         ) -> LoadRequest {
-            LoadRequest(
+            var request = LoadRequest(
                 contentId: contentId,
                 preferredFileId: preferredFileId,
                 preferredAudioTrackIndex: preferredAudioTrackIndex,
@@ -1010,6 +1014,43 @@ class PlayerViewModel {
                 offlineDownloadId: offlineDownloadId,
                 preferredQualityOverride: preferredQualityOverride
             )
+            request.preferredProtocolV3SubtitleIndex = preferredProtocolV3SubtitleIndex
+            return request
+        }
+
+        /// Refresh the inputs used by session renewal from an adopted V3 plan.
+        /// Player track lists are transient and may already be empty when a
+        /// failed transport reports that its server session disappeared.
+        func adoptingProtocolV3Intent(
+            plan: PlaybackV3Plan,
+            selectedVersion: FileVersion,
+            activeQualityId: String
+        ) -> LoadRequest {
+            let selectedSubtitleIndex = plan.selectedTracks.subtitle?.index
+            let selectedSubtitle = selectedSubtitleIndex.flatMap { selectedIndex in
+                plan.subtitle.inventory.first(where: { $0.combinedIndex == selectedIndex })
+            }
+            let embeddedFFmpegIndex: Int? = selectedSubtitle.flatMap { item in
+                guard item.source == "embedded" else { return nil }
+                return ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
+                    serverCombinedIndex: item.combinedIndex,
+                    in: selectedVersion
+                )
+            }
+            let sidecarTrackId: Int64? = selectedSubtitle.flatMap { item in
+                guard item.delivery == "sidecar" else { return nil }
+                return SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex)
+            }
+            var request = copyForRecovery(
+                preferredFileId: plan.effectiveMediaFileId,
+                preferredAudioTrackIndex: plan.selectedTracks.audio?.index,
+                preferredSubtitleTrackIndex: embeddedFFmpegIndex,
+                preferredSidecarSubtitleTrackId: sidecarTrackId,
+                offlineDownloadId: offlineDownloadId
+            )
+            request.preferredProtocolV3SubtitleIndex = selectedSubtitleIndex
+            request.preferredQualityOverride = activeQualityId
+            return request
         }
     }
 
@@ -1609,11 +1650,16 @@ class PlayerViewModel {
                 self.currentWatchDetail = prepared.watchDetail
                 self.currentSelectedVersion = prepared.selectedVersion
                 self.activePreparedProtocolV3 = prepared.protocolV3
+                self.adoptProtocolV3RenewalIntent(from: prepared)
                 self.pendingExternalSubtitles = prepared.session.subtitleUrls ?? []
                 self.knownExternalSubtitles = self.pendingExternalSubtitles
                 self.duration = prepared.session.durationSeconds ?? prepared.selectedVersion.duration ?? self.duration
                 self.currentTime = self.movieTime(for: prepared.session)
                 self.activeQualityId = prepared.activeQualityId
+                self.qualityOptions = ApplePlaybackQuality.playbackOptions(
+                    serverQualities: prepared.protocolV3?.plan.availableQualities ?? [],
+                    fallbackVersion: prepared.selectedVersion
+                )
 
                 if previousSessionId != prepared.session.sessionId {
                     await self.realtimeClient.unbind()
@@ -3248,6 +3294,35 @@ class PlayerViewModel {
         return lastLoadRequest?.preferredSidecarSubtitleTrackId
     }
 
+    private func adoptProtocolV3RenewalIntent(from prepared: PreparedPlayback) {
+        guard let protocolV3 = prepared.protocolV3,
+              let lastLoadRequest,
+              lastLoadRequest.offlineDownloadId == nil else {
+            return
+        }
+        let adopted = lastLoadRequest.adoptingProtocolV3Intent(
+            plan: protocolV3.plan,
+            selectedVersion: prepared.selectedVersion,
+            activeQualityId: prepared.activeQualityId
+        )
+        self.lastLoadRequest = adopted
+
+        // The V3 plan is authoritative for the tracks actually rendered.
+        // Apply it before the new source publishes a track list so container
+        // defaults and the post-open Auto resolver cannot drift away from the
+        // selection the server will preserve through replans and renewals.
+        let rendersSubtitleLocally = protocolV3.plan.subtitle.mode == "render"
+        pendingSubtitleFfIndex = rendersSubtitleLocally
+            ? adopted.preferredSubtitleTrackIndex
+            : -1
+        pendingSidecarSubtitleTrackId = rendersSubtitleLocally
+            ? adopted.preferredSidecarSubtitleTrackId
+            : nil
+        hasExplicitSubtitleChoice = true
+        prefsForCurrentItem = nil
+        prefsResolvedForCurrentItem = true
+    }
+
     private func makeSuspendedPlaybackContext() -> SuspendedPlaybackContext? {
         guard let lastLoadRequest else { return nil }
         let request = lastLoadRequest.copyForRecovery(
@@ -3424,6 +3499,7 @@ class PlayerViewModel {
                 self.currentWatchDetail = prepared.watchDetail
                 self.currentSelectedVersion = prepared.selectedVersion
                 self.activePreparedProtocolV3 = prepared.protocolV3
+                self.adoptProtocolV3RenewalIntent(from: prepared)
                 // Artwork and Next Up are catalog fetches; the offline path
                 // already published its cached poster above and has no
                 // server to resolve a next episode against.
@@ -3432,7 +3508,10 @@ class PlayerViewModel {
                     self.loadNextUpCandidate(for: prepared.watchDetail)
                     self.loadNextUpOnDeckItems(for: prepared.watchDetail)
                 }
-                self.qualityOptions = ApplePlaybackQuality.playbackOptions(for: prepared.selectedVersion)
+                self.qualityOptions = ApplePlaybackQuality.playbackOptions(
+                    serverQualities: prepared.protocolV3?.plan.availableQualities ?? [],
+                    fallbackVersion: prepared.selectedVersion
+                )
                 self.activeQualityId = prepared.activeQualityId
                 self.isQualitySwitching = false
                 self.qualitySwitchError = nil
@@ -3529,6 +3608,7 @@ class PlayerViewModel {
                     preferredFileId: request.preferredFileId,
                     preferredAudioTrackIndex: request.preferredAudioTrackIndex,
                     preferredSubtitleTrackIndex: request.preferredSubtitleTrackIndex,
+                    preferredProtocolV3SubtitleIndex: request.preferredProtocolV3SubtitleIndex,
                     startFromBeginning: request.startFromBeginning,
                     resumePosition: resumePosition,
                     allowNearEndResume: allowNearEndResume,
@@ -3555,6 +3635,7 @@ class PlayerViewModel {
                 preferredFileId: request.preferredFileId,
                 preferredAudioTrackIndex: request.preferredAudioTrackIndex,
                 preferredSubtitleTrackIndex: request.preferredSubtitleTrackIndex,
+                preferredProtocolV3SubtitleIndex: request.preferredProtocolV3SubtitleIndex,
                 startFromBeginning: request.startFromBeginning,
                 resumePosition: resumePosition,
                 allowNearEndResume: allowNearEndResume,
@@ -3684,6 +3765,13 @@ class PlayerViewModel {
     }
 
     private func finalizeTerminalPlaybackError(_ message: String) {
+        progressTask?.cancel()
+        progressTask = nil
+        staleSessionRecoveryTask?.cancel()
+        staleSessionRecoveryTask = nil
+        backgroundRenewalTask?.cancel()
+        backgroundRenewalTask = nil
+        backgroundRenewalSessionId = nil
         clearForegroundInterruptionState()
         clearSuspendedPlaybackState()
         clearServerOutageRecoveryState()
@@ -3692,15 +3780,17 @@ class PlayerViewModel {
         sourceProxy?.stop()
         sourceProxy = nil
         activePlaybackSessionId = nil
+        activePreparedProtocolV3 = nil
+        activeExecutionPlan = nil
         error = message
         isLoading = false
         isPlaying = false
     }
 
-    /// Silently renews a lost server session in place: the bridge re-POSTs
-    /// the captured start request (same file, same plan), the source proxy
-    /// is retargeted at the renewed stream URL, and the player, remuxer, and
-    /// cache are never touched — zero user-visible effect. Returns false
+    /// Silently renews a lost server session in place: the bridge stages a
+    /// fresh V3 start and accepts it only when the effective direct route is
+    /// unchanged. The source proxy is then retargeted at the renewed stream
+    /// URL while the player, remuxer, and cache remain untouched. Returns false
     /// when this playback cannot be renewed in place (offline, non-direct
     /// delivery, no proxy); the caller falls back to the visible renewal.
     /// A renewal that fails with a re-plan escalates to the visible renewal
@@ -3711,6 +3801,7 @@ class PlayerViewModel {
         guard !isDisposed,
               offlinePlaybackContext == nil,
               currentDeliveryStrategy == .direct,
+              let currentWatchDetail,
               sourceProxy != nil else {
             return false
         }
@@ -3732,8 +3823,13 @@ class PlayerViewModel {
             guard let self, !self.isDisposed else { return }
             do {
                 let renewed = try await self.sessionBridge.renewDirectSession(
+                    watchDetail: currentWatchDetail,
                     position: resumePosition,
-                    audioTrackIndex: self.resolvedAudioTrackIndexForResume()
+                    // The bridge owns the adopted V3 plan. Passing no
+                    // overrides makes renewal repeat that exact tuple instead
+                    // of consulting player tracks that may already be empty.
+                    audioTrackIndex: nil,
+                    subtitleTrackIndex: nil
                 )
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 // A fresh load may have replaced this playback while the
@@ -3746,7 +3842,10 @@ class PlayerViewModel {
                     )
                     return
                 }
-                guard let streamRequest = await self.makeStreamRequest(session: renewed) else {
+                guard let streamRequest = await self.makeStreamRequest(
+                    session: renewed.session,
+                    additionalHeaders: renewed.protocolV3?.plan.stream.headers ?? [:]
+                ) else {
                     self.failBackgroundRenewal(
                         reason: reason,
                         observedPosition: resumePosition,
@@ -3755,15 +3854,27 @@ class PlayerViewModel {
                     return
                 }
                 proxy.retargetOrigin(url: streamRequest.url, headers: streamRequest.headers)
-                self.activePlaybackSessionId = renewed.sessionId
+                self.activePlaybackSessionId = renewed.session.sessionId
+                self.currentWatchDetail = renewed.watchDetail
+                self.currentSelectedVersion = renewed.selectedVersion
+                self.activePreparedProtocolV3 = renewed.protocolV3
+                self.adoptProtocolV3RenewalIntent(from: renewed)
+                self.pendingExternalSubtitles = renewed.session.subtitleUrls ?? self.pendingExternalSubtitles
+                self.knownExternalSubtitles = self.pendingExternalSubtitles
+                self.duration = renewed.session.durationSeconds ?? renewed.selectedVersion.duration ?? self.duration
+                self.activeQualityId = renewed.activeQualityId
+                self.qualityOptions = ApplePlaybackQuality.playbackOptions(
+                    serverQualities: renewed.protocolV3?.plan.availableQualities ?? [],
+                    fallbackVersion: renewed.selectedVersion
+                )
                 self.staleSessionRecoverySessionId = nil
                 self.backgroundRenewalSessionId = nil
                 self.backgroundRenewalTransientFailures = 0
                 await self.realtimeClient.unbind()
                 guard !Task.isCancelled, !self.isDisposed else { return }
-                await self.realtimeClient.bind(sessionId: renewed.sessionId)
+                await self.realtimeClient.bind(sessionId: renewed.session.sessionId)
                 Self.logger.info(
-                    "[CMP-RECOVERY] background session renewal succeeded old=\(staleSessionId, privacy: .public) new=\(renewed.sessionId, privacy: .public) reason=\(reason, privacy: .public)"
+                    "[CMP-RECOVERY] background session renewal succeeded old=\(staleSessionId, privacy: .public) new=\(renewed.session.sessionId, privacy: .public) reason=\(reason, privacy: .public)"
                 )
             } catch let error as PlaybackSessionBridge.DirectSessionRenewalError {
                 guard !Task.isCancelled, !self.isDisposed else { return }
@@ -4851,13 +4962,18 @@ class PlayerViewModel {
         qualityId: String,
         source: String
     ) -> Bool {
-        guard let currentWatchDetail,
-              let selectedVersion = currentSelectedVersion else {
-            Self.logger.warning("[CMP-SEEK] in-place transcode restart skipped: missing current item snapshot")
+        guard let protocolV3 = activePreparedProtocolV3,
+              let currentWatchDetail,
+              currentSelectedVersion != nil else {
+            Self.logger.warning("[CMP-SEEK] V3 stream replan skipped: missing active protocol or item snapshot")
             if source == "quality" {
                 isQualitySwitching = false
                 qualitySwitchError = "Quality unavailable for this item."
             }
+            return false
+        }
+        if source == "seek",
+           !protocolV3.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature) {
             return false
         }
 
@@ -4904,16 +5020,36 @@ class PlayerViewModel {
             }
 
             do {
-                let session = try await self.sessionBridge.restartCurrentTranscode(
-                    selectedVersion: selectedVersion,
-                    seekSeconds: target,
-                    qualityOverride: source == "quality" ? qualityId : nil
-                )
+                guard let prepared = try await self.sessionBridge.replanProtocolV3(
+                    watchDetail: currentWatchDetail,
+                    position: target,
+                    classification: source == "quality" ? "quality_changed" : "seek_reanchor",
+                    message: source == "quality"
+                        ? "User selected playback quality \(qualityId)."
+                        : "Reanchor the active stream at the requested source position.",
+                    operation: source == "quality"
+                        ? PlaybackProtocolV3.ReplanOperation.qualityChange
+                        : PlaybackProtocolV3.ReplanOperation.seekReanchor,
+                    qualityPreference: source == "quality" ? qualityId : nil,
+                    audioTrackIndex: self.resolvedAudioTrackIndexForResume(),
+                    subtitleTrackIndex: self.resolvedProtocolV3SubtitleIndexForResume()
+                ) else {
+                    throw PlaybackV3TerminalFailure(
+                        reason: "replan_unavailable",
+                        message: "The active V3 playback plan cannot be replaced in place.",
+                        retryable: false
+                    )
+                }
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 if source == "quality" {
                     self.lastLoadRequest?.preferredQualityOverride = qualityId
                 }
+                let session = prepared.session
                 self.activePlaybackSessionId = session.sessionId
+                self.currentWatchDetail = prepared.watchDetail
+                self.currentSelectedVersion = prepared.selectedVersion
+                self.activePreparedProtocolV3 = prepared.protocolV3
+                self.adoptProtocolV3RenewalIntent(from: prepared)
                 self.autoSkippedIntroKey = nil
                 self.autoSkippedCreditsKey = nil
                 self.autoSkipIntroCancelledKey = nil
@@ -4926,16 +5062,6 @@ class PlayerViewModel {
                     self.activePlayer.dispose()
                 }
 
-                let prepared = PreparedPlayback(
-                    watchDetail: currentWatchDetail,
-                    selectedVersion: selectedVersion,
-                    session: session,
-                    activeQualityId: ApplePlaybackQuality.activeQualityId(
-                        requestedQualityId: qualityId,
-                        selectedVersion: selectedVersion,
-                        delivery: PlaybackDeliveryStrategy(playMethod: session.playMethod)
-                    )
-                )
                 self.pendingExternalSubtitles = session.subtitleUrls ?? externalSubtitleSnapshot
                 self.knownExternalSubtitles = self.pendingExternalSubtitles
                 // Re-establish the subtitle selection across the backend
@@ -4955,13 +5081,19 @@ class PlayerViewModel {
                 self.pendingRecoveredSubtitleSelection = embeddedSubtitleSelectionSnapshot
                 self.hasExplicitSubtitleChoice = explicitSubtitleChoiceSnapshot
                 self.pendingRecoveredSecondarySubtitleId = selectedSecondarySubtitleSnapshot
-                self.duration = session.durationSeconds ?? selectedVersion.duration ?? self.duration
+                self.duration = session.durationSeconds ?? prepared.selectedVersion.duration ?? self.duration
                 self.currentTime = self.movieTime(for: session)
-                self.qualityOptions = ApplePlaybackQuality.playbackOptions(for: selectedVersion)
+                self.qualityOptions = ApplePlaybackQuality.playbackOptions(
+                    serverQualities: prepared.protocolV3?.plan.availableQualities ?? [],
+                    fallbackVersion: prepared.selectedVersion
+                )
                 self.activeQualityId = prepared.activeQualityId
                 self.qualitySwitchError = nil
 
-                guard let streamRequest = await self.makeStreamRequest(session: session) else {
+                guard let streamRequest = await self.makeStreamRequest(
+                    session: session,
+                    additionalHeaders: prepared.protocolV3?.plan.stream.headers ?? [:]
+                ) else {
                     self.finalizeTerminalPlaybackError("Invalid stream URL")
                     return
                 }
@@ -7275,12 +7407,14 @@ class PlayerViewModel {
             }
         }
 
-        // If a forced sidecar is present, auto-select it. Forced tracks
-        // (for non-native dialogue or song lyrics in anime) are meant
-        // to display regardless of the Silo subtitle preference. Device
-        // settings mode instead routes every sidecar through Apple's ordered
-        // language policy, including Forced Only.
+        // If a forced sidecar is present, auto-select it when the protocol plan
+        // has not already made an explicit choice. Forced tracks (for
+        // non-native dialogue or song lyrics in anime) otherwise display
+        // regardless of the Silo subtitle preference. Device settings mode
+        // routes every sidecar through Apple's ordered language policy,
+        // including Forced Only.
         if !settings.subtitleMatchesSystemAppearance,
+           !hasExplicitSubtitleChoice,
            selectedSubtitleId == nil,
            let forced = descriptors.first(where: { $0.forced == true }) {
             let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: forced.index)

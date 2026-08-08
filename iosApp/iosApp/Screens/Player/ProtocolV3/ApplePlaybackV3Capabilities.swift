@@ -98,7 +98,10 @@ enum ApplePlaybackV3Capabilities {
             sidecarText: true,
             assStyling: true,
             embeddedBitmap: true,
-            sidecarBitmap: true,
+            // SidecarSubtitleFetcher intentionally accepts text payloads only;
+            // bitmap subtitles are supported when embedded in the original
+            // source and decoded by the loopback extractor, not as sidecars.
+            sidecarBitmap: false,
             fontAttachments: true
         )
         let avPlayerSubtitles = PlaybackV3DeliverySubtitleCapabilities(
@@ -276,7 +279,7 @@ enum ApplePlaybackV3Capabilities {
         sinkType = outputs.map { $0.portType.rawValue }.sorted().joined(separator: ",")
         #endif
         let hdrIdentity = hdrDetails.map {
-            "\($0.hdr10)|\($0.hdr10Plus)|\($0.hlg)|\($0.dolbyVisionProfiles.map(String.init).joined(separator: ","))"
+            "\($0.hdr10)|\($0.hdr10Plus)|\($0.hlg)|\($0.dolbyVisionProfiles.map { String($0) }.joined(separator: ","))"
         } ?? "unknown"
         let identity = [platformName, formFactor, sink, sinkType, hdrIdentity].joined(separator: "|")
         return PlaybackV3OutputContext(

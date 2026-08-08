@@ -296,6 +296,7 @@ struct PlaybackV3SourceDescriptor: Codable, Equatable {
     let videoProfile: String?
     let videoLevel: Int?
     let bitDepth: Int?
+    let colorRange: String?
     let width: Int?
     let height: Int?
     let frameRate: Double?
@@ -308,6 +309,7 @@ struct PlaybackV3SourceDescriptor: Codable, Equatable {
     let audioCodec: String?
     let audioChannels: Int?
     let audioLayout: String?
+    let videoCopyUnsafe: Bool?
 }
 
 struct PlaybackV3VideoClaims: Codable, Equatable {

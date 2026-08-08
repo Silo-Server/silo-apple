@@ -91,19 +91,41 @@ enum ApplePlaybackV3PlanAdapter {
         sessionId: String,
         selectedVersion: FileVersion
     ) -> PlaybackSessionResponse {
-        let subtitleUrls: [SubtitleUrl]? = plan.subtitle.artifact.map { artifact in
+        var subtitleUrls = plan.subtitle.inventory.compactMap { item -> SubtitleUrl? in
+            guard item.delivery == "sidecar",
+                  let url = item.url?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !url.isEmpty else {
+                return nil
+            }
+            return SubtitleUrl(
+                index: item.combinedIndex,
+                language: item.language,
+                codec: item.codec,
+                label: item.label,
+                source: item.source,
+                forced: item.forced,
+                url: url
+            )
+        }
+        // Inventory is authoritative in the neutral contract. Keep a narrow
+        // fallback for a selected sidecar artifact so an otherwise executable
+        // plan does not lose its active subtitle if a transitional server
+        // omitted that one inventory URL.
+        if let artifact = plan.subtitle.artifact,
+           let selectedIndex = plan.selectedTracks.subtitle?.index,
+           !subtitleUrls.contains(where: { $0.index == selectedIndex }) {
             let selected = plan.selectedTracks.subtitle?.index.flatMap {
                 subtitleTrack(atServerCombinedIndex: $0, in: selectedVersion)
             }
-            return [SubtitleUrl(
-                index: plan.selectedTracks.subtitle?.index ?? 0,
+            subtitleUrls.append(SubtitleUrl(
+                index: selectedIndex,
                 language: selected?.language,
                 codec: artifact.format,
                 label: selected?.title,
                 source: selected.map { $0.external == true ? "external" : "embedded" } ?? "protocol_v3",
                 forced: selected?.forced,
                 url: artifact.url
-            )]
+            ))
         }
         return PlaybackSessionResponse(
             sessionId: sessionId,
@@ -121,7 +143,7 @@ enum ApplePlaybackV3PlanAdapter {
             // the server reports an unknown runtime would reintroduce a guess.
             durationSeconds: plan.source.durationSeconds ?? selectedVersion.duration,
             timelineOffsetSeconds: max(0, plan.timeline.timelineOffsetSeconds),
-            subtitleUrls: subtitleUrls,
+            subtitleUrls: subtitleUrls.isEmpty ? nil : subtitleUrls,
             playbackInfo: PlaybackInfo(
                 streamType: plan.stream.protocol,
                 transcodeAudio: plan.transformations.contains { $0.name == "audio_to_aac" },
@@ -163,6 +185,19 @@ enum ApplePlaybackV3PlanAdapter {
             ffmpegStreamIndex: ffmpegStreamIndex,
             in: version
         )
+    }
+
+    static func ffmpegSubtitleStreamIndex(
+        serverCombinedIndex: Int,
+        in version: FileVersion
+    ) -> Int? {
+        guard serverCombinedIndex >= 0 else { return nil }
+        let tracks = version.subtitleTracks ?? []
+        let externalCount = tracks.filter { $0.external == true }.count
+        let embedded = tracks.filter { $0.external != true }
+        let embeddedOrdinal = serverCombinedIndex - externalCount
+        guard embedded.indices.contains(embeddedOrdinal) else { return nil }
+        return embedded[embeddedOrdinal].index
     }
 
     static func makeExecutionPlan(
@@ -212,7 +247,9 @@ enum ApplePlaybackV3PlanAdapter {
             audioCodec: plan.source.audioCodec,
             subtitleCodecs: basePlan.sourceMetadata.subtitleCodecs,
             dolbyVisionProfile: plan.source.dolbyVisionProfile,
-            colorRange: basePlan.sourceMetadata.colorRange
+            // Prefer the server's probed source fact. Catalog metadata remains
+            // the compatibility fallback for plans that omit color_range.
+            colorRange: plan.source.colorRange ?? basePlan.sourceMetadata.colorRange
         )
         let transformationTokens = plan.transformations.map {
             "v3_transform_\($0.executor)_\($0.name)_\($0.recipeVersion)"
