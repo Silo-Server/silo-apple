@@ -114,6 +114,11 @@ private struct DoubleRangeSpinner: View {
 struct PlayerSettingsSheet: View {
     let viewModel: PlayerViewModel
     let sleepTimer: SleepTimer
+    /// Visibility of the iOS stats annotation. A binding rather than a
+    /// one-shot action because the overlay itself has no dismiss affordance
+    /// — this row is both the on and the off switch. Nil on platforms with
+    /// no such overlay, which hides the row.
+    var statsOverlayVisible: Binding<Bool>?
 
     #if os(iOS)
     @Environment(\.dismiss) private var dismiss
@@ -473,6 +478,18 @@ struct PlayerSettingsSheet: View {
 
     private var advancedSection: some View {
         Section {
+            if let statsOverlayVisible {
+                Toggle(isOn: statsOverlayVisible) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Stats")
+                        Text("Live overlay on the player")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .tint(.continuumAccent)
+            }
+
             NavigationLink {
                 advancedPage
             } label: {

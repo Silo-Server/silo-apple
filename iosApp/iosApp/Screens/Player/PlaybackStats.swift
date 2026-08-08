@@ -99,6 +99,46 @@ struct PlaybackStats: Equatable {
 }
 
 extension PlaybackStats {
+    /// Every section's rows in display order — the full set the tvOS HUD
+    /// pane pages through.
+    var allRows: [(String, String)] {
+        sourceRows + mediaRows + bufferRows + networkRows + deviceRows
+    }
+
+    /// The subset the iOS overlay draws. The full set runs to ~45 rows on
+    /// the loopback route, which is a wall of text over the picture and
+    /// mostly cache/segment internals you'd go to the tvOS pane (or the
+    /// Advanced page) for. This keeps what identifies the file and tells
+    /// you whether playback is healthy, in the same order.
+    ///
+    /// Filtered by label against `allRows` rather than rebuilt from the
+    /// stored properties, so the formatting can never drift from the pane.
+    var compactRows: [(String, String)] {
+        let wanted = [
+            "Route", "Source", "Container", "Created by",
+            "Video", "Audio", "Dynamic range", "Subtitles",
+            "Buffer status", "Buffered ahead", "Dropped frames",
+            // Indicated/Observed are the fallbacks `networkRows` emits when
+            // the average/download pair is unavailable on the active route,
+            // so both spellings have to be listed or the bitrate line just
+            // vanishes there.
+            "Average file bitrate", "Current download bitrate",
+            "Indicated bitrate", "Observed bitrate",
+            "Network throughput", "Stream speed",
+            "Device", "Free disk space"
+        ]
+        let rows = allRows
+        return wanted.compactMap { label in
+            rows.first { $0.0 == label }
+        }
+    }
+
+    /// True once any section has something to show. Every row accessor drops
+    /// nil/empty values, so a snapshot taken before the engine has reported
+    /// anything renders as a blank panel; callers use this to show a
+    /// placeholder instead.
+    var hasRows: Bool { !allRows.isEmpty }
+
     var sourceRows: [(String, String)] {
         [
             ("Route", route),

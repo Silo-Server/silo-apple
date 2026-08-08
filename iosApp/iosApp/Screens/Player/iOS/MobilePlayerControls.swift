@@ -25,6 +25,10 @@ struct MobilePlayerControls: View {
     /// duration otherwise. Tap the label to flip — the native player idiom.
     @State private var showsRemainingTime = true
     @State private var pictureInPicture = PictureInPictureCoordinator.shared
+    /// Floating stats card. Kept here rather than on the view model because
+    /// it is purely presentation, and kept outside the `showControls` gate
+    /// below so the auto-hide takes the transport away without it.
+    @State private var showsStats = false
 
 
     var body: some View {
@@ -72,7 +76,12 @@ struct MobilePlayerControls: View {
             if viewModel.showIntroSkip {
                 introSkipPill
             }
+            if showsStats {
+                MobilePlaybackStatsOverlay(stats: viewModel.playbackStats)
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeOut(duration: 0.18), value: showsStats)
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .aiSubtitles:
@@ -94,8 +103,20 @@ struct MobilePlayerControls: View {
                 )
                 .presentationDetents([.large])
             case .settings:
-                PlayerSettingsSheet(viewModel: viewModel, sleepTimer: viewModel.sleepTimer)
-                    .presentationDetents([.large])
+                PlayerSettingsSheet(
+                    viewModel: viewModel,
+                    sleepTimer: viewModel.sleepTimer,
+                    statsOverlayVisible: Binding(
+                        get: { showsStats },
+                        set: { newValue in
+                            showsStats = newValue
+                            // Switching it on closes the sheet: the stats are
+                            // only useful over the picture they describe.
+                            if newValue { activeSheet = nil }
+                        }
+                    )
+                )
+                .presentationDetents([.large])
             }
         }
         .onChange(of: activeSheet) { _, newValue in
