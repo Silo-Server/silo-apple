@@ -738,6 +738,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
         var onSwipeLeft: () -> Void
         private var dragStartOffset: CGFloat = 0
         private weak var managedSplitViewController: UISplitViewController?
+        private weak var dragPresentationView: UIView?
         private weak var swipeHostView: UIView?
         private lazy var swipeLeftRecognizer: UIPanGestureRecognizer = {
             let recognizer = UIPanGestureRecognizer(
@@ -812,11 +813,19 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
         }
 
         @objc private func handleSwipeLeft(_ gestureRecognizer: UIPanGestureRecognizer) {
-            guard let splitViewController = splitViewControllerAncestor,
-                  let presentationView = splitViewController
-                    .viewController(for: .primary)?
-                    .view
-            else { return }
+            guard let splitViewController = splitViewControllerAncestor else { return }
+
+            let presentationView: UIView
+            if gestureRecognizer.state == .began {
+                guard let resolvedView = sidebarPresentationView(in: splitViewController) else {
+                    return
+                }
+                presentationView = resolvedView
+                dragPresentationView = resolvedView
+            } else {
+                guard let activeView = dragPresentationView else { return }
+                presentationView = activeView
+            }
 
             switch gestureRecognizer.state {
             case .began:
@@ -867,6 +876,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                             self.onSwipeLeft()
                             presentationView.transform = .identity
                             splitViewController.view.layoutIfNeeded()
+                            self.dragPresentationView = nil
                         }
                     }
                 } else {
@@ -891,7 +901,32 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                 options: [.beginFromCurrentState, .allowUserInteraction]
             ) {
                 presentationView.transform = .identity
+            } completion: { finished in
+                if finished {
+                    self.dragPresentationView = nil
+                }
             }
+        }
+
+        private func sidebarPresentationView(
+            in splitViewController: UISplitViewController
+        ) -> UIView? {
+            guard let primaryView = splitViewController
+                .viewController(for: .primary)?
+                .view
+            else { return nil }
+
+            // On iPadOS the navigation controller is wrapped by a clipping
+            // view and then by the adaptive column surface that owns the
+            // sidebar's glass background and shadow. Move that complete
+            // fixed-width surface when it matches the primary geometry;
+            // otherwise fall back to the public primary view.
+            guard let columnView = primaryView.superview?.superview,
+                  columnView !== splitViewController.view,
+                  abs(columnView.bounds.width - width) <= 1,
+                  abs(columnView.bounds.height - primaryView.bounds.height) <= 1
+            else { return primaryView }
+            return columnView
         }
 
         private func installSwipeRecognizer(in splitViewController: UISplitViewController) {
@@ -907,6 +942,9 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
         }
 
         func tearDown() {
+            dragPresentationView?.layer.removeAllAnimations()
+            dragPresentationView?.transform = .identity
+            dragPresentationView = nil
             swipeHostView?.layer.removeAllAnimations()
             swipeHostView?.transform = .identity
             swipeHostView?.removeGestureRecognizer(swipeLeftRecognizer)
