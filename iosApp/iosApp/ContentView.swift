@@ -1,5 +1,5 @@
 import SwiftUI
-#if os(tvOS)
+#if os(iOS) || os(tvOS)
 import UIKit
 #endif
 
@@ -711,6 +711,77 @@ struct ContentView: View {
     }
 }
 
+#if os(iOS)
+/// SwiftUI treats `navigationSplitViewColumnWidth` as a preference on iPad.
+/// Pin the backing UIKit split controller to the same width so its divider
+/// cannot resize the overlay while retaining the system sidebar presentation.
+private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
+    let width: CGFloat
+
+    func makeUIViewController(context: Context) -> Controller {
+        Controller(width: width)
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.width = width
+        controller.applyWidthLock()
+    }
+
+    final class Controller: UIViewController {
+        var width: CGFloat
+
+        init(width: CGFloat) {
+            self.width = width
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            applyWidthLock()
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            applyWidthLock()
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            applyWidthLock()
+        }
+
+        func applyWidthLock() {
+            guard let splitViewController = splitViewControllerAncestor else { return }
+            if splitViewController.preferredPrimaryColumnWidth != width {
+                splitViewController.preferredPrimaryColumnWidth = width
+            }
+            if splitViewController.minimumPrimaryColumnWidth != width {
+                splitViewController.minimumPrimaryColumnWidth = width
+            }
+            if splitViewController.maximumPrimaryColumnWidth != width {
+                splitViewController.maximumPrimaryColumnWidth = width
+            }
+        }
+
+        private var splitViewControllerAncestor: UISplitViewController? {
+            var ancestor = parent
+            while let controller = ancestor {
+                if let splitViewController = controller as? UISplitViewController {
+                    return splitViewController
+                }
+                ancestor = controller.parent
+            }
+            return nil
+        }
+    }
+}
+#endif
+
 private struct DebugPlayerPresentationModifier: ViewModifier {
     let contentId: String?
     @Binding var isPresented: Bool
@@ -1211,8 +1282,16 @@ struct MainTabView: View {
     private var iPadSidebarLayout: some View {
         NavigationSplitView(columnVisibility: $iPadColumnVisibility) {
             sidebarList(dismissAfterSelection: true)
+                .background {
+                    FixedPrimarySplitViewWidth(width: iPadSidebarWidth)
+                        .frame(width: 0, height: 0)
+                }
                 .navigationTitle("Silo")
-                .navigationSplitViewColumnWidth(iPadSidebarWidth)
+                .navigationSplitViewColumnWidth(
+                    min: iPadSidebarWidth,
+                    ideal: iPadSidebarWidth,
+                    max: iPadSidebarWidth
+                )
                 .toolbar(removing: .sidebarToggle)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
