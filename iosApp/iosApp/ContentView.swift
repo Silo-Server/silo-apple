@@ -964,6 +964,7 @@ struct MainTabView: View {
     /// its cache invalidation and network refresh finish.
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var iPadColumnVisibility: NavigationSplitViewVisibility = .detailOnly
     /// Shared namespace for the poster → detail zoom transition. Injected into
     /// the environment (`\.zoomNamespace`) so both the cards and the central
     /// detail destination resolve the same identity.
@@ -1173,55 +1174,112 @@ struct MainTabView: View {
         .environment(\.zoomNamespace, zoomNamespace)
     }
 
-    /// iPad regular width: sidebar list + detail pane.
-    /// Selection drives both the highlighted row and the detail content.
+    /// iPad regular width: the native sidebar overlays the detail pane without
+    /// changing its original system material or row-selection appearance.
+    /// macOS keeps the standard side-by-side split-view layout.
     ///
     /// Home / Libraries / Recommendations hide the nav bar (so SwiftUI's
     /// default sidebar toggle isn't visible on those screens). We inject a
     /// toggle closure through `\.sidebarToggle` instead — each custom header
-    /// renders a `SidebarToggleButton` on its leading edge, which collapses
-    /// and re-expands the sidebar. Video playback doesn't overlap the sidebar
-    /// because the player is presented via `fullScreenCover` on
-    /// `router.presentedPlayer` rather than pushed into the detail pane.
+    /// renders a `SidebarToggleButton` on its leading edge while the overlay is
+    /// closed. Video playback doesn't overlap the sidebar because the player is
+    /// presented via `fullScreenCover` on `router.presentedPlayer` rather than
+    /// pushed into the detail pane.
     private var sidebarLayout: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            List(selection: Binding<MainTabDestinationID?>(
-                get: { selectedDestinationID },
-                set: { if let value = $0 { selectSidebarDestination(value) } }
-            )) {
-                ForEach(visibleDestinations) { destination in
-                    Label(
-                        destination.title,
-                        systemImage: selectedDestinationID == destination.id
-                            ? destination.selectedIcon
-                            : destination.icon
-                    )
-                    .tag(destination.id)
-                }
-            }
-            .navigationTitle("Silo")
-            .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 280)
-        } detail: {
-            NavigationStack(path: $router.path) {
-                destinationContent(for: selectedDestination)
-                    .id(selectedDestination.id)
-                    .navigationDestination(for: Route.self) { route in
-                        routeContent(for: route)
-                    }
-            }
+        Group {
+            #if os(iOS)
+            iPadSidebarLayout
+                .environment(
+                    \.sidebarToggle,
+                    iPadColumnVisibility == .detailOnly ? toggleSidebar : nil
+                )
+            #else
+            macSidebarLayout
+                .environment(\.sidebarToggle, toggleSidebar)
+            #endif
         }
-        .environment(\.sidebarToggle, toggleSidebar)
         .environment(\.zoomNamespace, zoomNamespace)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             NowPlayingShelf(style: .card)
         }
     }
 
-    /// Collapses or re-expands the sidebar. Animated so the detail pane
-    /// slides into place rather than snapping.
+    #if os(iOS)
+    private let iPadSidebarWidth: CGFloat = 320
+
+    private var iPadSidebarLayout: some View {
+        NavigationSplitView(columnVisibility: $iPadColumnVisibility) {
+            sidebarList(dismissAfterSelection: true)
+                .navigationTitle("Silo")
+                .navigationSplitViewColumnWidth(iPadSidebarWidth)
+                .toolbar(removing: .sidebarToggle)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(action: dismissSidebar) {
+                            Image(systemName: "arrow.left")
+                        }
+                        .accessibilityLabel("Close sidebar")
+                    }
+                }
+        } detail: {
+            sidebarDetailContent
+                .toolbar(removing: .sidebarToggle)
+        }
+        .navigationSplitViewStyle(.prominentDetail)
+    }
+
+    #else
+    private var macSidebarLayout: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            sidebarList(dismissAfterSelection: false)
+                .navigationTitle("Silo")
+        } detail: {
+            sidebarDetailContent
+        }
+    }
+    #endif
+
+    private var sidebarDetailContent: some View {
+        NavigationStack(path: $router.path) {
+            destinationContent(for: selectedDestination)
+                .id(selectedDestination.id)
+                .navigationDestination(for: Route.self) { route in
+                    routeContent(for: route)
+                }
+        }
+    }
+
+    private func sidebarList(dismissAfterSelection: Bool) -> some View {
+        List(selection: Binding<MainTabDestinationID?>(
+            get: { selectedDestinationID },
+            set: { value in
+                guard let value else { return }
+                selectSidebarDestination(value)
+                if dismissAfterSelection {
+                    dismissSidebar()
+                }
+            }
+        )) {
+            ForEach(visibleDestinations) { destination in
+                Label(
+                    destination.title,
+                    systemImage: selectedDestinationID == destination.id
+                        ? destination.selectedIcon
+                        : destination.icon
+                )
+                .tag(destination.id)
+            }
+        }
+    }
+
+    /// Collapses or re-expands the sidebar without moving the detail content.
     private func toggleSidebar() {
         withAnimation(.easeInOut(duration: 0.25)) {
+            #if os(iOS)
+            iPadColumnVisibility = iPadColumnVisibility == .detailOnly ? .all : .detailOnly
+            #else
             columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+            #endif
         }
     }
 
@@ -1231,6 +1289,15 @@ struct MainTabView: View {
     private func selectSidebarDestination(_ destinationID: MainTabDestinationID) {
         router.popToRoot()
         selectedDestinationID = destinationID
+    }
+
+    private func dismissSidebar() {
+        #if os(iOS)
+        guard iPadColumnVisibility != .detailOnly else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            iPadColumnVisibility = .detailOnly
+        }
+        #endif
     }
 
     @ViewBuilder

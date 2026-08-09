@@ -289,6 +289,12 @@ struct DownloadsView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        #if os(iOS)
+        ToolbarItem(placement: .topBarLeading) {
+            SidebarToggleButton()
+        }
+        #endif
+
         if isSelecting {
             ToolbarItem(placement: .navigation) {
                 Button(allSelected ? "Clear" : "Select All") { toggleSelectAll() }

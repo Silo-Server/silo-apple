@@ -17,7 +17,7 @@ extension EnvironmentValues {
     }
 }
 
-/// Leading hamburger-style button that toggles the iPad sidebar.
+/// Leading sidebar button that opens the iPad overlay.
 ///
 /// Renders nothing unless a toggle action is present in the environment —
 /// i.e. only on iPad in the sidebar layout. Styled to match the circular
@@ -35,6 +35,7 @@ struct SidebarToggleButton: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Open sidebar")
         }
     }
 }
