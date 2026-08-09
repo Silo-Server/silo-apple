@@ -1,5 +1,9 @@
 import Foundation
 
+extension Notification.Name {
+    static let userLibrariesDidRefresh = Notification.Name("userLibrariesDidRefresh")
+}
+
 @MainActor
 enum StartupContentPrefetcher {
     // tvOS paints a full-width first row plus the focus marquee's logo and
@@ -197,6 +201,10 @@ enum StartupContentPrefetcher {
                 userLibrariesTask = nil
             }
             ResponseCache.shared.set(response, for: CacheKey.userLibraries)
+            NotificationCenter.default.post(
+                name: .userLibrariesDidRefresh,
+                object: response
+            )
             return response
         } catch {
             if profileScopedGeneration == generation {

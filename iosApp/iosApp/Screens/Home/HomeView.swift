@@ -268,7 +268,10 @@ struct HomeView: View {
             showRefreshStatus()
         }
 
-        await viewModel.loadSections()
+        async let homeRefresh: Void = viewModel.loadSections()
+        async let libraryRefresh: LibrariesResponse? = try? await StartupContentPrefetcher
+            .fetchUserLibraries()
+        _ = await (homeRefresh, libraryRefresh)
 
         await MainActor.run {
             scheduleRefreshStatusHide()

@@ -250,7 +250,13 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testMainTabProjectionKeepsLibraryIdentityAndHidesUnsupportedShortcuts() {
-        let movie = Library(id: 7, name: "Movies", type: "movies", sortOrder: 0, posterUrl: nil)
+        let movie = Library(
+            id: 7,
+            name: "Renamed Movies",
+            type: "movies",
+            sortOrder: 0,
+            posterUrl: nil
+        )
         let series = Library(id: 8, name: "Series", type: "series", sortOrder: 1, posterUrl: nil)
         let audiobook = Library(
             id: 9,
@@ -288,7 +294,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
                 .app(.calendar),
             ]
         )
-        XCTAssertEqual(destinations[4].title, "Movies")
+        XCTAssertEqual(
+            destinations[4].title,
+            "Renamed Movies",
+            "pinned destinations should use current library metadata instead of their stored label"
+        )
         XCTAssertFalse(
             destinations.contains { $0.id == .app(.libraries) },
             "authored categories and unsupported shortcut IDs must not collapse into an aggregate tab"

@@ -297,7 +297,11 @@ struct InterfaceCustomizationView: View {
     }
 
     private func displayTitle(for item: PrimaryMenuItem) -> String {
-        item.title
+        if case .library(let libraryId, _) = item,
+           let currentName = libraries.first(where: { $0.id == libraryId })?.name {
+            return currentName
+        }
+        return item.title
     }
 
     private func move(from source: IndexSet, to destination: Int) {

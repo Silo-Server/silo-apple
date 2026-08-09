@@ -1064,7 +1064,8 @@ func projectedMainTabDestinations(
         case .builtin(.forYou): destination = .app(.recommendations)
         case .builtin(.calendar): destination = .app(.calendar)
         case .library(let libraryId, let label):
-            destination = .library(id: libraryId, label: label)
+            let currentLabel = availableLibraries.first(where: { $0.id == libraryId })?.name
+            destination = .library(id: libraryId, label: currentLabel ?? label)
         case .section, .collection:
             destination = nil
         }
@@ -1268,6 +1269,13 @@ struct MainTabView: View {
                 selectedDestinationID,
                 visibleDestinations: visibleDestinations
             )
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) {
+            notification in
+            guard let authority = currentLibraryAuthority,
+                  let response = notification.object as? LibrariesResponse
+            else { return }
+            librarySnapshot = .init(authority: authority, libraries: response.libraries)
         }
         #if !os(macOS)
         .fullScreenCover(isPresented: Binding(
