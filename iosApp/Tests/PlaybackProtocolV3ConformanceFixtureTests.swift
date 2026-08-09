@@ -1,0 +1,329 @@
+import Foundation
+import XCTest
+@testable import Silo
+
+final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
+    func testServerErrorEnvelopeDecodes() throws {
+        let fixture = try decodeFixture(PlaybackV3ErrorFixture.self, named: "error_response")
+
+        XCTAssertEqual(fixture.error, "client_upgrade_required")
+        XCTAssertFalse(fixture.message.isEmpty)
+    }
+
+    func testMatrixCoversEveryNeutralContractCategory() throws {
+        let matrix = try decodeFixture(PlaybackV3ConformanceMatrix.self, named: "conformance_matrix")
+        XCTAssertEqual(matrix.schemaVersion, 1)
+        XCTAssertEqual(matrix.plannerScenarios.count, 17)
+        XCTAssertEqual(matrix.replanScenarios.count, 9)
+        XCTAssertEqual(matrix.protocolScenarios.count, 7)
+
+        let categories = Set(
+            matrix.plannerScenarios.map(\.category)
+                + matrix.replanScenarios.map(\.category)
+                + matrix.protocolScenarios.map(\.category)
+        )
+        XCTAssertTrue(
+            Set([
+                "evidence_tier_gating",
+                "deliveries_negotiation",
+                "audio_only_planning",
+                "hdr_dv_matrix",
+                "audio_matrix",
+                "subtitle_matrix",
+                "available_qualities",
+                "track_change_replan",
+                "quality_change_replan",
+                "idempotent_replan",
+                "concurrent_replan",
+                "mid_seek_replan",
+                "legacy_426",
+                "output_context_invalidation",
+                "attempt_key_echo_and_loop",
+                "recovery_matrix",
+                "restart_matrix",
+                "capacity_matrix",
+                "route_event_limits"
+            ]).isSubset(of: categories)
+        )
+
+        let names = matrix.plannerScenarios.map(\.name)
+            + matrix.replanScenarios.map(\.name)
+            + matrix.protocolScenarios.map(\.name)
+        XCTAssertEqual(Set(names).count, names.count, "conformance scenario names must be unique")
+    }
+
+    func testMatrixDecodesHDRDVAudioAndSubtitleExpectations() throws {
+        let matrix = try decodeFixture(PlaybackV3ConformanceMatrix.self, named: "conformance_matrix")
+
+        let hdr10 = try plannerScenario(named: "hdr10_exact_direct", in: matrix)
+        XCTAssertEqual(hdr10.source.dynamicRange, "hdr10")
+        XCTAssertEqual(hdr10.expected.delivery, "original_http")
+        XCTAssertEqual(hdr10.expected.claims?.video.hdr10, true)
+
+        let dolbyVision = try plannerScenario(named: "dolby_vision_8_exact_direct", in: matrix)
+        XCTAssertEqual(dolbyVision.source.dolbyVisionProfile, 8)
+        XCTAssertEqual(dolbyVision.expected.delivery, "original_http")
+        XCTAssertEqual(dolbyVision.expected.claims?.video.dolbyVision, true)
+
+        let fallback = try plannerScenario(named: "dolby_vision_7_hdr10_fallback", in: matrix)
+        XCTAssertEqual(fallback.source.dolbyVisionProfile, 7)
+        XCTAssertEqual(fallback.expected.delivery, "server_remux_progressive")
+        XCTAssertEqual(fallback.expected.transformations?.map(\.executor), ["server"])
+
+        let audioConversion = try plannerScenario(named: "truehd_audio_conversion", in: matrix)
+        XCTAssertEqual(audioConversion.source.audioCodec, "truehd")
+        XCTAssertEqual(audioConversion.expected.claims?.audio.codec, "aac")
+        XCTAssertEqual(audioConversion.expected.claims?.audio.passthrough, false)
+
+        let passthrough = try plannerScenario(named: "truehd_exact_layout_passthrough", in: matrix)
+        XCTAssertEqual(passthrough.expected.claims?.audio.codec, "truehd")
+        XCTAssertEqual(passthrough.expected.claims?.audio.passthrough, true)
+
+        let pgs = try plannerScenario(named: "embedded_pgs_sidecar", in: matrix)
+        XCTAssertEqual(pgs.request.subtitleTrackIndex, 0)
+        XCTAssertEqual(pgs.expected.subtitle?.mode, "render")
+        XCTAssertEqual(pgs.expected.subtitle?.inventory.first?.codec, "hdmv_pgs_subtitle")
+        XCTAssertEqual(pgs.expected.subtitle?.inventory.first?.delivery, "sidecar")
+
+        let ass = try plannerScenario(named: "embedded_ass_authored_render", in: matrix)
+        XCTAssertEqual(ass.expected.subtitle?.mode, "render")
+        XCTAssertEqual(ass.expected.subtitle?.inventory.first?.codec, "ass")
+
+        let dvd = try plannerScenario(named: "embedded_dvd_burn_in", in: matrix)
+        XCTAssertEqual(dvd.expected.subtitle?.mode, "burn_in")
+        XCTAssertEqual(dvd.expected.delivery, "server_transcode_hls")
+    }
+
+    func testMatrixPreservesOpaqueAttemptIdentityAndClientIntent() throws {
+        let matrix = try decodeFixture(PlaybackV3ConformanceMatrix.self, named: "conformance_matrix")
+
+        XCTAssertTrue(
+            matrix.replanScenarios.allSatisfy { $0.request.failure == nil },
+            "track, quality, and seek-reanchor intent vectors must omit failure"
+        )
+
+        let recovery = try protocolScenario(named: "failure_recovery_preserves_intent", in: matrix)
+        let recoveryRequest = try XCTUnwrap(recovery.input.replanRequest)
+        XCTAssertEqual(recoveryRequest.operation, PlaybackProtocolV3.ReplanOperation.failureRecovery)
+        XCTAssertEqual(recoveryRequest.failure?.classification, "network_degraded")
+        XCTAssertEqual(recoveryRequest.attemptedPlanKeys, [recoveryRequest.planAttemptKey])
+        XCTAssertEqual(recoveryRequest.selectedTracks.subtitle?.index, 2)
+        XCTAssertEqual(recovery.expected.selectionPreserved, true)
+        XCTAssertEqual(recovery.expected.positionPreserved, true)
+
+        let restart = try protocolScenario(named: "restart_replays_terminal_attempt", in: matrix)
+        XCTAssertEqual(restart.input.restarted, true)
+        XCTAssertEqual(restart.input.persistedDecision?.terminal?.reason, "transcode_start_failed")
+        XCTAssertEqual(restart.expected.responseReplayedVerbatim, true)
+        XCTAssertEqual(restart.expected.capacityDelta, 0)
+
+        let capacity = try protocolScenario(named: "capacity_unavailable_cleans_up", in: matrix)
+        XCTAssertEqual(capacity.input.capacityAvailable, false)
+        XCTAssertEqual(capacity.expected.terminalReason, "capacity_unavailable")
+        XCTAssertEqual(capacity.expected.cleanupComplete, true)
+
+        let routeLimit = try protocolScenario(named: "route_event_diagnostic_limit", in: matrix)
+        XCTAssertEqual(routeLimit.input.routeEvent?.diagnostics.count, 33)
+        XCTAssertEqual(routeLimit.expected.httpStatus, 400)
+        XCTAssertEqual(routeLimit.expected.action, "reject_without_persisting")
+
+        let opaque = try protocolScenario(named: "opaque_attempt_key_loop", in: matrix)
+        let serverKey = try XCTUnwrap(opaque.input.serverPlanAttemptKey)
+        XCTAssertEqual(opaque.input.replanEcho, serverKey)
+        XCTAssertEqual(opaque.input.attemptedPlanKeys, [serverKey])
+        XCTAssertEqual(opaque.expected.action, "reject_already_attempted_plan")
+    }
+
+    private var decoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
+    }
+
+    private func fixtureURL(named name: String) throws -> URL {
+        try XCTUnwrap(
+            Bundle(for: Self.self).url(forResource: name, withExtension: "json"),
+            "Missing vendored Playback V3 fixture \(name).json"
+        )
+    }
+
+    private func decodeFixture<T: Decodable>(_ type: T.Type, named name: String) throws -> T {
+        try decoder.decode(type, from: Data(contentsOf: fixtureURL(named: name)))
+    }
+
+    private func plannerScenario(
+        named name: String,
+        in matrix: PlaybackV3ConformanceMatrix
+    ) throws -> PlaybackV3ConformancePlannerScenario {
+        try XCTUnwrap(matrix.plannerScenarios.first { $0.name == name })
+    }
+
+    private func protocolScenario(
+        named name: String,
+        in matrix: PlaybackV3ConformanceMatrix
+    ) throws -> PlaybackV3ConformanceProtocolScenario {
+        try XCTUnwrap(matrix.protocolScenarios.first { $0.name == name })
+    }
+}
+
+private struct PlaybackV3ErrorFixture: Decodable {
+    let error: String
+    let message: String
+}
+
+private struct PlaybackV3ConformanceMatrix: Decodable {
+    let schemaVersion: Int
+    let plannerScenarios: [PlaybackV3ConformancePlannerScenario]
+    let replanScenarios: [PlaybackV3ConformanceReplanScenario]
+    let protocolScenarios: [PlaybackV3ConformanceProtocolScenario]
+}
+
+private struct PlaybackV3ConformancePlannerScenario: Decodable {
+    let name: String
+    let category: String
+    let request: PlaybackV3ConformanceStartRequest
+    let source: PlaybackV3SourceDescriptor
+    let attemptedPlanKeys: [String]?
+    let expected: PlaybackV3ConformancePlannerExpectation
+}
+
+private struct PlaybackV3ConformanceStartRequest: Decodable {
+    let protocolVersion: Int
+    let playbackAttemptId: String
+    let qualityPreference: String
+    let subtitleTrackId: String?
+    let subtitleTrackIndex: Int?
+    let clientCapabilities: PlaybackV3ConformanceCapabilities
+    let clientPlaybackContext: PlaybackV3ConformanceClientContext
+}
+
+private struct PlaybackV3ConformanceCapabilities: Decodable {
+    let videoEvidence: String
+    let audioEvidence: String
+    let hdr: Bool
+    let hdrDetails: PlaybackV3HDRCapabilities?
+    let audioPassthrough: PlaybackV3AudioPassthrough?
+}
+
+private struct PlaybackV3ConformanceClientContext: Decodable {
+    let protocolVersion: Int
+    let device: PlaybackV3ConformanceDevice
+    let output: PlaybackV3OutputContext
+    let deliveries: [String: PlaybackV3ConformanceDelivery]
+}
+
+private struct PlaybackV3ConformanceDevice: Decodable {
+    let platform: String
+}
+
+private struct PlaybackV3ConformanceDelivery: Decodable {
+    let enabled: Bool
+    let supportedOnDevice: Bool
+    let transformations: [PlaybackV3Transformation]?
+}
+
+private struct PlaybackV3ConformancePlannerExpectation: Decodable {
+    let outcome: String
+    let delivery: String?
+    let decisionReason: String?
+    let planId: String?
+    let planAttemptKey: String?
+    let selectedTracks: PlaybackV3SelectedTracks?
+    let subtitle: PlaybackV3SubtitleDecision?
+    let claims: PlaybackV3ValidationClaims?
+    let transformations: [PlaybackV3Transformation]?
+    let availableQualities: [PlaybackV3ConformanceAvailableQuality]?
+}
+
+private struct PlaybackV3ConformanceAvailableQuality: Decodable {
+    let label: String
+    let height: Int?
+    let bitrateKbps: Int
+    let preservesSource: Bool
+}
+
+private struct PlaybackV3ConformanceReplanScenario: Decodable {
+    let name: String
+    let category: String
+    let request: PlaybackV3ConformanceReplanRequest
+    let expected: PlaybackV3ConformanceReplanExpectation
+}
+
+private struct PlaybackV3ConformanceReplanRequest: Decodable {
+    let operation: String
+    let playbackAttemptId: String
+    let replanRequestId: String
+    let failedPlanId: String
+    let planAttemptKey: String
+    let attemptedPlanKeys: [String]
+    let positionSeconds: Double
+    let selectedTracks: PlaybackV3SelectedTracks
+    let failure: PlaybackV3Failure?
+}
+
+private struct PlaybackV3ConformanceReplanExpectation: Decodable {
+    let httpStatus: Int?
+    let preserveUnmodifiedTracks: Bool?
+    let selectedQuality: String?
+    let positionPreserved: Bool?
+    let positionSeconds: Double?
+    let responseReplayedVerbatim: Bool?
+    let sameRequestAndBodyStatus: Int?
+    let changedBodyStatus: Int?
+    let changedBodyError: String?
+    let whileFirstLeaseActiveStatus: Int?
+    let concurrentError: String?
+    let afterCompletionStatus: Int?
+}
+
+private struct PlaybackV3ConformanceProtocolScenario: Decodable {
+    let name: String
+    let category: String
+    let input: PlaybackV3ConformanceProtocolInput
+    let expected: PlaybackV3ConformanceProtocolExpectation
+}
+
+private struct PlaybackV3ConformanceProtocolInput: Decodable {
+    let body: [String: Int]?
+    let planId: String?
+    let firstOutputContextId: String?
+    let secondOutputContextId: String?
+    let firstPlanAttemptKey: String?
+    let secondPlanAttemptKey: String?
+    let serverPlanAttemptKey: String?
+    let replanEcho: String?
+    let attemptedPlanKeys: [String]?
+    let replanRequest: PlaybackV3ConformanceReplanRequest?
+    let startRequest: PlaybackV3ConformanceStartRequest?
+    let persistedDecision: PlaybackV3DecisionResponse?
+    let restarted: Bool?
+    let capacityAvailable: Bool?
+    let routeEvent: PlaybackV3ConformanceRouteEvent?
+}
+
+private struct PlaybackV3ConformanceRouteEvent: Decodable {
+    let protocolVersion: Int
+    let playbackAttemptId: String
+    let sessionId: String?
+    let planId: String?
+    let planAttemptId: String?
+    let planAttemptKey: String?
+    let event: String
+    let outputContextId: String?
+    let diagnostics: [String: String]
+}
+
+private struct PlaybackV3ConformanceProtocolExpectation: Decodable {
+    let httpStatus: Int?
+    let error: String?
+    let outcome: String?
+    let terminalReason: String?
+    let planIdUnchanged: Bool?
+    let planAttemptKeyChanged: Bool?
+    let selectionPreserved: Bool?
+    let positionPreserved: Bool?
+    let responseReplayedVerbatim: Bool?
+    let capacityDelta: Int?
+    let cleanupComplete: Bool?
+    let action: String?
+}

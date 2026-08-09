@@ -13,7 +13,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             return XCTFail("Expected the recovered server fixture to be playable")
         }
         XCTAssertEqual(sessionId, "11111111-1111-4111-8111-111111111111")
-        XCTAssertEqual(plan.planAttemptKey, "v3:f0144c47fa349e3e")
+        XCTAssertFalse(plan.planAttemptKey.isEmpty)
         XCTAssertEqual(plan.source.durationSeconds, 7_265.5)
         XCTAssertEqual(plan.availableQualities.map(\.label), ["original", "720p", "480p"])
         XCTAssertEqual(plan.subtitle.inventory.map(\.combinedIndex), [0, 1, 2, 3, 4])
@@ -64,13 +64,21 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(Set(start.clientPlaybackContext.deliveries.keys), ["original_http"])
 
         let replan = try fixtureObject(named: "replan_request")
-        XCTAssertEqual(replan["plan_attempt_key"] as? String, "v3:0000000000000001")
+        let decision = try decodeFixture(
+            PlaybackV3DecisionResponse.self,
+            named: "decision_response"
+        )
+        let plan = try XCTUnwrap(decision.playbackPlan)
+        XCTAssertEqual(replan["failed_plan_id"] as? String, plan.planId)
+        XCTAssertEqual(replan["plan_attempt_key"] as? String, plan.planAttemptKey)
+        XCTAssertEqual(replan["attempted_plan_keys"] as? [String], [plan.planAttemptKey])
         XCTAssertNil(replan["engine"])
         XCTAssertNil(replan["output_route_generation"])
 
         let routeEvent = try fixtureObject(named: "route_event")
         XCTAssertEqual(routeEvent["output_context_id"] as? String, "7")
-        XCTAssertEqual(routeEvent["plan_attempt_key"] as? String, "v3:0000000000000001")
+        XCTAssertEqual(routeEvent["plan_id"] as? String, plan.planId)
+        XCTAssertEqual(routeEvent["plan_attempt_key"] as? String, plan.planAttemptKey)
 
         let subtitleFixture = try fixtureObject(named: "subtitle_inventory")
         let inventory = try XCTUnwrap(subtitleFixture["inventory"] as? [[String: Any]])
@@ -78,6 +86,15 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
         let attemptKeys = try fixtureArray(named: "attempt_keys")
         XCTAssertFalse(attemptKeys.isEmpty)
+        for vector in attemptKeys {
+            let serverKey = try XCTUnwrap(vector["server_plan_attempt_key"] as? String)
+            XCTAssertEqual(vector["replan_echo"] as? String, serverKey)
+            XCTAssertEqual(vector["attempted_plan_keys"] as? [String], [serverKey])
+            XCTAssertEqual(
+                vector["expected_server_action"] as? String,
+                "reject_already_attempted_plan"
+            )
+        }
     }
 
     func testPlanAttemptKeyIsOpaqueAndEchoedVerbatim() throws {
