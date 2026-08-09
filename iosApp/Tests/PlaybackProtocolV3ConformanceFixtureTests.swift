@@ -15,7 +15,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         XCTAssertEqual(matrix.schemaVersion, 1)
         XCTAssertEqual(matrix.plannerScenarios.count, 17)
         XCTAssertEqual(matrix.replanScenarios.count, 9)
-        XCTAssertEqual(matrix.protocolScenarios.count, 7)
+        XCTAssertEqual(matrix.protocolScenarios.count, 8)
 
         let categories = Set(
             matrix.plannerScenarios.map(\.category)
@@ -37,6 +37,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
                 "concurrent_replan",
                 "mid_seek_replan",
                 "legacy_426",
+                "draft_v3_426",
                 "output_context_invalidation",
                 "attempt_key_echo_and_loop",
                 "recovery_matrix",
@@ -132,6 +133,21 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         XCTAssertEqual(opaque.input.replanEcho, serverKey)
         XCTAssertEqual(opaque.input.attemptedPlanKeys, [serverKey])
         XCTAssertEqual(opaque.expected.action, "reject_already_attempted_plan")
+
+        let draft = try protocolScenario(named: "draft_v3_start_requires_upgrade", in: matrix)
+        XCTAssertEqual(draft.input.body?.protocolVersion, 3)
+        XCTAssertEqual(draft.input.body?.fileId, 42)
+        XCTAssertEqual(draft.expected.httpStatus, 426)
+        XCTAssertEqual(draft.expected.error, "client_upgrade_required")
+
+        let restartRequest = try XCTUnwrap(restart.input.startRequest)
+        XCTAssertEqual(restartRequest.progressPersistence, "client")
+        XCTAssertNotNil(restartRequest.startPosition)
+        XCTAssertTrue(
+            restart.input.persistedDecision?.serverFeatures.contains(
+                PlaybackProtocolV3.neutralContractFeature
+            ) == true
+        )
     }
 
     private var decoder: JSONDecoder {
@@ -191,6 +207,8 @@ private struct PlaybackV3ConformanceStartRequest: Decodable {
     let protocolVersion: Int
     let playbackAttemptId: String
     let qualityPreference: String
+    let progressPersistence: String?
+    let startPosition: Double?
     let subtitleTrackId: String?
     let subtitleTrackIndex: Int?
     let clientCapabilities: PlaybackV3ConformanceCapabilities
@@ -279,7 +297,7 @@ private struct PlaybackV3ConformanceProtocolScenario: Decodable {
 }
 
 private struct PlaybackV3ConformanceProtocolInput: Decodable {
-    let body: [String: Int]?
+    let body: PlaybackV3ConformanceDraftBody?
     let planId: String?
     let firstOutputContextId: String?
     let secondOutputContextId: String?
@@ -294,6 +312,11 @@ private struct PlaybackV3ConformanceProtocolInput: Decodable {
     let restarted: Bool?
     let capacityAvailable: Bool?
     let routeEvent: PlaybackV3ConformanceRouteEvent?
+}
+
+private struct PlaybackV3ConformanceDraftBody: Decodable {
+    let protocolVersion: Int?
+    let fileId: Int
 }
 
 private struct PlaybackV3ConformanceRouteEvent: Decodable {

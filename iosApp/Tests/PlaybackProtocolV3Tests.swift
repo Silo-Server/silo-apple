@@ -47,6 +47,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             named: "capability_response"
         )
         XCTAssertEqual(capability.protocolVersions, [3])
+        XCTAssertTrue(capability.features.contains(PlaybackProtocolV3.neutralContractFeature))
         XCTAssertEqual(
             Set(capability.deliveries),
             [
@@ -58,6 +59,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
 
         let start = try decodeFixture(PlaybackV3StartRequest.self, named: "start_request")
+        XCTAssertEqual(start.progressPersistence, "client")
+        XCTAssertEqual(start.startPosition, 12.5)
         XCTAssertEqual(start.clientCapabilities.videoEvidence, PlaybackProtocolV3.Evidence.exact)
         XCTAssertEqual(start.clientPlaybackContext.device.platform, "android")
         XCTAssertEqual(start.clientPlaybackContext.output.outputContextId, "7")
@@ -69,6 +72,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             named: "decision_response"
         )
         let plan = try XCTUnwrap(decision.playbackPlan)
+        XCTAssertTrue(decision.serverFeatures.contains(PlaybackProtocolV3.neutralContractFeature))
         XCTAssertEqual(replan["failed_plan_id"] as? String, plan.planId)
         XCTAssertEqual(replan["plan_attempt_key"] as? String, plan.planAttemptKey)
         XCTAssertEqual(replan["attempted_plan_keys"] as? [String], [plan.planAttemptKey])

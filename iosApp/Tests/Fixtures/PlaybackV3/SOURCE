@@ -1,6 +1,6 @@
 Source: silo-server internal/playback/testdata/protocol_v3
 Server ref: codex/playback-v3-neutral-server
-Server commit: 63247a36a3dcb4462cd6c6145b090025578dbbf9
-Vendored: 2026-08-08
+Server commit: 30ddc0d09255816e44cd9874ff79a785d8a6fd8e
+Vendored: 2026-08-09
 
 Refresh these files from the exact server commit above, then regenerate Silo.xcodeproj with xcodegen generate.
