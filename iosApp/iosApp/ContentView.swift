@@ -1301,6 +1301,7 @@ struct MainTabView: View {
                         .accessibilityLabel("Close sidebar")
                     }
                 }
+                .simultaneousGesture(iPadSidebarDismissGesture)
         } detail: {
             sidebarDetailContent
                 .toolbar(removing: .sidebarToggle)
@@ -1379,6 +1380,28 @@ struct MainTabView: View {
         }
         #endif
     }
+
+    #if os(iOS)
+    private var iPadSidebarDismissGesture: some Gesture {
+        DragGesture(minimumDistance: 16)
+            .onEnded { value in
+                let leftwardDistance = max(
+                    -value.translation.width,
+                    -value.predictedEndTranslation.width
+                )
+                let verticalDistance = max(
+                    abs(value.translation.height),
+                    abs(value.predictedEndTranslation.height)
+                )
+
+                guard leftwardDistance >= 72,
+                      leftwardDistance > verticalDistance * 1.25
+                else { return }
+
+                dismissSidebar()
+            }
+    }
+    #endif
 
     @ViewBuilder
     private func destinationContent(for destination: MainTabDestination) -> some View {
