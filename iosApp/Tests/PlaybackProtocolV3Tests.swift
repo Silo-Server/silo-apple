@@ -762,6 +762,27 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         ))
     }
 
+    func testMissingPlaybackSessionDetectionRequiresTheSpecific404() {
+        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(
+            HTTPError.http(
+                statusCode: 404,
+                body: #"{"error":"playback_session_not_found","message":"Playback session not found"}"#
+            )
+        ))
+        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionMissing(
+            HTTPError.http(statusCode: 404, body: "Playback session not found")
+        ))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(
+            HTTPError.http(statusCode: 404, body: "Not found")
+        ))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(
+            HTTPError.http(
+                statusCode: 500,
+                body: #"{"error":"playback_session_not_found"}"#
+            )
+        ))
+    }
+
     func testHDRAttestationDoesNotInventHDR10PlusOrMacDolbyVision() {
         let details = ApplePlaybackV3Capabilities.hdrDetails(
             hdr10: true,

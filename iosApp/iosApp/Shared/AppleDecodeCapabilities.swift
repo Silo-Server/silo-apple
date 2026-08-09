@@ -45,12 +45,27 @@ enum AppleDecodeCapabilities {
             "opus", "vorbis", "pcm", "pcm_s16le", "pcm_s24le"
         ]
 
-    /// Containers the client demuxes. Both spellings of the two aliased ones
-    /// (`mkv`/`matroska`, `ts`/`mpegts`) are listed: the server sends whichever
-    /// its scanner recorded, and a claim it cannot match reads as "unsupported".
-    static let containers: [String] = isSimulator
+    /// Video containers the client demuxes. Both spellings of the two aliased
+    /// ones (`mkv`/`matroska`, `ts`/`mpegts`) are listed: the server sends
+    /// whichever its scanner recorded, and a claim it cannot match reads as
+    /// "unsupported".
+    static let videoContainers: [String] = isSimulator
         ? ["mp4", "mov", "m4v", "mkv", "matroska", "ts", "m2ts", "mpegts"]
         : ["mp4", "mov", "m4v", "mkv", "matroska", "webm", "avi", "ts", "m2ts", "mpegts"]
+
+    /// Bare audio containers AVPlayer opens directly on every supported Apple
+    /// platform. The scanner currently normalizes M4A/M4B to `mp4`, but the
+    /// aliases remain honest for legacy metadata and future scanner changes.
+    ///
+    /// Ogg is deliberately absent. AVPlayer opens Ogg/Opus on current OSes but
+    /// rejects Ogg/Vorbis, while V3 advertises codecs and containers as
+    /// independent flat lists. Claiming `ogg` alongside the valid `vorbis`
+    /// codec claim would therefore authorize an unplayable original route.
+    static let audioContainers = ["mp3", "m4a", "m4b", "aac", "flac", "wav"]
+
+    /// The full direct-play container vocabulary used by flat capability
+    /// surfaces and by the `original_http` V3 delivery.
+    static let containers = videoContainers + audioContainers
 
     /// The resolution ceiling to claim, or nil for "no client-imposed cap".
     /// The simulator renders at 1080p; on device the ceiling is the display

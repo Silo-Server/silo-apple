@@ -38,6 +38,20 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         XCTAssertEqual(v3, Set(AppleDecodeCapabilities.audioCodecs))
     }
 
+    func testBareAudioContainersReachTheFlatAndOriginalHTTPClaims() throws {
+        let expected = Set(["mp3", "m4a", "m4b", "aac", "flac", "wav"])
+        XCTAssertEqual(Set(AppleDecodeCapabilities.audioContainers), expected)
+        XCTAssertTrue(expected.isSubset(of: Set(AppleDecodeCapabilities.containers)))
+
+        let originalHTTP = try XCTUnwrap(
+            ApplePlaybackV3Capabilities.snapshot().context.deliveries[
+                PlaybackProtocolV3.DeliveryClass.originalHTTP
+            ]
+        )
+        XCTAssertTrue(expected.isSubset(of: Set(originalHTTP.containers)))
+        XCTAssertFalse(originalHTTP.containers.contains("ogg"))
+    }
+
     // MARK: - The vocabulary itself
 
     func testDeviceListsCoverTheFormatsTheStackDecodes() {
@@ -47,6 +61,9 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         let containers = AppleDecodeCapabilities.containers
         XCTAssertTrue(containers.contains("mkv"))
         XCTAssertTrue(containers.contains("mp4"))
+        XCTAssertTrue(containers.contains("mp3"))
+        XCTAssertTrue(containers.contains("flac"))
+        XCTAssertTrue(containers.contains("wav"))
         // Both spellings of the aliased containers, or a server that recorded
         // the other one reads as unsupported.
         XCTAssertEqual(containers.contains("mkv"), containers.contains("matroska"))

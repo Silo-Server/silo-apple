@@ -1687,6 +1687,13 @@ class PlayerViewModel {
             } catch {
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 Self.logger.error("Protocol V3 replan failed: \(String(describing: error), privacy: .public)")
+                if PlaybackSessionBridge.isPlaybackSessionMissing(error),
+                   self.attemptStaleSessionRenewal(
+                       reason: "protocol_v3_replan_missing_session",
+                       observedPosition: position
+                   ) {
+                    return
+                }
                 self.finalizeTerminalPlaybackError(error.localizedDescription)
             }
         }

@@ -1455,7 +1455,7 @@ actor PlaybackSessionBridge {
 
     // MARK: - Helpers
 
-    private static func isPlaybackSessionMissing(_ error: Error) -> Bool {
+    static func isPlaybackSessionMissing(_ error: Error) -> Bool {
         guard case let HTTPError.http(statusCode, body) = error,
               statusCode == 404 else {
             return false
