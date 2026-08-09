@@ -7,6 +7,7 @@ struct AudioPlaybackTrack: Identifiable, Hashable {
     let index: Int
     let fileId: Int
     let fileName: String?
+    let version: FileVersion
     let durationSeconds: Double
     let startOffsetSeconds: Double
     var id: Int { index }
@@ -49,6 +50,7 @@ struct AudiobookPlaybackContext {
                 index: index,
                 fileId: part.fileId,
                 fileName: part.fileName,
+                version: part,
                 durationSeconds: duration,
                 startOffsetSeconds: offset
             ))

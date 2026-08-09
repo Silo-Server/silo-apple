@@ -655,6 +655,7 @@ final class DetailVersionSelectionTests: XCTestCase {
                 index: 0,
                 fileId: 7,
                 fileName: nil,
+                version: version(fileId: 7, resolution: nil),
                 durationSeconds: 120,
                 startOffsetSeconds: 0
             ),
@@ -662,6 +663,7 @@ final class DetailVersionSelectionTests: XCTestCase {
                 index: 1,
                 fileId: 8,
                 fileName: nil,
+                version: version(fileId: 8, resolution: nil),
                 durationSeconds: 180,
                 startOffsetSeconds: 120
             ),

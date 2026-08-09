@@ -31,7 +31,7 @@ enum ApplePlaybackV3Capabilities {
     /// mirrors `ApplePlaybackRoutePlanner`'s native-direct and loopback
     /// allowlists rather than the wider set FFmpeg can demux: a codec claimed
     /// here is one the server may hand us untranscoded.
-    private static let directVideoCodecs = ["h264", "hevc"]
+    private static let directVideoCodecs = ["h264", "hevc", AppleDecodeCapabilities.mpeg2VideoCodec]
 
     static func snapshot() -> ApplePlaybackV3CapabilitySnapshot {
         let output = outputSnapshot()
@@ -187,7 +187,7 @@ enum ApplePlaybackV3Capabilities {
             ("h264", kCMVideoCodecType_H264),
             ("hevc", kCMVideoCodecType_HEVC)
         ]
-        return codecTypes.compactMap { codec, codecType in
+        var capabilities: [PlaybackV3VideoDecodeCapability] = codecTypes.compactMap { codec, codecType in
             guard directVideoCodecs.contains(codec), hardwareDecodeSupported(codecType) else {
                 return nil
             }
@@ -210,6 +210,24 @@ enum ApplePlaybackV3Capabilities {
                 hardware: true
             )
         }
+        #if !targetEnvironment(simulator)
+        // PlayerCore carries a bounded FFmpeg software path for MPEG-2. Keep
+        // it out of the hardware list while still advertising the route the
+        // production executor can actually decode.
+        capabilities.append(PlaybackV3VideoDecodeCapability(
+            codec: AppleDecodeCapabilities.mpeg2VideoCodec,
+            decoderName: "FFmpeg",
+            profiles: [],
+            levels: [],
+            bitDepths: [8],
+            maxWidth: 1_920,
+            maxHeight: 1_080,
+            maxFrameRate: 60,
+            maxBitrateKbps: 50_000,
+            hardware: false
+        ))
+        #endif
+        return capabilities
     }
 
     /// Whether the platform routes this codec to an accelerated decoder.
@@ -239,7 +257,7 @@ enum ApplePlaybackV3Capabilities {
         // open. The server gives output HDR evidence precedence over device
         // decoder evidence, so a hardcoded device-wide claim could select an
         // HDR route for an SDR display chain.
-        let hdrDetails: PlaybackV3HDRCapabilities? = {
+        let hdrCapabilities: PlaybackV3HDRCapabilities? = {
             #if targetEnvironment(simulator)
             return PlaybackV3HDRCapabilities(
                 hdr10: false,
@@ -248,22 +266,20 @@ enum ApplePlaybackV3Capabilities {
                 dolbyVisionProfiles: []
             )
             #elseif os(macOS)
-            // macOS does not expose AVPlayer.availableHDRModes. Avoid
-            // advertising display-specific HDR facts that cannot be attested.
-            return PlaybackV3HDRCapabilities(
-                hdr10: false,
-                hdr10Plus: false,
-                hlg: false,
-                dolbyVisionProfiles: []
+            // macOS exposes a live output-chain eligibility signal instead of
+            // AVPlayer.availableHDRModes. It attests HDR presentation, but not
+            // Dolby Vision format support, so keep DV profiles empty.
+            return hdrDetails(
+                hdr10: AVPlayer.eligibleForHDRPlayback,
+                hlg: AVPlayer.eligibleForHDRPlayback,
+                dolbyVision: false
             )
             #else
             let modes = AVPlayer.availableHDRModes
-            return PlaybackV3HDRCapabilities(
+            return hdrDetails(
                 hdr10: modes.contains(.hdr10),
-                // Apple has no separate HDR10+ output-mode attestation.
-                hdr10Plus: false,
                 hlg: modes.contains(.hlg),
-                dolbyVisionProfiles: modes.contains(.dolbyVision) ? [5, 8] : []
+                dolbyVision: modes.contains(.dolbyVision)
             )
             #endif
         }()
@@ -278,18 +294,32 @@ enum ApplePlaybackV3Capabilities {
         sink = outputs.map { $0.uid }.sorted().joined(separator: ",")
         sinkType = outputs.map { $0.portType.rawValue }.sorted().joined(separator: ",")
         #endif
-        let hdrIdentity = hdrDetails.map {
+        let hdrIdentity = hdrCapabilities.map {
             "\($0.hdr10)|\($0.hdr10Plus)|\($0.hlg)|\($0.dolbyVisionProfiles.map { String($0) }.joined(separator: ","))"
         } ?? "unknown"
         let identity = [platformName, formFactor, sink, sinkType, hdrIdentity].joined(separator: "|")
         return PlaybackV3OutputContext(
-            hdrDetails: hdrDetails,
+            hdrDetails: hdrCapabilities,
             // Apple cannot enumerate receiver codec/layout passthrough facts,
             // and platform-attested audio evidence never earns passthrough.
             audioPassthrough: nil,
             currentSink: boundedField(sink),
             sinkType: boundedField(sinkType),
             outputContextId: outputContextId(identity)
+        )
+    }
+
+    static func hdrDetails(
+        hdr10: Bool,
+        hlg: Bool,
+        dolbyVision: Bool
+    ) -> PlaybackV3HDRCapabilities {
+        PlaybackV3HDRCapabilities(
+            hdr10: hdr10,
+            // Apple exposes no independent HDR10+ output attestation.
+            hdr10Plus: false,
+            hlg: hlg,
+            dolbyVisionProfiles: dolbyVision ? [5, 8] : []
         )
     }
 

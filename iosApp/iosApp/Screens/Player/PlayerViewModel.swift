@@ -1031,7 +1031,10 @@ class PlayerViewModel {
                 plan.subtitle.inventory.first(where: { $0.combinedIndex == selectedIndex })
             }
             let embeddedFFmpegIndex: Int? = selectedSubtitle.flatMap { item in
-                guard item.source == "embedded" else { return nil }
+                // A sidecar is the server-selected artifact even when it was
+                // extracted from an embedded stream. Arming both identities
+                // would publish and select the same subtitle twice.
+                guard item.source == "embedded", item.delivery != "sidecar" else { return nil }
                 return ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
                     serverCombinedIndex: item.combinedIndex,
                     in: selectedVersion
@@ -1607,7 +1610,7 @@ class PlayerViewModel {
         position: Double,
         classification: String,
         message: String,
-        operation: String = "failure_recovery",
+        operation: String? = nil,
         qualityPreference: String? = nil,
         completesQualitySwitch: Bool = false
     ) {
@@ -3169,6 +3172,7 @@ class PlayerViewModel {
         preferredAudioTrackIndex: Int?,
         preferredSubtitleTrackIndex: Int?,
         preferredSidecarSubtitleTrackId: Int64?,
+        preferredProtocolV3SubtitleIndex: Int? = nil,
         resetRouteRecoveryFlags: Bool = true
     ) {
         isLoading = true
@@ -3242,7 +3246,9 @@ class PlayerViewModel {
         pendingSubtitleFfIndex = preferredSubtitleTrackIndex
         pendingSidecarSubtitleTrackId = preferredSidecarSubtitleTrackId
         hasExplicitSubtitleChoice =
-            preferredSubtitleTrackIndex != nil || preferredSidecarSubtitleTrackId != nil
+            preferredSubtitleTrackIndex != nil
+            || preferredSidecarSubtitleTrackId != nil
+            || preferredProtocolV3SubtitleIndex != nil
         prefsForCurrentItem = nil
         prefsResolvedForCurrentItem = false
     }
@@ -3318,9 +3324,13 @@ class PlayerViewModel {
         pendingSidecarSubtitleTrackId = rendersSubtitleLocally
             ? adopted.preferredSidecarSubtitleTrackId
             : nil
-        hasExplicitSubtitleChoice = true
-        prefsForCurrentItem = nil
-        prefsResolvedForCurrentItem = true
+        // Adopting an authoritative server plan does not convert an automatic
+        // system/server policy into a user choice. Manual choices stay latched;
+        // automatic choices remain eligible for later policy changes.
+        if hasExplicitSubtitleChoice {
+            prefsForCurrentItem = nil
+            prefsResolvedForCurrentItem = true
+        }
     }
 
     private func makeSuspendedPlaybackContext() -> SuspendedPlaybackContext? {
@@ -3378,7 +3388,8 @@ class PlayerViewModel {
         resetPublishedLoadState(
             preferredAudioTrackIndex: request.preferredAudioTrackIndex,
             preferredSubtitleTrackIndex: request.preferredSubtitleTrackIndex,
-            preferredSidecarSubtitleTrackId: request.preferredSidecarSubtitleTrackId
+            preferredSidecarSubtitleTrackId: request.preferredSidecarSubtitleTrackId,
+            preferredProtocolV3SubtitleIndex: request.preferredProtocolV3SubtitleIndex
         )
 
         freshLoadTask?.cancel()
@@ -3601,6 +3612,22 @@ class PlayerViewModel {
         allowNearEndResume: Bool,
         timeout: TimeInterval?
     ) async throws -> PreparedPlayback {
+        let initialSubtitlePreferences: PlaybackSessionBridge.InitialProtocolV3SubtitlePreferences? = {
+            guard settings.subtitleMatchesSystemAppearance, !hasExplicitSubtitleChoice else {
+                return nil
+            }
+            let preferences = systemCaptionPrefsSnapshot()
+            return PlaybackSessionBridge.InitialProtocolV3SubtitlePreferences(
+                preferredLanguage: preferences.preferredLanguage,
+                additionalPreferredLanguages: preferences.additionalPreferredLanguages,
+                mode: preferences.mode,
+                showForced: preferences.showForced,
+                forcedOnly: preferences.forcedOnly,
+                preferAccessibilityTracks: preferences.preferAccessibilityTracks,
+                disableWhenNoLanguageMatch: preferences.disableWhenNoLanguageMatch,
+                trackSignature: preferences.trackSignature
+            )
+        }()
         if let timeout {
             let startTask = Task<PreparedPlayback, Error> { [sessionBridge] in
                 try await sessionBridge.startSession(
@@ -3609,6 +3636,7 @@ class PlayerViewModel {
                     preferredAudioTrackIndex: request.preferredAudioTrackIndex,
                     preferredSubtitleTrackIndex: request.preferredSubtitleTrackIndex,
                     preferredProtocolV3SubtitleIndex: request.preferredProtocolV3SubtitleIndex,
+                    initialSubtitlePreferences: initialSubtitlePreferences,
                     startFromBeginning: request.startFromBeginning,
                     resumePosition: resumePosition,
                     allowNearEndResume: allowNearEndResume,
@@ -3636,6 +3664,7 @@ class PlayerViewModel {
                 preferredAudioTrackIndex: request.preferredAudioTrackIndex,
                 preferredSubtitleTrackIndex: request.preferredSubtitleTrackIndex,
                 preferredProtocolV3SubtitleIndex: request.preferredProtocolV3SubtitleIndex,
+                initialSubtitlePreferences: initialSubtitlePreferences,
                 startFromBeginning: request.startFromBeginning,
                 resumePosition: resumePosition,
                 allowNearEndResume: allowNearEndResume,
@@ -4341,7 +4370,9 @@ class PlayerViewModel {
     func switchQuality(_ qualityId: String) {
         guard !isBackgroundSuspended else { return }
         guard let plan = activeExecutionPlan else { return }
-        let normalized = ApplePlaybackQuality.normalizeStoredId(qualityId)
+        let normalized = activePreparedProtocolV3 == nil
+            ? ApplePlaybackQuality.normalizeStoredId(qualityId)
+            : ApplePlaybackQuality.protocolV3QualityId(qualityId)
         let resolvedQualityId = normalized
 
         guard resolvedQualityId != activeQualityId || qualitySwitchError != nil else { return }
@@ -4866,11 +4897,6 @@ class PlayerViewModel {
             "[CMP-SEEK] server-backed HLS reload seek delivery=\(plan.delivery.name, privacy: .public) target=\(clampedTarget, privacy: .public) origin=\(origin, privacy: .public) offset=\(self.playbackTimelineOffset, privacy: .public)"
         )
 
-        if plan.delivery == .transcode,
-           restartCurrentTranscodeHLSForSeek(to: clampedTarget, origin: origin) {
-            return true
-        }
-
         let seekRequest = lastLoadRequest.copyForRecovery(
             preferredFileId: lastLoadRequest.preferredFileId,
             preferredAudioTrackIndex: lastLoadRequest.preferredAudioTrackIndex,
@@ -4945,15 +4971,6 @@ class PlayerViewModel {
             await self?.loadStream(plan: updatedPlan)
         }
         return true
-    }
-
-    private func restartCurrentTranscodeHLSForSeek(to target: Double, origin: Double) -> Bool {
-        return restartCurrentTranscodeHLS(
-            to: target,
-            origin: origin,
-            qualityId: activeQualityId,
-            source: "seek"
-        )
     }
 
     private func restartCurrentTranscodeHLS(
@@ -5659,18 +5676,24 @@ class PlayerViewModel {
             return nil
         }
         let serverUrl = resolvedServerUrl
-        guard let inventory = activePreparedProtocolV3?.plan.subtitle.inventory, !inventory.isEmpty else {
+        guard let inventory = activePreparedProtocolV3?.plan.subtitle.inventory else {
             Self.logger.warning("[AI-SUB] no V3 subtitle inventory for subtitle handoff")
             return nil
         }
-        let baseTrackCount = inventory
-            .filter { $0.source.caseInsensitiveCompare("downloaded") != .orderedSame }
-            .count
+        let baseTrackCount = Self.protocolV3DownloadedSubtitleBaseTrackCount(inventory)
         return SubtitleAIController.HandoffContext(
             sessionId: sessionId,
             baseTrackCount: baseTrackCount,
             resolveURL: { [weak self] path in self?.resolveServerUrl(path, serverUrl: serverUrl) }
         )
+    }
+
+    static func protocolV3DownloadedSubtitleBaseTrackCount(
+        _ inventory: [PlaybackV3SubtitleInventoryItem]
+    ) -> Int {
+        inventory.filter {
+            $0.source.caseInsensitiveCompare("downloaded") != .orderedSame
+        }.count
     }
 
     /// Completion handoff for a finished AI subtitle job: register the
@@ -7436,7 +7459,23 @@ class PlayerViewModel {
     /// `onSidecarTracksRegistered` are layered in separately.
     private func applyTrackList(_ tracks: [PlayerTrack]) {
         audioTracks = tracks.filter { $0.kind == .audio }
-        let embeddedSubs = tracks.filter { $0.kind == .sub }
+        let shadowedEmbeddedFFmpegIndices: Set<Int> = {
+            guard let version = currentSelectedVersion else { return [] }
+            return Set(knownExternalSubtitles.compactMap { subtitle in
+                guard subtitle.source?.caseInsensitiveCompare("embedded") == .orderedSame else {
+                    return nil
+                }
+                return ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
+                    serverCombinedIndex: subtitle.index,
+                    in: version
+                )
+            })
+        }()
+        let embeddedSubs = tracks.filter { track in
+            guard track.kind == .sub else { return false }
+            guard let ffIndex = track.ffIndex else { return true }
+            return !shadowedEmbeddedFFmpegIndices.contains(ffIndex)
+        }
         // Preserve separately-layered subtitle rows that `onTracksChange`
         // does not enumerate: server sidecars (from
         // `onSidecarTracksRegistered`) and synthetic live AI tracks (from
@@ -7543,6 +7582,10 @@ class PlayerViewModel {
         }
 
         let allSubs = subtitleTracks
+        guard !allSubs.isEmpty else {
+            prefsResolvedForCurrentItem = false
+            return
+        }
 
         let audioLang = audioTracks
             .first(where: { $0.trackId == selectedAudioId })?
@@ -7637,16 +7680,43 @@ class PlayerViewModel {
         case .noChange:
             return
         case .disable:
+            if replanAutomaticProtocolV3SubtitleSelection(nil) { return }
             if selectedSubtitleId != nil {
                 selectedSubtitleId = nil
                 applySubtitleTrackSelection(nil)
             }
         case .select(let track):
+            if replanAutomaticProtocolV3SubtitleSelection(track) { return }
             if selectedSubtitleId != track.trackId {
                 selectedSubtitleId = track.trackId
                 applySubtitleTrackSelection(track.trackId)
             }
         }
+    }
+
+    /// System/server caption policy changes are protocol intent on V3. The
+    /// server must mint the replacement plan; mutating only the local player
+    /// would make selected_tracks and later recovery disagree with the UI.
+    private func replanAutomaticProtocolV3SubtitleSelection(_ track: PlayerTrack?) -> Bool {
+        guard let activePreparedProtocolV3,
+              let version = currentSelectedVersion else {
+            return false
+        }
+        let combinedIndex = track.flatMap {
+            ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(for: $0, in: version)
+        }
+        guard combinedIndex != activePreparedProtocolV3.plan.selectedTracks.subtitle?.index else {
+            return false
+        }
+
+        selectedSubtitleId = track?.trackId
+        lastLoadRequest?.preferredProtocolV3SubtitleIndex = combinedIndex
+        attemptProtocolV3Replan(
+            position: currentTime,
+            classification: "subtitle_track_changed",
+            message: "Automatic caption policy selected a different subtitle track."
+        )
+        return true
     }
 
     private func startProgressReporting() {

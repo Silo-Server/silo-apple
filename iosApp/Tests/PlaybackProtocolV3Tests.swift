@@ -180,6 +180,21 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             PlaybackSessionBridge.replanOperation(forClassification: "decoder_failed"),
             PlaybackProtocolV3.ReplanOperation.failureRecovery
         )
+        XCTAssertNil(
+            PlaybackSessionBridge.replanFailure(
+                operation: PlaybackProtocolV3.ReplanOperation.seekReanchor,
+                classification: "seek_reanchor",
+                message: "intent"
+            )
+        )
+        XCTAssertEqual(
+            PlaybackSessionBridge.replanFailure(
+                operation: PlaybackProtocolV3.ReplanOperation.failureRecovery,
+                classification: "decoder_failed",
+                message: "broken"
+            )?.classification,
+            "decoder_failed"
+        )
 
         let request = makeReplanRequest(
             planAttemptKey: "v3:intent",
@@ -471,7 +486,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
         XCTAssertEqual(renewal.preferredFileId, 42)
         XCTAssertEqual(renewal.preferredAudioTrackIndex, 3)
-        XCTAssertEqual(renewal.preferredSubtitleTrackIndex, 5)
+        XCTAssertNil(renewal.preferredSubtitleTrackIndex)
         XCTAssertEqual(renewal.preferredProtocolV3SubtitleIndex, 2)
         XCTAssertEqual(
             renewal.preferredSidecarSubtitleTrackId,
@@ -550,6 +565,40 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 combinedIndex: 2
             )
         )
+
+        let accessibilityVersion = makeVersion(
+            container: "mkv",
+            videoCodec: "h264",
+            audioCodec: "aac",
+            subtitleTracks: [
+                makeSubtitle(index: 2, codec: "subrip", external: false, path: nil),
+                makeSubtitle(
+                    index: 4,
+                    codec: "subrip",
+                    external: false,
+                    path: nil,
+                    hearingImpaired: true
+                )
+            ]
+        )
+        XCTAssertEqual(
+            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: accessibilityVersion,
+                explicitFFmpegIndex: nil,
+                explicitCombinedIndex: nil,
+                preferredLanguage: "en",
+                mode: .always,
+                showForced: false,
+                preferAccessibilityTracks: true,
+                disableWhenNoLanguageMatch: true,
+                trackSignature: nil,
+                currentAudioLanguage: "ja"
+            ),
+            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(
+                ffmpegStreamIndex: 4,
+                combinedIndex: 1
+            )
+        )
         XCTAssertEqual(
             PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
                 version: version,
@@ -621,6 +670,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             playbackAttemptId: "apple:12345678",
             qualityPreference: "auto",
             subtitleFidelityPreference: "preserve",
+            progressPersistence: nil,
             startPosition: 12.5,
             audioTrackId: "file:42:audio:0",
             audioTrackIndex: 0,
@@ -642,8 +692,103 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNil(context["platform"])
         XCTAssertNil(object["engine"])
         XCTAssertNil(object["output_route_generation"])
+        XCTAssertNil(object["progress_persistence"])
         let output = try XCTUnwrap(context["output"] as? [String: Any])
         XCTAssertEqual(output["output_context_id"] as? String, snapshot.outputContextId)
+    }
+
+    func testAudioStartUsesClientOwnedProgressWithExplicitZeroPosition() throws {
+        let snapshot = ApplePlaybackV3Capabilities.snapshot()
+        let request = PlaybackV3StartRequest(
+            protocolVersion: 3,
+            clientFeatures: ApplePlaybackV3Capabilities.features,
+            fileId: 42,
+            profileId: "profile-1",
+            playbackAttemptId: "apple-audio:12345678",
+            qualityPreference: "auto",
+            subtitleFidelityPreference: "preserve",
+            progressPersistence: "client",
+            startPosition: 0,
+            audioTrackId: nil,
+            audioTrackIndex: nil,
+            subtitleTrackId: nil,
+            subtitleTrackIndex: nil,
+            metered: false,
+            bandwidthEstimateKbps: nil,
+            bandwidthCapKbps: nil,
+            clientCapabilities: snapshot.capabilities,
+            clientPlaybackContext: snapshot.context
+        )
+        let object = try encodedObject(request)
+        XCTAssertEqual(object["progress_persistence"] as? String, "client")
+        XCTAssertEqual(object["start_position"] as? Double, 0)
+    }
+
+    func testNeutralCapabilityGateAndLegacyEndpointUpgradeMapping() {
+        let capability = PlaybackV3CapabilityResponse(
+            enabled: true,
+            protocolVersions: [3],
+            features: [
+                PlaybackProtocolV3.planFeature,
+                PlaybackProtocolV3.neutralContractFeature
+            ],
+            deliveries: ["original_http"],
+            transformations: [],
+            reason: nil
+        )
+        XCTAssertTrue(PlaybackSessionBridge.supportsNeutralProtocolV3(capability))
+        XCTAssertFalse(PlaybackSessionBridge.supportsNeutralProtocolV3(
+            PlaybackV3CapabilityResponse(
+                enabled: true,
+                protocolVersions: [3],
+                features: [PlaybackProtocolV3.planFeature],
+                deliveries: ["original_http"],
+                transformations: [],
+                reason: nil
+            )
+        ))
+        XCTAssertTrue(PlaybackSessionBridge.isMissingProtocolV3Capability(
+            HTTPError.http(statusCode: 404, body: nil)
+        ))
+        XCTAssertTrue(PlaybackSessionBridge.isMissingProtocolV3Capability(
+            HTTPError.http(statusCode: 405, body: nil)
+        ))
+        XCTAssertFalse(PlaybackSessionBridge.isMissingProtocolV3Capability(
+            HTTPError.http(statusCode: 500, body: nil)
+        ))
+    }
+
+    func testHDRAttestationDoesNotInventHDR10PlusOrMacDolbyVision() {
+        let details = ApplePlaybackV3Capabilities.hdrDetails(
+            hdr10: true,
+            hlg: true,
+            dolbyVision: false
+        )
+        XCTAssertTrue(details.hdr10)
+        XCTAssertTrue(details.hlg)
+        XCTAssertFalse(details.hdr10Plus)
+        XCTAssertEqual(details.dolbyVisionProfiles, [])
+    }
+
+    func testEmptySubtitleInventoryStartsDownloadedIdentityAtZero() {
+        XCTAssertEqual(PlayerViewModel.protocolV3DownloadedSubtitleBaseTrackCount([]), 0)
+    }
+
+    func testAudioOnlyAndUnknownServerQualityRungsRemainUsable() {
+        let options = ApplePlaybackQuality.playbackOptions(
+            serverQualities: [
+                PlaybackV3AvailableQuality(
+                    label: "audio_high",
+                    height: nil,
+                    bitrateKbps: 320,
+                    preservesSource: false
+                )
+            ],
+            fallbackVersion: nil
+        )
+        XCTAssertEqual(options.map(\.id), ["auto", "audio_high"])
+        XCTAssertEqual(options.last?.resolution, "")
+        XCTAssertEqual(options.last?.bitrateKbps, 320)
     }
 
     func testPlanRuntimeFallbackIsUsedOnlyWhenSourceRuntimeIsAbsent() throws {
@@ -1011,7 +1156,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         external: Bool,
         path: String?,
         forced: Bool = false,
-        isDefault: Bool = false
+        isDefault: Bool = false,
+        hearingImpaired: Bool = false
     ) -> SubtitleTrack {
         SubtitleTrack(
             index: index,
@@ -1020,7 +1166,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             title: codec.uppercased(),
             embeddedTitle: nil,
             forced: forced,
-            hearingImpaired: false,
+            hearingImpaired: hearingImpaired,
             isDefault: isDefault,
             external: external,
             externalPath: path

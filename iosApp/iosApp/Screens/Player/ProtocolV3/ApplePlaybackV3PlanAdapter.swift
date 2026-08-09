@@ -41,9 +41,7 @@ enum ApplePlaybackV3PlanAdapter {
     ]
 
     static func validate(_ plan: PlaybackV3Plan) throws {
-        guard [
-            "original_http", "server_remux_hls", "server_remux_progressive", "server_transcode_hls"
-        ].contains(plan.delivery) else {
+        guard PlaybackProtocolV3.PlanDelivery.supported.contains(plan.delivery) else {
             throw ApplePlaybackV3PlanError.unsupportedDelivery(plan.delivery)
         }
         guard !plan.stream.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

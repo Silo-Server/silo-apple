@@ -232,14 +232,9 @@ private struct PlaybackV3ConformancePlannerExpectation: Decodable {
     let subtitle: PlaybackV3SubtitleDecision?
     let claims: PlaybackV3ValidationClaims?
     let transformations: [PlaybackV3Transformation]?
-    let availableQualities: [PlaybackV3ConformanceAvailableQuality]?
-}
-
-private struct PlaybackV3ConformanceAvailableQuality: Decodable {
-    let label: String
-    let height: Int?
-    let bitrateKbps: Int
-    let preservesSource: Bool
+    // Decode through the production model so audio-only rungs without a
+    // video height exercise the same contract used by the app.
+    let availableQualities: [PlaybackV3AvailableQuality]?
 }
 
 private struct PlaybackV3ConformanceReplanScenario: Decodable {

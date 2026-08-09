@@ -128,19 +128,38 @@ enum ApplePlaybackQuality {
         }
         var seen = Set<String>()
         let planned = serverQualities.compactMap { quality -> ApplePlaybackQualityOption? in
-            let id = normalizeStoredId(quality.label)
+            let id = protocolV3QualityId(quality.label)
             guard id != autoId, seen.insert(id).inserted else { return nil }
             let isOriginal = quality.preservesSource || id == originalId
+            let height = quality.height ?? 0
             return ApplePlaybackQualityOption(
                 id: id,
-                label: playbackLabel(id: id, height: quality.height, isOriginal: isOriginal),
-                resolution: isOriginal || quality.height <= 0 ? "" : "\(quality.height)p",
+                label: playbackLabel(id: id, height: height, isOriginal: isOriginal),
+                resolution: isOriginal || height <= 0 ? "" : "\(height)p",
                 bitrateKbps: max(0, quality.bitrateKbps),
                 isOriginal: isOriginal,
                 isAuto: false
             )
         }
         return [auto] + planned
+    }
+
+    /// Quality labels in an active V3 plan are server-owned identifiers. Keep
+    /// unknown additive rungs instead of coercing them to Auto; only Settings
+    /// persistence uses the closed local catalog in `normalizeStoredId`.
+    static func protocolV3QualityId(_ raw: String?) -> String {
+        let value = raw?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        guard !value.isEmpty else { return autoId }
+        switch value {
+        case "4k", "uhd":
+            return ultraHDId
+        case "420p":
+            return "328p"
+        default:
+            return value
+        }
     }
 
     private static func playbackLabel(id: String, height: Int, isOriginal: Bool) -> String {
@@ -185,6 +204,17 @@ enum ApplePlaybackQuality {
             return id
         }
         return autoId
+    }
+
+    static func activeProtocolV3QualityId(
+        requestedQualityId: String?,
+        availableQualities: [PlaybackV3AvailableQuality]
+    ) -> String {
+        let requested = protocolV3QualityId(requestedQualityId)
+        guard requested != autoId else { return autoId }
+        return availableQualities.contains(where: {
+            protocolV3QualityId($0.label) == requested
+        }) ? requested : autoId
     }
 
     /// Whether changing quality must re-run source-version selection instead

@@ -13,6 +13,7 @@ final class AudioPlayerViewModel {
     /// engine. Audiobooks get one session per file; crossing a part
     /// boundary retires this session and starts a fresh one.
     private var activeSession: PlaybackSessionResponse?
+    private var protocolV3Available: Bool?
     /// Invalidates an in-flight track load when the user seeks again or
     /// closes the player while `/playback/start` is still on the wire.
     private var loadGeneration = 0
@@ -240,21 +241,103 @@ final class AudioPlayerViewModel {
         for track: AudioPlaybackTrack,
         localTime: Double
     ) async throws -> PlaybackSessionResponse {
-        let profileId = await TokenStore.shared.getProfileId()
-        return try await ContinuumAPI.shared.startPlayback(request: StartPlaybackRequest(
+        if protocolV3Available == nil {
+            do {
+                let capability = try await ContinuumAPI.shared.playbackV3Capability()
+                protocolV3Available = PlaybackSessionBridge.supportsNeutralProtocolV3(capability)
+            } catch {
+                if PlaybackSessionBridge.isMissingProtocolV3Capability(error) {
+                    protocolV3Available = false
+                } else {
+                    throw error
+                }
+            }
+        }
+        guard protocolV3Available == true else {
+            throw PlaybackV3TerminalFailure(
+                reason: "server_upgrade_required",
+                message: "This server does not support the playback protocol this app requires. Update the server to continue.",
+                retryable: false
+            )
+        }
+        guard let profileId = await TokenStore.shared.getProfileId(),
+              !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw PlaybackV3TerminalFailure(
+                reason: "profile_required",
+                message: "Select a profile before starting playback.",
+                retryable: false
+            )
+        }
+
+        let snapshot = ApplePlaybackV3Capabilities.snapshot()
+        let playbackAttemptId = "apple-audio:\(UUID().uuidString.lowercased())"
+        // Audiobook resume is a whole-item timeline stitched across files.
+        // The server keeps session-local progress for liveness, while the
+        // client owns durable resume/history through /sync/progress.
+        let request = PlaybackV3StartRequest(
+            protocolVersion: PlaybackProtocolV3.version,
+            clientFeatures: ApplePlaybackV3Capabilities.features,
             fileId: track.fileId,
             profileId: profileId,
-            playMethod: "direct",
-            startPosition: localTime,
+            playbackAttemptId: playbackAttemptId,
+            qualityPreference: ApplePlaybackQuality.autoId,
+            subtitleFidelityPreference: "preserve",
+            progressPersistence: "client",
+            startPosition: localTime.isFinite ? max(0, localTime) : 0,
+            audioTrackId: nil,
             audioTrackIndex: nil,
-            preserveDirectAudioSelection: false,
-            codecsVideo: [],
-            codecsAudio: [],
-            containers: [],
-            maxResolution: nil,
-            hdr: false,
-            disableProgressPersistence: true
-        ))
+            subtitleTrackId: nil,
+            subtitleTrackIndex: nil,
+            metered: false,
+            bandwidthEstimateKbps: nil,
+            bandwidthCapKbps: nil,
+            clientCapabilities: snapshot.capabilities,
+            clientPlaybackContext: snapshot.context
+        )
+        let response: PlaybackV3DecisionResponse
+        do {
+            response = try await ContinuumAPI.shared.startPlaybackV3(request: request)
+        } catch let error as HTTPError {
+            guard case .network = error else { throw error }
+            // Preserve the logical attempt identity across an ambiguous
+            // transport retry so the server replays instead of double-starting.
+            response = try await ContinuumAPI.shared.startPlaybackV3(request: request)
+        }
+
+        switch response.validatedForApple() {
+        case .terminal(let terminal):
+            throw PlaybackV3TerminalFailure(
+                reason: terminal.reason,
+                message: terminal.message,
+                retryable: terminal.retryable
+            )
+        case .incompatible(let allocatedSessionId):
+            if let allocatedSessionId {
+                try? await ContinuumAPI.shared.stopPlayback(sessionId: allocatedSessionId)
+            }
+            throw PlaybackV3TerminalFailure(
+                reason: "invalid_playback_plan",
+                message: "The server returned an incompatible protocol V3 playback plan.",
+                retryable: false
+            )
+        case .playable(let plan, let sessionId):
+            try ApplePlaybackV3PlanAdapter.validate(plan)
+            guard let selectedVersion = context?.tracks.first(where: {
+                $0.fileId == plan.effectiveMediaFileId
+            })?.version else {
+                try? await ContinuumAPI.shared.stopPlayback(sessionId: sessionId)
+                throw PlaybackV3TerminalFailure(
+                    reason: "effective_file_unavailable",
+                    message: "The server selected an unavailable audiobook part.",
+                    retryable: false
+                )
+            }
+            return ApplePlaybackV3PlanAdapter.playbackSession(
+                plan: plan,
+                sessionId: sessionId,
+                selectedVersion: selectedVersion
+            )
+        }
     }
 
     private func loadPalette(posterUrl: String?) {

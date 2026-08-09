@@ -3,6 +3,10 @@ import Foundation
 enum PlaybackProtocolV3 {
     static let version = 3
     static let planFeature = "playback_plan_v3"
+    /// Server-only compatibility marker for the neutral V3 contract. Unlike
+    /// `playback_plan_v3`, this guarantees opaque server-minted attempt keys
+    /// and distinct intent replan operations.
+    static let neutralContractFeature = "neutral_playback_v3_contract_v1"
     static let layoutPassthroughFeature = "layout_aware_passthrough"
     static let clientTransformFeature = "client_video_transformations_v1"
     static let routeDiagnosticsFeature = "playback_route_diagnostics"
@@ -20,6 +24,17 @@ enum PlaybackProtocolV3 {
         static let originalHTTP = "original_http"
         static let progressive = "progressive"
         static let hls = "hls"
+    }
+
+    enum PlanDelivery {
+        static let originalHTTP = "original_http"
+        static let remuxProgressive = "server_remux_progressive"
+        static let remuxHLS = "server_remux_hls"
+        static let transcodeHLS = "server_transcode_hls"
+
+        static let supported: Set<String> = [
+            originalHTTP, remuxProgressive, remuxHLS, transcodeHLS
+        ]
     }
 
     /// How much the client actually knows about its own decoders. The server
@@ -172,6 +187,10 @@ struct PlaybackV3StartRequest: Codable, Equatable {
     let playbackAttemptId: String
     let qualityPreference: String
     let subtitleFidelityPreference: String
+    /// `client` keeps session-local progress reporting active while leaving
+    /// durable resume/history ownership to the client (audiobook timeline).
+    /// Omission is the normal server-owned policy.
+    let progressPersistence: String?
     let startPosition: Double?
     let audioTrackId: String?
     let audioTrackIndex: Int?
@@ -219,8 +238,8 @@ struct PlaybackV3ReplanRequest: Codable, Equatable {
     let bandwidthEstimateKbps: Int?
     let bandwidthCapKbps: Int?
     let selectedTracks: PlaybackV3SelectedTracks
-    /// Absent for the intent operations (`track_change`, `quality_change`),
-    /// which replan because the user asked, not because playback broke.
+    /// Absent for intent operations (`track_change`, `quality_change`) and
+    /// `seek_reanchor`, which describe desired state rather than a failure.
     let failure: PlaybackV3Failure?
     /// Client-side state the server should fold into the next attempt key, so
     /// a locally-mutated route does not collide with the plan it replaced.
@@ -392,7 +411,8 @@ struct PlaybackV3DegradationWarning: Codable, Equatable {
 
 struct PlaybackV3AvailableQuality: Codable, Equatable {
     let label: String
-    let height: Int
+    /// Audio-only quality rungs have no meaningful video height.
+    let height: Int?
     let bitrateKbps: Int
     let preservesSource: Bool
 }
@@ -478,10 +498,7 @@ extension PlaybackV3DecisionResponse {
               ["none", "session"].contains(plan.stream.headerRefresh) else {
             return .incompatible(allocatedSessionId: sessionId)
         }
-        let supportedDelivery = [
-            "original_http", "server_remux_hls", "server_remux_progressive", "server_transcode_hls"
-        ].contains(plan.delivery)
-        guard supportedDelivery else {
+        guard PlaybackProtocolV3.PlanDelivery.supported.contains(plan.delivery) else {
             return .incompatible(allocatedSessionId: sessionId)
         }
         return .playable(plan: plan, sessionId: sessionId)
