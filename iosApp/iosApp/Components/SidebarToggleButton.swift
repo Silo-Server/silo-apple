@@ -17,14 +17,28 @@ extension EnvironmentValues {
     }
 }
 
+struct ReservesSidebarToggleSpaceEnvironmentKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var reservesSidebarToggleSpace: Bool {
+        get { self[ReservesSidebarToggleSpaceEnvironmentKey.self] }
+        set { self[ReservesSidebarToggleSpaceEnvironmentKey.self] = newValue }
+    }
+}
+
 /// Leading sidebar button that opens the iPad overlay.
 ///
-/// Renders nothing unless a toggle action is present in the environment —
-/// i.e. only on iPad in the sidebar layout. Styled to match the circular
-/// icon buttons used by `TabTopBarActions`.
+/// Renders the button only while the iPad sidebar is closed. While the overlay
+/// is open, the sidebar layout can reserve the same footprint so neighboring
+/// header content does not shift. Styled to match the circular icon buttons
+/// used by `TabTopBarActions`.
 struct SidebarToggleButton: View {
     @Environment(\.sidebarToggle) private var toggle
+    @Environment(\.reservesSidebarToggleSpace) private var reservesSpace
 
+    @ViewBuilder
     var body: some View {
         if let toggle {
             Button(action: toggle) {
@@ -36,6 +50,13 @@ struct SidebarToggleButton: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Open sidebar")
+        } else if reservesSpace {
+            Color.clear
+                .frame(
+                    width: ContinuumTheme.topBarIconHitSize,
+                    height: ContinuumTheme.topBarIconHitSize
+                )
+                .accessibilityHidden(true)
         }
     }
 }

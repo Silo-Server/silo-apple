@@ -1193,6 +1193,7 @@ struct MainTabView: View {
                     \.sidebarToggle,
                     iPadColumnVisibility == .detailOnly ? toggleSidebar : nil
                 )
+                .environment(\.reservesSidebarToggleSpace, true)
             #else
             macSidebarLayout
                 .environment(\.sidebarToggle, toggleSidebar)
