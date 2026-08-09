@@ -1030,6 +1030,13 @@ struct MainTabDestination: Identifiable, Equatable {
     }
 }
 
+private struct MainTabSidebarDestination: Identifiable {
+    let destination: MainTabDestination
+    let isNestedLibrary: Bool
+
+    var id: MainTabDestinationID { destination.id }
+}
+
 /// Projects the cross-client menu into roots this Apple shell can navigate
 /// without discarding destination identity. Sections and collections remain
 /// stored in the synced document, but stay hidden until this shell has a
@@ -1432,7 +1439,10 @@ struct MainTabView: View {
 
     private var iPadSidebarLayout: some View {
         NavigationSplitView(columnVisibility: $iPadColumnVisibility) {
-            sidebarList(dismissAfterSelection: true)
+            sidebarList(
+                dismissAfterSelection: true,
+                nestsPinnedLibraries: true
+            )
                 .background {
                     FixedPrimarySplitViewWidth(
                         width: iPadSidebarWidth,
@@ -1465,7 +1475,10 @@ struct MainTabView: View {
     #else
     private var macSidebarLayout: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebarList(dismissAfterSelection: false)
+            sidebarList(
+                dismissAfterSelection: false,
+                nestsPinnedLibraries: false
+            )
                 .navigationTitle(sidebarTitle)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 280)
         } detail: {
@@ -1493,7 +1506,10 @@ struct MainTabView: View {
         }
     }
 
-    private func sidebarList(dismissAfterSelection: Bool) -> some View {
+    private func sidebarList(
+        dismissAfterSelection: Bool,
+        nestsPinnedLibraries: Bool
+    ) -> some View {
         List(selection: Binding<MainTabDestinationID?>(
             get: { selectedDestinationID },
             set: { value in
@@ -1504,16 +1520,78 @@ struct MainTabView: View {
                 }
             }
         )) {
-            ForEach(visibleDestinations) { destination in
+            ForEach(sidebarDestinations(nestingPinnedLibraries: nestsPinnedLibraries)) { item in
+                let destination = item.destination
                 Label(
                     destination.title,
                     systemImage: selectedDestinationID == destination.id
                         ? destination.selectedIcon
                         : destination.icon
                 )
+                .padding(.leading, item.isNestedLibrary ? 24 : 0)
                 .tag(destination.id)
             }
         }
+    }
+
+    private func sidebarDestinations(
+        nestingPinnedLibraries: Bool
+    ) -> [MainTabSidebarDestination] {
+        guard nestingPinnedLibraries else {
+            return visibleDestinations.map {
+                MainTabSidebarDestination(destination: $0, isNestedLibrary: false)
+            }
+        }
+
+        let availableLibraries = librarySnapshot.availableLibraries(
+            for: currentLibraryAuthority
+        )
+        let librariesByID = Dictionary(
+            uniqueKeysWithValues: availableLibraries.map { ($0.id, $0) }
+        )
+        let visibleCategories = visibleDestinations.compactMap { destination -> PrimaryMenuBuiltin? in
+            guard case .libraryCategory(let category) = destination.id else { return nil }
+            return category
+        }
+        var parentCategoryByLibraryID: [Int: PrimaryMenuBuiltin] = [:]
+        for destination in visibleDestinations {
+            guard case .library(let libraryID) = destination.id,
+                  let library = librariesByID[libraryID],
+                  let category = visibleCategories.first(where: {
+                      libraryMatchesPrimaryMenuCategory(library, category: $0)
+                  })
+            else { continue }
+            parentCategoryByLibraryID[libraryID] = category
+        }
+
+        var items: [MainTabSidebarDestination] = []
+
+        for destination in visibleDestinations {
+            guard case .library(let libraryID) = destination.id else {
+                items.append(.init(destination: destination, isNestedLibrary: false))
+
+                guard case .libraryCategory(let category) = destination.id else {
+                    continue
+                }
+                for pinnedDestination in visibleDestinations {
+                    guard case .library(let libraryID) = pinnedDestination.id,
+                          parentCategoryByLibraryID[libraryID] == category
+                    else { continue }
+
+                    items.append(.init(
+                        destination: pinnedDestination,
+                        isNestedLibrary: true
+                    ))
+                }
+                continue
+            }
+
+            if parentCategoryByLibraryID[libraryID] == nil {
+                items.append(.init(destination: destination, isNestedLibrary: false))
+            }
+        }
+
+        return items
     }
 
     /// Collapses or re-expands the sidebar without moving the detail content.
