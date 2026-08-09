@@ -729,9 +729,15 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
         controller.applyWidthLock()
     }
 
+    static func dismantleUIViewController(_ controller: Controller, coordinator: Void) {
+        controller.tearDown()
+    }
+
     final class Controller: UIViewController, UIGestureRecognizerDelegate {
         var width: CGFloat
         var onSwipeLeft: () -> Void
+        private var dragStartOffset: CGFloat = 0
+        private weak var managedSplitViewController: UISplitViewController?
         private weak var swipeHostView: UIView?
         private lazy var swipeLeftRecognizer: UIPanGestureRecognizer = {
             let recognizer = UIPanGestureRecognizer(
@@ -773,7 +779,11 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
 
         func applyWidthLock() {
             guard let splitViewController = splitViewControllerAncestor else { return }
-            splitViewController.presentsWithGesture = true
+            managedSplitViewController = splitViewController
+            // The direct-touch pan below is the sole interactive transition
+            // owner. Keeping UIKit's built-in pan enabled would let both
+            // recognizers move the same primary column simultaneously.
+            splitViewController.presentsWithGesture = false
             if splitViewController.preferredPrimaryColumnWidth != width {
                 splitViewController.preferredPrimaryColumnWidth = width
             }
@@ -803,16 +813,28 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
 
         @objc private func handleSwipeLeft(_ gestureRecognizer: UIPanGestureRecognizer) {
             guard let splitViewController = splitViewControllerAncestor,
-                  let presentationView = sidebarPresentationView(in: splitViewController)
+                  let presentationView = splitViewController
+                    .viewController(for: .primary)?
+                    .view
             else { return }
 
             switch gestureRecognizer.state {
             case .began:
+                let visibleTransform = presentationView.layer
+                    .presentation()?
+                    .affineTransform() ?? presentationView.transform
                 presentationView.layer.removeAllAnimations()
+                UIView.performWithoutAnimation {
+                    presentationView.transform = visibleTransform
+                }
+                dragStartOffset = visibleTransform.tx
 
             case .changed:
                 let translation = gestureRecognizer.translation(in: splitViewController.view)
-                let horizontalOffset = max(-width, min(0, translation.x))
+                let horizontalOffset = max(
+                    -width,
+                    min(0, dragStartOffset + translation.x)
+                )
                 presentationView.transform = CGAffineTransform(
                     translationX: horizontalOffset,
                     y: 0
@@ -821,7 +843,12 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
             case .ended:
                 let translation = gestureRecognizer.translation(in: splitViewController.view)
                 let velocity = gestureRecognizer.velocity(in: splitViewController.view)
-                let shouldDismiss = translation.x <= -(width * 0.25) || velocity.x <= -700
+                let horizontalOffset = max(
+                    -width,
+                    min(0, dragStartOffset + translation.x)
+                )
+                let shouldDismiss = horizontalOffset <= -(width * 0.25) || velocity.x <= -700
+                dragStartOffset = 0
 
                 if shouldDismiss {
                     UIView.animate(
@@ -833,7 +860,8 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                             translationX: -self.width,
                             y: 0
                         )
-                    } completion: { _ in
+                    } completion: { finished in
+                        guard finished else { return }
                         UIView.performWithoutAnimation {
                             splitViewController.hide(.primary)
                             self.onSwipeLeft()
@@ -846,6 +874,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                 }
 
             case .cancelled, .failed:
+                dragStartOffset = 0
                 restoreSidebarPosition(presentationView)
 
             default:
@@ -877,24 +906,13 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
             swipeHostView = primaryView
         }
 
-        private func sidebarPresentationView(
-            in splitViewController: UISplitViewController
-        ) -> UIView? {
-            guard let primaryView = splitViewController
-                .viewController(for: .primary)?
-                .view
-            else { return nil }
-
-            var presentationView = primaryView
-            var ancestor = primaryView.superview
-            while let candidate = ancestor,
-                  candidate !== splitViewController.view,
-                  candidate.bounds.width > 0,
-                  candidate.bounds.width <= width + 64 {
-                presentationView = candidate
-                ancestor = candidate.superview
-            }
-            return presentationView
+        func tearDown() {
+            swipeHostView?.layer.removeAllAnimations()
+            swipeHostView?.transform = .identity
+            swipeHostView?.removeGestureRecognizer(swipeLeftRecognizer)
+            swipeHostView = nil
+            managedSplitViewController?.presentsWithGesture = true
+            managedSplitViewController = nil
         }
 
         private var splitViewControllerAncestor: UISplitViewController? {
@@ -1449,6 +1467,7 @@ struct MainTabView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebarList(dismissAfterSelection: false)
                 .navigationTitle(sidebarTitle)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 280)
         } detail: {
             sidebarDetailContent
         }
@@ -1461,6 +1480,15 @@ struct MainTabView: View {
                 .id(selectedDestination.id)
                 .navigationDestination(for: Route.self) { route in
                     routeContent(for: route)
+                        #if os(iOS)
+                        .toolbar {
+                            if routeNeedsSidebarToggle(route) {
+                                ToolbarItem(placement: .topBarLeading) {
+                                    SidebarToggleButton()
+                                }
+                            }
+                        }
+                        #endif
                 }
         }
     }
@@ -1716,6 +1744,17 @@ struct MainTabView: View {
                 .continuumBackground()
         }
     }
+
+    #if os(iOS)
+    private func routeNeedsSidebarToggle(_ route: Route) -> Bool {
+        switch route {
+        case .downloads, .recommendations:
+            false
+        default:
+            true
+        }
+    }
+    #endif
 
     private var settingsPlaceholder: some View {
         List {
