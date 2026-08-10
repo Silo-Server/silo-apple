@@ -745,6 +745,8 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
         private var isDismissAnimationRunning = false
         private weak var managedSplitViewController: UISplitViewController?
         private weak var dragPresentationView: UIView?
+        private weak var dragDimmingView: UIView?
+        private var dimmingBaseAlpha: CGFloat = 1
         private weak var swipeHostView: UIView?
         private lazy var swipeLeftRecognizer: UIPanGestureRecognizer = {
             let recognizer = UIPanGestureRecognizer(
@@ -798,6 +800,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
             else { return }
             strandedView.transform = .identity
             dragPresentationView = nil
+            releaseDimmingView(restoring: true)
         }
 
         func applyWidthLock() {
@@ -862,6 +865,10 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                     presentationView.transform = visibleTransform
                 }
                 dragStartOffset = visibleTransform.tx
+                resolveDimmingView(
+                    in: splitViewController,
+                    excluding: presentationView
+                )
 
             case .changed:
                 let translation = gestureRecognizer.translation(in: splitViewController.view)
@@ -873,6 +880,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                     translationX: horizontalOffset,
                     y: 0
                 )
+                updateDimming(forSidebarOffset: horizontalOffset)
 
             case .ended:
                 let translation = gestureRecognizer.translation(in: splitViewController.view)
@@ -895,6 +903,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                             translationX: -self.width,
                             y: 0
                         )
+                        self.dragDimmingView?.alpha = 0
                     } completion: { finished in
                         self.isDismissAnimationRunning = false
                         // A new drag re-owns the view mid-animation; leave its
@@ -907,6 +916,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                             splitViewController.hide(.primary)
                             self.onSwipeLeft()
                             presentationView.transform = .identity
+                            self.releaseDimmingView()
                             splitViewController.view.layoutIfNeeded()
                             self.dragPresentationView = nil
                         }
@@ -922,6 +932,93 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
             default:
                 break
             }
+        }
+
+        /// UIKit's overlay presentation dims the detail pane behind the
+        /// sidebar but knows nothing about our interactive drag, so the dim
+        /// would stay opaque until dismissal completes and then pop off. Track
+        /// the dimming view (identified structurally: a full-size, non-opaque
+        /// scrim under the sidebar surface) and fade it with the drag. If the
+        /// hierarchy doesn't match, everything degrades to the old pop.
+        private func resolveDimmingView(
+            in splitViewController: UISplitViewController,
+            excluding presentationView: UIView
+        ) {
+            guard dragDimmingView == nil else { return }
+            guard let dimmingView = findDimmingView(
+                from: splitViewController.view,
+                excluding: presentationView,
+                depth: 0
+            ) else {
+                #if DEBUG
+                logSidebarHierarchy(splitViewController.view, presentationView: presentationView)
+                #endif
+                return
+            }
+            dragDimmingView = dimmingView
+            dimmingBaseAlpha = dimmingView.alpha
+        }
+
+        #if DEBUG
+        /// One-shot dump of the split view's subtree when no scrim was found,
+        /// so a mismatched iPadOS hierarchy is diagnosable from device logs.
+        private static var didLogSidebarHierarchy = false
+        private func logSidebarHierarchy(_ root: UIView, presentationView: UIView) {
+            guard !Self.didLogSidebarHierarchy else { return }
+            Self.didLogSidebarHierarchy = true
+            func describe(_ view: UIView, indent: String) -> String {
+                let marker = view === presentationView ? " <sidebar-surface>" : ""
+                let color = view.backgroundColor.map { " bg=\($0)" } ?? ""
+                var lines = "\(indent)\(type(of: view)) frame=\(view.frame) alpha=\(view.alpha)\(color)\(marker)\n"
+                guard indent.count < 12 else { return lines }
+                for subview in view.subviews {
+                    lines += describe(subview, indent: indent + "  ")
+                }
+                return lines
+            }
+            print("[SidebarDrag] no dimming view found; hierarchy:\n\(describe(root, indent: ""))")
+        }
+        #endif
+
+        /// The scrim is identified by class name ("Dimming"), the same way
+        /// UIKit names it across releases (`UIDimmingView`, knockout backdrop
+        /// variants). The sidebar surface's own subtree is excluded so we
+        /// never fade something that slides with the drag.
+        private func findDimmingView(
+            from root: UIView,
+            excluding presentationView: UIView,
+            depth: Int
+        ) -> UIView? {
+            guard depth <= 6 else { return nil }
+            for candidate in root.subviews {
+                guard candidate !== presentationView else { continue }
+                if !candidate.isHidden,
+                   String(describing: type(of: candidate))
+                       .localizedCaseInsensitiveContains("dimming") {
+                    return candidate
+                }
+                if let nested = findDimmingView(
+                    from: candidate,
+                    excluding: presentationView,
+                    depth: depth + 1
+                ) {
+                    return nested
+                }
+            }
+            return nil
+        }
+
+        private func updateDimming(forSidebarOffset horizontalOffset: CGFloat) {
+            guard let dimmingView = dragDimmingView, width > 0 else { return }
+            let visibleFraction = max(0, min(1, 1 + horizontalOffset / width))
+            dimmingView.alpha = dimmingBaseAlpha * visibleFraction
+        }
+
+        private func releaseDimmingView(restoring: Bool = false) {
+            if restoring {
+                dragDimmingView?.alpha = dimmingBaseAlpha
+            }
+            dragDimmingView = nil
         }
 
         /// Whether a pan is actively re-owning the sidebar mid-animation.
@@ -941,9 +1038,11 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                 options: [.beginFromCurrentState, .allowUserInteraction]
             ) {
                 presentationView.transform = .identity
+                self.dragDimmingView?.alpha = self.dimmingBaseAlpha
             } completion: { finished in
                 if finished {
                     self.dragPresentationView = nil
+                    self.releaseDimmingView(restoring: true)
                 }
             }
         }
@@ -985,6 +1084,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
             dragPresentationView?.layer.removeAllAnimations()
             dragPresentationView?.transform = .identity
             dragPresentationView = nil
+            releaseDimmingView(restoring: true)
             swipeHostView?.layer.removeAllAnimations()
             swipeHostView?.transform = .identity
             swipeHostView?.removeGestureRecognizer(swipeLeftRecognizer)
@@ -1638,6 +1738,9 @@ struct MainTabView: View {
                 .tag(destination.id)
             }
         }
+        // The sidebar's few rows rarely overflow; without this the list
+        // still rubber-bands on drag, visually dragging the whole bar.
+        .scrollBounceBehavior(.basedOnSize)
     }
 
     private func sidebarDestinations(
