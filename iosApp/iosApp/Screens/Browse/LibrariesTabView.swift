@@ -289,6 +289,11 @@ struct LibrariesTabView: View {
         .onChange(of: navPrefs.showAudiobooks) {
             applyLibrarySelection()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) {
+            notification in
+            guard let response = notification.object as? LibrariesResponse else { return }
+            acceptRefreshedLibraries(response)
+        }
         .sheet(isPresented: $showPicker) {
             LibraryPickerSheet(
                 libraries: visibleLibraries,
@@ -404,18 +409,27 @@ struct LibrariesTabView: View {
         do {
             let response = try await StartupContentPrefetcher.fetchUserLibraries()
             guard !Task.isCancelled else { return }
-            libraries = response.libraries
-            applyLibrarySelection()
-            onLibrariesLoaded?(libraryAuthority, response.libraries)
-            if let selectedLibraryId {
-                StartupContentPrefetcher.prefetchLibraryLanding(libraryId: selectedLibraryId)
-            }
+            acceptRefreshedLibraries(response)
         } catch {
             if libraries.isEmpty {
                 self.error = ErrorState(error)
             }
         }
         isLoading = false
+    }
+
+    /// Apply library metadata refreshed elsewhere (for example Home pull to
+    /// refresh) so retained tab instances cannot keep renamed or revoked
+    /// libraries in their local state.
+    private func acceptRefreshedLibraries(_ response: LibrariesResponse) {
+        libraries = response.libraries
+        error = nil
+        isLoading = false
+        applyLibrarySelection()
+        onLibrariesLoaded?(libraryAuthority, response.libraries)
+        if let selectedLibraryId {
+            StartupContentPrefetcher.prefetchLibraryLanding(libraryId: selectedLibraryId)
+        }
     }
 
     /// Preserve the stored selection if it still exists; otherwise fall
