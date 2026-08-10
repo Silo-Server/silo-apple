@@ -1540,26 +1540,42 @@ struct MainTabView: View {
                     )
                         .frame(width: 0, height: 0)
                 }
-                .navigationTitle(sidebarTitle)
                 .navigationSplitViewColumnWidth(
                     min: iPadSidebarWidth,
                     ideal: iPadSidebarWidth,
                     max: iPadSidebarWidth
                 )
                 .toolbar(removing: .sidebarToggle)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button(action: dismissSidebar) {
-                            Image(systemName: "arrow.left")
-                        }
-                        .accessibilityLabel("Close sidebar")
-                    }
+                .toolbar(.hidden, for: .navigationBar)
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    iPadSidebarHeader
                 }
         } detail: {
             sidebarDetailContent
                 .toolbar(removing: .sidebarToggle)
         }
         .navigationSplitViewStyle(.prominentDetail)
+    }
+
+    /// Custom sidebar header replacing the navigation bar so the server name
+    /// and close button can sit lower than the system bar allows.
+    private var iPadSidebarHeader: some View {
+        HStack {
+            Text(sidebarTitle)
+                .font(.headline)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .overlay(alignment: .trailing) {
+                    Button(action: dismissSidebar) {
+                        Image(systemName: "arrow.left")
+                            .font(.body.weight(.semibold))
+                    }
+                    .accessibilityLabel("Close sidebar")
+                }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 24)
+        .padding(.bottom, 12)
     }
 
     #else
