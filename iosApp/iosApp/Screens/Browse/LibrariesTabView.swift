@@ -285,6 +285,7 @@ struct LibrariesTabView: View {
         .sheet(isPresented: $showPicker) {
             LibraryPickerSheet(
                 libraries: visibleLibraries,
+                scopedCategory: pickerScopeCategory,
                 selectedLibraryId: selectedLibraryId,
                 onSelect: { id in
                     selectedLibraryId = id
@@ -354,6 +355,18 @@ struct LibrariesTabView: View {
 
     private var activeLibrary: Library? {
         visibleLibraries.first(where: { $0.id == selectedLibraryId })
+    }
+
+    /// The media-type scope the picker opened under, if any. A direct-library
+    /// root inherits the pinned library's type since its siblings share it.
+    private var pickerScopeCategory: PrimaryMenuBuiltin? {
+        if let category { return category }
+        guard let fixedLibraryId,
+              let fixed = libraries.first(where: { $0.id == fixedLibraryId })
+        else { return nil }
+        return [PrimaryMenuBuiltin.movies, .series, .audiobooks].first {
+            libraryMatchesPrimaryMenuCategory(fixed, category: $0)
+        }
     }
 
     private var visibleLibraries: [Library] {
@@ -544,6 +557,7 @@ private struct LibrarySelectorButton: View {
 /// switching the active library from the Libraries tab.
 private struct LibraryPickerSheet: View {
     let libraries: [Library]
+    let scopedCategory: PrimaryMenuBuiltin?
     let selectedLibraryId: Int?
     let onSelect: (Int) -> Void
 
@@ -582,6 +596,7 @@ private struct LibraryPickerSheet: View {
                 ForEach(libraries) { library in
                     LibraryPickerRow(
                         library: library,
+                        scopedCategory: scopedCategory,
                         isSelected: library.id == selectedLibraryId,
                         onTap: { onSelect(library.id) }
                     )
@@ -597,6 +612,7 @@ private struct LibraryPickerSheet: View {
 
 private struct LibraryPickerRow: View {
     let library: Library
+    let scopedCategory: PrimaryMenuBuiltin?
     let isSelected: Bool
     let onTap: () -> Void
 
@@ -616,9 +632,11 @@ private struct LibraryPickerRow: View {
                     Text(library.name)
                         .font(.continuumHeadline)
                         .foregroundColor(.continuumOnSurface)
-                    Text(typeLabel)
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                    if let typeLabel {
+                        Text(typeLabel)
+                            .font(.continuumCaption)
+                            .foregroundColor(.continuumSecondaryText)
+                    }
                 }
 
                 Spacer()
@@ -652,7 +670,11 @@ private struct LibraryPickerRow: View {
         return "square.stack.3d.up.fill"
     }
 
-    private var typeLabel: String {
+    /// Nil when the caption would just repeat the media-type scope the picker
+    /// opened under — every non-mixed library there shares that type. Mixed
+    /// libraries keep their caption since they stand out from the scope.
+    private var typeLabel: String? {
+        if scopedCategory != nil && !library.isMixedLibrary { return nil }
         if library.isAudiobookLibrary { return "Audiobooks library" }
         if library.isMixedLibrary { return "Movies & Series library" }
         if library.isSeriesLibrary { return "TV library" }
