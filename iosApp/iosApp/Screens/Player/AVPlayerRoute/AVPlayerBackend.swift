@@ -1433,7 +1433,8 @@ final class AVPlayerBackend {
                     compatibilityBrand: spec.manifestMetadata.compatibilityBrand,
                     videoRange: spec.manifestMetadata.videoRange,
                     mayClaimAtmos: Self.loopbackPreservesAtmos(for: selectedTrack)
-                )
+                ),
+                servingMode: spec.servingMode
             )
             Self.logger.info(
                 "[CMP-AVP] rebuilding loopback for audio trackId=\(trackId, privacy: .public) trackIndex=\(selectedTrackIndex, privacy: .public) ffIndex=\(selectedTrack.ffIndex ?? -1, privacy: .public)"
@@ -2141,6 +2142,12 @@ final class AVPlayerBackend {
                 guard let self, !self.isDisposed else { return }
                 guard self.activeLoopbackSessionID == sessionID else { return }
                 guard case .siloLoopback = self.currentSourceStrategy else { return }
+                // EVENT fragments are normalized to a fresh zero-based
+                // timeline and need their observed source anchor. Static VOD
+                // fragments stay on the segment plan's stable playlist axis;
+                // replacing that plan anchor with a mid-title packet timestamp
+                // briefly doubles the playhead and can trigger a false replan.
+                guard sessionSpec.servingMode != .vodPlan else { return }
                 self.setMediaTimelineOffset(sourceStartSeconds)
             }
         }
@@ -2717,7 +2724,8 @@ final class AVPlayerBackend {
 
     @MainActor
     private func audioStats(for item: AVPlayerItem) async -> PlaybackStats.MediaStream {
-        if case .siloLoopback(let spec) = currentSourceStrategy {
+        if case .siloLoopback(let spec) = currentSourceStrategy,
+           spec.selectedAudio.isPresent {
             let outputMode = Self.audioOutputModeLabel(spec.selectedAudio.outputMode)
             let liveStream = await AVFoundationPlaybackIntrospection.audioStream(for: item)
             return PlaybackStats.MediaStream(

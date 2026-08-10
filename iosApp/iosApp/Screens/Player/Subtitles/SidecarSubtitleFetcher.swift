@@ -19,10 +19,21 @@ enum SidecarSubtitleFetchError: Error {
     case emptyBody
 }
 
+struct SubtitleFontAttachment: Sendable, Equatable {
+    let name: String
+    let data: Data
+}
+
 actor SidecarSubtitleFetcher {
+
+    private struct FontBundleItem: Decodable {
+        let name: String
+        let data: String
+    }
 
     private let session: URLSession
     private let tokenStore: TokenStore
+    private var fontBundleCache: [URL: [SubtitleFontAttachment]] = [:]
 
     init(
         session: URLSession? = nil,
@@ -93,6 +104,42 @@ actor SidecarSubtitleFetcher {
             body: content
         )
         return (content, format)
+    }
+
+    /// Fetch the server's JSON/base64 font bundle for an authored ASS track.
+    func fetchFontBundle(url: URL) async throws -> [SubtitleFontAttachment] {
+        if let cached = fontBundleCache[url] { return cached }
+
+        var request = await buildRequest(url: url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw SidecarSubtitleFetchError.transport(underlying: error)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw SidecarSubtitleFetchError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw SidecarSubtitleFetchError.statusCode(http.statusCode)
+        }
+
+        let items: [FontBundleItem]
+        do {
+            items = try JSONDecoder().decode([FontBundleItem].self, from: data)
+        } catch {
+            throw SidecarSubtitleFetchError.transport(underlying: error)
+        }
+        let attachments = try items.map { item in
+            guard let decoded = Data(base64Encoded: item.data) else {
+                throw SidecarSubtitleFetchError.invalidResponse
+            }
+            return SubtitleFontAttachment(name: item.name, data: decoded)
+        }
+        fontBundleCache[url] = attachments
+        return attachments
     }
 
     // MARK: - Local (offline) sidecars

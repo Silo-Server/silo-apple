@@ -5,6 +5,12 @@ import OSLog
 @Observable
 @MainActor
 final class AudioPlayerViewModel {
+    private struct StartedAudioSession {
+        let session: PlaybackSessionResponse
+        let track: AudioPlaybackTrack
+        let streamHeaders: [String: String]
+    }
+
     private let engine = AudioPlayerEngine()
     private let nowPlaying = NowPlayingController()
     private var syncTask: Task<Void, Never>?
@@ -14,6 +20,9 @@ final class AudioPlayerViewModel {
     /// boundary retires this session and starts a fresh one.
     private var activeSession: PlaybackSessionResponse?
     private var protocolV3Available: Bool?
+    private var protocolV3AvailabilityServerId: String?
+    /// Converts engine-local time back to the effective file's source time.
+    private var activeTimelineOffsetSeconds: Double = 0
     /// Invalidates an in-flight track load when the user seeks again or
     /// closes the player while `/playback/start` is still on the wire.
     private var loadGeneration = 0
@@ -184,6 +193,7 @@ final class AudioPlayerViewModel {
         context = nil
         activeSession = nil
         activeTrackIndex = nil
+        activeTimelineOffsetSeconds = 0
         currentTime = 0
         duration = 0
         palette = .fallback
@@ -208,28 +218,39 @@ final class AudioPlayerViewModel {
             throw APIError.unsupportedMedia("No playable audio track is available.")
         }
         let localTime = AudioPlaybackTimeline.localTime(for: globalTime, in: track)
+        var resolvedGlobalTime = globalTime
         if activeTrackIndex == index, activeSession != nil {
-            engine.seek(to: localTime)
+            engine.seek(to: max(0, localTime - activeTimelineOffsetSeconds))
         } else {
             loadGeneration += 1
             let generation = loadGeneration
             retireActiveSession()
-            let session = try await startSession(for: track, localTime: localTime)
+            let started = try await startSession(for: track, localTime: localTime)
             guard generation == loadGeneration, self.context != nil else {
                 // Superseded by a newer seek or a close while the request
                 // was in flight — release the session we no longer need.
-                Task { try? await ContinuumAPI.shared.stopPlayback(sessionId: session.sessionId) }
+                Task { try? await ContinuumAPI.shared.stopPlayback(sessionId: started.session.sessionId) }
                 return
             }
-            guard let url = await resolvedStreamURL(session.streamUrl) else {
-                Task { try? await ContinuumAPI.shared.stopPlayback(sessionId: session.sessionId) }
+            guard let url = await resolvedStreamURL(started.session.streamUrl) else {
+                Task { try? await ContinuumAPI.shared.stopPlayback(sessionId: started.session.sessionId) }
                 throw APIError.unsupportedMedia("No playable audio track is available.")
             }
-            activeSession = session
-            activeTrackIndex = index
-            engine.load(url: url, headers: await authHeaders(), startSeconds: localTime)
+            activeSession = started.session
+            activeTrackIndex = started.track.index
+            activeTimelineOffsetSeconds = max(0, started.session.timelineOffsetSeconds)
+            let headers = started.streamHeaders.merging(await authHeaders()) { _, auth in auth }
+            engine.load(
+                url: url,
+                headers: headers,
+                startSeconds: max(0, started.session.position)
+            )
+            resolvedGlobalTime =
+                started.track.startOffsetSeconds
+                    + max(0, started.session.position)
+                    + activeTimelineOffsetSeconds
         }
-        currentTime = clampGlobal(globalTime)
+        currentTime = clampGlobal(resolvedGlobalTime)
         if autoplay {
             isPlaying = true
             engine.setRate(playbackRate, shouldResume: true)
@@ -240,7 +261,12 @@ final class AudioPlayerViewModel {
     private func startSession(
         for track: AudioPlaybackTrack,
         localTime: Double
-    ) async throws -> PlaybackSessionResponse {
+    ) async throws -> StartedAudioSession {
+        let activeServerId = await TokenStore.shared.getActiveServerId()
+        if protocolV3AvailabilityServerId != activeServerId {
+            protocolV3AvailabilityServerId = activeServerId
+            protocolV3Available = nil
+        }
         if protocolV3Available == nil {
             do {
                 let capability = try await ContinuumAPI.shared.playbackV3Capability()
@@ -276,7 +302,7 @@ final class AudioPlayerViewModel {
         // client owns durable resume/history through /sync/progress.
         let request = PlaybackV3StartRequest(
             protocolVersion: PlaybackProtocolV3.version,
-            clientFeatures: ApplePlaybackV3Capabilities.features,
+            clientFeatures: ApplePlaybackV3Capabilities.audiobookFeatures,
             fileId: track.fileId,
             profileId: profileId,
             playbackAttemptId: playbackAttemptId,
@@ -322,9 +348,9 @@ final class AudioPlayerViewModel {
             )
         case .playable(let plan, let sessionId):
             try ApplePlaybackV3PlanAdapter.validate(plan)
-            guard let selectedVersion = context?.tracks.first(where: {
+            guard let effectiveTrack = context?.tracks.first(where: {
                 $0.fileId == plan.effectiveMediaFileId
-            })?.version else {
+            }) else {
                 try? await ContinuumAPI.shared.stopPlayback(sessionId: sessionId)
                 throw PlaybackV3TerminalFailure(
                     reason: "effective_file_unavailable",
@@ -332,10 +358,15 @@ final class AudioPlayerViewModel {
                     retryable: false
                 )
             }
-            return ApplePlaybackV3PlanAdapter.playbackSession(
+            let session = ApplePlaybackV3PlanAdapter.playbackSession(
                 plan: plan,
                 sessionId: sessionId,
-                selectedVersion: selectedVersion
+                selectedVersion: effectiveTrack.version
+            )
+            return StartedAudioSession(
+                session: session,
+                track: effectiveTrack,
+                streamHeaders: plan.stream.headers
             )
         }
     }
@@ -353,6 +384,7 @@ final class AudioPlayerViewModel {
         guard let session = activeSession else { return }
         activeSession = nil
         activeTrackIndex = nil
+        activeTimelineOffsetSeconds = 0
         Task { try? await ContinuumAPI.shared.stopPlayback(sessionId: session.sessionId) }
     }
 
@@ -360,7 +392,12 @@ final class AudioPlayerViewModel {
         guard let context,
               let activeTrackIndex,
               let track = context.tracks.first(where: { $0.index == activeTrackIndex }) else { return }
-        currentTime = clampGlobal(AudioPlaybackTimeline.globalTime(for: localTime, in: track))
+        currentTime = clampGlobal(
+            AudioPlaybackTimeline.globalTime(
+                for: localTime + activeTimelineOffsetSeconds,
+                in: track
+            )
+        )
         pushNowPlaying()
     }
 

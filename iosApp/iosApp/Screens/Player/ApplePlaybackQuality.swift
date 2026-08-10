@@ -124,7 +124,7 @@ enum ApplePlaybackQuality {
         fallbackVersion: FileVersion?
     ) -> [ApplePlaybackQualityOption] {
         guard !serverQualities.isEmpty else {
-            return playbackOptions(for: fallbackVersion)
+            return [auto]
         }
         var seen = Set<String>()
         let planned = serverQualities.compactMap { quality -> ApplePlaybackQualityOption? in
@@ -212,8 +212,15 @@ enum ApplePlaybackQuality {
     ) -> String {
         let requested = protocolV3QualityId(requestedQualityId)
         guard requested != autoId else { return autoId }
-        return availableQualities.contains(where: {
-            protocolV3QualityId($0.label) == requested
+        let requestedResolution = settingsOptions.contains(where: { $0.id == requested })
+            ? AppleQualityAxes.split(requested).resolution
+            : nil
+        return availableQualities.contains(where: { quality in
+            let offered = protocolV3QualityId(quality.label)
+            return offered == requested
+                || requestedResolution.map {
+                    AppleQualityAxes.split(offered).resolution == $0
+                } == true
         }) ? requested : autoId
     }
 

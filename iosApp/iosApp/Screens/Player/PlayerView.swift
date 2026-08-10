@@ -297,11 +297,19 @@ struct PlayerView: View {
             dismissPlayer()
         }
         .onAppear {
+            let activeViewModel: PlayerViewModel
+            if viewModel.needsReplacementForPresentation {
+                let replacement = PlayerViewModel()
+                viewModel = replacement
+                activeViewModel = replacement
+            } else {
+                activeViewModel = viewModel
+            }
             #if os(iOS)
             orientationCoordinator.activatePlayer()
             #endif
-            viewModel.applyArtworkURLHints(posterURL: posterURLHint, backdropURL: backdropURLHint)
-            viewModel.loadAndPlay(
+            activeViewModel.applyArtworkURLHints(posterURL: posterURLHint, backdropURL: backdropURLHint)
+            activeViewModel.loadAndPlay(
                 contentId: contentId,
                 preferredFileId: preferredFileId,
                 preferredAudioTrackIndex: preferredAudioTrackIndex,
@@ -311,7 +319,7 @@ struct PlayerView: View {
                 offlineDownloadId: offlineDownloadId
             )
             #if os(tvOS)
-            TVControlReceiver.shared.registerPlayer(viewModel, contentId: contentId)
+            TVControlReceiver.shared.registerPlayer(activeViewModel, contentId: contentId)
             withAnimation(.easeInOut(duration: 0.2)) {
                 remoteIdentityNotice = RemotePlaybackIdentityManager.shared.activeIdentity
             }

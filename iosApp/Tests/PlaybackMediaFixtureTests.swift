@@ -172,6 +172,75 @@ final class PlaybackMediaFixtureTests: XCTestCase {
         }
     }
 
+    func testAppleLoopbackRouteSupportsVideoOnlyDolbyVision() throws {
+        let streamURL = try XCTUnwrap(URL(string: "https://example.invalid/video-only-dv.mp4"))
+        let session = PlaybackSessionResponse(
+            sessionId: "video-only-dv-session",
+            userId: nil,
+            profileId: nil,
+            mediaFileId: 43,
+            playMethod: "direct",
+            position: 0,
+            isPaused: false,
+            streamUrl: streamURL.absoluteString,
+            audioTrackIndex: nil,
+            durationSeconds: 30,
+            subtitleUrls: nil,
+            playbackInfo: nil
+        )
+        let version = FileVersion(
+            fileId: 43,
+            fileName: "video-only-dv.mp4",
+            resolution: "2160p",
+            codecVideo: "hevc",
+            codecAudio: nil,
+            hdr: true,
+            container: "mp4",
+            fileSize: 100_000,
+            duration: 30,
+            bitrate: 40_000,
+            videoTracks: [
+                VideoTrack(
+                    index: 0, codec: "hevc", width: 3840, height: 2160,
+                    frameRate: "60.000", bitrate: 40_000, profile: "Main 10",
+                    level: 153, bitDepth: 10, colorRange: "pc", colorSpace: nil,
+                    colorPrimaries: nil, colorTransfer: nil,
+                    videoRange: "DolbyVision", dolbyVision: "Profile 5",
+                    title: nil, language: nil
+                )
+            ],
+            audioTracks: [],
+            subtitleTracks: [],
+            chapters: nil
+        )
+        let stream = StreamRequest(url: streamURL, headers: [:], serverUrl: "")
+
+        let plan = ApplePlaybackRoutePlanner().makeExecutionPlan(
+            input: ApplePlaybackPlannerInput(
+                session: session,
+                selectedVersion: version,
+                streamRequest: stream,
+                routeRequirements: .baseline,
+                selectedAudioTrackId: nil,
+                pendingAudioFfIndex: nil,
+                preferredAudioTrackIndex: nil,
+                selectedPrimarySubtitleTrackId: nil,
+                selectedSecondarySubtitleTrackId: nil,
+                hlsRouteFeatureEnabled: true,
+                siloPlayerPrimaryEnabled: true,
+                dolbyVisionPolicy: .default
+            )
+        )
+
+        XCTAssertEqual(plan.engine, .siloPlayerLoopback)
+        XCTAssertEqual(plan.loopbackSession?.videoMode, .passthroughProfile5)
+        XCTAssertEqual(
+            plan.loopbackSession?.selectedAudio,
+            LoopbackSessionSpec.SelectedAudio.none
+        )
+        XCTAssertEqual(plan.normalizationSummary.audioMode, "none")
+    }
+
     private func fixtureURL(_ fixture: Fixture) throws -> URL {
         try XCTUnwrap(
             Bundle(for: Self.self).url(forResource: fixture.resource, withExtension: fixture.ext),

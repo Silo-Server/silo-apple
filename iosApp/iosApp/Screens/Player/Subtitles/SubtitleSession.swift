@@ -25,9 +25,36 @@ struct SidecarSubtitleDescriptor: Hashable {
     let label: String?
     let source: String?
     let forced: Bool?
+    let isDefault: Bool?
+    let isHearingImpaired: Bool?
+    let fontBundleUrl: URL?
     /// Absolute URL (server URL already resolved against the relative
     /// path that came back from `/playback/start`).
     let url: URL
+
+    init(
+        index: Int,
+        language: String?,
+        codec: String?,
+        label: String?,
+        source: String?,
+        forced: Bool?,
+        isDefault: Bool? = nil,
+        isHearingImpaired: Bool? = nil,
+        fontBundleUrl: URL? = nil,
+        url: URL
+    ) {
+        self.index = index
+        self.language = language
+        self.codec = codec
+        self.label = label
+        self.source = source
+        self.forced = forced
+        self.isDefault = isDefault
+        self.isHearingImpaired = isHearingImpaired
+        self.fontBundleUrl = fontBundleUrl
+        self.url = url
+    }
 }
 
 final class SubtitleSession {
@@ -246,26 +273,30 @@ final class SubtitleSession {
         descriptor: SidecarSubtitleDescriptor,
         slot: SubtitleSlot
     ) {
-        // Fast path: cached.
-        if let cached = withLock({ sidecarCache[urlIndex] }) {
-            installSidecarContent(
-                content: cached,
-                codecHint: descriptor.codec,
-                url: descriptor.url,
-                slot: slot
-            )
-            return
-        }
-
+        let cached = withLock { sidecarCache[urlIndex] }
         let localFetcher = fetcher
         let task = Task { [weak self] in
             do {
-                let result = try await localFetcher.fetch(
-                    url: descriptor.url,
-                    preferredFormatHint: Self.codecToFormat(descriptor.codec)
+                async let fontAttachments = Self.fetchFontAttachments(
+                    for: descriptor,
+                    with: localFetcher
                 )
+                let result: (content: String, format: SubtitleFormat?)
+                if let cached {
+                    result = (cached, nil)
+                } else {
+                    let fetched = try await localFetcher.fetch(
+                        url: descriptor.url,
+                        preferredFormatHint: Self.codecToFormat(descriptor.codec)
+                    )
+                    result = (fetched.content, fetched.format)
+                }
                 guard let self else { return }
                 if Task.isCancelled { return }
+
+                for attachment in await fontAttachments {
+                    self.registerEmbeddedFont(name: attachment.name, data: attachment.data)
+                }
 
                 Self.logger.info(
                     "[CMP-SUB] fetched sidecar index=\(urlIndex, privacy: .public) slot=\(slot.rawValue, privacy: .public) format=\(String(describing: result.format), privacy: .public) chars=\(result.content.count, privacy: .public)"
@@ -284,6 +315,21 @@ final class SubtitleSession {
             }
         }
         withLock { fetchTasks[slot] = task }
+    }
+
+    private static func fetchFontAttachments(
+        for descriptor: SidecarSubtitleDescriptor,
+        with fetcher: SidecarSubtitleFetcher
+    ) async -> [SubtitleFontAttachment] {
+        guard let url = descriptor.fontBundleUrl else { return [] }
+        do {
+            return try await fetcher.fetchFontBundle(url: url)
+        } catch {
+            logger.warning(
+                "sidecar font bundle fetch failed: \(String(describing: error), privacy: .public)"
+            )
+            return []
+        }
     }
 
     /// Close the given slot. Drops the libass track and cancels any

@@ -1122,8 +1122,35 @@ struct SubtitleUrl: Codable, Identifiable, Hashable {
     let label: String?
     let source: String?
     let forced: Bool?
+    let `default`: Bool?
+    let hearingImpaired: Bool?
+    let fontBundleUrl: String?
     let url: String
     var id: Int { index }
+
+    init(
+        index: Int,
+        language: String?,
+        codec: String?,
+        label: String?,
+        source: String?,
+        forced: Bool?,
+        `default`: Bool? = nil,
+        hearingImpaired: Bool? = nil,
+        fontBundleUrl: String? = nil,
+        url: String
+    ) {
+        self.index = index
+        self.language = language
+        self.codec = codec
+        self.label = label
+        self.source = source
+        self.forced = forced
+        self.default = `default`
+        self.hearingImpaired = hearingImpaired
+        self.fontBundleUrl = fontBundleUrl
+        self.url = url
+    }
 }
 
 // MARK: - Transcode Start Response

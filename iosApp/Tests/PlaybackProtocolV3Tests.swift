@@ -39,6 +39,13 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(session.durationSeconds, 7_265.5)
         // Starting with subtitles off must not hide selectable sidecars.
         XCTAssertEqual(session.subtitleUrls?.count, 4)
+        let authoredASS = try XCTUnwrap(session.subtitleUrls?.first(where: { $0.index == 1 }))
+        XCTAssertEqual(authoredASS.default, false)
+        XCTAssertEqual(authoredASS.hearingImpaired, false)
+        XCTAssertEqual(
+            authoredASS.fontBundleUrl,
+            "/stream/11111111-1111-4111-8111-111111111111/subtitles/1/fonts?file_id=42"
+        )
     }
 
     func testRecoveredServerRequestAndCapabilityFixturesDecode() throws {
@@ -645,6 +652,10 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(snapshot.capabilities.codecsVideoHardware, ["h264"])
         XCTAssertEqual(snapshot.capabilities.videoDecode.first?.profiles, [])
         XCTAssertEqual(snapshot.capabilities.videoDecode.first?.levels, [])
+        XCTAssertEqual(
+            snapshot.context.deliveries[PlaybackProtocolV3.DeliveryClass.progressive]?.videoCodecs,
+            AppleDecodeCapabilities.videoCodecs
+        )
         XCTAssertNil(snapshot.capabilities.audioPassthrough)
         XCTAssertNil(snapshot.context.output.audioPassthrough)
         XCTAssertTrue(snapshot.outputContextId?.hasPrefix("apple:") == true)
@@ -799,6 +810,215 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(PlayerViewModel.protocolV3DownloadedSubtitleBaseTrackCount([]), 0)
     }
 
+    func testNonRenderPlanDoesNotRestoreSidecarSnapshot() {
+        let sidecarId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3)
+        XCTAssertEqual(
+            PlayerViewModel.protocolV3RestoredSidecarTrackId(sidecarId, subtitleMode: "render"),
+            sidecarId
+        )
+        XCTAssertNil(
+            PlayerViewModel.protocolV3RestoredSidecarTrackId(sidecarId, subtitleMode: "burn_in")
+        )
+        XCTAssertNil(
+            PlayerViewModel.protocolV3RestoredSidecarTrackId(sidecarId, subtitleMode: "off")
+        )
+    }
+
+    func testV3ReplanRestoresServerRenderedSubtitleAsDisplayOnlySelection() {
+        let sidecarId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3)
+
+        XCTAssertEqual(
+            PlayerViewModel.protocolV3SidecarRestoreIntent(
+                snapshot: sidecarId,
+                selectedSubtitleIndex: 3,
+                subtitleMode: "render"
+            ),
+            .renderLocally(sidecarId)
+        )
+        XCTAssertEqual(
+            PlayerViewModel.protocolV3SidecarRestoreIntent(
+                snapshot: sidecarId,
+                selectedSubtitleIndex: 3,
+                subtitleMode: "burn_in"
+            ),
+            .serverRendered(sidecarId)
+        )
+        XCTAssertNil(PlayerViewModel.protocolV3SidecarRestoreIntent(
+            snapshot: sidecarId,
+            selectedSubtitleIndex: 3,
+            subtitleMode: "off"
+        ))
+        XCTAssertNil(PlayerViewModel.protocolV3SidecarRestoreIntent(
+            snapshot: sidecarId,
+            selectedSubtitleIndex: 4,
+            subtitleMode: "burn_in"
+        ))
+    }
+
+    func testV3AudioIntentOverridesBackendDefaultAfterReplan() {
+        let version = makeVersion(
+            container: "mkv",
+            videoCodec: "h264",
+            audioCodec: "truehd",
+            audioTracks: [
+                makeAudio(index: 0, codec: "truehd", isDefault: true),
+                makeAudio(index: 1, codec: "ac3", isDefault: false)
+            ]
+        )
+        let original = PlayerViewModel.LoadRequest(
+            contentId: "movie-1",
+            preferredFileId: 42,
+            preferredAudioTrackIndex: 0,
+            preferredSubtitleTrackIndex: -1,
+            preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false
+        )
+        let adopted = original.adoptingProtocolV3Intent(
+            plan: makePlan(selectedAudioIndex: 1),
+            selectedVersion: version,
+            activeQualityId: "original"
+        )
+
+        let intent = PlayerViewModel.protocolV3PendingTrackIntent(
+            plan: makePlan(selectedAudioIndex: 1),
+            request: adopted
+        )
+
+        XCTAssertEqual(adopted.preferredAudioTrackIndex, 1)
+        XCTAssertEqual(intent.audioIndex, 1)
+        XCTAssertEqual(intent.embeddedSubtitleIndex, -1)
+        XCTAssertNil(intent.sidecarSubtitleTrackId)
+    }
+
+    func testStaleStreamGenerationCannotConsumePendingTrackIntent() {
+        XCTAssertTrue(
+            PlayerViewModel.isCurrentStreamCallback(7, currentGeneration: 7)
+        )
+        XCTAssertFalse(
+            PlayerViewModel.isCurrentStreamCallback(6, currentGeneration: 7)
+        )
+    }
+
+    func testReplacementLoaderCannotMovePlaybackBackwardsWithoutASeek() {
+        XCTAssertTrue(
+            PlayerViewModel.isUnexpectedBackwardPlaybackTime(
+                32.1,
+                currentTime: 35,
+                explicitSeekInFlight: false
+            )
+        )
+        XCTAssertFalse(
+            PlayerViewModel.isUnexpectedBackwardPlaybackTime(
+                32.1,
+                currentTime: 35,
+                explicitSeekInFlight: true
+            )
+        )
+        XCTAssertFalse(
+            PlayerViewModel.isUnexpectedBackwardPlaybackTime(
+                34.5,
+                currentTime: 35,
+                explicitSeekInFlight: false
+            )
+        )
+    }
+
+    func testLoopbackVODReplanKeepsStablePlaylistTimeline() {
+        XCTAssertEqual(
+            PlayerViewModel.initialLoopbackTimelineOffset(
+                servingMode: .vodPlan,
+                startTime: 21.5
+            ),
+            0
+        )
+        XCTAssertEqual(
+            PlayerViewModel.initialLoopbackTimelineOffset(
+                servingMode: .event,
+                startTime: 21.5
+            ),
+            21.5
+        )
+    }
+
+    func testGrowingTranscodePlaylistCannotReplaceKnownVODDuration() {
+        XCTAssertFalse(
+            PlayerViewModel.shouldAdoptBackendDuration(
+                73,
+                currentDuration: 57,
+                delivery: .transcode
+            )
+        )
+        XCTAssertTrue(
+            PlayerViewModel.shouldAdoptBackendDuration(
+                73,
+                currentDuration: 0,
+                delivery: .transcode
+            )
+        )
+        XCTAssertTrue(
+            PlayerViewModel.shouldAdoptBackendDuration(
+                73,
+                currentDuration: 57,
+                delivery: .direct
+            )
+        )
+        XCTAssertFalse(
+            PlayerViewModel.shouldAdoptBackendDuration(
+                50,
+                currentDuration: 57,
+                delivery: .direct
+            )
+        )
+    }
+
+    func testV3RouteSubtitleFilteringRetainsOnlySelectedEmbeddedSidecar() {
+        let external = makeSubtitleUrl(index: 3, source: "external")
+        let selectedEmbedded = makeSubtitleUrl(index: 9, source: "embedded")
+        let redundantEmbedded = makeSubtitleUrl(index: 10, source: "EmBeDdEd")
+        let urls = [external, selectedEmbedded, redundantEmbedded]
+
+        XCTAssertEqual(
+            PlayerViewModel.protocolV3SubtitleUrlsForCurrentRoute(
+                urls,
+                routeUsesEmbeddedExtraction: true,
+                selectedSubtitleIndex: 9,
+                subtitleMode: "render"
+            ).map(\.index),
+            [3, 9]
+        )
+        XCTAssertEqual(
+            PlayerViewModel.protocolV3SubtitleUrlsForCurrentRoute(
+                urls,
+                routeUsesEmbeddedExtraction: true,
+                selectedSubtitleIndex: 9,
+                subtitleMode: "burn_in"
+            ).map(\.index),
+            [3]
+        )
+        XCTAssertEqual(
+            PlayerViewModel.protocolV3SubtitleUrlsForCurrentRoute(
+                urls,
+                routeUsesEmbeddedExtraction: false,
+                selectedSubtitleIndex: 9,
+                subtitleMode: "render"
+            ),
+            urls
+        )
+    }
+
+    func testAudiobookFeaturesDoNotClaimSeekReanchor() {
+        XCTAssertFalse(
+            ApplePlaybackV3Capabilities.audiobookFeatures.contains(
+                PlaybackProtocolV3.seekReanchorFeature
+            )
+        )
+        XCTAssertTrue(
+            ApplePlaybackV3Capabilities.audiobookFeatures.contains(
+                PlaybackProtocolV3.planFeature
+            )
+        )
+    }
+
     func testAudioOnlyAndUnknownServerQualityRungsRemainUsable() {
         let options = ApplePlaybackQuality.playbackOptions(
             serverQualities: [
@@ -814,6 +1034,49 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(options.map(\.id), ["auto", "audio_high"])
         XCTAssertEqual(options.last?.resolution, "")
         XCTAssertEqual(options.last?.bitrateKbps, 320)
+    }
+
+    func testEmptyServerQualityCatalogOnlyOffersAuto() {
+        let options = ApplePlaybackQuality.playbackOptions(
+            serverQualities: [],
+            fallbackVersion: makeVersion(
+                container: "mp4",
+                videoCodec: "h264",
+                audioCodec: "aac"
+            )
+        )
+        XCTAssertEqual(options.map(\.id), [ApplePlaybackQuality.autoId])
+    }
+
+    func testCompoundAndUnknownV3QualityIdsSurvivePlanMatching() {
+        let qualities = [
+            PlaybackV3AvailableQuality(
+                label: "1080p",
+                height: 1_080,
+                bitrateKbps: 8_000,
+                preservesSource: false
+            ),
+            PlaybackV3AvailableQuality(
+                label: "audio_high",
+                height: nil,
+                bitrateKbps: 320,
+                preservesSource: false
+            )
+        ]
+        XCTAssertEqual(
+            ApplePlaybackQuality.activeProtocolV3QualityId(
+                requestedQualityId: "1080p-8",
+                availableQualities: qualities
+            ),
+            "1080p-8"
+        )
+        XCTAssertEqual(
+            ApplePlaybackQuality.activeProtocolV3QualityId(
+                requestedQualityId: "audio_high",
+                availableQualities: qualities
+            ),
+            "audio_high"
+        )
     }
 
     func testPlanRuntimeFallbackIsUsedOnlyWhenSourceRuntimeIsAbsent() throws {
@@ -1155,6 +1418,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         container: String,
         videoCodec: String,
         audioCodec: String,
+        audioTracks: [AudioTrack]? = nil,
         subtitleTracks: [SubtitleTrack]? = nil
     ) -> FileVersion {
         FileVersion(
@@ -1169,9 +1433,40 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             duration: 120,
             bitrate: 8_000_000,
             videoTracks: nil,
-            audioTracks: nil,
+            audioTracks: audioTracks,
             subtitleTracks: subtitleTracks,
             chapters: nil
+        )
+    }
+
+    private func makeAudio(
+        index: Int,
+        codec: String,
+        isDefault: Bool
+    ) -> AudioTrack {
+        AudioTrack(
+            index: index,
+            codec: codec,
+            channels: 6,
+            channelLayout: "5.1",
+            bitrate: 640_000,
+            sampleRate: 48_000,
+            language: "en",
+            title: codec.uppercased(),
+            embeddedTitle: nil,
+            isDefault: isDefault
+        )
+    }
+
+    private func makeSubtitleUrl(index: Int, source: String) -> SubtitleUrl {
+        SubtitleUrl(
+            index: index,
+            language: "en",
+            codec: "srt",
+            label: "English",
+            source: source,
+            forced: false,
+            url: "/stream/subtitles/\(index)"
         )
     }
 

@@ -27,6 +27,12 @@ enum ApplePlaybackV3Capabilities {
         PlaybackProtocolV3.directStreamResumeFeature
     ]
 
+    /// Audiobooks currently restart sessions at part boundaries and do not
+    /// retain enough plan identity to request seek re-anchors in place.
+    static let audiobookFeatures = features.filter {
+        $0 != PlaybackProtocolV3.seekReanchorFeature
+    }
+
     /// Video codecs the Apple playback stack decodes on a direct route. This
     /// mirrors `ApplePlaybackRoutePlanner`'s native-direct and loopback
     /// allowlists rather than the wider set FFmpeg can demux: a codec claimed
@@ -136,7 +142,7 @@ enum ApplePlaybackV3Capabilities {
                 supportedOnDevice: true,
                 failureReason: nil,
                 containers: ["mp4", "mov", "m4v"],
-                videoCodecs: videoCodecs,
+                videoCodecs: AppleDecodeCapabilities.videoCodecs,
                 audioDecodeCodecs: ["aac", "ac3", "eac3", "alac", "mp3"],
                 audioPassthroughCodecs: [],
                 maxChannels: 8,

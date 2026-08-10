@@ -398,13 +398,26 @@ struct ApplePlaybackRoutePlanner {
                 pendingAudioFfIndex: pendingAudioFfIndex,
                 preferredAudioTrackIndex: preferredAudioTrackIndex
             )
-        guard let selectedTrack,
-              let selectedTrackIndex = selectedTrack.srcId ?? selectedAudioTrackIndex else {
-            return nil
+        let selectedAudio: LoopbackSessionSpec.SelectedAudio
+        if tracks.isEmpty {
+            selectedAudio = .none
+        } else {
+            guard let selectedTrack,
+                  let selectedTrackIndex = selectedTrack.srcId ?? selectedAudioTrackIndex else {
+                return nil
+            }
+            let outputMode = loopbackAudioOutputMode(for: selectedTrack)
+            let preservesAtmos = outputMode == .copy && loopbackAudioPreservesAtmos(for: selectedTrack)
+            selectedAudio = LoopbackSessionSpec.SelectedAudio(
+                trackIndex: selectedTrackIndex,
+                ffIndex: selectedTrack.ffIndex,
+                sourceCodec: selectedTrack.codec,
+                sourceChannelCount: selectedTrack.audioChannelCount,
+                sourceChannelLayout: selectedTrack.audioChannelsLayout,
+                outputMode: outputMode,
+                preservesAtmos: preservesAtmos
+            )
         }
-
-        let outputMode = loopbackAudioOutputMode(for: selectedTrack)
-        let preservesAtmos = outputMode == .copy && loopbackAudioPreservesAtmos(for: selectedTrack)
         let advertisedProfile: Int? = switch videoMode {
         case .passthroughProfile5:
             5
@@ -439,21 +452,13 @@ struct ApplePlaybackRoutePlanner {
             sourceBitrateBps: version.bitrate.map { Double($0) * 1_000 },
             videoMode: videoMode,
             sourceVideoFrameRate: loopbackSourceFrameRate(for: version),
-            selectedAudio: LoopbackSessionSpec.SelectedAudio(
-                trackIndex: selectedTrackIndex,
-                ffIndex: selectedTrack.ffIndex,
-                sourceCodec: selectedTrack.codec,
-                sourceChannelCount: selectedTrack.audioChannelCount,
-                sourceChannelLayout: selectedTrack.audioChannelsLayout,
-                outputMode: outputMode,
-                preservesAtmos: preservesAtmos
-            ),
+            selectedAudio: selectedAudio,
             availableAudioTracks: tracks,
             manifestMetadata: LoopbackSessionSpec.ManifestMetadata(
                 advertisedDolbyVisionProfile: advertisedProfile,
                 compatibilityBrand: compatibilityBrand,
                 videoRange: videoRange,
-                mayClaimAtmos: preservesAtmos
+                mayClaimAtmos: selectedAudio.preservesAtmos
             ),
             servingMode: servingMode
         )
@@ -768,7 +773,11 @@ private extension ApplePlaybackRoutePlanner {
             return PlaybackNormalizationSummary(
                 containerMode: "local_fmp4_hls",
                 videoMode: loopbackSession?.videoMode.logToken ?? "loopback_unresolved",
-                audioMode: loopbackSession?.selectedAudio.outputMode.logToken ?? "loopback_unresolved",
+                audioMode: loopbackSession.map {
+                    $0.selectedAudio.isPresent
+                        ? $0.selectedAudio.outputMode.logToken
+                        : "none"
+                } ?? "loopback_unresolved",
                 subtitleMode: sourceMetadata.subtitleCodecs.isEmpty ? "none" : "extract_or_sidecar"
             )
         case .avPlayerNativeDirect:

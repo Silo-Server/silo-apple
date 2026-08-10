@@ -102,6 +102,9 @@ enum ApplePlaybackV3PlanAdapter {
                 label: item.label,
                 source: item.source,
                 forced: item.forced,
+                default: item.default,
+                hearingImpaired: item.hearingImpaired,
+                fontBundleUrl: item.fontBundleUrl,
                 url: url
             )
         }
@@ -122,6 +125,9 @@ enum ApplePlaybackV3PlanAdapter {
                 label: selected?.title,
                 source: selected.map { $0.external == true ? "external" : "embedded" } ?? "protocol_v3",
                 forced: selected?.forced,
+                default: selected?.isDefault,
+                hearingImpaired: selected?.hearingImpaired,
+                fontBundleUrl: nil,
                 url: artifact.url
             ))
         }
@@ -141,7 +147,7 @@ enum ApplePlaybackV3PlanAdapter {
             // the server reports an unknown runtime would reintroduce a guess.
             durationSeconds: plan.source.durationSeconds ?? selectedVersion.duration,
             timelineOffsetSeconds: max(0, plan.timeline.timelineOffsetSeconds),
-            subtitleUrls: subtitleUrls.isEmpty ? nil : subtitleUrls,
+            subtitleUrls: subtitleUrls,
             playbackInfo: PlaybackInfo(
                 streamType: plan.stream.protocol,
                 transcodeAudio: plan.transformations.contains { $0.name == "audio_to_aac" },
@@ -258,7 +264,8 @@ enum ApplePlaybackV3PlanAdapter {
         let normalization = PlaybackNormalizationSummary(
             containerMode: plan.delivery == "original_http" ? basePlan.normalizationSummary.containerMode : plan.delivery,
             videoMode: plan.effectiveRecipe.videoCodec ?? "copy",
-            audioMode: plan.effectiveRecipe.audioCodec ?? "copy",
+            audioMode: plan.effectiveRecipe.audioCodec
+                ?? (plan.source.audioCodec == nil ? "none" : "copy"),
             subtitleMode: plan.subtitle.mode
         )
 

@@ -349,9 +349,9 @@ actor PlaybackSessionBridge {
         // A mid-stream quality-change replan passes an explicit override
         // (e.g. back to Auto) that must win over the persisted setting.
         let playerSettings = PlayerSettings.shared
-        let preferredQuality = normalizedQualityPreference(
-            preferredQualityOverride ?? playerSettings.preferredQuality
-        )
+        let preferredQuality = preferredQualityOverride.map {
+            ApplePlaybackQuality.protocolV3QualityId($0)
+        } ?? normalizedQualityPreference(playerSettings.preferredQuality)
         let bandwidthCapKbps = AppleQualityAxes.resolvedBitrateCap(
             qualityOverride: preferredQualityOverride,
             fallbackBitrateKbps: playerSettings.maxBitrateKbps

@@ -113,6 +113,23 @@ struct LoopbackSessionSpec {
         let sourceChannelLayout: String?
         let outputMode: AudioOutputMode
         let preservesAtmos: Bool
+
+        static let none = SelectedAudio(
+            trackIndex: -1,
+            ffIndex: nil,
+            sourceCodec: nil,
+            sourceChannelCount: nil,
+            sourceChannelLayout: nil,
+            outputMode: .copy,
+            preservesAtmos: false
+        )
+
+        var isPresent: Bool {
+            if let ffIndex {
+                return ffIndex >= 0
+            }
+            return trackIndex >= 0
+        }
     }
 
     struct ManifestMetadata: Equatable {
@@ -595,8 +612,11 @@ struct PlaybackExecutionPlan {
         PlaybackNormalizationSummary(
             containerMode: "local_fmp4_hls",
             videoMode: loopbackSession?.videoMode.logToken ?? "loopback_unresolved",
-            audioMode: loopbackSession.map { audioModeLogToken($0.selectedAudio.outputMode) }
-                ?? "loopback_unresolved",
+            audioMode: loopbackSession.map {
+                $0.selectedAudio.isPresent
+                    ? audioModeLogToken($0.selectedAudio.outputMode)
+                    : "none"
+            } ?? "loopback_unresolved",
             subtitleMode: sourceMetadata.subtitleCodecs.isEmpty ? "none" : "extract_or_sidecar"
         )
     }
