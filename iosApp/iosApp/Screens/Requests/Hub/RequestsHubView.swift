@@ -7,6 +7,7 @@ import SwiftUI
 /// reports `requests_enabled`.
 struct RequestsHubView: View {
     @State private var viewModel = RequestsHubViewModel()
+    @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(AppRouter.self) private var router
 
     var body: some View {
@@ -97,7 +98,14 @@ struct RequestsHubView: View {
             .frame(maxWidth: .infinity)
         } else {
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: RequestsUI.cardWidth), spacing: RequestsUI.railSpacing, alignment: .top)],
+                columns: [GridItem(
+                    .adaptive(
+                        minimum: RequestsUI.cardWidth
+                            * uiCustomization.cardPresentation.posterSize.scale
+                    ),
+                    spacing: RequestsUI.railSpacing,
+                    alignment: .top
+                )],
                 alignment: .leading,
                 spacing: RequestsUI.railSpacing
             ) {

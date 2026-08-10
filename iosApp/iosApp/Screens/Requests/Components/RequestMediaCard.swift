@@ -17,6 +17,7 @@ struct RequestMediaCard: View {
     let posterPath: String?
     let state: RequestDisplayState?
     let onTap: () -> Void
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
     init(result: RequestMediaResult, onTap: @escaping () -> Void) {
         self.title = result.title
@@ -45,7 +46,9 @@ struct RequestMediaCard: View {
         return label
     }
 
-    private var width: CGFloat { RequestsUI.cardWidth }
+    private var width: CGFloat {
+        RequestsUI.cardWidth * uiCustomization.cardPresentation.posterSize.scale
+    }
 
     private var height: CGFloat {
         width * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
@@ -63,18 +66,24 @@ struct RequestMediaCard: View {
             // would announce an image-only "Button".
             .accessibilityLabel(accessibilityTitle)
 
-            caption
+            if uiCustomization.cardPresentation.caption.showsTitle {
+                caption
+            }
         }
         .frame(width: width)
         #else
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: 4) {
                 posterImage
-                caption
+                if uiCustomization.cardPresentation.caption.showsTitle {
+                    caption
+                }
             }
         }
         .buttonStyle(.plain)
         .frame(width: width)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityTitle)
         #endif
     }
 
@@ -126,7 +135,7 @@ struct RequestMediaCard: View {
                 .lineLimit(2, reservesSpace: true)
                 #endif
 
-            if let year, year > 0 {
+            if uiCustomization.cardPresentation.caption.showsMetadata, let year, year > 0 {
                 Text(String(year))
                     .font(.continuumCaption)
                     .foregroundColor(.continuumSecondaryText)

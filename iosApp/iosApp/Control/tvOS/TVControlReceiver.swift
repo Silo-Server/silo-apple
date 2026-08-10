@@ -10,6 +10,7 @@ final class TVControlReceiver {
 
     private var listener: NWListener?
     private var advertisedServerId: String?
+    private var advertisedServerName: String?
     /// Bumped whenever we intentionally cancel/replace the listener, so its
     /// state handler can tell a system-initiated failure (restart) from our
     /// own teardown (ignore).
@@ -42,6 +43,11 @@ final class TVControlReceiver {
     private var playerContentId: String?
     private var playerHandoffGeneration: UUID?
     private var pendingPlayerHandoffGeneration: UUID?
+    /// A terminally rejected handoff does not need a best-effort logout, but
+    /// player teardown is asynchronous. Carry its exact generation through
+    /// `unregisterPlayer` so a replacement handoff is never treated as the
+    /// rejected one.
+    private var rejectedPlayerHandoffGeneration: UUID?
     private var remoteControllerName: String?
     private var remoteControllerDeviceId: String?
     private var remoteControllerServerId: String?
@@ -60,7 +66,9 @@ final class TVControlReceiver {
         }
         let serverId = RemotePlaybackIdentityManager.shared.effectiveServerId ?? server.id
         let serverName = RemotePlaybackIdentityManager.shared.effectiveServerName ?? server.displayName
-        if listener != nil, advertisedServerId == serverId {
+        if listener != nil,
+           advertisedServerId == serverId,
+           advertisedServerName == serverName {
             return
         }
 
@@ -114,6 +122,7 @@ final class TVControlReceiver {
             listener.start(queue: .main)
             self.listener = listener
             advertisedServerId = serverId
+            advertisedServerName = serverName
         } catch {
             Self.logger.error("failed to start control listener: \(String(describing: error), privacy: .public)")
         }
@@ -122,6 +131,7 @@ final class TVControlReceiver {
     private func scheduleListenerRestart() {
         listener = nil
         advertisedServerId = nil
+        advertisedServerName = nil
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard let self, self.listener == nil, let router = self.router else { return }
@@ -152,6 +162,7 @@ final class TVControlReceiver {
         listener?.cancel()
         listener = nil
         advertisedServerId = nil
+        advertisedServerName = nil
         closeActiveSession(sendClose: false)
     }
 
@@ -159,13 +170,25 @@ final class TVControlReceiver {
         closeActiveSession(sendClose: true)
     }
 
-    func temporaryAuthExpired() {
+    func temporaryAuthExpired(expected event: SessionExpiryEvent) {
+        let expectedGenerationID = event.account.credentialGenerationID
+        guard event.disposition == .temporarySessionExpired,
+              RemotePlaybackIdentityManager.shared.activeIdentity?.generationID == expectedGenerationID else {
+            return
+        }
+        rejectedPlayerHandoffGeneration = expectedGenerationID
         sendError(code: "temporary_session_expired", message: "The phone profile session expired.")
         let hadPlayer = playerViewModel != nil
         stopRemotePlayback()
         if !hadPlayer {
             Task { @MainActor [weak self] in
-                await RemotePlaybackIdentityManager.shared.end()
+                guard await RemotePlaybackIdentityManager.shared.end(
+                    expectedGenerationID: expectedGenerationID,
+                    notifyServer: false
+                ) else { return }
+                if self?.rejectedPlayerHandoffGeneration == expectedGenerationID {
+                    self?.rejectedPlayerHandoffGeneration = nil
+                }
                 self?.refreshAdvertisement()
                 self?.reconcileAuthorizationAfterRestore()
             }
@@ -200,7 +223,14 @@ final class TVControlReceiver {
            RemotePlaybackIdentityManager.shared.activeIdentity?.generationID == endingGeneration {
             Task { @MainActor [weak self, weak viewModel] in
                 await viewModel?.waitForCleanupCompletion()
-                await RemotePlaybackIdentityManager.shared.end()
+                let notifyServer = self?.rejectedPlayerHandoffGeneration != endingGeneration
+                guard await RemotePlaybackIdentityManager.shared.end(
+                    expectedGenerationID: endingGeneration,
+                    notifyServer: notifyServer
+                ) else { return }
+                if self?.rejectedPlayerHandoffGeneration == endingGeneration {
+                    self?.rejectedPlayerHandoffGeneration = nil
+                }
                 self?.refreshAdvertisement()
                 self?.reconcileAuthorizationAfterRestore()
                 self?.refreshStandbyState()

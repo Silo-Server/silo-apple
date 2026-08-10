@@ -134,31 +134,75 @@ enum PlaybackPrefSentinel {
     static let originalLanguage = "original"
 }
 
-/// The same twelve languages the web settings expose. ISO 639-1 codes
-/// matched on the wire; labels are display-only.
+/// One language row in a settings picker. Values come from the generated
+/// contract catalog, deployment-observed suggestions, and the current stored
+/// value. Labels are localized by Foundation rather than shipped as a second
+/// English-only registry.
 struct PlaybackLanguageOption: Identifiable, Hashable {
     let code: String
     let label: String
     var id: String { code }
 
-    static let all: [PlaybackLanguageOption] = [
-        .init(code: "en", label: "English"),
-        .init(code: "es", label: "Spanish"),
-        .init(code: "fr", label: "French"),
-        .init(code: "de", label: "German"),
-        .init(code: "it", label: "Italian"),
-        .init(code: "pt", label: "Portuguese"),
-        .init(code: "ja", label: "Japanese"),
-        .init(code: "ko", label: "Korean"),
-        .init(code: "zh", label: "Chinese"),
-        .init(code: "ru", label: "Russian"),
-        .init(code: "ar", label: "Arabic"),
-        .init(code: "hi", label: "Hindi"),
+    static let all = options(for: .playbackSubtitleLanguage)
+
+    /// ISO 639-2/B spellings whose terminology form differs. Foundation
+    /// canonicalizes most of these through CLDR, but not every supported
+    /// spelling (notably `mao`), so keep the stable ISO aliases explicit.
+    private static let bibliographicAliases: [String: String] = [
+        "alb": "sq", "arm": "hy", "baq": "eu", "bur": "my",
+        "chi": "zh", "cze": "cs", "dut": "nl", "fre": "fr",
+        "geo": "ka", "ger": "de", "gre": "el", "ice": "is",
+        "mac": "mk", "mao": "mi", "may": "ms", "per": "fa",
+        "rum": "ro", "slo": "sk", "tib": "bo", "wel": "cy",
     ]
+
+    static func options(
+        for key: SettingKey,
+        currentValue: String? = nil,
+        runtimeValues: [String] = []
+    ) -> [PlaybackLanguageOption] {
+        var values: [String] = []
+        var indexByIdentity: [String: Int] = [:]
+
+        func add(_ rawValue: String, replacingAlias: Bool) {
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty,
+                  value != PlaybackPrefSentinel.none,
+                  value != PlaybackPrefSentinel.inherit else { return }
+            let identity = languageIdentity(value)
+            if let index = indexByIdentity[identity] {
+                if replacingAlias { values[index] = value }
+                return
+            }
+            indexByIdentity[identity] = values.count
+            values.append(value)
+        }
+
+        SettingPresentationMetadata.suggestedValues(for: key).forEach {
+            add($0, replacingAlias: false)
+        }
+        runtimeValues.forEach { add($0, replacingAlias: false) }
+        if let currentValue { add(currentValue, replacingAlias: true) }
+
+        return values.map { .init(code: $0, label: label(forCode: $0)) }
+    }
 
     static func label(forCode code: String) -> String {
         if code == PlaybackPrefSentinel.originalLanguage { return "Original Language" }
-        return all.first { $0.code == code }?.label ?? code.uppercased()
+        return Locale.current.localizedString(forIdentifier: code)?.capitalized
+            ?? Locale.current.localizedString(forLanguageCode: code)?.capitalized
+            ?? code.uppercased()
+    }
+
+    private static func languageIdentity(_ value: String) -> String {
+        let normalized = value.replacingOccurrences(of: "_", with: "-")
+        var components = normalized.split(separator: "-").map(String.init)
+        guard let language = components.first else { return normalized.lowercased() }
+        let languageCode = Locale(identifier: language).language.languageCode
+        components[0] = languageCode?.identifier(.alpha2)
+            ?? bibliographicAliases[language.lowercased()]
+            ?? language
+        return components.joined(separator: "-").lowercased()
     }
 }
 

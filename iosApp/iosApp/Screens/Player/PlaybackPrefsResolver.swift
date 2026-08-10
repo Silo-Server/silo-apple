@@ -35,10 +35,22 @@ struct SubtitleAutoResolver {
         /// means the user has no preference at any level. Empty
         /// string means "no subs" — distinct from no preference.
         let preferredLanguage: String?
+        /// Additional ordered language fallbacks. Used by Apple's caption
+        /// profile, which exposes a stack rather than one server value.
+        let additionalPreferredLanguages: [String]
         /// `subtitle_mode` from the cascade. `nil` → fall back to "auto".
         let mode: SubtitleMode?
         /// Whether forced subs should be auto-selected when available.
         let showForced: Bool
+        /// Apple's Forced Only display mode.
+        let forcedOnly: Bool
+        /// Prefer CC/SDH over plain subtitles when Apple requests the
+        /// accessibility media characteristics.
+        let preferAccessibilityTracks: Bool
+        /// An explicit device language stack is authoritative. If none of
+        /// those languages exists, clear any server-selected subtitle rather
+        /// than leaking the server profile back into device-settings mode.
+        let disableWhenNoLanguageMatch: Bool
         /// Per-series sticky pick. Highest priority signal — if a track
         /// matches the signature, select it regardless of language /
         /// mode.
@@ -51,6 +63,30 @@ struct SubtitleAutoResolver {
         /// preferred subtitle language (e.g. English audio + English
         /// sub preference → no subs).
         let currentAudioLanguage: String?
+
+        init(
+            preferredLanguage: String?,
+            additionalPreferredLanguages: [String] = [],
+            mode: SubtitleMode?,
+            showForced: Bool,
+            forcedOnly: Bool = false,
+            preferAccessibilityTracks: Bool = false,
+            disableWhenNoLanguageMatch: Bool = false,
+            trackSignature: SubtitleTrackSignature?,
+            availableSubtitles: [PlayerTrack],
+            currentAudioLanguage: String?
+        ) {
+            self.preferredLanguage = preferredLanguage
+            self.additionalPreferredLanguages = additionalPreferredLanguages
+            self.mode = mode
+            self.showForced = showForced
+            self.forcedOnly = forcedOnly
+            self.preferAccessibilityTracks = preferAccessibilityTracks
+            self.disableWhenNoLanguageMatch = disableWhenNoLanguageMatch
+            self.trackSignature = trackSignature
+            self.availableSubtitles = availableSubtitles
+            self.currentAudioLanguage = currentAudioLanguage
+        }
     }
 
     /// Resolve a subtitle pick. Caller is expected to skip this when
@@ -58,12 +94,26 @@ struct SubtitleAutoResolver {
     /// arguments) — the resolver is for the "no override" case.
     static func resolve(_ inputs: Inputs) -> SubtitleAutoSelection {
         if inputs.availableSubtitles.isEmpty {
-            return .noChange
+            return inputs.disableWhenNoLanguageMatch ? .disable : .noChange
         }
 
         let mode = inputs.mode ?? .auto
 
         if mode == .off {
+            return .disable
+        }
+
+        let preferredLanguages = orderedLanguages(from: inputs)
+
+        if inputs.forcedOnly {
+            if let forced = bestLanguageMatch(
+                preferredLanguages,
+                in: inputs.availableSubtitles.filter(\.isForced),
+                preferForced: true,
+                preferAccessibility: inputs.preferAccessibilityTracks
+            ) {
+                return .select(forced)
+            }
             return .disable
         }
 
@@ -74,9 +124,14 @@ struct SubtitleAutoResolver {
 
         guard let rawLang = inputs.preferredLanguage else {
             // No language preference recorded anywhere. Honour `always`
-            // by trying any default forced track but otherwise leave
+            // by choosing the best available track, but otherwise leave
             // alone — auto-enabling a random language would surprise.
-            if mode == .always, let any = bestLanguageMatch(nil, in: inputs.availableSubtitles, preferForced: inputs.showForced) {
+            if mode == .always, let any = bestLanguageMatch(
+                nil,
+                in: inputs.availableSubtitles,
+                preferForced: inputs.showForced,
+                preferAccessibility: inputs.preferAccessibilityTracks
+            ) {
                 return .select(any)
             }
             return .noChange
@@ -92,12 +147,17 @@ struct SubtitleAutoResolver {
         // (signs/foreign-dialogue-only) track is what "show forced
         // subtitles" is FOR. Mirrors the Android resolver.
         if mode == .auto, let audio = inputs.currentAudioLanguage,
-           languagesMatch(audio, rawLang) {
+           preferredLanguages.contains(where: { languagesMatch(audio, $0) }) {
             if inputs.showForced,
-               let forced = inputs.availableSubtitles.first(where: { track in
-                   track.isForced
-                       && track.lang.map { languagesMatch($0, rawLang) } == true
-               }) {
+               let matchingLanguage = preferredLanguages.first(where: {
+                   normalizedLanguageIdentifier(audio) == normalizedLanguageIdentifier($0)
+               }) ?? preferredLanguages.first(where: { languagesMatch(audio, $0) }),
+               let forced = bestLanguageMatch(
+                   matchingLanguage,
+                   in: inputs.availableSubtitles.filter(\.isForced),
+                   preferForced: true,
+                   preferAccessibility: inputs.preferAccessibilityTracks
+               ) {
                 return .select(forced)
             }
             return .disable
@@ -107,17 +167,24 @@ struct SubtitleAutoResolver {
         // full-dialogue track. `showForced` must NOT steal this pick —
         // a forced track is signs-only and reads as "subtitles stopped
         // working" minutes into any dialogue scene.
-        if let pick = bestLanguageMatch(rawLang, in: inputs.availableSubtitles, preferForced: false) {
+        if let pick = bestLanguageMatch(
+            preferredLanguages,
+            in: inputs.availableSubtitles,
+            preferForced: false,
+            preferAccessibility: inputs.preferAccessibilityTracks
+        ) {
             return .select(pick)
         }
 
         // No matching language. `always` could fall back to anything,
         // but unless forced subs are wanted we'd rather show nothing
         // than a random language the user can't read.
-        if inputs.showForced, let forced = inputs.availableSubtitles.first(where: { $0.isForced }) {
+        if !inputs.disableWhenNoLanguageMatch,
+           inputs.showForced,
+           let forced = inputs.availableSubtitles.first(where: { $0.isForced }) {
             return .select(forced)
         }
-        return .noChange
+        return inputs.disableWhenNoLanguageMatch ? .disable : .noChange
     }
 
     // MARK: - Matching helpers
@@ -170,30 +237,101 @@ struct SubtitleAutoResolver {
     private static func bestLanguageMatch(
         _ language: String?,
         in tracks: [PlayerTrack],
-        preferForced: Bool
+        preferForced: Bool,
+        preferAccessibility: Bool = false
     ) -> PlayerTrack? {
-        let pool: [PlayerTrack]
-        if let lang = language {
-            pool = tracks.filter {
-                guard let trackLang = $0.lang else { return false }
-                return languagesMatch(trackLang, lang)
+        guard let language else {
+            return bestTrackClass(in: tracks, preferForced: preferForced,
+                                  preferAccessibility: preferAccessibility)
+        }
+        return bestLanguageMatch(
+            [language],
+            in: tracks,
+            preferForced: preferForced,
+            preferAccessibility: preferAccessibility
+        )
+    }
+
+    /// Apply track-class priority before regional exactness: a full-dialogue
+    /// generic-language track must beat an exact signs-only track. Within the
+    /// same class, exhaust Apple's ordered exact locale matches before falling
+    /// back to primary-language equivalence.
+    private static func bestLanguageMatch(
+        _ languages: [String],
+        in tracks: [PlayerTrack],
+        preferForced: Bool,
+        preferAccessibility: Bool
+    ) -> PlayerTrack? {
+        let predicates = trackClassPredicates(
+            preferForced: preferForced,
+            preferAccessibility: preferAccessibility
+        )
+        for predicate in predicates {
+            for language in languages {
+                let normalized = normalizedLanguageIdentifier(language)
+                if let exact = tracks.first(where: { track in
+                    predicate(track)
+                        && track.lang.map(normalizedLanguageIdentifier) == normalized
+                }) {
+                    return exact
+                }
             }
-        } else {
-            pool = tracks
+            for language in languages {
+                if let fallback = tracks.first(where: { track in
+                    predicate(track)
+                        && track.lang.map { languagesMatch($0, language) } == true
+                }) {
+                    return fallback
+                }
+            }
         }
-        guard !pool.isEmpty else { return nil }
-        if preferForced, let forced = pool.first(where: { $0.isForced }) {
-            return forced
+        return nil
+    }
+
+    private static func bestTrackClass(
+        in tracks: [PlayerTrack],
+        preferForced: Bool,
+        preferAccessibility: Bool
+    ) -> PlayerTrack? {
+        for predicate in trackClassPredicates(
+            preferForced: preferForced,
+            preferAccessibility: preferAccessibility
+        ) {
+            if let track = tracks.first(where: predicate) { return track }
         }
-        if let nonForced = pool.first(where: {
+        return nil
+    }
+
+    private static func trackClassPredicates(
+        preferForced: Bool,
+        preferAccessibility: Bool
+    ) -> [(PlayerTrack) -> Bool] {
+        let accessible: (PlayerTrack) -> Bool = {
+            !$0.isForced && ($0.isHearingImpaired || titleIndicatesHearingImpaired($0.title))
+        }
+        let plain: (PlayerTrack) -> Bool = {
             !$0.isForced && !$0.isHearingImpaired && !titleIndicatesHearingImpaired($0.title)
-        }) {
-            return nonForced
         }
-        if let nonForced = pool.first(where: { !$0.isForced }) {
-            return nonForced
+        let nonForced: (PlayerTrack) -> Bool = { !$0.isForced }
+        let forced: (PlayerTrack) -> Bool = { $0.isForced }
+
+        if preferForced { return [forced, accessible, plain, nonForced, { _ in true }] }
+        if preferAccessibility { return [accessible, plain, nonForced, forced, { _ in true }] }
+        return [plain, nonForced, forced, { _ in true }]
+    }
+
+    private static func orderedLanguages(from inputs: Inputs) -> [String] {
+        guard let first = inputs.preferredLanguage, !first.isEmpty else { return [] }
+        var result: [String] = []
+        for language in [first] + inputs.additionalPreferredLanguages where !language.isEmpty {
+            let normalized = normalizedLanguageIdentifier(language)
+            if !result.contains(where: {
+                normalizedLanguageIdentifier($0) == normalized
+            }) {
+                result.append(language)
+            }
         }
-        return pool.first
+        return result
     }
 
     /// CC/SDH detection from the track title, for files that label the
@@ -210,41 +348,30 @@ struct SubtitleAutoResolver {
         return tokens.contains("cc") || tokens.contains("sdh")
     }
 
-    /// Loose ISO 639 comparison. Accepts mixed 2-letter / 3-letter
-    /// codes by mapping known pairs ("en"↔"eng", "es"↔"spa", etc.).
-    /// Falls back to case-insensitive prefix match for codes outside
-    /// the table.
+    /// Loose ISO 639 comparison. Foundation canonicalizes arbitrary alpha-2,
+    /// alpha-3 terminology, and alpha-3 bibliographic spellings before the
+    /// primary language subtags are compared. This keeps Apple locale tags
+    /// such as `nl-NL` equivalent to mux metadata such as `nld` without a
+    /// hand-maintained language allowlist.
     static func languagesMatch(_ a: String, _ b: String) -> Bool {
-        let la = a.lowercased()
-        let lb = b.lowercased()
+        let la = normalizedLanguageIdentifier(a)
+        let lb = normalizedLanguageIdentifier(b)
         if la == lb { return true }
-        if let alt = isoEquivalent[la], alt == lb { return true }
-        if let alt = isoEquivalent[lb], alt == la { return true }
-        // Some mux tools emit hyphenated forms like "en-us"; compare on
-        // the primary subtag.
-        let primaryA = la.split(separator: "-").first.map(String.init) ?? la
-        let primaryB = lb.split(separator: "-").first.map(String.init) ?? lb
-        if primaryA == primaryB { return true }
-        if let alt = isoEquivalent[primaryA], alt == primaryB { return true }
-        if let alt = isoEquivalent[primaryB], alt == primaryA { return true }
-        return false
+        return canonicalPrimaryLanguage(la) == canonicalPrimaryLanguage(lb)
     }
 
-    /// 2-letter ↔ 3-letter ISO 639 mapping for the languages our prefs
-    /// editor exposes. Server uses both forms interchangeably depending
-    /// on the source codec metadata, so the client has to match either.
-    private static let isoEquivalent: [String: String] = [
-        "en": "eng", "eng": "en",
-        "es": "spa", "spa": "es",
-        "fr": "fre", "fre": "fr", "fra": "fr",
-        "de": "ger", "ger": "de", "deu": "de",
-        "it": "ita", "ita": "it",
-        "pt": "por", "por": "pt",
-        "ja": "jpn", "jpn": "ja",
-        "ko": "kor", "kor": "ko",
-        "zh": "chi", "chi": "zh", "zho": "zh",
-        "ru": "rus", "rus": "ru",
-        "ar": "ara", "ara": "ar",
-        "hi": "hin", "hin": "hi",
-    ]
+    private static func normalizedLanguageIdentifier(_ identifier: String) -> String {
+        identifier
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+    }
+
+    private static func canonicalPrimaryLanguage(_ identifier: String) -> String {
+        let primary = identifier.split(separator: "-").first.map(String.init) ?? identifier
+        let languageCode = Locale(identifier: primary).language.languageCode
+        return languageCode?.identifier(.alpha2)
+            ?? languageCode?.identifier(.alpha3)
+            ?? primary
+    }
 }

@@ -368,7 +368,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
-    func testSimulatorCapabilitySnapshotIsConservativeAndComplete() {
+    func testSimulatorCapabilitySnapshotIsConservativeAndComplete() throws {
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         XCTAssertEqual(snapshot.context.protocolVersion, 3)
         XCTAssertEqual(snapshot.context.platform, "ios")
@@ -379,6 +379,37 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(snapshot.capabilities.codecsVideo, ["h264"])
         XCTAssertFalse(snapshot.capabilities.hdr)
         XCTAssertGreaterThanOrEqual(snapshot.outputRouteGeneration, 0)
+
+        // The per-format detail has to agree with the coarse flag, or the
+        // server plans an HDR delivery this client just said it cannot render.
+        let hdrDetails = try XCTUnwrap(snapshot.capabilities.hdrDetails)
+        XCTAssertFalse(hdrDetails.hdr10)
+        XCTAssertFalse(hdrDetails.hdr10Plus)
+        XCTAssertFalse(hdrDetails.hlg)
+        XCTAssertEqual(hdrDetails.dolbyVisionProfiles, [])
+        XCTAssertEqual(snapshot.capabilities.hdr, hdrDetails.claimsAnyHDR)
+        for (name, engine) in snapshot.context.engines {
+            XCTAssertEqual(engine.hdrDetails, hdrDetails, "engine \(name) disagrees on HDR")
+        }
+    }
+
+    func testHDRCapabilityFlagIsDerivedFromPerFormatDetail() {
+        XCTAssertFalse(
+            PlaybackV3HDRCapabilities(
+                hdr10: false, hdr10Plus: false, hlg: false, dolbyVisionProfiles: []
+            ).claimsAnyHDR
+        )
+        XCTAssertTrue(
+            PlaybackV3HDRCapabilities(
+                hdr10: false, hdr10Plus: false, hlg: true, dolbyVisionProfiles: []
+            ).claimsAnyHDR
+        )
+        // Dolby-Vision-only is still an HDR claim.
+        XCTAssertTrue(
+            PlaybackV3HDRCapabilities(
+                hdr10: false, hdr10Plus: false, hlg: false, dolbyVisionProfiles: [8]
+            ).claimsAnyHDR
+        )
     }
 
     func testStartRequestUsesSnakeCaseContract() throws {

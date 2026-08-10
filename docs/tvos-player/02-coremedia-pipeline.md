@@ -178,11 +178,15 @@ selection chooses one.
 
 On tvOS, HDR is handled through `AVDisplayManager`, not EDR on the layer:
 
-- `onSigPeakChange` is effectively an iOS-only mechanism.
-- tvOS calls `applyDisplayCriteria(refreshRate:dynamicRange:)`.
-- The dynamic-range integer comes from the private
-  [`AVDisplayCriteriaPrivate.h`](../../iosApp/iosApp/Screens/Player/CoreMedia/AVDisplayCriteriaPrivate.h)
-  bridge.
+- `onSigPeakChange` drives EDR on iOS and macOS only.
+- tvOS calls `TVDisplayCriteria.apply(refreshRate:contentFormat:)`.
+- The criteria are built with the public
+  `AVDisplayCriteria(refreshRate:formatDescription:)` (tvOS 17+). The compositor picks its HDMI mode from the codec fourcc plus the colour
+  signalling, so Dolby Vision carries its base-layer transfer — PQ for
+  Profile 8.1, Rec.709 SDR for 8.2, HLG for 8.4. The same mapping
+  (`VideoColorMetadata.dolbyVisionBaseLayerColorimetry`) supplies the colour
+  attachments on the format description `PlayerCore` hands the decoder, so
+  the HDMI mode and the decoded frames describe one base layer.
 
 That means HDMI mode matching is part of the default `PlayerCore` path.
 
@@ -208,7 +212,6 @@ position scrubbing through `MPRemoteCommandCenter`.
   session.
 - Mid-stream format changes are handled with `displayLayer.flush()` rather than
   a full surface teardown.
-- The display-matching path uses a private API bridge.
 
 ## 12. H.264 software decode fallback
 

@@ -1,3 +1,19 @@
+enum TVVisibleRootsFocusRearm: Equatable {
+    case none
+    case topMenu
+    case content
+}
+
+func tvVisibleRootsFocusRearm(
+    menuOwnedFocus: Bool,
+    isShowingRoot: Bool,
+    selectedRootWasRemoved: Bool
+) -> TVVisibleRootsFocusRearm {
+    guard isShowingRoot else { return .none }
+    if menuOwnedFocus { return .topMenu }
+    return selectedRootWasRemoved ? .content : .none
+}
+
 #if os(tvOS)
 import SwiftUI
 
@@ -27,6 +43,7 @@ struct TVMainTabView: View {
     /// tab is opted in). Observed so the bar re-derives `visibleRoots` the
     /// instant a toggle flips in Settings.
     @State private var navPrefs = TVNavPreferences.shared
+    @State private var uiCustomization = UICustomizationPreferences.shared
     /// Visible libraries for the active profile; drives which type tabs
     /// exist and which library each type tab scopes to. Seeded from the
     /// startup prefetch so all type tabs are in the bar's first frame —
@@ -34,9 +51,20 @@ struct TVMainTabView: View {
     /// splash lifted.
     @State private var libraries: [Library] =
         ResponseCache.shared.get(CacheKey.userLibraries, as: LibrariesResponse.self)?.libraries ?? []
+    @State private var loadedLibraryAuthority: MainTabLibraryAuthority? = {
+        let registry = ServerRegistry.shared
+        return MainTabLibraryAuthority(
+            serverId: registry.activeServerId,
+            profileId: registry.activeProfileId
+        )
+    }()
     /// Per-type pill selection, session-only (§8): it survives tab
-    /// switches but cold start always lands on Browse.
+    /// switches but cold start always lands on Recommended.
     @State private var pillSelections: [TVLibraryTabType: TVLibraryPill] = [:]
+    /// Direct pins own section state by exact library identity. They must not
+    /// inherit Movies/Series state, and each pin's one-library cascade remains
+    /// independently usable even when its category root is hidden.
+    @State private var shortcutPillSelections: [Int: TVLibraryPill] = [:]
     /// Per-type library scope: which single library each multi-library type
     /// is scoped to (§3.1). Seeded from the persisted choice (or the first
     /// library on cold start) via `TVLibraryScopeStore`, and updated +
@@ -49,7 +77,7 @@ struct TVMainTabView: View {
     /// route or full-screen modal.
     @State private var openPanel: TVTopMenuPanel?
     @State private var panelEntersFocus = false
-    @State private var panelFocusEntryToken = 0
+    @State private var panelFocusEntryGeneration = 0
     @State private var panelHasFocus = false
     @State private var panelFocusExitTask: Task<Void, Never>?
     @State private var controlReceiver = TVControlReceiver.shared
@@ -66,7 +94,7 @@ struct TVMainTabView: View {
     /// this, so their pops keep the engine's restore-to-card behavior.
     @State private var barOwnsFocusOnPopToRoot = false
     @State private var topMenuFocusRequest = 0
-    /// Active focus hand-down token. Incremented whenever a root is
+    /// Active focus hand-down generation. Incremented whenever a root is
     /// selected so the freshly-swapped-in content imperatively claims
     /// focus, instead of relying on `prefersDefaultFocus` (which can lose
     /// to geometric proximity, per CLAUDE.md's "tvOS default focus on
@@ -189,10 +217,12 @@ struct TVMainTabView: View {
             // Re-read tab-visibility prefs for the now-known profile (the
             // singleton may hold the previous profile's value after a switch).
             navPrefs.refresh()
+            await uiCustomization.refresh()
             controlReceiver.start(router: router)
-            async let profileTask: Void = loadCurrentProfile()
-            async let librariesTask: Void = loadLibraries()
-            _ = await (profileTask, librariesTask)
+            await loadCurrentProfile()
+        }
+        .task(id: currentLibraryAuthority) {
+            await loadLibraries(for: currentLibraryAuthority)
         }
         .onChange(of: router.path.isEmpty) { _, isEmpty in
             // Returning from a pushed route (Search, detail, settings)
@@ -228,15 +258,16 @@ struct TVMainTabView: View {
                 selectRoot(.home)
             }
         }
-        .onChange(of: navPrefs.showAudiobooks) {
-            // Turning a tab off while parked on it would otherwise orphan the
-            // page with no matching tab in the bar; snap back to Home.
-            ensureSelectedRootIsVisible()
+        .onChange(of: visibleRoots) { _, _ in
+            reconcileVisibleRootsChange()
         }
         .onDisappear {
             controlReceiver.stop()
         }
         .onChange(of: ServerRegistry.shared.activeServerId) {
+            controlReceiver.start(router: router)
+        }
+        .onChange(of: ServerRegistry.shared.activeServer?.displayName) {
             controlReceiver.start(router: router)
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -245,6 +276,8 @@ struct TVMainTabView: View {
             // find this TV. No-op when the listener is healthy.
             if newPhase == .active {
                 controlReceiver.start(router: router)
+                let authority = currentLibraryAuthority
+                Task { await loadLibraries(for: authority) }
             }
         }
     }
@@ -308,6 +341,27 @@ struct TVMainTabView: View {
             // section fetches reset cleanly (pill selection survives in
             // pillSelections).
             .id(type)
+        case .libraryShortcut(let libraryId, _):
+            if let library = libraries.first(where: { $0.id == libraryId }),
+               let type = tabType(for: library) {
+                TVLibraryTypeTabView(
+                    type: type,
+                    libraries: [library],
+                    activeLibrary: library,
+                    selectedPill: shortcutPillSelection(for: libraryId, categoryType: type),
+                    focusRequest: contentFocusRequest,
+                    isTopMenuFocused: isTopMenuFocused,
+                    onTopMenuFocusRequest: { focusTopMenuIfVisible() }
+                )
+                .id(library.id)
+            } else {
+                EmptyStateView(
+                    icon: "square.stack.3d.up",
+                    title: "Library unavailable",
+                    subtitle: "This pinned library is no longer visible to the active profile."
+                )
+                .padding(.top, TVTopMenuLayout.contentTopInset)
+            }
         case .calendar:
             CalendarView(
                 focusRequest: contentFocusRequest,
@@ -355,7 +409,7 @@ struct TVMainTabView: View {
     private var persistentPanels: [TVTopMenuPanel] {
         var panels = visibleRoots.compactMap { root -> TVTopMenuPanel? in
             switch root {
-            case .libraryType, .recommendations:
+            case .libraryType, .libraryShortcut, .recommendations:
                 return .root(root)
             case .home, .calendar:
                 return nil
@@ -367,7 +421,7 @@ struct TVMainTabView: View {
 
     private func panelIntrinsicWidth(for panel: TVTopMenuPanel) -> CGFloat {
         switch panel {
-        case .profile, .root(.recommendations):
+        case .profile, .root(.recommendations), .root(.libraryShortcut):
             return ContinuumTheme.Skyline.dropdownWidth
         case .root:
             return ContinuumTheme.Skyline.dropdownWidth
@@ -428,7 +482,7 @@ struct TVMainTabView: View {
         case .profile:
             // Right-aligned to safeArea.x (§5.8).
             return max(safe, screenWidth - safe - level1Width)
-        case .root(.recommendations):
+        case .root(.recommendations), .root(.libraryShortcut):
             guard let anchor = anchors[panel] else {
                 return safe
             }
@@ -476,6 +530,11 @@ struct TVMainTabView: View {
             switch root {
             case .libraryType(let type):
                 cascadePanel(for: type, isActive: isActive)
+            case .libraryShortcut(let libraryId, let label):
+                shortcutCascadePanel(
+                    for: .libraryShortcut(libraryId: libraryId, label: label),
+                    isActive: isActive
+                )
             case .recommendations:
                 forYouPanel(isActive: isActive)
             case .home, .calendar:
@@ -492,7 +551,7 @@ struct TVMainTabView: View {
             libraries: libraries(of: type),
             currentScopeId: activeLibrary(for: type)?.id,
             entersPanel: isActive && panelEntersFocus,
-            focusEntryToken: panelFocusEntryToken,
+            focusEntryGeneration: panelFocusEntryGeneration,
             onCommitLibrary: { commitScope(type: type, library: $0, pill: nil) },
             onCommitSection: { commitScope(type: type, library: $0, pill: $1) },
             onClose: { closePanel() },
@@ -501,10 +560,33 @@ struct TVMainTabView: View {
         )
     }
 
+    @ViewBuilder
+    private func shortcutCascadePanel(
+        for root: TVRootDestination,
+        isActive: Bool
+    ) -> some View {
+        if case .libraryShortcut(let libraryId, _) = root,
+           let library = libraries.first(where: { $0.id == libraryId }),
+           let type = tabType(for: library) {
+            TVCascadeSelector(
+                type: type,
+                libraries: [library],
+                currentScopeId: library.id,
+                entersPanel: isActive && panelEntersFocus,
+                focusEntryGeneration: panelFocusEntryGeneration,
+                onCommitLibrary: { commitShortcut(root: root, library: $0, pill: nil) },
+                onCommitSection: { commitShortcut(root: root, library: $0, pill: $1) },
+                onClose: { closePanel() },
+                onPanelFocusChanged: { handlePanelFocusChanged($0) },
+                onExitToContent: { exitPanelToContent() }
+            )
+        }
+    }
+
     private func forYouPanel(isActive: Bool) -> some View {
         TVForYouDropdown(
             entersPanel: isActive && panelEntersFocus,
-            focusEntryToken: panelFocusEntryToken,
+            focusEntryGeneration: panelFocusEntryGeneration,
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
             onClose: { closePanel() },
             onExitToContent: { exitPanelToContent() },
@@ -520,7 +602,7 @@ struct TVMainTabView: View {
             avatar: currentProfile?.avatarEmoji,
             serverHost: ServerRegistry.shared.activeServer?.displayName,
             entersPanel: isActive && panelEntersFocus,
-            focusEntryToken: panelFocusEntryToken,
+            focusEntryGeneration: panelFocusEntryGeneration,
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
             onSwitchProfile: { closePanel(then: switchProfile) },
             onWatchlist: { closePanel(then: { navigateFromBar(.watchlist) }) },
@@ -591,7 +673,7 @@ struct TVMainTabView: View {
         panelFocusExitTask = nil
         panelEntersFocus = true
         panelHasFocus = true
-        panelFocusEntryToken += 1
+        panelFocusEntryGeneration += 1
     }
 
     /// Route a d-pad-down on a panel-bearing bar element (§5.3): open its
@@ -622,7 +704,7 @@ struct TVMainTabView: View {
         panelFocusExitTask = nil
         panelEntersFocus = true
         panelHasFocus = true
-        panelFocusEntryToken += 1
+        panelFocusEntryGeneration += 1
         withAnimation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.Skyline.cascadeScrimDuration)) {
             openPanel = panel
         }
@@ -719,7 +801,7 @@ struct TVMainTabView: View {
 
         // Tear down the panel first, then select the tab + hand focus to the
         // swapped-in content. Selecting the root bumps contentFocusRequest,
-        // which the new page consumes as its entry token.
+        // which the new page consumes as its entry generation.
         withAnimation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.Skyline.cascadeScrimDuration)) {
             openPanel = nil
         }
@@ -728,30 +810,64 @@ struct TVMainTabView: View {
         selectRoot(.libraryType(type))
     }
 
+    private func commitShortcut(
+        root: TVRootDestination,
+        library: Library,
+        pill: TVLibraryPill?
+    ) {
+        guard case .libraryShortcut(let libraryId, _) = root,
+              library.id == libraryId else { return }
+        panelFocusExitTask?.cancel()
+        panelFocusExitTask = nil
+        shortcutPillSelections[libraryId] = pill ?? .recommended
+
+        withAnimation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.Skyline.cascadeScrimDuration)) {
+            openPanel = nil
+        }
+        panelEntersFocus = false
+        panelHasFocus = false
+        selectRoot(root)
+    }
+
     // MARK: - Tab derivation
 
-    /// Fixed root order (Skyline §3.1): Home, then one tab per library type
-    /// the profile can see, then For You and Calendar.
+    /// Contract-ordered roots for this TV family. Search and Profile remain
+    /// fixed outside this list, which keeps their focus anchors stable while
+    /// the user rearranges content tabs.
     private var visibleRoots: [TVRootDestination] {
-        var roots: [TVRootDestination] = [.home]
-        for type in TVLibraryTabType.allCases
-        where libraries.contains(where: { type.matches($0) }) && isTypeVisible(type) {
-            roots.append(.libraryType(type))
+        var roots: [TVRootDestination] = []
+        for item in uiCustomization.resolvedPrimaryMenuItems(availableLibraries: libraries) {
+            let root: TVRootDestination?
+            switch item {
+            case .builtin(.home): root = .home
+            case .builtin(.movies): root = availableRoot(for: .movies)
+            case .builtin(.series): root = availableRoot(for: .series)
+            case .builtin(.music): root = availableRoot(for: .music)
+            case .builtin(.audiobooks): root = availableRoot(for: .audiobooks)
+            case .builtin(.forYou): root = .recommendations
+            case .builtin(.calendar): root = .calendar
+            case .library(let libraryId, let label):
+                root = libraries.contains(where: { $0.id == libraryId })
+                    ? .libraryShortcut(libraryId: libraryId, label: label)
+                    : nil
+            case .section, .collection:
+                // The contract can carry these for web and future clients.
+                // Apple TV currently has a stable root route only for whole
+                // libraries, so unsupported shortcuts stay stored but hidden.
+                root = nil
+            }
+            if let root, !roots.contains(root) { roots.append(root) }
         }
-        roots.append(.recommendations)
-        roots.append(.calendar)
+        if !roots.contains(.home) { roots.insert(.home, at: 0) }
         return roots
     }
 
-    /// Whether a library type the profile can see should surface as a tab.
-    /// Most types are always shown; Audiobooks is opt-in (hidden by default)
-    /// because most users don't want it on their TV. This is the seam a
-    /// fuller "customize the header" feature would extend.
-    private func isTypeVisible(_ type: TVLibraryTabType) -> Bool {
-        switch type {
-        case .audiobooks: return navPrefs.showAudiobooks
-        default: return true
-        }
+    private func availableRoot(for type: TVLibraryTabType) -> TVRootDestination? {
+        libraries.contains(where: { type.matches($0) }) ? .libraryType(type) : nil
+    }
+
+    private func tabType(for library: Library) -> TVLibraryTabType? {
+        TVLibraryTabType.allCases.first(where: { $0.matches(library) })
     }
 
     private func libraries(of type: TVLibraryTabType) -> [Library] {
@@ -777,20 +893,65 @@ struct TVMainTabView: View {
 
     private func pillSelection(for type: TVLibraryTabType) -> Binding<TVLibraryPill> {
         Binding(
-            get: { pillSelections[type] ?? .recommended },
+            get: {
+                resolvedLibraryRootPill(
+                    categorySelection: pillSelections[type] ?? .recommended,
+                    directSelection: nil,
+                    isDirectLibraryShortcut: false
+                )
+            },
             set: { pillSelections[type] = $0 }
         )
     }
 
-    private func loadLibraries() async {
+    private func shortcutPillSelection(
+        for libraryId: Int,
+        categoryType: TVLibraryTabType
+    ) -> Binding<TVLibraryPill> {
+        Binding(
+            get: {
+                resolvedLibraryRootPill(
+                    categorySelection: pillSelections[categoryType] ?? .recommended,
+                    directSelection: shortcutPillSelections[libraryId],
+                    isDirectLibraryShortcut: true
+                )
+            },
+            set: { shortcutPillSelections[libraryId] = $0 }
+        )
+    }
+
+    private var currentLibraryAuthority: MainTabLibraryAuthority? {
+        MainTabLibraryAuthority(
+            serverId: registry.activeServerId,
+            profileId: registry.activeProfileId
+        )
+    }
+
+    private func loadLibraries(for authority: MainTabLibraryAuthority?) async {
+        if loadedLibraryAuthority != authority {
+            loadedLibraryAuthority = authority
+            libraries = []
+            scopeSelections = [:]
+            pillSelections = [:]
+            shortcutPillSelections = [:]
+            ensureSelectedRootIsVisible()
+        }
+        guard let authority else { return }
+
         if libraries.isEmpty,
            let cached: LibrariesResponse = ResponseCache.shared.get(CacheKey.userLibraries) {
             libraries = cached.libraries
+            ensureSelectedRootIsVisible()
         }
 
         do {
             let response = try await StartupContentPrefetcher.fetchUserLibraries()
+            guard !Task.isCancelled, currentLibraryAuthority == authority else { return }
+            loadedLibraryAuthority = authority
             libraries = response.libraries
+            shortcutPillSelections = shortcutPillSelections.filter { libraryId, _ in
+                response.libraries.contains { $0.id == libraryId }
+            }
             ensureSelectedRootIsVisible()
         } catch {
             // Keep whatever tabs we already have (cached or none) — Home
@@ -802,11 +963,41 @@ struct TVMainTabView: View {
     /// The selected root can stop being visible — a library refresh removes
     /// its type (e.g. profile permissions changed), or the user hides its tab
     /// from Settings. Snap back to Home rather than leaving a tab-less content
-    /// view on screen. Home / For You / Calendar are always in `visibleRoots`,
-    /// so this never strands the user.
-    private func ensureSelectedRootIsVisible() {
+    /// view on screen. Home is always injected into `visibleRoots`, so this
+    /// never strands the user.
+    private func ensureSelectedRootIsVisible(requestContentFocus: Bool = true) {
         if !visibleRoots.contains(selectedRoot) {
             selectedRoot = .home
+            if requestContentFocus {
+                contentFocusRequest += 1
+            }
+        }
+    }
+
+    /// A synced menu edit can remove the bar button that currently owns focus
+    /// even when the selected page remains visible. Capture the owner before
+    /// closing any panel, then explicitly re-arm that same focus zone after the
+    /// graph changes so tvOS never has to repair from an ownerless state.
+    private func reconcileVisibleRootsChange() {
+        let menuOwnedFocus = !isTopMenuFocusSuppressed || panelEntersFocus
+        let isShowingRoot = router.path.isEmpty
+        let selectedRootWasRemoved = !visibleRoots.contains(selectedRoot)
+        let focusRearm = tvVisibleRootsFocusRearm(
+            menuOwnedFocus: menuOwnedFocus,
+            isShowingRoot: isShowingRoot,
+            selectedRootWasRemoved: selectedRootWasRemoved
+        )
+
+        closePanel()
+        ensureSelectedRootIsVisible(requestContentFocus: false)
+
+        switch focusRearm {
+        case .none:
+            break
+        case .topMenu:
+            focusTopMenuIfVisible()
+        case .content:
+            suppressTopMenuFocusForContentHandoff()
             contentFocusRequest += 1
         }
     }
@@ -947,8 +1138,10 @@ struct TVMainTabView: View {
                 selectedRoot = .home
                 currentProfile = nil
                 libraries = []
+                loadedLibraryAuthority = nil
                 ResponseCache.shared.remove(CacheKey.userLibraries)
                 pillSelections = [:]
+                shortcutPillSelections = [:]
                 // Re-read tab-visibility prefs under the new server+profile
                 // key: this path switches in place without rebuilding the
                 // shell, so `.task` (the only other caller of refresh) won't
@@ -958,7 +1151,7 @@ struct TVMainTabView: View {
             }
             if AuthService.shared.hasProfile {
                 async let profileTask: Void = loadCurrentProfile()
-                async let librariesTask: Void = loadLibraries()
+                async let librariesTask: Void = loadLibraries(for: currentLibraryAuthority)
                 _ = await (profileTask, librariesTask)
             }
         }

@@ -13,16 +13,22 @@ struct SubtitleSettingsView: View {
 
     var body: some View {
         List {
+            SettingsPageHeader(
+                title: "Subtitles",
+                subtitle: "Language, behavior, and on-screen appearance.",
+                systemImage: "captions.bubble.fill",
+                tint: .pink
+            )
+            .settingsPageHeaderRow()
+
             profileBackedSection
             if AICapabilities.shared.metadataEnabled {
                 metadataLanguageSection
             }
             appearanceSection
         }
-        .continuumGroupedListStyle()
-        .continuumScrollContentBackgroundHidden()
-        .background(Color.continuumBackground.ignoresSafeArea())
-        .navigationTitle("Subtitles")
+        .settingsListChrome()
+        .navigationTitle("")
         .continuumNavigationTitleDisplayMode(.inline)
         .continuumToolbarColorSchemeDark()
         .onChange(of: viewModel.editorSubtitleLanguage) { _, _ in
@@ -45,8 +51,11 @@ struct SubtitleSettingsView: View {
     private var metadataLanguageSection: some View {
         Section {
             Picker("Metadata Language", selection: $viewModel.editorPreferredMetadataLanguage) {
-                Text("Library Default").tag(PlaybackPrefSentinel.none)
-                ForEach(PlaybackLanguageOption.all) { option in
+                Text(
+                    SettingPresentationMetadata.definitions[.catalogMetadataLanguage]?.unsetLabel
+                        ?? "Library default"
+                ).tag(PlaybackPrefSentinel.none)
+                ForEach(viewModel.metadataLanguageOptions) { option in
                     Text(option.label).tag(option.code)
                 }
             }
@@ -63,6 +72,7 @@ struct SubtitleSettingsView: View {
             Text("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
                 .foregroundStyle(Color.continuumSecondaryText)
         }
+        .disabled(viewModel.settingsServerUpgradeRequired)
         .listRowBackground(Color.continuumSurfaceElevated)
     }
 
@@ -72,8 +82,11 @@ struct SubtitleSettingsView: View {
     private var profileBackedSection: some View {
         Section {
             Picker("Language", selection: $viewModel.editorSubtitleLanguage) {
-                Text("None").tag(PlaybackPrefSentinel.none)
-                ForEach(PlaybackLanguageOption.all) { option in
+                Text(
+                    SettingPresentationMetadata.definitions[.playbackSubtitleLanguage]?.unsetLabel
+                        ?? "None"
+                ).tag(PlaybackPrefSentinel.none)
+                ForEach(viewModel.subtitleLanguageOptions) { option in
                     Text(option.label).tag(option.code)
                 }
             }
@@ -110,13 +123,26 @@ struct SubtitleSettingsView: View {
                 .foregroundStyle(Color.continuumSecondaryText)
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
-                if let state = viewModel.prefSaveState {
+                if viewModel.subtitleMatchesSystemAppearance {
+                    Text("Language, display behavior, forced captions, and CC/SDH preference follow this device's Accessibility settings.")
+                } else if viewModel.settingsServerUpgradeRequired {
+                    Text(ProfilePrefsEditor.serverUpgradeMessage)
+                        .foregroundStyle(Color.continuumError)
+                } else {
+                    Text("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
+                    if let overrideMessage = viewModel.prefs.subtitleProfileOverrideMessage {
+                        Text("Override active — \(overrideMessage)")
+                            .foregroundStyle(Color.continuumWarning)
+                    }
+                }
+                if let state = viewModel.prefSaveState,
+                   !(viewModel.settingsServerUpgradeRequired && state == .serverUpgradeRequired) {
                     saveStateView(state)
                 }
             }
             .foregroundStyle(Color.continuumSecondaryText)
         }
+        .disabled(viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
         .listRowBackground(Color.continuumSurfaceElevated)
     }
 
@@ -144,7 +170,7 @@ struct SubtitleSettingsView: View {
 
         Section {
             Toggle(
-                "Match Device Settings",
+                "Use Device Settings",
                 isOn: Binding(
                     get: { viewModel.subtitleMatchesSystemAppearance },
                     set: { enabled in
@@ -170,13 +196,17 @@ struct SubtitleSettingsView: View {
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 if viewModel.subtitleMatchesSystemAppearance {
-                    Text("Following this device's caption style from Accessibility settings (Subtitles & Captioning). Editing any option below switches back to Silo styling.")
+                    Text("Following this device's caption language, display behavior, CC/SDH preference, font, colors, opacity, edges, size, and caption window from Accessibility → Subtitles & Captioning.")
                 } else if viewModel.subtitleUsesDeviceAppearanceOverride {
                     Text("Saved on the server for this profile on this device. An admin can reset it.")
                 } else {
                     Text("Using the server fallback for this profile on this device. Turn on Custom Appearance to save your own here.")
                 }
-                Text("Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings.")
+                if viewModel.subtitleMatchesSystemAppearance {
+                    Text("Subtitles with built-in styling follow each device caption option's Video Overrides Style choice.")
+                } else {
+                    Text("Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings.")
+                }
             }
             .foregroundStyle(Color.continuumSecondaryText)
         }
@@ -357,6 +387,9 @@ struct SubtitleSettingsView: View {
             Text("Saved")
         case .failed(let message):
             Text("Couldn't save: \(message)")
+                .foregroundStyle(Color.continuumError)
+        case .serverUpgradeRequired:
+            Text(ProfilePrefsEditor.serverUpgradeMessage)
                 .foregroundStyle(Color.continuumError)
         }
     }

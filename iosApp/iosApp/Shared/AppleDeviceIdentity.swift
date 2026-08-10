@@ -10,11 +10,24 @@ struct AppleDeviceIdentity: Sendable {
     let id: String
     let name: String
     let platform: String
+    /// Canonical settings family used by `profile_client` resolution.
+    /// Kept separate from `platform`: the latter is diagnostic/device
+    /// metadata (`iOS`, `tvOS`, `macOS`), while this intentionally groups
+    /// interchangeable form factors across operating systems.
+    let clientFamily: String
+
+    init(id: String, name: String, platform: String, clientFamily: String) {
+        self.id = id
+        self.name = name
+        self.platform = platform
+        self.clientFamily = clientFamily
+    }
 
     static let current = AppleDeviceIdentity(
         id: AppleDeviceIdentity.loadOrCreateID(),
         name: AppleDeviceIdentity.currentName(),
-        platform: AppleDeviceIdentity.currentPlatform()
+        platform: AppleDeviceIdentity.currentPlatform(),
+        clientFamily: AppleDeviceIdentity.currentClientFamily()
     )
 
     private static let keychainAccount = "com.continuum.device.identity"
@@ -48,6 +61,18 @@ struct AppleDeviceIdentity: Sendable {
         return "macOS"
         #else
         return "Apple"
+        #endif
+    }
+
+    private static func currentClientFamily() -> String {
+        #if os(tvOS)
+        return "tv"
+        #elseif os(macOS)
+        return "desktop"
+        #elseif os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "mobile"
+        #else
+        return "desktop"
         #endif
     }
 }

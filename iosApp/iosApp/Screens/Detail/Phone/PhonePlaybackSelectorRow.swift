@@ -38,43 +38,135 @@ struct PhonePlaybackSelectorRow: View {
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
 
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
     @State private var activeSelector: PhonePlaybackSelectorKind?
 
     private var editions: [PlaybackEditions.Edition] {
         PlaybackEditions.editions(from: versions)
     }
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10),
-    ]
-
     var body: some View {
         if currentVersion != nil, !selectorKinds.isEmpty {
-            LazyVGrid(columns: columns, alignment: .center, spacing: 10) {
-                ForEach(selectorKinds) { kind in
-                    PhonePlaybackSelectorPill(
-                        kind: kind,
-                        value: value(for: kind),
-                        isInteractive: isInteractive(kind),
-                        action: { activeSelector = kind }
-                    )
+            #if os(iOS)
+            selectorCard
+                .popover(
+                    item: $activeSelector,
+                    attachmentAnchor: .rect(.bounds),
+                    arrowEdge: .top
+                ) { kind in
+                    selectorPresentation(for: kind)
+                }
+            #else
+            selectorCard
+                .sheet(item: $activeSelector) { kind in
+                    selectorPresentation(for: kind)
+                }
+            #endif
+        }
+    }
+
+    private func selectorPresentation(
+        for kind: PhonePlaybackSelectorKind
+    ) -> PhonePlaybackSelectorSheet {
+        PhonePlaybackSelectorSheet(
+            kinds: [kind],
+            versions: versions,
+            currentVersion: currentVersion,
+            selectedVersionFileId: selectedVersionFileId,
+            selectedAudioTrackIndex: selectedAudioTrackIndex,
+            selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+            usesPopoverLayout: usesPopoverLayout,
+            onSelectVersion: onSelectVersion,
+            onSelectAudioTrack: onSelectAudioTrack,
+            onSelectSubtitleTrack: onSelectSubtitleTrack
+        )
+    }
+
+    private var usesPopoverLayout: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .regular
+        #else
+        false
+        #endif
+    }
+
+    /// Settings-style rows: icon and label lead, value trails, chevron last.
+    ///
+    /// Replaced a two-column `LazyVGrid` that stranded the third selector
+    /// alone in the leading column, so the common version / audio /
+    /// subtitles case always read as a broken form. A horizontally
+    /// scrollable chip strip was tried first and was worse: three chips need
+    /// more width than a phone has, so subtitles fell off the edge entirely
+    /// and the most-hunted control became the invisible one. Rows never
+    /// truncate, never go ragged, and absorb a fourth edition picker by
+    /// simply growing.
+    private var selectorCard: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(selectorKinds.enumerated()), id: \.element.id) { index, kind in
+                if index > 0 {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.08))
+                        .frame(height: 0.5)
+                        .padding(.leading, 30)
+                }
+
+                selectorButton(kind) {
+                    HStack(spacing: 10) {
+                        Image(systemName: kind.icon)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.55))
+                            .frame(width: 20, alignment: .leading)
+
+                        Text(kind.title)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white.opacity(0.72))
+
+                        Spacer(minLength: 12)
+
+                        Text(value(for: kind))
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+
+                        if isInteractive(kind) {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white.opacity(0.35))
+                        }
+                    }
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
                 }
             }
-            .frame(maxWidth: .infinity)
-            .sheet(item: $activeSelector) { kind in
-                PhonePlaybackSelectorSheet(
-                    kind: kind,
-                    versions: versions,
-                    currentVersion: currentVersion,
-                    selectedVersionFileId: selectedVersionFileId,
-                    selectedAudioTrackIndex: selectedAudioTrackIndex,
-                    selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
-                    onSelectVersion: onSelectVersion,
-                    onSelectAudioTrack: onSelectAudioTrack,
-                    onSelectSubtitleTrack: onSelectSubtitleTrack
+        }
+        .padding(.horizontal, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.05))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
                 )
-            }
+        )
+    }
+    /// Wraps a layout's row/column in a button when that selector can
+    /// actually be changed, and leaves it inert when it cannot.
+    @ViewBuilder
+    private func selectorButton<Content: View>(
+        _ kind: PhonePlaybackSelectorKind,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        if isInteractive(kind) {
+            Button { activeSelector = kind } label: { content() }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(kind.title), \(value(for: kind))")
+        } else {
+            content()
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(kind.title), \(value(for: kind))")
         }
     }
 
@@ -161,72 +253,16 @@ struct PhonePlaybackSelectorRow: View {
         }
     }
 }
-
-private struct PhonePlaybackSelectorPill: View {
-    let kind: PhonePlaybackSelectorKind
-    let value: String
-    let isInteractive: Bool
-    let action: () -> Void
-
-    @ViewBuilder
-    var body: some View {
-        if isInteractive {
-            Button(action: action) {
-                labelContent(showsChevron: true)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(kind.title), \(value)")
-        } else {
-            labelContent(showsChevron: false)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(kind.title), \(value)")
-        }
-    }
-
-    private func labelContent(showsChevron: Bool) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: kind.icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.white.opacity(0.78))
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(kind.title.uppercased())
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(.white.opacity(0.62))
-                    .lineLimit(1)
-                Text(value)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-            }
-            Spacer(minLength: 4)
-            if showsChevron {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(.white.opacity(0.58))
-            }
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 46)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.white.opacity(0.20), lineWidth: 1)
-                )
-        )
-    }
-}
-
 private struct PhonePlaybackSelectorSheet: View {
-    let kind: PhonePlaybackSelectorKind
+    /// One entry when opened from a single control, all of them when opened
+    /// from the `.summary` row.
+    let kinds: [PhonePlaybackSelectorKind]
     let versions: [FileVersion]
     let currentVersion: FileVersion?
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
+    let usesPopoverLayout: Bool
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
@@ -261,7 +297,7 @@ private struct PhonePlaybackSelectorSheet: View {
                 await ProfilePrefsStore.shared.hydrateIfNeeded()
                 preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
             }
-            .navigationTitle(kind.title)
+            .navigationTitle(sheetTitle)
             #if !os(macOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -279,6 +315,15 @@ private struct PhonePlaybackSelectorSheet: View {
                 #endif
             }
         }
+        #if os(iOS)
+        // Regular-width iPad uses this view as an anchored popover instead
+        // of forcing a phone detent into the split-view detail column.
+        .frame(
+            width: usesPopoverLayout ? 440 : nil,
+            height: usesPopoverLayout ? 480 : nil
+        )
+        .presentationCompactAdaptation(.sheet)
+        #endif
         #if !os(macOS)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
@@ -287,15 +332,30 @@ private struct PhonePlaybackSelectorSheet: View {
 
     @ViewBuilder
     private var optionContent: some View {
-        switch kind {
-        case .edition:
-            editionOptions
-        case .version:
-            versionOptions
-        case .audio:
-            audioOptions
-        case .subtitles:
-            subtitleOptions
+        ForEach(kinds) { kind in
+            switch kind {
+            case .edition:
+                editionOptions
+            case .version:
+                versionOptions
+            case .audio:
+                audioOptions
+            case .subtitles:
+                subtitleOptions
+            }
+        }
+    }
+
+    private var sheetTitle: String {
+        kinds.count == 1 ? (kinds.first?.title ?? "Playback") : "Playback"
+    }
+
+    /// Section headers only earn their space when the sheet holds more than
+    /// one selector; a single-selector sheet already says so in its title.
+    @ViewBuilder
+    private func sectionHeader(_ kind: PhonePlaybackSelectorKind) -> some View {
+        if kinds.count > 1 {
+            Text(kind.title)
         }
     }
 
@@ -322,6 +382,8 @@ private struct PhonePlaybackSelectorSheet: View {
                     }
                 }
             }
+        } header: {
+            sectionHeader(.edition)
         }
     }
 
@@ -346,6 +408,8 @@ private struct PhonePlaybackSelectorSheet: View {
                     dismiss()
                 }
             }
+        } header: {
+            sectionHeader(.version)
         }
     }
 
@@ -385,6 +449,8 @@ private struct PhonePlaybackSelectorSheet: View {
                     }
                 }
             }
+        } header: {
+            sectionHeader(.audio)
         }
     }
 
@@ -424,6 +490,8 @@ private struct PhonePlaybackSelectorSheet: View {
                     }
                 }
             }
+        } header: {
+            sectionHeader(.subtitles)
         }
     }
 

@@ -5,9 +5,11 @@
 //  Pure functions over ISO/IEC 14496-12 (ISO Base Media File Format) byte
 //  buffers. `LoopbackSegmentWriter` uses these to post-process an fMP4 init segment
 //  the FFmpeg mp4 muxer produces — the muxer in our build doesn't emit the
-//  `dvvC` box required for Dolby Vision signalling, so we patch one in by
-//  walking the box tree to find the video `hvcC` and inserting the `dvvC`
-//  immediately after it (then bumping every ancestor container's size).
+//  configuration box required for Dolby Vision signalling, so we patch one in
+//  by walking the box tree to find the video `hvcC` and inserting the
+//  `dvcC` / `dvvC` immediately after it (then bumping every ancestor
+//  container's size). Which of the two is written follows the record's
+//  profile: `dvcC` up to Profile 7, `dvvC` for the cross-compatible 8+.
 //
 //  Also hosts the HEVC parameter-set NAL scanner and the `hvcC` atom builder:
 //  MKV doesn't populate HEVC extradata with VPS/SPS/PPS (leaves a 23-byte
@@ -127,12 +129,14 @@ enum ISOBoxSurgery {
 
     // MARK: - Box surgery
 
-    /// Insert the given `dvvC` box immediately after the video track's
-    /// `hvcC` box and adjust all ancestor container sizes by the inserted
-    /// length. Returns nil if the expected tree shape isn't present —
+    /// Insert the Dolby Vision configuration box for `doviBytes` immediately
+    /// after the video track's `hvcC` box and adjust all ancestor container
+    /// sizes by the inserted length. Returns nil if the expected tree shape
+    /// isn't present or the record is too short to build a box from —
     /// callers should ship the unmodified data rather than propagating a
     /// partial edit.
-    static func injectDvvC(into data: Data, doviBytes: Data) -> Data? {
+    static func injectDolbyVisionConfig(into data: Data, doviBytes: Data) -> Data? {
+        guard let configBox = buildDolbyVisionConfigBox(doviBytes: doviBytes) else { return nil }
         guard let moov = findTopLevelBox(in: data, type: "moov") else { return nil }
         guard let trak = findVideoTrak(in: data, moov: moov) else { return nil }
         guard let mdia = findChildBox(in: data, parent: trak, childType: "mdia") else { return nil }
@@ -159,11 +163,10 @@ enum ISOBoxSurgery {
             out.removeSubrange(stale.box.start ..< stale.box.start + stale.box.size)
         }
 
-        let dvvCBox = buildDvvCBox(doviBytes: doviBytes)
         let adjustedInsertionIndex = insertionIndex - removedBeforeInsertion
-        out.insert(contentsOf: dvvCBox, at: adjustedInsertionIndex)
+        out.insert(contentsOf: configBox, at: adjustedInsertionIndex)
 
-        let delta = dvvCBox.count - removedBytes
+        let delta = configBox.count - removedBytes
         for box in [moov, trak, mdia, minf, stbl, stsd, entry] {
             addToBoxSize(in: &out, boxOffset: box.start, delta: delta)
         }
@@ -184,11 +187,22 @@ enum ISOBoxSurgery {
         return result
     }
 
-    /// Build a 32-byte `dvvC` box from FFmpeg's DOVI decoder configuration
-    /// record bytes. Layout (per ETSI TS 103 572 / ISO 14496-12):
+    /// The configuration-box FourCC a Dolby Vision profile is carried in.
+    /// Profiles up to 7 use `dvcC`; the cross-compatible profiles 8 and above
+    /// use `dvvC`. Same rule FFmpeg's `mov_write_dvcc_dvvc_tag` applies, and
+    /// what Apple requires of a Profile 5 `dvh1` sample entry — a Profile 5
+    /// track carrying `dvvC` is not recognised as Dolby Vision.
+    static func dolbyVisionConfigBoxType(profile: UInt8) -> String {
+        profile > 7 ? "dvvC" : "dvcC"
+    }
+
+    /// Build a 32-byte Dolby Vision configuration box from FFmpeg's DOVI
+    /// decoder configuration record bytes. The two box types share this
+    /// layout and differ only in FourCC (see `dolbyVisionConfigBoxType`).
+    /// Layout (per ETSI TS 103 572 / ISO 14496-12):
     ///
     ///   u32 size = 32        (big-endian)
-    ///   u32 'dvvC'
+    ///   u32 'dvcC' or 'dvvC'
     ///   u8  dv_version_major
     ///   u8  dv_version_minor
     ///   u7  dv_profile
@@ -204,8 +218,8 @@ enum ISOBoxSurgery {
     /// byte in the order: version_major, version_minor, profile, level,
     /// rpu_flag, el_flag, bl_flag, bl_compat_id. We read those 8 bytes and
     /// repack into the on-disk bit layout.
-    static func buildDvvCBox(doviBytes: Data) -> Data {
-        guard doviBytes.count >= 8 else { return Data() }
+    static func buildDolbyVisionConfigBox(doviBytes: Data) -> Data? {
+        guard doviBytes.count >= 8 else { return nil }
         let versionMajor = doviBytes[0]
         let versionMinor = doviBytes[1]
         let profile      = doviBytes[2] & 0x7F
@@ -217,7 +231,7 @@ enum ISOBoxSurgery {
 
         var box = Data()
         box.append(contentsOf: [0x00, 0x00, 0x00, 0x20])    // size = 32
-        box.append(contentsOf: [0x64, 0x76, 0x76, 0x43])    // 'dvvC'
+        box.append(contentsOf: dolbyVisionConfigBoxType(profile: profile).utf8)
         box.append(versionMajor)
         box.append(versionMinor)
         box.append((profile << 1) | ((level >> 5) & 0x01))

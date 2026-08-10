@@ -1,3 +1,4 @@
+import CoreVideo
 import XCTest
 @testable import Silo
 
@@ -37,14 +38,15 @@ final class HDRDisplayCriteriaPolicyTests: XCTestCase {
 
     // MARK: - Selection
 
-    func testDolbyVisionModesSelectDolbyVisionRegardlessOfGate() {
-        let modes: [LoopbackSessionSpec.VideoMode] = [
-            .passthroughProfile5,
-            .convertProfile7To81,
-            .passthroughProfile8(.hdr10),
-            .passthroughProfile8(.hlg),
+    func testDolbyVisionModesPreserveBaseLayerRegardlessOfGate() {
+        let modes: [(LoopbackSessionSpec.VideoMode, HDRDisplayCriteriaPolicy.CriteriaSelection)] = [
+            (.passthroughProfile5, .dolbyVision(.hdr10)),
+            (.convertProfile7To81, .dolbyVision(.hdr10)),
+            (.passthroughProfile8(.hdr10), .dolbyVision(.hdr10)),
+            (.passthroughProfile8(.sdr), .dolbyVision(.sdr)),
+            (.passthroughProfile8(.hlg), .dolbyVision(.hlg)),
         ]
-        for mode in modes {
+        for (mode, expected) in modes {
             for gate in [false, true] {
                 XCTAssertEqual(
                     HDRDisplayCriteriaPolicy.selection(
@@ -52,11 +54,74 @@ final class HDRDisplayCriteriaPolicyTests: XCTestCase {
                         manifestVideoRange: "PQ",
                         hdrGateEnabled: gate
                     ),
-                    .dolbyVision,
+                    expected,
                     "\(mode) gate=\(gate)"
                 )
             }
         }
+    }
+
+    /// The two sides that decide a Profile 8 base layer — the parsed
+    /// configuration record after decode, and server metadata before it —
+    /// must name the same one, including Profile 8.2's SDR base. Requesting a
+    /// PQ HDMI mode for an SDR base layer is the failure this pins against.
+    func testProfile8BaseLayerAgreesAcrossBothDecisionPaths() {
+        let byCompatibilityID: [(Int?, LoopbackSessionSpec.DVProfile8BaseLayer)] = [
+            (nil, .hdr10),   // no record parsed
+            (0, .hdr10),     // no cross-compatibility signalled
+            (1, .hdr10),     // 8.1
+            (2, .sdr),       // 8.2
+            (4, .hlg),       // 8.4
+        ]
+        for (compatibilityID, expected) in byCompatibilityID {
+            XCTAssertEqual(
+                LoopbackSessionSpec.DVProfile8BaseLayer(dolbyVisionCompatibilityID: compatibilityID),
+                expected,
+                "compatibilityID=\(String(describing: compatibilityID))"
+            )
+        }
+
+        let byTransfer: [(String?, LoopbackSessionSpec.DVProfile8BaseLayer)] = [
+            ("smpte2084", .hdr10),
+            ("bt709", .sdr),
+            ("arib-std-b67", .hlg),
+            (nil, .hdr10),
+        ]
+        for (transfer, expected) in byTransfer {
+            XCTAssertEqual(
+                ApplePlaybackRoutePlanner.dvProfile8BaseLayer(
+                    for: hevcVersion(colorTransfer: transfer, videoRange: "DolbyVision"),
+                    sourceMetadata: .unknown
+                ),
+                expected,
+                "colorTransfer=\(String(describing: transfer))"
+            )
+        }
+    }
+
+    /// The base layer decides two things that have to agree: the HDMI mode
+    /// tvOS asks the panel for, and the colorimetry the decoder's format
+    /// description declares. Both read this one mapping, so a Profile 8.2
+    /// stream cannot be handed PQ frames while the panel is asked for SDR.
+    func testBaseLayerColorimetryDescribesTheBaseLayer() {
+        let expected: [(LoopbackSessionSpec.DVProfile8BaseLayer, CFString, CFString)] = [
+            (.hdr10, kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ, kCVImageBufferColorPrimaries_ITU_R_2020),
+            (.hlg, kCVImageBufferTransferFunction_ITU_R_2100_HLG, kCVImageBufferColorPrimaries_ITU_R_2020),
+            (.sdr, kCVImageBufferTransferFunction_ITU_R_709_2, kCVImageBufferColorPrimaries_ITU_R_709_2),
+        ]
+        for (baseLayer, transfer, primaries) in expected {
+            let colorimetry = VideoColorMetadata.dolbyVisionBaseLayerColorimetry(baseLayer)
+            XCTAssertEqual(colorimetry.transfer as String, transfer as String, "\(baseLayer)")
+            XCTAssertEqual(colorimetry.primaries as String, primaries as String, "\(baseLayer)")
+        }
+
+        // The specific regression: an SDR base layer declared as PQ.
+        let sdr = VideoColorMetadata.dolbyVisionBaseLayerColorimetry(.sdr)
+        XCTAssertNotEqual(
+            sdr.transfer as String,
+            kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String
+        )
+        XCTAssertEqual(sdr.matrix as String, kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String)
     }
 
     func testHEVCSelectsHDRRangeWhenGateOn() {
@@ -211,7 +276,7 @@ final class HDRDisplayCriteriaPolicyTests: XCTestCase {
     // MARK: - Preserve across reload
 
     func testPreservesCriteriaForSameSelectionAndRate() {
-        for selection: HDRDisplayCriteriaPolicy.CriteriaSelection in [.dolbyVision, .hdr10, .hlg] {
+        for selection: HDRDisplayCriteriaPolicy.CriteriaSelection in [.dolbyVision(.hdr10), .dolbyVision(.hlg), .hdr10, .hlg] {
             XCTAssertTrue(
                 HDRDisplayCriteriaPolicy.shouldPreserveCriteriaAcrossReload(
                     current: selection,
@@ -239,8 +304,39 @@ final class HDRDisplayCriteriaPolicyTests: XCTestCase {
         )
         XCTAssertFalse(
             HDRDisplayCriteriaPolicy.shouldPreserveCriteriaAcrossReload(
-                current: .dolbyVision, next: .dolbyVision,
+                current: .dolbyVision(.hdr10), next: .dolbyVision(.hdr10),
                 currentRate: 23.976, nextRate: 25.0
+            )
+        )
+        XCTAssertFalse(
+            HDRDisplayCriteriaPolicy.shouldPreserveCriteriaAcrossReload(
+                current: .dolbyVision(.hdr10), next: .dolbyVision(.hlg),
+                currentRate: 23.976, nextRate: 23.976
+            )
+        )
+    }
+
+    // MARK: - EDR (iOS + macOS hosts)
+
+    func testEDRNeedsBothAnHDRStreamAndScreenHeadroom() {
+        // `publishSigPeakIfNeeded` emits 1.1 for HDR with the user setting on.
+        XCTAssertTrue(HDRDisplayCriteriaPolicy.shouldEnableEDR(sigPeak: 1.1, screenHeadroom: 4.0))
+        // HDR stream, SDR display — e.g. the window dragged onto one.
+        XCTAssertFalse(HDRDisplayCriteriaPolicy.shouldEnableEDR(sigPeak: 1.1, screenHeadroom: 1.0))
+        // SDR stream on an HDR-capable display.
+        XCTAssertFalse(HDRDisplayCriteriaPolicy.shouldEnableEDR(sigPeak: 0.0, screenHeadroom: 4.0))
+    }
+
+    func testEDRHeadroomUsesTheSharedFloorNotBareOne() {
+        // An SDR panel reporting just over 1.0 through float noise must not
+        // read as HDR — the same floor the tvOS settle path judges by.
+        XCTAssertFalse(
+            HDRDisplayCriteriaPolicy.shouldEnableEDR(sigPeak: 1.1, screenHeadroom: 1.0005)
+        )
+        XCTAssertTrue(
+            HDRDisplayCriteriaPolicy.shouldEnableEDR(
+                sigPeak: 1.1,
+                screenHeadroom: HDRDisplayCriteriaPolicy.hdrHeadroomFloor + 0.001
             )
         )
     }

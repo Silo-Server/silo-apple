@@ -25,7 +25,9 @@ enum HDRDisplayCriteriaPolicy {
     /// Which display criteria the loopback route should request before
     /// creating the AVPlayerItem.
     enum CriteriaSelection: Equatable {
-        case dolbyVision
+        /// The Dolby Vision base-layer transfer selects the corresponding
+        /// public format description for the HDMI mode request.
+        case dolbyVision(LoopbackSessionSpec.DVProfile8BaseLayer)
         case hdr10
         case hlg
         case none
@@ -43,8 +45,10 @@ enum HDRDisplayCriteriaPolicy {
         hdrGateEnabled: Bool
     ) -> CriteriaSelection {
         switch videoMode {
-        case .passthroughProfile5, .convertProfile7To81, .passthroughProfile8:
-            return .dolbyVision
+        case .passthroughProfile5, .convertProfile7To81:
+            return .dolbyVision(.hdr10)
+        case .passthroughProfile8(let baseLayer):
+            return .dolbyVision(baseLayer)
         case .passthroughHEVC:
             guard hdrGateEnabled else { return .none }
             switch manifestVideoRange {
@@ -73,6 +77,17 @@ enum HDRDisplayCriteriaPolicy {
     /// A panel hosting HDR reports EDR headroom above 1.0; the epsilon
     /// guards float noise on SDR panels reporting exactly 1.0.
     static let hdrHeadroomFloor: Double = 1.001
+
+    /// Whether the host view should hand its display layer an EDR surface.
+    /// The stream has to be HDR (`PlayerCore.publishSigPeakIfNeeded` emits
+    /// 1.1 when it is and the user has HDR on, 0 otherwise) *and* the screen
+    /// currently showing the window has to have headroom to spend — dragging
+    /// a window onto an SDR display takes it away. Shared by the iOS and
+    /// macOS hosts so the threshold has one spelling; tvOS drives HDR through
+    /// HDMI negotiation instead and never calls this.
+    static func shouldEnableEDR(sigPeak: Double, screenHeadroom: Double) -> Bool {
+        sigPeak > 1.0 && screenHeadroom > hdrHeadroomFloor
+    }
 
     /// Whether display criteria can survive an in-place pipeline reload
     /// (audio-track change etc.) without renegotiating the HDMI mode: same

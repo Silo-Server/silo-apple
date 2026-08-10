@@ -218,9 +218,8 @@ final class PendingReportStore {
 
     init(rootDirectory: URL? = nil, fileManager: FileManager = .default) {
         self.fileManager = fileManager
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        self.rootDirectory = rootDirectory ?? appSupport.appendingPathComponent("Diagnostics", isDirectory: true)
+        self.rootDirectory = rootDirectory ?? DiagnosticsStorageRoot.baseDirectory(fileManager: fileManager)
+            .appendingPathComponent("Diagnostics", isDirectory: true)
     }
 
     var pendingDirectory: URL {

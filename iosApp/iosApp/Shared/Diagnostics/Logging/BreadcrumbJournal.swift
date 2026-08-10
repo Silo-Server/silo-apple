@@ -215,9 +215,7 @@ final class BreadcrumbJournal {
     }
 
     private static func defaultDirectory(fileManager: FileManager) -> URL {
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        return appSupport
+        DiagnosticsStorageRoot.baseDirectory(fileManager: fileManager)
             .appendingPathComponent("Diagnostics", isDirectory: true)
             .appendingPathComponent("breadcrumbs", isDirectory: true)
     }

@@ -24,6 +24,20 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     let seasonEpisodes: [EpisodeListItem]
     let episodeFavoriteStates: [String: Bool]
     let isLoadingEpisodes: Bool
+    /// Merged remote-video + local-extra rail, already shaped by the call
+    /// site (which owns the YouTube-app availability probe that decides
+    /// whether remote cards exist at all). Empty hides the rail.
+    let trailerEntries: [TrailerRailEntry]
+    let onSelectTrailer: (TrailerRailEntry) -> Void
+    /// Whether the manual "Find Trailers" action applies to this item —
+    /// false on episode pages, which never carry videos.
+    let supportsTrailerFetch: Bool
+    let onFindTrailers: () -> Void
+    /// Copy from the fetch coordinator; nil while idle.
+    let trailerFetchStatus: String?
+    let isFetchingTrailers: Bool
+    /// Called once a terminal fetch message has been on screen long enough.
+    let onTrailerStatusShown: () -> Void
     let onPlay: (_ startFromBeginning: Bool) -> Void
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
@@ -41,6 +55,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     /// site (which owns the view model) and rendered under the synopsis.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
 
+    @Environment(\.resetFocus) private var resetFocus
     @Namespace private var detailFocusNamespace
     @FocusState private var playFocused: Bool
     /// True while focus sits anywhere inside the season chip row — drives the
@@ -49,6 +64,10 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
+    /// The first default-focus evaluation can run before the pushed page's
+    /// button is registered, leaving focus on the geometrically higher
+    /// synopsis. Reevaluate the scoped default once Play has been laid out.
+    @State private var didResetInitialPlayFocus = false
 
     // Plain constants (not `static`) — the generic BelowSynopsis parameter
     // forbids static stored properties on this type.
@@ -84,6 +103,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                         if let cast = detail.cast, !cast.isEmpty {
                             castSection(cast: cast)
                         }
+                        trailersSection
                         detailsSection
                         if showsSimilarRail {
                             similarSection
@@ -126,6 +146,15 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 onSelectAudioTrack: onSelectAudioTrack,
                 onSelectSubtitleTrack: onSelectSubtitleTrack
             )
+            if let trailerFetchStatus {
+                // Non-focusable readout, so it adds no stop to the action
+                // column's focus traversal.
+                TVTrailerStatusPill(
+                    message: trailerFetchStatus,
+                    isFetching: isFetchingTrailers,
+                    onAutoDismiss: onTrailerStatusShown
+                )
+            }
         }
     }
 
@@ -137,6 +166,12 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 action: { onPlay(false) },
                 focused: $playFocused
             )
+            .onGeometryChange(for: Bool.self) { proxy in
+                proxy.size.width > 0 && proxy.size.height > 0
+            } action: { isLaidOut in
+                guard isLaidOut else { return }
+                resetInitialPlayFocus()
+            }
 
             if hasResumeProgress {
                 TVSecondaryPillButton(
@@ -186,19 +221,32 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
         .focusSection()
     }
 
+    private func resetInitialPlayFocus() {
+        guard !didResetInitialPlayFocus else { return }
+        didResetInitialPlayFocus = true
+        resetFocus(in: detailFocusNamespace)
+    }
+
     // MARK: - More menu
 
     private var hasOverflowNavigation: Bool {
         detail.type == "episode" && detail.seriesId != nil
     }
 
+    /// The ellipsis now also appears on movie pages, which previously had
+    /// no overflow entries at all — "Find Trailers" is the first.
     private var hasMoreMenu: Bool {
-        hasOverflowNavigation
+        hasOverflowNavigation || supportsTrailerFetch
     }
 
     @ViewBuilder
     private var moreMenu: some View {
         TVCircleMenuButton(accessibilityLabel: "More options") {
+            if supportsTrailerFetch {
+                Button(action: onFindTrailers) {
+                    Label("Find Trailers", systemImage: "film.stack")
+                }
+            }
             if let seriesId = detail.seriesId,
                let seasonNumber = detail.seasonNumber,
                seasonNumber > 0 {
@@ -327,6 +375,14 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
             contentId: detail.contentId,
             onSelect: onNavigateToItem
         )
+    }
+
+    // MARK: - Trailers & More
+
+    private var trailersSection: some View {
+        // Header lives inside the rail so it disappears with the cards when
+        // the item has neither remote videos nor local extras.
+        TVTrailersRail(entries: trailerEntries, onSelect: onSelectTrailer)
     }
 
     // MARK: - Cast

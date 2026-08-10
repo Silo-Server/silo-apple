@@ -53,14 +53,19 @@ struct TVMediaCard: View {
     @FocusState private var isFocused: Bool
     @State private var favoriteOverride: Bool?
     @State private var watchlistOverride: Bool?
+    @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
+
+    private var resolvedCardWidth: CGFloat {
+        cardWidth * uiCustomization.cardPresentation.posterSize.scale
+    }
 
     private var cardHeight: CGFloat {
         switch aspect {
         case .poster:
-            cardWidth * 1.5
+            resolvedCardWidth * 1.5
         case .square:
-            cardWidth
+            resolvedCardWidth
         }
     }
 
@@ -68,9 +73,11 @@ struct TVMediaCard: View {
         VStack(alignment: .leading, spacing: 16) {
             posterButton
                 .personalListContextMenu(hasPersonalActions ? personalMenuItems : nil)
-            caption
+            if uiCustomization.cardPresentation.caption.showsTitle {
+                caption
+            }
         }
-        .frame(width: cardWidth)
+        .frame(width: resolvedCardWidth)
         .onChange(of: userState) { _, _ in
             favoriteOverride = nil
             watchlistOverride = nil
@@ -138,6 +145,8 @@ struct TVMediaCard: View {
                 .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
                 .applyRailFocus(focusBinding, contentId: focusContentId)
                 .applyTVCardPlayPauseAction(playAction)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(accessibilityDescription)
         case .ring:
             Button(action: action) { posterImage }
                 .buttonStyle(TVPosterRingButtonStyle())
@@ -145,6 +154,8 @@ struct TVMediaCard: View {
                 .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
                 .applyRailFocus(focusBinding, contentId: focusContentId)
                 .applyTVCardPlayPauseAction(playAction)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(accessibilityDescription)
         }
     }
 
@@ -154,15 +165,15 @@ struct TVMediaCard: View {
         ZStack(alignment: .topTrailing) {
             CachedAsyncImage(
                 url: posterUrl,
-                targetSize: CGSize(width: cardWidth, height: cardHeight),
+                targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
                 contentMode: .fill
             )
-            .frame(width: cardWidth, height: cardHeight)
+            .frame(width: resolvedCardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
 
             if let overlayData, overlayStore.enabled {
                 CardOverlays(data: overlayData, prefs: overlayStore.prefs, variant: .poster)
-                    .frame(width: cardWidth, height: cardHeight)
+                    .frame(width: resolvedCardWidth, height: cardHeight)
                     .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
             }
 
@@ -171,7 +182,7 @@ struct TVMediaCard: View {
                     .padding(12)
             }
         }
-        .frame(width: cardWidth, height: cardHeight)
+        .frame(width: resolvedCardWidth, height: cardHeight)
         .overlay {
             // The `.ring` treatment supplies its own focus cue (the native
             // halo is suppressed in TVPosterRingButtonStyle), matching the
@@ -196,14 +207,15 @@ struct TVMediaCard: View {
                 .truncationMode(.tail)
                 .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
 
-            if let secondLine = subtitle ?? year.map(String.init) {
+            if uiCustomization.cardPresentation.caption.showsMetadata,
+               let secondLine = subtitle ?? year.map(String.init) {
                 Text(secondLine)
                     .font(.system(size: 18, weight: .regular))
                     .foregroundColor(.continuumSecondaryText)
             }
         }
         .multilineTextAlignment(.center)
-        .frame(width: cardWidth, alignment: .center)
+        .frame(width: resolvedCardWidth, alignment: .center)
     }
 
     private var watchedBadge: some View {
@@ -216,6 +228,18 @@ struct TVMediaCard: View {
                 .font(.system(size: 20, weight: .bold))
                 .foregroundColor(Color.continuumBackground)
         }
+    }
+
+    private var accessibilityDescription: String {
+        let secondLine = subtitle ?? year.map(String.init)
+        var components = [title]
+        if let secondLine {
+            components.append(secondLine)
+        }
+        if userState?.played == true {
+            components.append("Watched")
+        }
+        return components.joined(separator: ", ")
     }
 }
 

@@ -114,6 +114,11 @@ private struct DoubleRangeSpinner: View {
 struct PlayerSettingsSheet: View {
     let viewModel: PlayerViewModel
     let sleepTimer: SleepTimer
+    /// Visibility of the iOS stats annotation. A binding rather than a
+    /// one-shot action because the overlay itself has no dismiss affordance
+    /// — this row is both the on and the off switch. Nil on platforms with
+    /// no such overlay, which hides the row.
+    var statsOverlayVisible: Binding<Bool>?
 
     #if os(iOS)
     @Environment(\.dismiss) private var dismiss
@@ -195,7 +200,8 @@ struct PlayerSettingsSheet: View {
     }
 
     private var activeQualityLabel: String {
-        viewModel.qualityOptions.first(where: { $0.id == viewModel.activeQualityId })?.label ?? "Auto"
+        viewModel.qualityOptions.first(where: { $0.id == viewModel.activeQualityId })?.label
+            ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
     }
 
     private var qualityPage: some View {
@@ -297,7 +303,7 @@ struct PlayerSettingsSheet: View {
     /// "Large · Box · Bottom"-style value label for the Appearance row.
     private var appearanceSummary: String {
         if viewModel.settings.subtitleMatchesSystemAppearance {
-            return "Matching Device"
+            return "Using Device"
         }
         let appearance = viewModel.settings.subtitleAppearance
         return [
@@ -320,7 +326,7 @@ struct PlayerSettingsSheet: View {
             }
 
             Section {
-                Toggle("Match device settings", isOn: Binding(
+                Toggle("Use device settings", isOn: Binding(
                     get: { viewModel.settings.subtitleMatchesSystemAppearance },
                     set: { enabled in
                         viewModel.setSubtitleMatchesSystemAppearance(enabled)
@@ -338,7 +344,7 @@ struct PlayerSettingsSheet: View {
                 .disabled(matchesSystem)
             } footer: {
                 Text(matchesSystem
-                     ? "Following this device's caption style from Accessibility settings. Editing any option below switches back to Silo styling."
+                     ? "Following this device's caption language, behavior, CC/SDH preference, and complete style from Accessibility settings."
                      : "Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings.")
             }
 
@@ -472,6 +478,18 @@ struct PlayerSettingsSheet: View {
 
     private var advancedSection: some View {
         Section {
+            if let statsOverlayVisible {
+                Toggle(isOn: statsOverlayVisible) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Stats")
+                        Text("Live overlay on the player")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .tint(.continuumAccent)
+            }
+
             NavigationLink {
                 advancedPage
             } label: {
@@ -727,7 +745,7 @@ struct PlayerSettingsSheet: View {
                     SubtitleAppearancePreview(appearance: viewModel.settings.effectiveSubtitleAppearance)
                         .listRowInsets(EdgeInsets())
 
-                    Toggle("Match device settings", isOn: Binding(
+                    Toggle("Use device settings", isOn: Binding(
                         get: { viewModel.settings.subtitleMatchesSystemAppearance },
                         set: { enabled in
                             viewModel.setSubtitleMatchesSystemAppearance(enabled)
@@ -804,7 +822,7 @@ struct PlayerSettingsSheet: View {
                     Text("Subtitle appearance")
                 } footer: {
                     Text(matchesSystem
-                         ? "Following this device's caption style from Accessibility settings. Editing any option switches back to Silo styling."
+                         ? "Following this device's caption language, behavior, CC/SDH preference, and complete style from Accessibility settings."
                          : "Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings.")
                 }
             }

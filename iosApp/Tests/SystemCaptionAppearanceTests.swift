@@ -24,6 +24,32 @@ final class SystemCaptionAppearanceTests: XCTestCase {
         XCTAssertEqual(mapped.backgroundColor, "#123456")
     }
 
+    func testWindowPropertiesMapToCaptionWindow() {
+        var snapshot = SystemCaptionAppearance.Snapshot()
+        snapshot.windowOpacity = 0.5
+        snapshot.windowColorHex = "#ff00ff"
+        snapshot.windowCornerRadius = 8
+
+        let mapped = SystemCaptionAppearance.appearance(from: snapshot)
+        XCTAssertEqual(mapped.captionWindowOpacity, 50)
+        XCTAssertEqual(mapped.captionWindowColor, "#ff00ff")
+        XCTAssertEqual(mapped.captionWindowCornerRadius, 8)
+    }
+
+    func testWindowAndGlyphBackgroundRemainIndependent() {
+        var snapshot = SystemCaptionAppearance.Snapshot()
+        snapshot.backgroundOpacity = 0.8
+        snapshot.backgroundColorHex = "#000000"
+        snapshot.windowOpacity = 0.5
+        snapshot.windowColorHex = "#ff00ff"
+
+        let mapped = SystemCaptionAppearance.appearance(from: snapshot)
+        XCTAssertEqual(mapped.backgroundOpacity, 80)
+        XCTAssertEqual(mapped.backgroundColor, "#000000")
+        XCTAssertEqual(mapped.captionWindowOpacity, 50)
+        XCTAssertEqual(mapped.captionWindowColor, "#ff00ff")
+    }
+
     func testZeroBackgroundOpacityRemovesBackground() {
         var snapshot = SystemCaptionAppearance.Snapshot()
         snapshot.backgroundOpacity = 0
@@ -46,8 +72,9 @@ final class SystemCaptionAppearanceTests: XCTestCase {
         snapshot.edgeStyle = .dropShadow
 
         let mapped = SystemCaptionAppearance.appearance(from: snapshot)
-        XCTAssertEqual(mapped.backgroundStyle, .shadow)
+        XCTAssertEqual(mapped.backgroundStyle, SubtitleBackgroundStylePreset.none)
         XCTAssertFalse(mapped.textOutline)
+        XCTAssertEqual(mapped.systemTextEdgeStyle, .dropShadow)
     }
 
     func testDropShadowEdgeYieldsToBoxBackground() {
@@ -60,6 +87,7 @@ final class SystemCaptionAppearanceTests: XCTestCase {
         let mapped = SystemCaptionAppearance.appearance(from: snapshot)
         XCTAssertEqual(mapped.backgroundStyle, .box)
         XCTAssertEqual(mapped.backgroundOpacity, 80)
+        XCTAssertEqual(mapped.systemTextEdgeStyle, .dropShadow)
     }
 
     func testForegroundColorMaps() {
@@ -68,6 +96,57 @@ final class SystemCaptionAppearanceTests: XCTestCase {
 
         let mapped = SystemCaptionAppearance.appearance(from: snapshot)
         XCTAssertEqual(mapped.fontColor, "#facc15")
+    }
+
+    func testForegroundOpacityMapsWithoutChangingColor() {
+        var snapshot = SystemCaptionAppearance.Snapshot()
+        snapshot.foregroundOpacity = 0.4
+
+        let mapped = SystemCaptionAppearance.appearance(from: snapshot)
+        XCTAssertEqual(mapped.fontOpacity, 40)
+    }
+
+    func testRelativeSizePreservesExactSystemScale() {
+        var snapshot = SystemCaptionAppearance.Snapshot()
+        snapshot.relativeCharacterSize = 1.75
+
+        let mapped = SystemCaptionAppearance.appearance(from: snapshot)
+        XCTAssertEqual(mapped.systemRelativeFontScale, 1.75)
+    }
+
+    func testRaisedAndDepressedEdgesStayDistinct() {
+        var raised = SystemCaptionAppearance.Snapshot()
+        raised.edgeStyle = .raised
+        var depressed = SystemCaptionAppearance.Snapshot()
+        depressed.edgeStyle = .depressed
+
+        XCTAssertEqual(
+            SystemCaptionAppearance.appearance(from: raised).systemTextEdgeStyle,
+            .raised
+        )
+        XCTAssertEqual(
+            SystemCaptionAppearance.appearance(from: depressed).systemTextEdgeStyle,
+            .depressed
+        )
+    }
+
+    func testVideoOverridePrecedenceSurvivesMapping() {
+        var snapshot = SystemCaptionAppearance.Snapshot()
+        snapshot.contentOverrides = [.font, .size, .colors, .edge, .window]
+
+        let mapped = SystemCaptionAppearance.appearance(from: snapshot)
+        XCTAssertEqual(mapped.systemContentOverrides, snapshot.contentOverrides)
+    }
+
+    func testColorOverridePrecedenceRemainsPerProperty() {
+        var snapshot = SystemCaptionAppearance.Snapshot()
+        snapshot.contentOverrides = [.foregroundColor, .backgroundOpacity]
+
+        let overrides = SystemCaptionAppearance.appearance(from: snapshot).systemContentOverrides
+        XCTAssertTrue(overrides.contains(.foregroundColor))
+        XCTAssertFalse(overrides.contains(.foregroundOpacity))
+        XCTAssertFalse(overrides.contains(.backgroundColor))
+        XCTAssertTrue(overrides.contains(.backgroundOpacity))
     }
 
     func testRelativeSizeAnchorsDefaultAtSiloDefaultPreset() {
@@ -90,5 +169,15 @@ final class SystemCaptionAppearanceTests: XCTestCase {
         } else {
             XCTFail("grayscale conversion failed")
         }
+    }
+
+    func testContentFallbackBehaviorStillUsesSystemValueWhenMatchingDeviceSettings() {
+        XCTAssertEqual(
+            SystemCaptionAppearance.valueForMatchingDeviceSettings(
+                MACaptionAppearanceTextEdgeStyle.uniform,
+                behavior: .useContentIfAvailable
+            ),
+            .uniform
+        )
     }
 }

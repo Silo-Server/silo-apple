@@ -37,6 +37,11 @@ actor ContinuumAPI {
         await tokenStore.getAccessToken()
     }
 
+    /// The profile the session is acting as, or nil before one is selected.
+    func currentProfileId() async -> String? {
+        await tokenStore.getProfileId()
+    }
+
     // MARK: - Path-based dispatcher (legacy)
 
     func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
@@ -559,6 +564,21 @@ actor ContinuumAPI {
 
     func refreshPerson(id: Int) async throws -> PersonRefreshQueuedResponse {
         try await http.post("/api/v1/people/\(id)/refresh")
+    }
+
+    /// Ask the server to look for trailers for a movie or series.
+    ///
+    /// Three expected outcomes, all decoded from a body: `202` +
+    /// `{"status":"queued"}` when a refresh started, `200` +
+    /// `{"status":"cooldown","next_allowed_at":…}` when the item was checked
+    /// too recently, and `200` + `{"status":"disabled"}` when remote videos
+    /// are switched off for every library holding the item. Only `429`
+    /// (per-user rate limit) and the usual transport failures throw.
+    ///
+    /// There is no job id: observe completion by re-fetching item detail
+    /// until `videos` / `extras` change — see ``TrailerFetchCoordinator``.
+    func requestTrailersRefresh(contentId: String) async throws -> TrailerRefreshResponse {
+        try await http.post("/api/v1/items/\(contentId)/trailers/refresh")
     }
 
     func personCatalogItems(

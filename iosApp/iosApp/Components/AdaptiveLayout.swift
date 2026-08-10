@@ -7,18 +7,44 @@ import SwiftUI
 /// and landscape report `.regular` and get 5 columns, so posters render at
 /// their intended density instead of stretching to nearly 2× width.
 ///
-/// tvOS views use their own hand-tuned column counts (see `TVCatalogGrid`)
-/// and don't consume this helper.
 enum AdaptiveColumns {
     static func posters(
         for sizeClass: UserInterfaceSizeClass?,
+        posterSize: CardPosterSize = .standard,
         spacing: CGFloat = 12
     ) -> [GridItem] {
-        let count = (sizeClass == .regular) ? 5 : 3
+        let standardCount = (sizeClass == .regular) ? 5 : 3
+        let count: Int
+        switch posterSize {
+        case .compact:
+            count = sizeClass == .regular ? standardCount + 1 : standardCount
+        case .standard:
+            count = standardCount
+        case .large:
+            count = max(2, standardCount - 1)
+        }
         return Array(
             repeating: GridItem(.flexible(), spacing: spacing),
             count: count
         )
+    }
+
+    /// Keeps tvOS poster grids dense enough for compact artwork while making
+    /// room for large artwork and its native focus lift. Six columns is the
+    /// safe upper bound inside the standard 1,760-point content width.
+    static func tvPosterCount(
+        standardCount: Int,
+        posterSize: CardPosterSize,
+        minimumCount: Int = 3
+    ) -> Int {
+        switch posterSize {
+        case .compact:
+            return min(6, standardCount + 1)
+        case .standard:
+            return standardCount
+        case .large:
+            return max(minimumCount, standardCount - 1)
+        }
     }
 }
 
@@ -32,4 +58,3 @@ extension View {
             .frame(maxWidth: .infinity, alignment: .center)
     }
 }
-

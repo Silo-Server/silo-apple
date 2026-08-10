@@ -122,6 +122,238 @@ final class PlaybackOriginRoutingPolicyTests: XCTestCase {
     }
 }
 
+final class PlaybackWindowClaimPolicyTests: XCTestCase {
+
+    private let owner = UUID()
+    private let rival = UUID()
+
+    func testUnownedWindowGrantsAnyClaim() {
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: rival,
+                owner: nil,
+                ownerIsAlive: false,
+                demandOffset: 10,
+                windowCursor: 20
+            ),
+            .retarget
+        )
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: nil,
+                owner: nil,
+                ownerIsAlive: false,
+                demandOffset: 10,
+                windowCursor: 20
+            ),
+            .retarget
+        )
+    }
+
+    func testOwnerMayAdvanceItsOwnWindow() {
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: owner,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: 100,
+                windowCursor: 20
+            ),
+            .retarget
+        )
+    }
+
+    func testOwnerUsesChunkForNearbyBehindWindowMiss() {
+        // Origin bytes can land between the response's cache check and its
+        // window claim. Re-anchoring for this tiny behind-cursor race caused
+        // the production 1-2 second cancellation loop.
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: owner,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: 10,
+                windowCursor: 50
+            ),
+            .chunk(.sameOwnerBehindWindow)
+        )
+    }
+
+    func testOwnerReanchorsWhenFarBehindProductiveWindow() {
+        // A sequential reader can lag after finite-cache eviction. Discrete
+        // fallback is deliberately bounded to one chunk so that reader can
+        // reclaim the streaming connection instead of becoming RTT-bound.
+        let cursor = PlaybackWindowClaimPolicy.sameOwnerChunkBehindBytes + 100
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: owner,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: 0,
+                windowCursor: cursor
+            ),
+            .retarget
+        )
+    }
+
+    func testRivalCannotStealLiveOwnersWindow() {
+        // The 2026-07 tvOS storm: two full-rate readers alternately
+        // retargeting the window, cancelling each other's origin connection
+        // every 1-2s. The rival must be served by a chunk instead.
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: rival,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: 100,
+                windowCursor: 20
+            ),
+            .chunk(.liveOwnerConflict)
+        )
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: nil,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: 100,
+                windowCursor: 20
+            ),
+            .chunk(.liveOwnerConflict)
+        )
+    }
+
+    func testDeadOwnerFreesTheWindow() {
+        // A seek closes the old serve connection and opens a new one; the
+        // new consumer must be able to re-anchor immediately.
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: rival,
+                owner: owner,
+                ownerIsAlive: false,
+                demandOffset: 10,
+                windowCursor: 50
+            ),
+            .retarget
+        )
+    }
+
+    func testRepeatedBehindMissesDoNotRetargetTheLiveOwner() {
+        // Model the live simulator trace: the origin advances productively
+        // while a cache-check/storage race leaves the same response only
+        // kilobytes behind it. Those nearby misses must never cancel the
+        // warm request.
+        var windowCursor: Int64 = 64 * 1024 * 1024
+        var retargetCount = 0
+        var chunkCount = 0
+        let deliveredPerInterval: [Int64] = [
+            23_709_456,
+            16_391_800,
+            14_292_744,
+        ]
+
+        for cycle in 0..<48 {
+            let delivered = deliveredPerInterval[cycle % deliveredPerInterval.count]
+            windowCursor += delivered
+            let demandOffset = windowCursor - 64 * 1024
+            let verdict = PlaybackWindowClaimPolicy.arbitrate(
+                claimant: owner,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: demandOffset,
+                windowCursor: windowCursor
+            )
+            switch verdict {
+            case .retarget:
+                retargetCount += 1
+                windowCursor = demandOffset
+            case .chunk(let reason):
+                XCTAssertEqual(reason, .sameOwnerBehindWindow)
+                chunkCount += 1
+            }
+        }
+
+        XCTAssertEqual(retargetCount, 0)
+        XCTAssertEqual(chunkCount, 48)
+    }
+}
+
+final class PlaybackOriginDetachGraceTests: XCTestCase {
+
+    func testUnknownBitrateFallsBackToFixedGrace() {
+        XCTAssertEqual(
+            PlaybackOriginStreamPolicy.detachGraceSeconds(
+                hysteresisGapBytes: 64 * 1024 * 1024,
+                sourceBitrateBps: nil
+            ),
+            PlaybackOriginStreamPolicy.detachAfterSeconds
+        )
+    }
+
+    func testFastSourceKeepsFloorGrace() {
+        // 80 Mbps drains 64 MiB in ~6.7s; grace stays at the floor.
+        XCTAssertEqual(
+            PlaybackOriginStreamPolicy.detachGraceSeconds(
+                hysteresisGapBytes: 64 * 1024 * 1024,
+                sourceBitrateBps: 80_000_000
+            ),
+            PlaybackOriginStreamPolicy.detachAfterSeconds
+        )
+    }
+
+    func testMastersBitrateOutlivesTheDrain() {
+        // The regression file: 19.4 Mbps drains the 64 MiB gap in ~27.7s,
+        // past the fixed 25s grace. The adaptive grace must cover the drain
+        // plus margin so demand resumes the parked task instead of paying a
+        // detach + reconnect every cycle.
+        let drain = Double(64 * 1024 * 1024) * 8.0 / 19_400_000
+        let grace = PlaybackOriginStreamPolicy.detachGraceSeconds(
+            hysteresisGapBytes: 64 * 1024 * 1024,
+            sourceBitrateBps: 19_400_000
+        )
+        XCTAssertGreaterThan(grace, drain)
+        XCTAssertLessThanOrEqual(grace, PlaybackOriginStreamPolicy.detachGraceCeilingSeconds)
+    }
+
+    func testSlowPlaybackRateStretchesTheGrace() {
+        // At 0.75x the 19.4 Mbps title drains 64 MiB in ~36.9s, past the
+        // 1x grace — the rate must scale the drain estimate.
+        let gap: Int64 = 64 * 1024 * 1024
+        let slowDrain = Double(gap) * 8.0 / (19_400_000 * 0.75)
+        let grace = PlaybackOriginStreamPolicy.detachGraceSeconds(
+            hysteresisGapBytes: gap,
+            sourceBitrateBps: 19_400_000,
+            playbackRate: 0.75
+        )
+        XCTAssertGreaterThan(grace, slowDrain)
+        XCTAssertLessThanOrEqual(grace, PlaybackOriginStreamPolicy.detachGraceCeilingSeconds)
+        // Zero/negative rates (paused, backends reporting 0) fall back to 1x
+        // instead of producing an infinite drain.
+        XCTAssertEqual(
+            PlaybackOriginStreamPolicy.detachGraceSeconds(
+                hysteresisGapBytes: gap,
+                sourceBitrateBps: 19_400_000,
+                playbackRate: 0
+            ),
+            PlaybackOriginStreamPolicy.detachGraceSeconds(
+                hysteresisGapBytes: gap,
+                sourceBitrateBps: 19_400_000
+            )
+        )
+    }
+
+    func testVerySlowSourceClampsToProxySafeCeiling() {
+        // 4 Mbps would drain 64 MiB in ~134s; the grace must still close
+        // the connection before reverse-proxy client-send timeouts reap it.
+        XCTAssertEqual(
+            PlaybackOriginStreamPolicy.detachGraceSeconds(
+                hysteresisGapBytes: 64 * 1024 * 1024,
+                sourceBitrateBps: 4_000_000
+            ),
+            PlaybackOriginStreamPolicy.detachGraceCeilingSeconds
+        )
+    }
+}
+
 final class PlaybackOriginStreamPolicyTests: XCTestCase {
 
     func testWindowPausesOnlyOnGlobalBudget() {

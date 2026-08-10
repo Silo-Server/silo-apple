@@ -764,9 +764,10 @@ final class LoopbackSegmentWriter {
     /// stream (8 useful bytes matching FFmpeg's `AVDOVIDecoderConfigurationRecord`
     /// layout: version_major, version_minor, profile, level, rpu_flag, el_flag,
     /// bl_flag, bl_compat_id). Nil if the source isn't Dolby Vision. Used by
-    /// `writeInitSegment` to synthesise a `dvvC` box — FFmpeg's mp4 muxer in
-    /// our build doesn't emit one on its own, so AVPlayer can't see DV
-    /// signalling and paints the IPT samples as YCbCr (green/purple).
+    /// `writeInitSegment` to synthesise the configuration box the profile
+    /// names (`dvcC` up to 7, `dvvC` for 8+) — FFmpeg's mp4 muxer in our
+    /// build doesn't emit one on its own, so AVPlayer can't see DV signalling
+    /// and paints the IPT samples as YCbCr (green/purple).
     private var doviConfig: Data?
     private var doviRecord: DoviRecord?
     private var outputAudioCodecID: AVCodecID?
@@ -2358,12 +2359,46 @@ final class LoopbackSegmentWriter {
         // source on every producer restart.
     }
 
+    /// Which input stream supplies the selected audio track, or nil when the
+    /// selection names no audio stream in this context.
+    ///
+    /// An explicit `ffIndex` wins only when it actually points at an audio
+    /// stream here. A stale index — or an ordinal-shaped one, as offline
+    /// manifests carry (the server writes the audio-list ordinal and drops the
+    /// real ffmpeg stream index) — falls through to the ordinal scan instead
+    /// of naming a video stream or nothing at all.
+    ///
+    /// Both the demuxer discard pass and the mux setup resolve through this so
+    /// they cannot disagree: when they did, the discard pass dropped the audio
+    /// the muxer then waited forever to receive, surfacing as `vodMoovBlocked`
+    /// with nothing naming the real cause.
+    private static func audioStreamIndex(
+        in ctx: UnsafeMutablePointer<AVFormatContext>,
+        ffIndex: Int?,
+        ordinal: Int
+    ) -> Int? {
+        let nb = Int(ctx.pointee.nb_streams)
+        func isAudio(_ index: Int) -> Bool {
+            guard index >= 0, index < nb,
+                  let stream = ctx.pointee.streams?[index] else { return false }
+            return stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO
+        }
+        if let ffIndex, isAudio(ffIndex) { return ffIndex }
+        guard ordinal >= 0 else { return nil }
+        var audioOrdinal = 0
+        for i in 0..<nb where isAudio(i) {
+            if audioOrdinal == ordinal { return i }
+            audioOrdinal += 1
+        }
+        return nil
+    }
+
     /// Marks every stream we won't mux as `AVDISCARD_ALL` so libavformat
     /// skips them during `find_stream_info` and `av_read_frame`. Discards
     /// (a) all non-audio / non-video streams unconditionally and (b) every
-    /// audio stream other than the one selected by ordinal `keepAudioOrdinal`
-    /// or explicit `keepAudioFfIndex`. Pass `keepAudioOrdinal=-1` to drop
-    /// audio entirely.
+    /// audio stream other than the one `audioStreamIndex` resolves
+    /// from `keepAudioFfIndex`/`keepAudioOrdinal`. Pass `keepAudioOrdinal=-1`
+    /// with no `keepAudioFfIndex` to drop audio entirely.
     private static func discardUnusedStreamsForMux(
         in ctx: UnsafeMutablePointer<AVFormatContext>,
         keepVideoIndex: Int,
@@ -2372,6 +2407,11 @@ final class LoopbackSegmentWriter {
         keepSubtitleIndices: Set<Int>
     ) {
         let nb = Int(ctx.pointee.nb_streams)
+        let keepAudioIndex = audioStreamIndex(
+            in: ctx,
+            ffIndex: keepAudioFfIndex,
+            ordinal: keepAudioOrdinal
+        )
         var discardedSubtitles = 0
         var discardedOther = 0
         var discardedExtraVideo = 0
@@ -2379,7 +2419,6 @@ final class LoopbackSegmentWriter {
         var keptVideo = 0
         var keptAudio = 0
         var keptSubtitles = 0
-        var audioOrdinal = 0
         if let streams = ctx.pointee.streams {
             for i in 0..<nb {
                 guard let stream = streams[i] else { continue }
@@ -2394,16 +2433,7 @@ final class LoopbackSegmentWriter {
                     continue
                 }
                 if mediaType == AVMEDIA_TYPE_AUDIO {
-                    let isSelected: Bool
-                    if let ff = keepAudioFfIndex, ff >= 0 {
-                        isSelected = (i == ff)
-                    } else if keepAudioOrdinal >= 0 {
-                        isSelected = (audioOrdinal == keepAudioOrdinal)
-                    } else {
-                        isSelected = false
-                    }
-                    audioOrdinal += 1
-                    if isSelected {
+                    if i == keepAudioIndex {
                         keptAudio += 1
                     } else {
                         stream.pointee.discard = AVDISCARD_ALL
@@ -3058,6 +3088,7 @@ final class LoopbackSegmentWriter {
                 }
                 doviConfig = dovi
                 doviRecord = dovi.flatMap(parseDoviRecord(from:))
+                try requireUsableProfile5Record()
                 let codecTag = videoMode.sampleEntryCodec
                 let doviLog = dovi.flatMap(parseDoviRecord(from:))?.logLine ?? "none"
                 print("[CMP-AVP] out video codecpar tag=\(codecTag) initial extradataSize=\(edSize) nalLen=\(nalLengthSize) videoMode=\(videoMode.logToken) dovi=\(doviLog) removedDoviSideData=\(removedDoviSideData)")
@@ -3124,27 +3155,16 @@ final class LoopbackSegmentWriter {
     private func resolveSelectedAudioStreamIndex(
         in inputCtx: UnsafeMutablePointer<AVFormatContext>
     ) throws -> Int {
-        if let explicitStreamIndex = sessionSpec.selectedAudio.ffIndex,
-           explicitStreamIndex >= 0,
-           explicitStreamIndex < Int(inputCtx.pointee.nb_streams),
-           let stream = inputCtx.pointee.streams?[explicitStreamIndex],
-           stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO {
-            return explicitStreamIndex
+        guard let index = Self.audioStreamIndex(
+            in: inputCtx,
+            ffIndex: sessionSpec.selectedAudio.ffIndex,
+            ordinal: selectedAudioTrackIndex
+        ) else {
+            throw LoopbackWriterError.audioTranscodeSetup(
+                "selected audio track \(selectedAudioTrackIndex) was not found in source stream map"
+            )
         }
-
-        var audioOrdinal = 0
-        for i in 0 ..< Int(inputCtx.pointee.nb_streams) {
-            guard let stream = inputCtx.pointee.streams?[i] else { continue }
-            guard stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO else { continue }
-            if audioOrdinal == selectedAudioTrackIndex {
-                return i
-            }
-            audioOrdinal += 1
-        }
-
-        throw LoopbackWriterError.audioTranscodeSetup(
-            "selected audio track \(selectedAudioTrackIndex) was not found in source stream map"
-        )
+        return index
     }
 
     /// Drain a queue of prefetched packets to the muxer. Each packet's
@@ -3596,6 +3616,28 @@ final class LoopbackSegmentWriter {
         return Int(before - cp.pointee.nb_coded_side_data)
     }
 
+    /// Profile 5 is the one mode whose Dolby Vision signalling has no
+    /// fallback: the base layer is IPT-PQ-c2, so a `dvh1` sample entry
+    /// without a `dvcC` renders as garbage rather than as a lesser dynamic
+    /// range, and the CODECS token cannot repair it (Dolby derives both the
+    /// playlist profile and level from the configuration box, and its level
+    /// IDs start at 1 — there is no `dvh1.05.00` to fall back on). A source
+    /// whose DOVI record the demuxer never surfaced, or surfaced malformed,
+    /// therefore fails the session here so the route ladder falls back
+    /// immediately instead of publishing an unplayable presentation.
+    private func requireUsableProfile5Record() throws {
+        guard videoMode == .passthroughProfile5 else { return }
+        guard let record = doviRecord else {
+            throw LoopbackWriterError.profile5ConfigUnusable("no DOVI configuration record on the video track")
+        }
+        guard record.profile == 5 else {
+            throw LoopbackWriterError.profile5ConfigUnusable("record declares profile \(record.profile), not 5")
+        }
+        guard record.level > 0 else {
+            throw LoopbackWriterError.profile5ConfigUnusable("record declares level 0")
+        }
+    }
+
     private func parseDoviRecord(from data: Data) -> DoviRecord? {
         guard data.count >= 8 else { return nil }
         let bytes = Array(data.prefix(8))
@@ -3645,8 +3687,64 @@ final class LoopbackSegmentWriter {
         if videoMode == .passthroughH264 {
             return h264RFC6381CodecString(avccHeader: inputAvccHeader) ?? sampleEntry
         }
+        // Profile 5 advertises Dolby Vision in CODECS itself, so it needs the
+        // Dolby form. Running it through the HEVC builder produces a `dvh1`
+        // fourcc glued to HEVC profile/level fields — the `dvh1.2.4.L150`
+        // shape AVPlayer rejects with -15517 — so the HEVC path below must
+        // never see a `dvh1` sample entry. The Dolby form is always available
+        // here: a P5 session without a usable record never reaches the mux
+        // (`requireUsableProfile5Record`), so the `hvc1` arm is inert.
+        if videoMode == .passthroughProfile5 {
+            return dolbyVisionRFC6381CodecString() ?? "hvc1"
+        }
         return hevcRFC6381CodecString(sampleEntry: sampleEntry, hvccHeader: inputHvccHeader)
             ?? sampleEntry
+    }
+
+    /// Dolby Vision RFC 6381 form, `dvh1.<profile>.<level>` with both fields
+    /// zero-padded to two digits. The one builder behind both CODECS
+    /// (Profile 5) and SUPPLEMENTAL-CODECS (Profiles 7 and 8, which append a
+    /// compatibility brand), so the two fields AVPlayer cross-validates
+    /// cannot name different profiles for the same stream.
+    private static func dolbyVisionRFC6381CodecString(profile: Int, level: Int) -> String {
+        String(format: "dvh1.%02d.%02d", profile, level)
+    }
+
+    /// Nil when either field is unknown. Dolby derives the playlist profile
+    /// and level from the configuration box, and its published level IDs
+    /// begin at 01 — so a missing record cannot be papered over with a zero
+    /// level. Omitting the token entirely leaves the caller on its HEVC
+    /// fallback (Profile 8's base layer is viewable without the
+    /// SUPPLEMENTAL-CODECS claim); Profile 5 never gets this far, because
+    /// `requireUsableProfile5Record` fails the session at mux setup.
+    private func dolbyVisionRFC6381CodecString() -> String? {
+        guard let profile = outputDolbyVisionProfile,
+              let level = doviRecord.map({ Int($0.level) }),
+              level > 0 else {
+            return nil
+        }
+        return Self.dolbyVisionRFC6381CodecString(profile: profile, level: level)
+    }
+
+    /// The Dolby Vision profile the written segments actually carry, which is
+    /// not always the source's: `convertProfile7To81` rewrites the `dvcC` to
+    /// Profile 8.1, so the parsed record's 7 would misdescribe the output.
+    /// The planner derives `advertisedDolbyVisionProfile` from the same
+    /// `videoMode` that selects what gets written, so it leads; the parsed
+    /// record covers callers that build a spec without it. A source whose
+    /// DOVI side data the demuxer never surfaced — `parseDoviRecord` also
+    /// rejects records under 8 bytes — leaves only the advertised value.
+    private var outputDolbyVisionProfile: Int? {
+        switch videoMode {
+        case .convertProfile7To81:
+            // `derivedProfile81DoviConfig` stamps 8 into the written record.
+            return 8
+        case .passthroughProfile5, .passthroughProfile8:
+            return manifestMetadata.advertisedDolbyVisionProfile
+                ?? doviRecord.map { Int($0.profile) }
+        case .passthroughHEVC, .passthroughH264:
+            return nil
+        }
     }
 
     private func masterManifestSampleEntryCodec() -> String {
@@ -3730,13 +3828,11 @@ final class LoopbackSegmentWriter {
         case .passthroughProfile5, .passthroughHEVC, .passthroughH264:
             emitsSupplemental = false
         }
-        guard emitsSupplemental,
-              let profile = manifestMetadata.advertisedDolbyVisionProfile else {
+        guard emitsSupplemental, let token = dolbyVisionRFC6381CodecString() else {
             return nil
         }
-        let level = doviRecord?.level ?? 0
         let compat = manifestMetadata.compatibilityBrand ?? "db1p"
-        return String(format: "dvh1.%02d.%02d/%@", profile, level, compat)
+        return "\(token)/\(compat)"
     }
 
     private func outputDoviConfig(from data: Data?) -> Data? {
@@ -5514,20 +5610,26 @@ final class LoopbackSegmentWriter {
     }
 
     private func writeInitSegment() {
-        // FFmpeg's mp4 muxer in our build doesn't emit a dvvC box even when
-        // the video codec_tag is `dvh1` and DOVI side data is present on the
-        // track's codecpar. Without dvvC, AVPlayer has no DV signalling in
-        // the sample entry and decodes IPT-PQ-c2 as YCbCr → green/purple
-        // render. Inject the dvvC ourselves before writing init.mp4 to disk.
-        // Plain HEVC/HLG/HDR10 skips this and uses the muxer's normal hvcC.
+        // FFmpeg's mp4 muxer in our build doesn't emit a Dolby Vision
+        // configuration box even when the video codec_tag is `dvh1` and DOVI
+        // side data is present on the track's codecpar. Without it AVPlayer
+        // has no DV signalling in the sample entry and decodes IPT-PQ-c2 as
+        // YCbCr → green/purple render. Inject the box ourselves before
+        // writing init.mp4 to disk; the surgery picks `dvcC` or `dvvC` from
+        // the record's profile, which `outputDoviConfig` has already rewritten
+        // to the profile the segments actually carry. Plain HEVC/HLG/HDR10
+        // skips this and uses the muxer's normal hvcC.
         var bytes = initSegmentBytes
         if let dovi = doviConfig {
-            if let patched = ISOBoxSurgery.injectDvvC(into: bytes, doviBytes: dovi) {
+            if let patched = ISOBoxSurgery.injectDolbyVisionConfig(into: bytes, doviBytes: dovi) {
                 bytes = patched
+                // Injection succeeded, so the record parsed: the box type it
+                // chose is the one this profile names.
+                let boxType = ISOBoxSurgery.dolbyVisionConfigBoxType(profile: doviRecord?.profile ?? 0)
                 let doviLog = doviRecord?.logLine ?? "unknown"
-                print("[CMP-AVP] dvvC injected (init.mp4 grew by 32 bytes) \(doviLog)")
+                print("[CMP-AVP] \(boxType) injected (init.mp4 grew by 32 bytes) \(doviLog)")
             } else {
-                print("[CMP-AVP] dvvC injection failed — hvcC not found in init tree")
+                print("[CMP-AVP] DV config injection failed — hvcC not found in init tree, or record malformed")
             }
         }
         if selectedAudioIsAtmosJOC {
@@ -6578,6 +6680,12 @@ enum LoopbackWriterError: Error {
     /// the startup watchdog.
     case bootstrapFailed(String)
     case profile81ConversionFailed(String)
+    /// A Profile 5 session reached mux setup without a usable DOVI
+    /// configuration record. Neither the sample entry nor the CODECS token
+    /// can be written conformantly without one, and the IPT-PQ-c2 base layer
+    /// has no viewable fallback, so the session fails instead of publishing a
+    /// presentation that renders green/purple.
+    case profile5ConfigUnusable(String)
     /// `av_interleaved_write_frame` returned a negative code on three or more
     /// consecutive packets. The mux is no longer producing valid output; abort
     /// rather than continue writing a half-broken HLS presentation.

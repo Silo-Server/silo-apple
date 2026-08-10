@@ -204,13 +204,75 @@ actor PlaybackSessionBridge {
         var attemptedPlanKeys: [String]
         var attemptCount: Int
         var clientQualityId: String
+        /// The independent bandwidth ceiling captured for this attempt. Every
+        /// replan must repeat it or recovery silently widens the connection.
+        var bandwidthCapKbps: Int?
         var snapshot: ApplePlaybackV3CapabilitySnapshot
         var serverFeatures: [String]
         var plan: PlaybackV3Plan
     }
 
+    private struct ProtocolV3AttemptIdentity: Equatable {
+        let playbackAttemptId: String
+        let planAttemptId: String
+        let planAttemptKey: String
+
+        init(_ active: ActiveProtocolV3) {
+            playbackAttemptId = active.playbackAttemptId
+            planAttemptId = active.planAttemptId
+            planAttemptKey = active.planAttemptKey
+        }
+    }
+
+    private struct ActiveQualityIntent {
+        var clientQualityId: String
+        var bandwidthCapKbps: Int?
+    }
+
     private var activeProtocolV3: ActiveProtocolV3?
+    /// Exact session-level quality intent. The cap cannot be reconstructed from
+    /// `clientQualityId`: a foreign 1080p/6 Mbps pair maps to Apple's 8 Mbps rung.
+    private var activeQualityIntent: ActiveQualityIntent?
     private var protocolV3FirstFramePlanIds: Set<String> = []
+
+    private func isCurrentProtocolV3Attempt(
+        _ expected: ProtocolV3AttemptIdentity,
+        sessionId expectedSessionId: String
+    ) -> Bool {
+        guard !Task.isCancelled,
+              sessionId == expectedSessionId,
+              currentSession?.sessionId == expectedSessionId,
+              let activeProtocolV3 else {
+            return false
+        }
+        return ProtocolV3AttemptIdentity(activeProtocolV3) == expected
+    }
+
+    private func discardStaleProtocolV3Response(
+        _ response: PlaybackV3DecisionValidation
+    ) {
+        let allocatedSessionId: String?
+        switch response {
+        case .playable(_, let responseSessionId):
+            allocatedSessionId = responseSessionId
+        case .incompatible(let responseSessionId):
+            allocatedSessionId = responseSessionId
+        case .terminal:
+            allocatedSessionId = nil
+        }
+        guard let allocatedSessionId, allocatedSessionId != sessionId else { return }
+        stopStaleSession(allocatedSessionId)
+    }
+
+    /// Cleanup must outlive the cancelled request that produced the stale
+    /// response. An unstructured task intentionally does not inherit its
+    /// caller's cancellation; failure remains best-effort and server timeout is
+    /// the final fallback.
+    private func stopStaleSession(_ staleSessionId: String) {
+        Task {
+            try? await ContinuumAPI.shared.stopPlayback(sessionId: staleSessionId)
+        }
+    }
 
     private func adoptSession(_ session: PlaybackSessionResponse) {
         sessionId = session.sessionId
@@ -275,8 +337,13 @@ actor PlaybackSessionBridge {
 
         // A mid-stream quality-change replan passes an explicit override
         // (e.g. back to Auto) that must win over the persisted setting.
+        let playerSettings = PlayerSettings.shared
         let preferredQuality = normalizedQualityPreference(
-            preferredQualityOverride ?? PlayerSettings.shared.preferredQuality
+            preferredQualityOverride ?? playerSettings.preferredQuality
+        )
+        let bandwidthCapKbps = AppleQualityAxes.resolvedBitrateCap(
+            qualityOverride: preferredQualityOverride,
+            fallbackBitrateKbps: playerSettings.maxBitrateKbps
         )
         let normalizedResumePosition: Double? = {
             guard let resumePosition, resumePosition.isFinite, resumePosition >= 0 else {
@@ -307,15 +374,17 @@ actor PlaybackSessionBridge {
                 )
             }
 
-            initiallySelectedVersion = selectVersion(
-                from: watchDetail,
+            initiallySelectedVersion = Self.selectVersion(
+                from: watchDetail.versions,
+                lastFileId: watchDetail.userData?.lastFileId,
                 preferredQuality: preferredQuality
             )
         }
         let playbackPlan = planClientPlayback(
             watchDetail: watchDetail,
             initiallySelectedVersion: initiallySelectedVersion,
-            preferredQuality: preferredQuality
+            preferredQuality: preferredQuality,
+            bandwidthCapKbps: bandwidthCapKbps
         )
         let selectedVersion = playbackPlan.selectedVersion
         let effectiveStartPosition = resolvedStartPosition(
@@ -352,6 +421,7 @@ actor PlaybackSessionBridge {
                selectedVersion: selectedVersion,
                profileId: profileId,
                qualityPreference: resolvedQualityPreference,
+               bandwidthCapKbps: bandwidthCapKbps,
                startPosition: effectiveStartPosition,
                audioTrackIndex: preferredAudioTrackIndex ?? selectedVersion.effectiveAudioTrackIndex,
                subtitleTrackIndex: preferredSubtitleTrackIndex
@@ -392,6 +462,7 @@ actor PlaybackSessionBridge {
             watchDetail: watchDetail,
             selectedVersion: selectedVersion,
             preferredQuality: resolvedQualityPreference,
+            bandwidthCapKbps: bandwidthCapKbps,
             effectiveStartPosition: effectiveStartPosition,
             prefersSDRTranscode: playbackPlan.prefersSDRTranscode
         )
@@ -407,6 +478,10 @@ actor PlaybackSessionBridge {
 
         activeProtocolV3 = nil
         adoptSession(session)
+        activeQualityIntent = ActiveQualityIntent(
+            clientQualityId: ApplePlaybackQuality.normalizeStoredId(resolvedQualityPreference),
+            bandwidthCapKbps: bandwidthCapKbps
+        )
         return PreparedPlayback(
             watchDetail: watchDetail,
             selectedVersion: selectedVersion,
@@ -424,6 +499,7 @@ actor PlaybackSessionBridge {
         selectedVersion: FileVersion,
         profileId: String,
         qualityPreference: String?,
+        bandwidthCapKbps: Int?,
         startPosition: Double?,
         audioTrackIndex: Int?,
         subtitleTrackIndex: Int?
@@ -468,7 +544,7 @@ actor PlaybackSessionBridge {
             outputRouteGeneration: snapshot.outputRouteGeneration,
             metered: false,
             bandwidthEstimateKbps: nil,
-            bandwidthCapKbps: nil,
+            bandwidthCapKbps: bandwidthCapKbps,
             clientCapabilities: snapshot.capabilities,
             clientPlaybackContext: snapshot.context
         )
@@ -529,9 +605,14 @@ actor PlaybackSessionBridge {
                 attemptedPlanKeys: [planAttemptKey],
                 attemptCount: 1,
                 clientQualityId: ApplePlaybackQuality.normalizeStoredId(qualityPreference),
+                bandwidthCapKbps: bandwidthCapKbps,
                 snapshot: snapshot,
                 serverFeatures: serverFeatures,
                 plan: plan
+            )
+            activeQualityIntent = ActiveQualityIntent(
+                clientQualityId: ApplePlaybackQuality.normalizeStoredId(qualityPreference),
+                bandwidthCapKbps: bandwidthCapKbps
             )
             protocolV3FirstFramePlanIds.removeAll()
             sessionId = resolvedSessionId
@@ -576,6 +657,7 @@ actor PlaybackSessionBridge {
               let currentSessionId = sessionId else {
             return nil
         }
+        let expectedAttempt = ProtocolV3AttemptIdentity(active)
         guard active.attemptCount < 8 else {
             await emitProtocolV3Terminal(
                 active: active,
@@ -633,6 +715,10 @@ actor PlaybackSessionBridge {
         let requestedClientQualityId = qualityPreference.map {
             ApplePlaybackQuality.normalizeStoredId($0)
         } ?? active.clientQualityId
+        let requestedBandwidthCapKbps = AppleQualityAxes.resolvedBitrateCap(
+            qualityOverride: qualityPreference,
+            fallbackBitrateKbps: active.bandwidthCapKbps
+        )
         let eventName = isSeekReanchor
             ? "seek_reanchor_requested"
             : (invalidatesIntent ? "plan_invalidated" : "plan_failed")
@@ -644,6 +730,9 @@ actor PlaybackSessionBridge {
             fallbackReason: nil,
             diagnostics: ["message": String(message.prefix(512))]
         )
+        guard isCurrentProtocolV3Attempt(expectedAttempt, sessionId: currentSessionId) else {
+            throw CancellationError()
+        }
 
         let request = PlaybackV3ReplanRequest(
             protocolVersion: PlaybackProtocolV3.version,
@@ -660,7 +749,7 @@ actor PlaybackSessionBridge {
             outputRouteGeneration: active.snapshot.outputRouteGeneration,
             metered: false,
             bandwidthEstimateKbps: nil,
-            bandwidthCapKbps: nil,
+            bandwidthCapKbps: requestedBandwidthCapKbps,
             selectedTracks: selectedTracks,
             failure: PlaybackV3Failure(
                 classification: classification,
@@ -674,7 +763,12 @@ actor PlaybackSessionBridge {
             sessionId: currentSessionId,
             request: request
         )
-        switch response.validatedForApple() {
+        let validatedResponse = response.validatedForApple()
+        guard isCurrentProtocolV3Attempt(expectedAttempt, sessionId: currentSessionId) else {
+            discardStaleProtocolV3Response(validatedResponse)
+            throw CancellationError()
+        }
+        switch validatedResponse {
         case .terminal(let terminal):
             await emitProtocolV3Terminal(
                 active: active,
@@ -791,7 +885,12 @@ actor PlaybackSessionBridge {
             active.serverFeatures = response.serverFeatures
             active.plan = nextPlan
             active.clientQualityId = requestedClientQualityId
+            active.bandwidthCapKbps = requestedBandwidthCapKbps
             activeProtocolV3 = active
+            activeQualityIntent = ActiveQualityIntent(
+                clientQualityId: requestedClientQualityId,
+                bandwidthCapKbps: requestedBandwidthCapKbps
+            )
             sessionId = nextSessionId
             self.currentSession = nextSession
             if isSeekReanchor {
@@ -983,14 +1082,19 @@ actor PlaybackSessionBridge {
     func restartCurrentTranscode(
         selectedVersion: FileVersion,
         seekSeconds: Double,
-        qualityId: String? = nil
+        qualityOverride: String? = nil
     ) async throws -> PlaybackSessionResponse {
         guard let currentSession else {
             throw APIError.unsupportedMedia("No active playback session")
         }
+        let expectedSessionId = currentSession.sessionId
+        let expectedProtocolV3Attempt = activeProtocolV3.map(ProtocolV3AttemptIdentity.init)
 
-        let preferredQuality = qualityId ?? requestedQualityPreference(
-            preferredQuality: normalizedQualityPreference(PlayerSettings.shared.preferredQuality),
+        let playerSettings = PlayerSettings.shared
+        let preferredQuality = qualityOverride.map {
+            ApplePlaybackQuality.normalizeStoredId($0)
+        } ?? activeQualityIntent?.clientQualityId ?? requestedQualityPreference(
+            preferredQuality: normalizedQualityPreference(playerSettings.preferredQuality),
             selectedVersion: selectedVersion,
             hasManualSelection: true
         )
@@ -1000,13 +1104,26 @@ actor PlaybackSessionBridge {
             delivery: PlaybackDeliveryStrategy(playMethod: currentSession.playMethod)
         )
         let currentDelivery = PlaybackDeliveryStrategy(playMethod: currentSession.playMethod)
+        let fallbackCapKbps: Int?
+        if let activeQualityIntent {
+            fallbackCapKbps = activeQualityIntent.bandwidthCapKbps
+        } else {
+            fallbackCapKbps = playerSettings.maxBitrateKbps
+        }
+        let capKbps = AppleQualityAxes.resolvedBitrateCap(
+            qualityOverride: qualityOverride,
+            fallbackBitrateKbps: fallbackCapKbps
+        )
         let forcedByQuality = ApplePlaybackQuality.shouldForceTranscode(
             preferredQualityId: preferredQuality,
-            selectedVersion: selectedVersion
+            selectedVersion: selectedVersion,
+            capKbps: capKbps
         )
-        let useCopyVideo = currentDelivery == .remux
-            || qualityOption.isOriginal
-            || (!forcedByQuality && currentDelivery != .transcode)
+        let useCopyVideo = ApplePlaybackQuality.shouldUseLegacyCopyVideo(
+            delivery: currentDelivery,
+            option: qualityOption,
+            forcedByQuality: forcedByQuality
+        )
         let transcodeRequest = TranscodeStartRequest(
             sessionId: currentSession.sessionId,
             seekSeconds: seekSeconds,
@@ -1018,7 +1135,8 @@ actor PlaybackSessionBridge {
             targetCodecAudio: "aac",
             targetBitrateKbps: useCopyVideo ? 0 : ApplePlaybackQuality.targetBitrateKbps(
                 for: qualityOption,
-                selectedVersion: selectedVersion
+                selectedVersion: selectedVersion,
+                capKbps: capKbps
             ),
             segmentDuration: 2,
             subtitleTrackIndex: -1,
@@ -1031,6 +1149,16 @@ actor PlaybackSessionBridge {
         let transcodeResponse = try await ContinuumAPI.shared.startTranscode(
             request: transcodeRequest
         )
+        let currentProtocolV3Attempt = activeProtocolV3.map(ProtocolV3AttemptIdentity.init)
+        guard !Task.isCancelled,
+              sessionId == expectedSessionId,
+              self.currentSession?.sessionId == expectedSessionId,
+              currentProtocolV3Attempt == expectedProtocolV3Attempt else {
+            if transcodeResponse.sessionId != sessionId {
+                stopStaleSession(transcodeResponse.sessionId)
+            }
+            throw CancellationError()
+        }
         let restartedSession = PlaybackSessionResponse(
             sessionId: transcodeResponse.sessionId,
             userId: currentSession.userId,
@@ -1049,6 +1177,10 @@ actor PlaybackSessionBridge {
             playbackInfo: currentSession.playbackInfo
         )
         adoptSession(restartedSession)
+        activeQualityIntent = ActiveQualityIntent(
+            clientQualityId: ApplePlaybackQuality.normalizeStoredId(preferredQuality),
+            bandwidthCapKbps: capKbps
+        )
         return restartedSession
     }
 
@@ -1229,6 +1361,7 @@ actor PlaybackSessionBridge {
         sessionId = nil
         currentSession = nil
         activeProtocolV3 = nil
+        activeQualityIntent = nil
         protocolV3FirstFramePlanIds.removeAll()
         lastStartRequest = nil
         consecutiveProgressFailures = 0
@@ -1259,6 +1392,7 @@ actor PlaybackSessionBridge {
         watchDetail: WatchDetail,
         selectedVersion: FileVersion,
         preferredQuality: String?,
+        bandwidthCapKbps: Int?,
         effectiveStartPosition: Double?,
         prefersSDRTranscode: Bool
     ) async throws -> PlaybackSessionResponse {
@@ -1279,13 +1413,21 @@ actor PlaybackSessionBridge {
 
         // Remux = codec copy in HLS container (original video quality, AAC audio).
         // Transcode = server re-encodes video at the requested target.
-        let isRemux = strategy == .remux
         let qualityOption = ApplePlaybackQuality.resolvedRequestOption(
             preferredQualityId: preferredQuality,
             selectedVersion: selectedVersion,
             delivery: strategy
         )
-        let useCopyVideo = isRemux || qualityOption.isOriginal
+        let forcedByQuality = ApplePlaybackQuality.shouldForceTranscode(
+            preferredQualityId: preferredQuality,
+            selectedVersion: selectedVersion,
+            capKbps: bandwidthCapKbps
+        )
+        let useCopyVideo = ApplePlaybackQuality.shouldUseLegacyCopyVideo(
+            delivery: strategy,
+            option: qualityOption,
+            forcedByQuality: forcedByQuality
+        )
         let transcodeRequest = TranscodeStartRequest(
             sessionId: session.sessionId,
             seekSeconds: resumeSeconds,
@@ -1297,7 +1439,8 @@ actor PlaybackSessionBridge {
             targetCodecAudio: "aac",
             targetBitrateKbps: useCopyVideo ? 0 : ApplePlaybackQuality.targetBitrateKbps(
                 for: qualityOption,
-                selectedVersion: selectedVersion
+                selectedVersion: selectedVersion,
+                capKbps: bandwidthCapKbps
             ),
             segmentDuration: 2,
             subtitleTrackIndex: -1,
@@ -1329,15 +1472,22 @@ actor PlaybackSessionBridge {
             }()
             guard isRecoverable else { throw error }
 
-            if isRemux {
-                logger.warning("4K copy rejected, falling back to 1080p transcode")
+            if useCopyVideo {
+                guard ApplePlaybackQuality.allowsLegacyCopyFallbackToTranscode(
+                    preferredQualityId: preferredQuality
+                ) else {
+                    throw error
+                }
+                logger.warning("Video copy rejected, falling back to 1080p transcode")
                 let fallback = TranscodeStartRequest(
                     sessionId: session.sessionId,
                     seekSeconds: resumeSeconds,
                     targetResolution: "1080p",
                     targetCodecVideo: "h264",
                     targetCodecAudio: "aac",
-                    targetBitrateKbps: 6000,
+                    targetBitrateKbps: ApplePlaybackQuality.legacyCopyFallbackBitrateKbps(
+                        capKbps: bandwidthCapKbps
+                    ),
                     segmentDuration: 2,
                     subtitleTrackIndex: -1,
                     subtitleBurnIn: false
@@ -1421,36 +1571,11 @@ actor PlaybackSessionBridge {
     /// server. iPhone HDR files may still switch off PlayerCore later if VT
     /// rejects the stream, but that backend handoff needs the original direct
     /// source URL first, so we keep capability reporting truthful here.
-    private func makeClientCaps(avoidDirectHDRPlayback: Bool) -> (
-        codecsVideo: [String],
-        codecsAudio: [String],
-        containers: [String],
-        maxResolution: String?,
-        hdr: Bool
-    ) {
-        #if targetEnvironment(simulator)
-        return (
-            codecsVideo: ["h264"],
-            codecsAudio: ["aac", "ac3", "eac3", "mp3", "opus", "flac"],
-            containers: ["mp4", "mov", "m4v", "mkv"],
-            maxResolution: "1080p",
-            hdr: false
-        )
-        #else
-        return (
-            codecsVideo: avoidDirectHDRPlayback ? ["h264"] : ["h264", "hevc"],
-            codecsAudio: [
-                "aac", "ac3", "eac3", "dts", "truehd", "flac", "mp3",
-                "opus", "vorbis", "pcm", "pcm_s16le", "pcm_s24le"
-            ],
-            containers: ["mkv", "mp4", "mov", "m4v", "webm", "avi", "ts", "m2ts"],
-            maxResolution: avoidDirectHDRPlayback ? "1080p" : nil,
-            hdr: !avoidDirectHDRPlayback
-        )
-        #endif
-    }
-
-    private func makeMacClientCaps() -> (
+    ///
+    /// The lists themselves come from `AppleDecodeCapabilities` — the same
+    /// ones the V3 snapshot and download creation report, so the server sees
+    /// one client whichever door a request arrives through.
+    private func makeClientCaps(includingMPEG2: Bool = false) -> (
         codecsVideo: [String],
         codecsAudio: [String],
         containers: [String],
@@ -1458,58 +1583,35 @@ actor PlaybackSessionBridge {
         hdr: Bool
     ) {
         (
-            codecsVideo: ["h264", "hevc"],
-            codecsAudio: ["aac", "ac3", "eac3", "alac", "mp3"],
-            containers: ["mp4", "mov", "m4v"],
-            maxResolution: nil,
-            hdr: true
+            codecsVideo: AppleDecodeCapabilities.videoCodecs(includingMPEG2: includingMPEG2),
+            codecsAudio: AppleDecodeCapabilities.audioCodecs,
+            containers: AppleDecodeCapabilities.containers,
+            maxResolution: AppleDecodeCapabilities.maxResolution,
+            hdr: !AppleDecodeCapabilities.isSimulator
         )
-    }
-
-    private func makeMPEG2DirectClientCaps() -> (
-        codecsVideo: [String],
-        codecsAudio: [String],
-        containers: [String],
-        maxResolution: String?,
-        hdr: Bool
-    ) {
-        var caps = makeClientCaps(avoidDirectHDRPlayback: false)
-        if !caps.codecsVideo.contains(where: { $0.caseInsensitiveCompare("mpeg2video") == .orderedSame }) {
-            caps.codecsVideo.append("mpeg2video")
-        }
-        return caps
     }
 
     private func planClientPlayback(
         watchDetail: WatchDetail,
         initiallySelectedVersion: FileVersion,
-        preferredQuality: String?
+        preferredQuality: String?,
+        bandwidthCapKbps: Int?
     ) -> ClientPlaybackPlan {
         let requestedTranscode = ApplePlaybackQuality.shouldForceTranscode(
             preferredQualityId: preferredQuality,
-            selectedVersion: initiallySelectedVersion
+            selectedVersion: initiallySelectedVersion,
+            capKbps: bandwidthCapKbps
         )
-        #if os(macOS)
         return ClientPlaybackPlan(
             selectedVersion: initiallySelectedVersion,
             playMethod: requestedTranscode
                 ? PlaybackDeliveryStrategy.transcode.name
                 : PlaybackDeliveryStrategy.direct.name,
             prefersSDRTranscode: false,
-            capabilities: makeMacClientCaps()
+            capabilities: makeClientCaps(
+                includingMPEG2: isMPEG2Video(initiallySelectedVersion)
+            )
         )
-        #else
-        return ClientPlaybackPlan(
-            selectedVersion: initiallySelectedVersion,
-            playMethod: requestedTranscode
-                ? PlaybackDeliveryStrategy.transcode.name
-                : PlaybackDeliveryStrategy.direct.name,
-            prefersSDRTranscode: false,
-            capabilities: isMPEG2Video(initiallySelectedVersion)
-                ? makeMPEG2DirectClientCaps()
-                : makeClientCaps(avoidDirectHDRPlayback: false)
-        )
-        #endif
     }
 
     private func isMPEG2Video(_ version: FileVersion) -> Bool {
@@ -1543,13 +1645,9 @@ actor PlaybackSessionBridge {
     }
 
     private func protocolV3QualityPreference(_ quality: String?) -> String {
-        let normalized = ApplePlaybackQuality.normalizeStoredId(quality)
-        if normalized.hasPrefix("1080p") { return "1080p" }
-        if normalized.hasPrefix("720p") { return "720p" }
-        if normalized.hasPrefix("480p") { return "480p" }
-        if normalized.hasPrefix("328p") { return "480p" }
-        if normalized == ApplePlaybackQuality.originalId { return "original" }
-        return "auto"
+        AppleQualityAxes.split(
+            ApplePlaybackQuality.normalizeStoredId(quality)
+        ).resolution
     }
 
     private func protocolV3TrackId(fileId: Int, kind: String, index: Int) -> String {
@@ -1560,11 +1658,12 @@ actor PlaybackSessionBridge {
     /// filtering happens separately in `planClientPlayback`; this ranking step
     /// only decides the user's preferred source before device-specific fallbacks
     /// are applied.
-    private func selectVersion(
-        from watchDetail: WatchDetail,
+    static func selectVersion(
+        from versions: [FileVersion],
+        lastFileId: Int?,
         preferredQuality: String?
     ) -> FileVersion {
-        let ranked = watchDetail.versions.sorted {
+        let ranked = versions.sorted {
             score(for: $0, preferredQuality: preferredQuality) >
                 score(for: $1, preferredQuality: preferredQuality)
         }
@@ -1576,15 +1675,15 @@ actor PlaybackSessionBridge {
             return matchingQuality
         }
 
-        if let lastFileId = watchDetail.userData?.lastFileId,
-           let lastUsed = watchDetail.versions.first(where: { $0.fileId == lastFileId }) {
+        if let lastFileId,
+           let lastUsed = versions.first(where: { $0.fileId == lastFileId }) {
             return lastUsed
         }
 
-        return ranked.first ?? watchDetail.versions[0]
+        return ranked.first ?? versions[0]
     }
 
-    private func score(for version: FileVersion, preferredQuality: String?) -> Int {
+    private static func score(for version: FileVersion, preferredQuality: String?) -> Int {
         var score = resolutionRank(version.resolution) * 10
 
         if let preferredQuality {
@@ -1612,13 +1711,16 @@ actor PlaybackSessionBridge {
         return selectedVersion.resolution ?? preferredQuality ?? "original"
     }
 
-    private func qualityMatches(_ resolution: String?, preferredQuality: String) -> Bool {
+    private static func qualityMatches(_ resolution: String?, preferredQuality: String) -> Bool {
         let versionRank = resolutionRank(resolution)
+        if preferredQuality == ApplePlaybackQuality.originalId {
+            return versionRank > 0
+        }
         let requestedRank = resolutionRank(preferredQuality)
         return versionRank > 0 && versionRank <= requestedRank
     }
 
-    private func resolutionRank(_ value: String?) -> Int {
+    private static func resolutionRank(_ value: String?) -> Int {
         guard let value = value?.lowercased() else { return 0 }
 
         if value.contains("2160") || value.contains("4k") {

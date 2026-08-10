@@ -26,6 +26,7 @@ class QRLoginViewModel {
     private var countdownTask: Task<Void, Never>?
     private var deviceName: String = ""
     private var devicePlatform: String = ""
+    private var expectedAccount: RefreshAccountIdentity?
 
     private let auth = AuthService.shared
 
@@ -50,10 +51,17 @@ class QRLoginViewModel {
     private func startSession() async {
         state = .starting
         do {
+            guard let account = await TokenStore.shared.refreshAccountIdentity() else {
+                throw HTTPError.serverUrlNotConfigured
+            }
             let session = try await auth.startDeviceLogin(
                 deviceName: deviceName,
                 devicePlatform: devicePlatform
             )
+            guard await TokenStore.shared.refreshAccountIdentity() == account else {
+                throw HTTPError.requestIdentityChanged
+            }
+            expectedAccount = account
             state = .awaiting(session)
             startCountdown(expiresAt: session.expiresAt)
             startPolling(session: session)
@@ -100,13 +108,15 @@ class QRLoginViewModel {
                 return
             case .approved:
                 guard let accessToken = response.accessToken,
-                      let refreshToken = response.refreshToken else {
+                      let refreshToken = response.refreshToken,
+                      let expectedAccount else {
                     finalize(.error(message: "Server approved the session but did not return tokens."))
                     return
                 }
-                await TokenStore.shared.saveTokens(
+                try await auth.installSession(
                     accessToken: accessToken,
-                    refreshToken: refreshToken
+                    refreshToken: refreshToken,
+                    expectedAccount: expectedAccount
                 )
                 finalize(.approved)
             case .denied:
@@ -121,6 +131,8 @@ class QRLoginViewModel {
         } catch HTTPError.http(let code, _) where code == 404 {
             // Server cleaned up the pairing row before it was approved.
             finalize(.error(message: "This sign-in request has expired."))
+        } catch HTTPError.requestIdentityChanged {
+            finalize(.error(message: "The active server changed during sign-in. Please try again."))
         } catch {
             // Transient network error — keep trying until the countdown
             // times out the session server-side.

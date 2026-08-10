@@ -31,6 +31,21 @@ enum PlatformScreen {
         #endif
     }
 
+    /// EDR headroom the given screen could make available, spelled once for
+    /// both hosts — AppKit and UIKit name the same quantity differently.
+    /// Headroom is per screen rather than per machine: on a multi-display Mac
+    /// the window may sit on a display with none to spend. `nil` screen (view
+    /// not in a window yet) reads as the SDR floor.
+    #if os(iOS)
+    static func potentialEDRHeadroom(of screen: UIScreen?) -> Double {
+        Double(screen?.potentialEDRHeadroom ?? 1.0)
+    }
+    #elseif canImport(AppKit)
+    static func potentialEDRHeadroom(of screen: NSScreen?) -> Double {
+        Double(screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1.0)
+    }
+    #endif
+
     #if canImport(UIKit) && !os(tvOS)
     private static var activeScreen: UIScreen? {
         let scenes = UIApplication.shared.connectedScenes

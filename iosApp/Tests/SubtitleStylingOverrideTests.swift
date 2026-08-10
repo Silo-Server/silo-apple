@@ -69,6 +69,194 @@ final class SubtitleStylingOverrideTests: XCTestCase {
         XCTAssertEqual(fields[6], "&H80000000")
     }
 
+    func testSystemForegroundOpacityReachesASSPrimaryColour() {
+        var appearance = SubtitleAppearance.default
+        appearance.fontColor = "#ffffff"
+        appearance.fontOpacity = 40
+        let params = SubtitleStylingOverride.Parameters.from(appearance: appearance, syncOffsetMs: 0)
+
+        XCTAssertEqual(styleFields(params: params)[3], "&H99FFFFFF")
+        XCTAssertEqual(
+            SubtitleStylingOverride.assColor(
+                hexRGBUInt: params.textColorHex,
+                alphaByte: params.textAlphaByte
+            ),
+            0xFFFFFF99
+        )
+    }
+
+    func testSystemRelativeSizeDoesNotQuantizeToPresetLadder() {
+        var appearance = SubtitleAppearance.default
+        appearance.systemRelativeFontScale = 1.75
+        let params = SubtitleStylingOverride.Parameters.from(appearance: appearance, syncOffsetMs: 0)
+
+        XCTAssertEqual(
+            params.fontSize,
+            SubtitleStylingOverride.Parameters.referenceFontSize * 1.75,
+            accuracy: 0.001
+        )
+    }
+
+    func testSystemWindowParametersRemainSeparateFromGlyphBackground() {
+        var appearance = SubtitleAppearance.default
+        appearance.backgroundColor = "#000000"
+        appearance.backgroundOpacity = 80
+        appearance.captionWindowColor = "#ff00ff"
+        appearance.captionWindowOpacity = 50
+        appearance.captionWindowCornerRadius = 8
+        appearance.systemContentOverrides = [.font, .window]
+        let params = SubtitleStylingOverride.Parameters.from(appearance: appearance, syncOffsetMs: 0)
+
+        XCTAssertEqual(params.backgroundColorHex, "#000000")
+        XCTAssertEqual(params.backgroundOpacityPercent, 80)
+        XCTAssertEqual(params.captionWindowColorHex, "#ff00ff")
+        XCTAssertEqual(params.captionWindowOpacityPercent, 50)
+        XCTAssertEqual(params.captionWindowCornerRadius, 8)
+        XCTAssertEqual(params.systemContentOverrides, [.font, .window])
+    }
+
+    func testSystemOnlyAppearanceFieldsAreNotServerEncoded() {
+        var appearance = SubtitleAppearance.default
+        appearance.fontOpacity = 25
+        appearance.systemRelativeFontScale = 1.75
+        appearance.systemTextEdgeStyle = .raised
+        appearance.captionWindowColor = "#ff00ff"
+        appearance.captionWindowOpacity = 50
+        appearance.captionWindowCornerRadius = 8
+        appearance.systemContentOverrides = [.font, .window]
+
+        let json = appearance.jsonString
+        XCTAssertFalse(json.contains("fontOpacity"))
+        XCTAssertFalse(json.contains("systemRelativeFontScale"))
+        XCTAssertFalse(json.contains("captionWindow"))
+        XCTAssertFalse(json.contains("systemContentOverrides"))
+    }
+
+    func testNativeColorOverridesRemainPerProperty() {
+        var appearance = SubtitleAppearance.default
+        appearance.fontColor = "#22c55e"
+        appearance.fontOpacity = 40
+        appearance.backgroundColor = "#ff00ff"
+        appearance.backgroundOpacity = 50
+        appearance.systemContentOverrides = [.foregroundColor, .backgroundOpacity]
+
+        let params = SubtitleStylingOverride.Parameters.from(appearance: appearance, syncOffsetMs: 0)
+        XCTAssertEqual(params.nativeForegroundColorOverride?.0, 0x22)
+        XCTAssertEqual(params.nativeForegroundColorOverride?.1, 0xC5)
+        XCTAssertEqual(params.nativeForegroundColorOverride?.2, 0x5E)
+        XCTAssertNil(params.nativeForegroundAlphaOverride)
+        XCTAssertNil(params.nativeBackgroundColorOverride)
+        XCTAssertEqual(params.nativeBackgroundAlphaOverride, 127)
+    }
+
+    func testDropShadowWithGlyphBoxUsesIndependentCompositorEdge() {
+        var params = SubtitleStylingOverride.Parameters.default
+        params.backgroundStyle = .box
+        params.backgroundOpacityPercent = 80
+        params.systemTextEdgeStyle = .dropShadow
+
+        XCTAssertEqual(params.assBorderStyle, 4)
+        XCTAssertEqual(params.assShadow, params.boxPadding)
+        XCTAssertNotNil(params.compositedEdgeShadow)
+    }
+
+    func testRaisedAndDepressedEdgesUseVisibleBackColours() {
+        var raised = SubtitleStylingOverride.Parameters.default
+        raised.backgroundStyle = SubtitleBackgroundStylePreset.none
+        raised.systemTextEdgeStyle = .raised
+        XCTAssertEqual(raised.effectiveBackColorHex, "#FFFFFF")
+        XCTAssertNotEqual(raised.backgroundAlphaByte, 0xFF)
+        XCTAssertEqual(raised.assShadow, 0)
+        XCTAssertEqual(raised.compositedEdgeShadow?.offsetX, -1)
+        XCTAssertEqual(raised.compositedEdgeShadow?.offsetY, -1)
+
+        var depressed = raised
+        depressed.systemTextEdgeStyle = .depressed
+        XCTAssertEqual(depressed.effectiveBackColorHex, "#000000")
+        XCTAssertNotEqual(depressed.backgroundAlphaByte, 0xFF)
+        XCTAssertGreaterThan(depressed.assShadow, 0)
+    }
+
+    func testCaptionWindowGroupingSeparatesDistantSimultaneousCues() {
+        let leftCue = [
+            CGRect(x: 20, y: 400, width: 80, height: 30),
+            CGRect(x: 110, y: 400, width: 70, height: 30),
+        ]
+        let positionedSign = CGRect(x: 700, y: 80, width: 120, height: 40)
+
+        let groups = SubtitleRenderer.groupedPaintedBounds(
+            leftCue + [positionedSign],
+            joiningDistance: 20
+        )
+
+        XCTAssertEqual(groups.count, 2)
+        XCTAssertTrue(groups.contains(where: { $0.contains(CGPoint(x: 50, y: 410)) }))
+        XCTAssertTrue(groups.contains(where: { $0.contains(CGPoint(x: 750, y: 90)) }))
+    }
+
+    func testNativeCaptionWindowRequiresItsOwnOpacityOverride() {
+        XCTAssertFalse(SubtitleRenderer.shouldDrawCaptionWindow(
+            isNativeASS: true,
+            opacityPercent: 50,
+            overrides: [.windowCornerRadius]
+        ))
+        XCTAssertTrue(SubtitleRenderer.shouldDrawCaptionWindow(
+            isNativeASS: true,
+            opacityPercent: 50,
+            overrides: [.windowOpacity]
+        ))
+    }
+
+    func testNativeBackgroundIsSynthesizedWhenEitherPropertyOverridesContent() {
+        XCTAssertTrue(SubtitleRenderer.shouldSynthesizeGlyphBackground(
+            isNativeASS: true,
+            opacityPercent: 50,
+            overrides: [.backgroundColor],
+            hasAuthoredBackground: false
+        ))
+        XCTAssertTrue(SubtitleRenderer.shouldSynthesizeGlyphBackground(
+            isNativeASS: true,
+            opacityPercent: 50,
+            overrides: [.backgroundOpacity],
+            hasAuthoredBackground: false
+        ))
+        XCTAssertFalse(SubtitleRenderer.shouldSynthesizeGlyphBackground(
+            isNativeASS: true,
+            opacityPercent: 50,
+            overrides: [.backgroundColor],
+            hasAuthoredBackground: true
+        ))
+        XCTAssertFalse(SubtitleRenderer.shouldSynthesizeGlyphBackground(
+            isNativeASS: false,
+            opacityPercent: 50,
+            overrides: [.backgroundOpacity],
+            hasAuthoredBackground: false
+        ))
+    }
+
+    func testSolidBackgroundMaskDetectionRejectsGlyphMasks() {
+        let solid = [UInt8](repeating: 0xFF, count: 12)
+        var glyph = solid
+        glyph[5] = 0
+
+        solid.withUnsafeBufferPointer {
+            XCTAssertTrue(SubtitleRenderer.isSolidBackgroundMask(
+                $0.baseAddress,
+                width: 4,
+                height: 3,
+                stride: 4
+            ))
+        }
+        glyph.withUnsafeBufferPointer {
+            XCTAssertFalse(SubtitleRenderer.isSolidBackgroundMask(
+                $0.baseAddress,
+                width: 4,
+                height: 3,
+                stride: 4
+            ))
+        }
+    }
+
     // MARK: - Struct color packing (libass internal RRGGBBAA)
 
     func testStructColorPackingIsInternalRGBA() {

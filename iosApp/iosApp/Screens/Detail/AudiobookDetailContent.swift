@@ -1,10 +1,22 @@
 import SwiftUI
 
+func audiobookRelatedItemAccessibilityLabel(_ item: AudiobookRelatedItem) -> String {
+    var components = [item.title]
+    if let seriesIndex = item.seriesIndex {
+        components.append("Book \(seriesIndex)")
+    }
+    if let year = item.year {
+        components.append(String(year))
+    }
+    return components.joined(separator: ", ")
+}
+
 struct AudiobookDetailContent: View {
     let detail: ItemDetail
     let onNavigateToItem: (String) -> Void
 
     @Environment(AudioPlaybackStore.self) private var audioStore
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
     #if !os(tvOS)
     @State private var showAllChapters = false
@@ -530,24 +542,30 @@ struct AudiobookDetailContent: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 8) {
                             relatedPoster(item)
-                            Text(item.title)
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.continuumOnSurface)
-                                .lineLimit(2, reservesSpace: true)
-                            if let seriesIndex = item.seriesIndex {
-                                Text("Book \(seriesIndex)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            } else if let year = item.year {
-                                Text(String(year))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                            if uiCustomization.cardPresentation.caption.showsTitle {
+                                Text(item.title)
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(Color.continuumOnSurface)
+                                    .lineLimit(2, reservesSpace: true)
+                                if uiCustomization.cardPresentation.caption.showsMetadata {
+                                    if let seriesIndex = item.seriesIndex {
+                                        Text("Book \(seriesIndex)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    } else if let year = item.year {
+                                        Text(String(year))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
                             }
                         }
                         .frame(width: relatedPosterWidth, alignment: .leading)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(audiobookRelatedItemAccessibilityLabel(item))
                 }
             }
             .padding(.vertical, 4)
@@ -801,7 +819,9 @@ struct AudiobookDetailContent: View {
 
     private var aboutFont: Font { .system(size: 15) }
 
-    private var relatedPosterWidth: CGFloat { 110 }
+    private var relatedPosterWidth: CGFloat {
+        110 * uiCustomization.cardPresentation.posterSize.scale
+    }
 
     private var relatedPosterHeight: CGFloat {
         // Audiobook covers are square — don't stretch them into the
@@ -876,4 +896,3 @@ private struct AudiobookResumePill: View {
     }
 }
 #endif
-

@@ -11,15 +11,23 @@ struct DiagnosticsSettingsView: View {
 
     var body: some View {
         List {
+            SettingsPageHeader(
+                title: "Diagnostics",
+                subtitle: "Capture, review, and send reports to your Silo server.",
+                systemImage: "stethoscope",
+                tint: .orange
+            )
+            .settingsPageHeaderRow()
+
             availabilitySection
             preferencesSection
             pendingSection
             manualSection
             sentHistorySection
         }
-        .continuumGroupedListStyle()
-        .navigationTitle("Diagnostics")
-        .continuumNavigationTitleDisplayMode(.large)
+        .settingsListChrome()
+        .navigationTitle("")
+        .continuumNavigationTitleDisplayMode(.inline)
         .continuumToolbarColorSchemeDark()
         .task {
             await model.load(profile: profile)
@@ -41,6 +49,7 @@ struct DiagnosticsSettingsView: View {
                 Text("Showing the last known diagnostics state. Reports stay on this device while the server is offline.")
             }
         }
+        .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
     }
 
     private var preferencesSection: some View {
@@ -83,6 +92,7 @@ struct DiagnosticsSettingsView: View {
         } footer: {
             Text("Crash report consent is tied to this server account. Debug logging is a setting for this device.")
         }
+        .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
     }
 
     private var pendingSection: some View {
@@ -107,6 +117,7 @@ struct DiagnosticsSettingsView: View {
         } header: {
             Text("Pending Reports (\(model.pendingReports.count))")
         }
+        .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
     }
 
     private var manualSection: some View {
@@ -138,6 +149,7 @@ struct DiagnosticsSettingsView: View {
         } footer: {
             Text("A manual report includes device capability details, recent playback session identifiers, and recent diagnostic logs for this server.")
         }
+        .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
     }
 
     private var sentHistorySection: some View {
@@ -162,6 +174,7 @@ struct DiagnosticsSettingsView: View {
                 }
             }
         }
+        .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
     }
 
     private func requestModeChange(_ mode: DiagnosticsConsentChoice) {

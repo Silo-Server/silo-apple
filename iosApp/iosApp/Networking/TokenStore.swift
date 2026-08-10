@@ -1,6 +1,59 @@
 import Foundation
 
+struct RefreshAccountIdentity: Hashable, Sendable {
+    let serverId: String
+    let serverURL: String
+    /// Process-local epoch for the exact credential owner. Persistent epochs
+    /// change on login/sign-out/retarget; temporary scopes supply their stable
+    /// handoff generation. Guarded refresh rotation preserves the epoch.
+    let credentialGenerationID: UUID
+
+    init(
+        serverId: String,
+        serverURL: String,
+        credentialGenerationID: UUID
+    ) {
+        self.serverId = serverId
+        self.serverURL = serverURL
+        self.credentialGenerationID = credentialGenerationID
+    }
+}
+
+struct CapturedRefreshCredential: Equatable, Sendable {
+    let account: RefreshAccountIdentity
+    let refreshToken: String
+    let owner: CapturedHTTPRequestCredentialOwner
+}
+
+/// One actor-consistent snapshot of every mutable credential field an
+/// ordinary request sends. The account includes temporary-owner generation;
+/// profile identity is kept alongside it so a 401 can never retry under a
+/// profile selected after the original request left the client.
+struct CapturedOrdinaryRequestAuth: Equatable, Sendable {
+    let account: RefreshAccountIdentity
+    let credentialOwner: CapturedHTTPRequestCredentialOwner
+    let accessToken: String?
+    let profileId: String?
+    let profileToken: String?
+}
+
+enum RejectedRefreshDisposition: Equatable, Sendable {
+    case persistentSessionCleared
+    case temporarySessionExpired
+}
+
+/// Nonsecret notification payload identifying the exact rejected credential
+/// epoch. Consumers revalidate it with TokenStore immediately before routing
+/// or tearing down a temporary playback identity.
+struct SessionExpiryEvent: Equatable, Sendable {
+    let account: RefreshAccountIdentity
+    let disposition: RejectedRefreshDisposition
+}
+
 struct TemporaryAuthScope: Equatable, Sendable {
+    /// Stable for this installed credential overlay and replaced whenever a
+    /// new remote-playback handoff is activated.
+    let credentialGenerationID: UUID
     let serverId: String
     let serverURL: String
     var accessToken: String
@@ -9,6 +62,46 @@ struct TemporaryAuthScope: Equatable, Sendable {
     var profileToken: String
     let controllerDeviceId: String
     let expiresAt: Date
+
+    init(
+        credentialGenerationID: UUID = UUID(),
+        serverId: String,
+        serverURL: String,
+        accessToken: String,
+        refreshToken: String,
+        profileId: String,
+        profileToken: String,
+        controllerDeviceId: String,
+        expiresAt: Date
+    ) {
+        self.credentialGenerationID = credentialGenerationID
+        self.serverId = serverId
+        self.serverURL = serverURL
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.profileId = profileId
+        self.profileToken = profileToken
+        self.controllerDeviceId = controllerDeviceId
+        self.expiresAt = expiresAt
+    }
+}
+
+/// Exact temporary-owner state displaced by a handoff activation. Keeping the
+/// rejection bit with the credentials lets a cancelled replacement restore
+/// the prior generation without silently making a terminally rejected scope
+/// refreshable again.
+struct TemporaryAuthScopeSnapshot: Equatable, Sendable {
+    let scope: TemporaryAuthScope?
+    fileprivate let wasRefreshRejected: Bool
+}
+
+/// Atomic result of ending one temporary credential generation. Callers must
+/// distinguish an already-absent scope (the requested generation is gone) from
+/// a different installed generation (a replacement owns the slot).
+enum TemporaryAuthScopeEndResult: Equatable, Sendable {
+    case ended(TemporaryAuthScope)
+    case alreadyAbsent
+    case differentGeneration(activeGenerationID: UUID)
 }
 
 /// Persistent, thread-safe store for Continuum session state.
@@ -71,9 +164,17 @@ actor TokenStore {
     private var cachedAccessToken: String?
     private var cachedRefreshToken: String?
     private var cachedProfileToken: String?
+    /// Process-local identity for the persistent credential slot currently
+    /// selected by `activeServerId`. Refresh rotation leaves it unchanged;
+    /// every session replacement or routing boundary installs a fresh epoch.
+    private var persistentCredentialGenerationID = UUID()
     /// Playback-scoped credentials received by a TV through remote handoff.
     /// They are process-only and never written into normal per-server slots.
     private var temporaryScope: TemporaryAuthScope?
+    /// A terminally rejected temporary generation remains installed until
+    /// remote-playback teardown, but it must never submit its refresh token
+    /// again or emit duplicate expiry notifications.
+    private var rejectedTemporaryCredentialGenerations: Set<UUID> = []
     /// Server the current cache was loaded for. Nil means the cache is
     /// invalid and must be re-read on next access.
     private var loadedForServerId: String?
@@ -98,6 +199,7 @@ actor TokenStore {
     /// Idempotent: a no-op if `serverId` is already active.
     func switchActiveServer(serverId: String) {
         if serverId == activeServerId { return }
+        persistentCredentialGenerationID = UUID()
         activeServerId = serverId
         cachedAccessToken = nil
         cachedRefreshToken = nil
@@ -113,6 +215,7 @@ actor TokenStore {
     /// the full token load + Top Shelf mirror before SwiftUI leaves `.loading`.
     func retargetActiveServer(serverId: String) {
         if serverId == activeServerId { return }
+        persistentCredentialGenerationID = UUID()
         activeServerId = serverId
         cachedAccessToken = nil
         cachedRefreshToken = nil
@@ -123,19 +226,369 @@ actor TokenStore {
     /// The current active server ID. Empty string if none.
     func getActiveServerId() -> String { temporaryScope?.serverId ?? activeServerId }
 
-    func beginTemporaryScope(_ scope: TemporaryAuthScope) {
-        temporaryScope = scope
+    /// Atomically capture the account-level identity that owns refresh-token
+    /// rotation. Both ordinary and captured-identity HTTP requests use this
+    /// key to join one refresh flight.
+    func refreshAccountIdentity() -> RefreshAccountIdentity? {
+        let scope = temporaryScope
+        let serverId = scope?.serverId ?? activeServerId
+        let serverURL = ServerRegistry.normalize(
+            url: scope?.serverURL
+                ?? defaults.string(forKey: serverUrlDefaultsKey)
+                ?? ""
+        )
+        guard !serverId.isEmpty, !serverURL.isEmpty else { return nil }
+        return RefreshAccountIdentity(
+            serverId: serverId,
+            serverURL: serverURL,
+            credentialGenerationID: scope?.credentialGenerationID
+                ?? persistentCredentialGenerationID
+        )
+    }
+
+    /// Capture the account, credential owner, and complete request auth header
+    /// set in one actor turn. The request carries this immutable identity
+    /// through its 401 path so a later server, temporary-owner, or profile
+    /// switch cannot redirect its refresh or produce mixed headers.
+    func captureOrdinaryRequestAuth() -> CapturedOrdinaryRequestAuth? {
+        guard let account = refreshAccountIdentity() else { return nil }
+        if let temporaryScope {
+            return CapturedOrdinaryRequestAuth(
+                account: account,
+                credentialOwner: .temporary,
+                accessToken: temporaryScope.accessToken,
+                profileId: temporaryScope.profileId,
+                profileToken: temporaryScope.profileToken
+            )
+        }
+
+        ensureLoaded()
+        return CapturedOrdinaryRequestAuth(
+            account: account,
+            credentialOwner: .persistentServer(serverId: account.serverId),
+            accessToken: cachedAccessToken,
+            profileId: defaults.string(forKey: profileIdDefaultsKey),
+            profileToken: cachedProfileToken
+        )
+    }
+
+    /// Capture the refresh credential and its owner in the same actor turn as
+    /// the account identity check. A refresh response must carry this snapshot
+    /// back to its save/invalidation operation so it cannot affect credentials
+    /// installed by a later server switch, sign-out, or token rotation.
+    func captureRefreshCredential(expected: RefreshAccountIdentity) -> CapturedRefreshCredential? {
+        guard refreshAccountIdentity() == expected else { return nil }
+        if let temporaryScope {
+            guard expected.credentialGenerationID == temporaryScope.credentialGenerationID,
+                  !rejectedTemporaryCredentialGenerations.contains(temporaryScope.credentialGenerationID),
+                  !temporaryScope.refreshToken.isEmpty else { return nil }
+            return CapturedRefreshCredential(
+                account: expected,
+                refreshToken: temporaryScope.refreshToken,
+                owner: .temporary
+            )
+        }
+
+        ensureLoaded()
+        guard let cachedRefreshToken, !cachedRefreshToken.isEmpty else { return nil }
+        return CapturedRefreshCredential(
+            account: expected,
+            refreshToken: cachedRefreshToken,
+            owner: .persistentServer(serverId: expected.serverId)
+        )
+    }
+
+    /// Atomically re-capture the current ordinary-request auth only if its
+    /// account owner/generation and profile identity still match `expected`.
+    /// Access-token rotation is intentionally excluded from the identity
+    /// comparison so callers can detect a completed shared refresh.
+    func currentOrdinaryRequestAuth(
+        matchingIdentityOf expected: CapturedOrdinaryRequestAuth
+    ) -> CapturedOrdinaryRequestAuth? {
+        guard let current = captureOrdinaryRequestAuth(),
+              current.account == expected.account,
+              current.credentialOwner == expected.credentialOwner,
+              current.profileId == expected.profileId,
+              current.profileToken == expected.profileToken else {
+            return nil
+        }
+        return current
     }
 
     @discardableResult
-    func endTemporaryScope() -> TemporaryAuthScope? {
-        defer { temporaryScope = nil }
-        return temporaryScope
+    func beginTemporaryScope(_ scope: TemporaryAuthScope) -> TemporaryAuthScopeSnapshot {
+        let previous = TemporaryAuthScopeSnapshot(
+            scope: temporaryScope,
+            wasRefreshRejected: temporaryScope.map {
+                rejectedTemporaryCredentialGenerations.contains($0.credentialGenerationID)
+            } ?? false
+        )
+        if let previous = temporaryScope,
+           previous.credentialGenerationID != scope.credentialGenerationID {
+            rejectedTemporaryCredentialGenerations.remove(previous.credentialGenerationID)
+        }
+        temporaryScope = scope
+        return previous
+    }
+
+    /// Roll back a just-installed scope only while it is still the active
+    /// generation. A newer activation wins and is never overwritten by a
+    /// delayed cancellation cleanup.
+    @discardableResult
+    func restoreTemporaryScope(
+        _ snapshot: TemporaryAuthScopeSnapshot,
+        replacingGenerationID: UUID
+    ) -> Bool {
+        guard temporaryScope?.credentialGenerationID == replacingGenerationID else {
+            return false
+        }
+        rejectedTemporaryCredentialGenerations.remove(replacingGenerationID)
+        temporaryScope = snapshot.scope
+        if snapshot.wasRefreshRejected, let restored = snapshot.scope {
+            rejectedTemporaryCredentialGenerations.insert(restored.credentialGenerationID)
+        }
+        return true
+    }
+
+    @discardableResult
+    func endTemporaryScope(
+        expectedGenerationID: UUID? = nil
+    ) -> TemporaryAuthScopeEndResult {
+        guard let scope = temporaryScope else { return .alreadyAbsent }
+        if let expectedGenerationID,
+           scope.credentialGenerationID != expectedGenerationID {
+            return .differentGeneration(
+                activeGenerationID: scope.credentialGenerationID
+            )
+        }
+        rejectedTemporaryCredentialGenerations.remove(scope.credentialGenerationID)
+        temporaryScope = nil
+        return .ended(scope)
     }
 
     func getTemporaryScope() -> TemporaryAuthScope? { temporaryScope }
 
     func hasTemporaryScope() -> Bool { temporaryScope != nil }
+
+    /// Atomically verify a queued request's routing identity and snapshot the
+    /// matching credentials. No mutable global scope is installed: the caller
+    /// carries this value for one explicit request only.
+    func captureRequestAuth(expected: HTTPRequestIdentity) throws -> CapturedHTTPRequestAuth {
+        let expectedURL = ServerRegistry.normalize(url: expected.serverURL)
+        guard let account = refreshAccountIdentity() else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let currentServerId = temporaryScope?.serverId ?? activeServerId
+        let currentURL = ServerRegistry.normalize(
+            url: temporaryScope?.serverURL
+                ?? defaults.string(forKey: serverUrlDefaultsKey)
+                ?? ""
+        )
+        let currentProfileId = temporaryScope?.profileId
+            ?? defaults.string(forKey: profileIdDefaultsKey)
+
+        guard !expected.serverId.isEmpty,
+              !expectedURL.isEmpty,
+              !expected.profileId.isEmpty,
+              currentServerId == expected.serverId,
+              currentURL == expectedURL,
+              account.serverId == expected.serverId,
+              account.serverURL == expectedURL,
+              currentProfileId == expected.profileId else {
+            throw HTTPError.requestIdentityChanged
+        }
+
+        if let temporaryScope {
+            return CapturedHTTPRequestAuth(
+                account: account,
+                serverURL: expectedURL,
+                accessValue: temporaryScope.accessToken,
+                refreshValue: temporaryScope.refreshToken,
+                profileId: expected.profileId,
+                profileValue: temporaryScope.profileToken,
+                credentialOwner: .temporary
+            )
+        }
+
+        ensureLoaded()
+        return CapturedHTTPRequestAuth(
+            account: account,
+            serverURL: expectedURL,
+            accessValue: cachedAccessToken,
+            refreshValue: cachedRefreshToken,
+            profileId: expected.profileId,
+            profileValue: cachedProfileToken,
+            credentialOwner: .persistentServer(serverId: expected.serverId)
+        )
+    }
+
+    /// Store a scoped refresh only if the same server account and refresh
+    /// value are still active. Access/refresh credentials belong to the
+    /// server account, not one selected profile, so a profile switch must not
+    /// discard a successful rotation and strand that server's slot.
+    func saveRefreshedTokens(
+        _ accessValue: String,
+        _ value: String,
+        replacing previousValue: String?,
+        expected: HTTPRequestIdentity,
+        credentialOwner: CapturedHTTPRequestCredentialOwner
+    ) -> Bool {
+        let expectedURL = ServerRegistry.normalize(url: expected.serverURL)
+        guard credentialOwner == .persistentServer(serverId: expected.serverId),
+              !expected.serverId.isEmpty,
+              !expectedURL.isEmpty,
+              let previousValue,
+              !previousValue.isEmpty else { return false }
+        guard let account = refreshAccountIdentity(),
+              account.serverId == expected.serverId,
+              account.serverURL == expectedURL else { return false }
+        return saveRefreshedTokens(
+            accessValue,
+            value,
+            replacing: CapturedRefreshCredential(
+                account: RefreshAccountIdentity(
+                    serverId: expected.serverId,
+                    serverURL: expectedURL,
+                    credentialGenerationID: account.credentialGenerationID
+                ),
+                refreshToken: previousValue,
+                owner: credentialOwner
+            )
+        )
+    }
+
+    /// Store rotated credentials only if the exact account, credential owner,
+    /// and refresh token captured before the network call are still current.
+    func saveRefreshedTokens(
+        _ accessValue: String,
+        _ value: String,
+        replacing captured: CapturedRefreshCredential
+    ) -> Bool {
+        guard refreshAccountIdentity() == captured.account else { return false }
+
+        switch captured.owner {
+        case .temporary:
+            let generationID = captured.account.credentialGenerationID
+            guard temporaryScope?.credentialGenerationID == generationID,
+                  !rejectedTemporaryCredentialGenerations.contains(generationID),
+                  temporaryScope?.refreshToken == captured.refreshToken else { return false }
+            temporaryScope?.accessToken = accessValue
+            temporaryScope?.refreshToken = value
+            return true
+
+        case .persistentServer(let serverId):
+            guard temporaryScope == nil,
+                  serverId == captured.account.serverId,
+                  activeServerId == serverId else { return false }
+            ensureLoaded()
+            guard cachedRefreshToken == captured.refreshToken else { return false }
+
+            cachedAccessToken = accessValue
+            cachedRefreshToken = value
+            keychain.set(accessValue, for: Self.accessTokenKey(for: serverId))
+            keychain.set(value, for: Self.refreshTokenKey(for: serverId))
+            // Account refresh must not re-mirror a stale profile credential
+            // during an in-progress profile transition.
+            mirrorActiveAccessValueForExtension()
+            return true
+        }
+    }
+
+    /// Clear a rejected captured refresh only if it still belongs to the same
+    /// active server account and no newer refresh token has replaced it. This
+    /// is the failure-side counterpart to `saveRefreshedTokens`: a late scoped
+    /// response must never sign out a server selected while it was in flight.
+    func clearTokensAfterRejectedRefresh(
+        replacing previousValue: String?,
+        expected: HTTPRequestIdentity,
+        credentialOwner: CapturedHTTPRequestCredentialOwner
+    ) -> Bool {
+        let expectedURL = ServerRegistry.normalize(url: expected.serverURL)
+        guard credentialOwner == .persistentServer(serverId: expected.serverId),
+              !expected.serverId.isEmpty,
+              !expectedURL.isEmpty,
+              let previousValue,
+              !previousValue.isEmpty else { return false }
+        guard let account = refreshAccountIdentity(),
+              account.serverId == expected.serverId,
+              account.serverURL == expectedURL else { return false }
+        let disposition = invalidateRejectedRefresh(
+            CapturedRefreshCredential(
+                account: RefreshAccountIdentity(
+                    serverId: expected.serverId,
+                    serverURL: expectedURL,
+                    credentialGenerationID: account.credentialGenerationID
+                ),
+                refreshToken: previousValue,
+                owner: credentialOwner
+            )
+        )
+        return disposition == .persistentSessionCleared
+    }
+
+    /// Invalidate only the credential snapshot the server rejected. Temporary
+    /// playback credentials stay installed until their teardown path removes
+    /// them, preventing a fall-through to the owner's persistent account.
+    func invalidateRejectedRefresh(
+        _ captured: CapturedRefreshCredential
+    ) -> RejectedRefreshDisposition? {
+        guard refreshAccountIdentity() == captured.account else { return nil }
+
+        switch captured.owner {
+        case .temporary:
+            let generationID = captured.account.credentialGenerationID
+            guard temporaryScope?.credentialGenerationID == generationID,
+                  temporaryScope?.refreshToken == captured.refreshToken,
+                  rejectedTemporaryCredentialGenerations.insert(generationID).inserted else {
+                return nil
+            }
+            return .temporarySessionExpired
+
+        case .persistentServer(let serverId):
+            guard temporaryScope == nil,
+                  serverId == captured.account.serverId,
+                  activeServerId == serverId else { return nil }
+            ensureLoaded()
+            guard cachedRefreshToken == captured.refreshToken else { return nil }
+
+            cachedAccessToken = nil
+            cachedRefreshToken = nil
+            cachedProfileToken = nil
+            keychain.delete(Self.accessTokenKey(for: serverId))
+            keychain.delete(Self.refreshTokenKey(for: serverId))
+            keychain.delete(Self.profileTokenKey(for: serverId))
+            defaults.removeObject(forKey: profileIdDefaultsKey)
+            clearMirroredTokensForExtension()
+            return .persistentSessionCleared
+        }
+    }
+
+    /// Verify that an expiry event still describes the active credential
+    /// state after invalidation. Registry and temporary-scope switches cancel
+    /// refresh tasks before installing the replacement; this final actor check
+    /// prevents a late event from routing or tearing down that replacement.
+    func shouldConsumeSessionExpiryEvent(_ event: SessionExpiryEvent) -> Bool {
+        guard refreshAccountIdentity() == event.account else { return false }
+
+        switch event.disposition {
+        case .temporarySessionExpired:
+            let generationID = event.account.credentialGenerationID
+            return temporaryScope?.credentialGenerationID == generationID
+                && rejectedTemporaryCredentialGenerations.contains(generationID)
+
+        case .persistentSessionCleared:
+            guard temporaryScope == nil,
+                  activeServerId == event.account.serverId,
+                  persistentCredentialGenerationID == event.account.credentialGenerationID else {
+                return false
+            }
+            ensureLoaded()
+            return cachedAccessToken == nil
+                && cachedRefreshToken == nil
+                && cachedProfileToken == nil
+                && defaults.string(forKey: profileIdDefaultsKey) == nil
+        }
+    }
 
     // MARK: - Tokens
 
@@ -183,6 +636,7 @@ actor TokenStore {
         }
         guard !activeServerId.isEmpty else { return }
         ensureLoaded()
+        persistentCredentialGenerationID = UUID()
         cachedAccessToken = accessToken
         cachedRefreshToken = refreshToken
         keychain.set(accessToken, for: accessTokenKey)
@@ -194,11 +648,13 @@ actor TokenStore {
     /// stored tokens intact and leaves the active-server registry entry
     /// in place (sign-out keeps the URL / name).
     func clearTokens() {
-        if temporaryScope != nil {
-            temporaryScope = nil
+        if let temporaryScope {
+            rejectedTemporaryCredentialGenerations.remove(temporaryScope.credentialGenerationID)
+            self.temporaryScope = nil
             return
         }
         ensureLoaded()
+        persistentCredentialGenerationID = UUID()
         cachedAccessToken = nil
         cachedRefreshToken = nil
         cachedProfileToken = nil
@@ -218,6 +674,7 @@ actor TokenStore {
         keychain.delete(Self.refreshTokenKey(for: serverId))
         keychain.delete(Self.profileTokenKey(for: serverId))
         if serverId == activeServerId {
+            persistentCredentialGenerationID = UUID()
             cachedAccessToken = nil
             cachedRefreshToken = nil
             cachedProfileToken = nil
@@ -314,6 +771,18 @@ actor TokenStore {
                 keychain.delete(SharedStorage.mirroredProfileTokenAccount)
             }
             lastMirroredProfileToken = cachedProfileToken
+        }
+    }
+
+    private func mirrorActiveAccessValueForExtension() {
+        if cachedAccessToken != lastMirroredAccessToken {
+            if let value = cachedAccessToken {
+                keychain.set(value, for: SharedStorage.mirroredAccessTokenAccount)
+                lastMirroredAccessToken = value
+            } else {
+                keychain.delete(SharedStorage.mirroredAccessTokenAccount)
+                lastMirroredAccessToken = nil
+            }
         }
     }
 

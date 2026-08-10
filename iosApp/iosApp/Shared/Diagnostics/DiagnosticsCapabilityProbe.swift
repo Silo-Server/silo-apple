@@ -4,9 +4,9 @@ import Foundation
 
 // Diagnostics-scoped capability probe feeding device.json snapshots.
 // Deliberately named apart from the playback-protocol capability reporter
-// (ApplePlaybackV3Capabilities, in flight on another branch); once that
-// lands, DeviceSnapshotBuilder's providers can delegate to its
-// outputSnapshot() internals instead of probing here.
+// (ApplePlaybackV3Capabilities); the two answer different questions — this
+// one probes the attached display, that one states what the client decodes.
+// Where they overlap (which video codecs), both read `AppleDecodeCapabilities`.
 enum DiagnosticsCapabilityProbe {
     struct Snapshot: Equatable {
         let display: DiagnosticsJSONValue
@@ -95,12 +95,13 @@ enum DiagnosticsCapabilityProbe {
     }
 
     private static func videoCodecSnapshot(_ capabilities: ApplePlaybackDisplayCapabilities) -> DiagnosticsJSONValue {
+        // Which codecs is the shared client answer; the rest of each entry is
+        // this probe's own (display-derived resolution, HDR from the panel).
+        let codecs = AppleDecodeCapabilities.videoCodecs.map(diagnosticsMIME(for:))
         #if targetEnvironment(simulator)
-        let codecs = ["video/avc"]
         let maxResolution = "1080p"
         let hdr = false
         #else
-        let codecs = ["video/avc", "video/hevc"]
         let maxResolution = capabilities.maxResolution?.rawValue ?? "unknown"
         let hdr = capabilities.supportsHDR10 || capabilities.supportsHLG || capabilities.supportsDolbyVision
         #endif
@@ -114,6 +115,17 @@ enum DiagnosticsCapabilityProbe {
                 "hdr": .bool(hdr),
             ])
         })
+    }
+
+    /// device.json reports codecs as MIME types (the schema is shared with
+    /// the Android client, which gets them from MediaCodec).
+    private static func diagnosticsMIME(for codec: String) -> String {
+        switch codec {
+        case "h264": return "video/avc"
+        case "hevc": return "video/hevc"
+        case AppleDecodeCapabilities.mpeg2VideoCodec: return "video/mpeg2"
+        default: return "video/\(codec)"
+        }
     }
 
     private static func hashedRouteUID(_ uid: String) -> String {

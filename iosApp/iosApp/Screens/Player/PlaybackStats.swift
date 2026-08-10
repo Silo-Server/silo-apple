@@ -11,6 +11,19 @@ struct PlaybackStats: Equatable {
         var bitrateBps: Double?
     }
 
+    /// What the engine is actually rendering, as opposed to what the plan
+    /// asked for. `dynamicRange` below is a human-readable label that may
+    /// describe the source instead ("Dolby Vision Profile 7 … as HDR10") or
+    /// fall back to the planned route, so it cannot be pattern-matched to
+    /// decide what the picture really is. This is only ever set from engine
+    /// introspection; `nil` means "not determined yet", never "SDR".
+    enum ConfirmedDynamicRange: Equatable {
+        case sdr
+        case hdr10
+        case hlg
+        case dolbyVision
+    }
+
     var sampledAt: Date = Date()
     var route: String?
     var source: String?
@@ -19,6 +32,7 @@ struct PlaybackStats: Equatable {
     var video: MediaStream = .init()
     var audio: MediaStream = .init()
     var dynamicRange: String?
+    var confirmedDynamicRange: ConfirmedDynamicRange?
     var subtitles: String?
     var screenFrameRate: Double?
     var playbackRate: Double?
@@ -85,6 +99,46 @@ struct PlaybackStats: Equatable {
 }
 
 extension PlaybackStats {
+    /// Every section's rows in display order — the full set the tvOS HUD
+    /// pane pages through.
+    var allRows: [(String, String)] {
+        sourceRows + mediaRows + bufferRows + networkRows + deviceRows
+    }
+
+    /// The subset the iOS overlay draws. The full set runs to ~45 rows on
+    /// the loopback route, which is a wall of text over the picture and
+    /// mostly cache/segment internals you'd go to the tvOS pane (or the
+    /// Advanced page) for. This keeps what identifies the file and tells
+    /// you whether playback is healthy, in the same order.
+    ///
+    /// Filtered by label against `allRows` rather than rebuilt from the
+    /// stored properties, so the formatting can never drift from the pane.
+    var compactRows: [(String, String)] {
+        let wanted = [
+            "Route", "Source", "Container", "Created by",
+            "Video", "Audio", "Dynamic range", "Subtitles",
+            "Buffer status", "Buffered ahead", "Dropped frames",
+            // Indicated/Observed are the fallbacks `networkRows` emits when
+            // the average/download pair is unavailable on the active route,
+            // so both spellings have to be listed or the bitrate line just
+            // vanishes there.
+            "Average file bitrate", "Current download bitrate",
+            "Indicated bitrate", "Observed bitrate",
+            "Network throughput", "Stream speed",
+            "Device", "Free disk space"
+        ]
+        let rows = allRows
+        return wanted.compactMap { label in
+            rows.first { $0.0 == label }
+        }
+    }
+
+    /// True once any section has something to show. Every row accessor drops
+    /// nil/empty values, so a snapshot taken before the engine has reported
+    /// anything renders as a blank panel; callers use this to show a
+    /// placeholder instead.
+    var hasRows: Bool { !allRows.isEmpty }
+
     var sourceRows: [(String, String)] {
         [
             ("Route", route),
@@ -375,6 +429,10 @@ enum AVFoundationPlaybackIntrospection {
     struct VideoFormat {
         var stream: PlaybackStats.MediaStream
         var dynamicRange: String?
+        /// Set only when the item's own format description settled the
+        /// question. `nil` when there is no format description to read yet,
+        /// so callers never mistake an unresolved item for SDR.
+        var confirmedDynamicRange: PlaybackStats.ConfirmedDynamicRange?
     }
 
     @MainActor
@@ -406,7 +464,8 @@ enum AVFoundationPlaybackIntrospection {
                 detail: detail,
                 bitrateBps: bitrate
             ),
-            dynamicRange: description.flatMap(dynamicRangeLabel)
+            dynamicRange: description.flatMap(dynamicRangeLabel),
+            confirmedDynamicRange: description.map(confirmedDynamicRange)
         )
     }
 
@@ -493,6 +552,33 @@ enum AVFoundationPlaybackIntrospection {
             channelLayoutLabel(channelCount),
             sampleRate
         ])
+    }
+
+    /// The same classification `dynamicRangeLabel` describes in prose, as a
+    /// value the UI can branch on. Read from the description AVPlayer is
+    /// actually feeding its decoder, so a Dolby Vision source the loopback
+    /// stripped to its base layer is written out as `hvc1` + PQ and reports
+    /// `.hdr10` here, not `.dolbyVision`.
+    private static func confirmedDynamicRange(
+        from description: CMFormatDescription
+    ) -> PlaybackStats.ConfirmedDynamicRange {
+        if dolbyVisionConfig(in: description) != nil {
+            return .dolbyVision
+        }
+
+        let subtype = fourCC(CMFormatDescriptionGetMediaSubType(description)).lowercased()
+        if subtype == "dvh1" || subtype == "dvhe" {
+            return .dolbyVision
+        }
+
+        let transfer = extensionString(description, key: kCMFormatDescriptionExtension_TransferFunction)
+        if containsAny(transfer, ["smpte_st_2084", "smpte2084", "pq"]) {
+            return .hdr10
+        }
+        if containsAny(transfer, ["arib_std_b67", "itu_r_2100_hlg", "hlg"]) {
+            return .hlg
+        }
+        return .sdr
     }
 
     private static func dynamicRangeLabel(from description: CMFormatDescription) -> String? {

@@ -20,7 +20,10 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let seasons: [Season]
     let selectedSeason: Season?
     let seasonEpisodes: [EpisodeListItem]
+    let seasonEpisodesBySeason: [Int: [EpisodeListItem]]
     let isLoadingEpisodes: Bool
+    let episodeSeriesPosterUrl: String?
+    let episodeSeriesPosterThumbhash: String?
     let onPlay: (_ startFromBeginning: Bool) -> Void
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
@@ -32,10 +35,24 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     let onEpisodeTap: (String) -> Void
+    /// Play a local extra from the trailers rail. Routed separately from
+    /// `onPlay` because extras are never downloadable and have no resume
+    /// point — see `ItemDetailView` for why they skip the offline/cast gates.
+    let onPlayExtra: (String) -> Void
+    /// Kick off the manual "Find Trailers" fetch (movies only).
+    let onFindTrailers: () -> Void
+    /// Copy for the fetch status pill, straight from the coordinator. `nil`
+    /// hides the pill.
+    let trailerStatusMessage: String?
+    /// True while the fetch is still requesting or polling.
+    let isFindingTrailers: Bool
+    /// Called once a terminal status message has been on screen long enough.
+    let onTrailerStatusShown: () -> Void
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showResumeDialog = false
     /// Presents the DownloadActionButton's options sheet; lives here so the
     /// overflow menu can open it now that a plain tap downloads directly.
@@ -43,7 +60,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 32) {
+            VStack(alignment: .leading, spacing: heroToContentSpacing) {
                 hero
                 belowFold
             }
@@ -60,13 +77,20 @@ struct MovieDetailContent<BelowOverview: View>: View {
         }
     }
 
+    private var heroToContentSpacing: CGFloat {
+        horizontalSizeClass == .regular ? 16 : 32
+    }
+
     // MARK: - Hero
 
     private var hero: some View {
-        PhoneDetailHero(
+        let posterArtwork = heroPosterArtwork
+        return PhoneDetailHero(
             title: detail.title,
             seriesTitle: detail.type == "episode" ? detail.seriesTitle : nil,
             logoUrl: detail.logoUrl,
+            posterUrl: posterArtwork.url,
+            posterThumbhash: posterArtwork.thumbhash,
             backdropUrl: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
             eyebrow: detail.type == "episode" ? nil : PhoneHeroMetadata.eyebrow(from: detail),
@@ -80,30 +104,120 @@ struct MovieDetailContent<BelowOverview: View>: View {
         )
     }
 
+    /// Episodes carry wide stills as their own artwork. The portrait slot
+    /// instead follows the episode hierarchy: its season poster, then the
+    /// parent series poster. Browsing another season below the hero does not
+    /// change this because the lookup stays anchored to `detail.seasonNumber`.
+    private var heroPosterArtwork: (url: String?, thumbhash: String?) {
+        guard detail.type == "episode" else {
+            return (detail.posterUrl, detail.posterThumbhash)
+        }
+
+        if let seasonNumber = detail.seasonNumber,
+           let season = seasons.first(where: { $0.seasonNumber == seasonNumber }),
+           let url = nonEmptyArtworkURL(season.posterUrl) {
+            return (url, season.posterThumbhash)
+        }
+
+        if let url = nonEmptyArtworkURL(episodeSeriesPosterUrl) {
+            return (url, episodeSeriesPosterThumbhash)
+        }
+
+        return (nil, nil)
+    }
+
+    private func nonEmptyArtworkURL(_ value: String?) -> String? {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    /// Play, then the named secondary actions, then the playback
+    /// selectors. See `PhoneDetailActionRow` for why the circles went away.
     @ViewBuilder
     private var actionStack: some View {
-        VStack(spacing: 12) {
-            PhonePrimaryPillButton(
+        VStack(spacing: 16) {
+            PhoneRefinedPlayButton(
                 icon: "play.fill",
                 title: primaryPlayLabel,
-                action: handlePlayTap,
-                fullWidth: true
+                action: handlePlayTap
             )
-            circleRow
-            if let effectiveVersion {
-                PhonePlaybackSelectorRow(
-                    versions: availableVersions,
-                    currentVersion: effectiveVersion,
-                    selectedVersionFileId: selectedVersionFileId,
-                    selectedAudioTrackIndex: selectedAudioTrackIndex,
-                    selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
-                    onSelectVersion: onSelectVersion,
-                    onSelectAudioTrack: onSelectAudioTrack,
-                    onSelectSubtitleTrack: onSelectSubtitleTrack
+
+            PhoneLabeledActionRow {
+                PhoneLabeledAction(
+                    icon: "heart",
+                    iconActive: "heart.fill",
+                    isActive: isFavorite,
+                    label: "Favorite",
+                    accessibilityLabelOverride: isFavorite
+                        ? "Remove from Favorites" : "Add to Favorites",
+                    action: onToggleFavorite
                 )
+                PhoneLabeledAction(
+                    icon: "bookmark",
+                    iconActive: "bookmark.fill",
+                    isActive: inWatchlist,
+                    label: "Watchlist",
+                    accessibilityLabelOverride: inWatchlist
+                        ? "Remove from Watchlist" : "Add to Watchlist",
+                    action: onToggleWatchlist
+                )
+                PhoneLabeledAction(
+                    icon: "checkmark.circle",
+                    iconActive: "checkmark.circle.fill",
+                    isActive: isWatched,
+                    label: isWatched ? "Watched" : "Mark Seen",
+                    accessibilityLabelOverride: isWatched
+                        ? watchedLabelUnmark : watchedLabelMark,
+                    action: onToggleWatched
+                )
+                if showsDownloadButton {
+                    // Captioned style, so it reads as a peer of the actions
+                    // beside it rather than the odd circle out. It still owns
+                    // its own progress ring and state-derived caption.
+                    DownloadActionButton(
+                        detail: detail,
+                        versions: availableVersions,
+                        selectedVersionFileId: selectedVersionFileId,
+                        showOptions: $showDownloadOptions,
+                        style: .labeled
+                    )
+                }
+                if hasOverflowMenu {
+                    PhoneLabeledMenu(label: "More") {
+                        overflowMenuItems
+                    }
+                }
+            }
+
+            if let trailerStatusMessage {
+                PhoneTrailerStatusPill(
+                    message: trailerStatusMessage,
+                    isFetching: isFindingTrailers,
+                    onAutoDismiss: onTrailerStatusShown
+                )
+            }
+
+            if let effectiveVersion {
+                playbackSelectors(for: effectiveVersion)
             }
         }
         .frame(maxWidth: .infinity)
+        .animation(.easeInOut(duration: 0.18), value: trailerStatusMessage)
+    }
+
+    private func playbackSelectors(for version: FileVersion) -> some View {
+        PhonePlaybackSelectorRow(
+            versions: availableVersions,
+            currentVersion: version,
+            selectedVersionFileId: selectedVersionFileId,
+            selectedAudioTrackIndex: selectedAudioTrackIndex,
+            selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+            onSelectVersion: onSelectVersion,
+            onSelectAudioTrack: onSelectAudioTrack,
+            onSelectSubtitleTrack: onSelectSubtitleTrack
+        )
     }
 
     private func handlePlayTap() {
@@ -113,50 +227,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
             onPlay(false)
         }
     }
-
-    /// Centered cluster of secondary toggles. The full-width Play sits
-    /// above; circle toggles balance under it horizontally.
-    private var circleRow: some View {
-        HStack(spacing: 14) {
-            PhoneCircleActionButton(
-                icon: "heart",
-                iconActive: "heart.fill",
-                isActive: isFavorite,
-                accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
-                action: onToggleFavorite
-            )
-
-            PhoneCircleActionButton(
-                icon: "bookmark",
-                iconActive: "bookmark.fill",
-                isActive: inWatchlist,
-                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
-                action: onToggleWatchlist
-            )
-
-            PhoneCircleActionButton(
-                icon: "checkmark.circle",
-                iconActive: "checkmark.circle.fill",
-                isActive: isWatched,
-                accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
-                action: onToggleWatched
-            )
-
-            if showsDownloadButton {
-                DownloadActionButton(
-                    detail: detail,
-                    versions: availableVersions,
-                    selectedVersionFileId: selectedVersionFileId,
-                    showOptions: $showDownloadOptions
-                )
-            }
-
-            if hasOverflowMenu {
-                overflowMenu
-            }
-        }
-    }
-
     /// Download is offered for movies and individual episodes once the
     /// server advertises the capability for this profile.
     private var showsDownloadButton: Bool {
@@ -168,37 +238,43 @@ struct MovieDetailContent<BelowOverview: View>: View {
         detail.type == "episode" && detail.seriesId != nil
     }
 
-    /// Downloads also earn the overflow menu: the one-tap download button no
-    /// longer opens the options sheet, so the menu keeps it discoverable.
+    /// Downloads also earn the overflow menu: a plain tap on Download starts
+    /// it, so the menu is what keeps the options sheet discoverable. Movies
+    /// always earn it, because "Find Trailers" is the only entry point to the
+    /// trailer fetch.
     private var hasOverflowMenu: Bool {
-        hasOverflowNavigation || showsDownloadButton
+        hasOverflowNavigation || showsDownloadButton || detail.type == "movie"
     }
-
+    /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
-    private var overflowMenu: some View {
-        PhoneCircleMenuButton(accessibilityLabel: "More options") {
-            if let seriesId = detail.seriesId,
-               let seasonNumber = detail.seasonNumber, seasonNumber > 0 {
-                Button {
-                    onNavigateToItem("\(seriesId)-S\(seasonNumber)")
-                } label: {
-                    Label("Go to Season", systemImage: "square.stack")
-                }
+    private var overflowMenuItems: some View {
+        if let seriesId = detail.seriesId,
+           let seasonNumber = detail.seasonNumber, seasonNumber > 0 {
+            Button {
+                onNavigateToItem("\(seriesId)-S\(seasonNumber)")
+            } label: {
+                Label("Go to Season", systemImage: "square.stack")
             }
-            if let seriesId = detail.seriesId {
-                Button {
-                    onNavigateToItem(seriesId)
-                } label: {
-                    Label("Go to Series", systemImage: "tv")
-                }
+        }
+        if let seriesId = detail.seriesId {
+            Button {
+                onNavigateToItem(seriesId)
+            } label: {
+                Label("Go to Series", systemImage: "tv")
             }
-            if showsDownloadButton {
-                Button {
-                    showDownloadOptions = true
-                } label: {
-                    Label("Download Options…", systemImage: "slider.horizontal.3")
-                }
+        }
+        if showsDownloadButton {
+            Button {
+                showDownloadOptions = true
+            } label: {
+                Label("Download Options…", systemImage: "slider.horizontal.3")
             }
+        }
+        if detail.type == "movie" {
+            Button(action: onFindTrailers) {
+                Label("Find Trailers", systemImage: "film")
+            }
+            .disabled(isFindingTrailers)
         }
     }
 
@@ -214,6 +290,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
                 castSection(cast: cast)
             }
 
+            trailersSection
+
             detailsSection
                 .padding(.horizontal, ContinuumTheme.safePadding)
 
@@ -223,10 +301,33 @@ struct MovieDetailContent<BelowOverview: View>: View {
         }
     }
 
+    // MARK: - Trailers & extras
+
+    /// Hidden — header and all — when the item has neither remote videos nor
+    /// local extras. The emptiness test lives here rather than only inside
+    /// the rail so the surrounding VStack doesn't reserve a 36pt gap for a
+    /// section that renders nothing.
+    ///
+    /// `allowRemote` is unconditionally true: iOS plays remote trailers in a
+    /// web sheet and macOS opens them in the browser, so unlike tvOS there is
+    /// never a reason to drop them.
+    @ViewBuilder
+    private var trailersSection: some View {
+        let entries = TrailerRail.entries(
+            videos: detail.videos,
+            extras: detail.extras,
+            allowRemote: true
+        )
+        if !entries.isEmpty {
+            PhoneTrailersSection(entries: entries, onPlayExtra: onPlayExtra)
+        }
+    }
+
     // MARK: - Episode rail (episode detail page)
 
     private var showsEpisodeRail: Bool {
-        detail.type == "episode" && !seasonEpisodes.isEmpty
+        detail.type == "episode"
+            && (!seasons.isEmpty || !seasonEpisodes.isEmpty || isLoadingEpisodes)
     }
 
     @ViewBuilder
@@ -235,27 +336,16 @@ struct MovieDetailContent<BelowOverview: View>: View {
             PhoneSectionHeader(label: episodeRailEyebrow, title: "Episodes")
                 .padding(.horizontal, ContinuumTheme.safePadding)
 
-            if seasons.count > 1 {
-                PhoneSeasonChips(
-                    seasons: seasons,
-                    selected: selectedSeason,
-                    onSelect: onSelectSeason
-                )
-            }
-
-            if isLoadingEpisodes {
-                HStack {
-                    Spacer()
-                    ProgressView().tint(.continuumOnSurface).padding()
-                    Spacer()
-                }
-            } else {
-                PhoneEpisodeRail(
-                    episodes: seasonEpisodes,
-                    onSelect: onEpisodeTap,
-                    currentContentId: detail.contentId
-                )
-            }
+            PhoneSeasonEpisodeBrowser(
+                seasons: seasons,
+                selectedSeason: selectedSeason,
+                episodes: seasonEpisodes,
+                episodesBySeason: seasonEpisodesBySeason,
+                isLoadingEpisodes: isLoadingEpisodes,
+                onSelectSeason: onSelectSeason,
+                onSelectEpisode: onEpisodeTap,
+                currentContentId: detail.contentId
+            )
         }
     }
 

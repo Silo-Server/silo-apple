@@ -22,42 +22,34 @@ enum ApplePlaybackV3Capabilities {
 
     static func snapshot() -> ApplePlaybackV3CapabilitySnapshot {
         let output = outputSnapshot()
-        let isSimulator: Bool = {
-            #if targetEnvironment(simulator)
-            true
-            #else
-            false
-            #endif
-        }()
+        let isSimulator = AppleDecodeCapabilities.isSimulator
 
-        let videoCodecs = isSimulator ? ["h264"] : ["h264", "hevc", "mpeg2video"]
-        let hardwareVideoCodecs = isSimulator ? ["h264"] : ["h264", "hevc"]
-        let audioCodecs = isSimulator
-            ? ["aac", "ac3", "eac3", "mp3", "opus", "flac"]
-            : [
-                "aac", "ac3", "eac3", "dts", "truehd", "flac", "alac", "mp3",
-                "opus", "vorbis", "pcm", "pcm_s16le", "pcm_s24le"
-            ]
-        let containers = isSimulator
-            ? ["mp4", "mov", "m4v", "mkv", "matroska", "ts", "m2ts", "mpegts"]
-            : ["mp4", "mov", "m4v", "mkv", "matroska", "webm", "avi", "ts", "m2ts", "mpegts"]
-        let maxWidth = isSimulator ? 1_920 : 3_840
-        let maxHeight = isSimulator ? 1_080 : 2_160
-        let hdr = output.hdrDetails.map { $0.hdr10 || $0.hlg || !$0.dolbyVisionProfiles.isEmpty } ?? false
+        // This snapshot describes every route the plan can land on, including
+        // the software decoder, so it claims MPEG-2.
+        let videoCodecs = AppleDecodeCapabilities.videoCodecs(includingMPEG2: true)
+        let hardwareVideoCodecs = AppleDecodeCapabilities.hardwareVideoCodecs
+        let audioCodecs = AppleDecodeCapabilities.audioCodecs
+        let containers = AppleDecodeCapabilities.containers
+        let maxWidth = AppleDecodeCapabilities.maxDecodeWidth
+        let maxHeight = AppleDecodeCapabilities.maxDecodeHeight
 
         let capabilities = PlaybackV3CodecCapabilities(
             codecsVideo: videoCodecs,
             codecsVideoHardware: hardwareVideoCodecs,
             codecsAudio: audioCodecs,
             containers: containers,
-            maxResolution: isSimulator ? "1080p" : "2160p",
-            hdr: hdr,
+            maxResolution: AppleDecodeCapabilities.maxResolutionToken,
+            hdr: output.hdrDetails?.claimsAnyHDR ?? false,
             hdrDetails: output.hdrDetails,
             audioPassthrough: output.audioPassthrough,
             videoDecode: videoCodecs.map { codec in
-                PlaybackV3VideoDecodeCapability(
+                let hardware = hardwareVideoCodecs.contains(codec)
+                return PlaybackV3VideoDecodeCapability(
                     codec: codec,
-                    decoderName: codec == "mpeg2video" ? "VideoToolbox" : "VideoToolbox",
+                    // MPEG-2 is the one claimed codec PlayerCore routes to the
+                    // FFmpeg decoder (`videoDecodeMode = .software`); naming
+                    // VideoToolbox for it would contradict `hardware: false`.
+                    decoderName: hardware ? "VideoToolbox" : "FFmpeg",
                     profiles: [],
                     levels: [],
                     bitDepths: codec == "hevc" ? [8, 10] : [8],
@@ -65,7 +57,7 @@ enum ApplePlaybackV3Capabilities {
                     maxHeight: maxHeight,
                     maxFrameRate: 60,
                     maxBitrateKbps: isSimulator ? 25_000 : 120_000,
-                    hardware: hardwareVideoCodecs.contains(codec)
+                    hardware: hardware
                 )
             }
         )
@@ -179,24 +171,43 @@ enum ApplePlaybackV3Capabilities {
     }
 
     private static func outputSnapshot() -> PlaybackV3OutputContext {
+        // Per format: can this client be handed such a source and render it
+        // correctly? That is what the server plans against, and it does not
+        // depend on the display — PQ, HLG and the HDR10 base of HDR10+ all tone
+        // map on the display layer, and Dolby Vision is resolved during decode.
+        //
+        // Dolby Vision is per-platform because Profile 5 carries IPT-PQ-c2
+        // pixels with no HDR10-compatible base layer: rendering it correctly
+        // needs a display in Dolby Vision mode. tvOS negotiates that mode over
+        // HDMI and refuses playback when the panel declines
+        // (`PlayerCore.applyDvGatedDisplayCriteria`); iOS drives its own
+        // Dolby-Vision-capable panel. macOS has neither — an arbitrary
+        // attached display is never negotiated — so it claims only the
+        // base-layer-compatible Profile 8.
         let hdrDetails: PlaybackV3HDRCapabilities? = {
             #if targetEnvironment(simulator)
-            return PlaybackV3HDRCapabilities(hdr10: false, hdr10Plus: false, hlg: false, dolbyVisionProfiles: [])
+            // The simulator decodes H.264 only, matching the rest of this
+            // snapshot and `PlaybackSessionBridge.makeClientCaps()`.
+            return PlaybackV3HDRCapabilities(
+                hdr10: false,
+                hdr10Plus: false,
+                hlg: false,
+                dolbyVisionProfiles: []
+            )
             #elseif os(macOS)
-            // macOS does not expose AVPlayer.availableHDRModes. Avoid
-            // advertising display-specific HDR claims that we cannot verify.
-            return PlaybackV3HDRCapabilities(hdr10: false, hdr10Plus: false, hlg: false, dolbyVisionProfiles: [])
+            return PlaybackV3HDRCapabilities(
+                hdr10: true,
+                hdr10Plus: true,
+                hlg: true,
+                dolbyVisionProfiles: [8]
+            )
             #else
-            if #available(iOS 14.0, tvOS 14.0, *) {
-                let modes = AVPlayer.availableHDRModes
-                return PlaybackV3HDRCapabilities(
-                    hdr10: modes.contains(.hdr10),
-                    hdr10Plus: false,
-                    hlg: modes.contains(.hlg),
-                    dolbyVisionProfiles: modes.contains(.dolbyVision) ? [5, 8] : []
-                )
-            }
-            return nil
+            return PlaybackV3HDRCapabilities(
+                hdr10: true,
+                hdr10Plus: true,
+                hlg: true,
+                dolbyVisionProfiles: [5, 8]
+            )
             #endif
         }()
 

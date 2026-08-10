@@ -68,6 +68,7 @@ private struct ItemDetailPhoneContent: View {
     @State private var preferredVersionFileId: Int?
     @State private var preferredAudioTrackIndex: Int?
     @State private var preferredSubtitleTrackIndex: Int?
+    @State private var preferredSubtitleTrackWasManuallySelected = false
     @State private var preferredNextUpFileId: Int?
     @State private var preferredNextUpAudioTrackIndex: Int?
     @State private var preferredNextUpSubtitleTrackIndex: Int?
@@ -98,6 +99,7 @@ private struct ItemDetailPhoneContent: View {
             preferredVersionFileId = nil
             preferredAudioTrackIndex = nil
             preferredSubtitleTrackIndex = nil
+            preferredSubtitleTrackWasManuallySelected = false
             preferredNextUpFileId = nil
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
@@ -105,6 +107,20 @@ private struct ItemDetailPhoneContent: View {
             refreshOnPlayerDismiss = false
             await viewModel.loadDetail(contentId: contentId)
             seedSubtitleOverrideIfNeeded()
+        }
+        .onAppear {
+            // Coming back from the player (or an extra) resumes a poll that
+            // `onDisappear` cancelled — without re-POSTing, since the server
+            // already spent the item's weekly slot. Precedent:
+            // `PersonDetailView.resumeMetadataRefreshIfNeeded`.
+            viewModel.resumeTrailerFetchIfNeeded()
+            seedSubtitleOverrideIfNeeded()
+        }
+        .onDisappear {
+            // The trailer poll isn't owned by `.task`, so it would otherwise
+            // keep running (and retaining the view model) after the route
+            // pops. Same reasoning as `PersonDetailView.stopMetadataRefresh`.
+            viewModel.stopTrailerFetch()
         }
         .onChange(of: router.presentedPlayer?.id) { oldValue, newValue in
             guard oldValue != nil, newValue == nil, refreshOnPlayerDismiss else { return }
@@ -115,6 +131,7 @@ private struct ItemDetailPhoneContent: View {
                 // drop the pre-play selector state so the reloaded pref
                 // re-seeds and the selector reflects the latest pick.
                 preferredSubtitleTrackIndex = nil
+                preferredSubtitleTrackWasManuallySelected = false
                 seedSubtitleOverrideIfNeeded()
             }
         }
@@ -267,6 +284,7 @@ private struct ItemDetailPhoneContent: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
+                episodesBySeason: viewModel.episodesBySeason,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 selectedNextUpFileId: preferredNextUpFileId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
@@ -372,6 +390,7 @@ private struct ItemDetailPhoneContent: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
+                episodesBySeason: viewModel.episodesBySeason,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 selectedNextUpFileId: preferredNextUpFileId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
@@ -455,6 +474,11 @@ private struct ItemDetailPhoneContent: View {
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 },
+                onPlayExtra: { id in playExtra(contentId: id) },
+                onFindTrailers: { viewModel.startTrailerFetch() },
+                trailerStatusMessage: viewModel.trailerFetch.statusMessage,
+                isFindingTrailers: viewModel.trailerFetch.isFetching,
+                onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 belowOverview: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
                         .id(detail.contentId)
@@ -475,7 +499,10 @@ private struct ItemDetailPhoneContent: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 seasonEpisodes: viewModel.episodes,
+                seasonEpisodesBySeason: viewModel.episodesBySeason,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
+                episodeSeriesPosterUrl: viewModel.episodeSeriesPosterUrl,
+                episodeSeriesPosterThumbhash: viewModel.episodeSeriesPosterThumbhash,
                 onPlay: { startFromBeginning in
                     let resumePosition = startFromBeginning ? nil : playableResumePosition(for: detail)
                     if let fileId = playbackFileId(for: detail) {
@@ -522,6 +549,7 @@ private struct ItemDetailPhoneContent: View {
                     )
                 },
                 onSelectSubtitleTrack: { index in
+                    preferredSubtitleTrackWasManuallySelected = true
                     preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: detail,
                         versionFileId: preferredVersionFileId,
@@ -536,8 +564,7 @@ private struct ItemDetailPhoneContent: View {
                     )
                 },
                 onSelectSeason: { season in
-                    guard season.id != detail.contentId else { return }
-                    router.navigate(to: .itemDetail(contentId: season.contentId))
+                    Task { await viewModel.selectSeason(season) }
                 },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
@@ -553,12 +580,69 @@ private struct ItemDetailPhoneContent: View {
                 onEpisodeTap: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 },
+                onPlayExtra: { id in playExtra(contentId: id) },
+                onFindTrailers: { viewModel.startTrailerFetch() },
+                trailerStatusMessage: viewModel.trailerFetch.statusMessage,
+                isFindingTrailers: viewModel.trailerFetch.isFetching,
+                onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 belowOverview: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
                         .id(detail.contentId)
                 }
             )
         }
+    }
+
+    /// Play a local extra from the trailers rail. Always from the beginning
+    /// — an extra has no stored resume point.
+    ///
+    /// An extra is an ordinary watch target with its own `contentId`, so a
+    /// live Silo Control session casts it to the TV exactly like every other
+    /// play affordance on the page; anything else would make extras the one
+    /// odd affordance that plays locally while the rest beam.
+    ///
+    /// Without a session it skips only the downloaded-vs-stream choice of
+    /// `presentPlayerFromDetail`: extras can't be downloaded, so that dialog
+    /// has nothing to offer. The unreachable-server alert still applies —
+    /// it warns up front rather than dropping the user into a player that
+    /// will spin and fail, and extras must fail the same way as every other
+    /// play affordance on the page.
+    private func playExtra(contentId: String) {
+        #if os(iOS)
+        if siloControl.hasActiveSession {
+            let request = SiloControlPlaybackRequest(
+                contentId: contentId,
+                fileId: nil,
+                audioTrackIndex: nil,
+                subtitleTrackIndex: nil,
+                startFromBeginning: true,
+                resumePosition: nil
+            )
+            Task { await siloControl.launch(request) }
+            return
+        }
+        #endif
+
+        guard ConnectionMonitor.shared.isServerReachable else {
+            unreachablePlayRequest = UnreachablePlayRequest(
+                contentId: contentId,
+                fileId: nil,
+                audioTrackIndex: nil,
+                subtitleTrackIndex: nil,
+                startFromBeginning: true,
+                resumePosition: nil
+            )
+            return
+        }
+
+        presentStreamingPlayer(
+            contentId: contentId,
+            fileId: nil,
+            audioTrackIndex: nil,
+            subtitleTrackIndex: nil,
+            startFromBeginning: true,
+            resumePosition: nil
+        )
     }
 
     private func playbackFileId(for detail: ItemDetail) -> Int? {
@@ -685,11 +769,20 @@ private struct ItemDetailPhoneContent: View {
     /// the pick was persisted; audio doesn't need an equivalent because
     /// `resolvedAudioOrdinal` falls back to `effectiveAudioTrackIndex`.
     private func seedSubtitleOverrideIfNeeded() {
-        guard preferredSubtitleTrackIndex == nil, let detail = viewModel.detail else { return }
-        preferredSubtitleTrackIndex = DetailPlaybackFormatting.serverPreferredSubtitleIndex(
+        if PlayerSettings.shared.subtitleMatchesSystemAppearance {
+            if !preferredSubtitleTrackWasManuallySelected {
+                preferredSubtitleTrackIndex = nil
+            }
+            return
+        }
+        guard !preferredSubtitleTrackWasManuallySelected,
+              preferredSubtitleTrackIndex == nil,
+              let detail = viewModel.detail else { return }
+        preferredSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
             version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
             signature: detail.effectiveSubtitleTrackSignature,
-            mode: detail.effectiveSubtitleMode
+            mode: detail.effectiveSubtitleMode,
+            usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
         )
     }
 
@@ -774,10 +867,11 @@ private struct ItemDetailPhoneContent: View {
             let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             nextUpWatchDetail = watchDetail
-            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.serverPreferredSubtitleIndex(
+            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
                 version: effectiveVersion(for: watchDetail, versionFileId: nil),
                 signature: watchDetail.effectiveSubtitleTrackSignature,
-                mode: watchDetail.effectiveSubtitleMode
+                mode: watchDetail.effectiveSubtitleMode,
+                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
             )
         } catch {
             guard !Task.isCancelled else { return }

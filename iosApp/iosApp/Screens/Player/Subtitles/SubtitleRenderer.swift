@@ -510,6 +510,97 @@ final class SubtitleRenderer {
 
     // MARK: - Render + composite
 
+    /// Merge nearby libass image rectangles into cue-sized regions. libass
+    /// does not expose an event identifier on `ASS_Image`, but images for one
+    /// cue are spatially adjacent while simultaneous dialogue/sign events at
+    /// different positions are not. Connected-component merging preserves
+    /// those independent regions instead of spanning the empty space between
+    /// them with one caption window.
+    static func groupedPaintedBounds(
+        _ rects: [CGRect],
+        joiningDistance: CGFloat
+    ) -> [CGRect] {
+        let distance = max(0, joiningDistance)
+        var groups: [CGRect] = []
+
+        for rect in rects where !rect.isNull && !rect.isEmpty {
+            var merged = rect
+            var index = 0
+            while index < groups.count {
+                let mergeRegion = merged.insetBy(dx: -distance, dy: -distance)
+                if mergeRegion.intersects(groups[index]) {
+                    merged = merged.union(groups.remove(at: index))
+                    index = 0
+                } else {
+                    index += 1
+                }
+            }
+            groups.append(merged)
+        }
+
+        return groups.sorted {
+            $0.minY == $1.minY ? $0.minX < $1.minX : $0.minY < $1.minY
+        }
+    }
+
+    /// Native ASS receives a compositor window only when Apple says the
+    /// window opacity itself overrides authored content.
+    static func shouldDrawCaptionWindow(
+        isNativeASS: Bool,
+        opacityPercent: Int,
+        overrides: SystemCaptionContentOverrides
+    ) -> Bool {
+        guard opacityPercent > 0 else { return false }
+        return !isNativeASS || overrides.contains(.windowOpacity)
+    }
+
+    /// Native ASS needs an explicit compositor box because changing a libass
+    /// shadow bitmap cannot create a background when the track authored none.
+    static func shouldSynthesizeGlyphBackground(
+        isNativeASS: Bool,
+        opacityPercent: Int,
+        overrides: SystemCaptionContentOverrides,
+        hasAuthoredBackground: Bool = false
+    ) -> Bool {
+        let backgroundOverrides: SystemCaptionContentOverrides = [
+            .backgroundColor,
+            .backgroundOpacity,
+        ]
+        return isNativeASS
+            && opacityPercent > 0
+            && !hasAuthoredBackground
+            && !overrides.isDisjoint(with: backgroundOverrides)
+    }
+
+    /// libass represents a BorderStyle 4 caption background as an entirely
+    /// filled bitmap but does not assign it a distinct image type. Detect the
+    /// exact mask so background and edge precedence can be applied
+    /// independently for native ASS cues.
+    static func isSolidBackgroundMask(
+        _ bitmap: UnsafePointer<UInt8>?,
+        width: Int,
+        height: Int,
+        stride: Int
+    ) -> Bool {
+        guard let bitmap, width > 0, height > 0, stride >= width else { return false }
+        for y in 0..<height {
+            let row = bitmap.advanced(by: y * stride)
+            for x in 0..<width where row[x] != 0xFF {
+                return false
+            }
+        }
+        return true
+    }
+
+    fileprivate static func isGlyphBackgroundImage(_ image: ASS_Image) -> Bool {
+        isSolidBackgroundMask(
+            image.bitmap,
+            width: Int(image.w),
+            height: Int(image.h),
+            stride: Int(image.stride)
+        )
+    }
+
     /// Render the current frame. Callable only from `sessionQueue`. The
     /// caller is responsible for hopping back to main to assign the
     /// returned image to the overlay layer's `contents`.
@@ -623,25 +714,236 @@ final class SubtitleRenderer {
         frameSizeDirty = false
         lastCompositedImageFingerprint = imageFingerprint
 
+        // BorderStyle 4 backgrounds are the largest libass masks in a cue.
+        // Classify each bitmap once for this dirty frame and pass the identity
+        // set through every grouping and compositor pass; uniform edges alone
+        // redraw the image list eight times.
+        var glyphBackgroundBitmaps: Set<UInt> = []
+        for head in [imgPrimary, imgSecondary] {
+            var node = head
+            while let current = node {
+                let image = current.pointee
+                if Self.isGlyphBackgroundImage(image), let bitmap = image.bitmap {
+                    glyphBackgroundBitmaps.insert(UInt(bitPattern: UnsafeRawPointer(bitmap)))
+                }
+                node = image.next
+            }
+        }
+        func isGlyphBackground(_ image: ASS_Image) -> Bool {
+            guard let bitmap = image.bitmap else { return false }
+            return glyphBackgroundBitmaps.contains(UInt(bitPattern: UnsafeRawPointer(bitmap)))
+        }
+
         // Composite only the union of the rects libass painted. The
         // full-frame canvas was the dominant render cost on tvOS: at 4K
         // (scale 2) every cue change cleared, copied (`makeImage`), and
         // re-uploaded a 33 MiB buffer when the painted region is
         // typically 1-2 MiB. Clipped to the frame like `draw` does.
-        var minX = widthPx, minY = heightPx, maxX = 0, maxY = 0
-        for head in [imgSecondary, imgPrimary] {
+        func paintedRects(
+            _ head: UnsafeMutablePointer<ASS_Image>?,
+            charactersOnly: Bool = false
+        ) -> [CGRect] {
+            var result: [CGRect] = []
             var node = head
             while let cur = node {
                 let img = cur.pointee
-                if img.w > 0, img.h > 0, img.bitmap != nil {
-                    minX = min(minX, max(0, Int(img.dst_x)))
-                    minY = min(minY, max(0, Int(img.dst_y)))
-                    maxX = max(maxX, min(widthPx, Int(img.dst_x) + Int(img.w)))
-                    maxY = max(maxY, min(heightPx, Int(img.dst_y) + Int(img.h)))
+                let isCharacter = !isGlyphBackground(img)
+                    && img.type == IMAGE_TYPE_CHARACTER
+                if (!charactersOnly || isCharacter),
+                   img.w > 0, img.h > 0, img.bitmap != nil {
+                    let minX = max(0, Int(img.dst_x))
+                    let minY = max(0, Int(img.dst_y))
+                    let maxX = min(widthPx, Int(img.dst_x) + Int(img.w))
+                    let maxY = min(heightPx, Int(img.dst_y) + Int(img.h))
+                    if maxX > minX, maxY > minY {
+                        result.append(CGRect(
+                            x: minX,
+                            y: minY,
+                            width: maxX - minX,
+                            height: maxY - minY
+                        ))
+                    }
                 }
                 node = img.next
             }
+            return result
         }
+
+        let playfieldScale = Double(heightPx) / 1080.0
+        let windowPadding = max(2, Int((currentParams.fontSize * 0.12 * playfieldScale).rounded()))
+        let cueJoiningDistance = max(
+            CGFloat(windowPadding * 2),
+            CGFloat(currentParams.fontSize * 0.35 * playfieldScale)
+        )
+        let primaryRects = paintedRects(imgPrimary)
+        let secondaryRects = paintedRects(imgSecondary)
+        let primaryGroups = Self.groupedPaintedBounds(
+            primaryRects,
+            joiningDistance: cueJoiningDistance
+        )
+        let secondaryGroups = Self.groupedPaintedBounds(
+            secondaryRects,
+            joiningDistance: cueJoiningDistance
+        )
+        let primaryCharacterGroups = Self.groupedPaintedBounds(
+            paintedRects(imgPrimary, charactersOnly: true),
+            joiningDistance: cueJoiningDistance
+        )
+        let secondaryCharacterGroups = Self.groupedPaintedBounds(
+            paintedRects(imgSecondary, charactersOnly: true),
+            joiningDistance: cueJoiningDistance
+        )
+        func hasAuthoredGlyphBackground(_ head: UnsafeMutablePointer<ASS_Image>?) -> Bool {
+            var node = head
+            while let current = node {
+                if isGlyphBackground(current.pointee) { return true }
+                node = current.pointee.next
+            }
+            return false
+        }
+        func captionWindowBounds(
+            _ groups: [CGRect],
+            for handle: ASSTrackHandle?
+        ) -> [CGRect] {
+            guard let handle,
+                  Self.shouldDrawCaptionWindow(
+                      isNativeASS: handle.isNativeASS,
+                      opacityPercent: currentParams.captionWindowOpacityPercent,
+                      overrides: currentParams.systemContentOverrides
+                  ) else { return [] }
+            return groups.map { bounds in
+                CGRect(
+                    x: max(0, Int(bounds.minX) - windowPadding),
+                    y: max(0, Int(bounds.minY) - windowPadding),
+                    width: min(widthPx, Int(bounds.maxX) + windowPadding)
+                        - max(0, Int(bounds.minX) - windowPadding),
+                    height: min(heightPx, Int(bounds.maxY) + windowPadding)
+                        - max(0, Int(bounds.minY) - windowPadding)
+                )
+            }
+        }
+        let primaryWindowBounds = captionWindowBounds(primaryGroups, for: primaryHandle)
+        let secondaryWindowBounds = captionWindowBounds(secondaryGroups, for: secondaryHandle)
+
+        let glyphBackgroundPadding = max(
+            1,
+            Int((currentParams.boxPadding * playfieldScale).rounded())
+        )
+        func nativeGlyphBackgroundBounds(
+            _ groups: [CGRect],
+            imageList: UnsafeMutablePointer<ASS_Image>?,
+            for handle: ASSTrackHandle?
+        ) -> [CGRect] {
+            guard let handle,
+                  Self.shouldSynthesizeGlyphBackground(
+                      isNativeASS: handle.isNativeASS,
+                      opacityPercent: currentParams.backgroundOpacityPercent,
+                      overrides: currentParams.systemContentOverrides,
+                      hasAuthoredBackground: hasAuthoredGlyphBackground(imageList)
+                  )
+                    else { return [] }
+            return groups.map { bounds in
+                CGRect(
+                    x: max(0, Int(bounds.minX) - glyphBackgroundPadding),
+                    y: max(0, Int(bounds.minY) - glyphBackgroundPadding),
+                    width: min(widthPx, Int(bounds.maxX) + glyphBackgroundPadding)
+                        - max(0, Int(bounds.minX) - glyphBackgroundPadding),
+                    height: min(heightPx, Int(bounds.maxY) + glyphBackgroundPadding)
+                        - max(0, Int(bounds.minY) - glyphBackgroundPadding)
+                )
+            }
+        }
+        let primaryGlyphBackgroundBounds = nativeGlyphBackgroundBounds(
+            primaryCharacterGroups,
+            imageList: imgPrimary,
+            for: primaryHandle
+        )
+        let secondaryGlyphBackgroundBounds = nativeGlyphBackgroundBounds(
+            secondaryCharacterGroups,
+            imageList: imgSecondary,
+            for: secondaryHandle
+        )
+
+        typealias EdgeLayer = (
+            offsetX: Int,
+            offsetY: Int,
+            color: (UInt8, UInt8, UInt8),
+            alpha: UInt8
+        )
+        func compositedEdgeLayers(
+            for handle: ASSTrackHandle?
+        ) -> [EdgeLayer] {
+            guard let handle else { return [] }
+            if handle.isNativeASS,
+               currentParams.systemContentOverrides.contains(.edge) {
+                let single: (Double, Double, String, Int)?
+                switch currentParams.systemTextEdgeStyle {
+                case .some(.none), nil:
+                    return []
+                case .some(.raised):
+                    single = (-1, -1, "#FFFFFF", 80)
+                case .some(.depressed):
+                    single = (1, 1, "#000000", 90)
+                case .some(.dropShadow):
+                    single = (1.5, 1.5, "#000000", 50)
+                case .some(.uniform):
+                    let radius = max(
+                        1,
+                        Int((currentParams.effectiveBorderSize * playfieldScale).rounded())
+                    )
+                    let color = SubtitleStylingOverride.rgbBytes(
+                        fromHex: currentParams.effectiveOutlineColorHex
+                    )
+                    return [
+                        (-radius, -radius, color, 255),
+                        (0, -radius, color, 255),
+                        (radius, -radius, color, 255),
+                        (-radius, 0, color, 255),
+                        (radius, 0, color, 255),
+                        (-radius, radius, color, 255),
+                        (0, radius, color, 255),
+                        (radius, radius, color, 255),
+                    ]
+                }
+                guard let single else { return [] }
+                return [(
+                    Int((single.0 * playfieldScale).rounded()),
+                    Int((single.1 * playfieldScale).rounded()),
+                    SubtitleStylingOverride.rgbBytes(fromHex: single.2),
+                    UInt8(max(0, min(255, single.3 * 255 / 100)))
+                )]
+            }
+            guard let shadow = currentParams.compositedEdgeShadow else { return [] }
+            return [(
+                Int((shadow.offsetX * playfieldScale).rounded()),
+                Int((shadow.offsetY * playfieldScale).rounded()),
+                SubtitleStylingOverride.rgbBytes(fromHex: shadow.colorHex),
+                UInt8(max(0, min(255, shadow.opacityPercent * 255 / 100)))
+            )]
+        }
+        let primaryEdgeLayers = compositedEdgeLayers(for: primaryHandle)
+        let secondaryEdgeLayers = compositedEdgeLayers(for: secondaryHandle)
+        func shadowBounds(
+            _ head: UnsafeMutablePointer<ASS_Image>?,
+            edges: [EdgeLayer]
+        ) -> [CGRect] {
+            paintedRects(head, charactersOnly: true).flatMap { bounds in
+                edges.map {
+                    bounds.offsetBy(dx: CGFloat($0.offsetX), dy: CGFloat($0.offsetY))
+                }
+            }
+        }
+        let primaryShadowBounds = shadowBounds(imgPrimary, edges: primaryEdgeLayers)
+        let secondaryShadowBounds = shadowBounds(imgSecondary, edges: secondaryEdgeLayers)
+
+        let allBounds = primaryRects + secondaryRects
+            + primaryWindowBounds + secondaryWindowBounds
+            + primaryGlyphBackgroundBounds + secondaryGlyphBackgroundBounds
+            + primaryShadowBounds + secondaryShadowBounds
+        let minX = max(0, Int(allBounds.map(\.minX).min() ?? CGFloat(widthPx)))
+        let minY = max(0, Int(allBounds.map(\.minY).min() ?? CGFloat(heightPx)))
+        let maxX = min(widthPx, Int(ceil(allBounds.map(\.maxX).max() ?? 0)))
+        let maxY = min(heightPx, Int(ceil(allBounds.map(\.maxY).max() ?? 0)))
         guard maxX > minX, maxY > minY else {
             // Cue ended (or everything rasterized off-frame): dirty with a
             // nil image so the overlay clears without a full-frame pass.
@@ -654,11 +956,166 @@ final class SubtitleRenderer {
             )
         }
 
-        // Secondary first so primary draws on top if they overlap.
+        func draw(
+            _ imageList: UnsafeMutablePointer<ASS_Image>,
+            on canvas: CompositorCanvas,
+            frameOffsetX: Int,
+            frameOffsetY: Int,
+            handle: ASSTrackHandle?,
+            edgeLayers: [EdgeLayer]
+        ) {
+            let isNativeASS = handle?.isNativeASS == true
+            let characterColor = isNativeASS ? currentParams.nativeForegroundColorOverride : nil
+            let characterAlpha = isNativeASS ? currentParams.nativeForegroundAlphaOverride : nil
+            let backgroundColor = isNativeASS ? currentParams.nativeBackgroundColorOverride : nil
+            let backgroundAlpha = isNativeASS ? currentParams.nativeBackgroundAlphaOverride : nil
+            let replacesAuthoredEdge = isNativeASS
+                && currentParams.systemContentOverrides.contains(.edge)
+
+            if !edgeLayers.isEmpty || replacesAuthoredEdge {
+                // BorderStyle 4 emits the box through the non-character image
+                // layers. Draw those first, then the independent system edge,
+                // then the foreground glyphs so neither layer hides another.
+                canvas.draw(
+                    imageList: imageList,
+                    offsetX: frameOffsetX,
+                    offsetY: frameOffsetY,
+                    selection: .excludingCharacters,
+                    suppressAuthoredEdges: replacesAuthoredEdge,
+                    glyphBackgroundColorOverride: backgroundColor,
+                    glyphBackgroundAlphaOverride: backgroundAlpha,
+                    glyphBackgroundBitmaps: glyphBackgroundBitmaps
+                )
+                for edge in edgeLayers {
+                    canvas.draw(
+                        imageList: imageList,
+                        offsetX: frameOffsetX,
+                        offsetY: frameOffsetY,
+                        translationX: edge.offsetX,
+                        translationY: edge.offsetY,
+                        selection: .charactersOnly,
+                        characterColorOverride: edge.color,
+                        characterAlphaOverride: edge.alpha,
+                        glyphBackgroundBitmaps: glyphBackgroundBitmaps
+                    )
+                }
+                canvas.draw(
+                    imageList: imageList,
+                    offsetX: frameOffsetX,
+                    offsetY: frameOffsetY,
+                    selection: .charactersOnly,
+                    characterColorOverride: characterColor,
+                    characterAlphaOverride: characterAlpha,
+                    glyphBackgroundBitmaps: glyphBackgroundBitmaps
+                )
+            } else {
+                canvas.draw(
+                    imageList: imageList,
+                    offsetX: frameOffsetX,
+                    offsetY: frameOffsetY,
+                    characterColorOverride: characterColor,
+                    characterAlphaOverride: characterAlpha,
+                    glyphBackgroundColorOverride: backgroundColor,
+                    glyphBackgroundAlphaOverride: backgroundAlpha,
+                    glyphBackgroundBitmaps: glyphBackgroundBitmaps
+                )
+            }
+        }
+
+        // Secondary first so primary draws on top if they overlap. Apple's
+        // caption window is a separate layer behind the complete cue; native
+        // ASS receives it only when Apple says the system value overrides
+        // authored content.
         let canvas = ensureCanvas(widthPx: maxX - minX, heightPx: maxY - minY)
         canvas.clear()
-        if let imgSecondary { canvas.draw(imageList: imgSecondary, offsetX: minX, offsetY: minY) }
-        if let imgPrimary   { canvas.draw(imageList: imgPrimary, offsetX: minX, offsetY: minY) }
+        func captionWindowStyle(
+            for handle: ASSTrackHandle?
+        ) -> (color: (UInt8, UInt8, UInt8), alpha: UInt8, radius: Double) {
+            let isNativeASS = handle?.isNativeASS == true
+            let usesSystemColor = !isNativeASS
+                || currentParams.systemContentOverrides.contains(.windowColor)
+            let usesSystemRadius = !isNativeASS
+                || currentParams.systemContentOverrides.contains(.windowCornerRadius)
+            return (
+                SubtitleStylingOverride.rgbBytes(
+                    fromHex: usesSystemColor ? currentParams.captionWindowColorHex : "#000000"
+                ),
+                UInt8(max(0, min(255, currentParams.captionWindowOpacityPercent * 255 / 100))),
+                (usesSystemRadius ? currentParams.captionWindowCornerRadius : 0) * playfieldScale
+            )
+        }
+        let secondaryWindowStyle = captionWindowStyle(for: secondaryHandle)
+        for bounds in secondaryWindowBounds {
+            canvas.drawRoundedRect(
+                x: Int(bounds.minX) - minX,
+                y: Int(bounds.minY) - minY,
+                width: Int(bounds.width),
+                height: Int(bounds.height),
+                radius: secondaryWindowStyle.radius,
+                color: secondaryWindowStyle.color,
+                alpha: secondaryWindowStyle.alpha
+            )
+        }
+        let glyphBackgroundColor = SubtitleStylingOverride.rgbBytes(
+            fromHex: currentParams.backgroundColorHex
+        )
+        let glyphBackgroundAlpha = UInt8(
+            max(0, min(255, currentParams.backgroundOpacityPercent * 255 / 100))
+        )
+        for bounds in secondaryGlyphBackgroundBounds {
+            canvas.drawRoundedRect(
+                x: Int(bounds.minX) - minX,
+                y: Int(bounds.minY) - minY,
+                width: Int(bounds.width),
+                height: Int(bounds.height),
+                radius: 0,
+                color: glyphBackgroundColor,
+                alpha: glyphBackgroundAlpha
+            )
+        }
+        if let imgSecondary {
+            draw(
+                imgSecondary,
+                on: canvas,
+                frameOffsetX: minX,
+                frameOffsetY: minY,
+                handle: secondaryHandle,
+                edgeLayers: secondaryEdgeLayers
+            )
+        }
+        let primaryWindowStyle = captionWindowStyle(for: primaryHandle)
+        for bounds in primaryWindowBounds {
+            canvas.drawRoundedRect(
+                x: Int(bounds.minX) - minX,
+                y: Int(bounds.minY) - minY,
+                width: Int(bounds.width),
+                height: Int(bounds.height),
+                radius: primaryWindowStyle.radius,
+                color: primaryWindowStyle.color,
+                alpha: primaryWindowStyle.alpha
+            )
+        }
+        for bounds in primaryGlyphBackgroundBounds {
+            canvas.drawRoundedRect(
+                x: Int(bounds.minX) - minX,
+                y: Int(bounds.minY) - minY,
+                width: Int(bounds.width),
+                height: Int(bounds.height),
+                radius: 0,
+                color: glyphBackgroundColor,
+                alpha: glyphBackgroundAlpha
+            )
+        }
+        if let imgPrimary {
+            draw(
+                imgPrimary,
+                on: canvas,
+                frameOffsetX: minX,
+                frameOffsetY: minY,
+                handle: primaryHandle,
+                edgeLayers: primaryEdgeLayers
+            )
+        }
 
         let cgImage = canvas.snapshot(scale: scale)
         // Canvas pixels map to points through the (possibly capped) render
@@ -818,6 +1275,12 @@ final class SubtitleRenderer {
 /// `clear()`), and produce a fresh `CGImage` per dirty frame so
 /// CoreAnimation can retain the image while we write the next one.
 private final class CompositorCanvas {
+    enum ImageSelection {
+        case all
+        case charactersOnly
+        case excludingCharacters
+    }
+
     let widthPx: Int
     let heightPx: Int
 
@@ -863,6 +1326,62 @@ private final class CompositorCanvas {
         buffer.initialize(repeating: 0, count: bufferLength)
     }
 
+    /// Draw Apple's caption-window layer behind a complete cue. Coordinates
+    /// are in this cropped canvas's top-left pixel space.
+    func drawRoundedRect(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        radius: Double,
+        color: (UInt8, UInt8, UInt8),
+        alpha: UInt8
+    ) {
+        guard width > 0, height > 0, alpha > 0 else { return }
+        let startX = max(0, x)
+        let startY = max(0, y)
+        let endX = min(widthPx, x + width)
+        let endY = min(heightPx, y + height)
+        guard startX < endX, startY < endY else { return }
+
+        let r = max(0, min(radius, Double(min(width, height)) / 2))
+        let rSquared = r * r
+        let leftCenter = Double(x) + r
+        let rightCenter = Double(x + width) - r
+        let topCenter = Double(y) + r
+        let bottomCenter = Double(y + height) - r
+        let srcAlpha = UInt32(alpha)
+        let srcR = (UInt32(color.0) * srcAlpha) / 255
+        let srcG = (UInt32(color.1) * srcAlpha) / 255
+        let srcB = (UInt32(color.2) * srcAlpha) / 255
+        let invA = 255 - srcAlpha
+
+        for py in startY..<endY {
+            let canvasRow = buffer.advanced(by: py * bytesPerRow)
+            for px in startX..<endX {
+                if r > 0 {
+                    let sampleX = Double(px) + 0.5
+                    let sampleY = Double(py) + 0.5
+                    let centerX = min(max(sampleX, leftCenter), rightCenter)
+                    let centerY = min(max(sampleY, topCenter), bottomCenter)
+                    let dx = sampleX - centerX
+                    let dy = sampleY - centerY
+                    if (dx * dx) + (dy * dy) > rSquared { continue }
+                }
+
+                let offset = px * 4
+                let dstB = UInt32(canvasRow[offset])
+                let dstG = UInt32(canvasRow[offset + 1])
+                let dstR = UInt32(canvasRow[offset + 2])
+                let dstA = UInt32(canvasRow[offset + 3])
+                canvasRow[offset] = UInt8(min(255, srcB + (dstB * invA) / 255))
+                canvasRow[offset + 1] = UInt8(min(255, srcG + (dstG * invA) / 255))
+                canvasRow[offset + 2] = UInt8(min(255, srcR + (dstR * invA) / 255))
+                canvasRow[offset + 3] = UInt8(min(255, srcAlpha + (dstA * invA) / 255))
+            }
+        }
+    }
+
     /// Walk a libass `ASS_Image*` linked list and composite each rect's
     /// alpha mask + flat color into the canvas. `offsetX`/`offsetY` map
     /// frame-space destinations into this canvas (the caller sizes the
@@ -874,15 +1393,45 @@ private final class CompositorCanvas {
     /// channels are premultiplied by that effective alpha and blended
     /// over the existing canvas contents using straightforward `over`
     /// compositing.
-    func draw(imageList head: UnsafeMutablePointer<ASS_Image>, offsetX: Int = 0, offsetY: Int = 0) {
+    func draw(
+        imageList head: UnsafeMutablePointer<ASS_Image>,
+        offsetX: Int = 0,
+        offsetY: Int = 0,
+        translationX: Int = 0,
+        translationY: Int = 0,
+        selection: ImageSelection = .all,
+        characterColorOverride: (UInt8, UInt8, UInt8)? = nil,
+        characterAlphaOverride: UInt8? = nil,
+        suppressAuthoredEdges: Bool = false,
+        glyphBackgroundColorOverride: (UInt8, UInt8, UInt8)? = nil,
+        glyphBackgroundAlphaOverride: UInt8? = nil,
+        glyphBackgroundBitmaps: Set<UInt> = []
+    ) {
         var current: UnsafeMutablePointer<ASS_Image>? = head
         while let node = current {
             let img = node.pointee
+            let isGlyphBackground = img.bitmap.map {
+                glyphBackgroundBitmaps.contains(UInt(bitPattern: UnsafeRawPointer($0)))
+            } ?? false
+            let isCharacter = !isGlyphBackground && img.type == IMAGE_TYPE_CHARACTER
+            let shouldDraw = switch selection {
+            case .all: true
+            case .charactersOnly: isCharacter
+            case .excludingCharacters: !isCharacter
+            }
+            if !shouldDraw {
+                current = img.next
+                continue
+            }
+            if suppressAuthoredEdges && !isCharacter && !isGlyphBackground {
+                current = img.next
+                continue
+            }
             let w = Int(img.w)
             let h = Int(img.h)
             let stride = Int(img.stride)
-            let dstX = Int(img.dst_x) - offsetX
-            let dstY = Int(img.dst_y) - offsetY
+            let dstX = Int(img.dst_x) - offsetX + translationX
+            let dstY = Int(img.dst_y) - offsetY + translationY
             guard w > 0, h > 0, let bitmap = img.bitmap else {
                 current = img.next
                 continue
@@ -895,7 +1444,26 @@ private final class CompositorCanvas {
             // from SubtitleStylingOverride, and it resurrected genuinely
             // faded-out glyphs as opaque. Both are fixed; trust the
             // documented order.)
-            let rgba = unpackDocumentedRenderColor(img.color)
+            var rgba = unpackDocumentedRenderColor(img.color)
+            if isCharacter {
+                if let characterColorOverride {
+                    rgba.r = characterColorOverride.0
+                    rgba.g = characterColorOverride.1
+                    rgba.b = characterColorOverride.2
+                }
+                if let characterAlphaOverride {
+                    rgba.alpha = characterAlphaOverride
+                }
+            } else if isGlyphBackground {
+                if let glyphBackgroundColorOverride {
+                    rgba.r = glyphBackgroundColorOverride.0
+                    rgba.g = glyphBackgroundColorOverride.1
+                    rgba.b = glyphBackgroundColorOverride.2
+                }
+                if let glyphBackgroundAlphaOverride {
+                    rgba.alpha = glyphBackgroundAlphaOverride
+                }
+            }
             if rgba.alpha == 0 {
                 current = img.next
                 continue

@@ -2,10 +2,12 @@ import Foundation
 
 /// Single source of truth for which overlays exist. Order within the
 /// array determines the default render order within each corner. The
-/// 26 entries here mirror `web/src/lib/overlays/registry/*.ts` —
-/// adding/removing one here MUST be mirrored on the web side, and the
-/// `OverlayId` enum, or stored prefs from one platform will silently
-/// drop on another.
+/// entries here mirror `web/src/lib/overlays/registry/*.ts` and the
+/// contract's `card-overlays.json` id enum — adding/removing one here
+/// MUST be mirrored there, and in the `OverlayId` enum, or stored
+/// prefs from one platform will silently drop on another. (The two
+/// planned ribbon ids, `imdb_top_250` and `rt_certified_fresh`, are
+/// schema-legal but not yet in the web registry.)
 enum OverlayRegistry {
 
     static let all: [OverlayDef] = tech + ratings + metadata + ribbons
@@ -96,11 +98,23 @@ private extension OverlayRegistry {
         return value.contains("DV") ? "DV" : "HDR"
     }
 
+    /// Mirrors web's `hdrIcon`: only exact wordmark matches get a brand
+    /// mark; anything else (HLG, combined strings like "HDR10+") renders
+    /// as plain text with no icon rather than a wrong generic mark.
     static func hdrIcon(_ value: String?) -> OverlayIconId? {
         guard let value, !value.isEmpty else { return nil }
         if value.contains("DV") { return .dolbyVision }
-        if value.contains("HDR10") { return .hdr10 }
-        return .hdr
+        if value == "HDR10" { return .hdr10 }
+        if value == "HDR" { return .hdr }
+        return nil
+    }
+
+    /// The combined badge's label already carries an "HDR" suffix, so the
+    /// only icon worth doubling up is the Dolby Vision mark — mirrors
+    /// web's `resolution_hdr.getIcon`.
+    static func resolutionHdrIcon(_ value: String?) -> OverlayIconId? {
+        guard let value, value.contains("DV") else { return nil }
+        return .dolbyVision
     }
 
     static func audioIcon(_ value: String?) -> OverlayIconId? {
@@ -127,7 +141,9 @@ private extension OverlayRegistry {
             defaultEnabled: true,
             iconId: .monitor,
             iconCapable: true,
-            getValue: { $0.resolution?.uppercased() }
+            // `prettyResolution`, not raw uppercase: web renders "4K" for a
+            // `2160p` payload and the standalone badge must match it.
+            getValue: { prettyResolution($0.resolution) }
         ),
         OverlayDef(
             id: .hdr,
@@ -153,7 +169,7 @@ private extension OverlayRegistry {
                 if let hdr = compactHdrSuffix(data.hdr) { return "\(res) \(hdr)" }
                 return res
             },
-            getIcon: { hdrIcon($0.hdr) }
+            getIcon: { resolutionHdrIcon($0.hdr) }
         ),
         OverlayDef(
             id: .audio,
@@ -348,6 +364,21 @@ private extension OverlayRegistry {
         return h > 0 ? "\(h)h \(m)m" : "\(m)m"
     }
 
+    /// English display name for a language tag, matching web's
+    /// `formatLanguage` (English CLDR names, so "en" → "English" not
+    /// "EN"). A tag CLDR can't name falls back to the uppercased code
+    /// rather than web's "Unknown language (…)" sentence, which doesn't
+    /// fit a badge.
+    static func formatLanguageName(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let english = Locale(identifier: "en")
+        let name = english.localizedString(forIdentifier: trimmed)
+            ?? english.localizedString(forLanguageCode: trimmed)
+        return name?.capitalized ?? trimmed.uppercased()
+    }
+
     static let metadata: [OverlayDef] = [
         OverlayDef(
             id: .year,
@@ -382,7 +413,7 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .globe,
             iconCapable: true,
-            getValue: { $0.originalLanguage?.uppercased() }
+            getValue: { formatLanguageName($0.originalLanguage) }
         ),
         OverlayDef(
             id: .studio,
@@ -413,15 +444,20 @@ private extension OverlayRegistry {
 
 private extension OverlayRegistry {
 
+    /// Mirrors web's `formatShowStatus` — the recognized spellings and
+    /// the pass-through default must stay identical or the same library
+    /// renders different ribbons per platform.
     static func formatShowStatus(_ value: String?) -> String? {
-        guard let value else { return nil }
+        guard let value, !value.isEmpty else { return nil }
         switch value.lowercased() {
-        case "returning", "returning series", "in_production", "in production":
+        case "returning", "returning series", "continuing", "in_production", "in production":
             return "Returning"
         case "ended":
             return "Ended"
         case "cancelled", "canceled":
             return "Cancelled"
+        case "upcoming", "planned":
+            return "Upcoming"
         default:
             return value
         }

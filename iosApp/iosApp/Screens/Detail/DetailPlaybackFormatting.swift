@@ -244,6 +244,24 @@ enum DetailPlaybackFormatting {
         return nil
     }
 
+    /// A server-remembered track is useful for reflecting the server policy
+    /// in the pre-play selector, but it is not a manual choice made during
+    /// this visit. Device-settings mode must start on Apple's caption policy
+    /// instead of forwarding that seed as an explicit player override.
+    static func launchPreferredSubtitleIndex(
+        version: FileVersion?,
+        signature: SubtitleTrackSignature?,
+        mode: String?,
+        usesDeviceSettings: Bool
+    ) -> Int? {
+        guard !usesDeviceSettings else { return nil }
+        return serverPreferredSubtitleIndex(
+            version: version,
+            signature: signature,
+            mode: mode
+        )
+    }
+
     /// Mirrors `SubtitleAutoResolver.bestSignatureMatch` scoring, applied
     /// to the detail payload's `SubtitleTrack` metadata, so the selector
     /// shows the same track the player would restore on its own.

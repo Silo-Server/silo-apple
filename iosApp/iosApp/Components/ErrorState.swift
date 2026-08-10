@@ -48,6 +48,8 @@ struct ErrorState: Equatable {
         switch httpError {
         case .serverUrlNotConfigured:
             return "No server is configured."
+        case .requestIdentityChanged:
+            return "The active server or profile changed. Try again."
         case .invalidURL:
             return "The request URL was invalid."
         case .invalidResponse:

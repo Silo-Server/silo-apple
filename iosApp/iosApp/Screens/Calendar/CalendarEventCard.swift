@@ -1,5 +1,27 @@
 import SwiftUI
 
+func calendarEventAccessibilityLabel(_ event: CalendarEvent) -> String {
+    var components = [event.title]
+    components.append(contentsOf: [
+        event.episodeSubtitle,
+        event.episodeTitle,
+    ].compactMap { value in
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    })
+    if event.type == "movie" {
+        components.append("Movie")
+    }
+    if let displayAirTime = event.displayAirTime {
+        components.append(displayAirTime)
+    }
+    components.append(contentsOf: event.displayBadges.map(\.label))
+    if event.isWatched {
+        components.append("Watched")
+    }
+    return components.joined(separator: ", ")
+}
+
 /// Poster card for a single calendar event: badge pills, watched check,
 /// air-time caption, and an episode subtitle line. Purpose-built rather
 /// than wrapping `MediaCard` so badge overlays live inside the tvOS
@@ -10,15 +32,21 @@ struct CalendarEventCard: View {
     /// tvOS-only: parent shelf's focus tracking, so the shelf can route
     /// default focus to a specific card.
     var focusedItemId: FocusState<String?>.Binding? = nil
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
-    private var cardWidth: CGFloat { ContinuumTheme.posterCardWidth }
-    private var cardHeight: CGFloat { ContinuumTheme.posterCardHeight }
+    private var cardWidth: CGFloat {
+        ContinuumTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
+    }
+    private var cardHeight: CGFloat {
+        cardWidth * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
+    }
 
     var body: some View {
         #if os(tvOS)
         FocusableCalendarCard(
             event: event,
             cardWidth: cardWidth,
+            captionStyle: uiCustomization.cardPresentation.caption,
             action: action,
             focusedItemId: focusedItemId
         ) {
@@ -28,11 +56,15 @@ struct CalendarEventCard: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 4) {
                 posterImage
-                captionText
+                if uiCustomization.cardPresentation.caption.showsTitle {
+                    captionText
+                }
             }
         }
         .buttonStyle(.plain)
         .frame(width: cardWidth)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
         #endif
     }
 
@@ -93,7 +125,15 @@ struct CalendarEventCard: View {
 
     @ViewBuilder
     fileprivate var captionText: some View {
-        CalendarCardCaption(event: event, cardWidth: cardWidth)
+        CalendarCardCaption(
+            event: event,
+            cardWidth: cardWidth,
+            showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata
+        )
+    }
+
+    private var accessibilityDescription: String {
+        calendarEventAccessibilityLabel(event)
     }
 
     // MARK: - Metrics
@@ -205,6 +245,7 @@ private struct CalendarBadgePill: View {
 private struct CalendarCardCaption: View {
     let event: CalendarEvent
     let cardWidth: CGFloat
+    var showsMetadata: Bool = true
     var isFocused: Bool = false
 
     var body: some View {
@@ -214,7 +255,7 @@ private struct CalendarCardCaption: View {
                 .foregroundColor(isFocused ? .continuumOnSurface : .continuumOnSurface.opacity(0.85))
                 .lineLimit(2, reservesSpace: true)
 
-            if let subtitle {
+            if showsMetadata, let subtitle {
                 Text(subtitle)
                     .font(.continuumCaption)
                     .foregroundColor(.continuumSecondaryText)
@@ -250,6 +291,7 @@ private struct CalendarCardCaption: View {
 private struct FocusableCalendarCard<Content: View>: View {
     let event: CalendarEvent
     let cardWidth: CGFloat
+    let captionStyle: CardCaptionStyle
     let action: () -> Void
     let focusedItemId: FocusState<String?>.Binding?
     @ViewBuilder var content: () -> Content
@@ -264,11 +306,24 @@ private struct FocusableCalendarCard<Content: View>: View {
             .buttonStyle(.card)
             .focused($isFocused)
             .applyShelfFocus(focusedItemId, itemId: event.contentId)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityDescription)
 
-            CalendarCardCaption(event: event, cardWidth: cardWidth, isFocused: isFocused)
+            if captionStyle.showsTitle {
+                CalendarCardCaption(
+                    event: event,
+                    cardWidth: cardWidth,
+                    showsMetadata: captionStyle.showsMetadata,
+                    isFocused: isFocused
+                )
                 .animation(.easeOut(duration: 0.15), value: isFocused)
+            }
         }
         .frame(width: cardWidth)
+    }
+
+    private var accessibilityDescription: String {
+        calendarEventAccessibilityLabel(event)
     }
 }
 

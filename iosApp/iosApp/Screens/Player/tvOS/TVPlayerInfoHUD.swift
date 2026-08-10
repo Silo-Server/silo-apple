@@ -723,7 +723,7 @@ private struct VideoPane: View {
                                 HUDPickerPresentation(
                                     title: "Quality",
                                     options: qualityOptions,
-                                    selection: selectedQuality.id,
+                                    selection: viewModel.activeQualityId,
                                     onSelect: { viewModel.switchQuality($0) }
                                 )
                             )
@@ -854,11 +854,6 @@ private struct VideoPane: View {
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: activePicker?.id)
     }
 
-    private var selectedQuality: ApplePlaybackQualityOption {
-        viewModel.qualityOptions.first(where: { $0.id == viewModel.activeQualityId })
-            ?? ApplePlaybackQuality.auto
-    }
-
     private var qualityValue: String {
         if viewModel.isQualitySwitching {
             return "Switching..."
@@ -866,7 +861,8 @@ private struct VideoPane: View {
         if let error = viewModel.qualitySwitchError, !error.isEmpty {
             return error
         }
-        return selectedQuality.labelWithBitrate
+        return viewModel.qualityOptions.first(where: { $0.id == viewModel.activeQualityId })?.labelWithBitrate
+            ?? ApplePlaybackQuality.displayNameWithBitrate(for: viewModel.activeQualityId)
     }
 
     private var qualityOptions: [HUDDropdownOption] {
@@ -1129,7 +1125,7 @@ private struct SubtitleAppearanceDialog: View {
                 ScrollView(showsIndicators: true) {
                     VStack(spacing: 2) {
                         HUDToggleRow(
-                            label: "Match device style",
+                            label: "Use device settings",
                             isOn: viewModel.settings.subtitleMatchesSystemAppearance
                         ) { enabled in
                             viewModel.setSubtitleMatchesSystemAppearance(enabled)

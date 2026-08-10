@@ -1,0 +1,31 @@
+repository=https://github.com/Silo-Server/silo-server
+path=contracts/settings/v1
+manifest_revision=5
+fixture_version=1
+
+Both files are byte-identical copies of the server's canonical settings
+contract; do not hand-edit either one. Re-vendor by copying them again and
+updating the commits below, then run the SiloTests scheme —
+SettingsConformanceTests fails when the fixture's manifest_revision, the
+vendored manifest's revision, and the generated SettingKey.revision stop
+agreeing, which is the whole point of carrying the pair rather than the
+fixture alone.
+
+conformance.json commit=dfa78454cf97412db0760576312d0061c0ac2e8a
+manifest.json    commit=dfa78454cf97412db0760576312d0061c0ac2e8a
+copied from      commit=dfa78454cf97412db0760576312d0061c0ac2e8a
+
+manifest.json is vendored whole, including the maintainer `notes` the server
+strips before serving /api/v1/settings/contract. Keeping it byte-identical is
+what lets a re-vendor be verified with a plain diff against the server repo.
+
+The runner reads the manifest for the facts the generated bindings in
+iosApp/iosApp/Networking/SettingKeys.generated.swift do not carry:
+resolution_order, default_value, value_schema.ordered plus its enum member
+order, and constrained_by. Those are what the fixture's expectations actually
+test, so the resolver in Tests/SettingsContractResolve.swift is driven by the
+contract rather than by a hand-copied table.
+
+Android vendors the same pair at
+shared/src/commonTest/resources/settings/v1/ in silo-android; the two SOURCE
+notes are meant to stay in step.

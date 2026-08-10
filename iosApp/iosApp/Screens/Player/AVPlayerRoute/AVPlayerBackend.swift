@@ -2604,8 +2604,12 @@ final class AVPlayerBackend {
         )
         // Prefer the format description of what AVPlayer is actually
         // playing (e.g. "Dolby Vision Profile 8 Level 6 (HDR10
-        // compatible)") over the spec-derived expectation.
+        // compatible)") over the spec-derived expectation. The route-derived
+        // label is a diagnostic fallback describing what was planned, so it
+        // deliberately does not feed `confirmedDynamicRange`, which the HUD
+        // badge trusts.
         stats.dynamicRange = videoFormat.dynamicRange ?? dynamicRangeLabel(for: currentSourceStrategy)
+        stats.confirmedDynamicRange = videoFormat.confirmedDynamicRange
         stats.audio = audio
         stats.subtitles = selectedSubtitleLabel()
         stats.screenFrameRate = PlatformScreen.maximumFramesPerSecond
@@ -2780,6 +2784,8 @@ final class AVPlayerBackend {
             return "Dolby Vision (Profile 7 → 8.1)"
         case .passthroughProfile8(.hdr10):
             return "Dolby Vision (Profile 8.1)"
+        case .passthroughProfile8(.sdr):
+            return "Dolby Vision (Profile 8.2)"
         case .passthroughProfile8(.hlg):
             return "Dolby Vision (Profile 8.4)"
         case .passthroughHEVC:
@@ -4486,11 +4492,15 @@ final class AVPlayerBackend {
         isPreservingTVDisplayCriteriaForReload = false
         let refreshRate = spec.sourceVideoFrameRate ?? 24.0
         switch selection {
-        case .dolbyVision:
+        case .dolbyVision(let baseLayer):
             // `handleFirstSegmentReady` (the only caller) is dispatched onto
-            // the main queue by the writer callback.
+            // the main queue by the writer callback. `setCriteria` uses the
+            // public format-description initializer with the `dvh1` fourcc.
             let outcome = MainActor.assumeIsolated {
-                TVDisplayCriteria.setRangeCriteria(.dolbyVision, refreshRate: refreshRate)
+                TVDisplayCriteria.setCriteria(
+                    .dolbyVision(baseLayer: baseLayer),
+                    refreshRate: refreshRate
+                )
             }
             switch outcome {
             case .noDisplayManager:
@@ -4498,7 +4508,7 @@ final class AVPlayerBackend {
             case .matchingDisabled:
                 print("[CMP-AVP] tv display apply context=\(context) matching=0 skipped=matching_disabled")
             case .applied:
-                print(String(format: "[CMP-AVP] tv display apply context=%@ fps=%.3f dr=%d matching=1 preservedReload=%d", context, Double(refreshRate), Int(SpikeDynamicRange.dolbyVision.rawValue), preservedForReload ? 1 : 0))
+                print(String(format: "[CMP-AVP] tv display apply context=%@ fps=%.3f format=dolbyVision(%@) matching=1 preservedReload=%d", context, Double(refreshRate), baseLayer == .hlg ? "hlg" : "hdr10", preservedForReload ? 1 : 0))
                 // A reload that preserved criteria left the panel in the
                 // right mode already; only a fresh apply can start an HDMI
                 // negotiation the item creation must not race. The settle
@@ -4512,8 +4522,8 @@ final class AVPlayerBackend {
         case .hdr10, .hlg:
             let range = selection == .hlg ? "HLG" : "PQ"
             let outcome = MainActor.assumeIsolated {
-                TVDisplayCriteria.setHDRFormatCriteria(
-                    hlg: selection == .hlg,
+                TVDisplayCriteria.setCriteria(
+                    selection == .hlg ? .hlg : .hdr10,
                     refreshRate: refreshRate
                 )
             }
@@ -4521,7 +4531,7 @@ final class AVPlayerBackend {
             // A reload that preserved criteria left the panel in the right
             // mode already; rewriting identical criteria triggers no new
             // negotiation, so only a fresh apply needs the settle wait.
-            return outcome == .applied && !preservedForReload
+            return outcome.didWrite && !preservedForReload
         case .none:
             return false
         }

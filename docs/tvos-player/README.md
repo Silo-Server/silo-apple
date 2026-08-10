@@ -90,8 +90,9 @@ one backend:
   is an overlay renderer, not client-side burn-in, so HDR/Dolby Vision video
   presentation can stay owned by the active video route.
 - **Is HDR mode matching public API?**  
-  No. tvOS uses the private `AVDisplayCriteria` initializer exposed via
-  [`AVDisplayCriteriaPrivate.h`](../../iosApp/iosApp/Screens/Player/CoreMedia/AVDisplayCriteriaPrivate.h).
+  Yes. tvOS uses `AVDisplayCriteria(refreshRate:formatDescription:)` (tvOS 17+)
+  via [`TVDisplayCriteria`](../../iosApp/iosApp/Screens/Player/CoreMedia/TVDisplayCriteria.swift).
+  The private initializer it replaced has been removed.
 
 ## Scope and conventions
 

@@ -1,6 +1,32 @@
-#if os(tvOS)
 import Foundation
 
+/// Pure entry policy for temporary-identity teardown. Kept outside the tvOS
+/// conditional so the generation rules can be regression-tested without a
+/// simulator-only test target.
+enum RemotePlaybackIdentityEndPolicy {
+    static func endingGenerationID(
+        activeIdentityGenerationID: UUID?,
+        scopeGenerationID: UUID?,
+        expectedGenerationID: UUID?
+    ) -> UUID? {
+        if let expectedGenerationID {
+            guard activeIdentityGenerationID == expectedGenerationID,
+                  scopeGenerationID == nil || scopeGenerationID == expectedGenerationID else {
+                return nil
+            }
+            return expectedGenerationID
+        }
+
+        guard let currentGenerationID = activeIdentityGenerationID ?? scopeGenerationID,
+              activeIdentityGenerationID == nil || activeIdentityGenerationID == currentGenerationID,
+              scopeGenerationID == nil || scopeGenerationID == currentGenerationID else {
+            return nil
+        }
+        return currentGenerationID
+    }
+}
+
+#if os(tvOS)
 @MainActor
 final class RemotePlaybackIdentityManager {
     static let shared = RemotePlaybackIdentityManager()
@@ -43,6 +69,10 @@ final class RemotePlaybackIdentityManager {
 
     private(set) var activeIdentity: ActiveIdentity?
     private let api = PairingDeviceAPI()
+    /// Set synchronously before a replacement begins global request
+    /// cancellation. An older re-entrant `end` must not cancel or remove work
+    /// after this generation has claimed the transition.
+    private var activationGenerationPending: UUID?
 
     private init() {}
 
@@ -124,7 +154,7 @@ final class RemotePlaybackIdentityManager {
                 }
                 let expiresAt = poll.sessionExpiresAt.flatMap(Self.parseISO8601)
                     ?? Date().addingTimeInterval(24 * 60 * 60)
-                await activate(TemporaryAuthScope(
+                guard await activate(TemporaryAuthScope(
                     serverId: offer.serverId,
                     serverURL: normalizedURL,
                     accessToken: accessToken,
@@ -137,7 +167,9 @@ final class RemotePlaybackIdentityManager {
                     serverName: offer.serverName,
                     profileName: offer.profileName,
                     controllerDeviceName: controllerDeviceName
-                )
+                ) else {
+                    throw CancellationError()
+                }
                 return SiloControlHandoffReady(
                     requestId: offer.requestId,
                     serverId: offer.serverId,
@@ -156,16 +188,65 @@ final class RemotePlaybackIdentityManager {
         throw HandoffError.expired
     }
 
-    func end() async {
-        let hasTemporaryScope = await TokenStore.shared.hasTemporaryScope()
-        guard activeIdentity != nil || hasTemporaryScope else { return }
-        if hasTemporaryScope {
-            try? await HTTPClient.shared.postVoid("/api/v1/auth/logout")
+    @discardableResult
+    func end(
+        expectedGenerationID: UUID? = nil,
+        notifyServer: Bool = true
+    ) async -> Bool {
+        let scope = await TokenStore.shared.getTemporaryScope()
+        guard activationGenerationPending == nil,
+              let endingGenerationID = RemotePlaybackIdentityEndPolicy.endingGenerationID(
+                  activeIdentityGenerationID: activeIdentity?.generationID,
+                  scopeGenerationID: scope?.credentialGenerationID,
+                  expectedGenerationID: expectedGenerationID
+              ) else { return false }
+        if let scope, notifyServer {
+            try? await HTTPClient.shared.postVoid(
+                "/api/v1/auth/logout",
+                expectedAccount: RefreshAccountIdentity(
+                    serverId: scope.serverId,
+                    serverURL: scope.serverURL,
+                    credentialGenerationID: scope.credentialGenerationID
+                )
+            )
+        }
+        // A replacement can start while logout is suspended. It sets the
+        // pending marker before its own queued cancellation pass, so the old
+        // generation must stop here without globally cancelling new work.
+        guard activationGenerationPending == nil,
+              activeIdentity == nil || activeIdentity?.generationID == endingGenerationID,
+              !Task.isCancelled else {
+            return false
+        }
+        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            return false
+        }
+        guard activationGenerationPending == nil,
+              activeIdentity == nil || activeIdentity?.generationID == endingGenerationID,
+              !Task.isCancelled else {
+            return await releaseIdentityTransition(transitionLease, returning: false)
         }
         await HTTPClient.shared.cancelInFlightRequests()
-        _ = await TokenStore.shared.endTemporaryScope()
+        // Every await above can admit a replacement handoff. Re-check both
+        // owners, then make scope removal itself generation-conditional.
+        guard activationGenerationPending == nil,
+              activeIdentity == nil || activeIdentity?.generationID == endingGenerationID else {
+            return await releaseIdentityTransition(transitionLease, returning: false)
+        }
+        switch await TokenStore.shared.endTemporaryScope(
+            expectedGenerationID: endingGenerationID
+        ) {
+        case .ended, .alreadyAbsent:
+            break
+        case .differentGeneration:
+            // A replacement generation owns the credential slot. Its
+            // activation will publish the matching identity after this
+            // transition lease is released, so preserve manager state.
+            return await releaseIdentityTransition(transitionLease, returning: false)
+        }
         activeIdentity = nil
         AuthService.shared.clearCachesForTemporaryIdentityChange()
+        return await releaseIdentityTransition(transitionLease, returning: true)
     }
 
     private func activate(
@@ -173,13 +254,53 @@ final class RemotePlaybackIdentityManager {
         serverName: String?,
         profileName: String?,
         controllerDeviceName: String?
-    ) async {
+    ) async -> Bool {
+        let generationID = scope.credentialGenerationID
+        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            return false
+        }
+        guard !Task.isCancelled,
+              activationGenerationPending == nil else {
+            return await releaseIdentityTransition(transitionLease, returning: false)
+        }
+        activationGenerationPending = generationID
+        let previousIdentity = activeIdentity
         let usesDifferentServer = scope.serverId != ServerRegistry.shared.activeServerId
         await HTTPClient.shared.cancelInFlightRequests()
+        guard activationGenerationPending == generationID,
+              !Task.isCancelled else {
+            if activationGenerationPending == generationID {
+                activationGenerationPending = nil
+            }
+            return await releaseIdentityTransition(transitionLease, returning: false)
+        }
         AuthService.shared.clearCachesForTemporaryIdentityChange()
-        await TokenStore.shared.beginTemporaryScope(scope)
+        let previousScope = await TokenStore.shared.beginTemporaryScope(scope)
+        let previousOwnersAligned = previousIdentity?.generationID
+            == previousScope.scope?.credentialGenerationID
+        guard activationGenerationPending == generationID,
+              !Task.isCancelled,
+              previousOwnersAligned else {
+            let restored = await TokenStore.shared.restoreTemporaryScope(
+                previousScope,
+                replacingGenerationID: generationID
+            )
+            if restored {
+                activeIdentity = previousIdentity
+            } else {
+                let currentScope = await TokenStore.shared.getTemporaryScope()
+                if activeIdentity?.generationID != currentScope?.credentialGenerationID {
+                    activeIdentity = nil
+                }
+            }
+            if activationGenerationPending == generationID {
+                activationGenerationPending = nil
+            }
+            AuthService.shared.clearCachesForTemporaryIdentityChange()
+            return await releaseIdentityTransition(transitionLease, returning: false)
+        }
         activeIdentity = ActiveIdentity(
-            generationID: UUID(),
+            generationID: generationID,
             serverId: scope.serverId,
             serverURL: scope.serverURL,
             serverName: serverName,
@@ -190,6 +311,16 @@ final class RemotePlaybackIdentityManager {
             usesDifferentServer: usesDifferentServer,
             sessionExpiresAt: scope.expiresAt
         )
+        activationGenerationPending = nil
+        return await releaseIdentityTransition(transitionLease, returning: true)
+    }
+
+    private func releaseIdentityTransition(
+        _ lease: HTTPIdentityTransitionLease,
+        returning result: Bool
+    ) async -> Bool {
+        await HTTPClient.shared.endIdentityTransition(lease)
+        return result
     }
 
     private static func iso8601(_ date: Date) -> String {

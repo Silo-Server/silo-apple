@@ -1,5 +1,108 @@
 import SwiftUI
 
+func libraryMatchesPrimaryMenuCategory(
+    _ library: Library,
+    category: PrimaryMenuBuiltin
+) -> Bool {
+    switch category {
+    case .movies:
+        return library.isMovieLibrary || library.isMixedLibrary
+    case .series:
+        return library.isSeriesLibrary || library.isMixedLibrary
+    case .audiobooks:
+        return library.isAudiobookLibrary
+    case .home, .music, .forYou, .calendar:
+        return false
+    }
+}
+
+func visibleLibrariesForRoot(
+    _ libraries: [Library],
+    category: PrimaryMenuBuiltin?,
+    fixedLibraryId: Int?,
+    showAudiobooks: Bool
+) -> [Library] {
+    if let fixedLibraryId {
+        return libraries.filter { $0.id == fixedLibraryId }
+    }
+    guard let category else {
+        return libraries.filter { showAudiobooks || !$0.isAudiobookLibrary }
+    }
+    return libraries.filter { libraryMatchesPrimaryMenuCategory($0, category: category) }
+}
+
+func libraryRootCanSwitch(fixedLibraryId: Int?, visibleLibraryCount: Int) -> Bool {
+    fixedLibraryId == nil && visibleLibraryCount > 1
+}
+
+func resolvedLibraryIdForRoot(
+    _ libraries: [Library],
+    category: PrimaryMenuBuiltin?,
+    fixedLibraryId: Int?,
+    showAudiobooks: Bool,
+    storedLibraryId: Int
+) -> Int? {
+    let visible = visibleLibrariesForRoot(
+        libraries,
+        category: category,
+        fixedLibraryId: fixedLibraryId,
+        showAudiobooks: showAudiobooks
+    )
+    if fixedLibraryId != nil {
+        return visible.first?.id
+    }
+    if storedLibraryId != 0,
+       let restored = visible.first(where: { $0.id == storedLibraryId }) {
+        return restored.id
+    }
+    return visible.first?.id
+}
+
+private func libraryRootScopeID(
+    category: PrimaryMenuBuiltin?,
+    fixedLibraryId: Int?,
+    authority: MainTabLibraryAuthority?
+) -> String {
+    let destination: String
+    if let fixedLibraryId {
+        destination = "library:\(fixedLibraryId)"
+    } else if let category {
+        destination = "category:\(category.rawValue)"
+    } else {
+        destination = "all"
+    }
+    return "\(authority?.serverId ?? "none"):\(authority?.profileId ?? "none"):\(destination)"
+}
+
+func librarySelectionStorageKey(
+    category: PrimaryMenuBuiltin?,
+    fixedLibraryId: Int?,
+    authority: MainTabLibraryAuthority?
+) -> String? {
+    guard fixedLibraryId == nil else { return nil }
+    guard category != nil else { return "librariesTabSelectedLibraryId" }
+    guard authority != nil else { return nil }
+    let scopeId = libraryRootScopeID(
+        category: category,
+        fixedLibraryId: nil,
+        authority: authority
+    )
+    return "librariesTabSelectedLibraryId.\(scopeId)"
+}
+
+func storedLibrarySelectionId(
+    for storageKey: String?,
+    defaults: UserDefaults = .standard
+) -> Int {
+    guard let storageKey else { return 0 }
+    if defaults.object(forKey: storageKey) != nil {
+        return defaults.integer(forKey: storageKey)
+    }
+    // Seed new category-scoped selections from the legacy aggregate choice.
+    // The first resolved selection is persisted under its own scoped key.
+    return defaults.integer(forKey: "librariesTabSelectedLibraryId")
+}
+
 /// Root of the Libraries tab.
 ///
 /// Mirrors the Plex/Android flow: the tab lands directly on the active
@@ -7,6 +110,11 @@ import SwiftUI
 /// top bar — library selector on the left, search/saved/profile actions
 /// on the right.
 struct LibrariesTabView: View {
+    let category: PrimaryMenuBuiltin?
+    let fixedLibraryId: Int?
+    let libraryAuthority: MainTabLibraryAuthority?
+    let onLibrariesLoaded: ((MainTabLibraryAuthority?, [Library]) -> Void)?
+
     @State private var libraries: [Library] = []
     @State private var selectedLibraryId: Int?
     @State private var selectedTab: LibraryPageTab = .recommended
@@ -16,12 +124,32 @@ struct LibrariesTabView: View {
     @State private var currentProfile: UserProfile?
     @State private var navPrefs = AppNavPreferences.shared
 
-    /// Persist the last-selected library across launches so the user lands
-    /// back where they left off. Stored as Int because `@AppStorage` does
-    /// not support `Int?` directly; `0` represents "no stored value".
-    @AppStorage("librariesTabSelectedLibraryId") private var storedLibraryId: Int = 0
+    /// Persist the last-selected library per authored root so visiting Series
+    /// cannot replace the Movies or aggregate selection. Fixed-library roots
+    /// have no persistence key because their destination already fixes the ID.
+    private let selectionStorageKey: String?
+    @State private var storedLibraryId: Int
 
     @Environment(AppRouter.self) private var router
+
+    init(
+        category: PrimaryMenuBuiltin? = nil,
+        fixedLibraryId: Int? = nil,
+        libraryAuthority: MainTabLibraryAuthority? = nil,
+        onLibrariesLoaded: ((MainTabLibraryAuthority?, [Library]) -> Void)? = nil
+    ) {
+        self.category = category
+        self.fixedLibraryId = fixedLibraryId
+        self.libraryAuthority = libraryAuthority
+        self.onLibrariesLoaded = onLibrariesLoaded
+        let storageKey = librarySelectionStorageKey(
+            category: category,
+            fixedLibraryId: fixedLibraryId,
+            authority: libraryAuthority
+        )
+        selectionStorageKey = storageKey
+        _storedLibraryId = State(initialValue: storedLibrarySelectionId(for: storageKey))
+    }
 
     var body: some View {
         Group {
@@ -43,8 +171,18 @@ struct LibrariesTabView: View {
         #if !os(macOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif
-        .task {
+        .task(id: libraryRootScopeID(
+            category: category,
+            fixedLibraryId: fixedLibraryId,
+            authority: libraryAuthority
+        )) {
             navPrefs.refresh()
+            storedLibraryId = storedLibrarySelectionId(for: selectionStorageKey)
+            // SwiftUI can preserve this view while a split-view selection
+            // changes from one direct library root to another. Reconcile the
+            // selection before awaiting I/O so the old library never renders
+            // under the new destination.
+            applyLibrarySelection()
             await loadLibraries()
             await loadCurrentProfile()
         }
@@ -57,7 +195,7 @@ struct LibrariesTabView: View {
                 selectedLibraryId: selectedLibraryId,
                 onSelect: { id in
                     selectedLibraryId = id
-                    storedLibraryId = id
+                    persistLibrarySelection(id)
                     showPicker = false
                     StartupContentPrefetcher.prefetchLibraryLanding(libraryId: id)
                 }
@@ -96,9 +234,14 @@ struct LibrariesTabView: View {
         VStack(spacing: 0) {
             LibrariesTopBar(
                 activeLibrary: activeLibrary,
-                canSwitch: visibleLibraries.count > 1,
+                canSwitch: libraryRootCanSwitch(
+                    fixedLibraryId: fixedLibraryId,
+                    visibleLibraryCount: visibleLibraries.count
+                ),
                 profile: currentProfile,
-                onLibraryTap: { showPicker = true },
+                onLibraryTap: {
+                    if fixedLibraryId == nil { showPicker = true }
+                },
                 onSearch: { router.navigate(to: .search) },
                 onOpenSettings: { router.navigate(to: .settings) },
                 onOpenRequests: { router.navigate(to: .requestsHub) },
@@ -123,7 +266,12 @@ struct LibrariesTabView: View {
     }
 
     private var visibleLibraries: [Library] {
-        libraries.filter { navPrefs.showAudiobooks || !$0.isAudiobookLibrary }
+        visibleLibrariesForRoot(
+            libraries,
+            category: category,
+            fixedLibraryId: fixedLibraryId,
+            showAudiobooks: navPrefs.showAudiobooks
+        )
     }
 
     private func loadLibraries() async {
@@ -133,6 +281,7 @@ struct LibrariesTabView: View {
            let cached: LibrariesResponse = ResponseCache.shared.get(CacheKey.userLibraries) {
             libraries = cached.libraries
             applyLibrarySelection()
+            onLibrariesLoaded?(libraryAuthority, cached.libraries)
         }
         if libraries.isEmpty {
             isLoading = true
@@ -140,8 +289,10 @@ struct LibrariesTabView: View {
         error = nil
         do {
             let response = try await StartupContentPrefetcher.fetchUserLibraries()
+            guard !Task.isCancelled else { return }
             libraries = response.libraries
             applyLibrarySelection()
+            onLibrariesLoaded?(libraryAuthority, response.libraries)
             if let selectedLibraryId {
                 StartupContentPrefetcher.prefetchLibraryLanding(libraryId: selectedLibraryId)
             }
@@ -156,13 +307,21 @@ struct LibrariesTabView: View {
     /// Preserve the stored selection if it still exists; otherwise fall
     /// back to the first available library.
     private func applyLibrarySelection() {
-        let selectableLibraries = visibleLibraries
-        let restored = storedLibraryId != 0
-            ? selectableLibraries.first(where: { $0.id == storedLibraryId })?.id
-            : nil
-        let resolved = restored ?? selectableLibraries.first?.id
+        let resolved = resolvedLibraryIdForRoot(
+            libraries,
+            category: category,
+            fixedLibraryId: fixedLibraryId,
+            showAudiobooks: navPrefs.showAudiobooks,
+            storedLibraryId: storedLibraryId
+        )
         selectedLibraryId = resolved
-        if let resolved { storedLibraryId = resolved }
+        if let resolved { persistLibrarySelection(resolved) }
+    }
+
+    private func persistLibrarySelection(_ libraryId: Int) {
+        guard let selectionStorageKey else { return }
+        storedLibraryId = libraryId
+        UserDefaults.standard.set(libraryId, forKey: selectionStorageKey)
     }
 
     /// Load the currently-selected profile so we can render its avatar in
@@ -232,7 +391,7 @@ private struct LibrarySelectorButton: View {
                 HStack(spacing: 6) {
                     Text(library.name)
                         .font(.continuumTitle)
-                        .foregroundColor(.continuumOnSurface)
+                    .foregroundStyle(Color.continuumOnSurface)
                         .lineLimit(1)
                     if canSwitch {
                         Image(systemName: "chevron.down")
@@ -242,7 +401,7 @@ private struct LibrarySelectorButton: View {
                 }
                 Text(typeLabel)
                     .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundStyle(Color.continuumSecondaryText)
                     .lineLimit(1)
             }
         }

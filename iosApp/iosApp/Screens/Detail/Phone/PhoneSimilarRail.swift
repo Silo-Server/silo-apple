@@ -21,6 +21,7 @@ struct PhoneSimilarRail: View {
     @State private var items: [SimilarPosterItem] = []
     @State private var isLoading = true
     @State private var loadedFor: String? = nil
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
     var body: some View {
         Group {
@@ -55,6 +56,8 @@ struct PhoneSimilarRail: View {
                         PhoneSimilarCard(item: item)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(item.accessibilityDescription)
                 }
             }
             .padding(.horizontal, ContinuumTheme.safePadding)
@@ -70,7 +73,12 @@ struct PhoneSimilarRail: View {
                 ForEach(0..<4, id: \.self) { _ in
                     RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
                         .fill(Color.continuumSurfaceElevated)
-                        .frame(width: ContinuumTheme.posterCardWidth, height: ContinuumTheme.posterCardHeight)
+                        .frame(
+                            width: ContinuumTheme.posterCardWidth
+                                * uiCustomization.cardPresentation.posterSize.scale,
+                            height: ContinuumTheme.posterCardHeight
+                                * uiCustomization.cardPresentation.posterSize.scale
+                        )
                 }
             }
             .padding(.horizontal, ContinuumTheme.safePadding)
@@ -132,6 +140,10 @@ struct SimilarPosterItem: Identifiable, Hashable {
     let year: Int?
     var id: String { contentId }
 
+    var accessibilityDescription: String {
+        [title, year.map(String.init)].compactMap { $0 }.joined(separator: ", ")
+    }
+
     init(detail: ItemDetail) {
         self.contentId = detail.contentId
         self.title = detail.title
@@ -145,19 +157,26 @@ struct SimilarPosterItem: Identifiable, Hashable {
 
 private struct PhoneSimilarCard: View {
     let item: SimilarPosterItem
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
-    private var cardWidth: CGFloat { ContinuumTheme.posterCardWidth }
-    private var cardHeight: CGFloat { ContinuumTheme.posterCardHeight }
+    private var cardWidth: CGFloat {
+        ContinuumTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
+    }
+    private var cardHeight: CGFloat {
+        cardWidth * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             poster
-            Text(item.title)
-                .font(.continuumSubheadline)
-                .foregroundColor(.continuumOnSurface)
-                .lineLimit(2, reservesSpace: true)
-                .multilineTextAlignment(.leading)
-            if let year = item.year {
+            if uiCustomization.cardPresentation.caption.showsTitle {
+                Text(item.title)
+                    .font(.continuumSubheadline)
+                    .foregroundStyle(Color.continuumOnSurface)
+                    .lineLimit(2, reservesSpace: true)
+                    .multilineTextAlignment(.leading)
+            }
+            if uiCustomization.cardPresentation.caption.showsMetadata, let year = item.year {
                 Text(String(year))
                     .font(.continuumCaption)
                     .foregroundColor(.continuumSecondaryText)

@@ -32,6 +32,8 @@ enum SubtitleStylingOverride {
         var fontFamilyName: String
         /// `#RRGGBB` hex.
         var textColorHex: String
+        /// 0-100.
+        var textOpacityPercent: Int
         var borderSize: Double
         /// `#RRGGBB` hex.
         var borderColorHex: String
@@ -41,6 +43,12 @@ enum SubtitleStylingOverride {
         /// 0-100 (opaque if >0).
         var backgroundOpacityPercent: Int
         var textOutline: Bool
+        var systemTextEdgeStyle: SystemCaptionTextEdgeStyle?
+        /// Apple's separate box behind the complete caption cue.
+        var captionWindowColorHex: String
+        var captionWindowOpacityPercent: Int
+        var captionWindowCornerRadius: Double
+        var systemContentOverrides: SystemCaptionContentOverrides
         /// User position 0 (top) to 150 (bottom). Centered around 100.
         var verticalPosition: Int
         /// Subtitle sync offset in milliseconds. Positive = subs appear
@@ -48,7 +56,8 @@ enum SubtitleStylingOverride {
         var syncOffsetMs: Int
 
         var effectiveBorderSize: Double {
-            if borderSize > 0 {
+            if borderSize > 0 || systemTextEdgeStyle == .uniform
+                || systemTextEdgeStyle == .raised || systemTextEdgeStyle == .depressed {
                 return max(2, min(4, fontSize * 0.08))
             }
             return 0
@@ -94,21 +103,102 @@ enum SubtitleStylingOverride {
         /// Value for the ASS `Shadow` field: drop-shadow depth for the
         /// shadow style, box padding for the box style (see `boxPadding`).
         var assShadow: Double {
-            backgroundStyle == .shadow ? 1.5 : boxPadding
+            // BorderStyle 4 consumes Shadow as box padding and never draws
+            // the shadow. The compositor adds Apple's requested edge behind
+            // the glyphs separately in this combination.
+            if boxEnabled { return boxPadding }
+            if systemTextEdgeStyle == .dropShadow { return 1.5 }
+            // Parsed V4+ Style Shadow is a non-negative depth. Raised needs
+            // an up/left offset, so the compositor supplies that direction.
+            if systemTextEdgeStyle == .raised { return 0 }
+            if systemTextEdgeStyle == .depressed { return 1.0 }
+            return backgroundStyle == .shadow ? 1.5 : 0
+        }
+
+        var textAlphaByte: UInt8 {
+            UInt8(max(0, min(255, (100 - textOpacityPercent) * 255 / 100)))
+        }
+
+        /// BackColour is the glyph box under BorderStyle 4 and the edge
+        /// shadow under BorderStyle 1. Keep those meanings separate so every
+        /// Apple edge remains visible when no glyph box is active.
+        var effectiveBackColorHex: String {
+            if boxEnabled { return backgroundColorHex }
+            switch systemTextEdgeStyle {
+            case .some(.raised):
+                return "#FFFFFF"
+            case .some(.depressed), .some(.dropShadow):
+                return "#000000"
+            case .some(.none), .some(.uniform), nil:
+                return backgroundColorHex
+            }
         }
 
         /// Inverted ASS alpha byte for `BackColour` (0x00 opaque … 0xFF
-        /// transparent). Box: user opacity. Shadow: 50% black so the drop
-        /// shadow is actually visible. Otherwise fully transparent.
+        /// transparent).
         var backgroundAlphaByte: UInt8 {
-            switch backgroundStyle {
-            case .box:
+            if boxEnabled {
                 return UInt8(max(0, min(255, (100 - backgroundOpacityPercent) * 255 / 100)))
-            case .shadow:
-                return 0x80
-            case .outline, .none:
-                return 0xFF
             }
+            switch systemTextEdgeStyle {
+            case .some(.raised):
+                return 0x33
+            case .some(.depressed):
+                return 0x1A
+            case .some(.dropShadow):
+                return 0x80
+            case .some(.none), .some(.uniform), nil:
+                break
+            }
+            if backgroundStyle == .shadow {
+                return 0x80
+            }
+            return 0xFF
+        }
+
+        /// BorderStyle 4 cannot combine its glyph box with a libass shadow.
+        /// The compositor draws this edge from the character masks before it
+        /// composites the regular libass image list.
+        var compositedEdgeShadow: (
+            offsetX: Double,
+            offsetY: Double,
+            colorHex: String,
+            opacityPercent: Int
+        )? {
+            switch systemTextEdgeStyle {
+            case .some(.raised):
+                return (-1, -1, "#FFFFFF", 80)
+            case .some(.depressed):
+                return boxEnabled ? (1, 1, "#000000", 90) : nil
+            case .some(.dropShadow):
+                return boxEnabled ? (1.5, 1.5, "#000000", 50) : nil
+            case .some(.none), .some(.uniform), nil:
+                return nil
+            }
+        }
+
+        var nativeForegroundColorOverride: (UInt8, UInt8, UInt8)? {
+            systemContentOverrides.contains(.foregroundColor)
+                ? SubtitleStylingOverride.rgbBytes(fromHex: textColorHex)
+                : nil
+        }
+
+        var nativeForegroundAlphaOverride: UInt8? {
+            systemContentOverrides.contains(.foregroundOpacity)
+                ? UInt8(max(0, min(255, textOpacityPercent * 255 / 100)))
+                : nil
+        }
+
+        var nativeBackgroundColorOverride: (UInt8, UInt8, UInt8)? {
+            systemContentOverrides.contains(.backgroundColor)
+                ? SubtitleStylingOverride.rgbBytes(fromHex: backgroundColorHex)
+                : nil
+        }
+
+        var nativeBackgroundAlphaOverride: UInt8? {
+            systemContentOverrides.contains(.backgroundOpacity)
+                ? UInt8(max(0, min(255, backgroundOpacityPercent * 255 / 100)))
+                : nil
         }
 
         static let referenceFontSize: Double = SubtitleAppearance.default.fontSize.pointSize
@@ -117,12 +207,18 @@ enum SubtitleStylingOverride {
             fontSize: referenceFontSize,
             fontFamilyName: "Arial",
             textColorHex: "#FFFFFF",
+            textOpacityPercent: 100,
             borderSize: 0,
             borderColorHex: "#000000",
             backgroundColorHex: "#000000",
             backgroundStyle: .shadow,
             backgroundOpacityPercent: 0,
             textOutline: false,
+            systemTextEdgeStyle: nil,
+            captionWindowColorHex: "#000000",
+            captionWindowOpacityPercent: 0,
+            captionWindowCornerRadius: 0,
+            systemContentOverrides: [],
             verticalPosition: 100,
             syncOffsetMs: 0
         )
@@ -131,15 +227,23 @@ enum SubtitleStylingOverride {
             let sanitized = appearance.sanitized()
             let outlineEnabled = sanitized.backgroundStyle == .outline || sanitized.textOutline
             return Parameters(
-                fontSize: sanitized.fontSize.pointSize,
+                fontSize: sanitized.systemRelativeFontScale.map {
+                    referenceFontSize * $0
+                } ?? sanitized.fontSize.pointSize,
                 fontFamilyName: sanitized.fontFamily.assFontName,
                 textColorHex: sanitized.fontColor,
+                textOpacityPercent: sanitized.fontOpacity,
                 borderSize: outlineEnabled ? 2 : 0,
                 borderColorHex: sanitized.textOutlineColor,
                 backgroundColorHex: sanitized.backgroundColor,
                 backgroundStyle: sanitized.backgroundStyle,
                 backgroundOpacityPercent: sanitized.backgroundStyle == .box ? sanitized.backgroundOpacity : 0,
                 textOutline: sanitized.textOutline,
+                systemTextEdgeStyle: sanitized.systemTextEdgeStyle,
+                captionWindowColorHex: sanitized.captionWindowColor,
+                captionWindowOpacityPercent: sanitized.captionWindowOpacity,
+                captionWindowCornerRadius: sanitized.captionWindowCornerRadius,
+                systemContentOverrides: sanitized.systemContentOverrides,
                 verticalPosition: sanitized.position.legacyPosition,
                 syncOffsetMs: syncOffsetMs
             )
@@ -160,9 +264,9 @@ enum SubtitleStylingOverride {
         params: Parameters,
         slot: SubtitleSlot
     ) -> String {
-        let primary = assColor(hexRGB: params.textColorHex, alphaByte: 0x00)
+        let primary = assColor(hexRGB: params.textColorHex, alphaByte: params.textAlphaByte)
         let outline = assColor(hexRGB: params.effectiveOutlineColorHex, alphaByte: 0x00)
-        let back = assColor(hexRGB: params.backgroundColorHex, alphaByte: params.backgroundAlphaByte)
+        let back = assColor(hexRGB: params.effectiveBackColorHex, alphaByte: params.backgroundAlphaByte)
         let alignment = (slot == .secondary) ? 8 : primaryHeaderAlignment(for: params)
 
         // BorderStyle 1 = outline + shadow; BorderStyle 4 = per-event
@@ -231,9 +335,8 @@ enum SubtitleStylingOverride {
     /// - Parameter params: user preferences snapshot.
     /// - Parameter isNativeASS: true iff the active track was authored
     ///   as ASS/SSA (codec == AV_CODEC_ID_ASS / _SSA). For native ASS we
-    ///   skip color/font/border overrides so the creative work renders
-    ///   as the author intended. Sync offset still applies in the overlay
-    ///   pump, outside libass style overrides.
+    ///   preserve authored styling unless Apple's active caption profile marks
+    ///   a category as `useValue` (the user disabled Video Overrides Style).
     /// - Parameter slot: which subtitle slot this renderer draws. Only the
     ///   primary slot participates in `use_margins` placement below.
     /// - Parameter fontScaleCompensation: multiplier that re-keys libass's
@@ -264,7 +367,7 @@ enum SubtitleStylingOverride {
         let useMargins = !isNativeASS && slot == .primary && params.verticalPosition >= 100
         ass_set_use_margins(renderer, useMargins ? 1 : 0)
 
-        if isNativeASS {
+        if isNativeASS && params.systemContentOverrides.isEmpty {
             ass_set_font_scale(renderer, 1.0)
             ass_set_selective_style_override_enabled(renderer, 0)
             return
@@ -274,11 +377,12 @@ enum SubtitleStylingOverride {
         // source. Use renderer font scale for live size changes, but do not
         // use FONT_SIZE_FIELDS below: that path also overrides ScaleX/Y and
         // scales FontSize against each source track's PlayRes.
-        let compensation = fontScaleCompensation.isFinite && fontScaleCompensation > 0
+        let compensation = !isNativeASS && fontScaleCompensation.isFinite && fontScaleCompensation > 0
             ? fontScaleCompensation
             : 1.0
         let scale = (params.fontSize / Parameters.referenceFontSize) * compensation
-        ass_set_font_scale(renderer, scale.isFinite && scale > 0 ? scale : 1.0)
+        let shouldScaleFont = !isNativeASS || params.systemContentOverrides.contains(.size)
+        ass_set_font_scale(renderer, shouldScaleFont && scale.isFinite && scale > 0 ? scale : 1.0)
 
         // Swift's `ASS_Style()` already zero-initialises the struct.
         // Pointer fields (`Name`, `FontName`) are nil which violates the
@@ -297,11 +401,11 @@ enum SubtitleStylingOverride {
         style.Name = nameCString
         style.FontName = fontCString
         style.FontSize = params.fontSize
-        style.PrimaryColour = assColor(hexRGBUInt: params.textColorHex, alphaByte: 0x00)
+        style.PrimaryColour = assColor(hexRGBUInt: params.textColorHex, alphaByte: params.textAlphaByte)
         style.SecondaryColour = 0xFFFFFF00 // opaque white, internal RRGGBBAA
         style.OutlineColour = assColor(hexRGBUInt: params.effectiveOutlineColorHex, alphaByte: 0x00)
         style.BackColour = assColor(
-            hexRGBUInt: params.backgroundColorHex,
+            hexRGBUInt: params.effectiveBackColorHex,
             alphaByte: params.backgroundAlphaByte
         )
         // ScaleX/Y are doubles where 1.0 = 100%. The integer 100 here
@@ -329,14 +433,36 @@ enum SubtitleStylingOverride {
         // FONT_SIZE_FIELDS: it also overrides ScaleX/Y/Blur/Spacing and
         // scales FontSize against the source track's PlayRes, which makes
         // identical user sizes render differently across subtitle sources.
-        let bits: Int32 =
-            Int32(ASS_OVERRIDE_BIT_FONT_NAME.rawValue) |
-            Int32(ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE.rawValue) |
-            Int32(ASS_OVERRIDE_BIT_COLORS.rawValue) |
-            Int32(ASS_OVERRIDE_BIT_ATTRIBUTES.rawValue) |
-            Int32(ASS_OVERRIDE_BIT_BORDER.rawValue) |
-            Int32(ASS_OVERRIDE_BIT_ALIGNMENT.rawValue) |
-            Int32(ASS_OVERRIDE_BIT_MARGINS.rawValue)
+        let bits: Int32
+        if isNativeASS {
+            var systemBits: Int32 = 0
+            if params.systemContentOverrides.contains(.font) {
+                systemBits |= Int32(ASS_OVERRIDE_BIT_FONT_NAME.rawValue)
+            }
+            if params.systemContentOverrides.contains(.size) {
+                systemBits |= Int32(ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE.rawValue)
+            }
+            // libass exposes color override as one atomic bit spanning
+            // Primary, Secondary, Outline, and BackColour. Apple exposes
+            // foreground/background color and opacity precedence separately,
+            // so native ASS colors are transformed per image type by the
+            // compositor instead of enabling the lossy category-wide bit.
+            // Border is another atomic libass category: BorderStyle,
+            // Outline, and Shadow are replaced together. Apple gives the
+            // edge its own precedence, independent of the caption
+            // background. Native ASS edge overrides are therefore composed
+            // from glyph masks after rendering instead of enabling this bit.
+            bits = systemBits
+        } else {
+            bits =
+                Int32(ASS_OVERRIDE_BIT_FONT_NAME.rawValue) |
+                Int32(ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE.rawValue) |
+                Int32(ASS_OVERRIDE_BIT_COLORS.rawValue) |
+                Int32(ASS_OVERRIDE_BIT_ATTRIBUTES.rawValue) |
+                Int32(ASS_OVERRIDE_BIT_BORDER.rawValue) |
+                Int32(ASS_OVERRIDE_BIT_ALIGNMENT.rawValue) |
+                Int32(ASS_OVERRIDE_BIT_MARGINS.rawValue)
+        }
         ass_set_selective_style_override_enabled(renderer, bits)
     }
 

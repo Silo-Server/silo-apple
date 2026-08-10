@@ -99,8 +99,11 @@ Schemes: `Silo` (iOS), `SiloTV` (tvOS), `SiloMac` (macOS).
 
 ### Simulator — the default
 
-Needs no signing, so it never hits the keychain trap. Use it for any "does this compile / do the
-tests pass" question.
+Needs no developer signing identity, so it never hits the login-keychain trap. Normal simulator
+build/run tools still apply Xcode's local ad-hoc signature and simulated entitlements. Keep that
+signature for any flow that signs in: Silo stores its session in the Keychain, and an installed
+`CODE_SIGNING_ALLOWED=NO` product has no Keychain entitlement, so authentication exists only in
+memory and disappears on the next launch.
 
 | Intent | Tool |
 |---|---|
@@ -124,6 +127,12 @@ ssh mac-builder 'cd ~/silo-apple-deploy/iosApp && \
 ```
 
 `-scheme SiloMac -destination "platform=macOS"` for the Mac app.
+
+This is **compile-only**. Never install or launch this unsigned product for authenticated UI
+validation. Use `build_run_sim` or a normal simulator `xcodebuild` without
+`CODE_SIGNING_ALLOWED=NO`, reuse the same simulator, and verify the built app contains simulated
+`application-identifier` / `keychain-access-groups` entitlements before asking the user to sign
+in. Once authenticated, prefer stop/launch over reinstalling when the binary has not changed.
 
 ### Physical device
 
@@ -159,8 +168,10 @@ allowed`) is in the raw log.
 
 Rules:
 
-- **Simulator and `CODE_SIGNING_ALLOWED=NO` builds are unaffected.** Prefer them whenever the
-  question doesn't actually require a device.
+- **Normally signed simulator builds are unaffected.** Xcode uses "Sign to Run Locally" and does
+  not need the developer login keychain.
+- **`CODE_SIGNING_ALLOWED=NO` is compile-only.** It is safe for build checks, but an installed Silo
+  product cannot persist its Keychain-backed login across relaunches.
 - **Device builds:** unlock inside the *same* `ssh` command as `xcodebuild`:
 
 ```bash
@@ -238,12 +249,40 @@ mid-test; if you do, you caused the `App terminated due to signal 15` and must r
 - [ ] `xcodegen generate` run after the sync
 - [ ] Errors read from the full log, not the truncated tool output
 - [ ] Destination matches the claim (simulator build ≠ device verification)
+- [ ] Authenticated simulator runs use a normally signed product, not `CODE_SIGNING_ALLOWED=NO`
 - [ ] Nothing committed or edited on the Mac
+
+## When the simulator misbehaves, check the disk first
+
+A near-full boot volume on the Mac does not announce itself. It presents as CoreSimulator
+corruption, and every symptom points somewhere else:
+
+- `xcrun simctl install` hangs forever on a ~100 MB app.
+- A booted device shuts itself down between two commands.
+- `simctl boot` reports "delete the device properly or erase contents and settings".
+- `ps` / `pgrep` block, because simulator processes are wedged in kernel wait.
+- A stray `simctl diagnose` sits holding a device lock — a downstream symptom, not the cause.
+
+```bash
+ssh mac-builder 'df -h /System/Volumes/Data'
+```
+
+Below ~15 GiB free, expect trouble. `~/Library/Developer/CoreSimulator/Devices` runs to tens
+of GB on its own. Reclaim with `xcrun simctl erase <udid>` for devices you aren't using (this
+wipes their app data and any signed-in session) and `xcrun simctl delete unavailable`.
+
+`~/silo-build-ios` and `~/silo-build-tvos` are **symlinks** to `/Volumes/NVMe/...`, which has
+far more room than the boot volume. The documented paths above still work unchanged — don't
+convert them back into real directories on `/`.
 
 ## Gotchas
 
 - SourceKit "No such module" errors are IDE index artifacts. If `xcodebuild` says
   `BUILD SUCCEEDED`, the code is fine.
+- `mac-builder`'s Tailscale direct path sometimes drops and falls back to a lossy DERP relay.
+  SSH then times out while `tailscale ping mac-builder` still answers (via DERP, ~300ms). The
+  machine is not down; it recovers on its own. Connecting by raw Tailscale IP may work while
+  the hostname does not.
 - Device install can fail on a Developer Disk Image mismatch when the device OS is newer than the
   Mac's Xcode. Updating Xcode is the fix; the build isn't wrong.
 - Homebrew is not on the non-interactive SSH `PATH`. Use absolute paths:

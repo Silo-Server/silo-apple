@@ -16,7 +16,7 @@
 //    - tvOS: HDMI mode is driven by AVDisplayManager. `onSigPeakChange` is a
 //      no-op; the display layer's EDR flag is irrelevant because the compositor
 //      negotiates HDR directly with the TV.
-    //    - iOS: no HDMI to negotiate. HDR is driven by setting
+    //    - iOS / macOS: no HDMI to negotiate. HDR is driven by setting
     //      `preferredDynamicRange` on the AVSampleBufferDisplayLayer
 //      when the stream's transfer function is HDR and the user has HDR
 //      enabled. `onSigPeakChange` fires so the hosting view can toggle EDR.
@@ -1919,9 +1919,11 @@ final class PlayerCore: NSObject {
         guard formatCtx != nil else { return }
         #if os(tvOS)
         let rate = refreshRate
-        let range = enabled ? dynamicRange : .sdr
+        let contentFormat: TVDisplayCriteria.ContentFormat = enabled
+            ? tvDisplayContentFormat
+            : .sdr
         DispatchQueue.main.async {
-            TVDisplayCriteria.apply(refreshRate: rate, dynamicRange: range)
+            TVDisplayCriteria.apply(refreshRate: rate, contentFormat: contentFormat)
         }
         #else
         // iOS: re-publish sig peak so the hosting view can toggle EDR on the
@@ -1930,13 +1932,6 @@ final class PlayerCore: NSObject {
         #endif
     }
 
-    /// iOS HDR path: derives a sig peak from the current stream's dynamic
-    /// range and the user's `hdrEnabled` preference, then fires
-    /// `onSigPeakChange` so the hosting view can toggle
-    /// `preferredDynamicRange` on the display layer. Called once
-    /// per load (after dynamicRange is known) and whenever `setHDREnabled`
-    /// changes the preference. No-op on tvOS — HDR is handled via
-    /// AVDisplayManager there, not EDR.
     /// Recomputes `videoPresentationSize` from the current
     /// `videoFormatDescription` and notifies the hosting view on main when
     /// it changes. Called wherever `videoFormatDescription` is assigned or
@@ -1962,8 +1957,15 @@ final class PlayerCore: NSObject {
         }
     }
 
+    /// iOS/macOS HDR path: derives a sig peak from the current stream's
+    /// dynamic range and the user's `hdrEnabled` preference, then fires
+    /// `onSigPeakChange` so the hosting view can toggle
+    /// `preferredDynamicRange` on the display layer. Called once
+    /// per load (after dynamicRange is known) and whenever `setHDREnabled`
+    /// changes the preference. No-op on tvOS — HDR is handled via
+    /// AVDisplayManager there, not EDR.
     private func publishSigPeakIfNeeded() {
-        #if os(iOS)
+        #if os(iOS) || os(macOS)
         // 1.1 is a sentinel "HDR content present" value; the actual peak
         // nit target is handled by the OS when EDR is enabled. Real per-frame
         // MaxCLL propagation happens via the VT session's
@@ -1975,6 +1977,28 @@ final class PlayerCore: NSObject {
         }
         #endif
     }
+
+    #if os(tvOS)
+    /// Preserves the Dolby Vision base-layer transfer for HDMI negotiation.
+    /// Shares the compatibility-ID mapping with the route planner so the
+    /// pre-decode and post-decode paths cannot disagree. Profile 8.2
+    /// (compatibility ID 2) has an SDR base and falls in with the PQ default,
+    /// as it did under the private API this replaced — that API requested DV
+    /// mode with no transfer information at all.
+    private var tvDisplayContentFormat: TVDisplayCriteria.ContentFormat {
+        switch dynamicRange {
+        case .sdr: return .sdr
+        case .hdr10: return .hdr10
+        case .hlg: return .hlg
+        case .dolbyVision:
+            return .dolbyVision(
+                baseLayer: LoopbackSessionSpec.DVProfile8BaseLayer(
+                    dolbyVisionCompatibilityID: doviConfig.map { Int($0.compatId) }
+                )
+            )
+        }
+    }
+    #endif
 
     func dispose() {
         dispose(deferringFrees: true)
@@ -2873,6 +2897,7 @@ final class PlayerCore: NSObject {
         stats.video = currentVideoStats()
         stats.audio = currentAudioStats()
         stats.dynamicRange = currentDynamicRangeStatsLabel()
+        stats.confirmedDynamicRange = confirmedDynamicRangeForStats()
         stats.subtitles = currentSubtitleStats()
         stats.screenFrameRate = PlatformScreen.maximumFramesPerSecond
         stats.playbackRate = syncRate
@@ -2956,6 +2981,19 @@ final class PlayerCore: NSObject {
             detail: detailParts.isEmpty ? nil : detailParts.joined(separator: ", "),
             bitrateBps: codecpar.bit_rate > 0 ? Double(codecpar.bit_rate) : nil
         )
+    }
+
+    /// What this decoder is rendering, for the HUD badge. `dynamicRange` is
+    /// set from the resolved routing, so a Dolby Vision source the user's
+    /// settings stripped to its base layer reports `.hdr10` here even though
+    /// the prose label below still names the source's DV profile.
+    private func confirmedDynamicRangeForStats() -> PlaybackStats.ConfirmedDynamicRange {
+        switch dynamicRange {
+        case .sdr: return .sdr
+        case .hdr10: return .hdr10
+        case .hlg: return .hlg
+        case .dolbyVision: return .dolbyVision
+        }
     }
 
     private func currentDynamicRangeStatsLabel() -> String? {
@@ -3381,13 +3419,15 @@ final class PlayerCore: NSObject {
         // the display layer via a sig-peak event.
         #if os(tvOS)
         let fps = refreshRate
-        let range = hdrEnabled ? dynamicRange : .sdr
+        let contentFormat: TVDisplayCriteria.ContentFormat = hdrEnabled
+            ? tvDisplayContentFormat
+            : .sdr
         let needsDvGate = requiresDolbyVisionDisplay && hdrEnabled
         DispatchQueue.main.async { [weak self] in
             if needsDvGate {
                 self?.applyDvGatedDisplayCriteria(refreshRate: fps)
             } else {
-                TVDisplayCriteria.apply(refreshRate: fps, dynamicRange: range)
+                TVDisplayCriteria.apply(refreshRate: fps, contentFormat: contentFormat)
             }
         }
         #else
@@ -3741,19 +3781,26 @@ final class PlayerCore: NSObject {
             }
             extensions[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms] = atoms
         }
-        // Color attachments. Native-DV (P7/P8.x where the BL is HDR10/SDR/HLG)
-        // gets forced BT.2020/PQ/BT.2020_NCL because the DV atom tells the TV
-        // to remap, and VT needs a consistent HDR10 declaration on the BL.
+        // Color attachments. Native DV (P8.x / P9 / P10, whose base layer is
+        // HDR10/SDR/HLG-compatible) declares its base layer rather than the
+        // source VUI, which Profile 8 streams routinely tag for the DV layer
+        // instead. Which base layer that is comes from the compatibility ID,
+        // through the same mapping the tvOS HDMI criteria use, so the mode
+        // the panel is asked for and the frames it is handed agree: 8.1 is
+        // PQ, 8.2 is Rec.709 SDR, 8.4 is HLG.
+        //
         // For plain HEVC and for P5 passthrough we take the VUI values — the
         // helpers return nil on UNSPECIFIED, leaving the keys absent (standard
         // approach for P5).
         if isNativeDv {
-            extensions[kCVImageBufferColorPrimariesKey] =
-                kCVImageBufferColorPrimaries_ITU_R_2020 as String
-            extensions[kCVImageBufferTransferFunctionKey] =
-                kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String
-            extensions[kCVImageBufferYCbCrMatrixKey] =
-                kCVImageBufferYCbCrMatrix_ITU_R_2020 as String
+            let colorimetry = VideoColorMetadata.dolbyVisionBaseLayerColorimetry(
+                LoopbackSessionSpec.DVProfile8BaseLayer(
+                    dolbyVisionCompatibilityID: doviConfig.map { Int($0.compatId) }
+                )
+            )
+            extensions[kCVImageBufferColorPrimariesKey] = colorimetry.primaries as String
+            extensions[kCVImageBufferTransferFunctionKey] = colorimetry.transfer as String
+            extensions[kCVImageBufferYCbCrMatrixKey] = colorimetry.matrix as String
         } else {
             if let cp = VideoColorMetadata.colorPrimariesString(codecpar.color_primaries) {
                 extensions[kCVImageBufferColorPrimariesKey] = cp as String
@@ -5843,18 +5890,34 @@ final class PlayerCore: NSObject {
             return
         }
         let profile5Hint = "Dolby Vision Profile 5 requires a Dolby Vision display connected via HDMI with 'Match Content: Dynamic Range' enabled (Settings → Video and Audio → Match Content)."
-        guard dm.isDisplayCriteriaMatchingEnabled else {
+        // Shares `TVDisplayCriteria`'s public format-description write rather
+        // than constructing criteria here, so the `dvh1` request this gate
+        // makes is identical to every other Dolby Vision path.
+        switch TVDisplayCriteria.setCriteria(
+            .dolbyVision(baseLayer: .hdr10),
+            refreshRate: refreshRate
+        ) {
+        case .matchingDisabled:
             print("[CMP] dv gate REFUSE: isDisplayCriteriaMatchingEnabled=false")
             reportError(profile5Hint)
             return
+        case .formatUnavailable:
+            // No DV request could be made, so a non-DV panel would render the
+            // Profile 5 base layer as wrong colors. Refuse like the gate does
+            // for disabled matching.
+            print("[CMP] dv gate REFUSE: format description unavailable")
+            reportError(profile5Hint)
+            return
+        case .noDisplayManager:
+            // Raced the guard above; matches its silent bail.
+            print("[CMP] dv gate: avDisplayManager disappeared")
+            return
+        case .applied:
+            break
         }
-        let criteria = AVDisplayCriteria(
-            refreshRate: refreshRate,
-            videoDynamicRange: SpikeDynamicRange.dolbyVision.rawValue)
-        dm.preferredDisplayCriteria = criteria
         print(String(format:
-            "[CMP] dv gate applyCriteria fps=%.3f dr=%d (profile-5)",
-            Double(refreshRate), Int(SpikeDynamicRange.dolbyVision.rawValue)))
+            "[CMP] dv gate applyCriteria fps=%.3f format=dolbyVision(hdr10) (profile-5)",
+            Double(refreshRate)))
 
         dvGateObservation?.invalidate()
         dvGateObservation = dm.observe(

@@ -1,9 +1,12 @@
 import Foundation
 
-/// Encodes/decodes `CardOverlayPrefs` to/from the JSON string the server
-/// stores under the `card_overlays` user setting. The shape must stay
-/// compatible with the web's `parseOverlayPrefs` in
-/// `web/src/lib/overlays/schema.ts` since clients share the setting.
+/// Encodes/decodes `CardOverlayPrefs` to/from the JSON document the server
+/// stores under the `ui.card_overlays` contract setting (and, on
+/// pre-contract servers, the legacy `card_overlays` user setting). The
+/// shape must stay compatible with the web's `parseOverlayPrefs` in
+/// `web/src/lib/overlays/schema.ts` and the contract schema
+/// `contracts/settings/v1/schemas/card-overlays.json`, since clients
+/// share the setting.
 enum OverlaySchema {
 
     /// Build the default prefs document from the registry. Used the

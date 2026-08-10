@@ -2,62 +2,69 @@ import SwiftUI
 
 /// App settings screen.
 ///
-/// iOS/macOS: a native Settings-style inset-grouped `List` — account
-/// header up top, icon-badged rows grouped into sections, and
-/// drilldowns to dedicated sub-screens for compound preferences like
-/// Playback and Subtitles.
+/// iOS: a searchable, card-based overview aligned with the web app's
+/// information hierarchy. macOS retains the compact native Settings list.
 ///
 /// On tvOS this view delegates to ``TVSettingsView``, a root-menu Form
 /// with drill-in sub-screens tuned for the 10-foot experience.
 struct SettingsView: View {
     @State private var viewModel = SettingsViewModel()
+    @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(AppRouter.self) private var router
     @State private var showSignOutConfirm = false
     #if os(iOS)
-    @State private var navPrefs = AppNavPreferences.shared
     @State private var diagnosticsModel = DiagnosticsViewModel()
     #endif
 
     var body: some View {
         #if os(tvOS)
         TVSettingsView()
+        #elseif os(iOS)
+        iOSOverview
         #else
-        iosBody
+        macOSBody
         #endif
     }
 
-    #if !os(tvOS)
-    private var iosBody: some View {
+    #if os(iOS)
+    private var iOSOverview: some View {
+        IOSSettingsOverview(
+            viewModel: viewModel,
+            diagnosticsModel: diagnosticsModel,
+            uiCustomization: uiCustomization,
+            showSignOutConfirm: $showSignOutConfirm
+        )
+        .task {
+            await viewModel.loadSettings()
+            await diagnosticsModel.load(profile: viewModel.activeProfile)
+        }
+        .alert("Sign Out", isPresented: $showSignOutConfirm) {
+            Button("Sign Out", role: .destructive) {
+                router.signOutAndReset()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Are you sure you want to sign out?")
+        }
+    }
+    #endif
+
+    #if os(macOS)
+    private var macOSBody: some View {
         List {
             accountSection
             preferencesSection
-            #if os(iOS)
-            if diagnosticsModel.shouldShowSettings {
-                diagnosticsSection
-            }
-            #endif
             librarySection
             connectionSection
             aboutSection
             signOutSection
         }
-        // iOS-26 restyle (plan 010, PENDING REVIEW): let the native grouped-list
-        // glass show through instead of forcing flat OLED black. The previous
-        // `.continuumScrollContentBackgroundHidden()` + `Color.continuumBackground`
-        // page override and per-section `.listRowBackground(Color.continuumSurfaceElevated)`
-        // were intentionally dropped here. If brand-black must win, restore those.
         .continuumGroupedListStyle()
         .navigationTitle("Settings")
         .continuumNavigationTitleDisplayMode(.large)
         .continuumToolbarColorSchemeDark()
         .task {
-            #if os(iOS)
-            navPrefs.refresh()
-            #endif
             await viewModel.loadSettings()
-            #if os(iOS)
-            await diagnosticsModel.load(profile: viewModel.activeProfile)
-            #endif
         }
         .alert("Sign Out", isPresented: $showSignOutConfirm) {
             Button("Sign Out", role: .destructive) {
@@ -154,13 +161,24 @@ struct SettingsView: View {
     private var preferencesSection: some View {
         Section {
             NavigationLink {
+                InterfaceCustomizationView()
+            } label: {
+                SettingsRowLabel(
+                    title: "Interface",
+                    systemImage: "rectangle.3.group.fill",
+                    color: .indigo,
+                    value: uiCustomization.cardPresentation.preset?.title ?? "Custom"
+                )
+            }
+
+            NavigationLink {
                 PlaybackSettingsView(viewModel: viewModel)
             } label: {
                 SettingsRowLabel(
                     title: "Playback",
                     systemImage: "play.fill",
                     color: .blue,
-                    value: ApplePlaybackQuality.displayName(for: viewModel.preferredQuality)
+                    value: viewModel.preferredQualityLabel
                 )
             }
 
@@ -194,40 +212,10 @@ struct SettingsView: View {
         return PlaybackLanguageOption.label(forCode: tag)
     }
 
-    #if os(iOS)
-    private var diagnosticsSection: some View {
-        Section("Diagnostics") {
-            NavigationLink {
-                DiagnosticsSettingsView(
-                    model: diagnosticsModel,
-                    profile: viewModel.activeProfile
-                )
-            } label: {
-                SettingsRowLabel(
-                    title: "Diagnostics",
-                    systemImage: "stethoscope",
-                    color: .orange,
-                    value: diagnosticsModel.featureState.title
-                )
-            }
-        }
-    }
-    #endif
-
     // MARK: - Library
 
     private var librarySection: some View {
         Section("Library") {
-            #if os(iOS)
-            Toggle(isOn: Binding(
-                get: { navPrefs.showAudiobooks },
-                set: { navPrefs.setShowAudiobooks($0) }
-            )) {
-                SettingsRowLabel(title: "Show Audiobooks", systemImage: "book.closed.fill", color: .indigo)
-            }
-            .tint(.continuumAccent)
-            #endif
-
             NavigationLink {
                 WatchlistView()
             } label: {
@@ -313,7 +301,7 @@ struct SettingsView: View {
     #endif
 }
 
-#if !os(tvOS)
+#if os(macOS)
 
 // MARK: - Row primitives
 

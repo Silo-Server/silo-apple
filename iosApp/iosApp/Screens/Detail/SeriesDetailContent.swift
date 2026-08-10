@@ -15,6 +15,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
+    let episodesBySeason: [Int: [EpisodeListItem]]
     let isLoadingEpisodes: Bool
     let selectedNextUpFileId: Int?
     let selectedNextUpAudioTrackIndex: Int?
@@ -31,15 +32,30 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let onToggleWatched: () -> Void
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
+    /// Play a local extra from the trailers rail. Routed separately from
+    /// `onPlayEpisode` because extras are never downloadable and have no
+    /// resume point — see `ItemDetailView` for why they skip the
+    /// offline/cast gates.
+    let onPlayExtra: (String) -> Void
+    /// Kick off the manual "Find Trailers" fetch.
+    let onFindTrailers: () -> Void
+    /// Copy for the fetch status pill, straight from the coordinator. `nil`
+    /// hides the pill.
+    let trailerStatusMessage: String?
+    /// True while the fetch is still requesting or polling.
+    let isFindingTrailers: Bool
+    /// Called once a terminal status message has been on screen long enough.
+    let onTrailerStatusShown: () -> Void
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showResumeDialog = false
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 32) {
+            VStack(alignment: .leading, spacing: heroToContentSpacing) {
                 hero
                 belowFold
             }
@@ -58,6 +74,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         }
     }
 
+    private var heroToContentSpacing: CGFloat {
+        horizontalSizeClass == .regular ? 16 : 32
+    }
+
     // MARK: - Hero
 
     private var hero: some View {
@@ -65,6 +85,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             title: detail.title,
             seriesTitle: nil,
             logoUrl: detail.logoUrl,
+            posterUrl: detail.posterUrl,
+            posterThumbhash: detail.posterThumbhash,
             backdropUrl: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
             eyebrow: PhoneHeroMetadata.eyebrow(from: detail),
@@ -80,30 +102,97 @@ struct SeriesDetailContent<BelowOverview: View>: View {
 
     @ViewBuilder
     private var actionStack: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 16) {
             if let nextUp = nextUpEpisode {
-                PhonePrimaryPillButton(
+                PhoneRefinedPlayButton(
                     icon: "play.fill",
                     title: playButtonLabel(for: nextUp),
-                    action: { handlePlayTap(for: nextUp) },
-                    fullWidth: true
+                    action: { handlePlayTap(for: nextUp) }
                 )
             }
-            circleRow
-            if nextUpEpisode != nil, let effectiveNextUpVersion {
-                PhonePlaybackSelectorRow(
-                    versions: nextUpVersions,
-                    currentVersion: effectiveNextUpVersion,
-                    selectedVersionFileId: selectedNextUpFileId,
-                    selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
-                    selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
-                    onSelectVersion: onSelectNextUpVersion,
-                    onSelectAudioTrack: onSelectNextUpAudioTrack,
-                    onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
+
+            PhoneLabeledActionRow {
+                PhoneLabeledAction(
+                    icon: "heart",
+                    iconActive: "heart.fill",
+                    isActive: isFavorite,
+                    label: "Favorite",
+                    accessibilityLabelOverride: isFavorite
+                        ? "Remove from Favorites" : "Add to Favorites",
+                    action: onToggleFavorite
                 )
+                PhoneLabeledAction(
+                    icon: "bookmark",
+                    iconActive: "bookmark.fill",
+                    isActive: inWatchlist,
+                    label: "Watchlist",
+                    accessibilityLabelOverride: inWatchlist
+                        ? "Remove from Watchlist" : "Add to Watchlist",
+                    action: onToggleWatchlist
+                )
+                PhoneLabeledAction(
+                    icon: "checkmark.circle",
+                    iconActive: "checkmark.circle.fill",
+                    isActive: isWatched,
+                    label: isWatched ? "Watched" : "Mark Seen",
+                    accessibilityLabelOverride: isWatched
+                        ? "Mark Series Unwatched" : "Mark Series Watched",
+                    action: onToggleWatched
+                )
+                if DownloadManager.shared.downloadsEnabled {
+                    // Season downloads and future-episode monitoring live
+                    // behind this control; without it the series page has no
+                    // download entry point at all.
+                    SeriesDownloadMenuButton(
+                        detail: detail,
+                        seasons: seasons,
+                        selectedSeason: selectedSeason,
+                        style: .labeled
+                    )
+                }
+                // The series page has no other overflow entries today; the
+                // menu exists solely so the trailer fetch is reachable.
+                PhoneLabeledMenu(label: "More") {
+                    overflowMenuItems
+                }
+            }
+
+            if let trailerStatusMessage {
+                PhoneTrailerStatusPill(
+                    message: trailerStatusMessage,
+                    isFetching: isFindingTrailers,
+                    onAutoDismiss: onTrailerStatusShown
+                )
+            }
+
+            if nextUpEpisode != nil, let effectiveNextUpVersion {
+                nextUpSelectors(for: effectiveNextUpVersion)
             }
         }
         .frame(maxWidth: .infinity)
+        .animation(.easeInOut(duration: 0.18), value: trailerStatusMessage)
+    }
+
+    /// Menu contents for the action row's named "More" entry.
+    @ViewBuilder
+    private var overflowMenuItems: some View {
+        Button(action: onFindTrailers) {
+            Label("Find Trailers", systemImage: "film")
+        }
+        .disabled(isFindingTrailers)
+    }
+
+    private func nextUpSelectors(for version: FileVersion) -> some View {
+        PhonePlaybackSelectorRow(
+            versions: nextUpVersions,
+            currentVersion: version,
+            selectedVersionFileId: selectedNextUpFileId,
+            selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
+            selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
+            onSelectVersion: onSelectNextUpVersion,
+            onSelectAudioTrack: onSelectNextUpAudioTrack,
+            onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
+        )
     }
 
     private func handlePlayTap(for episode: EpisodeListItem) {
@@ -113,43 +202,6 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             onPlayEpisode(episode.contentId, selectedFileId(for: episode), false)
         }
     }
-
-    private var circleRow: some View {
-        HStack(spacing: 14) {
-            PhoneCircleActionButton(
-                icon: "heart",
-                iconActive: "heart.fill",
-                isActive: isFavorite,
-                accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
-                action: onToggleFavorite
-            )
-
-            PhoneCircleActionButton(
-                icon: "bookmark",
-                iconActive: "bookmark.fill",
-                isActive: inWatchlist,
-                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
-                action: onToggleWatchlist
-            )
-
-            PhoneCircleActionButton(
-                icon: "checkmark.circle",
-                iconActive: "checkmark.circle.fill",
-                isActive: isWatched,
-                accessibilityLabel: isWatched ? "Mark Series Unwatched" : "Mark Series Watched",
-                action: onToggleWatched
-            )
-
-            if DownloadManager.shared.downloadsEnabled {
-                SeriesDownloadMenuButton(
-                    detail: detail,
-                    seasons: seasons,
-                    selectedSeason: selectedSeason
-                )
-            }
-        }
-    }
-
     /// Next-up episode for the series Play button: prefer one in
     /// progress, then the first unwatched in the selected season,
     /// then fall back to the first episode we have.
@@ -216,9 +268,32 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             if let cast = detail.cast, !cast.isEmpty {
                 castSection(cast: cast)
             }
+            trailersSection
             detailsSection
                 .padding(.horizontal, ContinuumTheme.safePadding)
             similarSection
+        }
+    }
+
+    // MARK: - Trailers & extras
+
+    /// Hidden — header and all — when the series has neither remote videos
+    /// nor local extras. The emptiness test lives here rather than only
+    /// inside the rail so the surrounding VStack doesn't reserve a 36pt gap
+    /// for a section that renders nothing.
+    ///
+    /// `allowRemote` is unconditionally true: iOS plays remote trailers in a
+    /// web sheet and macOS opens them in the browser, so unlike tvOS there is
+    /// never a reason to drop them.
+    @ViewBuilder
+    private var trailersSection: some View {
+        let entries = TrailerRail.entries(
+            videos: detail.videos,
+            extras: detail.extras,
+            allowRemote: true
+        )
+        if !entries.isEmpty {
+            PhoneTrailersSection(entries: entries, onPlayExtra: onPlayExtra)
         }
     }
 
@@ -243,44 +318,21 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             )
             .padding(.horizontal, ContinuumTheme.safePadding)
 
-            if seasons.count > 1 {
-                PhoneSeasonChips(
-                    seasons: seasons,
-                    selected: selectedSeason,
-                    onSelect: onSelectSeason
-                )
-            }
-
-            episodeBody
+            PhoneSeasonEpisodeBrowser(
+                seasons: seasons,
+                selectedSeason: selectedSeason,
+                episodes: episodes,
+                episodesBySeason: episodesBySeason,
+                isLoadingEpisodes: isLoadingEpisodes,
+                onSelectSeason: onSelectSeason,
+                onSelectEpisode: onEpisodeTap
+            )
         }
     }
 
     private var episodeCountSubtitle: String? {
         guard let count = selectedSeason?.episodeCount, count > 0 else { return nil }
         return "\(count) episode\(count == 1 ? "" : "s")"
-    }
-
-    @ViewBuilder
-    private var episodeBody: some View {
-        if selectedSeason == nil && seasons.isEmpty {
-            EmptyView()
-        } else if isLoadingEpisodes {
-            HStack {
-                Spacer()
-                ProgressView().tint(.continuumOnSurface).padding()
-                Spacer()
-            }
-        } else if episodes.isEmpty {
-            Text("No episodes available")
-                .font(.continuumCaption)
-                .foregroundColor(.continuumSecondaryText)
-                .padding(.horizontal, ContinuumTheme.safePadding)
-        } else {
-            PhoneEpisodeRail(
-                episodes: episodes,
-                onSelect: onEpisodeTap
-            )
-        }
     }
 
     // MARK: - Cast

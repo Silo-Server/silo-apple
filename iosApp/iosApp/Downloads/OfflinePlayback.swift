@@ -36,9 +36,11 @@ struct OfflinePreparedPlayback {
 
 /// Synthesizes the same `PreparedPlayback` the online path produces, but
 /// from a stored offline manifest + local media file, so the player loads
-/// with no server session. The local file plays via the existing engines
-/// (FFmpeg `PlayerCore` for MKV/etc., `AVPlayer` for MP4) and the manifest
-/// drives chapters, intro/credits markers, and subtitles unchanged.
+/// with no server session. Routing is left to the standard planner — the
+/// synthesized version carries the manifest's real track metadata so a
+/// `file://` source can reach the loopback route, not just `PlayerCore` —
+/// and the manifest drives chapters, intro/credits markers, and subtitles
+/// unchanged.
 enum OfflinePlaybackBuilder {
     /// Near-end resume points restart from zero, mirroring the session
     /// bridge's suppression window so offline resume feels identical to
@@ -66,11 +68,21 @@ enum OfflinePlaybackBuilder {
             throw OfflinePlaybackError.mediaFileMissing
         }
 
+        // The manifest describes the catalog's file, never its video streams,
+        // so Dolby Vision and colour signalling have to come off the download
+        // itself. Off the MainActor: this opens the file and runs a header
+        // scan. Failures come back empty and simply leave the version without
+        // video tracks, which is where offline was before probing.
+        let videoTracks = await Task.detached(priority: .userInitiated) {
+            LocalMediaProbe.videoTracks(at: mediaURL)
+        }.value
+
         let leafId = record.leafMediaItemId
         let prepared = makePreparedPlayback(
             leafContentId: leafId,
             manifest: manifest,
             mediaURL: mediaURL,
+            videoTracks: videoTracks,
             subtitleURLs: localSubtitleUrls(record: record, manifest: manifest, manager: manager),
             resumePosition: resolvedResumePosition(
                 startFromBeginning: startFromBeginning,
@@ -144,10 +156,70 @@ enum OfflinePlaybackBuilder {
         return candidate >= max(0, duration - nearEndResumeSuppressionSeconds) ? 0 : candidate
     }
 
+    /// Map the manifest's audio tracks into the catalog `AudioTrack` shape the
+    /// route planner, loopback session spec, and detail views all read.
+    ///
+    /// `index` is deliberately dropped rather than forwarded. `AudioTrack.index`
+    /// means the ffmpeg stream index — it becomes `PlayerTrack.ffIndex`, which
+    /// selects the stream to mux — while the manifest's `index` is only the
+    /// ordinal within this list. On a typical file the ordinal names the video
+    /// stream, and the audio the muxer is waiting for gets discarded. Nil sends
+    /// selection down the ordinal path, which is what the manifest describes.
+    ///
+    /// `embeddedTitle` stays nil because the server already collapsed the
+    /// cleaned and embedded titles into one field; echoing the same string back
+    /// as both would corrupt the audio-pref signature that compares them
+    /// separately.
+    private static func audioTracks(from manifest: OfflineManifest) -> [AudioTrack]? {
+        manifest.audioTracks.map { tracks in
+            tracks.map { track in
+                AudioTrack(
+                    index: nil,
+                    codec: track.codec,
+                    channels: track.channels,
+                    channelLayout: track.layout,
+                    bitrate: track.bitrate,
+                    sampleRate: track.sampleRate,
+                    language: track.language,
+                    title: track.title,
+                    embeddedTitle: nil,
+                    isDefault: track.isDefault
+                )
+            }
+        }
+    }
+
+    /// Overall bitrate in kbps, matching the probed value the server puts on an
+    /// online `FileVersion`. Without it the loopback advertises a placeholder
+    /// `BANDWIDTH` in its master playlist and logs `source_bitrate_unknown`,
+    /// so offline sessions ramp differently from the same file streamed.
+    ///
+    /// The manifest carries no probed bitrate, so derive the real average from
+    /// the delivered file. `targetBitrateKbps` is only a transcode target and
+    /// is absent for original downloads, so it is the fallback, not the source.
+    /// A sub-second duration would be a corrupt manifest, not real content, and
+    /// dividing by it produces a value `Int(_:)` traps on. Both bounds below
+    /// keep a bad manifest falling back rather than crashing playback.
+    private static func averageBitrateKbps(from manifest: OfflineManifest) -> Int? {
+        guard let fileSize = manifest.fileSize, fileSize > 0,
+              let duration = manifest.durationSeconds, duration >= 1 else {
+            return manifest.targetBitrateKbps
+        }
+        let kbps = Double(fileSize) * 8 / duration / 1_000
+        guard kbps.isFinite, kbps >= 1, kbps < Double(Int32.max) else {
+            return manifest.targetBitrateKbps
+        }
+        return Int(kbps)
+    }
+
+    /// `videoTracks` comes from `LocalMediaProbe` reading the delivered file.
+    /// Defaulted so tests and any caller with no file to probe still get the
+    /// manifest-only version.
     static func makePreparedPlayback(
         leafContentId: String,
         manifest: OfflineManifest,
         mediaURL: URL,
+        videoTracks: [VideoTrack] = [],
         subtitleURLs: [SubtitleUrl],
         resumePosition: Double?
     ) -> PreparedPlayback {
@@ -161,9 +233,9 @@ enum OfflinePlaybackBuilder {
             container: manifest.container,
             fileSize: manifest.fileSize,
             duration: manifest.durationSeconds,
-            bitrate: nil,
-            videoTracks: nil,
-            audioTracks: nil,
+            bitrate: averageBitrateKbps(from: manifest),
+            videoTracks: videoTracks.isEmpty ? nil : videoTracks,
+            audioTracks: audioTracks(from: manifest),
             subtitleTracks: nil,
             chapters: manifest.chapters,
             intro: manifest.intro,
@@ -185,7 +257,7 @@ enum OfflinePlaybackBuilder {
             position: resumePosition ?? 0,
             isPaused: false,
             streamUrl: mediaURL.absoluteString,
-            audioTrackIndex: nil,
+            audioTrackIndex: manifest.selectedAudioTrackIndex,
             durationSeconds: manifest.durationSeconds,
             timelineOffsetSeconds: 0,
             subtitleUrls: subtitleURLs.isEmpty ? nil : subtitleURLs,

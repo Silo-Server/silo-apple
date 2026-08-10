@@ -8,6 +8,50 @@ enum MediaCardAspect {
     case square
 }
 
+func mediaCardAccessibilityLabel(
+    title: String,
+    episodeBadge: String?,
+    year: Int?,
+    isWatched: Bool
+) -> String {
+    var components = [title]
+    if let episodeBadge, !episodeBadge.isEmpty {
+        components.append(episodeBadge)
+    }
+    if let year {
+        components.append(String(year))
+    }
+    if isWatched {
+        components.append("Watched")
+    }
+    return components.joined(separator: ", ")
+}
+
+func episodeRailAccessibilityLabel(
+    seasonNumber: Int,
+    episodeNumber: Int,
+    title: String?,
+    metadata: String?,
+    isCurrent: Bool,
+    isPlayed: Bool
+) -> String {
+    let seasonLabel = seasonNumber == 0 ? "Specials" : "Season \(seasonNumber)"
+    var components = ["\(seasonLabel), Episode \(episodeNumber)"]
+    if let title, !title.isEmpty {
+        components.append(title)
+    }
+    if let metadata, !metadata.isEmpty {
+        components.append(metadata)
+    }
+    if isCurrent {
+        components.append("Now viewing")
+    }
+    if isPlayed {
+        components.append("Watched")
+    }
+    return components.joined(separator: ", ")
+}
+
 /// A poster-style media card with title, year, and optional progress.
 /// On tvOS the card uses `.buttonStyle(.card)` which gives proper focus lift,
 /// parallax, and title reveal — no manual focus effects required.
@@ -53,6 +97,7 @@ struct MediaCard: View {
     @State private var playedOverride: Bool?
     @State private var favoriteOverride: Bool?
     @State private var watchlistOverride: Bool?
+    @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     /// iOS 26 zoom transition namespace, shared from `MainTabView`. When
     /// present (and `contentId` is non-nil) the poster acts as the
@@ -70,7 +115,10 @@ struct MediaCard: View {
     @State private var zoomInstanceID = UUID()
     #endif
 
-    private var cardWidth: CGFloat { cardWidthOverride ?? ContinuumTheme.posterCardWidth }
+    private var cardWidth: CGFloat {
+        (cardWidthOverride ?? ContinuumTheme.posterCardWidth)
+            * uiCustomization.cardPresentation.posterSize.scale
+    }
     private var cardHeight: CGFloat {
         switch aspect {
         case .poster:
@@ -87,6 +135,8 @@ struct MediaCard: View {
         FocusableMediaCard(
             title: title,
             year: year,
+            episodeBadge: episodeBadge,
+            captionStyle: uiCustomization.cardPresentation.caption,
             cardWidth: cardWidth,
             action: action,
             playAction: playAction,
@@ -151,6 +201,8 @@ struct MediaCard: View {
                 .buttonStyle(.plain)
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
     }
 
     private var hasIOSContextActions: Bool {
@@ -258,8 +310,12 @@ struct MediaCard: View {
     private var cardContent: some View {
         VStack(alignment: .leading, spacing: 4) {
             posterImage
-            titleText
-            yearText
+            if uiCustomization.cardPresentation.caption.showsTitle {
+                titleText
+            }
+            if uiCustomization.cardPresentation.caption.showsMetadata {
+                yearText
+            }
         }
     }
 
@@ -337,6 +393,15 @@ struct MediaCard: View {
 
     private var isPlayed: Bool {
         playedOverride ?? (userState?.played == true)
+    }
+
+    private var accessibilityDescription: String {
+        mediaCardAccessibilityLabel(
+            title: title,
+            episodeBadge: episodeBadge,
+            year: year,
+            isWatched: isPlayed
+        )
     }
 
     private var titleText: some View {
@@ -435,6 +500,8 @@ extension View {
 private struct FocusableMediaCard<Content: View>: View {
     let title: String
     let year: Int?
+    let episodeBadge: String?
+    let captionStyle: CardCaptionStyle
     let cardWidth: CGFloat
     let action: () -> Void
     let playAction: (() -> Void)?
@@ -458,23 +525,29 @@ private struct FocusableMediaCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 22) {
             mediaButton
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.continuumSubheadline)
-                    .foregroundColor(isFocused ? .continuumOnSurface : .continuumOnSurface.opacity(0.85))
-                    // Single line, truncated — keeps poster cards a uniform
-                    // height and the row short under the bottom-anchored marquee.
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .animation(.easeOut(duration: 0.15), value: isFocused)
+            if captionStyle.showsTitle {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.continuumSubheadline)
+                        .foregroundStyle(
+                            isFocused
+                                ? Color.continuumOnSurface
+                                : Color.continuumOnSurface.opacity(0.85)
+                        )
+                        // Single line, truncated — keeps poster cards a uniform
+                        // height and the row short under the bottom-anchored marquee.
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .animation(.easeOut(duration: 0.15), value: isFocused)
 
-                if let year {
-                    Text(String(year))
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                    if captionStyle.showsMetadata, let year {
+                        Text(String(year))
+                            .font(.continuumCaption)
+                            .foregroundStyle(Color.continuumSecondaryText)
+                    }
                 }
+                .frame(width: cardWidth, alignment: .leading)
             }
-            .frame(width: cardWidth, alignment: .leading)
         }
         .frame(width: cardWidth)
     }
@@ -488,6 +561,8 @@ private struct FocusableMediaCard<Content: View>: View {
         .focused($isFocused)
         .applyRowFocus(focusedItemId, itemId: itemId)
         .applyPlayPauseAction(playAction)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
 
         mediaButtonWithContext(button)
     }
@@ -505,6 +580,15 @@ private struct FocusableMediaCard<Content: View>: View {
 
     private var hasContextActions: Bool {
         onSetWatched != nil || onRemoveFromContinueWatching != nil || personalItems != nil
+    }
+
+    private var accessibilityDescription: String {
+        mediaCardAccessibilityLabel(
+            title: title,
+            episodeBadge: episodeBadge,
+            year: year,
+            isWatched: isWatched
+        )
     }
 
     @ViewBuilder

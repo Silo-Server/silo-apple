@@ -21,6 +21,7 @@ struct EpisodeThumbCard: View {
     var onSetWatched: ((Bool) async -> Bool)? = nil
 
     @State private var playedOverride: Bool?
+    @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     /// iOS 26 zoom transition namespace, shared from `MainTabView`. Lets the
     /// tapped thumbnail act as the `.matchedTransitionSource` for the zoom into
@@ -34,8 +35,12 @@ struct EpisodeThumbCard: View {
     @State private var zoomInstanceID = UUID()
     #endif
 
-    private var cardWidth: CGFloat { ContinuumTheme.thumbnailCardWidth }
-    private var cardHeight: CGFloat { ContinuumTheme.thumbnailCardHeight }
+    private var cardWidth: CGFloat {
+        ContinuumTheme.thumbnailCardWidth * uiCustomization.cardPresentation.posterSize.scale
+    }
+    private var cardHeight: CGFloat {
+        cardWidth * (ContinuumTheme.thumbnailCardHeight / ContinuumTheme.thumbnailCardWidth)
+    }
 
     #if os(tvOS)
     @FocusState private var isFocused: Bool
@@ -46,21 +51,28 @@ struct EpisodeThumbCard: View {
         VStack(alignment: .leading, spacing: 14) {
             thumbnailButton
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(displayTitle)
-                    .font(.continuumSubheadline)
-                    .foregroundColor(isFocused ? .continuumOnSurface : .continuumOnSurface.opacity(0.85))
-                    .lineLimit(1)
-                    .animation(.easeOut(duration: 0.15), value: isFocused)
-
-                if let subtitle = subtitleLine {
-                    Text(subtitle)
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+            if uiCustomization.cardPresentation.caption.showsTitle {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(displayTitle)
+                        .font(.continuumSubheadline)
+                        .foregroundStyle(
+                            isFocused
+                                ? Color.continuumOnSurface
+                                : Color.continuumOnSurface.opacity(0.85)
+                        )
                         .lineLimit(1)
+                        .animation(.easeOut(duration: 0.15), value: isFocused)
+
+                    if uiCustomization.cardPresentation.caption.showsMetadata,
+                       let subtitle = subtitleLine {
+                        Text(subtitle)
+                            .font(.continuumCaption)
+                            .foregroundStyle(Color.continuumSecondaryText)
+                            .lineLimit(1)
+                    }
                 }
+                .frame(width: cardWidth, alignment: .leading)
             }
-            .frame(width: cardWidth, alignment: .leading)
         }
         .frame(width: cardWidth)
         .focusSection()
@@ -92,11 +104,14 @@ struct EpisodeThumbCard: View {
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 thumbnail
-                Text(displayTitle)
-                    .font(.continuumSubheadline)
-                    .foregroundColor(.continuumOnSurface)
-                    .lineLimit(1)
-                if let subtitle = subtitleLine {
+                if uiCustomization.cardPresentation.caption.showsTitle {
+                    Text(displayTitle)
+                        .font(.continuumSubheadline)
+                        .foregroundStyle(Color.continuumOnSurface)
+                        .lineLimit(1)
+                }
+                if uiCustomization.cardPresentation.caption.showsMetadata,
+                   let subtitle = subtitleLine {
                     Text(subtitle)
                         .font(.continuumCaption)
                         .foregroundColor(.continuumSecondaryText)
@@ -106,6 +121,8 @@ struct EpisodeThumbCard: View {
             .zoomTransitionSource(id: zoomInstanceID.uuidString, in: zoomNamespace)
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
     }
     #endif
 
@@ -224,6 +241,20 @@ struct EpisodeThumbCard: View {
         return nil
     }
 
+    private var accessibilityDescription: String {
+        var components = [displayTitle]
+        if let episodeBadge {
+            components.append(episodeBadge)
+        }
+        if let subtitleLine {
+            components.append(subtitleLine)
+        }
+        if isPlayed {
+            components.append("Watched")
+        }
+        return components.joined(separator: ", ")
+    }
+
     /// "S1 · E4" badge if we have season+episode numbers.
     private var episodeBadge: String? {
         if let season = item.seasonNumber, let episode = item.episodeNumber {
@@ -294,6 +325,8 @@ struct EpisodeThumbCard: View {
         .focused($isFocused)
         .applyRowFocus(focusedItemId, itemId: item.contentId)
         .applyEpisodePlayPauseAction(playAction)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
 
         thumbnailButtonWithContext(button)
     }

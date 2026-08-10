@@ -973,7 +973,7 @@ actor DiagnosticsCoordinator {
             case .http(let statusCode, _):
                 return (500...599).contains(statusCode)
             case .serverUrlNotConfigured, .invalidURL, .invalidResponse,
-                 .encodingFailed, .decodingFailed:
+                 .requestIdentityChanged, .encodingFailed, .decodingFailed:
                 return false
             }
         }

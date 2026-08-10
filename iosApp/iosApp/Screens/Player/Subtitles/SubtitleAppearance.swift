@@ -178,6 +178,44 @@ enum SubtitlePositionPreset: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// Apple exposes five distinct caption edge treatments. This value is
+/// runtime-only: it is populated from MediaAccessibility and deliberately
+/// excluded from the server-backed Silo appearance JSON.
+enum SystemCaptionTextEdgeStyle: Equatable {
+    case none
+    case raised
+    case depressed
+    case uniform
+    case dropShadow
+}
+
+struct SystemCaptionContentOverrides: OptionSet, Equatable {
+    let rawValue: Int
+
+    static let font = SystemCaptionContentOverrides(rawValue: 1 << 0)
+    static let size = SystemCaptionContentOverrides(rawValue: 1 << 1)
+    static let foregroundColor = SystemCaptionContentOverrides(rawValue: 1 << 2)
+    static let foregroundOpacity = SystemCaptionContentOverrides(rawValue: 1 << 3)
+    static let backgroundColor = SystemCaptionContentOverrides(rawValue: 1 << 4)
+    static let backgroundOpacity = SystemCaptionContentOverrides(rawValue: 1 << 5)
+    static let edge = SystemCaptionContentOverrides(rawValue: 1 << 6)
+    static let windowColor = SystemCaptionContentOverrides(rawValue: 1 << 7)
+    static let windowOpacity = SystemCaptionContentOverrides(rawValue: 1 << 8)
+    static let windowCornerRadius = SystemCaptionContentOverrides(rawValue: 1 << 9)
+
+    static let colors: SystemCaptionContentOverrides = [
+        .foregroundColor,
+        .foregroundOpacity,
+        .backgroundColor,
+        .backgroundOpacity,
+    ]
+    static let window: SystemCaptionContentOverrides = [
+        .windowColor,
+        .windowOpacity,
+        .windowCornerRadius,
+    ]
+}
+
 struct SubtitleAppearance: Codable, Equatable {
     var fontSize: SubtitleFontSizePreset
     var fontFamily: SubtitleFontFamilyPreset
@@ -189,6 +227,17 @@ struct SubtitleAppearance: Codable, Equatable {
     var textOutlineColor: String
     var position: SubtitlePositionPreset
 
+    // Runtime-only MediaAccessibility details. These are intentionally not
+    // CodingKeys: a device caption profile must never leak into the user's
+    // server-synced Silo appearance or another platform.
+    var fontOpacity: Int
+    var systemRelativeFontScale: Double?
+    var systemTextEdgeStyle: SystemCaptionTextEdgeStyle?
+    var captionWindowColor: String
+    var captionWindowOpacity: Int
+    var captionWindowCornerRadius: Double
+    var systemContentOverrides: SystemCaptionContentOverrides
+
     init(
         fontSize: SubtitleFontSizePreset,
         fontFamily: SubtitleFontFamilyPreset,
@@ -198,7 +247,14 @@ struct SubtitleAppearance: Codable, Equatable {
         backgroundOpacity: Int,
         textOutline: Bool,
         textOutlineColor: String,
-        position: SubtitlePositionPreset
+        position: SubtitlePositionPreset,
+        fontOpacity: Int = 100,
+        systemRelativeFontScale: Double? = nil,
+        systemTextEdgeStyle: SystemCaptionTextEdgeStyle? = nil,
+        captionWindowColor: String = "#000000",
+        captionWindowOpacity: Int = 0,
+        captionWindowCornerRadius: Double = 0,
+        systemContentOverrides: SystemCaptionContentOverrides = []
     ) {
         self.fontSize = fontSize
         self.fontFamily = fontFamily
@@ -209,6 +265,13 @@ struct SubtitleAppearance: Codable, Equatable {
         self.textOutline = textOutline
         self.textOutlineColor = textOutlineColor
         self.position = position
+        self.fontOpacity = fontOpacity
+        self.systemRelativeFontScale = systemRelativeFontScale
+        self.systemTextEdgeStyle = systemTextEdgeStyle
+        self.captionWindowColor = captionWindowColor
+        self.captionWindowOpacity = captionWindowOpacity
+        self.captionWindowCornerRadius = captionWindowCornerRadius
+        self.systemContentOverrides = systemContentOverrides
     }
 
     static let `default` = SubtitleAppearance(
@@ -267,6 +330,13 @@ struct SubtitleAppearance: Codable, Equatable {
         self.textOutline = try container.decodeIfPresent(Bool.self, forKey: .textOutline) ?? Self.default.textOutline
         self.textOutlineColor = try container.decodeIfPresent(String.self, forKey: .textOutlineColor) ?? Self.default.textOutlineColor
         self.position = try container.decodeIfPresent(SubtitlePositionPreset.self, forKey: .position) ?? Self.default.position
+        self.fontOpacity = 100
+        self.systemRelativeFontScale = nil
+        self.systemTextEdgeStyle = nil
+        self.captionWindowColor = "#000000"
+        self.captionWindowOpacity = 0
+        self.captionWindowCornerRadius = 0
+        self.systemContentOverrides = []
     }
 
     static func decode(from json: String?) -> SubtitleAppearance {
@@ -293,7 +363,16 @@ struct SubtitleAppearance: Codable, Equatable {
         if !Self.isValidHex(copy.fontColor) { copy.fontColor = Self.default.fontColor }
         if !Self.isValidHex(copy.backgroundColor) { copy.backgroundColor = Self.default.backgroundColor }
         if !Self.isValidHex(copy.textOutlineColor) { copy.textOutlineColor = Self.default.textOutlineColor }
+        if !Self.isValidHex(copy.captionWindowColor) { copy.captionWindowColor = "#000000" }
         copy.backgroundOpacity = max(0, min(100, copy.backgroundOpacity))
+        copy.fontOpacity = max(0, min(100, copy.fontOpacity))
+        copy.captionWindowOpacity = max(0, min(100, copy.captionWindowOpacity))
+        if let scale = copy.systemRelativeFontScale {
+            copy.systemRelativeFontScale = scale.isFinite ? max(0.1, min(5, scale)) : nil
+        }
+        copy.captionWindowCornerRadius = copy.captionWindowCornerRadius.isFinite
+            ? max(0, min(200, copy.captionWindowCornerRadius))
+            : 0
         // Legacy "outline" background style folds into the text-edge axis
         // so the UI has a single outline concept. Rendering is identical:
         // both paths draw a 2px border in the outline color.
@@ -362,4 +441,3 @@ struct EffectiveSettingResponse: Codable {
 struct EffectiveSettingsResponse: Codable {
     let settings: [EffectiveSettingResponse]
 }
-

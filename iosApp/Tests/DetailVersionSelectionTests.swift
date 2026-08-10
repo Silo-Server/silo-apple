@@ -3,6 +3,22 @@ import Foundation
 @testable import Silo
 
 final class DetailVersionSelectionTests: XCTestCase {
+
+    func testDeviceSettingsDoNotForwardServerSubtitleSeedAsManualChoice() {
+        XCTAssertNil(DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+            version: nil,
+            signature: nil,
+            mode: SubtitleMode.off.rawValue,
+            usesDeviceSettings: true
+        ))
+        XCTAssertEqual(DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+            version: nil,
+            signature: nil,
+            mode: SubtitleMode.off.rawValue,
+            usesDeviceSettings: false
+        ), -1)
+    }
+
     func testAutoDisplayPrefersBestVersionOverFirstReturnedVersion() {
         let versions = [
             version(fileId: 10, resolution: "1080p"),

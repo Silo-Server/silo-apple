@@ -111,8 +111,10 @@ struct DescriptionTranslationView: View {
             contentId: contentId,
             targetLanguage: targetLanguage
         ) { refreshed in
-            viewModel.detail = refreshed
-            ResponseCache.shared.set(refreshed, for: CacheKey.itemDetail(contentId))
+            // Through the view model's generation gate, so a detail load
+            // still suspended in enrichment can't land its pre-translation
+            // copy on top of this one.
+            viewModel.publishRefetchedDetail(refreshed, contentId: contentId)
         }
     }
 }

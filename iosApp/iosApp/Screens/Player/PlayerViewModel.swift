@@ -7,6 +7,39 @@ import SwiftUI
 /// so UI code (ChapterSheet, etc.) doesn't depend on the core type directly.
 typealias PlayerChapterInfo = PlayerCore.ChapterInfo
 
+/// Pure decision boundary for the credits setting's playback behavior.
+///
+/// Keeping the range/key checks outside the player backend makes every edge
+/// deterministic to test: the VM owns the seek side effect, while this policy
+/// decides whether the current time is the first eligible visit to this
+/// session/file/marker combination.
+enum CreditsAutoSkipPolicy {
+    static func target(
+        enabled: Bool,
+        playbackEligible: Bool,
+        time: Double,
+        range: TimeRange?,
+        markerKey: String?,
+        lastSkippedKey: String?
+    ) -> Double? {
+        guard enabled,
+              playbackEligible,
+              time.isFinite,
+              let range,
+              range.start.isFinite,
+              range.end.isFinite,
+              range.start >= 0,
+              range.end > range.start,
+              let markerKey,
+              markerKey != lastSkippedKey,
+              time >= range.start,
+              time < range.end else {
+            return nil
+        }
+        return range.end
+    }
+}
+
 private final class OneShotContinuation: @unchecked Sendable {
     private let lock = NSLock()
     private var didResume = false
@@ -916,8 +949,12 @@ class PlayerViewModel {
     private var prefsForCurrentItem: PrefsSnapshot?
     private struct PrefsSnapshot {
         let preferredLanguage: String?
+        let additionalPreferredLanguages: [String]
         let mode: SubtitleMode?
         let showForced: Bool
+        let forcedOnly: Bool
+        let preferAccessibilityTracks: Bool
+        let disableWhenNoLanguageMatch: Bool
         let trackSignature: SubtitleTrackSignature?
     }
     /// Set after the resolver has fired once for the current item so we
@@ -931,13 +968,14 @@ class PlayerViewModel {
     private var activePreparedProtocolV3: PreparedPlaybackV3?
     private var activePlaybackSessionId: String?
     private var autoSkippedIntroKey: String?
+    private var autoSkippedCreditsKey: String?
     private var autoSkipIntroCancelledKey: String?
     private var pendingAutoSkipIntroKey: String?
     private var autoSkipIntroCountdownTask: Task<Void, Never>?
     private var staleSessionRecoverySessionId: String?
     private var hasAttemptedNativeDirectRouteRecovery = false
     private var hasAttemptedSiloRouteCompatibilityFallback = false
-    private struct LoadRequest {
+    struct LoadRequest {
         let contentId: String
         let preferredFileId: Int?
         let preferredAudioTrackIndex: Int?
@@ -951,6 +989,28 @@ class PlayerViewModel {
         /// Explicit quality for this load (mid-stream quality-change replan);
         /// wins over `PlayerSettings.preferredQuality` in the bridge.
         var preferredQualityOverride: String? = nil
+
+        /// Rebuild a request for the same playback session while retaining the
+        /// user's temporary quality choice. Recovery must not fall back to the
+        /// persisted preference merely because tracks or the file id changed.
+        func copyForRecovery(
+            preferredFileId: Int?,
+            preferredAudioTrackIndex: Int?,
+            preferredSubtitleTrackIndex: Int?,
+            preferredSidecarSubtitleTrackId: Int64?,
+            offlineDownloadId: String?
+        ) -> LoadRequest {
+            LoadRequest(
+                contentId: contentId,
+                preferredFileId: preferredFileId,
+                preferredAudioTrackIndex: preferredAudioTrackIndex,
+                preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
+                preferredSidecarSubtitleTrackId: preferredSidecarSubtitleTrackId,
+                startFromBeginning: false,
+                offlineDownloadId: offlineDownloadId,
+                preferredQualityOverride: preferredQualityOverride
+            )
+        }
     }
 
     /// Where a `beginFreshLoad` invocation came from. Determines (a) whether
@@ -1036,7 +1096,9 @@ class PlayerViewModel {
     /// Re-applies subtitle styling when the user edits the system's
     /// Subtitles & Captioning preferences mid-playback.
     private var systemCaptionObserverToken: NSObjectProtocol?
-    private var audioRouteObserverToken: NSObjectProtocol?
+    /// Triggers a V3 replan when the audio route the session was planned
+    /// against changes. iOS/tvOS only — macOS has no `AVAudioSession`.
+    private var outputRouteObserverToken: NSObjectProtocol?
 
     init() {
         activePlayer = .none
@@ -1114,9 +1176,15 @@ class PlayerViewModel {
             guard let self, self.settings.subtitleMatchesSystemAppearance else { return }
             self.settings.refreshSubtitleSystemAppearance()
             self.applySubtitleAppearanceToPlayer()
+            self.subtitleOrderingLanguage = self.settings
+                .subtitleSystemSelectionPreferences.preferredLanguages.first
+            guard !self.hasExplicitSubtitleChoice else { return }
+            self.prefsForCurrentItem = self.systemCaptionPrefsSnapshot()
+            self.prefsResolvedForCurrentItem = false
+            self.applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: true)
         }
         #if !os(macOS)
-        audioRouteObserverToken = NotificationCenter.default.addObserver(
+        outputRouteObserverToken = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
             queue: .main
@@ -1252,6 +1320,7 @@ class PlayerViewModel {
             )
             self.updateNextUpPresentation(for: movieTime)
             self.autoSkipIntroIfNeeded(at: movieTime)
+            self.autoSkipCreditsIfNeeded(at: movieTime)
             self.pushNowPlayingIfDue()
         }
         cb.onDurationChange = { [weak self] seconds in
@@ -1330,6 +1399,7 @@ class PlayerViewModel {
             self.applySourceCacheStats(&enrichedStats)
             self.applyFileBitrateStats(&enrichedStats)
             self.applySourceOriginLabel(&enrichedStats)
+            self.applyRuntimeDynamicRangeBadge(enrichedStats)
             self.playbackStats = enrichedStats
         }
         cb.onEndOfFile = { [weak self] in
@@ -1530,6 +1600,9 @@ class PlayerViewModel {
                     return
                 }
                 guard !Task.isCancelled, !self.isDisposed else { return }
+                if completesQualitySwitch {
+                    self.lastLoadRequest?.preferredQualityOverride = prepared.activeQualityId
+                }
 
                 let previousSessionId = self.activePlaybackSessionId
                 self.activePlaybackSessionId = prepared.session.sessionId
@@ -1560,6 +1633,8 @@ class PlayerViewModel {
                 self.logExecutionPlan(plan)
                 await self.sessionBridge.reportProtocolV3PlanExecutionStarted()
                 await self.loadStream(plan: plan)
+            } catch is CancellationError {
+                return
             } catch {
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 Self.logger.error("Protocol V3 replan failed: \(String(describing: error), privacy: .public)")
@@ -2099,6 +2174,7 @@ class PlayerViewModel {
                 SubtitleTrackIdSpace.isSyntheticNonEmbedded(track.trackId) ? nil : TrackSelectionSnapshot(track: track)
             }
         let secondarySubtitleSelectionSnapshot = selectedSecondarySubtitleId
+        let explicitSubtitleChoiceSnapshot = hasExplicitSubtitleChoice
         resetPublishedLoadState(
             preferredAudioTrackIndex: preferredAudioTrackIndex,
             preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
@@ -2114,9 +2190,7 @@ class PlayerViewModel {
         pendingRecoveredAudioSelection = audioSelectionSnapshot
         pendingRecoveredSubtitleSelection = subtitleSelectionSnapshot
         pendingRecoveredSecondarySubtitleId = secondarySubtitleSelectionSnapshot
-        if subtitleSelectionSnapshot != nil {
-            hasExplicitSubtitleChoice = true
-        }
+        hasExplicitSubtitleChoice = explicitSubtitleChoiceSnapshot
         activePlayer.dispose()
         logExecutionPlan(fallbackPlan)
         Task { @MainActor [weak self] in
@@ -2303,6 +2377,7 @@ class PlayerViewModel {
             return
         }
         sourceProxy = prepared.proxy
+        sourceProxy?.setPlaybackRate(settings.playbackSpeed)
         sourceProxyFileId = prepared.proxy != nil ? currentSelectedVersion?.fileId : nil
         let loadPlan = prepared.plan
         activeExecutionPlan = loadPlan
@@ -2403,7 +2478,6 @@ class PlayerViewModel {
     private enum SourceProxyPreparationError: LocalizedError {
         case missingLocalURL
         case missingLoopbackSession
-        case unsupportedSourceURL
 
         var errorDescription: String? {
             switch self {
@@ -2411,8 +2485,6 @@ class PlayerViewModel {
                 return "local proxy URL was unavailable"
             case .missingLoopbackSession:
                 return "loopback session was unavailable"
-            case .unsupportedSourceURL:
-                return "loopback source URL is not HTTP(S)"
             }
         }
     }
@@ -2427,10 +2499,13 @@ class PlayerViewModel {
             // This load runs without a proxy, so any stashed cache has no
             // adopter — release it rather than hold its disk spans for the
             // rest of playback.
+            //
+            // Loopback included: the proxy exists to give the segment writer a
+            // cached, resumable HTTP origin, and a local `file://` source
+            // (offline downloads) needs neither — it is already seekable on
+            // disk and `LoopbackSegmentWriter` opens the path directly. The
+            // plan travels through unproxied, still pointing at the file.
             discardSourceCacheHandoff()
-            if plan.engine == .siloPlayerLoopback {
-                throw SourceProxyPreparationError.unsupportedSourceURL
-            }
             return SourceProxyPreparation(plan: plan, proxy: nil)
         }
         let cacheBudget = sourceCacheBudget(for: plan)
@@ -2786,11 +2861,21 @@ class PlayerViewModel {
     func setSubtitleMatchesSystemAppearance(_ enabled: Bool) {
         settings.setSubtitleMatchesSystemAppearance(enabled)
         applySubtitleAppearanceToPlayer()
+        subtitleOrderingLanguage = enabled
+            ? settings.subtitleSystemSelectionPreferences.preferredLanguages.first
+            : currentWatchDetail?.effectiveSubtitleLanguage
+        hasExplicitSubtitleChoice = false
+        prefsForCurrentItem = enabled
+            ? systemCaptionPrefsSnapshot()
+            : currentWatchDetail.map(serverSubtitlePrefsSnapshot)
+        prefsResolvedForCurrentItem = false
+        applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: true)
     }
 
     func setPlaybackSpeed(_ rate: Double) {
         settings.setPlaybackSpeed(rate)
         activePlayer.setSpeed(settings.playbackSpeed)
+        sourceProxy?.setPlaybackRate(settings.playbackSpeed)
         scheduleHideControls()
     }
 
@@ -3087,6 +3172,7 @@ class PlayerViewModel {
         currentSelectedVersion = nil
         activePreparedProtocolV3 = nil
         autoSkippedIntroKey = nil
+        autoSkippedCreditsKey = nil
         autoSkipIntroCancelledKey = nil
         selectedAudioId = nil
         selectedSubtitleId = nil
@@ -3164,13 +3250,11 @@ class PlayerViewModel {
 
     private func makeSuspendedPlaybackContext() -> SuspendedPlaybackContext? {
         guard let lastLoadRequest else { return nil }
-        let request = LoadRequest(
-            contentId: lastLoadRequest.contentId,
+        let request = lastLoadRequest.copyForRecovery(
             preferredFileId: lastLoadRequest.preferredFileId,
             preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
             preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
             preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-            startFromBeginning: false,
             offlineDownloadId: lastLoadRequest.offlineDownloadId
         )
         let resumePosition = currentTime.isFinite ? max(0, currentTime) : 0
@@ -3306,6 +3390,7 @@ class PlayerViewModel {
                 let session = prepared.session
                 self.activePlaybackSessionId = session.sessionId
                 self.autoSkippedIntroKey = nil
+                self.autoSkippedCreditsKey = nil
                 self.autoSkipIntroCancelledKey = nil
                 self.cancelPendingIntroAutoSkip()
                 self.staleSessionRecoverySessionId = nil
@@ -3317,7 +3402,9 @@ class PlayerViewModel {
                 // Snapshot the preferred language for track-list ordering
                 // unconditionally (even with an explicit choice) so the
                 // displayed groups float the user's language to the top.
-                self.subtitleOrderingLanguage = prepared.watchDetail.effectiveSubtitleLanguage
+                self.subtitleOrderingLanguage = self.settings.subtitleMatchesSystemAppearance
+                    ? self.settings.subtitleSystemSelectionPreferences.preferredLanguages.first
+                    : prepared.watchDetail.effectiveSubtitleLanguage
 
                 // Snapshot the server-resolved subtitle policy so the
                 // track-list callback (which fires post-FFmpeg-open)
@@ -3325,13 +3412,9 @@ class PlayerViewModel {
                 // entirely if the caller already passed an explicit
                 // subtitle index — manual override always wins.
                 if !self.hasExplicitSubtitleChoice {
-                    let modeRaw = prepared.watchDetail.effectiveSubtitleMode ?? ""
-                    self.prefsForCurrentItem = PrefsSnapshot(
-                        preferredLanguage: prepared.watchDetail.effectiveSubtitleLanguage,
-                        mode: SubtitleMode(rawValue: modeRaw),
-                        showForced: prepared.watchDetail.effectiveShowForcedSubtitles ?? false,
-                        trackSignature: prepared.watchDetail.effectiveSubtitleTrackSignature
-                    )
+                    self.prefsForCurrentItem = self.settings.subtitleMatchesSystemAppearance
+                        ? self.systemCaptionPrefsSnapshot()
+                        : self.serverSubtitlePrefsSnapshot(prepared.watchDetail)
                 }
 
                 self.title = prepared.displayTitle
@@ -3753,13 +3836,12 @@ class PlayerViewModel {
         let durationHint = duration.isFinite && duration > 0
             ? duration
             : (currentSelectedVersion?.duration ?? 0)
-        let renewalRequest = LoadRequest(
-            contentId: lastLoadRequest.contentId,
+        let renewalRequest = lastLoadRequest.copyForRecovery(
             preferredFileId: currentSelectedVersion?.fileId ?? lastLoadRequest.preferredFileId,
             preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
             preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
             preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-            startFromBeginning: false
+            offlineDownloadId: nil
         )
 
         Self.logger.warning(
@@ -3932,13 +4014,12 @@ class PlayerViewModel {
         let resumePosition = observedPosition.isFinite
             ? max(0, observedPosition)
             : max(0, currentTime)
-        let recoveryRequest = LoadRequest(
-            contentId: lastLoadRequest.contentId,
+        let recoveryRequest = lastLoadRequest.copyForRecovery(
             preferredFileId: currentSelectedVersion?.fileId ?? lastLoadRequest.preferredFileId,
             preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
             preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
             preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-            startFromBeginning: false
+            offlineDownloadId: nil
         )
 
         Self.logger.warning(
@@ -4168,15 +4249,49 @@ class PlayerViewModel {
             )
             return
         }
+        let qualityOverrideCapKbps = AppleQualityAxes.resolvedBitrateCap(
+            qualityOverride: resolvedQualityId,
+            fallbackBitrateKbps: nil
+        )
         let qualityRequiresTranscode = currentSelectedVersion.map {
             ApplePlaybackQuality.shouldForceTranscode(
                 preferredQualityId: resolvedQualityId,
-                selectedVersion: $0
+                selectedVersion: $0,
+                capKbps: qualityOverrideCapKbps
             )
         } ?? true
         if !qualityRequiresTranscode {
             if plan.delivery == .direct || plan.delivery == .remux {
+                if let selectedVersion = currentSelectedVersion,
+                   let watchDetail = currentWatchDetail,
+                   let lastLoadRequest,
+                   lastLoadRequest.offlineDownloadId == nil,
+                   ApplePlaybackQuality.shouldReselectSource(
+                       preferredQualityId: resolvedQualityId,
+                       selectedVersion: selectedVersion,
+                       availableVersions: watchDetail.versions
+                   ) {
+                    var request = lastLoadRequest.copyForRecovery(
+                        preferredFileId: nil,
+                        preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
+                        preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
+                        preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
+                        offlineDownloadId: nil
+                    )
+                    request.preferredQualityOverride = resolvedQualityId
+                    let target = currentTime.isFinite ? max(0, currentTime) : 0
+                    qualitySwitchError = nil
+                    beginFreshLoad(
+                        request: request,
+                        progressPosition: target,
+                        finalizeCurrentSession: true,
+                        resumePositionOverride: target,
+                        allowNearEndResume: true
+                    )
+                    return
+                }
                 activeQualityId = resolvedQualityId
+                lastLoadRequest?.preferredQualityOverride = resolvedQualityId
                 qualitySwitchError = nil
                 return
             }
@@ -4187,13 +4302,11 @@ class PlayerViewModel {
                 // replan the whole session so the server can hand back direct
                 // play. Same pattern as interruption recovery: preserve the
                 // current track selections and resume at the current position.
-                var request = LoadRequest(
-                    contentId: lastLoadRequest.contentId,
+                var request = lastLoadRequest.copyForRecovery(
                     preferredFileId: lastLoadRequest.preferredFileId,
                     preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
                     preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
                     preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-                    startFromBeginning: false,
                     offlineDownloadId: lastLoadRequest.offlineDownloadId
                 )
                 request.preferredQualityOverride = resolvedQualityId
@@ -4647,13 +4760,12 @@ class PlayerViewModel {
             return true
         }
 
-        let seekRequest = LoadRequest(
-            contentId: lastLoadRequest.contentId,
+        let seekRequest = lastLoadRequest.copyForRecovery(
             preferredFileId: lastLoadRequest.preferredFileId,
             preferredAudioTrackIndex: lastLoadRequest.preferredAudioTrackIndex,
             preferredSubtitleTrackIndex: lastLoadRequest.preferredSubtitleTrackIndex,
             preferredSidecarSubtitleTrackId: lastLoadRequest.preferredSidecarSubtitleTrackId,
-            startFromBeginning: false
+            offlineDownloadId: nil
         )
         beginFreshLoad(
             request: seekRequest,
@@ -4752,6 +4864,7 @@ class PlayerViewModel {
         let externalSubtitleSnapshot = knownExternalSubtitles
         let selectedSubtitleSnapshot = selectedSubtitleId
         let selectedSecondarySubtitleSnapshot = selectedSecondarySubtitleId
+        let explicitSubtitleChoiceSnapshot = hasExplicitSubtitleChoice
         // An embedded selection can't be re-established by trackId across
         // the backend rebuild (ids aren't stable), and after a switch to
         // transcode the same stream may resurface as a sidecar instead.
@@ -4794,11 +4907,15 @@ class PlayerViewModel {
                 let session = try await self.sessionBridge.restartCurrentTranscode(
                     selectedVersion: selectedVersion,
                     seekSeconds: target,
-                    qualityId: qualityId
+                    qualityOverride: source == "quality" ? qualityId : nil
                 )
                 guard !Task.isCancelled, !self.isDisposed else { return }
+                if source == "quality" {
+                    self.lastLoadRequest?.preferredQualityOverride = qualityId
+                }
                 self.activePlaybackSessionId = session.sessionId
                 self.autoSkippedIntroKey = nil
+                self.autoSkippedCreditsKey = nil
                 self.autoSkipIntroCancelledKey = nil
                 self.cancelPendingIntroAutoSkip()
                 self.staleSessionRecoverySessionId = nil
@@ -4836,9 +4953,7 @@ class PlayerViewModel {
                     self.pendingSidecarSubtitleTrackId = selectedSubtitleSnapshot
                 }
                 self.pendingRecoveredSubtitleSelection = embeddedSubtitleSelectionSnapshot
-                if embeddedSubtitleSelectionSnapshot != nil {
-                    self.hasExplicitSubtitleChoice = true
-                }
+                self.hasExplicitSubtitleChoice = explicitSubtitleChoiceSnapshot
                 self.pendingRecoveredSecondarySubtitleId = selectedSecondarySubtitleSnapshot
                 self.duration = session.durationSeconds ?? selectedVersion.duration ?? self.duration
                 self.currentTime = self.movieTime(for: session)
@@ -4867,6 +4982,8 @@ class PlayerViewModel {
                     "[CMP-SEEK] in-place transcode restart loaded target=\(target, privacy: .public)"
                 )
                 await self.loadStream(plan: restartedPlan)
+            } catch is CancellationError {
+                return
             } catch {
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 Self.logger.error("[CMP-SEEK] in-place transcode restart failed: \(String(describing: error), privacy: .public)")
@@ -4919,7 +5036,13 @@ class PlayerViewModel {
                 "[CMP-MARKERS] intro range active start=\(introRange.start, privacy: .public) end=\(introRange.end, privacy: .public)"
             )
         }
+        if let creditsRange {
+            Self.logger.info(
+                "[CMP-MARKERS] credits range active start=\(creditsRange.start, privacy: .public) end=\(creditsRange.end, privacy: .public)"
+            )
+        }
         autoSkipIntroIfNeeded(at: currentTime)
+        autoSkipCreditsIfNeeded(at: currentTime)
     }
 
     private func validTimeRange(_ range: TimeRange?) -> TimeRange? {
@@ -5018,12 +5141,42 @@ class PlayerViewModel {
         introAutoSkipCountdownSeconds = nil
     }
 
+    private func autoSkipCreditsIfNeeded(at time: Double) {
+        let key = creditsRange.flatMap(currentCreditsSkipKey(for:))
+        guard let target = CreditsAutoSkipPolicy.target(
+            enabled: settings.autoSkipCredits,
+            playbackEligible: !isLoading && !isBackgroundSuspended && !hasReachedEndOfFile,
+            time: time,
+            range: creditsRange,
+            markerKey: key,
+            lastSkippedKey: autoSkippedCreditsKey
+        ), let key else {
+            return
+        }
+
+        // Set the latch before seeking: a synchronous backend time callback
+        // caused by the seek must see this marker as already handled.
+        autoSkippedCreditsKey = key
+        Self.logger.info(
+            "[CMP-MARKERS] auto-skip credits target=\(target, privacy: .public) current=\(time, privacy: .public)"
+        )
+        seekTo(seconds: target)
+    }
+
     private func currentIntroSkipKey(for range: TimeRange) -> String? {
         guard let sessionId = activePlaybackSessionId,
               let fileId = currentSelectedVersion?.fileId else {
             return nil
         }
         return "\(sessionId):\(fileId):\(range.start):\(range.end)"
+    }
+
+    private func currentCreditsSkipKey(for range: TimeRange) -> String? {
+        guard let sessionId = activePlaybackSessionId,
+              let fileId = currentSelectedVersion?.fileId else {
+            return nil
+        }
+        return "\(sessionId):\(fileId):credits:\(range.start):\(range.end)"
     }
 
     func beginScrub(fraction: Double) {
@@ -5098,6 +5251,7 @@ class PlayerViewModel {
         pendingAudioFfIndex = nil
         selectedAudioId = track.trackId
         persistAudioSelection(track)
+        reapplySystemSubtitlePolicy()
         if activePreparedProtocolV3 != nil {
             attemptProtocolV3Replan(
                 position: currentTime,
@@ -5113,6 +5267,7 @@ class PlayerViewModel {
 
     func selectSubtitle(_ track: PlayerTrack) {
         guard !isBackgroundSuspended else { return }
+        hasExplicitSubtitleChoice = true
         pendingSubtitleFfIndex = nil
         if selectedSecondarySubtitleId == track.trackId {
             selectedSecondarySubtitleId = nil
@@ -5139,6 +5294,7 @@ class PlayerViewModel {
 
     func disableSubtitles() {
         guard !isBackgroundSuspended else { return }
+        hasExplicitSubtitleChoice = true
         pendingSubtitleFfIndex = nil
         if selectedSecondarySubtitleId != nil {
             selectedSecondarySubtitleId = nil
@@ -5786,6 +5942,7 @@ class PlayerViewModel {
         creditsRange = nil
         cancelPendingIntroAutoSkip()
         autoSkippedIntroKey = nil
+        autoSkippedCreditsKey = nil
         autoSkipIntroCancelledKey = nil
         knownExternalSubtitles = []
         subtitleAI.reset()
@@ -5815,9 +5972,9 @@ class PlayerViewModel {
         freshLoadTask?.cancel()
         protocolV3ReplanTask?.cancel()
         protocolV3ReplanTask = nil
-        if let audioRouteObserverToken {
-            NotificationCenter.default.removeObserver(audioRouteObserverToken)
-            self.audioRouteObserverToken = nil
+        if let outputRouteObserverToken {
+            NotificationCenter.default.removeObserver(outputRouteObserverToken)
+            self.outputRouteObserverToken = nil
         }
         nextUpLookupTask?.cancel()
         nextUpOnDeckTask?.cancel()
@@ -5919,8 +6076,8 @@ class PlayerViewModel {
         if let systemCaptionObserverToken {
             NotificationCenter.default.removeObserver(systemCaptionObserverToken)
         }
-        if let audioRouteObserverToken {
-            NotificationCenter.default.removeObserver(audioRouteObserverToken)
+        if let outputRouteObserverToken {
+            NotificationCenter.default.removeObserver(outputRouteObserverToken)
         }
         freshLoadTask?.cancel()
         protocolV3ReplanTask?.cancel()
@@ -6401,6 +6558,46 @@ class PlayerViewModel {
         }
     }
 
+    /// The session metadata is available before the engine has inspected its
+    /// format description, and derives its badge from the server's `hdr`
+    /// flag — so it may only say "HDR", or claim HDR for a source the user's
+    /// settings have since routed to SDR. Once the engine confirms what it is
+    /// actually rendering, reconcile the visible badge with that.
+    ///
+    /// Only `confirmedDynamicRange` is trusted here: `stats.dynamicRange` is
+    /// a prose label that describes the *source* ("Dolby Vision Profile 7 …
+    /// as HDR10") and falls back to the planned route when introspection is
+    /// unavailable, so matching on it claims Dolby Vision for pictures
+    /// rendering as plain HDR10. A `nil` confirmation means "not determined
+    /// yet" and leaves the source-derived badge untouched.
+    private func applyRuntimeDynamicRangeBadge(_ stats: PlaybackStats) {
+        guard let confirmed = stats.confirmedDynamicRange else { return }
+
+        let replacement: String?
+        switch confirmed {
+        case .dolbyVision: replacement = "Dolby Vision"
+        case .hdr10, .hlg: replacement = "HDR"
+        case .sdr: replacement = nil
+        }
+
+        let isDynamicRangeBadge: (String) -> Bool = { badge in
+            let normalized = badge.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            return normalized == "HDR" || normalized == "DV" || normalized == "DOLBY VISION"
+        }
+
+        // Keep the badge where the source put it — between resolution and
+        // video codec — rather than re-inserting it at a fixed index.
+        var expectedBadges = metadata.badges
+        let existing = expectedBadges.firstIndex(where: isDynamicRangeBadge)
+        expectedBadges.removeAll(where: isDynamicRangeBadge)
+        if let replacement {
+            expectedBadges.insert(replacement, at: min(existing ?? 1, expectedBadges.count))
+        }
+
+        guard metadata.badges != expectedBadges else { return }
+        metadata.badges = expectedBadges
+    }
+
     private func applySourceCacheStats(_ stats: inout PlaybackStats) {
         guard let sourceProxy else { return }
         let sourceStats = sourceProxy.stats()
@@ -6569,6 +6766,8 @@ class PlayerViewModel {
             "db1p"
         case .passthroughProfile8(.hdr10):
             "db1p"
+        case .passthroughProfile8(.sdr):
+            "db2g"
         case .passthroughProfile8(.hlg):
             "db4h"
         case .passthroughHEVC, .passthroughH264:
@@ -7061,7 +7260,10 @@ class PlayerViewModel {
             }
         }
 
-        if restoredPrimarySidecar { return }
+        if restoredPrimarySidecar,
+           !settings.subtitleMatchesSystemAppearance || hasExplicitSubtitleChoice {
+            return
+        }
 
         // A pre-restart embedded selection can resurface as a sidecar when
         // the new route has the server extract embedded streams into
@@ -7078,13 +7280,18 @@ class PlayerViewModel {
                 selectedSubtitleId = match.trackId
                 applySubtitleTrackSelection(match.trackId)
             }
-            return
+            if !settings.subtitleMatchesSystemAppearance || hasExplicitSubtitleChoice {
+                return
+            }
         }
 
         // If a forced sidecar is present, auto-select it. Forced tracks
         // (for non-native dialogue or song lyrics in anime) are meant
-        // to display regardless of the user's subtitle preference.
-        if selectedSubtitleId == nil,
+        // to display regardless of the Silo subtitle preference. Device
+        // settings mode instead routes every sidecar through Apple's ordered
+        // language policy, including Forced Only.
+        if !settings.subtitleMatchesSystemAppearance,
+           selectedSubtitleId == nil,
            let forced = descriptors.first(where: { $0.forced == true }) {
             let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: forced.index)
             selectedSubtitleId = trackId
@@ -7092,7 +7299,9 @@ class PlayerViewModel {
             return
         }
 
-        applyAutoSubtitlePreferencesIfNeeded(forceWhenNoSelection: true)
+        applyAutoSubtitlePreferencesIfNeeded(
+            forceReevaluation: settings.subtitleMatchesSystemAppearance || selectedSubtitleId == nil
+        )
     }
 
     /// Called on every `track-list` change. Updates the published track lists,
@@ -7203,28 +7412,97 @@ class PlayerViewModel {
         return best.track
     }
 
-    private func applyAutoSubtitlePreferencesIfNeeded(forceWhenNoSelection: Bool = false) {
+    private func applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: Bool = false) {
         guard !hasExplicitSubtitleChoice, let prefs = prefsForCurrentItem else { return }
-        if prefsResolvedForCurrentItem && !(forceWhenNoSelection && selectedSubtitleId == nil) {
+        if prefsResolvedForCurrentItem && !forceReevaluation {
             return
         }
 
         let allSubs = subtitleTracks
-        guard !allSubs.isEmpty else { return }
 
         let audioLang = audioTracks
             .first(where: { $0.trackId == selectedAudioId })?
             .lang
         let pick = SubtitleAutoResolver.resolve(.init(
             preferredLanguage: prefs.preferredLanguage,
+            additionalPreferredLanguages: prefs.additionalPreferredLanguages,
             mode: prefs.mode,
             showForced: prefs.showForced,
+            forcedOnly: prefs.forcedOnly,
+            preferAccessibilityTracks: prefs.preferAccessibilityTracks,
+            disableWhenNoLanguageMatch: prefs.disableWhenNoLanguageMatch,
             trackSignature: prefs.trackSignature,
             availableSubtitles: allSubs,
             currentAudioLanguage: audioLang
         ))
-        prefsResolvedForCurrentItem = true
+        // An empty callback still has to clear a server-seeded automatic
+        // selection in device-settings mode, but it must not latch the
+        // resolver: embedded or sidecar tracks can arrive in a later update.
+        prefsResolvedForCurrentItem = !allSubs.isEmpty
         applyAutoSubtitle(pick)
+    }
+
+    private func reapplySystemSubtitlePolicy() {
+        guard settings.subtitleMatchesSystemAppearance, !hasExplicitSubtitleChoice else { return }
+        subtitleOrderingLanguage = settings.subtitleSystemSelectionPreferences
+            .preferredLanguages.first
+        prefsForCurrentItem = systemCaptionPrefsSnapshot()
+        prefsResolvedForCurrentItem = false
+        applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: true)
+    }
+
+    private func systemCaptionPrefsSnapshot() -> PrefsSnapshot {
+        let system = settings.subtitleSystemSelectionPreferences
+        let firstLanguage = system.preferredLanguages.first
+        let remainingLanguages = Array(system.preferredLanguages.dropFirst())
+        switch system.displayMode {
+        case .forcedOnly:
+            return PrefsSnapshot(
+                preferredLanguage: firstLanguage,
+                additionalPreferredLanguages: remainingLanguages,
+                mode: .auto,
+                showForced: true,
+                forcedOnly: true,
+                preferAccessibilityTracks: system.prefersAccessibilityTracks,
+                disableWhenNoLanguageMatch: true,
+                trackSignature: nil
+            )
+        case .automatic:
+            return PrefsSnapshot(
+                preferredLanguage: firstLanguage,
+                additionalPreferredLanguages: remainingLanguages,
+                mode: .auto,
+                showForced: true,
+                forcedOnly: false,
+                preferAccessibilityTracks: system.prefersAccessibilityTracks,
+                disableWhenNoLanguageMatch: true,
+                trackSignature: nil
+            )
+        case .alwaysOn:
+            return PrefsSnapshot(
+                preferredLanguage: firstLanguage,
+                additionalPreferredLanguages: remainingLanguages,
+                mode: .always,
+                showForced: false,
+                forcedOnly: false,
+                preferAccessibilityTracks: system.prefersAccessibilityTracks,
+                disableWhenNoLanguageMatch: true,
+                trackSignature: nil
+            )
+        }
+    }
+
+    private func serverSubtitlePrefsSnapshot(_ watchDetail: WatchDetail) -> PrefsSnapshot {
+        PrefsSnapshot(
+            preferredLanguage: watchDetail.effectiveSubtitleLanguage,
+            additionalPreferredLanguages: [],
+            mode: SubtitleMode(rawValue: watchDetail.effectiveSubtitleMode ?? ""),
+            showForced: watchDetail.effectiveShowForcedSubtitles ?? false,
+            forcedOnly: false,
+            preferAccessibilityTracks: false,
+            disableWhenNoLanguageMatch: false,
+            trackSignature: watchDetail.effectiveSubtitleTrackSignature
+        )
     }
 
     /// Apply a resolver verdict. `noChange` is the "leave the player

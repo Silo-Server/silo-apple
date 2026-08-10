@@ -87,7 +87,10 @@ final class PlayerSurfaceHostView: UIView {
 
     func attach(player: PlayerCore) {
         if attachedPlayer === player { return }
-        attachedPlayer?.detachSubtitleOverlay(owner: self)
+        if let attachedPlayer {
+            attachedPlayer.detachSubtitleOverlay(owner: self)
+            attachedPlayer.onSigPeakChange = nil
+        }
         attachedPlayer = player
         player.attach(to: displayLayer)
 
@@ -107,9 +110,12 @@ final class PlayerSurfaceHostView: UIView {
 
         // iOS EDR: sig-peak > 0 means the stream is HDR and the user has
         // HDR enabled. Combine with the screen's available EDR headroom
-        // before flipping the flag. tvOS never fires this callback.
-        player.onSigPeakChange = { [weak self] peak in
-            self?.updateEDR(sigPeak: peak)
+        // before flipping the flag. tvOS never fires this callback. A core
+        // this host has since replaced must not apply its peak to the new
+        // one, so the callback checks it still owns the attachment.
+        player.onSigPeakChange = { [weak self, weak player] peak in
+            guard let self, let player, self.attachedPlayer === player else { return }
+            self.updateEDR(sigPeak: peak)
         }
         updateEDR(sigPeak: player.lastSigPeak)
     }
@@ -155,11 +161,14 @@ final class PlayerSurfaceHostView: UIView {
     /// Toggle EDR on the display layer based on stream peak + current screen
     /// headroom. iOS-only; tvOS composites HDR through HDMI and doesn't
     /// expose `preferredDynamicRange` on this layer in a way
-    /// that matters.
+    /// that matters. The decision itself lives in `HDRDisplayCriteriaPolicy`
+    /// so this host and the macOS one cannot drift apart.
     func updateEDR(sigPeak: Double) {
         #if os(iOS)
-        let headroom = window?.screen.potentialEDRHeadroom ?? 1.0
-        let enable = sigPeak > 1.0 && headroom > 1.0
+        let enable = HDRDisplayCriteriaPolicy.shouldEnableEDR(
+            sigPeak: sigPeak,
+            screenHeadroom: PlatformScreen.potentialEDRHeadroom(of: window?.screen)
+        )
         let dynamicRange: CALayer.DynamicRange = enable ? .high : .standard
         if displayLayer.preferredDynamicRange != dynamicRange {
             displayLayer.preferredDynamicRange = dynamicRange

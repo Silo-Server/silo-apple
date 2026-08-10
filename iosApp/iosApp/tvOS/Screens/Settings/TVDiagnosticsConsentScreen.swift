@@ -10,7 +10,7 @@ struct TVDiagnosticsConsentScreen: View {
 
     var body: some View {
         ZStack {
-            Color.continuumBackground.ignoresSafeArea()
+            SettingsBackdrop()
 
             VStack(alignment: .leading, spacing: 24) {
                 Text("Crash Reports")
