@@ -662,6 +662,31 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(mixed.selectedNavigationIcon, "square.stack.3d.up.fill")
     }
 
+    func testPinnedMixedLibraryOnlySwitchesAmongMixedLibraries() {
+        let mixed = Library(
+            id: 1, name: "Mixed A", type: "mixed", sortOrder: 0, posterUrl: nil
+        )
+        let otherMixed = Library(
+            id: 2, name: "Mixed B", type: "mixed", sortOrder: 1, posterUrl: nil
+        )
+        let movies = Library(
+            id: 3, name: "Movies", type: "movies", sortOrder: 2, posterUrl: nil
+        )
+        let series = Library(
+            id: 4, name: "Series", type: "series", sortOrder: 3, posterUrl: nil
+        )
+
+        XCTAssertEqual(
+            visibleLibrariesForRoot(
+                [mixed, otherMixed, movies, series],
+                category: nil,
+                fixedLibraryId: mixed.id,
+                showAudiobooks: true
+            ).map(\.id),
+            [mixed.id, otherMixed.id]
+        )
+    }
+
     func testPrimaryMenuEditorOnlyOffsetsLibrariesWithinTheirMediaType() {
         let rows = [
             PrimaryMenuEditorRow(item: .builtin(.movies), parentMediaType: nil),

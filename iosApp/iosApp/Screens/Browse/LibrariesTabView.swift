@@ -82,6 +82,13 @@ func groupPinnedLibrariesUnderMediaTypes<Element>(
 }
 
 private func sharesPrimaryMenuCategory(_ lhs: Library, _ rhs: Library) -> Bool {
+    // Mixed libraries participate in both authored Movies and Series roots,
+    // but a pinned mixed-library root is its own scope. Treating its two
+    // category memberships as sibling relationships would expose every movie
+    // and series library from that direct root.
+    if lhs.isMixedLibrary {
+        return rhs.isMixedLibrary
+    }
     let categories: [PrimaryMenuBuiltin] = [.movies, .series, .audiobooks]
     return categories.contains {
         libraryMatchesPrimaryMenuCategory(lhs, category: $0)
@@ -358,9 +365,9 @@ struct LibrariesTabView: View {
     }
 
     /// The media-type scope the picker opened under, if any. A direct-library
-    /// root inherits the pinned library's type since its siblings share it —
-    /// unless the pinned library is mixed, whose sibling list spans both
-    /// movie and series libraries and so has no single scope.
+    /// root inherits the pinned library's type since its siblings share it.
+    /// Mixed-library roots have their own scope rather than inheriting either
+    /// Movies or Series.
     private var pickerScopeCategory: PrimaryMenuBuiltin? {
         if let category { return category }
         guard let fixedLibraryId,
