@@ -167,8 +167,9 @@ enum ApplePlaybackV3Capabilities {
                 supportedOnDevice: true,
                 failureReason: nil,
                 containers: ["hls", "mpegts", "fmp4", "mp4"],
-                // HLS always executes through AVPlayer. The wider flat list
-                // also contains the PlayerCore-only MPEG-2 software decoder.
+                // HLS always executes through AVPlayer. The locally attested
+                // `videoCodecs` list also contains PlayerCore-only MPEG-2;
+                // the shared AVPlayer list deliberately does not.
                 videoCodecs: AppleDecodeCapabilities.videoCodecs,
                 audioDecodeCodecs: ["aac", "ac3", "eac3"],
                 audioPassthroughCodecs: [],

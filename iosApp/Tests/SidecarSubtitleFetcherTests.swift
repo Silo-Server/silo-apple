@@ -85,17 +85,22 @@ final class SidecarSubtitleFetcherTests: XCTestCase {
         let fetcher = SidecarSubtitleFetcher(
             session: makeSession(),
             fontBundleResponseByteLimit: 1_024,
-            fontBundleCacheByteLimit: 2
+            fontBundleCacheByteLimit: 4
         )
         let first = try XCTUnwrap(URL(string: "https://example.invalid/first"))
         let second = try XCTUnwrap(URL(string: "https://example.invalid/second"))
+        let third = try XCTUnwrap(URL(string: "https://example.invalid/third"))
 
         _ = try await fetcher.fetchFontBundle(url: first)
         _ = try await fetcher.fetchFontBundle(url: second)
         _ = try await fetcher.fetchFontBundle(url: first)
+        _ = try await fetcher.fetchFontBundle(url: third)
+        _ = try await fetcher.fetchFontBundle(url: first)
+        _ = try await fetcher.fetchFontBundle(url: second)
 
-        XCTAssertEqual(FontBundleURLProtocol.requestCount(for: first), 2)
-        XCTAssertEqual(FontBundleURLProtocol.requestCount(for: second), 1)
+        XCTAssertEqual(FontBundleURLProtocol.requestCount(for: first), 1)
+        XCTAssertEqual(FontBundleURLProtocol.requestCount(for: second), 2)
+        XCTAssertEqual(FontBundleURLProtocol.requestCount(for: third), 1)
     }
 
     private func makeSession() -> URLSession {
