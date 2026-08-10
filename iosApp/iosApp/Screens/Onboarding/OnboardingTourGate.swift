@@ -21,6 +21,30 @@ final class OnboardingTourGateModel {
         checkedProfileId = profileId
         showTour = false
 
+        if let serverId = ServerRegistry.shared.activeServerId,
+           let tourId = UnrenderableOnboardingTourSuppression.pendingTourId(
+               serverId: serverId,
+               profileId: profileId
+           ) {
+            do {
+                try await ContinuumAPI.shared.postOnboardingProgress(OnboardingProgressRequest(
+                    tourId: tourId,
+                    lastStep: nil,
+                    completed: true,
+                    skipped: false
+                ))
+                UnrenderableOnboardingTourSuppression.clear(
+                    serverId: serverId,
+                    profileId: profileId,
+                    tourId: tourId
+                )
+            } catch {
+                // Keep suppressing the empty UI and retry this completion on
+                // the next authenticated launch.
+            }
+            return
+        }
+
         if OnboardingTourSuppression.applies(to: ServerRegistry.shared.activeServerId) {
             do {
                 let flow = try await ContinuumAPI.shared.onboardingFlow(surface: "phone")

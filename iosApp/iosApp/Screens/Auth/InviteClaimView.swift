@@ -158,6 +158,10 @@ struct InviteClaimView: View {
                 .buttonStyle(AuroraPrimaryButtonStyle(isLoading: viewModel.isSubmitting))
                 .disabled(viewModel.isSubmitting)
                 .padding(.top, 4)
+
+                Button("Cancel") { router.restoreAfterCancelledInvite() }
+                    .buttonStyle(AuroraGhostButtonStyle())
+                    .disabled(viewModel.isSubmitting)
             }
             .padding(22)
             .auroraGlass(cornerRadius: 24, emphasized: true)

@@ -73,3 +73,38 @@ enum OnboardingTourSuppression {
         SharedDefaults.shared.removeObject(forKey: key)
     }
 }
+
+/// Prevents an unknown future manifest from reopening an empty tour forever
+/// when the completion post is temporarily unavailable. The gate retries the
+/// same completion silently on later authenticated launches.
+enum UnrenderableOnboardingTourSuppression {
+    private struct Record: Codable, Equatable {
+        let serverId: String
+        let profileId: String
+        let tourId: String
+    }
+
+    private static let key = "unrenderableOnboardingTour.v1"
+
+    static func set(serverId: String, profileId: String, tourId: String) {
+        let record = Record(serverId: serverId, profileId: profileId, tourId: tourId)
+        guard let data = try? JSONEncoder().encode(record) else { return }
+        SharedDefaults.shared.set(data, forKey: key)
+    }
+
+    static func pendingTourId(serverId: String?, profileId: String) -> String? {
+        guard let serverId,
+              let data = SharedDefaults.shared.data(forKey: key),
+              let record = try? JSONDecoder().decode(Record.self, from: data),
+              record.serverId == serverId,
+              record.profileId == profileId else {
+            return nil
+        }
+        return record.tourId
+    }
+
+    static func clear(serverId: String, profileId: String, tourId: String) {
+        guard pendingTourId(serverId: serverId, profileId: profileId) == tourId else { return }
+        SharedDefaults.shared.removeObject(forKey: key)
+    }
+}

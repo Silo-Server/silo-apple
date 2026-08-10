@@ -56,13 +56,36 @@ class OnboardingTourViewModel {
             let flow = try await api.onboardingFlow(surface: "phone")
             let renderable = flow.steps.filter { Self.knownKinds.contains($0.kind) }
             if renderable.isEmpty {
-                // Nothing we can show: mark complete so we never loop.
-                try? await api.postOnboardingProgress(OnboardingProgressRequest(
-                    tourId: flow.tourId,
-                    lastStep: nil,
-                    completed: true,
-                    skipped: false
-                ))
+                // Nothing we can show: dismiss now and persist a retry marker
+                // before posting completion so a transient failure cannot
+                // reopen an empty modal on every launch.
+                let serverId = ServerRegistry.shared.activeServerId
+                let profileId = AuthService.shared.profileId
+                if let serverId, let profileId {
+                    UnrenderableOnboardingTourSuppression.set(
+                        serverId: serverId,
+                        profileId: profileId,
+                        tourId: flow.tourId
+                    )
+                }
+                do {
+                    try await api.postOnboardingProgress(OnboardingProgressRequest(
+                        tourId: flow.tourId,
+                        lastStep: nil,
+                        completed: true,
+                        skipped: false
+                    ))
+                    if let serverId, let profileId {
+                        UnrenderableOnboardingTourSuppression.clear(
+                            serverId: serverId,
+                            profileId: profileId,
+                            tourId: flow.tourId
+                        )
+                    }
+                } catch {
+                    // The durable marker makes the gate retry without showing
+                    // an empty tour, so dismissal is still safe here.
+                }
                 finished = true
                 return
             }

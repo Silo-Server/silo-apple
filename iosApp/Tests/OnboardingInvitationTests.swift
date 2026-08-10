@@ -112,6 +112,17 @@ final class OnboardingInvitationTests: XCTestCase {
         XCTAssertFalse(model.finished)
     }
 
+    @MainActor
+    func testUnrenderableFlowDismissesWhenCompletionPostFails() async {
+        let api = OnboardingTourAPIStub(failProgress: true)
+        let model = OnboardingTourViewModel(api: api)
+
+        await model.load()
+
+        XCTAssertTrue(model.finished)
+        XCTAssertTrue(model.steps.isEmpty)
+    }
+
     private static func settingStep(id: String, target: String, key: String) -> OnboardingStep {
         OnboardingStep(
             id: id,
@@ -161,9 +172,11 @@ final class OnboardingInvitationTests: XCTestCase {
 private actor OnboardingTourAPIStub: OnboardingTourAPI {
     private var recordedWrites: [String] = []
     private let failWrites: Bool
+    private let failProgress: Bool
 
-    init(failWrites: Bool = false) {
+    init(failWrites: Bool = false, failProgress: Bool = false) {
         self.failWrites = failWrites
+        self.failProgress = failProgress
     }
 
     func writes() -> [String] { recordedWrites }
@@ -172,7 +185,9 @@ private actor OnboardingTourAPIStub: OnboardingTourAPI {
         OnboardingFlow(version: 1, tourId: "tour", steps: [])
     }
 
-    func postOnboardingProgress(_ request: OnboardingProgressRequest) async throws {}
+    func postOnboardingProgress(_ request: OnboardingProgressRequest) async throws {
+        if failProgress { throw URLError(.cannotConnectToHost) }
+    }
     func updateProfile(profileId: String, body: UpdateProfileBody) async throws {}
 
     func setSetting(key: String, value: String) async throws {
