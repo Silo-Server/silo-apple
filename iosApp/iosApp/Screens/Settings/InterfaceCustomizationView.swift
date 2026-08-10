@@ -243,7 +243,7 @@ struct InterfaceCustomizationView: View {
                                 .accessibilityLabel("Move \(displayTitle(for: item)) down")
 
                                 Button {
-                                    hide(item)
+                                    remove(item)
                                 } label: {
                                     Image(systemName: "minus.circle.fill")
                                         .foregroundStyle(.red)
@@ -251,7 +251,9 @@ struct InterfaceCustomizationView: View {
                                         .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                .accessibilityLabel("Hide \(displayTitle(for: item))")
+                                .accessibilityLabel(
+                                    "\(removalVerb(for: item)) \(displayTitle(for: item))"
+                                )
                             }
                             // The controls never compress; the flexible title
                             // column absorbs narrow widths by truncating.
@@ -262,7 +264,7 @@ struct InterfaceCustomizationView: View {
             } header: {
                 Text("Primary Menu")
             } footer: {
-                Text("Home is required. Use the arrows to reorder items. Libraries stay grouped under their media type and can only move within that group. Downloads (when available), Search, and Profile stay automatic.")
+                Text("Home is required. Use the arrows to reorder items. Libraries stay grouped under their media type and can only move within that group. Removing a library unpins it from your profile. Downloads (when available), Search, and Profile stay automatic.")
             }
             .disabled(
                 !preferences.allowsEditing
@@ -459,11 +461,19 @@ struct InterfaceCustomizationView: View {
         ) != nil
     }
 
-    private func hide(_ item: PrimaryMenuItem) {
+    private func remove(_ item: PrimaryMenuItem) {
         guard !item.isHome else { return }
-        // This control edits the current family menu. A library shortcut is
-        // profile-wide, so hiding its placement must not unpin it elsewhere.
+        if case .library(let libraryId, _) = item,
+           let library = libraries.first(where: { $0.id == libraryId }) {
+            preferences.setLibraryPinned(library, isPinned: false)
+            return
+        }
         persistVisibleDestinations(visibleDestinations.filter { $0.id != item.id })
+    }
+
+    private func removalVerb(for item: PrimaryMenuItem) -> String {
+        if case .library = item { return "Unpin" }
+        return "Hide"
     }
 
     private func addAvailableShortcut(_ item: PrimaryMenuItem) {
