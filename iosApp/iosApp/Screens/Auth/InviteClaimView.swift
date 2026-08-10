@@ -3,13 +3,14 @@ import SwiftUI
 #if !os(tvOS)
 /// Emailed-invitation claim. The deep link carried the server and token, so
 /// this screen asks for a password and nothing else. Mirrors SignupView's
-/// Aurora treatment; the invite journey reads Invite → Password → Profile.
+/// Aurora treatment; the invite journey reads Server → Password → Household.
 struct InviteClaimView: View {
     var router: AppRouter
-    let serverUrl: String
+    let endpoint: ServerEndpoint
     let token: String
 
     @State private var viewModel = InviteClaimViewModel()
+    @State private var hasConfirmedServer = false
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable { case password, confirm }
@@ -20,12 +21,17 @@ struct InviteClaimView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.bottom, 26)
 
-            AuroraJourneyProgress(currentStep: 2)
+            AuroraJourneyProgress(
+                currentStep: hasConfirmedServer ? 2 : 1,
+                labels: ["Server", "Password", "Household"]
+            )
                 .frame(maxWidth: 330)
                 .frame(maxWidth: .infinity)
                 .padding(.bottom, 30)
 
-            if viewModel.isLoadingInvitation {
+            if !hasConfirmedServer {
+                serverConfirmationCard
+            } else if viewModel.isLoadingInvitation {
                 ProgressView()
                     .tint(Color.auroraInk)
                     .frame(maxWidth: .infinity)
@@ -37,9 +43,38 @@ struct InviteClaimView: View {
             }
         }
         .navigationBarBackButtonHidden()
-        .task(id: token) {
-            await viewModel.load(serverUrl: serverUrl, token: token)
+        .task(id: hasConfirmedServer) {
+            guard hasConfirmedServer else { return }
+            await viewModel.load(endpoint: endpoint, token: token)
         }
+    }
+
+    private var serverConfirmationCard: some View {
+        VStack(spacing: 14) {
+            AuroraEyebrow(text: "Invitation server", centered: true)
+            Text("Continue to \(endpoint.displayHost)?")
+                .font(.continuumTitle)
+                .foregroundStyle(Color.auroraInk)
+                .multilineTextAlignment(.center)
+            Text(endpoint.baseURL)
+                .font(.continuumCaption.monospaced())
+                .foregroundStyle(Color.auroraInkSecondary)
+                .multilineTextAlignment(.center)
+                .textSelection(.enabled)
+            Text("Only continue if you recognize and trust this server. It will receive the invitation token from this link.")
+                .font(.continuumBody)
+                .foregroundStyle(Color.auroraInkSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button("Continue") { hasConfirmedServer = true }
+                .buttonStyle(AuroraPrimaryButtonStyle())
+                .padding(.top, 8)
+            Button("Cancel") { router.restoreAfterCancelledInvite() }
+                .buttonStyle(AuroraGhostButtonStyle())
+        }
+        .padding(22)
+        .auroraGlass(cornerRadius: 24, emphasized: true)
     }
 
     private var expiredCard: some View {
@@ -55,7 +90,7 @@ struct InviteClaimView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Button("Back to sign in") { router.resetToLogin() }
+            Button("Back") { router.restoreAfterCancelledInvite() }
                 .buttonStyle(AuroraGhostButtonStyle())
                 .frame(maxWidth: .infinity)
                 .padding(.top, 12)
@@ -73,6 +108,9 @@ struct InviteClaimView: View {
                     .font(.continuumTitle)
                     .foregroundStyle(Color.auroraInk)
                     .multilineTextAlignment(.center)
+                Text(endpoint.displayHost)
+                    .font(.continuumCaption.monospaced())
+                    .foregroundStyle(Color.auroraInkTertiary)
                 Text("Choose a password and you're in. You'll sign in with your email address.")
                     .font(.continuumBody)
                     .foregroundStyle(Color.auroraInkSecondary)

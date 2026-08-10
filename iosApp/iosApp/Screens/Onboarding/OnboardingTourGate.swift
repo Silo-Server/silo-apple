@@ -1,53 +1,50 @@
 import SwiftUI
 
 #if !os(tvOS)
-/// Presents the first-run tour over the authenticated UI when the active
-/// profile has never completed or skipped it. State is server-side per
-/// profile, so finishing on any device (web, Android, here) silences the
-/// rest. Errors and "already done" both mean: show nothing.
-struct OnboardingTourGate: ViewModifier {
-    var router: AppRouter
-    @State private var showTour = false
-    @State private var checkedProfileId: String?
+/// Platform-neutral state for the iOS full-screen cover and macOS sheet.
+/// A completed request is committed only if the same profile is still active,
+/// preventing a slow response from presenting a stale profile's tour.
+@Observable
+@MainActor
+final class OnboardingTourGateModel {
+    var showTour = false
+    private var checkedProfileId: String?
 
-    func body(content: Content) -> some View {
-        content
-            .task(id: AuthService.shared.profileId) {
-                guard let profileId = AuthService.shared.profileId else { return }
-                guard checkedProfileId != profileId else { return }
-                checkedProfileId = profileId
-                if let state = try? await ContinuumAPI.shared.onboardingState(), !state.done {
-                    showTour = true
-                }
+    func check(profileId: String?) async {
+        guard let profileId else {
+            checkedProfileId = nil
+            showTour = false
+            return
+        }
+        guard checkedProfileId != profileId else { return }
+
+        checkedProfileId = profileId
+        showTour = false
+
+        if OnboardingTourSuppression.applies(to: ServerRegistry.shared.activeServerId) {
+            do {
+                let flow = try await ContinuumAPI.shared.onboardingFlow(surface: "phone")
+                try await ContinuumAPI.shared.postOnboardingProgress(OnboardingProgressRequest(
+                    tourId: flow.tourId,
+                    lastStep: nil,
+                    completed: false,
+                    skipped: true
+                ))
+                OnboardingTourSuppression.clear()
+            } catch {
+                // Keep the durable hint for a future authenticated launch.
             }
-            #if os(macOS)
-            // macOS has no fullScreenCover; a sheet is the platform-correct
-            // modal for a one-time walkthrough.
-            .sheet(isPresented: $showTour) {
-                OnboardingTourView(router: router, onDismiss: { showTour = false })
-                    .frame(minWidth: 560, minHeight: 640)
-            }
-            #else
-            .fullScreenCover(isPresented: $showTour) {
-                OnboardingTourView(router: router, onDismiss: { showTour = false })
-            }
-            #endif
+            return
+        }
+
+        let state = try? await ContinuumAPI.shared.onboardingState()
+        guard !Task.isCancelled,
+              AuthService.shared.profileId == profileId else { return }
+        showTour = state.map { !$0.done } ?? false
+    }
+
+    func dismiss() {
+        showTour = false
     }
 }
-
-extension View {
-    /// Attach to the authenticated root so a first-run profile gets the tour.
-    func onboardingTourGate(router: AppRouter) -> some View {
-        modifier(OnboardingTourGate(router: router))
-    }
-}
-
-#else
-
-extension View {
-    /// tvOS follow-up: the manifest already carries surface=tv; the 10-foot
-    /// renderer lands separately. No-op keeps the call site uniform.
-    func onboardingTourGate(router: AppRouter) -> some View { self }
-}
-
 #endif

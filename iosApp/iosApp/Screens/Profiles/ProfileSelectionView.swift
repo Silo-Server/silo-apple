@@ -6,6 +6,7 @@ import SwiftUI
 /// background doesn't feel like dead space.
 struct ProfileSelectionView: View {
     var router: AppRouter
+    var journeyLabels: [String] = ["Server", "Account", "Profile"]
     @State private var viewModel = ProfileSelectionViewModel()
     @State private var pinEntryContext: PINEntryContext?
     @State private var showCreateProfile: Bool = false
@@ -174,7 +175,7 @@ struct ProfileSelectionView: View {
 
     private var titleBlock: some View {
         VStack(spacing: 6) {
-            AuroraJourneyProgress(currentStep: 3)
+            AuroraJourneyProgress(currentStep: 3, labels: journeyLabels)
                 .frame(maxWidth: journeyWidth)
                 .padding(.bottom, journeyBottomPadding)
 

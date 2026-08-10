@@ -114,6 +114,23 @@ actor HTTPClient {
         try await send(method: "GET", path: path, query: query, body: Optional<String>.none)
     }
 
+    /// Request an endpoint on an explicitly supplied server without reading
+    /// or mutating the active server and without attaching any persisted
+    /// credentials. Used for invitation links received before authentication.
+    func getAnonymous<T: Decodable>(
+        from endpoint: ServerEndpoint,
+        _ path: String,
+        query: [String: String] = [:]
+    ) async throws -> T {
+        try await sendAnonymous(
+            serverURL: endpoint.baseURL,
+            method: "GET",
+            path: path,
+            query: query,
+            body: Optional<String>.none
+        )
+    }
+
     func post<T: Decodable>(
         _ path: String,
         body: (any Encodable)? = nil,
@@ -121,6 +138,21 @@ actor HTTPClient {
         timeout: HTTPTimeout = .standard
     ) async throws -> T {
         try await send(method: "POST", path: path, query: query, body: body, timeout: timeout)
+    }
+
+    func postAnonymous<T: Decodable>(
+        to endpoint: ServerEndpoint,
+        _ path: String,
+        body: (any Encodable)? = nil,
+        query: [String: String] = [:]
+    ) async throws -> T {
+        try await sendAnonymous(
+            serverURL: endpoint.baseURL,
+            method: "POST",
+            path: path,
+            query: query,
+            body: body
+        )
     }
 
     func postVoid(
@@ -266,6 +298,33 @@ actor HTTPClient {
         timeout: HTTPTimeout = .standard
     ) async throws -> T {
         let data = try await sendRaw(method: method, path: path, query: query, body: body, timeout: timeout)
+        if data.isEmpty, let empty = EmptyResponse.empty as? T {
+            return empty
+        }
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            Self.logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
+            throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
+        }
+    }
+
+    private func sendAnonymous<T: Decodable>(
+        serverURL: String,
+        method: String,
+        path: String,
+        query: [String: String],
+        body: (any Encodable)?
+    ) async throws -> T {
+        let request = try buildRequest(
+            serverUrl: serverURL,
+            method: method,
+            path: path,
+            query: query,
+            body: body
+        )
+        let (data, response) = try await perform(request: request)
+        try ensureSuccess(data, response, method: method, quietStatuses: [])
         if data.isEmpty, let empty = EmptyResponse.empty as? T {
             return empty
         }

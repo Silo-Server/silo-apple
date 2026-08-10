@@ -4,6 +4,7 @@ import Foundation
 /// The link carries the server and single-use token, so the invitee chooses
 /// only a password; their email address becomes their username.
 @Observable
+@MainActor
 class InviteClaimViewModel {
     var isLoadingInvitation: Bool = true
     var invitation: InvitationLookupResponse?
@@ -14,17 +15,17 @@ class InviteClaimViewModel {
     var error: String?
 
     private let auth = AuthService.shared
-    private var serverUrl: String = ""
+    private var endpoint: ServerEndpoint?
     private var token: String = ""
 
-    func load(serverUrl: String, token: String) async {
+    func load(endpoint: ServerEndpoint, token: String) async {
         guard self.token != token || invitation == nil else { return }
-        self.serverUrl = serverUrl
+        self.endpoint = endpoint
         self.token = token
         isLoadingInvitation = true
         invitationInvalid = false
         do {
-            invitation = try await auth.lookupInvitation(serverUrl: serverUrl, token: token)
+            invitation = try await auth.lookupInvitation(endpoint: endpoint, token: token)
         } catch {
             invitationInvalid = true
         }
@@ -46,9 +47,14 @@ class InviteClaimViewModel {
         defer { isSubmitting = false }
 
         do {
-            try await auth.acceptInvitation(serverUrl: serverUrl, token: token, password: password)
-            await StartupContentPrefetcher.prefetchProfiles()
-            router.showProfileSelection()
+            guard let endpoint else { return }
+            try await auth.acceptInvitation(endpoint: endpoint, token: token, password: password)
+            if invitation?.showTour == false,
+               let serverId = ServerRegistry.shared.activeServerId {
+                OnboardingTourSuppression.set(for: serverId)
+            }
+            _ = try? await StartupContentPrefetcher.fetchProfiles()
+            router.showProfileSelection(journeyLabels: ["Server", "Password", "Household"])
         } catch {
             self.error = "Could not create your account. The invitation may have expired or been used already."
         }

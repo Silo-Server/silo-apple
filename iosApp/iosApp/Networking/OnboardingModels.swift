@@ -53,3 +53,23 @@ struct OnboardingProgressRequest: Codable {
     let completed: Bool
     let skipped: Bool
 }
+
+/// Bridges an invitation's `show_tour=false` hint across profile creation.
+/// The server cannot record profile-scoped progress until a profile exists,
+/// so the authenticated gate posts the skip and clears this durable hint.
+enum OnboardingTourSuppression {
+    private static let key = "onboardingTourSuppressedServerId.v1"
+
+    static func set(for serverId: String) {
+        SharedDefaults.shared.set(serverId, forKey: key)
+    }
+
+    static func applies(to serverId: String?) -> Bool {
+        guard let serverId else { return false }
+        return SharedDefaults.shared.string(forKey: key) == serverId
+    }
+
+    static func clear() {
+        SharedDefaults.shared.removeObject(forKey: key)
+    }
+}

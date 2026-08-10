@@ -32,6 +32,7 @@ struct OnboardingTourView: View {
             } else {
                 router.resetToHome()
             }
+            apply(route: viewModel.completionRoute)
         }
     }
 
@@ -43,7 +44,7 @@ struct OnboardingTourView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 HStack(spacing: 6) {
-                    ForEach(Array(viewModel.steps.enumerated()), id: \.offset) { index, _ in
+                    ForEach(viewModel.steps.indices, id: \.self) { index in
                         Capsule()
                             .fill(index == viewModel.currentIndex
                                 ? Color.auroraInk
@@ -52,10 +53,62 @@ struct OnboardingTourView: View {
                     }
                 }
                 Spacer()
-                Button("Skip") { viewModel.skip() }
+                Button("Skip") { Task { await viewModel.skip() } }
                     .buttonStyle(AuroraGhostButtonStyle())
+                    .disabled(viewModel.isSaving)
             }
 
+            TabView(selection: Binding(
+                get: { viewModel.currentIndex },
+                set: { _ in }
+            )) {
+                ForEach(viewModel.steps.indices, id: \.self) { index in
+                    stepContent(viewModel.steps[index])
+                        .tag(index)
+                }
+            }
+            .onboardingPageStyle()
+
+            if let error = viewModel.error {
+                VStack(alignment: .leading, spacing: 8) {
+                    AuroraErrorLabel(error)
+                    Button("Continue without saving") {
+                        viewModel.continueWithoutSaving()
+                    }
+                    .buttonStyle(AuroraGhostButtonStyle())
+                }
+                .padding(.bottom, 12)
+            }
+
+            HStack(spacing: 10) {
+                if viewModel.currentIndex > 0 {
+                    Button("Back") { viewModel.back() }
+                        .buttonStyle(AuroraGhostButtonStyle())
+                        .disabled(viewModel.isSaving)
+                }
+                Button {
+                    Task {
+                        if step.kind == "handoff" || isLast {
+                            await viewModel.finish()
+                        } else {
+                            await viewModel.advance()
+                        }
+                    }
+                } label: {
+                    Text(viewModel.isSaving
+                        ? "Saving…"
+                        : step.kind == "handoff" || isLast ? "Done"
+                        : viewModel.currentIndex == 0 ? "Show me" : "Next")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(AuroraPrimaryButtonStyle(isLoading: viewModel.isSaving))
+                .disabled(viewModel.isSaving)
+            }
+        }
+    }
+
+    private func stepContent(_ step: OnboardingStep) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
             Spacer()
 
             Image(systemName: illustrationSymbol(step.illustration))
@@ -64,6 +117,7 @@ struct OnboardingTourView: View {
                 .frame(width: 56, height: 56)
                 .background(Color.auroraInk.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
                 .padding(.bottom, 20)
+                .accessibilityHidden(true)
 
             if let title = step.title {
                 Text(title)
@@ -84,28 +138,21 @@ struct OnboardingTourView: View {
                     .padding(.top, 22)
             }
 
-            Spacer()
-
-            HStack(spacing: 10) {
-                if viewModel.currentIndex > 0 {
-                    Button("Back") { viewModel.back() }
-                        .buttonStyle(AuroraGhostButtonStyle())
+            if step.kind == "feature_card",
+               let label = step.actionLabel,
+               let route = step.route,
+               Self.supportedRoutes.contains(route) {
+                Button(label) {
+                    Task { await viewModel.finish(route: route) }
                 }
-                Button {
-                    if step.kind == "handoff" || isLast {
-                        viewModel.finish()
-                    } else {
-                        viewModel.advance()
-                    }
-                } label: {
-                    Text(step.kind == "handoff" || isLast
-                        ? "Done"
-                        : viewModel.currentIndex == 0 ? "Show me" : "Next")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(AuroraPrimaryButtonStyle())
+                .buttonStyle(AuroraGhostButtonStyle())
+                .disabled(viewModel.isSaving)
+                .padding(.top, 18)
             }
+
+            Spacer()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func settingChoice(step: OnboardingStep, spec: OnboardingSettingSpec) -> some View {
@@ -114,7 +161,7 @@ struct OnboardingTourView: View {
                 let isSelected = viewModel.selectedValues[step.id] == option.value
                     || (viewModel.selectedValues[step.id] == nil && option.value == spec.default)
                 Button {
-                    viewModel.choose(step: step, value: option.value)
+                    Task { await viewModel.choose(step: step, value: option.value) }
                 } label: {
                     HStack(spacing: 12) {
                         Circle()
@@ -137,6 +184,7 @@ struct OnboardingTourView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .disabled(viewModel.isSaving)
             }
         }
         .padding(10)
@@ -153,6 +201,30 @@ struct OnboardingTourView: View {
         case "subtitles": return "captions.bubble.fill"
         case "requests": return "wand.and.stars"
         default: return "sparkles"
+        }
+    }
+
+    private static let supportedRoutes: Set<String> = [
+        "/calendar",
+        "/requests",
+        "/taste-seed",
+    ]
+
+    /// Server routes are data, never arbitrary navigation instructions. Keep
+    /// this allowlist small and fall back to Home for unknown/future routes.
+    private func apply(route: String?) {
+        router.popToRoot()
+        switch route {
+        case "/calendar":
+            router.switchTab(to: .calendar)
+        case "/requests":
+            router.navigate(to: .requestsHub)
+        case "/taste-seed":
+            // Apple has no standalone seed picker; For You is the native
+            // recommendations destination backed by the same preferences.
+            router.switchTab(to: .recommendations)
+        default:
+            router.switchTab(to: .home)
         }
     }
 }

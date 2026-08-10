@@ -159,41 +159,42 @@ final class AuthService: @unchecked Sendable {
 
     // MARK: - Emailed invitations
 
-    /// Resolves an invitation claim token against the server named in the
-    /// deep link. Points HTTPClient at that server first (same sequencing as
-    /// `checkServer`): the claim flow starts before any session exists.
-    func lookupInvitation(serverUrl: String, token: String) async throws -> InvitationLookupResponse {
-        let normalized = ServerRegistry.normalize(url: serverUrl)
-        let id = ServerRegistry.serverId(for: normalized)
-        await TokenStore.shared.setServerUrl(normalized)
-        await TokenStore.shared.switchActiveServer(serverId: id)
-        return try await HTTPClient.shared.get("/api/v1/invitations/\(token)")
+    /// Resolve an invite against its validated endpoint without changing the
+    /// active server or attaching credentials from an existing session.
+    func lookupInvitation(endpoint: ServerEndpoint, token: String) async throws -> InvitationLookupResponse {
+        try await HTTPClient.shared.getAnonymous(
+            from: endpoint,
+            "/api/v1/invitations/\(token)"
+        )
     }
 
     /// Accepts an invitation: the account is created server-side with the
     /// invitation's email as username, and a normal session begins. The
     /// server entry is registered so the session survives restarts.
-    func acceptInvitation(serverUrl: String, token: String, password: String) async throws {
-        let normalized = ServerRegistry.normalize(url: serverUrl)
-        let id = ServerRegistry.serverId(for: normalized)
+    func acceptInvitation(endpoint: ServerEndpoint, token: String, password: String) async throws {
+        let id = ServerRegistry.serverId(for: endpoint.baseURL)
         var fetchedName: String?
-        if let health: HealthStatus = try? await HTTPClient.shared.get("/api/v1/health") {
+        if let health: HealthStatus = try? await HTTPClient.shared.getAnonymous(
+            from: endpoint,
+            "/api/v1/health"
+        ) {
             fetchedName = health.serverName
         }
-        let response: LoginResponse = try await HTTPClient.shared.post(
+        let response: LoginResponse = try await HTTPClient.shared.postAnonymous(
+            to: endpoint,
             "/api/v1/invitations/\(token)/accept",
             body: AcceptInvitationRequest(password: password)
         )
+
+        // Only a successful accept commits the server/session boundary.
         ServerRegistry.shared.addOrUpdate(ServerEntry(
             id: id,
-            url: normalized,
+            url: endpoint.baseURL,
             fetchedName: fetchedName,
             profileId: nil,
             lastUsedAt: Date()
-        ))
-        if ServerRegistry.shared.activeServerId != id {
-            await ServerRegistry.shared.switchTo(serverId: id)
-        }
+        ), preservingProfile: false)
+        await ServerRegistry.shared.switchTo(serverId: id)
         await startSession(accessToken: response.accessToken, refreshToken: response.refreshToken)
     }
 
@@ -268,12 +269,23 @@ final class AuthService: @unchecked Sendable {
         #endif
     }
 
-    func createProfile(name: String, avatarEmoji: String?, pin: String?, isChild: Bool) async throws -> UserProfile {
+    func createProfile(
+        name: String,
+        avatarEmoji: String?,
+        pin: String?,
+        isChild: Bool,
+        maxContentRating: String? = nil,
+        libraryRestrictionsEnabled: Bool = false,
+        allowedLibraryIds: [Int] = []
+    ) async throws -> UserProfile {
         try await ContinuumAPI.shared.createProfile(
             name: name,
             avatarEmoji: avatarEmoji,
             pin: pin,
-            isChild: isChild
+            isChild: isChild,
+            maxContentRating: maxContentRating,
+            libraryRestrictionsEnabled: libraryRestrictionsEnabled,
+            allowedLibraryIds: allowedLibraryIds
         )
     }
 

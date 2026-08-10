@@ -308,7 +308,10 @@ struct ContentView: View {
 
         case .needsProfile:
             NavigationStack(path: $router.path) {
-                ProfileSelectionView(router: router)
+                ProfileSelectionView(
+                    router: router,
+                    journeyLabels: router.profileJourneyLabels ?? ["Server", "Account", "Profile"]
+                )
                     .navigationDestination(for: Route.self) { route in
                         profileFlowDestination(for: route)
                     }
@@ -345,20 +348,17 @@ struct ContentView: View {
     /// `pendingDeepLink` and drained on the next `.authenticated`
     /// transition.
     private func handleDeepLink(_ url: URL) {
-        guard let host = url.host else { return }
-
-        if host == "invite" {
+        if let invitation = InvitationClaimLink(url: url) {
             // Pre-auth by design: the link carries the server and the
             // single-use claim token, so no session or queueing is needed.
-            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            let server = components?.queryItems?.first(where: { $0.name == "server" })?.value ?? ""
-            let claimToken = components?.queryItems?.first(where: { $0.name == "token" })?.value ?? ""
-            guard !server.isEmpty, !claimToken.isEmpty else { return }
             router.path = NavigationPath()
             router.authState = .needsLogin
-            router.navigate(to: .inviteClaim(serverUrl: server, token: claimToken))
+            router.navigate(to: .inviteClaim(endpoint: invitation.endpoint, token: invitation.token))
             return
         }
+
+        guard url.scheme?.lowercased() == "continuum",
+              let host = url.host?.lowercased() else { return }
 
         if host == "downloads" {
             guard router.authState == .authenticated else {
@@ -631,12 +631,12 @@ struct ContentView: View {
             #else
             SignupView(router: router)
             #endif
-        case .inviteClaim(let serverUrl, let token):
+        case .inviteClaim(let endpoint, let token):
             #if os(tvOS)
             EmptyStateView(icon: "envelope.badge.person.crop", title: "Open your invite on a phone or the web", subtitle: nil)
                 .continuumBackground()
             #else
-            InviteClaimView(router: router, serverUrl: serverUrl, token: token)
+            InviteClaimView(router: router, endpoint: endpoint, token: token)
             #endif
         case .onboardingTour:
             #if os(tvOS)

@@ -18,6 +18,10 @@ struct CreateProfileView: View {
     @State private var presetBatch: Int = 0
     @State private var pin: String = ""
     @State private var isChild: Bool = false
+    @State private var maxContentRating: String = "PG"
+    @State private var libraryRestrictionsEnabled: Bool = false
+    @State private var allowedLibraryIds: Set<Int> = []
+    @State private var libraries: [Library] = []
     @State private var isLoading: Bool = false
     @State private var formError: FormError?
     @Environment(\.dismiss) private var dismiss
@@ -79,6 +83,19 @@ struct CreateProfileView: View {
             Button("OK", role: .cancel) { formError = nil }
         } message: { err in
             Text(err.message)
+        }
+        .task {
+            libraries = (try? await ContinuumAPI.shared.libraries().libraries) ?? []
+        }
+        .onChange(of: isChild) { _, child in
+            if child {
+                if maxContentRating.isEmpty { maxContentRating = "PG" }
+                libraryRestrictionsEnabled = true
+            } else {
+                maxContentRating = ""
+                libraryRestrictionsEnabled = false
+                allowedLibraryIds.removeAll()
+            }
         }
     }
 
@@ -228,6 +245,10 @@ struct CreateProfileView: View {
 
             ChildProfileRow(isOn: $isChild)
 
+            if isChild {
+                childAccessControls
+            }
+
             Button("Create Profile") {
                 guard !isLoading else { return }
                 Task { await createProfile() }
@@ -333,6 +354,10 @@ struct CreateProfileView: View {
                         }
                         .tint(.continuumAccent)
 
+                        if isChild {
+                            childAccessControls
+                        }
+
                         Button("Create Profile") {
                             Task { await createProfile() }
                         }
@@ -395,6 +420,64 @@ struct CreateProfileView: View {
     #endif
 
     // MARK: - Shared bits
+
+    private static let contentRatings: [(value: String, label: String)] = [
+        ("G", "G / TV-G"),
+        ("PG", "PG / TV-PG / TV-Y7"),
+        ("PG-13", "PG-13 / TV-14"),
+        ("R", "R / TV-MA / NC-17"),
+    ]
+
+    private var childAccessControls: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Maximum content rating")
+                    .font(.continuumCaption)
+                    .foregroundStyle(Color.continuumSecondaryText)
+                Picker("Maximum content rating", selection: $maxContentRating) {
+                    ForEach(Self.contentRatings, id: \.value) { option in
+                        Text(option.label).tag(option.value)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
+            Toggle("Restrict libraries", isOn: $libraryRestrictionsEnabled)
+                .tint(.continuumAccent)
+
+            if libraryRestrictionsEnabled {
+                if libraries.isEmpty {
+                    Text("No libraries are available to assign.")
+                        .font(.continuumCaption)
+                        .foregroundStyle(Color.continuumSecondaryText)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Allowed libraries")
+                            .font(.continuumCaption)
+                            .foregroundStyle(Color.continuumSecondaryText)
+                        ForEach(libraries) { library in
+                            Toggle(
+                                library.name,
+                                isOn: Binding(
+                                    get: { allowedLibraryIds.contains(library.id) },
+                                    set: { allowed in
+                                        if allowed {
+                                            allowedLibraryIds.insert(library.id)
+                                        } else {
+                                            allowedLibraryIds.remove(library.id)
+                                        }
+                                    }
+                                )
+                            )
+                            .tint(.continuumAccent)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.continuumSurfaceElevated, in: RoundedRectangle(cornerRadius: 12))
+    }
 
     /// Drive the preview tile from a synthetic `UserProfile`. The avatar
     /// carries the DiceBear preset ref (same wire format the server stores),
@@ -475,6 +558,13 @@ struct CreateProfileView: View {
             formError = FormError(title: "Name Required", message: "Please enter a name.")
             return
         }
+        guard !libraryRestrictionsEnabled || !allowedLibraryIds.isEmpty else {
+            formError = FormError(
+                title: "Choose a Library",
+                message: "Select at least one library for this child profile."
+            )
+            return
+        }
 
         isLoading = true
         formError = nil
@@ -485,7 +575,12 @@ struct CreateProfileView: View {
                 name: name,
                 avatarEmoji: activePreset?.ref,
                 pin: pin.isEmpty ? nil : pin,
-                isChild: isChild
+                isChild: isChild,
+                maxContentRating: isChild ? maxContentRating : nil,
+                libraryRestrictionsEnabled: isChild && libraryRestrictionsEnabled,
+                allowedLibraryIds: isChild && libraryRestrictionsEnabled
+                    ? allowedLibraryIds.sorted()
+                    : []
             )
             onCreated()
         } catch {

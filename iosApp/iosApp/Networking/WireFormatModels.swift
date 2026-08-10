@@ -27,6 +27,7 @@ struct Profile: Codable {
     let preferredMetadataLanguage: String?
     let autoSkipIntro: Bool?
     let autoSkipCredits: Bool?
+    let autoSkipRecap: Bool?
     let libraryRestrictionsEnabled: Bool?
     let allowedLibraryIds: [Int]?
     let maxPlaybackQuality: String?
@@ -63,6 +64,9 @@ struct UpdateProfileBody: Encodable {
     /// Preferred metadata language (ISO 639-1; `""` = inherit the library
     /// default). Encodes as `preferred_metadata_language`.
     var preferredMetadataLanguage: String?
+    var autoSkipIntro: Bool?
+    var autoSkipCredits: Bool?
+    var autoSkipRecap: Bool?
 }
 
 struct ProfilesResponse: Codable {
@@ -88,6 +92,9 @@ struct CreateProfileRequestBody: Codable {
     let avatar: String?
     let pin: String?
     let isChild: Bool?
+    let maxContentRating: String?
+    let libraryRestrictionsEnabled: Bool
+    let allowedLibraryIds: [Int]
 }
 
 // MARK: - Recommendations (wire format for /discover)

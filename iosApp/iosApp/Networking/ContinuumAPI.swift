@@ -352,7 +352,10 @@ actor ContinuumAPI {
     // --- Onboarding tour (profile-scoped) ---
 
     func onboardingFlow(surface: String) async throws -> OnboardingFlow {
-        try await http.get("/api/v1/onboarding/flow?surface=\(surface)")
+        try await http.get(
+            "/api/v1/onboarding/flow",
+            query: ["surface": surface]
+        )
     }
 
     func onboardingState() async throws -> OnboardingState {
@@ -890,7 +893,10 @@ actor ContinuumAPI {
         name: String,
         avatarEmoji: String?,
         pin: String?,
-        isChild: Bool
+        isChild: Bool,
+        maxContentRating: String? = nil,
+        libraryRestrictionsEnabled: Bool = false,
+        allowedLibraryIds: [Int] = []
     ) async throws -> UserProfile {
         let profile: Profile = try await http.post(
             "/api/v1/profiles",
@@ -898,7 +904,10 @@ actor ContinuumAPI {
                 name: name,
                 avatar: avatarEmoji,
                 pin: pin,
-                isChild: isChild
+                isChild: isChild,
+                maxContentRating: maxContentRating,
+                libraryRestrictionsEnabled: libraryRestrictionsEnabled,
+                allowedLibraryIds: allowedLibraryIds
             )
         )
         return profile.asUserProfile

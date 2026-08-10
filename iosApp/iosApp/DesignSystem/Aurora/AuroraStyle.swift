@@ -60,13 +60,18 @@ struct AuroraEyebrow: View {
 /// not communicated by color alone.
 struct AuroraJourneyProgress: View {
     let currentStep: Int
+    let labels: [String]
 
-    private let labels = ["Server", "Account", "Profile"]
+    init(currentStep: Int, labels: [String] = ["Server", "Account", "Profile"]) {
+        self.currentStep = currentStep
+        self.labels = labels
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            ForEach(Array(labels.enumerated()), id: \.offset) { index, label in
+            ForEach(labels.indices, id: \.self) { index in
                 let step = index + 1
+                let label = labels[index]
 
                 if index > 0 {
                     Rectangle()
