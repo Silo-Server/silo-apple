@@ -1042,28 +1042,26 @@ struct MainTabDestination: Identifiable, Equatable {
         .init(id: .app(tab), title: tab.rawValue, icon: tab.icon, selectedIcon: tab.selectedIcon)
     }
 
-    static func library(id: Int, label: String) -> MainTabDestination {
+    static func library(
+        id: Int,
+        label: String,
+        icon: String = "rectangle.stack",
+        selectedIcon: String = "rectangle.stack.fill"
+    ) -> MainTabDestination {
         .init(
             id: .library(id),
             title: label,
-            icon: "rectangle.stack",
-            selectedIcon: "rectangle.stack.fill"
+            icon: icon,
+            selectedIcon: selectedIcon
         )
     }
 
     static func libraryCategory(_ category: PrimaryMenuBuiltin) -> MainTabDestination {
-        let icon: String
-        switch category {
-        case .movies: icon = "film.stack"
-        case .series: icon = "tv"
-        case .audiobooks: icon = "book.closed"
-        default: icon = "rectangle.stack"
-        }
         return .init(
             id: .libraryCategory(category),
             title: category.title,
-            icon: icon,
-            selectedIcon: icon
+            icon: category.navigationIcon,
+            selectedIcon: category.navigationIcon
         )
     }
 }
@@ -1102,8 +1100,13 @@ func projectedMainTabDestinations(
         case .builtin(.forYou): destination = .app(.recommendations)
         case .builtin(.calendar): destination = .app(.calendar)
         case .library(let libraryId, let label):
-            let currentLabel = availableLibraries.first(where: { $0.id == libraryId })?.name
-            destination = .library(id: libraryId, label: currentLabel ?? label)
+            let library = availableLibraries.first(where: { $0.id == libraryId })
+            destination = .library(
+                id: libraryId,
+                label: library?.name ?? label,
+                icon: library?.navigationIcon ?? "rectangle.stack",
+                selectedIcon: library?.selectedNavigationIcon ?? "rectangle.stack.fill"
+            )
         case .section, .collection:
             destination = nil
         }
@@ -1603,9 +1606,10 @@ struct MainTabView: View {
         for destination in visibleDestinations {
             guard case .library(let libraryID) = destination.id,
                   let library = librariesByID[libraryID],
-                  let category = visibleCategories.first(where: {
-                      libraryMatchesPrimaryMenuCategory(library, category: $0)
-                  })
+                  let category = primaryMenuParentCategory(
+                      for: library,
+                      among: visibleCategories
+                  )
             else { continue }
             parentCategoryByLibraryID[libraryID] = category
         }

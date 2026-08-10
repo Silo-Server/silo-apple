@@ -16,6 +16,16 @@ func libraryMatchesPrimaryMenuCategory(
     }
 }
 
+func primaryMenuParentCategory(
+    for library: Library,
+    among categories: [PrimaryMenuBuiltin]
+) -> PrimaryMenuBuiltin? {
+    guard !library.isMixedLibrary else { return nil }
+    return categories.first {
+        libraryMatchesPrimaryMenuCategory(library, category: $0)
+    }
+}
+
 func visibleLibrariesForRoot(
     _ libraries: [Library],
     category: PrimaryMenuBuiltin?,

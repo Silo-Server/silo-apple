@@ -1,15 +1,150 @@
 #if !os(tvOS)
 import SwiftUI
 
-func availablePrimaryMenuLibraryShortcuts(
-    _ shortcuts: [PrimaryMenuItem],
-    visibleIds: Set<String>,
-    availableLibraryIds: Set<Int>
-) -> [PrimaryMenuItem] {
-    shortcuts.filter { item in
-        guard case .library(let libraryId, _) = item else { return false }
-        return availableLibraryIds.contains(libraryId) && !visibleIds.contains(item.id)
+struct PrimaryMenuEditorRow: Identifiable, Equatable {
+    let item: PrimaryMenuItem
+    let parentMediaType: PrimaryMenuBuiltin?
+
+    var id: String { item.id }
+    var isNestedLibrary: Bool { parentMediaType != nil }
+}
+
+func primaryMenuShortcutTypeTitle(
+    _ item: PrimaryMenuItem,
+    libraries: [Library] = [],
+    isNestedLibrary: Bool = false
+) -> String {
+    switch item {
+    case .builtin(.movies), .builtin(.series), .builtin(.music), .builtin(.audiobooks):
+        return "Media Type"
+    case .library(let libraryId, _):
+        guard !isNestedLibrary,
+              let library = libraries.first(where: { $0.id == libraryId })
+        else { return "Library" }
+        if library.isMixedLibrary { return "Mixed Library" }
+        if library.isMovieLibrary { return "Movies Library" }
+        if library.isSeriesLibrary { return "Series Library" }
+        if library.isAudiobookLibrary { return "Audiobooks Library" }
+        return "Library"
+    case .section, .collection:
+        return "Library"
+    case .builtin(.forYou), .builtin(.calendar):
+        return "Discover"
+    case .builtin(.home):
+        return "Your Stuff"
     }
+}
+
+func groupedPrimaryMenuEditorRows(
+    _ items: [PrimaryMenuItem],
+    libraries: [Library]
+) -> [PrimaryMenuEditorRow] {
+    let librariesById = Dictionary(uniqueKeysWithValues: libraries.map { ($0.id, $0) })
+    let mediaTypes = items.compactMap { item -> PrimaryMenuBuiltin? in
+        guard case .builtin(let builtin) = item,
+              builtin == .movies
+                || builtin == .series
+                || builtin == .music
+                || builtin == .audiobooks
+        else { return nil }
+        return builtin
+    }
+    var parentByLibraryId: [Int: PrimaryMenuBuiltin] = [:]
+    for item in items {
+        guard case .library(let libraryId, _) = item,
+              let library = librariesById[libraryId],
+              let parent = primaryMenuParentCategory(for: library, among: mediaTypes)
+        else { continue }
+        parentByLibraryId[libraryId] = parent
+    }
+
+    var rows: [PrimaryMenuEditorRow] = []
+    for item in items {
+        if case .library(let libraryId, _) = item,
+           parentByLibraryId[libraryId] != nil {
+            continue
+        }
+
+        rows.append(.init(item: item, parentMediaType: nil))
+        guard case .builtin(let builtin) = item else { continue }
+        for child in items {
+            guard case .library(let libraryId, _) = child,
+                  parentByLibraryId[libraryId] == builtin
+            else { continue }
+            rows.append(.init(item: child, parentMediaType: builtin))
+        }
+    }
+    return rows
+}
+
+func availablePrimaryMenuShortcuts(
+    candidates: [PrimaryMenuItem],
+    libraries: [Library],
+    visibleIds: Set<String>,
+) -> [PrimaryMenuItem] {
+    let libraryItems = libraries.map {
+        PrimaryMenuItem.library(libraryId: $0.id, label: $0.name)
+    }
+    return (candidates + libraryItems).filter { !visibleIds.contains($0.id) }
+}
+
+func offsetPrimaryMenuEditorItem(
+    _ rows: [PrimaryMenuEditorRow],
+    itemId: String,
+    by offset: Int
+) -> [PrimaryMenuItem]? {
+    guard offset != 0,
+          let sourceIndex = rows.firstIndex(where: { $0.id == itemId })
+    else { return nil }
+    let sourceRow = rows[sourceIndex]
+    guard !sourceRow.item.isHome else { return nil }
+
+    if let parent = sourceRow.parentMediaType {
+        let siblingIndices = rows.indices.filter {
+            rows[$0].parentMediaType == parent
+        }
+        guard let siblingSourceIndex = siblingIndices.firstIndex(of: sourceIndex) else {
+            return nil
+        }
+        let siblingTargetIndex = siblingSourceIndex + offset
+        guard siblingIndices.indices.contains(siblingTargetIndex) else { return nil }
+
+        var reorderedRows = rows
+        reorderedRows.swapAt(
+            siblingIndices[siblingSourceIndex],
+            siblingIndices[siblingTargetIndex]
+        )
+        return reorderedRows.map(\.item)
+    }
+
+    let movableRoots = rows.filter {
+        $0.parentMediaType == nil && !$0.item.isHome
+    }
+    guard let rootSourceIndex = movableRoots.firstIndex(where: { $0.id == itemId }) else {
+        return nil
+    }
+    let rootTargetIndex = rootSourceIndex + offset
+    guard movableRoots.indices.contains(rootTargetIndex) else { return nil }
+
+    var rootIds = rows.compactMap { row in
+        row.parentMediaType == nil ? row.id : nil
+    }
+    guard let sourceRootIndex = rootIds.firstIndex(of: itemId),
+          let targetRootIndex = rootIds.firstIndex(of: movableRoots[rootTargetIndex].id)
+    else { return nil }
+    rootIds.swapAt(sourceRootIndex, targetRootIndex)
+
+    var blockByRootId: [String: [PrimaryMenuItem]] = [:]
+    var currentRootId: String?
+    for row in rows {
+        if row.parentMediaType == nil {
+            currentRootId = row.id
+            blockByRootId[row.id] = [row.item]
+        } else if let currentRootId {
+            blockByRootId[currentRootId, default: []].append(row.item)
+        }
+    }
+    return rootIds.flatMap { blockByRootId[$0] ?? [] }
 }
 
 /// Family-synced navigation and card presets for iPhone, iPad, and Mac.
@@ -84,33 +219,49 @@ struct InterfaceCustomizationView: View {
             )
 
             Section {
-                ForEach(visibleDestinations) { item in
+                ForEach(visibleRows) { row in
+                    let item = row.item
                     HStack(spacing: 12) {
-                        Image(systemName: item.isHome ? "lock.fill" : "line.3.horizontal")
-                            .foregroundStyle(Color.continuumSecondaryText)
-                            .frame(width: 22)
-                        Text(displayTitle(for: item))
+                        if row.isNestedLibrary {
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.turn.down.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Color.continuumSecondaryText)
+                                    .frame(width: 18)
+                                shortcutLabel(for: item, isNestedLibrary: true)
+                            }
+                            .padding(.leading, 20)
+                        } else {
+                            shortcutLabel(for: item)
+                        }
                         Spacer()
-#if os(macOS)
-                        Button {
-                            move(item, by: -1)
-                        } label: {
-                            Image(systemName: "arrow.up")
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(visibleDestinations.first?.id == item.id)
-                        .accessibilityLabel("Move \(displayTitle(for: item)) up")
-
-                        Button {
-                            move(item, by: 1)
-                        } label: {
-                            Image(systemName: "arrow.down")
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(visibleDestinations.last?.id == item.id)
-                        .accessibilityLabel("Move \(displayTitle(for: item)) down")
-#endif
                         if !item.isHome {
+                            HStack(spacing: 12) {
+                                Button {
+                                    move(item, by: -1)
+                                } label: {
+                                    Image(systemName: "arrow.up")
+                                        .font(.title3.weight(.semibold))
+                                        .frame(width: 52, height: 48)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(!canMove(item, by: -1))
+                                .accessibilityLabel("Move \(displayTitle(for: item)) up")
+
+                                Button {
+                                    move(item, by: 1)
+                                } label: {
+                                    Image(systemName: "arrow.down")
+                                        .font(.title3.weight(.semibold))
+                                        .frame(width: 52, height: 48)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(!canMove(item, by: 1))
+                                .accessibilityLabel("Move \(displayTitle(for: item)) down")
+                            }
+
                             Button {
                                 hide(item)
                             } label: {
@@ -124,62 +275,34 @@ struct InterfaceCustomizationView: View {
                         }
                     }
                 }
-                .onMove(perform: move)
             } header: {
                 Text("Primary Menu")
             } footer: {
-                Text("Home is required. Downloads (when available), Search, and Profile stay automatic. Media categories share Libraries; pinned libraries open directly. Unsupported section and collection rows stay synced for clients that can show them.")
+                Text("Home is required. Use the arrows to reorder items. Libraries stay grouped under their media type and can only move within that group. Downloads (when available), Search, and Profile stay automatic.")
             }
             .disabled(
                 !preferences.allowsEditing
                     || preferences.primaryMenuUsesDeviceOverride
             )
 
-            if !hiddenDestinations.isEmpty {
-                Section("Hidden") {
-                    ForEach(hiddenDestinations) { item in
-                        Button {
-                            show(item)
-                        } label: {
-                            Label("Show \(displayTitle(for: item))", systemImage: "plus.circle.fill")
-                        }
-                    }
-                }
-                .disabled(
-                    !preferences.allowsEditing
-                        || preferences.primaryMenuUsesDeviceOverride
-                )
-            }
-
             if !availableShortcuts.isEmpty {
                 Section("Available Shortcuts") {
                     ForEach(availableShortcuts) { item in
                         Button {
-                            show(item)
+                            addAvailableShortcut(item)
                         } label: {
-                            Label("Show \(item.title)", systemImage: "pin.circle.fill")
+                            HStack(spacing: 10) {
+                                Image(systemName: "plus.circle.fill")
+                                shortcutLabel(for: item)
+                            }
                         }
-                    }
-                }
-                .disabled(
-                    !preferences.allowsEditing
-                        || preferences.primaryMenuUsesDeviceOverride
-                )
-            }
-
-            if !libraries.isEmpty {
-                Section("Pinned Libraries") {
-                    ForEach(libraries.sorted(by: librarySort)) { library in
-                        Toggle(
-                            library.name,
-                            isOn: Binding(
-                                get: { preferences.isLibraryPinned(library.id) },
-                                set: { preferences.setLibraryPinned(library, isPinned: $0) }
-                            )
+                        .accessibilityLabel(
+                            "Pin \(displayTitle(for: item)), "
+                                + primaryMenuShortcutTypeTitle(item, libraries: libraries)
                         )
+                        .disabled(!canEditAvailableShortcut(item))
                     }
                 }
-                .disabled(!preferences.allowsEditing)
             }
 
             if let message = preferences.syncErrorMessage,
@@ -193,9 +316,6 @@ struct InterfaceCustomizationView: View {
         }
         .continuumGroupedListStyle()
         .navigationTitle("Interface")
-#if os(iOS)
-        .toolbar { EditButton() }
-#endif
         .task {
             await preferences.refresh()
         }
@@ -279,20 +399,19 @@ struct InterfaceCustomizationView: View {
         }
     }
 
-    private var hiddenDestinations: [PrimaryMenuItem] {
-        let visible = Set(visibleDestinations.map(\.id))
-        return Self.candidates.filter {
-            mainTabSupportsDestination($0, availableLibraries: libraries)
-                && !visible.contains($0.id)
-        }
+    private var visibleRows: [PrimaryMenuEditorRow] {
+        groupedPrimaryMenuEditorRows(visibleDestinations, libraries: libraries)
     }
 
     private var availableShortcuts: [PrimaryMenuItem] {
         let visible = Set(visibleDestinations.map(\.id))
-        return availablePrimaryMenuLibraryShortcuts(
-            preferences.shortcuts.items,
+        let candidates = Self.candidates.filter {
+            mainTabSupportsDestination($0, availableLibraries: libraries)
+        }
+        return availablePrimaryMenuShortcuts(
+            candidates: candidates,
+            libraries: libraries.sorted(by: librarySort),
             visibleIds: visible,
-            availableLibraryIds: Set(libraries.map(\.id))
         )
     }
 
@@ -304,28 +423,80 @@ struct InterfaceCustomizationView: View {
         return item.title
     }
 
-    private func move(from source: IndexSet, to destination: Int) {
-        var items = visibleDestinations
-        items.move(fromOffsets: source, toOffset: destination)
-        persistVisibleDestinations(items)
+    private func shortcutLabel(
+        for item: PrimaryMenuItem,
+        isNestedLibrary: Bool = false
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: navigationIcon(for: item))
+                .frame(width: 22)
+            HStack(spacing: 10) {
+                Text(displayTitle(for: item))
+                Text(
+                    primaryMenuShortcutTypeTitle(
+                        item,
+                        libraries: libraries,
+                        isNestedLibrary: isNestedLibrary
+                    ).uppercased()
+                )
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.continuumSecondaryText.opacity(0.75))
+            }
+        }
+    }
+
+    private func navigationIcon(for item: PrimaryMenuItem) -> String {
+        guard case .library(let libraryId, _) = item else {
+            return item.navigationIcon
+        }
+        return libraries.first(where: { $0.id == libraryId })?.navigationIcon
+            ?? item.navigationIcon
     }
 
     private func move(_ item: PrimaryMenuItem, by offset: Int) {
-        var items = visibleDestinations
-        guard let source = items.firstIndex(where: { $0.id == item.id }) else { return }
-        let destination = source + offset
-        guard items.indices.contains(destination) else { return }
-        items.swapAt(source, destination)
+        guard let items = offsetPrimaryMenuEditorItem(
+            visibleRows,
+            itemId: item.id,
+            by: offset
+        ) else { return }
         persistVisibleDestinations(items)
+    }
+
+    private func canMove(_ item: PrimaryMenuItem, by offset: Int) -> Bool {
+        offsetPrimaryMenuEditorItem(
+            visibleRows,
+            itemId: item.id,
+            by: offset
+        ) != nil
     }
 
     private func hide(_ item: PrimaryMenuItem) {
         guard !item.isHome else { return }
+        if case .library(let libraryId, _) = item,
+           let library = libraries.first(where: { $0.id == libraryId }) {
+            preferences.setLibraryPinned(library, isPinned: false)
+            return
+        }
         persistVisibleDestinations(visibleDestinations.filter { $0.id != item.id })
     }
 
-    private func show(_ item: PrimaryMenuItem) {
+    private func addAvailableShortcut(_ item: PrimaryMenuItem) {
+        if case .library(let libraryId, _) = item,
+           let library = libraries.first(where: { $0.id == libraryId }) {
+            if preferences.isLibraryPinned(libraryId) {
+                persistVisibleDestinations(visibleDestinations + [item])
+            } else {
+                preferences.setLibraryPinned(library, isPinned: true)
+            }
+            return
+        }
         persistVisibleDestinations(visibleDestinations + [item])
+    }
+
+    private func canEditAvailableShortcut(_ item: PrimaryMenuItem) -> Bool {
+        guard preferences.allowsEditing else { return false }
+        if case .library = item { return true }
+        return !preferences.primaryMenuUsesDeviceOverride
     }
 
     private func persistVisibleDestinations(_ destinations: [PrimaryMenuItem]) {

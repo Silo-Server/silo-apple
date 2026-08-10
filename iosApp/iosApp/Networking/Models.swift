@@ -1251,6 +1251,14 @@ struct Library: Codable, Identifiable, Hashable {
     var isSeriesLibrary: Bool { SiloMediaType.isSeries(type) }
     var isMixedLibrary: Bool { SiloMediaType.isMixedLibrary(type) }
     var isSupportedLibrary: Bool { SiloMediaType.isSupportedLibrary(type) }
+
+    var navigationIcon: String {
+        isMixedLibrary ? "square.stack.3d.up" : "rectangle.stack"
+    }
+
+    var selectedNavigationIcon: String {
+        isMixedLibrary ? "square.stack.3d.up.fill" : "rectangle.stack.fill"
+    }
 }
 
 struct LibrariesResponse: Codable {

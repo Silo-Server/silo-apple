@@ -124,6 +124,18 @@ enum PrimaryMenuBuiltin: String, Codable, CaseIterable, Identifiable, Sendable {
         case .calendar: return "Calendar"
         }
     }
+
+    var navigationIcon: String {
+        switch self {
+        case .home: return AppTab.home.icon
+        case .movies: return "film.stack"
+        case .series: return "tv"
+        case .music: return "rectangle.stack"
+        case .audiobooks: return "book.closed"
+        case .forYou: return AppTab.recommendations.icon
+        case .calendar: return AppTab.calendar.icon
+        }
+    }
 }
 
 /// One item in `nav.primary_menu` or `nav.shortcuts`.
@@ -174,6 +186,13 @@ enum PrimaryMenuItem: Hashable, Identifiable, Sendable {
     }
 
     var isHome: Bool { self == .builtin(.home) }
+
+    var navigationIcon: String {
+        switch self {
+        case .builtin(let destination): return destination.navigationIcon
+        case .library, .section, .collection: return "rectangle.stack"
+        }
+    }
 
     var isContractValid: Bool {
         switch self {
