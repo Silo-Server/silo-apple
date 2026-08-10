@@ -865,6 +865,18 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                     presentationView.transform = visibleTransform
                 }
                 dragStartOffset = visibleTransform.tx
+                // The dismiss/restore animations also own the scrim's alpha.
+                // Strip that animation alongside the transform one, or the
+                // shared animation transaction outlives the re-grab and its
+                // delayed completion can hide the column mid-drag.
+                if let dimmingView = dragDimmingView {
+                    let visibleAlpha = dimmingView.layer.presentation()?.opacity
+                        ?? Float(dimmingView.alpha)
+                    dimmingView.layer.removeAllAnimations()
+                    UIView.performWithoutAnimation {
+                        dimmingView.alpha = CGFloat(visibleAlpha)
+                    }
+                }
                 resolveDimmingView(
                     in: splitViewController,
                     excluding: presentationView
@@ -916,7 +928,11 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                             splitViewController.hide(.primary)
                             self.onSwipeLeft()
                             presentationView.transform = .identity
-                            self.releaseDimmingView()
+                            // The hide dismantles the overlay presentation,
+                            // but UIKit may reuse the scrim next time the
+                            // sidebar opens — leave it at its resting alpha,
+                            // not the zero we faded it to.
+                            self.releaseDimmingView(restoring: true)
                             splitViewController.view.layoutIfNeeded()
                             self.dragPresentationView = nil
                         }

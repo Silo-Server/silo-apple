@@ -358,11 +358,14 @@ struct LibrariesTabView: View {
     }
 
     /// The media-type scope the picker opened under, if any. A direct-library
-    /// root inherits the pinned library's type since its siblings share it.
+    /// root inherits the pinned library's type since its siblings share it —
+    /// unless the pinned library is mixed, whose sibling list spans both
+    /// movie and series libraries and so has no single scope.
     private var pickerScopeCategory: PrimaryMenuBuiltin? {
         if let category { return category }
         guard let fixedLibraryId,
-              let fixed = libraries.first(where: { $0.id == fixedLibraryId })
+              let fixed = libraries.first(where: { $0.id == fixedLibraryId }),
+              !fixed.isMixedLibrary
         else { return nil }
         return [PrimaryMenuBuiltin.movies, .series, .audiobooks].first {
             libraryMatchesPrimaryMenuCategory(fixed, category: $0)
