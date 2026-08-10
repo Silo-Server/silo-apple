@@ -46,12 +46,21 @@ class OnboardingTourViewModel {
 
     private var tourId: String = ""
     private let api: any OnboardingTourAPI
+    private let runtimeSettingsRefresher: any OnboardingRuntimeSettingsRefreshing
+    private let activeProfileId: @MainActor () -> String?
 
-    init(api: any OnboardingTourAPI = ContinuumAPI.shared) {
+    init(
+        api: any OnboardingTourAPI = ContinuumAPI.shared,
+        runtimeSettingsRefresher: (any OnboardingRuntimeSettingsRefreshing)? = nil,
+        activeProfileId: @escaping @MainActor () -> String? = { AuthService.shared.profileId }
+    ) {
         self.api = api
+        self.runtimeSettingsRefresher = runtimeSettingsRefresher
+            ?? OnboardingRuntimeSettingsRefresher()
+        self.activeProfileId = activeProfileId
     }
 
-    func load() async {
+    func load(resumeStepId: String? = nil) async {
         do {
             let flow = try await api.onboardingFlow(surface: "phone")
             let renderable = flow.steps.filter { Self.knownKinds.contains($0.kind) }
@@ -91,6 +100,10 @@ class OnboardingTourViewModel {
             }
             tourId = flow.tourId
             steps = renderable
+            if let resumeStepId,
+               let resumeIndex = renderable.firstIndex(where: { $0.id == resumeStepId }) {
+                currentIndex = resumeIndex
+            }
             isLoading = false
         } catch {
             finished = true
@@ -151,13 +164,20 @@ class OnboardingTourViewModel {
         await end(skipped: false, route: route ?? currentStepRoute)
     }
 
-    private func end(skipped: Bool, route: String?) async {
+    private func end(
+        skipped: Bool,
+        route: String?,
+        persistCurrentDefault: Bool = true
+    ) async {
         guard !isSaving else { return }
         isSaving = true
         error = nil
         defer { isSaving = false }
         let lastStep = steps.indices.contains(currentIndex) ? steps[currentIndex].id : nil
         do {
+            if !skipped, persistCurrentDefault {
+                try await persistDefaultForCurrentStepIfNeeded()
+            }
             try await api.postOnboardingProgress(OnboardingProgressRequest(
                 tourId: tourId,
                 lastStep: lastStep,
@@ -171,9 +191,12 @@ class OnboardingTourViewModel {
         }
     }
 
-    func continueWithoutSaving() {
-        completionRoute = currentStepRoute
-        finished = true
+    func continueWithoutSaving() async {
+        await end(
+            skipped: false,
+            route: currentStepRoute,
+            persistCurrentDefault: false
+        )
     }
 
     /// Writes one setting-choice value through its declared API. Unknown
@@ -190,6 +213,12 @@ class OnboardingTourViewModel {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    func isToggleEnabled(for step: OnboardingStep) -> Bool {
+        guard let spec = step.setting else { return false }
+        let value = selectedValues[step.id] ?? spec.default ?? "false"
+        return (try? boolean(value, key: spec.key)) ?? false
     }
 
     private var currentStepRoute: String? {
@@ -210,7 +239,7 @@ class OnboardingTourViewModel {
     private func writeSetting(spec: OnboardingSettingSpec, value: String) async throws {
         switch spec.target {
         case "profile_field":
-            guard let profileId = AuthService.shared.profileId else {
+            guard let profileId = activeProfileId() else {
                 throw OnboardingTourError.missingProfile
             }
 
@@ -221,10 +250,13 @@ class OnboardingTourViewModel {
             case "subtitle_mode": body.subtitleMode = value
             case "auto_skip_intro": body.autoSkipIntro = try boolean(value, key: spec.key)
             case "auto_skip_credits": body.autoSkipCredits = try boolean(value, key: spec.key)
-            case "auto_skip_recap": body.autoSkipRecap = try boolean(value, key: spec.key)
             default: throw OnboardingTourError.unsupportedSetting(spec.key)
             }
             try await api.updateProfile(profileId: profileId, body: body)
+            await runtimeSettingsRefresher.refreshAfterProfileWrite(
+                key: spec.key,
+                value: value
+            )
         case "setting":
             try await api.setSetting(key: spec.key, value: value)
         case "device_setting":

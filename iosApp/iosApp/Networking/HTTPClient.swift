@@ -240,11 +240,13 @@ actor HTTPClient {
     /// credentials. Used for invitation links received before authentication.
     func getAnonymous<T: Decodable>(
         from endpoint: ServerEndpoint,
-        _ path: String
+        _ path: String,
+        diagnosticPath: String? = nil
     ) async throws -> T {
         try await getUnauthenticated(
             serverURL: endpoint.baseURL,
-            path: path
+            path: path,
+            diagnosticPath: diagnosticPath
         )
     }
 
@@ -253,7 +255,8 @@ actor HTTPClient {
     func getUnauthenticated<T: Decodable>(
         serverURL: String,
         path: String,
-        quietStatuses: Set<Int> = []
+        quietStatuses: Set<Int> = [],
+        diagnosticPath: String? = nil
     ) async throws -> T {
         let dispatchRevision = try captureRequestDispatchRevision()
         let request = try buildRequest(
@@ -274,7 +277,7 @@ actor HTTPClient {
         } catch {
             Self.logDecodingFailure(
                 type: String(describing: T.self),
-                path: path,
+                path: diagnosticPath ?? path,
                 error: error,
                 data: data
             )
@@ -295,14 +298,16 @@ actor HTTPClient {
         to endpoint: ServerEndpoint,
         _ path: String,
         body: (any Encodable)? = nil,
-        query: [String: String] = [:]
+        query: [String: String] = [:],
+        diagnosticPath: String? = nil
     ) async throws -> T {
         try await sendAnonymous(
             serverURL: endpoint.baseURL,
             method: "POST",
             path: path,
             query: query,
-            body: body
+            body: body,
+            diagnosticPath: diagnosticPath
         )
     }
 
@@ -768,7 +773,8 @@ actor HTTPClient {
         method: String,
         path: String,
         query: [String: String],
-        body: (any Encodable)?
+        body: (any Encodable)?,
+        diagnosticPath: String?
     ) async throws -> T {
         let dispatchRevision = try captureRequestDispatchRevision()
         let request = try buildRequest(
@@ -790,7 +796,12 @@ actor HTTPClient {
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
-            Self.logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
+            Self.logDecodingFailure(
+                type: String(describing: T.self),
+                path: diagnosticPath ?? path,
+                error: error,
+                data: data
+            )
             throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
         }
     }

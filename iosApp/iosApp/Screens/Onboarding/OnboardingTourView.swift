@@ -8,6 +8,7 @@ import SwiftUI
 /// so finishing here silences the web and Android too.
 struct OnboardingTourView: View {
     var router: AppRouter
+    var resumeStepId: String? = nil
     /// Set when presented as a cover (the tour gate); falls back to a router
     /// reset when pushed as a route.
     var onDismiss: (() -> Void)? = nil
@@ -24,7 +25,7 @@ struct OnboardingTourView: View {
             }
         }
         .navigationBarBackButtonHidden()
-        .task { await viewModel.load() }
+        .task { await viewModel.load(resumeStepId: resumeStepId) }
         .onChange(of: viewModel.finished) { _, finished in
             guard finished else { return }
             if let onDismiss {
@@ -73,9 +74,10 @@ struct OnboardingTourView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     AuroraErrorLabel(error)
                     Button("Continue without saving") {
-                        viewModel.continueWithoutSaving()
+                        Task { await viewModel.continueWithoutSaving() }
                     }
                     .buttonStyle(AuroraGhostButtonStyle())
+                    .disabled(viewModel.isSaving)
                 }
                 .padding(.bottom, 12)
             }
@@ -155,7 +157,34 @@ struct OnboardingTourView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    @ViewBuilder
     private func settingChoice(step: OnboardingStep, spec: OnboardingSettingSpec) -> some View {
+        if spec.control == "toggle" {
+            Toggle(
+                spec.label ?? step.title ?? "Enabled",
+                isOn: Binding(
+                    get: { viewModel.isToggleEnabled(for: step) },
+                    set: { enabled in
+                        Task {
+                            await viewModel.choose(
+                                step: step,
+                                value: enabled ? "true" : "false"
+                            )
+                        }
+                    }
+                )
+            )
+            .font(.continuumBody)
+            .foregroundStyle(Color.auroraInk)
+            .disabled(viewModel.isSaving)
+            .padding(14)
+            .auroraGlass(cornerRadius: 20)
+        } else {
+            optionSettingChoice(step: step, spec: spec)
+        }
+    }
+
+    private func optionSettingChoice(step: OnboardingStep, spec: OnboardingSettingSpec) -> some View {
         VStack(spacing: 4) {
             ForEach(spec.options ?? [], id: \.value) { option in
                 let isSelected = viewModel.selectedValues[step.id] == option.value

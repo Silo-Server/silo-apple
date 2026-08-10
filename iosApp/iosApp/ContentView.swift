@@ -18,9 +18,9 @@ struct ContentView: View {
     #if os(iOS) || os(tvOS)
     @State private var diagnosticsModel = DiagnosticsViewModel()
     #endif
-    /// Deep link URL received before the auth state was ready. Drained
-    /// on the next `.authenticated` transition so Top Shelf taps during
-    /// a cold launch still route to the correct screen.
+    /// Deep link URL received before the auth state was ready. Content links
+    /// drain on the next `.authenticated` transition; invitation links drain
+    /// immediately after startup commits its initial auth route.
     @State private var pendingDeepLink: URL?
     /// Shared with every screen that renders cards. Hydrates lazily on
     /// the first .authenticated transition so cards stay visible during
@@ -377,16 +377,26 @@ struct ContentView: View {
     ///   download notifications)
     ///
     /// If the auth state isn't ready yet, the link is queued in
-    /// `pendingDeepLink` and drained on the next `.authenticated`
-    /// transition.
+    /// `pendingDeepLink` until startup commits its initial route.
     private func handleDeepLink(_ url: URL) {
         if let invitation = InvitationClaimLink(url: url) {
-            // Pre-auth by design: the link carries the server and the
-            // single-use claim token, so no session or queueing is needed.
+            #if os(tvOS)
+            // Invitation claiming is not implemented on tvOS. Ignore the
+            // route without disturbing an existing authenticated session.
+            return
+            #else
+            // The startup task owns auth-state routing while `.loading`.
+            // Defer this invite until that task commits so its older result
+            // cannot overwrite the claim route on a cold launch.
+            guard router.authState != .loading else {
+                pendingDeepLink = url
+                return
+            }
             router.path = NavigationPath()
             router.authState = .needsLogin
             router.navigate(to: .inviteClaim(endpoint: invitation.endpoint, token: invitation.token))
             return
+            #endif
         }
 
         guard url.scheme?.lowercased() == "continuum",
@@ -499,6 +509,13 @@ struct ContentView: View {
         guard didFinishStartupSplash, let targetState = pendingInitialAuthState else { return }
         pendingInitialAuthState = nil
         router.authState = targetState
+        #if !os(tvOS)
+        if let pendingDeepLink,
+           InvitationClaimLink(url: pendingDeepLink) != nil {
+            self.pendingDeepLink = nil
+            handleDeepLink(pendingDeepLink)
+        }
+        #endif
     }
 
     #if DEBUG

@@ -11,7 +11,11 @@ private struct OnboardingTourGateModifier: ViewModifier {
                 await model.check(profileId: AuthService.shared.profileId)
             }
             .sheet(isPresented: $model.showTour) {
-                OnboardingTourView(router: router, onDismiss: model.dismiss)
+                OnboardingTourView(
+                    router: router,
+                    resumeStepId: model.resumeStepId,
+                    onDismiss: model.dismiss
+                )
                     .frame(minWidth: 560, minHeight: 640)
             }
     }

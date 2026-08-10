@@ -57,20 +57,53 @@ struct OnboardingProgressRequest: Codable {
 /// Bridges an invitation's `show_tour=false` hint across profile creation.
 /// The server cannot record profile-scoped progress until a profile exists,
 /// so the authenticated gate posts the skip and clears this durable hint.
+/// Binding the marker to the newly claimed user prevents a later account on
+/// the same server from consuming another invitee's preference.
 enum OnboardingTourSuppression {
-    private static let key = "onboardingTourSuppressedServerId.v1"
-
-    static func set(for serverId: String) {
-        SharedDefaults.shared.set(serverId, forKey: key)
+    private struct Record: Codable, Equatable {
+        let serverId: String
+        let userId: String
     }
 
-    static func applies(to serverId: String?) -> Bool {
-        guard let serverId else { return false }
-        return SharedDefaults.shared.string(forKey: key) == serverId
+    private static let key = "onboardingTourSuppressedAccount.v2"
+    private static let legacyKey = "onboardingTourSuppressedServerId.v1"
+
+    static func set(
+        for serverId: String,
+        userId: String,
+        defaults: SharedDefaults = .shared
+    ) {
+        guard let data = try? JSONEncoder().encode(Record(serverId: serverId, userId: userId)) else {
+            return
+        }
+        defaults.removeObject(forKey: legacyKey)
+        defaults.set(data, forKey: key)
     }
 
-    static func clear() {
-        SharedDefaults.shared.removeObject(forKey: key)
+    static func pendingUserId(
+        for serverId: String?,
+        defaults: SharedDefaults = .shared
+    ) -> String? {
+        // The v1 value was not account-bound and is unsafe to consume.
+        if defaults.containsObject(forKey: legacyKey) {
+            defaults.removeObject(forKey: legacyKey)
+        }
+        guard let serverId,
+              let data = defaults.data(forKey: key),
+              let record = try? JSONDecoder().decode(Record.self, from: data),
+              record.serverId == serverId else {
+            return nil
+        }
+        return record.userId
+    }
+
+    static func clear(
+        serverId: String,
+        userId: String,
+        defaults: SharedDefaults = .shared
+    ) {
+        guard pendingUserId(for: serverId, defaults: defaults) == userId else { return }
+        defaults.removeObject(forKey: key)
     }
 }
 

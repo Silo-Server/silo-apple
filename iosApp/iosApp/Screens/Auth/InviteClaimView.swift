@@ -36,6 +36,8 @@ struct InviteClaimView: View {
                     .tint(Color.auroraInk)
                     .frame(maxWidth: .infinity)
                     .padding(.top, 60)
+            } else if let invitationLoadError = viewModel.invitationLoadError {
+                retryCard(message: invitationLoadError)
             } else if viewModel.invitationInvalid {
                 expiredCard
             } else if let invitation = viewModel.invitation {
@@ -94,6 +96,31 @@ struct InviteClaimView: View {
                 .buttonStyle(AuroraGhostButtonStyle())
                 .frame(maxWidth: .infinity)
                 .padding(.top, 12)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func retryCard(message: String) -> some View {
+        VStack(spacing: 12) {
+            AuroraEyebrow(text: "Invitation", centered: true)
+            Text("Could not load this invite")
+                .font(.continuumTitle)
+                .foregroundStyle(Color.auroraInk)
+                .multilineTextAlignment(.center)
+            Text(message)
+                .font(.continuumBody)
+                .foregroundStyle(Color.auroraInkSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button("Retry") {
+                Task { await viewModel.load(endpoint: endpoint, token: token) }
+            }
+            .buttonStyle(AuroraPrimaryButtonStyle())
+            .padding(.top, 12)
+
+            Button("Back", action: router.restoreAfterCancelledInvite)
+                .buttonStyle(AuroraGhostButtonStyle())
         }
         .frame(maxWidth: .infinity)
     }

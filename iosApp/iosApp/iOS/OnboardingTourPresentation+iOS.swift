@@ -11,7 +11,11 @@ private struct OnboardingTourGateModifier: ViewModifier {
                 await model.check(profileId: AuthService.shared.profileId)
             }
             .fullScreenCover(isPresented: $model.showTour) {
-                OnboardingTourView(router: router, onDismiss: model.dismiss)
+                OnboardingTourView(
+                    router: router,
+                    resumeStepId: model.resumeStepId,
+                    onDismiss: model.dismiss
+                )
             }
     }
 }

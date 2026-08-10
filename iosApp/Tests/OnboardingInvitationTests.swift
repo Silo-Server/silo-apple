@@ -123,7 +123,176 @@ final class OnboardingInvitationTests: XCTestCase {
         XCTAssertTrue(model.steps.isEmpty)
     }
 
-    private static func settingStep(id: String, target: String, key: String) -> OnboardingStep {
+    @MainActor
+    func testFinishingFinalSettingStepPersistsDisplayedDefaultFirst() async {
+        let step = Self.settingStep(
+            id: "final-default",
+            target: "setting",
+            key: "playback.auto_play_next",
+            defaultValue: "true"
+        )
+        let api = OnboardingTourAPIStub(flow: Self.flow(steps: [step]))
+        let model = OnboardingTourViewModel(api: api)
+
+        await model.load()
+        XCTAssertTrue(model.isToggleEnabled(for: step))
+        await model.finish()
+
+        let events = await api.events()
+        XCTAssertEqual(events, [
+            "setting:playback.auto_play_next=true",
+            "progress:final-default:completed",
+        ])
+        XCTAssertEqual(model.selectedValues[step.id], "true")
+        XCTAssertTrue(model.finished)
+    }
+
+    @MainActor
+    func testContinueWithoutSavingPostsCompletionBeforeDismissal() async {
+        let step = Self.settingStep(
+            id: "failed-setting",
+            target: "setting",
+            key: "playback.auto_play_next"
+        )
+        let api = OnboardingTourAPIStub(failWrites: true, flow: Self.flow(steps: [step]))
+        let model = OnboardingTourViewModel(api: api)
+
+        await model.load()
+        await model.choose(step: step, value: "true")
+        await model.continueWithoutSaving()
+
+        let events = await api.events()
+        XCTAssertEqual(events, ["progress:failed-setting:completed"])
+        XCTAssertTrue(model.finished)
+    }
+
+    @MainActor
+    func testLoadResumesAtTheServerRecordedStep() async {
+        let first = Self.welcomeStep(id: "welcome")
+        let second = Self.welcomeStep(id: "features")
+        let api = OnboardingTourAPIStub(flow: Self.flow(steps: [first, second]))
+        let model = OnboardingTourViewModel(api: api)
+
+        await model.load(resumeStepId: second.id)
+
+        XCTAssertEqual(model.currentIndex, 1)
+    }
+
+    @MainActor
+    func testProfileWriteRefreshesRuntimeStateAndRecapRemainsUnsupported() async {
+        let runtime = OnboardingRuntimeSettingsRefresherStub()
+        let api = OnboardingTourAPIStub()
+        let model = OnboardingTourViewModel(
+            api: api,
+            runtimeSettingsRefresher: runtime,
+            activeProfileId: { "profile-1" }
+        )
+        let intro = Self.settingStep(
+            id: "intro",
+            target: "profile_field",
+            key: "auto_skip_intro"
+        )
+
+        await model.choose(step: intro, value: "true")
+
+        let updatesAfterIntro = await api.profileUpdates()
+        XCTAssertEqual(updatesAfterIntro, ["profile-1"])
+        XCTAssertEqual(runtime.refreshes, ["auto_skip_intro=true"])
+
+        let recap = Self.settingStep(
+            id: "recap",
+            target: "profile_field",
+            key: "auto_skip_recap"
+        )
+        await model.choose(step: recap, value: "true")
+
+        XCTAssertNotNil(model.error)
+        let updatesAfterRecap = await api.profileUpdates()
+        XCTAssertEqual(updatesAfterRecap, ["profile-1"])
+        XCTAssertEqual(runtime.refreshes, ["auto_skip_intro=true"])
+    }
+
+    func testInviteTourSuppressionIsBoundToServerAndClaimedUser() throws {
+        let suiteName = "invite-tour-suppression-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        defer { suite.removePersistentDomain(forName: suiteName) }
+
+        OnboardingTourSuppression.set(
+            for: "server-a",
+            userId: "user-a",
+            defaults: defaults
+        )
+
+        XCTAssertEqual(
+            OnboardingTourSuppression.pendingUserId(for: "server-a", defaults: defaults),
+            "user-a"
+        )
+        XCTAssertNil(OnboardingTourSuppression.pendingUserId(for: "server-b", defaults: defaults))
+
+        OnboardingTourSuppression.clear(
+            serverId: "server-a",
+            userId: "user-b",
+            defaults: defaults
+        )
+        XCTAssertEqual(
+            OnboardingTourSuppression.pendingUserId(for: "server-a", defaults: defaults),
+            "user-a"
+        )
+
+        OnboardingTourSuppression.clear(
+            serverId: "server-a",
+            userId: "user-a",
+            defaults: defaults
+        )
+        XCTAssertNil(OnboardingTourSuppression.pendingUserId(for: "server-a", defaults: defaults))
+    }
+
+    @MainActor
+    func testTransientInviteLookupCanRetryButNotFoundIsPermanent() async throws {
+        let endpoint = try XCTUnwrap(ServerEndpoint(rawValue: "https://invite.example"))
+        let transientService = InvitationClaimServiceStub(firstFailure: .transient)
+        let transientModel = InviteClaimViewModel(auth: transientService)
+
+        await transientModel.load(endpoint: endpoint, token: "transient-token")
+        XCTAssertNotNil(transientModel.invitationLoadError)
+        XCTAssertFalse(transientModel.invitationInvalid)
+
+        await transientModel.load(endpoint: endpoint, token: "transient-token")
+        XCTAssertNotNil(transientModel.invitation)
+        XCTAssertNil(transientModel.invitationLoadError)
+
+        let permanentModel = InviteClaimViewModel(
+            auth: InvitationClaimServiceStub(firstFailure: .notFound)
+        )
+        await permanentModel.load(endpoint: endpoint, token: "expired-token")
+        XCTAssertTrue(permanentModel.invitationInvalid)
+        XCTAssertNil(permanentModel.invitationLoadError)
+    }
+
+    private static func flow(steps: [OnboardingStep]) -> OnboardingFlow {
+        OnboardingFlow(version: 1, tourId: "tour", steps: steps)
+    }
+
+    private static func welcomeStep(id: String) -> OnboardingStep {
+        OnboardingStep(
+            id: id,
+            kind: "welcome",
+            title: id,
+            body: nil,
+            illustration: nil,
+            setting: nil,
+            route: nil,
+            actionLabel: nil
+        )
+    }
+
+    private static func settingStep(
+        id: String,
+        target: String,
+        key: String,
+        defaultValue: String? = nil
+    ) -> OnboardingStep {
         OnboardingStep(
             id: id,
             kind: "setting_choice",
@@ -135,7 +304,7 @@ final class OnboardingInvitationTests: XCTestCase {
                 key: key,
                 control: "toggle",
                 options: nil,
-                default: nil,
+                default: defaultValue,
                 label: nil
             ),
             route: nil,
@@ -171,33 +340,103 @@ final class OnboardingInvitationTests: XCTestCase {
 
 private actor OnboardingTourAPIStub: OnboardingTourAPI {
     private var recordedWrites: [String] = []
+    private var recordedEvents: [String] = []
+    private var recordedProfileUpdates: [String] = []
     private let failWrites: Bool
     private let failProgress: Bool
+    private let flow: OnboardingFlow
 
-    init(failWrites: Bool = false, failProgress: Bool = false) {
+    init(
+        failWrites: Bool = false,
+        failProgress: Bool = false,
+        flow: OnboardingFlow = OnboardingFlow(version: 1, tourId: "tour", steps: [])
+    ) {
         self.failWrites = failWrites
         self.failProgress = failProgress
+        self.flow = flow
     }
 
     func writes() -> [String] { recordedWrites }
+    func events() -> [String] { recordedEvents }
+    func profileUpdates() -> [String] { recordedProfileUpdates }
 
     func onboardingFlow(surface: String) async throws -> OnboardingFlow {
-        OnboardingFlow(version: 1, tourId: "tour", steps: [])
+        flow
     }
 
     func postOnboardingProgress(_ request: OnboardingProgressRequest) async throws {
         if failProgress { throw URLError(.cannotConnectToHost) }
+        let disposition = request.skipped ? "skipped" : request.completed ? "completed" : "progress"
+        recordedEvents.append("progress:\(request.lastStep ?? "none"):\(disposition)")
     }
-    func updateProfile(profileId: String, body: UpdateProfileBody) async throws {}
+    func updateProfile(profileId: String, body: UpdateProfileBody) async throws {
+        if failWrites { throw URLError(.cannotConnectToHost) }
+        recordedProfileUpdates.append(profileId)
+        recordedEvents.append("profile:\(profileId)")
+    }
 
     func setSetting(key: String, value: String) async throws {
         if failWrites { throw URLError(.cannotConnectToHost) }
         recordedWrites.append("setting:\(key)=\(value)")
+        recordedEvents.append("setting:\(key)=\(value)")
     }
 
     func setDeviceSetting(key: String, value: String) async throws {
         if failWrites { throw URLError(.cannotConnectToHost) }
         recordedWrites.append("device:\(key)=\(value)")
+        recordedEvents.append("device:\(key)=\(value)")
+    }
+}
+
+@MainActor
+private final class OnboardingRuntimeSettingsRefresherStub: OnboardingRuntimeSettingsRefreshing {
+    private(set) var refreshes: [String] = []
+
+    func refreshAfterProfileWrite(key: String, value: String) async {
+        refreshes.append("\(key)=\(value)")
+    }
+}
+
+private actor InvitationClaimServiceStub: InvitationClaimServing {
+    enum Failure {
+        case transient
+        case notFound
+    }
+
+    private var firstFailure: Failure?
+
+    init(firstFailure: Failure? = nil) {
+        self.firstFailure = firstFailure
+    }
+
+    func lookupInvitation(
+        endpoint: ServerEndpoint,
+        token: String
+    ) async throws -> InvitationLookupResponse {
+        if let firstFailure {
+            self.firstFailure = nil
+            switch firstFailure {
+            case .transient:
+                throw URLError(.timedOut)
+            case .notFound:
+                throw HTTPError.http(statusCode: 404, body: nil)
+            }
+        }
+        return InvitationLookupResponse(
+            email: "invitee@example.com",
+            inviterName: "Inviter",
+            serverName: "Silo",
+            expiresAt: "2099-01-01T00:00:00Z",
+            showTour: true
+        )
+    }
+
+    func acceptInvitation(
+        endpoint: ServerEndpoint,
+        token: String,
+        password: String
+    ) async throws -> String {
+        "user-1"
     }
 }
 

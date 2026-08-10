@@ -197,14 +197,15 @@ final class AuthService: @unchecked Sendable {
     func lookupInvitation(endpoint: ServerEndpoint, token: String) async throws -> InvitationLookupResponse {
         try await HTTPClient.shared.getAnonymous(
             from: endpoint,
-            "/api/v1/invitations/\(token)"
+            "/api/v1/invitations/\(token)",
+            diagnosticPath: "/api/v1/invitations/<redacted>"
         )
     }
 
     /// Accepts an invitation: the account is created server-side with the
     /// invitation's email as username, and a normal session begins. The
     /// server entry is registered so the session survives restarts.
-    func acceptInvitation(endpoint: ServerEndpoint, token: String, password: String) async throws {
+    func acceptInvitation(endpoint: ServerEndpoint, token: String, password: String) async throws -> String {
         let id = ServerRegistry.serverId(for: endpoint.baseURL)
         var fetchedName: String?
         if let health: HealthStatus = try? await HTTPClient.shared.getAnonymous(
@@ -216,7 +217,8 @@ final class AuthService: @unchecked Sendable {
         let response: LoginResponse = try await HTTPClient.shared.postAnonymous(
             to: endpoint,
             "/api/v1/invitations/\(token)/accept",
-            body: AcceptInvitationRequest(password: password)
+            body: AcceptInvitationRequest(password: password),
+            diagnosticPath: "/api/v1/invitations/<redacted>/accept"
         )
 
         // Only a successful accept commits the server/session boundary.
@@ -236,6 +238,7 @@ final class AuthService: @unchecked Sendable {
             refreshToken: response.refreshToken,
             expectedAccount: expectedAccount
         )
+        return String(response.user.id)
     }
 
     /// A login response establishes a brand-new session. Wipe every piece of
