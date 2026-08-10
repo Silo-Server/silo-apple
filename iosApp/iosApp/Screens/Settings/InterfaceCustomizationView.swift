@@ -39,48 +39,29 @@ func groupedPrimaryMenuEditorRows(
     _ items: [PrimaryMenuItem],
     libraries: [Library]
 ) -> [PrimaryMenuEditorRow] {
-    let librariesById = Dictionary(uniqueKeysWithValues: libraries.map { ($0.id, $0) })
-    let mediaTypes = items.compactMap { item -> PrimaryMenuBuiltin? in
-        guard case .builtin(let builtin) = item,
-              builtin == .movies
-                || builtin == .series
-                || builtin == .music
-                || builtin == .audiobooks
-        else { return nil }
-        return builtin
-    }
-    var parentByLibraryId: [Int: PrimaryMenuBuiltin] = [:]
-    for item in items {
-        guard case .library(let libraryId, _) = item,
-              let library = librariesById[libraryId],
-              let parent = primaryMenuParentCategory(for: library, among: mediaTypes)
-        else { continue }
-        parentByLibraryId[libraryId] = parent
-    }
-
-    var rows: [PrimaryMenuEditorRow] = []
-    for item in items {
-        if case .library(let libraryId, _) = item,
-           parentByLibraryId[libraryId] != nil {
-            continue
+    groupPinnedLibrariesUnderMediaTypes(
+        items,
+        libraries: libraries,
+        libraryID: { item in
+            guard case .library(let libraryId, _) = item else { return nil }
+            return libraryId
+        },
+        mediaTypeCategory: { item in
+            guard case .builtin(let builtin) = item,
+                  builtin == .movies
+                    || builtin == .series
+                    || builtin == .music
+                    || builtin == .audiobooks
+            else { return nil }
+            return builtin
         }
-
-        rows.append(.init(item: item, parentMediaType: nil))
-        guard case .builtin(let builtin) = item else { continue }
-        for child in items {
-            guard case .library(let libraryId, _) = child,
-                  parentByLibraryId[libraryId] == builtin
-            else { continue }
-            rows.append(.init(item: child, parentMediaType: builtin))
-        }
-    }
-    return rows
+    ).map { .init(item: $0.element, parentMediaType: $0.parentCategory) }
 }
 
 func availablePrimaryMenuShortcuts(
     candidates: [PrimaryMenuItem],
     libraries: [Library],
-    visibleIds: Set<String>,
+    visibleIds: Set<String>
 ) -> [PrimaryMenuItem] {
     let libraryItems = libraries.map {
         PrimaryMenuItem.library(libraryId: $0.id, label: $0.name)
@@ -411,7 +392,7 @@ struct InterfaceCustomizationView: View {
         return availablePrimaryMenuShortcuts(
             candidates: candidates,
             libraries: libraries.sorted(by: librarySort),
-            visibleIds: visible,
+            visibleIds: visible
         )
     }
 

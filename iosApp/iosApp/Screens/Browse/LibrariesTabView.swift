@@ -26,6 +26,69 @@ func primaryMenuParentCategory(
     }
 }
 
+struct PinnedLibraryGroupedElement<Element> {
+    let element: Element
+    let parentCategory: PrimaryMenuBuiltin?
+
+    var isNestedLibrary: Bool { parentCategory != nil }
+}
+
+/// Orders navigation elements so pinned libraries sit directly beneath the
+/// media-type category that contains them, while libraries without a visible
+/// parent (mixed libraries, or categories the user hid) stay at root level.
+/// Shared by the iPad sidebar and the interface-customization editor so the
+/// two surfaces cannot drift apart.
+func groupPinnedLibrariesUnderMediaTypes<Element>(
+    _ elements: [Element],
+    libraries: [Library],
+    libraryID: (Element) -> Int?,
+    mediaTypeCategory: (Element) -> PrimaryMenuBuiltin?
+) -> [PinnedLibraryGroupedElement<Element>] {
+    let librariesByID = Dictionary(
+        uniqueKeysWithValues: libraries.map { ($0.id, $0) }
+    )
+    let visibleCategories = elements.compactMap(mediaTypeCategory)
+    var parentByLibraryID: [Int: PrimaryMenuBuiltin] = [:]
+    for element in elements {
+        guard let libraryID = libraryID(element),
+              let library = librariesByID[libraryID],
+              let parent = primaryMenuParentCategory(
+                  for: library,
+                  among: visibleCategories
+              )
+        else { continue }
+        parentByLibraryID[libraryID] = parent
+    }
+
+    var grouped: [PinnedLibraryGroupedElement<Element>] = []
+    for element in elements {
+        if let libraryID = libraryID(element) {
+            if parentByLibraryID[libraryID] == nil {
+                grouped.append(.init(element: element, parentCategory: nil))
+            }
+            continue
+        }
+
+        grouped.append(.init(element: element, parentCategory: nil))
+        guard let category = mediaTypeCategory(element) else { continue }
+        for child in elements {
+            guard let childLibraryID = libraryID(child),
+                  parentByLibraryID[childLibraryID] == category
+            else { continue }
+            grouped.append(.init(element: child, parentCategory: category))
+        }
+    }
+    return grouped
+}
+
+private func sharesPrimaryMenuCategory(_ lhs: Library, _ rhs: Library) -> Bool {
+    let categories: [PrimaryMenuBuiltin] = [.movies, .series, .audiobooks]
+    return categories.contains {
+        libraryMatchesPrimaryMenuCategory(lhs, category: $0)
+            && libraryMatchesPrimaryMenuCategory(rhs, category: $0)
+    }
+}
+
 func visibleLibrariesForRoot(
     _ libraries: [Library],
     category: PrimaryMenuBuiltin?,
@@ -33,7 +96,15 @@ func visibleLibrariesForRoot(
     showAudiobooks: Bool
 ) -> [Library] {
     if let fixedLibraryId {
-        return libraries.filter { $0.id == fixedLibraryId }
+        // A direct library root still requires the exact library to be
+        // accessible, but exposes sibling libraries of the same media type
+        // so the top selector can switch between them like media-type roots.
+        guard let fixed = libraries.first(where: { $0.id == fixedLibraryId }) else {
+            return []
+        }
+        return libraries.filter {
+            $0.id == fixed.id || sharesPrimaryMenuCategory(fixed, $0)
+        }
     }
     guard let category else {
         return libraries.filter { showAudiobooks || !$0.isAudiobookLibrary }
@@ -42,7 +113,7 @@ func visibleLibrariesForRoot(
 }
 
 func libraryRootCanSwitch(fixedLibraryId: Int?, visibleLibraryCount: Int) -> Bool {
-    fixedLibraryId == nil && visibleLibraryCount > 1
+    visibleLibraryCount > 1
 }
 
 func resolvedLibraryIdForRoot(
@@ -50,7 +121,8 @@ func resolvedLibraryIdForRoot(
     category: PrimaryMenuBuiltin?,
     fixedLibraryId: Int?,
     showAudiobooks: Bool,
-    storedLibraryId: Int
+    storedLibraryId: Int,
+    currentSelectionId: Int? = nil
 ) -> Int? {
     let visible = visibleLibrariesForRoot(
         libraries,
@@ -58,8 +130,14 @@ func resolvedLibraryIdForRoot(
         fixedLibraryId: fixedLibraryId,
         showAudiobooks: showAudiobooks
     )
-    if fixedLibraryId != nil {
-        return visible.first?.id
+    if let fixedLibraryId {
+        // Keep an in-session switch to a sibling library, but always land on
+        // the exact pinned library when entering the root fresh.
+        if let current = currentSelectionId,
+           visible.contains(where: { $0.id == current }) {
+            return current
+        }
+        return visible.first(where: { $0.id == fixedLibraryId })?.id
     }
     if storedLibraryId != 0,
        let restored = visible.first(where: { $0.id == storedLibraryId }) {
@@ -139,6 +217,11 @@ struct LibrariesTabView: View {
     /// have no persistence key because their destination already fixes the ID.
     private let selectionStorageKey: String?
     @State private var storedLibraryId: Int
+    /// Scope the current `selectedLibraryId` belongs to. A direct-library
+    /// root allows switching to sibling libraries in-session, but a fresh
+    /// visit (or a reused view whose destination changed) must land on the
+    /// exact pinned library again.
+    @State private var appliedScopeID: String?
 
     @Environment(AppRouter.self) private var router
 
@@ -249,9 +332,7 @@ struct LibrariesTabView: View {
                     visibleLibraryCount: visibleLibraries.count
                 ),
                 profile: currentProfile,
-                onLibraryTap: {
-                    if fixedLibraryId == nil { showPicker = true }
-                },
+                onLibraryTap: { showPicker = true },
                 onSearch: { router.navigate(to: .search) },
                 onOpenSettings: { router.navigate(to: .settings) },
                 onOpenRequests: { router.navigate(to: .requestsHub) },
@@ -317,21 +398,49 @@ struct LibrariesTabView: View {
     /// Preserve the stored selection if it still exists; otherwise fall
     /// back to the first available library.
     private func applyLibrarySelection() {
+        let scopeID = libraryRootScopeID(
+            category: category,
+            fixedLibraryId: fixedLibraryId,
+            authority: libraryAuthority
+        )
         let resolved = resolvedLibraryIdForRoot(
             libraries,
             category: category,
             fixedLibraryId: fixedLibraryId,
             showAudiobooks: navPrefs.showAudiobooks,
-            storedLibraryId: storedLibraryId
+            storedLibraryId: storedLibraryId,
+            currentSelectionId: appliedScopeID == scopeID ? selectedLibraryId : nil
         )
+        appliedScopeID = scopeID
         selectedLibraryId = resolved
         if let resolved { persistLibrarySelection(resolved) }
     }
 
     private func persistLibrarySelection(_ libraryId: Int) {
-        guard let selectionStorageKey else { return }
-        storedLibraryId = libraryId
-        UserDefaults.standard.set(libraryId, forKey: selectionStorageKey)
+        if let selectionStorageKey {
+            storedLibraryId = libraryId
+            UserDefaults.standard.set(libraryId, forKey: selectionStorageKey)
+        }
+        mirrorSelectionToMediaTypeRoots(libraryId)
+    }
+
+    /// Landing on (or switching within) a direct-library root also records
+    /// the selection for the matching media-type roots, so tapping "Movies"
+    /// after visiting "4K Movies" lands on 4K Movies.
+    private func mirrorSelectionToMediaTypeRoots(_ libraryId: Int) {
+        guard fixedLibraryId != nil,
+              libraryAuthority != nil,
+              let library = libraries.first(where: { $0.id == libraryId })
+        else { return }
+        for mediaType in [PrimaryMenuBuiltin.movies, .series, .audiobooks]
+        where libraryMatchesPrimaryMenuCategory(library, category: mediaType) {
+            guard let key = librarySelectionStorageKey(
+                category: mediaType,
+                fixedLibraryId: nil,
+                authority: libraryAuthority
+            ) else { continue }
+            UserDefaults.standard.set(libraryId, forKey: key)
+        }
     }
 
     /// Load the currently-selected profile so we can render its avatar in

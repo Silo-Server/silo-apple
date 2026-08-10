@@ -717,14 +717,18 @@ struct ContentView: View {
 /// cannot resize the overlay while retaining the system sidebar presentation.
 private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
     let width: CGFloat
+    let sidebarIsHidden: Bool
     let onSwipeLeft: () -> Void
 
     func makeUIViewController(context: Context) -> Controller {
-        Controller(width: width, onSwipeLeft: onSwipeLeft)
+        let controller = Controller(width: width, onSwipeLeft: onSwipeLeft)
+        controller.sidebarIsHidden = sidebarIsHidden
+        return controller
     }
 
     func updateUIViewController(_ controller: Controller, context: Context) {
         controller.width = width
+        controller.sidebarIsHidden = sidebarIsHidden
         controller.onSwipeLeft = onSwipeLeft
         controller.applyWidthLock()
     }
@@ -735,8 +739,10 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
 
     final class Controller: UIViewController, UIGestureRecognizerDelegate {
         var width: CGFloat
+        var sidebarIsHidden = false
         var onSwipeLeft: () -> Void
         private var dragStartOffset: CGFloat = 0
+        private var isDismissAnimationRunning = false
         private weak var managedSplitViewController: UISplitViewController?
         private weak var dragPresentationView: UIView?
         private weak var swipeHostView: UIView?
@@ -776,15 +782,34 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
         override func viewDidLayoutSubviews() {
             super.viewDidLayoutSubviews()
             applyWidthLock()
+            resetStrandedSidebarTransformIfNeeded()
+        }
+
+        /// `sidebarPresentationView` walks one level of private hierarchy; if
+        /// an iPadOS release reshuffles it, or an interrupted animation leaks
+        /// a translation, a stale transform would leave the sidebar visually
+        /// offset with no gesture in flight. Layout passes are the safety net:
+        /// when nothing owns the view, force it back to identity.
+        private func resetStrandedSidebarTransformIfNeeded() {
+            guard !isDragActive, !isDismissAnimationRunning,
+                  let strandedView = dragPresentationView,
+                  strandedView.transform != .identity,
+                  strandedView.layer.animationKeys()?.isEmpty != false
+            else { return }
+            strandedView.transform = .identity
+            dragPresentationView = nil
         }
 
         func applyWidthLock() {
             guard let splitViewController = splitViewControllerAncestor else { return }
             managedSplitViewController = splitViewController
-            // The direct-touch pan below is the sole interactive transition
-            // owner. Keeping UIKit's built-in pan enabled would let both
-            // recognizers move the same primary column simultaneously.
-            splitViewController.presentsWithGesture = false
+            // While the sidebar is visible the direct-touch pan below is the
+            // sole interactive transition owner: keeping UIKit's built-in pan
+            // enabled would let both recognizers move the same primary column
+            // simultaneously. While the sidebar is hidden our recognizer only
+            // accepts leftward swipes, so the system edge swipe stays enabled
+            // to reveal the sidebar.
+            splitViewController.presentsWithGesture = sidebarIsHidden
             if splitViewController.preferredPrimaryColumnWidth != width {
                 splitViewController.preferredPrimaryColumnWidth = width
             }
@@ -860,6 +885,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                 dragStartOffset = 0
 
                 if shouldDismiss {
+                    isDismissAnimationRunning = true
                     UIView.animate(
                         withDuration: 0.18,
                         delay: 0,
@@ -870,7 +896,13 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                             y: 0
                         )
                     } completion: { finished in
-                        guard finished else { return }
+                        self.isDismissAnimationRunning = false
+                        // A new drag re-owns the view mid-animation; leave its
+                        // state alone. Any other interruption (rotation, split
+                        // relayout) must still complete the hide, or the
+                        // sidebar stays "visible" while translated off-screen
+                        // with no toggle button rendered to recover it.
+                        guard finished || !self.isDragActive else { return }
                         UIView.performWithoutAnimation {
                             splitViewController.hide(.primary)
                             self.onSwipeLeft()
@@ -889,6 +921,14 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
 
             default:
                 break
+            }
+        }
+
+        /// Whether a pan is actively re-owning the sidebar mid-animation.
+        private var isDragActive: Bool {
+            switch swipeLeftRecognizer.state {
+            case .began, .changed: return true
+            default: return false
             }
         }
 
@@ -1495,6 +1535,7 @@ struct MainTabView: View {
                 .background {
                     FixedPrimarySplitViewWidth(
                         width: iPadSidebarWidth,
+                        sidebarIsHidden: iPadColumnVisibility == .detailOnly,
                         onSwipeLeft: finishInteractiveSidebarDismissal
                     )
                         .frame(width: 0, height: 0)
@@ -1595,53 +1636,25 @@ struct MainTabView: View {
         let availableLibraries = librarySnapshot.availableLibraries(
             for: currentLibraryAuthority
         )
-        let librariesByID = Dictionary(
-            uniqueKeysWithValues: availableLibraries.map { ($0.id, $0) }
-        )
-        let visibleCategories = visibleDestinations.compactMap { destination -> PrimaryMenuBuiltin? in
-            guard case .libraryCategory(let category) = destination.id else { return nil }
-            return category
-        }
-        var parentCategoryByLibraryID: [Int: PrimaryMenuBuiltin] = [:]
-        for destination in visibleDestinations {
-            guard case .library(let libraryID) = destination.id,
-                  let library = librariesByID[libraryID],
-                  let category = primaryMenuParentCategory(
-                      for: library,
-                      among: visibleCategories
-                  )
-            else { continue }
-            parentCategoryByLibraryID[libraryID] = category
-        }
-
-        var items: [MainTabSidebarDestination] = []
-
-        for destination in visibleDestinations {
-            guard case .library(let libraryID) = destination.id else {
-                items.append(.init(destination: destination, isNestedLibrary: false))
-
+        return groupPinnedLibrariesUnderMediaTypes(
+            visibleDestinations,
+            libraries: availableLibraries,
+            libraryID: { destination in
+                guard case .library(let libraryID) = destination.id else { return nil }
+                return libraryID
+            },
+            mediaTypeCategory: { destination in
                 guard case .libraryCategory(let category) = destination.id else {
-                    continue
+                    return nil
                 }
-                for pinnedDestination in visibleDestinations {
-                    guard case .library(let libraryID) = pinnedDestination.id,
-                          parentCategoryByLibraryID[libraryID] == category
-                    else { continue }
-
-                    items.append(.init(
-                        destination: pinnedDestination,
-                        isNestedLibrary: true
-                    ))
-                }
-                continue
+                return category
             }
-
-            if parentCategoryByLibraryID[libraryID] == nil {
-                items.append(.init(destination: destination, isNestedLibrary: false))
-            }
+        ).map {
+            MainTabSidebarDestination(
+                destination: $0.element,
+                isNestedLibrary: $0.isNestedLibrary
+            )
         }
-
-        return items
     }
 
     /// Collapses or re-expands the sidebar without moving the detail content.
