@@ -291,6 +291,23 @@ struct InterfaceCustomizationView: View {
                 }
             }
 
+            if !pinnedLibraries.isEmpty {
+                Section {
+                    ForEach(pinnedLibraries) { library in
+                        Button(role: .destructive) {
+                            preferences.setLibraryPinned(library, isPinned: false)
+                        } label: {
+                            Label("Unpin \(library.name)", systemImage: "pin.slash.fill")
+                        }
+                    }
+                } header: {
+                    Text("Pinned Libraries")
+                } footer: {
+                    Text("Unpinning removes the library shortcut from your profile and from this menu.")
+                }
+                .disabled(!preferences.allowsEditing)
+            }
+
             if let message = preferences.syncErrorMessage,
                message != preferences.capabilityMessage {
                 Section {
@@ -399,6 +416,12 @@ struct InterfaceCustomizationView: View {
             libraries: libraries.sorted(by: librarySort),
             visibleIds: visible
         )
+    }
+
+    private var pinnedLibraries: [Library] {
+        libraries
+            .filter { preferences.isLibraryPinned($0.id) }
+            .sorted(by: librarySort)
     }
 
     private func displayTitle(for item: PrimaryMenuItem) -> String {
