@@ -147,8 +147,9 @@ enum TVDisplayCriteria {
     /// property assignment; the renegotiation it requests only surfaces on
     /// `isDisplayModeSwitchInProgress` after a short delay, so a lone
     /// immediate check would race it. Phase one polls until the manager
-    /// reports a switch underway, bailing out early when the panel's EDR
-    /// headroom already clears the HDR floor (nothing left to negotiate).
+    /// reports a switch underway. Existing EDR headroom must not end this
+    /// phase: it cannot distinguish HDR10 from Dolby Vision and says nothing
+    /// about a pending refresh-rate switch.
     /// Phase two polls until the manager reports the switch finished. A
     /// switch that never surfaces within budget means the criteria were
     /// unsatisfiable or a no-op — playback proceeds and AVPlayer tonemaps.
@@ -171,14 +172,9 @@ enum TVDisplayCriteria {
                 negotiationBegan = true
                 break
             }
-            if screen.currentEDRHeadroom > HDRDisplayCriteriaPolicy.hdrHeadroomFloor {
-                logger.info("settle: panel already HDR")
-                print(String(format: "[CMP] displayModeSettle already-hdr headroom=%.3f", screen.currentEDRHeadroom))
-                return true
-            }
             startBudget -= 1
             try? await Task.sleep(
-                nanoseconds: UInt64(HDRDisplayCriteriaPolicy.switchStartPollIntervalMs) * 1_000_000
+                for: .milliseconds(HDRDisplayCriteriaPolicy.switchStartPollIntervalMs)
             )
         }
         if Task.isCancelled { return panelIsHostingHDR() }
@@ -192,7 +188,7 @@ enum TVDisplayCriteria {
         var settledAfterMs = 0
         while settleBudget > 0, !Task.isCancelled {
             try? await Task.sleep(
-                nanoseconds: UInt64(HDRDisplayCriteriaPolicy.switchSettlePollIntervalMs) * 1_000_000
+                for: .milliseconds(HDRDisplayCriteriaPolicy.switchSettlePollIntervalMs)
             )
             settleBudget -= 1
             settledAfterMs += HDRDisplayCriteriaPolicy.switchSettlePollIntervalMs

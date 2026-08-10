@@ -864,6 +864,17 @@ actor PlaybackSessionBridge {
         }
     }
 
+    /// AVAudioSession emits route-change notifications for configuration
+    /// updates performed by the player itself (for example, selecting a new
+    /// preferred multichannel layout). A V3 route replan is only warranted
+    /// when the opaque output identity used to select the active plan changed.
+    static func isMaterialOutputRouteChange(
+        activeOutputContextId: String?,
+        observedOutputContextId: String?
+    ) -> Bool {
+        activeOutputContextId != observedOutputContextId
+    }
+
     static func supportsNeutralProtocolV3(_ capability: PlaybackV3CapabilityResponse) -> Bool {
         capability.enabled
             && capability.protocolVersions.contains(PlaybackProtocolV3.version)
@@ -906,7 +917,8 @@ actor PlaybackSessionBridge {
         operation: String? = nil,
         qualityPreference: String? = nil,
         audioTrackIndex: Int? = nil,
-        subtitleTrackIndex: Int? = nil
+        subtitleTrackIndex: Int? = nil,
+        outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
     ) async throws -> PreparedPlayback? {
         let operation = operation ?? Self.replanOperation(forClassification: classification)
         guard var active = activeProtocolV3,
@@ -929,7 +941,7 @@ actor PlaybackSessionBridge {
         }
 
         if classification == "output_route_changed" {
-            active.snapshot = ApplePlaybackV3Capabilities.snapshot()
+            active.snapshot = outputRouteSnapshot ?? ApplePlaybackV3Capabilities.snapshot()
         }
 
         let isIntent = operation == PlaybackProtocolV3.ReplanOperation.trackChange

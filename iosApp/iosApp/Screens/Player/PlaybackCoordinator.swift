@@ -50,10 +50,26 @@ final class PlaybackCoordinator {
         return engine
     }
 
+    /// Keeps an already-installed engine when the implementation route did
+    /// not change. In-place replans (notably an audio-track change on the
+    /// SiloPlayer loopback route) need the backend to survive so it can keep
+    /// the active audio session and identical tvOS display criteria instead
+    /// of renegotiating HDMI around the replacement item.
+    @discardableResult
+    func prepareEngine(for kind: PlaybackEngineKind) -> PlaybackEngine {
+        if let activeEngine, activeEngine.kind == kind {
+            Self.logger.info(
+                "[CMP-ENGINE] reusing kind=\(kind.label, privacy: .public) family=\(kind.routeFamily.diagnosticsLabel, privacy: .public)"
+            )
+            return activeEngine
+        }
+        return installEngine(for: kind)
+    }
+
     func load(plan: PlaybackExecutionPlan) throws {
         let engine: PlaybackEngine
-        if let current = activeEngine, current.kind == plan.engine {
-            engine = current
+        if let activeEngine, activeEngine.kind == plan.engine {
+            engine = activeEngine
         } else {
             engine = installEngine(for: plan.engine)
         }

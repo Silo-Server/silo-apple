@@ -218,6 +218,89 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(object["attempted_plan_keys"] as? [String], [])
     }
 
+    func testOutputRouteReplanRequiresChangedOutputContextIdentity() {
+        XCTAssertFalse(
+            PlaybackSessionBridge.isMaterialOutputRouteChange(
+                activeOutputContextId: "apple:bedroom",
+                observedOutputContextId: "apple:bedroom"
+            ),
+            "player-owned AVAudioSession configuration notifications must not invalidate the plan"
+        )
+        XCTAssertTrue(
+            PlaybackSessionBridge.isMaterialOutputRouteChange(
+                activeOutputContextId: "apple:bedroom",
+                observedOutputContextId: "apple:airplay"
+            ),
+            "a genuinely different output identity must request a new plan"
+        )
+        XCTAssertFalse(
+            PlaybackSessionBridge.isMaterialOutputRouteChange(
+                activeOutputContextId: nil,
+                observedOutputContextId: nil
+            )
+        )
+        XCTAssertTrue(
+            PlaybackSessionBridge.isMaterialOutputRouteChange(
+                activeOutputContextId: nil,
+                observedOutputContextId: "apple:bedroom"
+            )
+        )
+    }
+
+    func testPlaybackCoordinatorReusesEngineForSameImplementationRoute() {
+        var avPlayerBackendCreations = 0
+        let coordinator = PlaybackCoordinator(
+            makeCore: {
+                XCTFail("The AVFoundation route must not construct PlayerCore")
+                return PlayerCore()
+            },
+            makeAVPlayer: { _ in
+                avPlayerBackendCreations += 1
+                return AVPlayerBackend()
+            }
+        )
+        defer { coordinator.dispose() }
+
+        let initial = coordinator.prepareEngine(for: .siloPlayerLoopback)
+        let replacement = coordinator.prepareEngine(for: .siloPlayerLoopback)
+
+        XCTAssertTrue(initial === replacement)
+        XCTAssertEqual(avPlayerBackendCreations, 1)
+    }
+
+    func testLoopbackSessionPublishesTheAudioTrackSelectedForMuxing() {
+        let tracks = [
+            makePlayerAudioTrack(trackId: 10_000, sourceIndex: 0, ffIndex: 1, isSelected: true),
+            makePlayerAudioTrack(trackId: 10_001, sourceIndex: 1, ffIndex: 2, isSelected: false),
+        ]
+
+        let session = LoopbackSessionSpec(
+            sourceURL: URL(string: "https://example.test/video")!,
+            headers: [:],
+            videoMode: .passthroughH264,
+            sourceVideoFrameRate: 24,
+            selectedAudio: LoopbackSessionSpec.SelectedAudio(
+                trackIndex: 1,
+                ffIndex: 2,
+                sourceCodec: "eac3",
+                sourceChannelCount: 6,
+                sourceChannelLayout: "5.1(side)",
+                outputMode: .copy,
+                preservesAtmos: false
+            ),
+            availableAudioTracks: tracks,
+            manifestMetadata: LoopbackSessionSpec.ManifestMetadata(
+                advertisedDolbyVisionProfile: nil,
+                compatibilityBrand: nil,
+                videoRange: "SDR",
+                mayClaimAtmos: false
+            )
+        )
+
+        XCTAssertEqual(session.availableAudioTracks.map(\.isSelected), [false, true])
+        XCTAssertEqual(session.availableAudioTracks.first(where: \.isSelected)?.srcId, 1)
+    }
+
     func testDeliveryClassesMapToAppleExecutorsWithoutEngineAliases() throws {
         let streamRequest = makeStreamRequest()
         let base = makeBaseExecutionPlan(streamRequest: streamRequest)
@@ -1358,6 +1441,32 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             url: URL(string: "https://example.test/\(path)")!,
             headers: ["Authorization": "Bearer test"],
             serverUrl: "https://example.test"
+        )
+    }
+
+    private func makePlayerAudioTrack(
+        trackId: Int64,
+        sourceIndex: Int,
+        ffIndex: Int,
+        isSelected: Bool
+    ) -> PlayerTrack {
+        PlayerTrack(
+            trackId: trackId,
+            kind: .audio,
+            title: nil,
+            lang: nil,
+            codec: "eac3",
+            audioChannelsLayout: "5.1(side)",
+            audioChannelCount: 6,
+            bitrate: nil,
+            isDefault: sourceIndex == 0,
+            isForced: false,
+            isHearingImpaired: false,
+            isVisualImpaired: false,
+            isExternal: false,
+            isSelected: isSelected,
+            ffIndex: ffIndex,
+            srcId: sourceIndex
         )
     }
 

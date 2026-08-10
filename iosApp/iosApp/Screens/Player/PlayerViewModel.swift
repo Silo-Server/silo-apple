@@ -1240,13 +1240,24 @@ class PlayerViewModel {
             queue: .main
         ) { [weak self] _ in
             guard let self,
-                  self.activePreparedProtocolV3 != nil,
+                  let activeProtocolV3 = self.activePreparedProtocolV3,
                   !self.isDisposed,
                   !self.isLoading else { return }
+            let observedSnapshot = ApplePlaybackV3Capabilities.snapshot()
+            guard PlaybackSessionBridge.isMaterialOutputRouteChange(
+                activeOutputContextId: activeProtocolV3.outputContextId,
+                observedOutputContextId: observedSnapshot.outputContextId
+            ) else {
+                Self.logger.debug(
+                    "Ignoring AVAudioSession route notification with unchanged Playback V3 output context"
+                )
+                return
+            }
             self.attemptProtocolV3Replan(
                 position: self.currentTime,
                 classification: "output_route_changed",
-                message: "The Apple audio output route changed."
+                message: "The Apple audio output route changed.",
+                outputRouteSnapshot: observedSnapshot
             )
         }
         #endif
@@ -1752,7 +1763,8 @@ class PlayerViewModel {
         message: String,
         operation: String? = nil,
         qualityPreference: String? = nil,
-        completesQualitySwitch: Bool = false
+        completesQualitySwitch: Bool = false,
+        outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
     ) {
         guard protocolV3ReplanTask == nil,
               let watchDetail = currentWatchDetail else {
@@ -1779,7 +1791,8 @@ class PlayerViewModel {
                     operation: operation,
                     qualityPreference: qualityPreference,
                     audioTrackIndex: self.resolvedAudioTrackIndexForResume(),
-                    subtitleTrackIndex: self.resolvedProtocolV3SubtitleIndexForResume()
+                    subtitleTrackIndex: self.resolvedProtocolV3SubtitleIndexForResume(),
+                    outputRouteSnapshot: outputRouteSnapshot
                 ) else {
                     self.finalizeTerminalPlaybackError(message)
                     return
@@ -1836,7 +1849,7 @@ class PlayerViewModel {
                 self.playbackTimelineOffset = prepared.session.timelineOffsetSeconds
                 self.logExecutionPlan(plan)
                 await self.sessionBridge.reportProtocolV3PlanExecutionStarted()
-                await self.loadStream(plan: plan)
+                await self.loadStream(plan: plan, reusingActiveEngine: true)
             } catch is CancellationError {
                 return
             } catch {
@@ -2560,15 +2573,22 @@ class PlayerViewModel {
         cmpLog(message)
     }
 
-    private func loadStream(plan: PlaybackExecutionPlan) async {
+    private func loadStream(
+        plan: PlaybackExecutionPlan,
+        reusingActiveEngine: Bool = false
+    ) async {
         streamLoadGeneration &+= 1
         let loadGeneration = streamLoadGeneration
-        activePlayer.dispose()
-        activePlayer = .none
-        // Re-arm the authoritative V3 intent after disposing the old player.
-        // A final track callback from that player may have consumed the first
-        // copy between replan adoption and this teardown; generation-gated
-        // callbacks cannot consume this post-teardown copy.
+        // Stop presentation while the replacement proxy is prepared, but
+        // retain the engine. If the implementation route is unchanged,
+        // PlaybackCoordinator will reload that backend in place so tvOS can
+        // preserve identical display criteria and the active audio session.
+        // The loading indicator remains over the outgoing surface meanwhile.
+        activePlayer.pause()
+        // Re-arm the authoritative V3 intent after invalidating the old
+        // callback generation. A final track callback from that player may
+        // have consumed the first copy between replan adoption and this
+        // point; generation-gated callbacks cannot consume this copy.
         rearmAdoptedProtocolV3TrackIntent()
         stashSourceCacheHandoff()
         sourceProxy?.stop()
@@ -2597,7 +2617,23 @@ class PlayerViewModel {
         sourceProxyFileId = prepared.proxy != nil ? currentSelectedVersion?.fileId : nil
         let loadPlan = prepared.plan
         activeExecutionPlan = loadPlan
-        installPlayer(for: loadPlan.engine)
+        // Only a live protocol replan has a known-good outgoing engine to
+        // preserve. Fresh loads and recovery paths may have disposed their
+        // ActivePlayer while the coordinator still owns the wrapper, so they
+        // must install a new implementation even when the route kind matches.
+        let installed = reusingActiveEngine && !activePlayer.isNone
+            ? playbackCoordinator.prepareEngine(for: loadPlan.engine)
+            : playbackCoordinator.installEngine(for: loadPlan.engine)
+        activePlayer = ActivePlayer(renderTarget: installed.renderTarget)
+        activeRouteKind = loadPlan.engine
+        if let core = activePlayer.core {
+            configurePrimaryCore(core)
+        }
+        if let backend = activePlayer.avBackend {
+            applyCallbacks(makeCallbacks(), to: backend)
+            wireSubtitleCallbacks(to: backend)
+            backend.setServerChapters(serverProvidedChapters)
+        }
         let startTime = loadPlan.startMode.seconds
         let backendTimelineOffset = avPlayerTimelineOffset(for: loadPlan, startTime: startTime)
         if loadPlan.engine == .siloPlayerLoopback {

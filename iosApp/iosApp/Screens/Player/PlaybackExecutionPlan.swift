@@ -171,9 +171,52 @@ struct LoopbackSessionSpec {
         self.videoMode = videoMode
         self.sourceVideoFrameRate = sourceVideoFrameRate
         self.selectedAudio = selectedAudio
-        self.availableAudioTracks = availableAudioTracks
+        self.availableAudioTracks = Self.markSelectedAudioTrack(
+            in: availableAudioTracks,
+            selectedAudio: selectedAudio
+        )
         self.manifestMetadata = manifestMetadata
         self.servingMode = servingMode
+    }
+
+    /// The selected mux input is authoritative. The planner can resolve it
+    /// from a server-provided audio ordinal after the inventory was initially
+    /// marked from local preferences; publishing those stale flags makes the
+    /// view model "correct" an already-correct selection and rebuild the
+    /// loopback item immediately after its first frame.
+    private static func markSelectedAudioTrack(
+        in tracks: [PlayerTrack],
+        selectedAudio: SelectedAudio
+    ) -> [PlayerTrack] {
+        guard selectedAudio.isPresent else { return tracks }
+        let selectedTrack = tracks.first(where: { $0.srcId == selectedAudio.trackIndex })
+            ?? selectedAudio.ffIndex.flatMap { ffIndex in
+                tracks.first(where: { $0.ffIndex == ffIndex })
+            }
+        guard let selectedTrack else { return tracks }
+
+        return tracks.map { track in
+            let isSelected = track.trackId == selectedTrack.trackId
+            guard track.isSelected != isSelected else { return track }
+            return PlayerTrack(
+                trackId: track.trackId,
+                kind: track.kind,
+                title: track.title,
+                lang: track.lang,
+                codec: track.codec,
+                audioChannelsLayout: track.audioChannelsLayout,
+                audioChannelCount: track.audioChannelCount,
+                bitrate: track.bitrate,
+                isDefault: track.isDefault,
+                isForced: track.isForced,
+                isHearingImpaired: track.isHearingImpaired,
+                isVisualImpaired: track.isVisualImpaired,
+                isExternal: track.isExternal,
+                isSelected: isSelected,
+                ffIndex: track.ffIndex,
+                srcId: track.srcId
+            )
+        }
     }
 
     func reanchored(at mediaSeconds: Double) -> LoopbackSessionSpec {

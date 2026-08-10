@@ -1387,6 +1387,12 @@ final class AVPlayerBackend {
                   let selectedTrackIndex = selectedTrack.srcId else {
                 return
             }
+            guard selectedTrackIndex != spec.selectedAudio.trackIndex else {
+                Self.logger.debug(
+                    "[CMP-AVP] ignoring unchanged loopback audio trackId=\(trackId, privacy: .public) trackIndex=\(selectedTrackIndex, privacy: .public)"
+                )
+                return
+            }
             let playerSeconds = currentTime()
             let startTime = playerSeconds.isFinite
                 ? mediaTime(for: max(0, playerSeconds))
@@ -1686,7 +1692,10 @@ final class AVPlayerBackend {
             from: currentSourceStrategy,
             to: strategy
         )
-        teardownMediaPipeline(clearDisplayCriteria: !preserveDisplayCriteria)
+        teardownMediaPipeline(
+            clearDisplayCriteria: !preserveDisplayCriteria,
+            deactivateAudioSession: false
+        )
         isPreservingTVDisplayCriteriaForReload = preserveDisplayCriteria
         currentSourceStrategy = strategy
         applyExternalPlaybackPolicy(for: strategy)
@@ -4345,7 +4354,10 @@ final class AVPlayerBackend {
         )
     }
 
-    private func teardownMediaPipeline(clearDisplayCriteria: Bool = true) {
+    private func teardownMediaPipeline(
+        clearDisplayCriteria: Bool = true,
+        deactivateAudioSession: Bool = true
+    ) {
         cancelSeekDeadline()
         loopbackItemDeathRecoveryState.reset()
         loopbackItemDeathConfirmationState.reset()
@@ -4396,7 +4408,9 @@ final class AVPlayerBackend {
             didTemporarilyMuteForInitialVideoDisplay = false
         }
         avPlayer.replaceCurrentItem(with: nil)
-        deactivateAudioSession()
+        if deactivateAudioSession {
+            self.deactivateAudioSession()
+        }
         currentItem = nil
         subtitleSession?.teardown()
         lastBitmapCueRenderKey = nil
@@ -4520,8 +4534,9 @@ final class AVPlayerBackend {
                 // A reload that preserved criteria left the panel in the
                 // right mode already; only a fresh apply can start an HDMI
                 // negotiation the item creation must not race. The settle
-                // helper early-outs in one poll when the panel is already
-                // hosting HDR, so an in-mode start pays no real latency.
+                // helper watches the bounded switch-start window even when
+                // EDR is already elevated because HDR10 and Dolby Vision are
+                // indistinguishable from headroom alone.
                 return !preservedForReload
             case .formatUnavailable:
                 break
