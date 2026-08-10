@@ -992,7 +992,11 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
                 }
                 return lines
             }
-            print("[SidebarDrag] no dimming view found; hierarchy:\n\(describe(root, indent: ""))")
+            DiagLog.d(
+                .other,
+                "SidebarDrag",
+                "No dimming view found; hierarchy:\n\(describe(root, indent: ""))"
+            )
         }
         #endif
 
@@ -1676,18 +1680,30 @@ struct MainTabView: View {
     /// Custom sidebar header replacing the navigation bar so the server name
     /// and close button can sit lower than the system bar allows.
     private var iPadSidebarHeader: some View {
-        HStack {
+        HStack(spacing: 0) {
+            Color.clear
+                .frame(
+                    width: ContinuumTheme.topBarIconHitSize,
+                    height: ContinuumTheme.topBarIconHitSize
+                )
+                .accessibilityHidden(true)
+
             Text(sidebarTitle)
                 .font(.headline)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .center)
-                .overlay(alignment: .trailing) {
-                    Button(action: dismissSidebar) {
-                        Image(systemName: "arrow.left")
-                            .font(.body.weight(.semibold))
-                    }
-                    .accessibilityLabel("Close sidebar")
-                }
+
+            Button(action: dismissSidebar) {
+                Image(systemName: "arrow.left")
+                    .font(.body.weight(.semibold))
+                    .frame(
+                        width: ContinuumTheme.topBarIconHitSize,
+                        height: ContinuumTheme.topBarIconHitSize
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close sidebar")
         }
         .padding(.horizontal, 20)
         .padding(.top, 24)

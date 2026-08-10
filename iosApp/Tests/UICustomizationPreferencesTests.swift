@@ -840,6 +840,34 @@ final class UICustomizationPreferencesTests: XCTestCase {
             second.id,
             "changing a reused fixed-root scope must immediately select the new exact library"
         )
+
+        let sibling = Library(
+            id: 9, name: "Sibling", type: "series", sortOrder: 2, posterUrl: nil
+        )
+        XCTAssertEqual(
+            resolvedLibraryIdForRoot(
+                [first, second, sibling],
+                category: nil,
+                fixedLibraryId: second.id,
+                showAudiobooks: true,
+                storedLibraryId: 0,
+                currentSelectionId: sibling.id
+            ),
+            sibling.id,
+            "an in-session switch to a same-type sibling must survive re-resolution"
+        )
+        XCTAssertEqual(
+            resolvedLibraryIdForRoot(
+                [first, second, sibling],
+                category: nil,
+                fixedLibraryId: second.id,
+                showAudiobooks: true,
+                storedLibraryId: 0,
+                currentSelectionId: first.id
+            ),
+            second.id,
+            "a selection outside the root scope must fall back to the pinned library"
+        )
     }
 
     func testLibrarySelectionPersistenceIsScopedByAuthorityAndRoot() throws {

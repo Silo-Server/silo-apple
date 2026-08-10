@@ -461,11 +461,8 @@ struct InterfaceCustomizationView: View {
 
     private func hide(_ item: PrimaryMenuItem) {
         guard !item.isHome else { return }
-        if case .library(let libraryId, _) = item,
-           let library = libraries.first(where: { $0.id == libraryId }) {
-            preferences.setLibraryPinned(library, isPinned: false)
-            return
-        }
+        // This control edits the current family menu. A library shortcut is
+        // profile-wide, so hiding its placement must not unpin it elsewhere.
         persistVisibleDestinations(visibleDestinations.filter { $0.id != item.id })
     }
 
@@ -482,9 +479,8 @@ struct InterfaceCustomizationView: View {
         persistVisibleDestinations(visibleDestinations + [item])
     }
 
-    private func canEditAvailableShortcut(_ item: PrimaryMenuItem) -> Bool {
+    private func canEditAvailableShortcut(_: PrimaryMenuItem) -> Bool {
         guard preferences.allowsEditing else { return false }
-        if case .library = item { return true }
         return !preferences.primaryMenuUsesDeviceOverride
     }
 
