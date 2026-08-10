@@ -138,6 +138,16 @@ enum PrimaryMenuBuiltin: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+func appleDefaultPrimaryMenuItems() -> [PrimaryMenuItem] {
+    [
+        .builtin(.home),
+        .builtin(.movies),
+        .builtin(.series),
+        .builtin(.forYou),
+        .builtin(.calendar),
+    ]
+}
+
 /// One item in `nav.primary_menu` or `nav.shortcuts`.
 ///
 /// The associated-value representation keeps impossible combinations out of

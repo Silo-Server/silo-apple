@@ -1245,8 +1245,11 @@ func projectedMainTabDestinations(
         return AppTab.visibleCases.map(MainTabDestination.app)
     }
 
+    let menuItems = primaryMenu.items.count == 1 && primaryMenu.items[0].isHome
+        ? appleDefaultPrimaryMenuItems()
+        : primaryMenu.items
     var destinations: [MainTabDestination] = []
-    for item in primaryMenu.items {
+    for item in menuItems {
         guard mainTabSupportsDestination(item, availableLibraries: availableLibraries) else {
             continue
         }
@@ -1277,6 +1280,24 @@ func projectedMainTabDestinations(
     }
     if !destinations.contains(where: { $0.id == .app(.home) }) {
         destinations.insert(.app(.home), at: 0)
+    }
+    if destinations.count == 1, destinations[0].id == .app(.home) {
+        var defaults: [MainTabDestination] = [.app(.home)]
+        if availableLibraries.contains(where: {
+            libraryMatchesPrimaryMenuCategory($0, category: .movies)
+        }) {
+            defaults.append(.libraryCategory(.movies))
+        }
+        if availableLibraries.contains(where: {
+            libraryMatchesPrimaryMenuCategory($0, category: .series)
+        }) {
+            defaults.append(.libraryCategory(.series))
+        }
+        defaults.append(contentsOf: [
+            .app(.recommendations),
+            .app(.calendar),
+        ])
+        return defaults
     }
     return destinations
 }

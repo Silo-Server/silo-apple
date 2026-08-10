@@ -313,7 +313,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
         ])
 
         let unavailable = projectedMainTabDestinations(primaryMenu: menu)
-        XCTAssertEqual(unavailable.map(\.id), [.app(.home)])
+        XCTAssertEqual(
+            unavailable.map(\.id),
+            [.app(.home), .app(.recommendations), .app(.calendar)]
+        )
 
         let known = projectedMainTabDestinations(
             primaryMenu: menu,
@@ -332,7 +335,32 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
 
         let knownEmpty = projectedMainTabDestinations(primaryMenu: menu, availableLibraries: [])
-        XCTAssertEqual(knownEmpty.map(\.id), [.app(.home)])
+        XCTAssertEqual(
+            knownEmpty.map(\.id),
+            [.app(.home), .app(.recommendations), .app(.calendar)]
+        )
+    }
+
+    func testHomeOnlyMainTabProjectionRestoresAppleDefaults() {
+        let menu = PrimaryMenuPreference(items: [.builtin(.home)])
+        let destinations = projectedMainTabDestinations(
+            primaryMenu: menu,
+            availableLibraries: [
+                Library(id: 1, name: "Movies", type: "movies", sortOrder: 0, posterUrl: nil),
+                Library(id: 2, name: "Series", type: "series", sortOrder: 1, posterUrl: nil),
+            ]
+        )
+
+        XCTAssertEqual(
+            destinations.map(\.id),
+            [
+                .app(.home),
+                .libraryCategory(.movies),
+                .libraryCategory(.series),
+                .app(.recommendations),
+                .app(.calendar),
+            ]
+        )
     }
 
     func testLibraryTabRequestUsesFirstAuthoredLibraryRoot() {

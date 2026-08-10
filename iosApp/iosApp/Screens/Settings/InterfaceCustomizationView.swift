@@ -264,7 +264,11 @@ struct InterfaceCustomizationView: View {
             } header: {
                 Text("Primary Menu")
             } footer: {
-                Text("Home is required. Use the arrows to reorder items. Libraries stay grouped under their media type and can only move within that group. Removing a library unpins it from your profile. Downloads (when available), Search, and Profile stay automatic.")
+                if isDefaultMenuApplied {
+                    Text("Default menu applied. Add shortcuts to customize.")
+                } else {
+                    Text("Home is required. Use the arrows to reorder items. Libraries stay grouped under their media type and can only move within that group. Removing a library unpins it from your profile. Downloads (when available), Search, and Profile stay automatic.")
+                }
             }
             .disabled(
                 !preferences.allowsEditing
@@ -289,23 +293,6 @@ struct InterfaceCustomizationView: View {
                         .disabled(!canEditAvailableShortcut(item))
                     }
                 }
-            }
-
-            if !pinnedLibraries.isEmpty {
-                Section {
-                    ForEach(pinnedLibraries) { library in
-                        Button(role: .destructive) {
-                            preferences.setLibraryPinned(library, isPinned: false)
-                        } label: {
-                            Label("Unpin \(library.name)", systemImage: "pin.slash.fill")
-                        }
-                    }
-                } header: {
-                    Text("Pinned Libraries")
-                } footer: {
-                    Text("Unpinning removes the library shortcut from your profile and from this menu.")
-                }
-                .disabled(!preferences.allowsEditing)
             }
 
             if let message = preferences.syncErrorMessage,
@@ -406,6 +393,10 @@ struct InterfaceCustomizationView: View {
         groupedPrimaryMenuEditorRows(visibleDestinations, libraries: libraries)
     }
 
+    private var isDefaultMenuApplied: Bool {
+        visibleDestinations.count == 1 && visibleDestinations[0].isHome
+    }
+
     private var availableShortcuts: [PrimaryMenuItem] {
         let visible = Set(visibleDestinations.map(\.id))
         let candidates = Self.candidates.filter {
@@ -416,12 +407,6 @@ struct InterfaceCustomizationView: View {
             libraries: libraries.sorted(by: librarySort),
             visibleIds: visible
         )
-    }
-
-    private var pinnedLibraries: [Library] {
-        libraries
-            .filter { preferences.isLibraryPinned($0.id) }
-            .sorted(by: librarySort)
     }
 
     private func displayTitle(for item: PrimaryMenuItem) -> String {
@@ -488,7 +473,17 @@ struct InterfaceCustomizationView: View {
         guard !item.isHome else { return }
         if case .library(let libraryId, _) = item,
            let library = libraries.first(where: { $0.id == libraryId }) {
-            preferences.setLibraryPinned(library, isPinned: false)
+            if preferences.isLibraryPinned(libraryId) {
+                preferences.setLibraryPinned(library, isPinned: false)
+            } else {
+                // Older or independently-authored menus can contain a library
+                // placement without a matching profile shortcut. There is
+                // nothing to unpin in that case, so remove the placement
+                // directly instead of letting setLibraryPinned no-op.
+                persistVisibleDestinations(
+                    visibleDestinations.filter { $0.id != item.id }
+                )
+            }
             return
         }
         persistVisibleDestinations(visibleDestinations.filter { $0.id != item.id })
