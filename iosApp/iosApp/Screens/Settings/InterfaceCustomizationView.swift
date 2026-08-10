@@ -215,15 +215,15 @@ struct InterfaceCustomizationView: View {
                         } else {
                             shortcutLabel(for: item)
                         }
-                        Spacer()
+                        Spacer(minLength: 8)
                         if !item.isHome {
-                            HStack(spacing: 12) {
+                            HStack(spacing: 4) {
                                 Button {
                                     move(item, by: -1)
                                 } label: {
                                     Image(systemName: "arrow.up")
                                         .font(.title3.weight(.semibold))
-                                        .frame(width: 52, height: 48)
+                                        .frame(width: 44, height: 44)
                                         .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
@@ -235,24 +235,27 @@ struct InterfaceCustomizationView: View {
                                 } label: {
                                     Image(systemName: "arrow.down")
                                         .font(.title3.weight(.semibold))
-                                        .frame(width: 52, height: 48)
+                                        .frame(width: 44, height: 44)
                                         .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(!canMove(item, by: 1))
                                 .accessibilityLabel("Move \(displayTitle(for: item)) down")
-                            }
 
-                            Button {
-                                hide(item)
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                                    .foregroundStyle(.red)
-                                    .frame(width: 44, height: 44)
-                                    .contentShape(Rectangle())
+                                Button {
+                                    hide(item)
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .foregroundStyle(.red)
+                                        .frame(width: 44, height: 44)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Hide \(displayTitle(for: item))")
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Hide \(displayTitle(for: item))")
+                            // The controls never compress; the flexible title
+                            // column absorbs narrow widths by truncating.
+                            .fixedSize()
                         }
                     }
                 }
@@ -411,8 +414,12 @@ struct InterfaceCustomizationView: View {
         HStack(spacing: 10) {
             Image(systemName: navigationIcon(for: item))
                 .frame(width: 22)
-            HStack(spacing: 10) {
+            // The type caption sits under the title rather than beside it so
+            // narrow screens never squeeze either into per-character wraps;
+            // the title truncates instead of wrapping.
+            VStack(alignment: .leading, spacing: 2) {
                 Text(displayTitle(for: item))
+                    .lineLimit(1)
                 Text(
                     primaryMenuShortcutTypeTitle(
                         item,
@@ -422,6 +429,7 @@ struct InterfaceCustomizationView: View {
                 )
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Color.continuumSecondaryText.opacity(0.75))
+                    .lineLimit(1)
             }
         }
     }
