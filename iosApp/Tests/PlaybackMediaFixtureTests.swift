@@ -236,7 +236,7 @@ final class PlaybackMediaFixtureTests: XCTestCase {
         XCTAssertEqual(plan.loopbackSession?.videoMode, .passthroughProfile5)
         XCTAssertEqual(
             plan.loopbackSession?.selectedAudio,
-            LoopbackSessionSpec.SelectedAudio.none
+            LoopbackSessionSpec.SelectedAudio.absent
         )
         XCTAssertEqual(plan.normalizationSummary.audioMode, "none")
     }

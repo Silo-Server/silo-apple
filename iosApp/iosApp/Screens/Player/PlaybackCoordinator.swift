@@ -67,13 +67,7 @@ final class PlaybackCoordinator {
     }
 
     func load(plan: PlaybackExecutionPlan) throws {
-        let engine: PlaybackEngine
-        if let activeEngine, activeEngine.kind == plan.engine {
-            engine = activeEngine
-        } else {
-            engine = installEngine(for: plan.engine)
-        }
-        try engine.load(plan: plan)
+        try prepareEngine(for: plan.engine).load(plan: plan)
     }
 
     func play() { activeEngine?.play() }

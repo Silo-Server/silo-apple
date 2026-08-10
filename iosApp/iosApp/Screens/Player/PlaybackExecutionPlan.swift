@@ -114,7 +114,7 @@ struct LoopbackSessionSpec {
         let outputMode: AudioOutputMode
         let preservesAtmos: Bool
 
-        static let none = SelectedAudio(
+        static let absent = SelectedAudio(
             trackIndex: -1,
             ffIndex: nil,
             sourceCodec: nil,

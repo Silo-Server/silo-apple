@@ -174,6 +174,58 @@ enum PlaybackDeliveryStrategy {
     }
 }
 
+/// One capability probe per active server, shared by video and audiobook
+/// playback. Keeping the in-flight task in the cache prevents two player
+/// models starting together from issuing duplicate probes.
+actor PlaybackV3CapabilityGate {
+    static let shared = PlaybackV3CapabilityGate()
+
+    private var availabilityByServerId: [String: Bool] = [:]
+    private var probeByServerId: [String: Task<Bool, Error>] = [:]
+
+    func requireNeutralProtocolV3() async throws {
+        let serverId = await TokenStore.shared.getActiveServerId()
+        let available: Bool
+        if let cached = availabilityByServerId[serverId] {
+            available = cached
+        } else {
+            let probe: Task<Bool, Error>
+            if let pending = probeByServerId[serverId] {
+                probe = pending
+            } else {
+                probe = Task {
+                    do {
+                        let capability = try await ContinuumAPI.shared.playbackV3Capability()
+                        return PlaybackSessionBridge.supportsNeutralProtocolV3(capability)
+                    } catch {
+                        if PlaybackSessionBridge.isMissingProtocolV3Capability(error) {
+                            return false
+                        }
+                        throw error
+                    }
+                }
+                probeByServerId[serverId] = probe
+            }
+            do {
+                available = try await probe.value
+                availabilityByServerId[serverId] = available
+                probeByServerId[serverId] = nil
+            } catch {
+                probeByServerId[serverId] = nil
+                throw error
+            }
+        }
+
+        guard available else {
+            throw PlaybackV3TerminalFailure(
+                reason: "server_upgrade_required",
+                message: "This server does not support the playback protocol this app requires. Update the server to continue.",
+                retryable: false
+            )
+        }
+    }
+}
+
 /// Manages the lifecycle of a playback session with the Continuum API.
 /// Handles session creation, periodic progress reporting, and cleanup.
 ///
@@ -191,7 +243,6 @@ actor PlaybackSessionBridge {
 
     private var sessionId: String?
     private var currentSession: PlaybackSessionResponse?
-    private var protocolV3Available: Bool?
 
     private struct ActiveProtocolV3 {
         let playbackAttemptId: String
@@ -614,27 +665,7 @@ actor PlaybackSessionBridge {
         audioTrackIndex: Int?,
         subtitleCombinedIndex: Int?
     ) async throws -> StagedProtocolV3Start {
-        if protocolV3Available == nil {
-            do {
-                let capability = try await ContinuumAPI.shared.playbackV3Capability()
-                protocolV3Available = Self.supportsNeutralProtocolV3(capability)
-            } catch {
-                if Self.isMissingProtocolV3Capability(error) {
-                    protocolV3Available = false
-                } else {
-                    throw error
-                }
-            }
-        }
-        // A server that cannot speak v3 cannot serve this client at all; there
-        // is no downgrade path left to take.
-        guard protocolV3Available == true else {
-            throw PlaybackV3TerminalFailure(
-                reason: "server_upgrade_required",
-                message: "This server does not support the playback protocol this app requires. Update the server to continue.",
-                retryable: false
-            )
-        }
+        try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
 
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         let playbackAttemptId = "apple:\(UUID().uuidString.lowercased())"
@@ -678,6 +709,13 @@ actor PlaybackSessionBridge {
 
         switch response.validatedForApple() {
         case .terminal(let terminal):
+            Task {
+                await Self.reportTerminalStart(
+                    playbackAttemptId: playbackAttemptId,
+                    snapshot: snapshot,
+                    terminal: terminal
+                )
+            }
             throw PlaybackV3TerminalFailure(
                 reason: terminal.reason,
                 message: terminal.message,
@@ -693,7 +731,12 @@ actor PlaybackSessionBridge {
                 retryable: false
             )
         case .playable(let plan, let resolvedSessionId):
-            try ApplePlaybackV3PlanAdapter.validate(plan)
+            do {
+                try ApplePlaybackV3PlanAdapter.validate(plan)
+            } catch {
+                try? await ContinuumAPI.shared.stopPlayback(sessionId: resolvedSessionId)
+                throw error
+            }
             guard let effectiveVersion = watchDetail.versions.first(where: {
                 $0.fileId == plan.effectiveMediaFileId
             }) else {
@@ -707,7 +750,8 @@ actor PlaybackSessionBridge {
             let session = ApplePlaybackV3PlanAdapter.playbackSession(
                 plan: plan,
                 sessionId: resolvedSessionId,
-                selectedVersion: effectiveVersion
+                selectedVersion: effectiveVersion,
+                serverFeatures: response.serverFeatures
             )
             return StagedProtocolV3Start(
                 playbackAttemptId: playbackAttemptId,
@@ -888,6 +932,50 @@ actor PlaybackSessionBridge {
             return false
         }
         return statusCode == 404 || statusCode == 405
+    }
+
+    static func terminalStartRouteEvent(
+        playbackAttemptId: String,
+        snapshot: ApplePlaybackV3CapabilitySnapshot,
+        terminal: PlaybackV3Terminal
+    ) -> PlaybackV3RouteEvent {
+        PlaybackV3RouteEvent(
+            protocolVersion: PlaybackProtocolV3.version,
+            playbackAttemptId: playbackAttemptId,
+            sessionId: nil,
+            planId: nil,
+            planAttemptId: nil,
+            planAttemptKey: nil,
+            event: "terminal",
+            failureClassification: nil,
+            fallbackReason: terminal.reason,
+            appliedQuirkIds: [],
+            quirkRegistryRevision: nil,
+            outputContextId: snapshot.outputContextId,
+            diagnostics: ["error_cause": String(terminal.message.prefix(256))]
+        )
+    }
+
+    static func reportTerminalStart(
+        playbackAttemptId: String,
+        snapshot: ApplePlaybackV3CapabilitySnapshot,
+        terminal: PlaybackV3Terminal
+    ) async {
+        let event = terminalStartRouteEvent(
+            playbackAttemptId: playbackAttemptId,
+            snapshot: snapshot,
+            terminal: terminal
+        )
+        do {
+            try await ContinuumAPI.shared.reportPlaybackRouteEventV3(event)
+        } catch {
+            Logger(
+                subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+                category: "Playback"
+            ).warning(
+                "Protocol V3 terminal-start route event failed: \(String(describing: error), privacy: .public)"
+            )
+        }
     }
 
     static func replanFailure(
@@ -1126,7 +1214,8 @@ actor PlaybackSessionBridge {
             let nextSession = ApplePlaybackV3PlanAdapter.playbackSession(
                 plan: nextPlan,
                 sessionId: nextSessionId,
-                selectedVersion: selectedVersion
+                selectedVersion: selectedVersion,
+                serverFeatures: response.serverFeatures
             )
             if isSeekReanchor {
                 guard nextSessionId == currentSessionId,

@@ -17,6 +17,7 @@ enum SidecarSubtitleFetchError: Error {
     case statusCode(Int)
     case transport(underlying: Error)
     case emptyBody
+    case responseTooLarge(maxBytes: Int)
 }
 
 struct SubtitleFontAttachment: Sendable, Equatable {
@@ -31,16 +32,33 @@ actor SidecarSubtitleFetcher {
         let data: String
     }
 
+    private struct CachedFontBundle {
+        let attachments: [SubtitleFontAttachment]
+        let decodedBytes: Int
+    }
+
+    static let maxFontBundleResponseBytes = 32 * 1_024 * 1_024
+    static let maxFontBundleCacheBytes = 64 * 1_024 * 1_024
+    private static let maxFontBundleCacheEntries = 8
+
     private let session: URLSession
     private let tokenStore: TokenStore
-    private var fontBundleCache: [URL: [SubtitleFontAttachment]] = [:]
+    private let fontBundleResponseByteLimit: Int
+    private let fontBundleCacheByteLimit: Int
+    private var fontBundleCache: [URL: CachedFontBundle] = [:]
+    private var fontBundleCacheOrder: [URL] = []
+    private var fontBundleCacheBytes = 0
 
     init(
         session: URLSession? = nil,
-        tokenStore: TokenStore = .shared
+        tokenStore: TokenStore = .shared,
+        fontBundleResponseByteLimit: Int = SidecarSubtitleFetcher.maxFontBundleResponseBytes,
+        fontBundleCacheByteLimit: Int = SidecarSubtitleFetcher.maxFontBundleCacheBytes
     ) {
         self.session = session ?? Self.makeSession()
         self.tokenStore = tokenStore
+        self.fontBundleResponseByteLimit = max(0, fontBundleResponseByteLimit)
+        self.fontBundleCacheByteLimit = max(0, fontBundleCacheByteLimit)
     }
 
     /// Auth-gated sidecar fetches must not share `URLSession.shared`'s cache:
@@ -108,14 +126,18 @@ actor SidecarSubtitleFetcher {
 
     /// Fetch the server's JSON/base64 font bundle for an authored ASS track.
     func fetchFontBundle(url: URL) async throws -> [SubtitleFontAttachment] {
-        if let cached = fontBundleCache[url] { return cached }
+        if let cached = fontBundleCache[url] {
+            markFontBundleRecentlyUsed(url)
+            return cached.attachments
+        }
 
         var request = await buildRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let (data, response): (Data, URLResponse)
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (bytes, response) = try await session.bytes(for: request)
         } catch {
             throw SidecarSubtitleFetchError.transport(underlying: error)
         }
@@ -124,6 +146,34 @@ actor SidecarSubtitleFetcher {
         }
         guard (200..<300).contains(http.statusCode) else {
             throw SidecarSubtitleFetchError.statusCode(http.statusCode)
+        }
+        let declaredLength = max(
+            http.expectedContentLength,
+            http.value(forHTTPHeaderField: "Content-Length").flatMap(Int64.init) ?? -1
+        )
+        guard declaredLength <= Int64(fontBundleResponseByteLimit) else {
+            throw SidecarSubtitleFetchError.responseTooLarge(
+                maxBytes: fontBundleResponseByteLimit
+            )
+        }
+
+        var data = Data()
+        if declaredLength > 0 {
+            data.reserveCapacity(Int(declaredLength))
+        }
+        do {
+            for try await byte in bytes {
+                guard data.count < fontBundleResponseByteLimit else {
+                    throw SidecarSubtitleFetchError.responseTooLarge(
+                        maxBytes: fontBundleResponseByteLimit
+                    )
+                }
+                data.append(byte)
+            }
+        } catch let error as SidecarSubtitleFetchError {
+            throw error
+        } catch {
+            throw SidecarSubtitleFetchError.transport(underlying: error)
         }
 
         let items: [FontBundleItem]
@@ -138,8 +188,44 @@ actor SidecarSubtitleFetcher {
             }
             return SubtitleFontAttachment(name: item.name, data: decoded)
         }
-        fontBundleCache[url] = attachments
+        cacheFontBundle(attachments, for: url)
         return attachments
+    }
+
+    private func markFontBundleRecentlyUsed(_ url: URL) {
+        fontBundleCacheOrder.removeAll { $0 == url }
+        fontBundleCacheOrder.append(url)
+    }
+
+    private func cacheFontBundle(
+        _ attachments: [SubtitleFontAttachment],
+        for url: URL
+    ) {
+        let decodedBytes = attachments.reduce(0) { $0 + $1.data.count }
+        guard decodedBytes <= fontBundleCacheByteLimit,
+              fontBundleCacheByteLimit > 0 else {
+            return
+        }
+
+        if let replaced = fontBundleCache.removeValue(forKey: url) {
+            fontBundleCacheBytes -= replaced.decodedBytes
+            fontBundleCacheOrder.removeAll { $0 == url }
+        }
+        while (fontBundleCacheBytes + decodedBytes > fontBundleCacheByteLimit
+                || fontBundleCache.count >= Self.maxFontBundleCacheEntries),
+              let leastRecentlyUsed = fontBundleCacheOrder.first {
+            fontBundleCacheOrder.removeFirst()
+            if let evicted = fontBundleCache.removeValue(forKey: leastRecentlyUsed) {
+                fontBundleCacheBytes -= evicted.decodedBytes
+            }
+        }
+
+        fontBundleCache[url] = CachedFontBundle(
+            attachments: attachments,
+            decodedBytes: decodedBytes
+        )
+        fontBundleCacheBytes += decodedBytes
+        fontBundleCacheOrder.append(url)
     }
 
     // MARK: - Local (offline) sidecars

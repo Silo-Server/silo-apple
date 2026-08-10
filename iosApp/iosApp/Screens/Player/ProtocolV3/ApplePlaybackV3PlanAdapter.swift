@@ -87,7 +87,8 @@ enum ApplePlaybackV3PlanAdapter {
     static func playbackSession(
         plan: PlaybackV3Plan,
         sessionId: String,
-        selectedVersion: FileVersion
+        selectedVersion: FileVersion,
+        serverFeatures: [String]
     ) -> PlaybackSessionResponse {
         var subtitleUrls = plan.subtitle.inventory.compactMap { item -> SubtitleUrl? in
             guard item.delivery == "sidecar",
@@ -131,6 +132,16 @@ enum ApplePlaybackV3PlanAdapter {
                 url: artifact.url
             ))
         }
+        let durationSeconds: Double?
+        if serverFeatures.contains(PlaybackProtocolV3.planSourceDurationFeature) {
+            // Presence of the feature makes nil authoritative: the server
+            // knows the field but could not determine this source's runtime.
+            durationSeconds = plan.source.durationSeconds
+        } else {
+            // Transitional servers predate the field, so the catalog value is
+            // still the only duration evidence available.
+            durationSeconds = plan.source.durationSeconds ?? selectedVersion.duration
+        }
         return PlaybackSessionResponse(
             sessionId: sessionId,
             userId: nil,
@@ -141,11 +152,7 @@ enum ApplePlaybackV3PlanAdapter {
             isPaused: false,
             streamUrl: plan.stream.url,
             audioTrackIndex: plan.selectedTracks.audio?.index,
-            // The plan's runtime is authoritative and describes the effective
-            // file the server actually chose. Fall back to the catalog version
-            // only for servers that predate the field; substituting it when
-            // the server reports an unknown runtime would reintroduce a guess.
-            durationSeconds: plan.source.durationSeconds ?? selectedVersion.duration,
+            durationSeconds: durationSeconds,
             timelineOffsetSeconds: max(0, plan.timeline.timelineOffsetSeconds),
             subtitleUrls: subtitleUrls,
             playbackInfo: PlaybackInfo(

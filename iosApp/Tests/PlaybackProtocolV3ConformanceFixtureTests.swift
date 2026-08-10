@@ -4,14 +4,22 @@ import XCTest
 
 final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
     func testServerErrorEnvelopeDecodes() throws {
-        let fixture = try decodeFixture(PlaybackV3ErrorFixture.self, named: "error_response")
+        let fixture = try PlaybackV3FixtureTestSupport.decode(
+            PlaybackV3ErrorFixture.self,
+            named: "error_response",
+            bundleClass: Self.self
+        )
 
         XCTAssertEqual(fixture.error, "client_upgrade_required")
         XCTAssertFalse(fixture.message.isEmpty)
     }
 
     func testMatrixCoversEveryNeutralContractCategory() throws {
-        let matrix = try decodeFixture(PlaybackV3ConformanceMatrix.self, named: "conformance_matrix")
+        let matrix = try PlaybackV3FixtureTestSupport.decode(
+            PlaybackV3ConformanceMatrix.self,
+            named: "conformance_matrix",
+            bundleClass: Self.self
+        )
         XCTAssertEqual(matrix.schemaVersion, 1)
         XCTAssertEqual(matrix.plannerScenarios.count, 17)
         XCTAssertEqual(matrix.replanScenarios.count, 9)
@@ -54,7 +62,11 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
     }
 
     func testMatrixDecodesHDRDVAudioAndSubtitleExpectations() throws {
-        let matrix = try decodeFixture(PlaybackV3ConformanceMatrix.self, named: "conformance_matrix")
+        let matrix = try PlaybackV3FixtureTestSupport.decode(
+            PlaybackV3ConformanceMatrix.self,
+            named: "conformance_matrix",
+            bundleClass: Self.self
+        )
 
         let hdr10 = try plannerScenario(named: "hdr10_exact_direct", in: matrix)
         XCTAssertEqual(hdr10.source.dynamicRange, "hdr10")
@@ -96,7 +108,11 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
     }
 
     func testMatrixPreservesOpaqueAttemptIdentityAndClientIntent() throws {
-        let matrix = try decodeFixture(PlaybackV3ConformanceMatrix.self, named: "conformance_matrix")
+        let matrix = try PlaybackV3FixtureTestSupport.decode(
+            PlaybackV3ConformanceMatrix.self,
+            named: "conformance_matrix",
+            bundleClass: Self.self
+        )
 
         XCTAssertTrue(
             matrix.replanScenarios.allSatisfy { $0.request.failure == nil },
@@ -148,23 +164,6 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
                 PlaybackProtocolV3.neutralContractFeature
             ) == true
         )
-    }
-
-    private var decoder: JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return decoder
-    }
-
-    private func fixtureURL(named name: String) throws -> URL {
-        try XCTUnwrap(
-            Bundle(for: Self.self).url(forResource: name, withExtension: "json"),
-            "Missing vendored Playback V3 fixture \(name).json"
-        )
-    }
-
-    private func decodeFixture<T: Decodable>(_ type: T.Type, named name: String) throws -> T {
-        try decoder.decode(type, from: Data(contentsOf: fixtureURL(named: name)))
     }
 
     private func plannerScenario(

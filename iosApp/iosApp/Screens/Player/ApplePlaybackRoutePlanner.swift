@@ -400,7 +400,7 @@ struct ApplePlaybackRoutePlanner {
             )
         let selectedAudio: LoopbackSessionSpec.SelectedAudio
         if tracks.isEmpty {
-            selectedAudio = .none
+            selectedAudio = .absent
         } else {
             guard let selectedTrack,
                   let selectedTrackIndex = selectedTrack.srcId ?? selectedAudioTrackIndex else {

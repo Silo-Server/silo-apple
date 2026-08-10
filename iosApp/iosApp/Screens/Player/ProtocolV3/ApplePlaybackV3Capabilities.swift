@@ -33,6 +33,17 @@ enum ApplePlaybackV3Capabilities {
         $0 != PlaybackProtocolV3.seekReanchorFeature
     }
 
+    /// The AVPlayer-backed audiobook engine does not execute PlayerCore or
+    /// local-loopback plans. Keep its flat codec/container cross-product to
+    /// combinations AVPlayer opens directly rather than inheriting the video
+    /// player's FFmpeg-only DTS, TrueHD, Vorbis, and Matroska claims.
+    private static let audiobookAudioCodecs = [
+        "aac", "ac3", "eac3", "alac", "mp3", "flac",
+        "pcm", "pcm_s16le", "pcm_s24le"
+    ]
+    private static let audiobookOriginalContainers = ["mp4"] + AppleDecodeCapabilities.audioContainers
+    private static let commonClaims = ["apple_execution_plan_v1", "authenticated_stream_headers"]
+
     /// Video codecs the Apple playback stack decodes on a direct route. This
     /// mirrors `ApplePlaybackRoutePlanner`'s native-direct and loopback
     /// allowlists rather than the wider set FFmpeg can demux: a codec claimed
@@ -118,8 +129,6 @@ enum ApplePlaybackV3Capabilities {
             sidecarBitmap: false,
             fontAttachments: false
         )
-        let commonClaims = ["apple_execution_plan_v1", "authenticated_stream_headers"]
-
         let deliveries = [
             PlaybackProtocolV3.DeliveryClass.originalHTTP: PlaybackV3DeliveryCapability(
                 enabled: true,
@@ -158,7 +167,9 @@ enum ApplePlaybackV3Capabilities {
                 supportedOnDevice: true,
                 failureReason: nil,
                 containers: ["hls", "mpegts", "fmp4", "mp4"],
-                videoCodecs: videoCodecs,
+                // HLS always executes through AVPlayer. The wider flat list
+                // also contains the PlayerCore-only MPEG-2 software decoder.
+                videoCodecs: AppleDecodeCapabilities.videoCodecs,
                 audioDecodeCodecs: ["aac", "ac3", "eac3"],
                 audioPassthroughCodecs: [],
                 maxChannels: 8,
@@ -176,6 +187,100 @@ enum ApplePlaybackV3Capabilities {
             formFactor: formFactor,
             appVersion: appVersion,
             device: deviceContext,
+            output: output,
+            deliveries: deliveries
+        )
+        return ApplePlaybackV3CapabilitySnapshot(capabilities: capabilities, context: context)
+    }
+
+    /// Capability evidence for the standalone audiobook engine. The engine
+    /// is AVPlayer-only, so every advertised delivery must remain executable
+    /// without the video player's PlayerCore or local-loopback adapters.
+    static func audiobookSnapshot() -> ApplePlaybackV3CapabilitySnapshot {
+        let base = snapshot()
+        let noSubtitles = PlaybackV3DeliverySubtitleCapabilities(
+            embeddedText: false,
+            sidecarText: false,
+            assStyling: false,
+            embeddedBitmap: false,
+            sidecarBitmap: false,
+            fontAttachments: false
+        )
+        let deliveries = [
+            PlaybackProtocolV3.DeliveryClass.originalHTTP: PlaybackV3DeliveryCapability(
+                enabled: true,
+                supportedOnDevice: true,
+                failureReason: nil,
+                containers: audiobookOriginalContainers,
+                videoCodecs: [],
+                audioDecodeCodecs: audiobookAudioCodecs,
+                audioPassthroughCodecs: [],
+                maxChannels: 8,
+                hdrDetails: nil,
+                subtitles: noSubtitles,
+                features: ["apple_native_direct"],
+                authHeaderRefresh: true,
+                validatedClaims: commonClaims,
+                transformations: []
+            ),
+            PlaybackProtocolV3.DeliveryClass.progressive: PlaybackV3DeliveryCapability(
+                enabled: true,
+                supportedOnDevice: true,
+                failureReason: nil,
+                containers: ["mp4", "mov", "m4v"],
+                videoCodecs: [],
+                audioDecodeCodecs: ["aac", "ac3", "eac3", "alac", "mp3"],
+                audioPassthroughCodecs: [],
+                maxChannels: 8,
+                hdrDetails: nil,
+                subtitles: noSubtitles,
+                features: ["apple_avplayer_progressive"],
+                authHeaderRefresh: true,
+                validatedClaims: commonClaims,
+                transformations: []
+            ),
+            PlaybackProtocolV3.DeliveryClass.hls: PlaybackV3DeliveryCapability(
+                enabled: true,
+                supportedOnDevice: true,
+                failureReason: nil,
+                containers: ["hls", "mpegts", "fmp4", "mp4"],
+                videoCodecs: [],
+                audioDecodeCodecs: ["aac", "ac3", "eac3"],
+                audioPassthroughCodecs: [],
+                maxChannels: 8,
+                hdrDetails: nil,
+                subtitles: noSubtitles,
+                features: ["apple_avplayer_hls"],
+                authHeaderRefresh: true,
+                validatedClaims: commonClaims,
+                transformations: []
+            )
+        ]
+        let capabilities = PlaybackV3CodecCapabilities(
+            videoEvidence: base.capabilities.videoEvidence,
+            audioEvidence: base.capabilities.audioEvidence,
+            codecsVideo: [],
+            codecsVideoHardware: [],
+            codecsAudio: audiobookAudioCodecs,
+            containers: audiobookOriginalContainers,
+            maxResolution: nil,
+            hdr: false,
+            hdrDetails: nil,
+            audioPassthrough: nil,
+            videoDecode: []
+        )
+        let output = PlaybackV3OutputContext(
+            hdrDetails: nil,
+            audioPassthrough: nil,
+            currentSink: base.context.output.currentSink,
+            sinkType: base.context.output.sinkType,
+            outputContextId: base.context.output.outputContextId
+        )
+        let context = PlaybackV3ClientContext(
+            protocolVersion: base.context.protocolVersion,
+            formFactor: base.context.formFactor,
+            appVersion: base.context.appVersion,
+            device: base.context.device,
             output: output,
             deliveries: deliveries
         )

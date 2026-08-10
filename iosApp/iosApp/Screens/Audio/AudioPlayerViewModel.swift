@@ -19,8 +19,6 @@ final class AudioPlayerViewModel {
     /// engine. Audiobooks get one session per file; crossing a part
     /// boundary retires this session and starts a fresh one.
     private var activeSession: PlaybackSessionResponse?
-    private var protocolV3Available: Bool?
-    private var protocolV3AvailabilityServerId: String?
     /// Converts engine-local time back to the effective file's source time.
     private var activeTimelineOffsetSeconds: Double = 0
     /// Invalidates an in-flight track load when the user seeks again or
@@ -262,30 +260,7 @@ final class AudioPlayerViewModel {
         for track: AudioPlaybackTrack,
         localTime: Double
     ) async throws -> StartedAudioSession {
-        let activeServerId = await TokenStore.shared.getActiveServerId()
-        if protocolV3AvailabilityServerId != activeServerId {
-            protocolV3AvailabilityServerId = activeServerId
-            protocolV3Available = nil
-        }
-        if protocolV3Available == nil {
-            do {
-                let capability = try await ContinuumAPI.shared.playbackV3Capability()
-                protocolV3Available = PlaybackSessionBridge.supportsNeutralProtocolV3(capability)
-            } catch {
-                if PlaybackSessionBridge.isMissingProtocolV3Capability(error) {
-                    protocolV3Available = false
-                } else {
-                    throw error
-                }
-            }
-        }
-        guard protocolV3Available == true else {
-            throw PlaybackV3TerminalFailure(
-                reason: "server_upgrade_required",
-                message: "This server does not support the playback protocol this app requires. Update the server to continue.",
-                retryable: false
-            )
-        }
+        try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
         guard let profileId = await TokenStore.shared.getProfileId(),
               !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw PlaybackV3TerminalFailure(
@@ -295,7 +270,7 @@ final class AudioPlayerViewModel {
             )
         }
 
-        let snapshot = ApplePlaybackV3Capabilities.snapshot()
+        let snapshot = ApplePlaybackV3Capabilities.audiobookSnapshot()
         let playbackAttemptId = "apple-audio:\(UUID().uuidString.lowercased())"
         // Audiobook resume is a whole-item timeline stitched across files.
         // The server keeps session-local progress for liveness, while the
@@ -332,6 +307,13 @@ final class AudioPlayerViewModel {
 
         switch response.validatedForApple() {
         case .terminal(let terminal):
+            Task {
+                await PlaybackSessionBridge.reportTerminalStart(
+                    playbackAttemptId: playbackAttemptId,
+                    snapshot: snapshot,
+                    terminal: terminal
+                )
+            }
             throw PlaybackV3TerminalFailure(
                 reason: terminal.reason,
                 message: terminal.message,
@@ -347,7 +329,12 @@ final class AudioPlayerViewModel {
                 retryable: false
             )
         case .playable(let plan, let sessionId):
-            try ApplePlaybackV3PlanAdapter.validate(plan)
+            do {
+                try ApplePlaybackV3PlanAdapter.validate(plan)
+            } catch {
+                try? await ContinuumAPI.shared.stopPlayback(sessionId: sessionId)
+                throw error
+            }
             guard let effectiveTrack = context?.tracks.first(where: {
                 $0.fileId == plan.effectiveMediaFileId
             }) else {
@@ -361,7 +348,8 @@ final class AudioPlayerViewModel {
             let session = ApplePlaybackV3PlanAdapter.playbackSession(
                 plan: plan,
                 sessionId: sessionId,
-                selectedVersion: effectiveTrack.version
+                selectedVersion: effectiveTrack.version,
+                serverFeatures: response.serverFeatures
             )
             return StartedAudioSession(
                 session: session,

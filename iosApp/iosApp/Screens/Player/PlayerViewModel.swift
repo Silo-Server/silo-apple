@@ -5349,12 +5349,21 @@ class PlayerViewModel {
                 // restored as sidecar and not as embedded): its cues can't
                 // be replayed, so live re-selection is M4's responsibility
                 // via the live coordinator.
-                if let restoredSidecarTrackId = Self.protocolV3RestoredSidecarTrackId(
-                    selectedSubtitleSnapshot,
+                switch Self.protocolV3SidecarRestoreIntent(
+                    snapshot: selectedSubtitleSnapshot,
+                    selectedSubtitleIndex: prepared.protocolV3?.plan.selectedTracks.subtitle?.index,
                     subtitleMode: prepared.protocolV3?.plan.subtitle.mode
-                ),
-                   SubtitleTrackIdSpace.isSidecar(restoredSidecarTrackId) {
-                    self.pendingSidecarSubtitleTrackId = restoredSidecarTrackId
+                ) {
+                case .renderLocally(let trackId):
+                    self.pendingSidecarSubtitleTrackId = trackId
+                    self.pendingServerRenderedSubtitleTrackId = nil
+                case .serverRendered(let trackId):
+                    self.pendingSidecarSubtitleTrackId = nil
+                    self.pendingServerRenderedSubtitleTrackId = trackId
+                case nil:
+                    // `armAdoptedProtocolV3TrackIntent` already carries the
+                    // replacement plan's authoritative local selection.
+                    self.pendingServerRenderedSubtitleTrackId = nil
                 }
                 self.pendingRecoveredSubtitleSelection = embeddedSubtitleSelectionSnapshot
                 self.hasExplicitSubtitleChoice = explicitSubtitleChoiceSnapshot
@@ -5955,13 +5964,6 @@ class PlayerViewModel {
         inventory.filter {
             $0.source.caseInsensitiveCompare("downloaded") != .orderedSame
         }.count
-    }
-
-    static func protocolV3RestoredSidecarTrackId(
-        _ snapshot: Int64?,
-        subtitleMode: String?
-    ) -> Int64? {
-        subtitleMode == "render" ? snapshot : nil
     }
 
     enum ProtocolV3SidecarRestoreIntent: Equatable {
@@ -7238,7 +7240,7 @@ class PlayerViewModel {
             ?? resolveLoopbackSelectedAudioTrack(from: tracks)
         let selectedAudio: LoopbackSessionSpec.SelectedAudio
         if tracks.isEmpty {
-            selectedAudio = .none
+            selectedAudio = .absent
         } else {
             guard let selectedTrack,
                   let selectedTrackIndex = selectedTrack.srcId ?? selectedAudioTrackIndex else {
