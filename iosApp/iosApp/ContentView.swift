@@ -1303,15 +1303,17 @@ struct MainTabView: View {
             )
         case .itemDetail(let contentId):
             ItemDetailView(contentId: contentId)
-                #if os(iOS)
-                // Destination half of the iOS 26 poster → detail zoom. Keys off
-                // the unique per-card source id the tapped card recorded in
-                // `pendingZoomSourceID` (falling back to `contentId`), so the
-                // zoom animates from the exact card even when the same item is
-                // visible in two rows. SwiftUI falls back to a normal push when
-                // no matching source is on screen.
-                .navigationTransition(.zoom(sourceID: router.pendingZoomSourceID ?? contentId, in: zoomNamespace))
-                #endif
+                // The iOS 26 poster → detail zoom transition
+                // (`.navigationTransition(.zoom(sourceID:in:))`, keyed off
+                // `pendingZoomSourceID`) is intentionally NOT applied here.
+                // On iOS 26 the zoom transition keeps the pushed detail bound
+                // to the source card's portal geometry; rotating the device
+                // while the detail is up recomputes that transform against
+                // stale geometry, leaving the whole page scaled up ("zoomed
+                // in") after rotating back and the source card stuck on
+                // screen. Deep-linked pushes (no zoom source) never showed
+                // the bug. Restore the modifier once Apple fixes the
+                // regression (see forums thread 807208).
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
         case .player(let contentId, let startFromBeginning, let resumePosition):
