@@ -52,7 +52,7 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
     private struct ContentRange {
         let start: Int64
         let end: Int64
-        let total: Int64
+        let total: Int64?
 
         var count: Int64 { end - start + 1 }
     }
@@ -288,8 +288,9 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
             // when the changed origin also returns less than the requested
             // interval. Only a response from the expected entity reaches this
             // coverage check.
+            let reachesEntityEOF = parsed.total.map { parsed.end == $0 - 1 } ?? false
             guard parsed.end == state.range.upperBound - 1
-                    || parsed.end == parsed.total - 1 else {
+                    || reachesEntityEOF else {
                 let receivedRange = contentRange ?? "missing"
                 Self.logger.warning(
                     "[CMP-SOURCE-CACHE] chunk incomplete content-range expected=\(state.range.lowerBound, privacy: .public)-\(state.range.upperBound - 1, privacy: .public) received=\(receivedRange, privacy: .public)"
@@ -377,9 +378,10 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
         }
     }
 
-    /// Parses exactly `bytes start-end/total`. A satisfiable 206 cannot use a
-    /// wildcard total, negative positions, an inverted interval, or an end at
-    /// or beyond the complete representation length.
+    /// Parses exactly `bytes start-end/total`, including the RFC-permitted
+    /// wildcard when the complete representation length is unknown. A
+    /// satisfiable 206 cannot use negative positions, an inverted interval,
+    /// or (when known) an end at or beyond the complete length.
     private static func parseContentRange(_ header: String?) -> ContentRange? {
         guard let header else { return nil }
         let trimmed = header.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -390,10 +392,15 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
         guard unit.lowercased() == "bytes" else { return nil }
         let value = trimmed[separator...].trimmingCharacters(in: .whitespaces)
         let slashParts = value.split(separator: "/", omittingEmptySubsequences: false)
-        guard slashParts.count == 2,
-              slashParts[1] != "*",
-              let total = Int64(slashParts[1]),
-              total > 0 else {
+        guard slashParts.count == 2 else {
+            return nil
+        }
+        let total: Int64?
+        if slashParts[1] == "*" {
+            total = nil
+        } else if let parsedTotal = Int64(slashParts[1]), parsedTotal > 0 {
+            total = parsedTotal
+        } else {
             return nil
         }
         let bounds = slashParts[0].split(separator: "-", omittingEmptySubsequences: false)
@@ -401,8 +408,10 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
               let start = Int64(bounds[0]),
               let end = Int64(bounds[1]),
               start >= 0,
-              start <= end,
-              end < total else {
+              start <= end else {
+            return nil
+        }
+        if let total, end >= total {
             return nil
         }
         return ContentRange(start: start, end: end, total: total)
@@ -433,7 +442,14 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
 
     /// Must run on `stateQueue`.
     private func handleDataLocked(_ data: Data, taskID: Int) -> Bool {
-        guard var state = attempts[taskID], state.response != nil else {
+        // Remove before mutation so the dictionary does not retain another
+        // reference to the Data buffer and force a full copy-on-write for
+        // every delegate delivery.
+        guard var state = attempts.removeValue(forKey: taskID) else {
+            return true
+        }
+        guard state.response != nil else {
+            attempts[taskID] = state
             return true
         }
         switch state.response {
@@ -443,7 +459,6 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
                 state.body.append(contentsOf: data.prefix(remaining))
             }
             if state.body.count == byteLimit {
-                attempts.removeValue(forKey: taskID)
                 completeMediaLocked(state)
                 return true
             } else {
@@ -455,7 +470,6 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
                 state.body.append(contentsOf: data.prefix(remaining))
             }
             if state.body.count == 4096 {
-                attempts.removeValue(forKey: taskID)
                 completeNotFoundLocked(state)
                 return true
             } else {
@@ -498,9 +512,10 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
         case .media(_, _, let byteLimit, let acceptsShortEOF):
             guard state.body.count == byteLimit
                     || (acceptsShortEOF && !state.body.isEmpty) else {
-                failLocked(
+                retryOrFailLocked(
                     id: state.id,
                     range: state.range,
+                    attempt: state.attempt,
                     cause: .prematureEOF,
                     statusCode: nil
                 )
