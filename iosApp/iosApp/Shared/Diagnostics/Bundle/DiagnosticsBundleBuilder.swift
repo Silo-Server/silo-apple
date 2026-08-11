@@ -21,9 +21,16 @@ struct DiagnosticsBundleBuilder {
         droppedLogLines: Int,
         redactionTokens: [String] = []
     ) throws -> DiagnosticsBundleBuildResult {
+        let isHosted = report.binding.binding.destinationChoice == .hosted
+        let rawLogsData = Data(
+            logLines.joined(separator: "\n").appending(logLines.isEmpty ? "" : "\n").utf8
+        )
+        let destinationSafeLogsData = isHosted
+            ? Self.sanitizeHostedLogJSONL(rawLogsData)
+            : rawLogsData
         let logsData = Self.scrubTextualEntry(
             name: "logs.jsonl",
-            data: Data(logLines.joined(separator: "\n").appending(logLines.isEmpty ? "" : "\n").utf8),
+            data: destinationSafeLogsData,
             tokens: redactionTokens
         )
         let logsGzipSize = (try? Self.gzip(logsData).count) ?? 0
@@ -31,12 +38,23 @@ struct DiagnosticsBundleBuilder {
         draft.logSummary = makeLogSummary(
             logsData: logsData,
             logsGzipSize: logsGzipSize,
-            droppedLines: droppedLogLines
+            droppedLines: droppedLogLines,
+            debugLogging: draft.logSummary.debugLogging
         )
 
         var entries: [(String, Data)] = []
         func appendEntry(_ name: String, _ data: Data) {
-            entries.append((name, Self.scrubTextualEntry(name: name, data: data, tokens: redactionTokens)))
+            let destinationSafeData = isHosted && name == "breadcrumbs.jsonl"
+                ? Self.sanitizeHostedLogJSONL(data)
+                : data
+            entries.append((
+                name,
+                Self.scrubTextualEntry(
+                    name: name,
+                    data: destinationSafeData,
+                    tokens: redactionTokens
+                )
+            ))
         }
 
         let manifestDraftData = try DiagnosticsJSONCoding.makeEncoder().encode(draft)
@@ -72,8 +90,18 @@ struct DiagnosticsBundleBuilder {
             data: try DiagnosticsJSONCoding.makeEncoder().encode(manifest),
             tokens: redactionTokens
         )
+        // The upload APIs consume both representations below. Decode the
+        // scrubbed bytes back into the returned model so the JSON envelope can
+        // never serialize an unsanitized value while the embedded manifest is
+        // sanitized. Keeping one canonical sanitized object also preserves
+        // collector outer-vs-embedded validation semantics.
+        let sanitizedManifest = try DiagnosticsJSONCoding.makeDecoder().decode(
+            DiagnosticsManifest.self,
+            from: manifestData
+        )
+        try sanitizedManifest.validate()
         return DiagnosticsBundleBuildResult(
-            manifest: manifest,
+            manifest: sanitizedManifest,
             manifestData: manifestData,
             bundleData: bundleData
         )
@@ -104,6 +132,122 @@ struct DiagnosticsBundleBuilder {
         return Data(text.utf8)
     }
 
+    /// Hosted collection uses the canonical server v1 attribute registry,
+    /// which intentionally excludes private-server correlation fields. The
+    /// self-hosted contract still accepts Apple's local playback extensions,
+    /// so filtering belongs at bundle construction rather than log capture.
+    /// Re-encoding every accepted line also fails closed for malformed frozen
+    /// evidence instead of forwarding bytes the public collector cannot
+    /// validate.
+    static func sanitizeHostedLogJSONL(_ data: Data) -> Data {
+        let decoder = DiagnosticsJSONCoding.makeDecoder()
+        let encoder = DiagnosticsJSONCoding.makeEncoder()
+        let rendered = data
+            .split(separator: 10, omittingEmptySubsequences: true)
+            .compactMap { rawLine -> String? in
+                guard let line = try? decoder.decode(
+                    DiagnosticsLogLine.self,
+                    from: Data(rawLine)
+                ), (try? line.validate()) != nil else {
+                    return nil
+                }
+                let registered = hostedAttributeRegistry[line.cat] ?? [:]
+                let safeAttributes = line.attrs?.filter { key, value in
+                    registered[key]?.accepts(value) == true
+                }
+                let sanitized = DiagnosticsLogLine(
+                    ts: line.ts,
+                    run: line.run,
+                    lvl: line.lvl,
+                    cat: line.cat,
+                    tag: sanitizeHostedPrivateIdentifierAssignments(in: line.tag),
+                    msg: sanitizeHostedPrivateIdentifierAssignments(in: line.msg),
+                    attrs: safeAttributes?.isEmpty == false ? safeAttributes : nil
+                )
+                guard let encoded = try? encoder.encode(sanitized) else {
+                    return nil
+                }
+                return String(data: encoded, encoding: .utf8)
+            }
+        guard !rendered.isEmpty else {
+            return Data()
+        }
+        return Data(rendered.joined(separator: "\n").appending("\n").utf8)
+    }
+
+    private static func sanitizeHostedPrivateIdentifierAssignments(in value: String) -> String {
+        let range = NSRange(location: 0, length: (value as NSString).length)
+        return hostedPrivateIdentifierAssignmentRegex.stringByReplacingMatches(
+            in: value,
+            options: [],
+            range: range,
+            withTemplate: "[redacted_private_id]"
+        )
+    }
+
+    private static let hostedPrivateIdentifierAssignmentRegex: NSRegularExpression = {
+        // CMP messages predate typed diagnostic attributes and include private
+        // Silo correlation IDs as key=value text. Remove the full assignment
+        // so neither a private value nor a rejected identity-like key reaches
+        // the collector. The matcher accepts camelCase and snake_case and
+        // covers current playback/file/item/media/plan identifiers.
+        let pattern = #"(?i)\b(playback[_-]?session[_-]?id|session[_-]?id|(?:plan|selected|effective|requested|media)?[_-]?file[_-]?id|item[_-]?id|media[_-]?id|plan[_-]?id|playback[_-]?attempt[_-]?id|plan[_-]?attempt[_-]?key|subtitle[_-]?id|track[_-]?id)\s*[:=]\s*(?:\"(?:\\.|[^\"\\\r\n])*\"|'[^'\r\n]*'|[^\s,;)\]}]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            preconditionFailure("Hosted diagnostics identifier redaction regex must compile")
+        }
+        return regex
+    }()
+
+    private enum HostedAttributeType {
+        case string
+        case integer
+
+        func accepts(_ value: DiagnosticsJSONValue) -> Bool {
+            switch (self, value) {
+            case (.string, .string), (.integer, .int):
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    // Vendored from silo-diagnostics/contract/v1/attr-registry.json. Keep this
+    // destination-specific: Apple's self-hosted registry has additional local
+    // playback attributes for compatibility with existing Silo servers.
+    private static let hostedAttributeRegistry: [
+        DiagnosticsLogCategory: [String: HostedAttributeType]
+    ] = [
+        .playback: [
+            "sink": .string,
+            "fmt": .string,
+            "decoder": .string,
+            "width": .integer,
+            "height": .integer,
+            "hdr_mode": .string,
+            "bitrate_kbps": .integer,
+            "dropped_frames": .integer,
+            "audio_underruns": .integer,
+        ],
+        .focus: [
+            "target": .string,
+            "action": .string,
+        ],
+        .network: [
+            "method": .string,
+            "path": .string,
+            "status": .integer,
+            "duration_ms": .integer,
+        ],
+        .lifecycle: [
+            "state": .string,
+        ],
+        .crash: [
+            "fingerprint": .string,
+            "source": .string,
+        ],
+    ]
+
     private static func scrubTextualEntry(name: String, data: Data, tokens: [String]) -> Data {
         guard textualEntryNames.contains(name) else {
             return data
@@ -124,7 +268,8 @@ struct DiagnosticsBundleBuilder {
     private func makeLogSummary(
         logsData: Data,
         logsGzipSize: Int,
-        droppedLines: Int
+        droppedLines: Int,
+        debugLogging: Bool
     ) -> DiagnosticsManifest.LogSummary {
         let decoder = DiagnosticsJSONCoding.makeDecoder()
         let lines = String(decoding: logsData, as: UTF8.self)
@@ -142,7 +287,7 @@ struct DiagnosticsBundleBuilder {
             bytesGz: logsGzipSize,
             droppedLines: droppedLines,
             categories: categories,
-            debugLogging: DiagnosticsConsentStore.shared.debugLoggingEnabled
+            debugLogging: debugLogging
         )
     }
 

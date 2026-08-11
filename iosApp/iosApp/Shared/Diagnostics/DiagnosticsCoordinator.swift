@@ -107,6 +107,14 @@ enum DiagnosticsUploadDecision: Equatable {
     case discardedInvalidLocalBundle
 }
 
+enum HostedDiagnosticsHTTPFailureDisposition: Equatable {
+    case retryable
+    case needsServerUpdate
+    case tooLarge
+    case staleConsent
+    case invalidLocalBundle
+}
+
 actor DiagnosticsCoordinator {
     static let shared = DiagnosticsCoordinator()
 
@@ -130,36 +138,58 @@ actor DiagnosticsCoordinator {
     nonisolated(unsafe) private static var activeProfileEligibilityGeneration: UInt64 = 0
 
     private let api: DiagnosticsAPI
+    private let hostedAPI: HostedDiagnosticsAPI
     private let continuumAPI: ContinuumAPI
     private let consentStore: DiagnosticsConsentStore
+    private let destinationStore: DiagnosticsDestinationStore
     private let pendingStore: PendingReportStore
     private let bundleBuilder: DiagnosticsBundleBuilder
     private let deviceSnapshotBuilder: DeviceSnapshotBuilder
     private let profileEligibilityStore: DiagnosticsProfileEligibilityStore
 
     private var cachedStatus: DiagnosticsStatusSnapshot?
+    private var cachedStatusDestination: DiagnosticsDestinationChoice?
     private var cachedStatusServerRegistryID: String?
     private var cachedStatusAccessTokenFingerprint: String?
 
     init(
         api: DiagnosticsAPI = .shared,
+        hostedAPI: HostedDiagnosticsAPI = .shared,
         continuumAPI: ContinuumAPI = .shared,
         consentStore: DiagnosticsConsentStore = .shared,
+        destinationStore: DiagnosticsDestinationStore = .shared,
         pendingStore: PendingReportStore = .shared,
         bundleBuilder: DiagnosticsBundleBuilder = DiagnosticsBundleBuilder(),
         deviceSnapshotBuilder: DeviceSnapshotBuilder = .live,
         profileEligibilityStore: DiagnosticsProfileEligibilityStore = .shared
     ) {
         self.api = api
+        self.hostedAPI = hostedAPI
         self.continuumAPI = continuumAPI
         self.consentStore = consentStore
+        self.destinationStore = destinationStore
         self.pendingStore = pendingStore
         self.bundleBuilder = bundleBuilder
         self.deviceSnapshotBuilder = deviceSnapshotBuilder
         self.profileEligibilityStore = profileEligibilityStore
     }
 
-    func refreshStatus() async throws -> DiagnosticsStatusSnapshot {
+    func refreshStatus(
+        destination: DiagnosticsDestinationChoice? = nil
+    ) async throws -> DiagnosticsStatusSnapshot {
+        let destination = destination ?? destinationStore.selectedDestination
+        if destination == .hosted {
+            do {
+                return try await refreshHostedStatus()
+            } catch {
+                if Self.isTransientCaptureFallbackFailure(error),
+                   let fallback = await hostedPersistentCaptureFallback() {
+                    _ = await activateHostedPersistentCaptureFallback(fallback)
+                }
+                throw error
+            }
+        }
+
         let requestServerRegistryID = ServerRegistry.shared.activeServerId
         guard requestServerRegistryID != nil,
               await Self.currentAccessTokenFingerprint() != nil else {
@@ -187,9 +217,14 @@ actor DiagnosticsCoordinator {
         )
         let snapshot = DiagnosticsStatusSnapshot(status: status, binding: binding)
         cachedStatus = snapshot
+        cachedStatusDestination = .selfHosted
         cachedStatusServerRegistryID = requestServerRegistryID
         cachedStatusAccessTokenFingerprint = accessTokenFingerprint
-        persistLastKnownSnapshot(snapshot, serverRegistryID: requestServerRegistryID)
+        persistLastKnownSnapshot(
+            snapshot,
+            serverRegistryID: requestServerRegistryID,
+            destination: .selfHosted
+        )
         updateBreadcrumbConsentContext(
             binding: binding,
             noticeVersion: status.consentNoticeVersion,
@@ -212,8 +247,69 @@ actor DiagnosticsCoordinator {
         return snapshot
     }
 
-    func cachedStatusForActiveServer() async -> DiagnosticsStatusSnapshot? {
+    private func refreshHostedStatus() async throws -> DiagnosticsStatusSnapshot {
+        let requestServerRegistryID = ServerRegistry.shared.activeServerId
+        guard let requestServerRegistryID,
+              await Self.currentAccessTokenFingerprint() != nil else {
+            throw DiagnosticsCoordinatorError.identityChanged
+        }
+
+        async let capabilitiesRequest = hostedAPI.capabilities()
+        async let currentUserRequest = continuumAPI.currentUser()
+        let (capabilities, user) = try await (capabilitiesRequest, currentUserRequest)
+        guard requestServerRegistryID == ServerRegistry.shared.activeServerId,
+              let accessTokenFingerprint = await Self.currentAccessTokenFingerprint() else {
+            throw DiagnosticsCoordinatorError.identityChanged
+        }
+        guard let accountUserID = user.id, !accountUserID.isEmpty else {
+            throw DiagnosticsCoordinatorError.missingAccountUserID
+        }
+
+        let status = capabilities.statusResponse
+        let binding = DiagnosticsBinding.hosted(
+            serverRegistryID: requestServerRegistryID,
+            accountUserID: accountUserID
+        )
+        let snapshot = DiagnosticsStatusSnapshot(status: status, binding: binding)
+        cachedStatus = snapshot
+        cachedStatusDestination = .hosted
+        cachedStatusServerRegistryID = requestServerRegistryID
+        cachedStatusAccessTokenFingerprint = accessTokenFingerprint
+        persistLastKnownSnapshot(
+            snapshot,
+            serverRegistryID: requestServerRegistryID,
+            destination: .hosted
+        )
+        updateBreadcrumbConsentContext(
+            binding: binding,
+            noticeVersion: status.consentNoticeVersion,
+            statusAvailable: status.status == .available
+        )
+        let eligibilityGeneration = Self.beginActiveProfileEligibilityResolution(invalidateCurrent: false)
+        Task {
+            await reevaluateActiveProfileBreadcrumbEligibility(generation: eligibilityGeneration)
+        }
+
+        let record = consentStore.record(
+            for: binding,
+            currentNoticeVersion: status.consentNoticeVersion
+        )
+        if record.mode == .always {
+            consentStore.setMode(
+                .ask,
+                for: binding,
+                noticeVersion: status.consentNoticeVersion
+            )
+        }
+        return snapshot
+    }
+
+    func cachedStatusForActiveServer(
+        destination: DiagnosticsDestinationChoice? = nil
+    ) async -> DiagnosticsStatusSnapshot? {
+        let destination = destination ?? destinationStore.selectedDestination
         guard cachedStatusServerRegistryID == ServerRegistry.shared.activeServerId,
+              cachedStatusDestination == destination,
               let cachedStatusAccessTokenFingerprint,
               cachedStatusAccessTokenFingerprint == (await Self.currentAccessTokenFingerprint()) else {
             return nil
@@ -226,19 +322,27 @@ actor DiagnosticsCoordinator {
     /// this session, then the value persisted from the previous successful
     /// refresh — the latter survives relaunch, so a crash delivered by
     /// MetricKit at the next launch can still be queued while offline.
-    private func lastKnownSnapshotForActiveServer() -> DiagnosticsStatusSnapshot? {
+    private func lastKnownSnapshotForActiveServer(
+        destination: DiagnosticsDestinationChoice
+    ) -> DiagnosticsStatusSnapshot? {
         guard let activeServerId = ServerRegistry.shared.activeServerId else {
             return nil
         }
-        if cachedStatusServerRegistryID == activeServerId, let cachedStatus {
+        if cachedStatusServerRegistryID == activeServerId,
+           cachedStatusDestination == destination,
+           let cachedStatus {
             return cachedStatus
         }
-        return Self.LastKnownStatusStore.snapshot(for: activeServerId)
+        return Self.LastKnownStatusStore.snapshot(for: activeServerId, destination: destination)
     }
 
-    private func persistLastKnownSnapshot(_ snapshot: DiagnosticsStatusSnapshot, serverRegistryID: String?) {
+    private func persistLastKnownSnapshot(
+        _ snapshot: DiagnosticsStatusSnapshot,
+        serverRegistryID: String?,
+        destination: DiagnosticsDestinationChoice
+    ) {
         guard let serverRegistryID else { return }
-        Self.LastKnownStatusStore.record(snapshot, for: serverRegistryID)
+        Self.LastKnownStatusStore.record(snapshot, for: serverRegistryID, destination: destination)
     }
 
     enum ProfileLookupResult: Equatable {
@@ -334,13 +438,16 @@ actor DiagnosticsCoordinator {
     }
 
     func buildBundle(for report: PendingReport) async throws -> DiagnosticsBundleBuildResult {
-        let redactionTokens = await Self.currentTokenRedactionValues()
+        let redactionTokens = Self.mergeRedactionTokens(
+            await Self.currentTokenRedactionValues(),
+            hostedInstallationToken: await hostedAPI.installationTokenForRedaction()
+        )
 
-        // Crash/hang/abnormal-exit reports snapshot their logs at capture time
-        // (see `logSnapshotArtifact`). Prefer that frozen snapshot so a report
-        // sent hours or days later — possibly after using another server or
-        // profile — carries the failure-time logs, not the current in-memory
-        // ring. Manual reports have no snapshot and use the live ring.
+        // Reports snapshot their logs at capture time. Prefer that frozen
+        // evidence so a report sent hours or days later — possibly after using
+        // another server or profile — carries capture-time logs and can replay
+        // a byte-identical hosted create after an ambiguous response. The live
+        // ring fallback remains only for legacy pending manual reports.
         if let snapshotData = try? Data(contentsOf: logSnapshotURL(for: report)) {
             let lines = String(decoding: snapshotData, as: UTF8.self)
                 .split(separator: "\n", omittingEmptySubsequences: true)
@@ -348,7 +455,7 @@ actor DiagnosticsCoordinator {
             return try bundleBuilder.build(
                 report: report,
                 logLines: lines,
-                droppedLogLines: 0,
+                droppedLogLines: report.manifest.logSummary.droppedLines,
                 redactionTokens: redactionTokens
             )
         }
@@ -382,8 +489,13 @@ actor DiagnosticsCoordinator {
         return PendingReportArtifact(relativePath: "logs.jsonl", data: data)
     }
 
-    func createManualReport() async throws -> PendingReport {
-        guard let context = await captureContext(requirePersistentCapture: false) else {
+    func createManualReport(
+        destination: DiagnosticsDestinationChoice? = nil
+    ) async throws -> PendingReport {
+        guard let context = await captureContext(
+            destination: destination,
+            requirePersistentCapture: false
+        ) else {
             throw DiagnosticsCoordinatorError.missingCaptureContext
         }
 
@@ -394,8 +506,19 @@ actor DiagnosticsCoordinator {
             capturedAt: capturedAt,
             crash: nil,
             deviceSummary: deviceSnapshotBuilder.deviceSummary(from: device),
-            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(for: context.binding),
+            playbackSessionIDs: context.destinationChoice == .hosted
+                ? []
+                : RecentSessionTracker.shared.recentSessionIDs(for: context.binding),
             consentMode: .manual
+        )
+        // A hosted create is idempotent only for the same canonical manifest,
+        // bundle length, and SHA. Freeze the manual report's live ring now so
+        // an ambiguous upload response can safely replay the same envelope;
+        // this also keeps review and send faithful to the evidence captured
+        // when the user tapped Send.
+        let frozenEvidence = Self.frozenManualEvidence(
+            manifest: manifest,
+            logSnapshot: DiagLog.ring.snapshot()
         )
         let fingerprint = DiagnosticsSHA256.hex(
             data: Data("manual|\(DiagLog.captureSessionID)|\(DiagnosticsTimestamp.string(from: capturedAt))".utf8)
@@ -407,20 +530,45 @@ actor DiagnosticsCoordinator {
             type: .manual,
             fingerprint: fingerprint,
             capturedAt: capturedAt,
-            manifest: manifest,
+            manifest: frozenEvidence.manifest,
             deviceSnapshot: device,
-            artifacts: []
+            artifacts: [frozenEvidence.artifact]
         ))
     }
 
+    nonisolated static func frozenManualEvidence(
+        manifest: DiagnosticsManifestDraft,
+        logSnapshot: LogRingSnapshot
+    ) -> (manifest: DiagnosticsManifestDraft, artifact: PendingReportArtifact) {
+        var frozenManifest = manifest
+        frozenManifest.logSummary = DiagnosticsManifest.LogSummary(
+            lines: 0,
+            bytesGz: 0,
+            droppedLines: logSnapshot.droppedCount,
+            categories: [],
+            debugLogging: manifest.logSummary.debugLogging
+        )
+        let data = logSnapshot.lines.isEmpty
+            ? Data()
+            : Data(logSnapshot.lines.joined(separator: "\n").appending("\n").utf8)
+        return (
+            manifest: frozenManifest,
+            artifact: PendingReportArtifact(relativePath: "logs.jsonl", data: data)
+        )
+    }
+
     func upload(report: PendingReport) async -> DiagnosticsUploadDecision {
+        let destination = report.binding.binding.destinationChoice
         // A non-persistent capture context is nil only when the status refresh
         // failed (offline or identity mid-change) — the destination was never
         // actually checked. Returning keptDestinationMismatch here would show
         // the wrong message and, on the Always path (already throttled before
         // upload), suppress retries for 24h. Keep it retryable instead; a
         // genuine binding mismatch is still reported below.
-        guard let context = await captureContext(requirePersistentCapture: false) else {
+        guard let context = await captureContext(
+            destination: destination,
+            requirePersistentCapture: false
+        ) else {
             return .keptRetryable
         }
         guard report.isUploadable(to: context.binding) else {
@@ -436,7 +584,7 @@ actor DiagnosticsCoordinator {
         // profile is active. Checked here before the (slow) bundle build for
         // the common case, and again right before the POST below in case the
         // profile switches while the bundle is building.
-        if Self.isProfileUploadMismatch(
+        if destination == .selfHosted, Self.isProfileUploadMismatch(
             captured: report.manifest.report.profileID,
             active: await TokenStore.shared.getProfileId()
         ) {
@@ -455,14 +603,23 @@ actor DiagnosticsCoordinator {
             for: report.binding.binding,
             currentNoticeVersion: context.noticeVersion
         )
-        let refreshedMode: ConsentMode = report.manifest.consent.mode == .manual
-            ? .manual
-            : currentConsent.mode.manifestMode
+        let refreshedMode: ConsentMode
+        if report.manifest.consent.mode == .manual {
+            refreshedMode = .manual
+        } else if destination == .hosted {
+            refreshedMode = .prompt
+        } else {
+            refreshedMode = currentConsent.mode.manifestMode
+        }
         let report = pendingStore.updatingConsent(
             report,
             mode: refreshedMode,
             noticeVersion: currentConsent.noticeVersion
         )
+
+        if destination == .hosted {
+            return await uploadHosted(report: report, context: context)
+        }
 
         do {
             // Snapshot the destination *identity* before building the bundle.
@@ -526,6 +683,139 @@ actor DiagnosticsCoordinator {
         }
     }
 
+    private func uploadHosted(
+        report: PendingReport,
+        context: DiagnosticsCaptureContext
+    ) async -> DiagnosticsUploadDecision {
+        do {
+            let destinationServerRegistryID = ServerRegistry.shared.activeServerId
+            // Capture the limit from the exact capability snapshot that made
+            // this context. `buildBundle` awaits Keychain access and permits
+            // actor reentrancy; consulting the coordinator-wide cache after it
+            // returns could accidentally observe a concurrent self-hosted or
+            // different-account refresh.
+            let maximumBundleBytes = context.maxBundleBytes
+                ?? HostedDiagnosticsCapabilities.conservativeCaptureStatus.maxBundleBytes
+            let bundle = try await buildBundle(for: report)
+            guard bundle.manifest.report.profileID == nil,
+                  bundle.manifest.playbackSessionIds.isEmpty,
+                  bundle.manifest.destination.serverInstanceID == context.destinationServerInstanceID,
+                  await Self.currentAccessTokenFingerprint() != nil,
+                  ServerRegistry.shared.activeServerId == destinationServerRegistryID else {
+                return .keptRetryable
+            }
+            guard bundle.bundleData.count <= maximumBundleBytes else {
+                pendingStore.markTooLarge(report)
+                return .keptTooLarge
+            }
+
+            let response = try await hostedAPI.upload(
+                reportID: report.id,
+                manifest: bundle.manifest,
+                bundleData: bundle.bundleData
+            )
+            pendingStore.delete(report)
+            return .uploaded(response)
+        } catch let error as HostedDiagnosticsAPIError {
+            return handleHostedUploadError(error, report: report)
+        } catch {
+            return .keptRetryable
+        }
+    }
+
+    private func handleHostedUploadError(
+        _ error: HostedDiagnosticsAPIError,
+        report: PendingReport
+    ) -> DiagnosticsUploadDecision {
+        switch error {
+        case .reportIdentityMismatch:
+            pendingStore.delete(report)
+            return .discardedInvalidLocalBundle
+        case .rejected(let code):
+            return handleHostedHTTPFailure(
+                statusCode: 422,
+                code: code,
+                report: report,
+                terminalRemoteState: true
+            )
+        case .http(let statusCode, let code):
+            return handleHostedHTTPFailure(
+                statusCode: statusCode,
+                code: code,
+                report: report
+            )
+        case .invalidBaseURL, .invalidResponse, .collectorIdentityMismatch,
+             .credentialPersistenceFailed, .remoteReportIdentityMismatch, .underlying:
+            return .keptRetryable
+        }
+    }
+
+    private func handleHostedHTTPFailure(
+        statusCode: Int,
+        code: String?,
+        report: PendingReport,
+        terminalRemoteState: Bool = false
+    ) -> DiagnosticsUploadDecision {
+        switch Self.hostedHTTPFailureDisposition(statusCode: statusCode, code: code) {
+        case .retryable:
+            if terminalRemoteState {
+                pendingStore.delete(report)
+                return .discardedInvalidLocalBundle
+            }
+            return .keptRetryable
+        case .needsServerUpdate:
+            pendingStore.markNeedsServerUpdate(report)
+            return .keptNeedsServerUpdate
+        case .tooLarge:
+            pendingStore.markTooLarge(report)
+            return .keptTooLarge
+        case .staleConsent:
+            consentStore.setMode(
+                .ask,
+                for: report.binding.binding,
+                noticeVersion: report.manifest.consent.noticeVersion
+            )
+            return .keptStaleConsent
+        case .invalidLocalBundle:
+            pendingStore.delete(report)
+            return .discardedInvalidLocalBundle
+        }
+    }
+
+    nonisolated static func hostedHTTPFailureDisposition(
+        statusCode: Int,
+        code: String?
+    ) -> HostedDiagnosticsHTTPFailureDisposition {
+        // Rate limiting, service failures, and transport failures retain the
+        // local report even if a malformed intermediary happens to attach an
+        // otherwise permanent code.
+        if statusCode == 429 || (500...599).contains(statusCode) {
+            return .retryable
+        }
+        if statusCode == 413
+            || code == "too_large"
+            || code == "bundle_too_large"
+            || code == "compression_ratio_exceeded" {
+            return .tooLarge
+        }
+        switch code {
+        case "unsupported_schema":
+            return .needsServerUpdate
+        case "stale_consent":
+            return .staleConsent
+        case "invalid_request", "unexpected_field", "invalid_report_id",
+             "invalid_bundle_size", "invalid_bundle_sha256", "invalid_manifest",
+             "privacy_field_rejected", "privacy_value_rejected", "wrong_destination",
+             "archive_metadata_mismatch", "report_conflict", "unsupported_media_type",
+             "size_mismatch", "archive_mismatch", "invalid_bundle",
+             "sensitive_header_rejected", "content_length_required",
+             "invalid_content_length", "invalid_json", "invalid_platform":
+            return .invalidLocalBundle
+        default:
+            return .retryable
+        }
+    }
+
     /// Chunked-upload fallback for a single-shot upload the fronting proxy
     /// refused. Throws `DiagnosticsUploadError` for the caller's shared
     /// error mapping.
@@ -571,13 +861,17 @@ actor DiagnosticsCoordinator {
 
     func captureContext(
         applicationVersionOverride: String? = nil,
+        destination: DiagnosticsDestinationChoice? = nil,
         requirePersistentCapture: Bool = true
     ) async -> DiagnosticsCaptureContext? {
+        let destination = destination ?? destinationStore.selectedDestination
         let snapshot: DiagnosticsStatusSnapshot
         let usedLastKnownSnapshot: Bool
+        let usedHostedFallback: Bool
         do {
-            snapshot = try await refreshStatus()
+            snapshot = try await refreshStatus(destination: destination)
             usedLastKnownSnapshot = false
+            usedHostedFallback = false
         } catch {
             // A persistent capture (crash/hang/abnormal-exit) must survive being
             // offline: fall back to the last-known-good status/binding so it is
@@ -589,13 +883,24 @@ actor DiagnosticsCoordinator {
             // binding a capture to the last-known binding there would attribute
             // it to a signed-out or stale account, so we fail closed. Also only
             // persistent captures use the fallback at all.
-            guard Self.isTransientCaptureFallbackFailure(error),
-                  requirePersistentCapture,
-                  let fallback = lastKnownSnapshotForActiveServer() else {
+            guard Self.isTransientCaptureFallbackFailure(error), requirePersistentCapture else {
                 return nil
             }
-            snapshot = fallback
-            usedLastKnownSnapshot = true
+            if destination == .hosted {
+                guard let fallback = await hostedPersistentCaptureFallback() else {
+                    return nil
+                }
+                snapshot = fallback.snapshot
+                usedLastKnownSnapshot = fallback.requiresCachedProfileEligibility
+                usedHostedFallback = true
+            } else {
+                guard let fallback = lastKnownSnapshotForActiveServer(destination: destination) else {
+                    return nil
+                }
+                snapshot = fallback
+                usedLastKnownSnapshot = true
+                usedHostedFallback = false
+            }
         }
 
         let record = consentStore.record(
@@ -603,41 +908,172 @@ actor DiagnosticsCoordinator {
             currentNoticeVersion: snapshot.status.consentNoticeVersion
         )
         if requirePersistentCapture {
-            // The server-side feature must be available. When offline we fall
-            // back to the last-known status above, so persist only if that
-            // last-known status was itself available — a disabled or
-            // storage-unavailable server must never accumulate crash reports
-            // that could auto-upload once it is re-enabled.
-            guard snapshot.status.status == .available else {
-                return nil
-            }
-            if record.mode == .never {
-                return nil
-            }
-            // Child profiles cannot manage diagnostics. Resolve live whenever
-            // the status request succeeded. If the status itself fell back
-            // because the server is offline, use only the last eligibility
-            // recorded for this exact binding/profile; making another live
-            // `/profiles` request there would always fail and discard a
-            // one-shot MetricKit delivery. Missing or stale identity data still
-            // fails closed.
-            let isChild = usedLastKnownSnapshot
-                ? cachedActiveProfileIsChild(binding: snapshot.binding)
-                : await activeProfileIsChild(binding: snapshot.binding)
-            guard isChild == false else {
-                return nil
+            if usedHostedFallback {
+                let fallback = HostedPersistentCaptureFallback(
+                    snapshot: snapshot,
+                    requiresCachedProfileEligibility: usedLastKnownSnapshot
+                )
+                guard await activateHostedPersistentCaptureFallback(fallback) else {
+                    return nil
+                }
+            } else {
+                // The server-side feature must be available. When offline we fall
+                // back to the last-known status above, so persist only if that
+                // last-known status was itself available — a disabled or
+                // storage-unavailable server must never accumulate crash reports
+                // that could auto-upload once it is re-enabled.
+                guard snapshot.status.status == .available else {
+                    return nil
+                }
+                if record.mode == .never {
+                    return nil
+                }
+                // Child profiles cannot manage diagnostics. Resolve live whenever
+                // the status request succeeded. If the status itself fell back
+                // because the server is offline, use only the last eligibility
+                // recorded for this exact binding/profile; making another live
+                // `/profiles` request there would always fail and discard a
+                // one-shot MetricKit delivery. Missing or stale identity data still
+                // fails closed.
+                let isChild = usedLastKnownSnapshot
+                    ? cachedActiveProfileIsChild(binding: snapshot.binding)
+                    : await activeProfileIsChild(binding: snapshot.binding)
+                guard isChild == false else {
+                    return nil
+                }
             }
         }
 
+        let manifestConsentMode: ConsentMode = destination == .hosted && record.mode == .always
+            ? .prompt
+            : record.mode.manifestMode
         return DiagnosticsCaptureContext(
             binding: snapshot.binding,
-            profileID: AuthService.shared.profileId,
-            consentMode: record.mode.manifestMode,
+            profileID: destination == .hosted ? nil : AuthService.shared.profileId,
+            consentMode: manifestConsentMode,
             noticeVersion: snapshot.status.consentNoticeVersion,
             appVersion: applicationVersionOverride?.isEmpty == false ? applicationVersionOverride! : Self.appVersion(),
             appBuild: Self.appBuild(),
             platform: Self.platform(),
-            osVersion: Self.osVersion()
+            osVersion: Self.osVersion(),
+            destinationServerInstanceID: snapshot.status.serverInstanceID,
+            maxBundleBytes: snapshot.status.maxBundleBytes
+        )
+    }
+
+    private struct HostedPersistentCaptureFallback {
+        let snapshot: DiagnosticsStatusSnapshot
+        let requiresCachedProfileEligibility: Bool
+    }
+
+    /// Hosted crash evidence is captured locally under Ask consent even when
+    /// the public collector is temporarily unreachable. Prefer a prior live
+    /// capability result, but the collector identity and v1 limits are pinned
+    /// in the app so a first-run capture can safely use conservative defaults.
+    /// Sending still calls `refreshHostedStatus()` and therefore requires a
+    /// live capability response with the exact pinned collector identity.
+    private func hostedPersistentCaptureFallback() async -> HostedPersistentCaptureFallback? {
+        guard let serverRegistryID = ServerRegistry.shared.activeServerId,
+              let accessTokenFingerprint = await Self.currentAccessTokenFingerprint() else {
+            return nil
+        }
+
+        if let user = try? await continuumAPI.currentUser(),
+           serverRegistryID == ServerRegistry.shared.activeServerId,
+           accessTokenFingerprint == (await Self.currentAccessTokenFingerprint()),
+           let accountUserID = user.id,
+           !accountUserID.isEmpty {
+            let snapshot = Self.hostedPersistentCaptureFallbackSnapshot(
+                serverRegistryID: serverRegistryID,
+                accountUserID: accountUserID,
+                previous: lastKnownSnapshotForActiveServer(destination: .hosted)
+            )
+            cacheHostedFallback(
+                snapshot,
+                serverRegistryID: serverRegistryID,
+                accessTokenFingerprint: accessTokenFingerprint
+            )
+            return HostedPersistentCaptureFallback(
+                snapshot: snapshot,
+                requiresCachedProfileEligibility: false
+            )
+        }
+
+        guard let previous = lastKnownSnapshotForActiveServer(destination: .hosted) else {
+            return nil
+        }
+        return HostedPersistentCaptureFallback(
+            snapshot: previous,
+            requiresCachedProfileEligibility: true
+        )
+    }
+
+    private func activateHostedPersistentCaptureFallback(
+        _ fallback: HostedPersistentCaptureFallback
+    ) async -> Bool {
+        let snapshot = fallback.snapshot
+        let generation = Self.beginActiveProfileEligibilityResolution(invalidateCurrent: true)
+        updateBreadcrumbConsentContext(
+            binding: snapshot.binding,
+            noticeVersion: snapshot.status.consentNoticeVersion,
+            statusAvailable: snapshot.status.status == .available
+        )
+        let record = consentStore.record(
+            for: snapshot.binding,
+            currentNoticeVersion: snapshot.status.consentNoticeVersion
+        )
+        guard snapshot.status.status == .available, record.mode != .never else {
+            _ = Self.publishActiveProfileBreadcrumbEligibility(false, generation: generation)
+            return false
+        }
+
+        let isChild = fallback.requiresCachedProfileEligibility
+            ? cachedActiveProfileIsChild(binding: snapshot.binding)
+            : await activeProfileIsChild(binding: snapshot.binding)
+        let eligible = isChild == false
+        _ = Self.publishActiveProfileBreadcrumbEligibility(eligible, generation: generation)
+        #if os(tvOS)
+        if eligible {
+            ExitSentinel.shared.profileEligibilityDidResolve(
+                binding: snapshot.binding,
+                profileID: AuthService.shared.profileId
+            )
+        }
+        #endif
+        return eligible
+    }
+
+    nonisolated static func hostedPersistentCaptureFallbackSnapshot(
+        serverRegistryID: String,
+        accountUserID: String,
+        previous: DiagnosticsStatusSnapshot?
+    ) -> DiagnosticsStatusSnapshot {
+        let binding = DiagnosticsBinding.hosted(
+            serverRegistryID: serverRegistryID,
+            accountUserID: accountUserID
+        )
+        if let previous, previous.binding == binding {
+            return previous
+        }
+        return DiagnosticsStatusSnapshot(
+            status: HostedDiagnosticsCapabilities.conservativeCaptureStatus,
+            binding: binding
+        )
+    }
+
+    private func cacheHostedFallback(
+        _ snapshot: DiagnosticsStatusSnapshot,
+        serverRegistryID: String,
+        accessTokenFingerprint: String
+    ) {
+        cachedStatus = snapshot
+        cachedStatusDestination = .hosted
+        cachedStatusServerRegistryID = serverRegistryID
+        cachedStatusAccessTokenFingerprint = accessTokenFingerprint
+        persistLastKnownSnapshot(
+            snapshot,
+            serverRegistryID: serverRegistryID,
+            destination: .hosted
         )
     }
 
@@ -658,6 +1094,13 @@ actor DiagnosticsCoordinator {
     }
 
     func purgeDiagnosticsForServerRegistryID(_ serverId: String) {
+        let hostedServerInstanceID = DiagnosticsBinding.hosted(
+            serverRegistryID: serverId,
+            accountUserID: "local-purge"
+        ).serverInstanceID
+        pendingStore.purge(serverInstanceID: hostedServerInstanceID)
+        consentStore.remove(serverInstanceID: hostedServerInstanceID)
+        profileEligibilityStore.remove(serverInstanceID: hostedServerInstanceID)
         let serverInstanceIDs = Self.ServerBindingIndex.serverInstanceIDs(for: serverId)
         if serverInstanceIDs.isEmpty {
             pendingStore.purge(serverInstanceID: serverId)
@@ -751,7 +1194,9 @@ actor DiagnosticsCoordinator {
             capturedAt: capturedAt,
             crash: crash,
             deviceSummary: deviceSnapshotBuilder.deviceSummary(from: device),
-            playbackSessionIDs: RecentSessionTracker.shared.recentSessionIDs(for: boundContext.binding),
+            playbackSessionIDs: boundContext.destinationChoice == .hosted
+                ? []
+                : RecentSessionTracker.shared.recentSessionIDs(for: boundContext.binding),
             captureSessionID: marker.runID
         )
         var artifacts: [PendingReportArtifact] = []
@@ -877,6 +1322,7 @@ actor DiagnosticsCoordinator {
     private func clearContext(for binding: DiagnosticsBinding) {
         if cachedStatus?.binding == binding {
             cachedStatus = nil
+            cachedStatusDestination = nil
             cachedStatusServerRegistryID = nil
             cachedStatusAccessTokenFingerprint = nil
         }
@@ -956,6 +1402,20 @@ actor DiagnosticsCoordinator {
         }
     }
 
+    nonisolated static func mergeRedactionTokens(
+        _ existing: [String],
+        hostedInstallationToken: String?
+    ) -> [String] {
+        var seen = Set<String>()
+        var merged = existing.filter { !$0.isEmpty && seen.insert($0).inserted }
+        if let hostedInstallationToken,
+           !hostedInstallationToken.isEmpty,
+           seen.insert(hostedInstallationToken).inserted {
+            merged.append(hostedInstallationToken)
+        }
+        return merged
+    }
+
     /// Whether a `refreshStatus()` failure is transient enough that a
     /// persistent capture may fall back to the last-known snapshot. Only
     /// offline/network errors and 5xx server errors qualify; auth/permission
@@ -965,6 +1425,18 @@ actor DiagnosticsCoordinator {
     nonisolated static func isTransientCaptureFallbackFailure(_ error: Error) -> Bool {
         if error is DiagnosticsCoordinatorError {
             return false
+        }
+        if let hostedError = error as? HostedDiagnosticsAPIError {
+            switch hostedError {
+            case .underlying, .invalidResponse:
+                return true
+            case .http(let statusCode, _):
+                return (500...599).contains(statusCode)
+            case .invalidBaseURL, .collectorIdentityMismatch,
+                 .credentialPersistenceFailed, .reportIdentityMismatch,
+                 .remoteReportIdentityMismatch, .rejected:
+                return false
+            }
         }
         if let httpError = error as? HTTPError {
             switch httpError {
@@ -1089,7 +1561,10 @@ actor DiagnosticsCoordinator {
             return context
         }
         guard let serverId = ServerRegistry.shared.activeServerId,
-              let snapshot = LastKnownStatusStore.snapshot(for: serverId) else {
+              let snapshot = LastKnownStatusStore.snapshot(
+                for: serverId,
+                destination: DiagnosticsDestinationStore.shared.selectedDestination
+              ) else {
             return nil
         }
         return BreadcrumbConsentContext(
@@ -1342,20 +1817,36 @@ actor DiagnosticsCoordinator {
         private static let key = "diagnostics.lastKnownStatus.v1"
         private static let lock = NSLock()
 
-        static func record(_ snapshot: DiagnosticsStatusSnapshot, for serverId: String) {
+        static func record(
+            _ snapshot: DiagnosticsStatusSnapshot,
+            for serverId: String,
+            destination: DiagnosticsDestinationChoice
+        ) {
             guard !serverId.isEmpty else { return }
             lock.lock()
             var index = load()
-            index[serverId] = snapshot
+            index[key(serverId: serverId, destination: destination)] = snapshot
             save(index)
             lock.unlock()
         }
 
-        static func snapshot(for serverId: String) -> DiagnosticsStatusSnapshot? {
+        static func snapshot(
+            for serverId: String,
+            destination: DiagnosticsDestinationChoice
+        ) -> DiagnosticsStatusSnapshot? {
             lock.lock()
-            let snapshot = load()[serverId]
+            let index = load()
+            let snapshot = index[key(serverId: serverId, destination: destination)]
+                ?? (destination == .selfHosted ? index[serverId] : nil)
             lock.unlock()
             return snapshot
+        }
+
+        private static func key(
+            serverId: String,
+            destination: DiagnosticsDestinationChoice
+        ) -> String {
+            "\(destination.rawValue)|\(serverId)"
         }
 
         static func removeSnapshots(matching binding: DiagnosticsBinding) {

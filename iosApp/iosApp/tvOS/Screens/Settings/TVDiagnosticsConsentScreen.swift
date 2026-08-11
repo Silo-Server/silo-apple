@@ -27,9 +27,11 @@ struct TVDiagnosticsConsentScreen: View {
                     .buttonStyle(TVSettingsPaneRowStyle())
                     .focused($focusedAction, equals: .ask)
 
-                Button("Always") { proposedMode = .always }
-                    .buttonStyle(TVSettingsPaneRowStyle())
-                    .focused($focusedAction, equals: .always)
+                if model.allowsAlwaysSend {
+                    Button("Always") { proposedMode = .always }
+                        .buttonStyle(TVSettingsPaneRowStyle())
+                        .focused($focusedAction, equals: .always)
+                }
 
                 Button("Never") { proposedMode = .never }
                     .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))

@@ -12,6 +12,12 @@ struct DiagnosticsPromptSheet: View {
             List {
                 Section {
                     Text(prompt.message)
+
+                    if model.selectedDestination == .hosted {
+                        Text(model.hostedPrivacyDisclosure)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section {
@@ -24,21 +30,23 @@ struct DiagnosticsPromptSheet: View {
                     }
                     .disabled(model.isWorking)
 
-                    Button("Always Send", systemImage: "checkmark.shield.fill") {
-                        showAlwaysConfirmation = true
-                    }
-                    .disabled(model.isWorking)
-                    .confirmationDialog(
-                        "Always Send Crash Reports?",
-                        isPresented: $showAlwaysConfirmation,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Always Send") {
-                            Task { await model.sendPrompt(always: true) }
+                    if model.allowsAlwaysSend {
+                        Button("Always Send", systemImage: "checkmark.shield.fill") {
+                            showAlwaysConfirmation = true
                         }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("This report and future crash reports for this server account will be sent automatically.")
+                        .disabled(model.isWorking)
+                        .confirmationDialog(
+                            "Always Send Crash Reports?",
+                            isPresented: $showAlwaysConfirmation,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Always Send") {
+                                Task { await model.sendPrompt(always: true) }
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("This report and future crash reports for this server account will be sent automatically.")
+                        }
                     }
 
                     Button("Don't Send", role: .cancel, action: model.declinePrompt)

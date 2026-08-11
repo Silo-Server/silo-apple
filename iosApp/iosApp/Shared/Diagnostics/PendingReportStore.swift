@@ -150,6 +150,12 @@ struct DiagnosticsCaptureContext {
     let appBuild: String
     let platform: Platform
     let osVersion: String
+    var destinationServerInstanceID: String? = nil
+    var maxBundleBytes: Int? = nil
+
+    var destinationChoice: DiagnosticsDestinationChoice {
+        binding.destinationChoice
+    }
 
     /// Returns a copy attributed to a different capturing profile — used when
     /// an abnormal-exit report must carry the profile that was active at crash
@@ -157,13 +163,15 @@ struct DiagnosticsCaptureContext {
     func overridingProfileID(_ profileID: String?) -> DiagnosticsCaptureContext {
         DiagnosticsCaptureContext(
             binding: binding,
-            profileID: profileID,
+            profileID: destinationChoice == .hosted ? nil : profileID,
             consentMode: consentMode,
             noticeVersion: noticeVersion,
             appVersion: appVersion,
             appBuild: appBuild,
             platform: platform,
-            osVersion: osVersion
+            osVersion: osVersion,
+            destinationServerInstanceID: destinationServerInstanceID,
+            maxBundleBytes: maxBundleBytes
         )
     }
 
@@ -186,13 +194,17 @@ struct DiagnosticsCaptureContext {
                 appBuild: appBuild,
                 platform: platform,
                 osVersion: osVersion,
-                profileID: profileID
+                profileID: destinationChoice == .hosted ? nil : profileID
             ),
-            destination: DiagnosticsManifest.Destination(serverInstanceID: binding.serverInstanceID),
+            destination: DiagnosticsManifest.Destination(
+                serverInstanceID: destinationServerInstanceID ?? binding.serverInstanceID
+            ),
             consent: DiagnosticsManifest.Consent(mode: consentMode ?? self.consentMode, noticeVersion: noticeVersion),
             crash: crash,
             deviceSummary: deviceSummary,
-            playbackSessionIds: Array(playbackSessionIDs.prefix(20)),
+            playbackSessionIds: destinationChoice == .hosted
+                ? []
+                : Array(playbackSessionIDs.prefix(20)),
             logSummary: DiagnosticsManifest.LogSummary(
                 lines: 0,
                 bytesGz: 0,

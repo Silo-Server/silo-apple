@@ -6,6 +6,7 @@ struct DiagnosticsSettingsView: View {
     let profile: UserProfile?
 
     @State private var selectedMode: DiagnosticsConsentChoice = .ask
+    @State private var selectedDestination: DiagnosticsDestinationChoice = .hosted
     @State private var showAlwaysConfirmation = false
     @State private var showNeverConfirmation = false
 
@@ -13,7 +14,7 @@ struct DiagnosticsSettingsView: View {
         List {
             SettingsPageHeader(
                 title: "Diagnostics",
-                subtitle: "Capture, review, and send reports to your Silo server.",
+                subtitle: "Capture, review, and securely send diagnostic reports.",
                 systemImage: "stethoscope",
                 tint: .orange
             )
@@ -32,9 +33,13 @@ struct DiagnosticsSettingsView: View {
         .task {
             await model.load(profile: profile)
             selectedMode = model.consentMode
+            selectedDestination = model.selectedDestination
         }
         .onChange(of: model.consentMode) { _, mode in
             selectedMode = mode
+        }
+        .onChange(of: model.selectedDestination) { _, destination in
+            selectedDestination = destination
         }
     }
 
@@ -54,12 +59,23 @@ struct DiagnosticsSettingsView: View {
 
     private var preferencesSection: some View {
         Section {
+            Picker("Send Reports To", selection: $selectedDestination) {
+                Text("Silo Diagnostics").tag(DiagnosticsDestinationChoice.hosted)
+                Text("My Silo Server").tag(DiagnosticsDestinationChoice.selfHosted)
+            }
+            .onChange(of: selectedDestination) { oldValue, newValue in
+                guard oldValue != newValue, newValue != model.selectedDestination else { return }
+                Task { await model.setDestination(newValue) }
+            }
+
             Toggle("Debug Logging", isOn: $model.debugLoggingEnabled)
                 .tint(.continuumAccent)
 
             Picker("Crash Reports", selection: $selectedMode) {
                 Text("Ask").tag(DiagnosticsConsentChoice.ask)
-                Text("Always").tag(DiagnosticsConsentChoice.always)
+                if model.allowsAlwaysSend {
+                    Text("Always").tag(DiagnosticsConsentChoice.always)
+                }
                 Text("Never").tag(DiagnosticsConsentChoice.never)
             }
             .disabled(!model.canChangeConsent)
@@ -90,7 +106,11 @@ struct DiagnosticsSettingsView: View {
         } header: {
             Text("Capture")
         } footer: {
-            Text("Crash report consent is tied to this server account. Debug logging is a setting for this device.")
+            if model.selectedDestination == .hosted {
+                Text(model.hostedPrivacyDisclosure)
+            } else {
+                Text("Crash report consent is tied to this server account. Debug logging is a setting for this device.")
+            }
         }
         .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
     }
@@ -147,7 +167,11 @@ struct DiagnosticsSettingsView: View {
                     .textSelection(.enabled)
             }
         } footer: {
-            Text("A manual report includes device capability details, recent playback session identifiers, and recent diagnostic logs for this server.")
+            if model.selectedDestination == .hosted {
+                Text("A hosted report includes device capability details and recent redacted diagnostic logs. It omits account, profile, server address, and playback session identifiers.")
+            } else {
+                Text("A manual report includes device capability details, recent playback session identifiers, and recent diagnostic logs for this server.")
+            }
         }
         .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
     }

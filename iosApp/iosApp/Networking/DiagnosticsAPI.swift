@@ -32,6 +32,13 @@ struct DiagnosticsStatusResponse: Codable, Equatable {
 struct DiagnosticsUploadResponse: Codable, Equatable {
     let reportId: String
     let shortId: String
+    let state: DiagnosticsRemoteReportState?
+
+    init(reportId: String, shortId: String, state: DiagnosticsRemoteReportState? = nil) {
+        self.reportId = reportId
+        self.shortId = shortId
+        self.state = state
+    }
 
     var reportID: String {
         reportId

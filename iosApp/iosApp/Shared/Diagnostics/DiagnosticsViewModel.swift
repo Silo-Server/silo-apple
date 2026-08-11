@@ -9,6 +9,7 @@ final class DiagnosticsViewModel {
     private(set) var pendingReports: [PendingReport] = []
     private(set) var sentHistory: [DiagnosticsSentReport] = []
     private(set) var consentMode: DiagnosticsConsentChoice = .ask
+    private(set) var selectedDestination: DiagnosticsDestinationChoice
     private(set) var canManageDiagnostics = false
     private(set) var isWorking = false
     var notice: DiagnosticsNotice?
@@ -27,13 +28,28 @@ final class DiagnosticsViewModel {
         statusSnapshot != nil
     }
 
+    var allowsAlwaysSend: Bool {
+        selectedDestination == .selfHosted
+    }
+
     var destinationServerName: String {
-        ServerRegistry.shared.activeServer?.displayName ?? "Current Silo server"
+        if selectedDestination == .hosted {
+            return "Silo Diagnostics"
+        }
+        return ServerRegistry.shared.activeServer?.displayName ?? "Current Silo server"
+    }
+
+    var hostedPrivacyDisclosure: String {
+        let retentionDays = statusSnapshot?.status.retentionDays
+            ?? HostedDiagnosticsCapabilities.conservativeCaptureStatus.retentionDays
+        let dayLabel = retentionDays == 1 ? "day" : "days"
+        return "Hosted reports use a pseudonymous installation credential that is not linked to your Silo account. They omit account, profile, server address, and playback session identifiers, are retained for up to \(retentionDays) \(dayLabel), and are never sent automatically."
     }
 
     private let coordinator: DiagnosticsCoordinator
     private let consentStore: DiagnosticsConsentStore
     private let pendingStore: PendingReportStore
+    private let destinationStore: DiagnosticsDestinationStore
     private var statusSnapshot: DiagnosticsStatusSnapshot?
     private var generation = 0
     private var isHandlingForeground = false
@@ -41,11 +57,14 @@ final class DiagnosticsViewModel {
     init(
         coordinator: DiagnosticsCoordinator = .shared,
         consentStore: DiagnosticsConsentStore = .shared,
-        pendingStore: PendingReportStore = .shared
+        pendingStore: PendingReportStore = .shared,
+        destinationStore: DiagnosticsDestinationStore = .shared
     ) {
         self.coordinator = coordinator
         self.consentStore = consentStore
         self.pendingStore = pendingStore
+        self.destinationStore = destinationStore
+        self.selectedDestination = destinationStore.selectedDestination
         self.debugLoggingEnabled = consentStore.debugLoggingEnabled
     }
 
@@ -66,6 +85,7 @@ final class DiagnosticsViewModel {
         pendingReports = []
         sentHistory = []
         consentMode = .ask
+        selectedDestination = destinationStore.selectedDestination
         canManageDiagnostics = false
         isWorking = false
         notice = nil
@@ -138,6 +158,7 @@ final class DiagnosticsViewModel {
 
     func setConsentMode(_ mode: DiagnosticsConsentChoice) async {
         guard canManageDiagnostics, let snapshot = statusSnapshot else { return }
+        guard mode != .always || allowsAlwaysSend else { return }
         consentStore.setMode(
             mode,
             for: snapshot.binding,
@@ -155,6 +176,20 @@ final class DiagnosticsViewModel {
         }
     }
 
+    func setDestination(_ destination: DiagnosticsDestinationChoice) async {
+        guard destination != selectedDestination else { return }
+        generation &+= 1
+        destinationStore.select(destination)
+        selectedDestination = destination
+        statusSnapshot = nil
+        featureState = .loading
+        pendingReports = []
+        sentHistory = []
+        prompt = nil
+        notice = nil
+        await refreshStatusAndLocalState()
+    }
+
     func createAndSendManualReport() async {
         guard canManageDiagnostics, featureState.isUploadAvailable else { return }
         isWorking = true
@@ -162,7 +197,7 @@ final class DiagnosticsViewModel {
         defer { isWorking = false }
 
         do {
-            let report = try await coordinator.createManualReport()
+            let report = try await coordinator.createManualReport(destination: selectedDestination)
             _ = try await coordinator.buildBundle(for: report)
             let decision = await coordinator.upload(report: report)
             handle(decision, report: report)
@@ -201,9 +236,10 @@ final class DiagnosticsViewModel {
 
     func sendPrompt(always: Bool) async {
         guard let prompt, let snapshot = statusSnapshot else { return }
+        let shouldAlwaysSend = always && allowsAlwaysSend
         let startingGeneration = generation
         isWorking = true
-        if always {
+        if shouldAlwaysSend {
             consentStore.setMode(
                 .always,
                 for: snapshot.binding,
@@ -243,13 +279,15 @@ final class DiagnosticsViewModel {
             deviceIdentity: "\(device.manufacturer) \(device.model) · \(device.os) · \(device.formFactor)",
             categories: logSummary.categories,
             lineCount: logSummary.lines,
-            destinationServerName: destinationServerName
+            destinationServerName: report.binding.binding.destinationChoice == .hosted
+                ? "Silo Diagnostics"
+                : destinationServerName
         )
     }
 
     private func refreshStatusAndLocalState() async {
         do {
-            let snapshot = try await coordinator.refreshStatus()
+            let snapshot = try await coordinator.refreshStatus(destination: selectedDestination)
             statusSnapshot = snapshot
             featureState = Self.featureState(for: snapshot.status.status)
             await reloadLocalState(for: snapshot)
@@ -259,7 +297,7 @@ final class DiagnosticsViewModel {
             pendingReports = []
             sentHistory = []
         } catch {
-            statusSnapshot = await coordinator.cachedStatusForActiveServer()
+            statusSnapshot = await coordinator.cachedStatusForActiveServer(destination: selectedDestination)
             featureState = .offline
             if let statusSnapshot {
                 await reloadLocalState(for: statusSnapshot)
@@ -329,6 +367,9 @@ final class DiagnosticsViewModel {
     private func message(for decision: DiagnosticsUploadDecision) -> String {
         switch decision {
         case .uploaded(let response):
+            if let state = response.state {
+                return "Sent as \(response.shortID) (\(state.rawValue))."
+            }
             return "Sent as \(response.shortID)."
         case .keptRetryable:
             return "Report kept; Silo will retry."

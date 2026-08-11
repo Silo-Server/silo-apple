@@ -24,6 +24,12 @@ struct TVDiagnosticsPromptScreen: View {
                         .font(.system(size: 26))
                         .foregroundStyle(Color.continuumSecondaryText)
                         .frame(maxWidth: 1050, alignment: .leading)
+                    if model.selectedDestination == .hosted {
+                        Text(model.hostedPrivacyDisclosure)
+                            .font(.system(size: 21))
+                            .foregroundStyle(Color.continuumSecondaryText.opacity(0.82))
+                            .frame(maxWidth: 1050, alignment: .leading)
+                    }
                 }
 
                 Spacer(minLength: 20)
@@ -81,11 +87,13 @@ struct TVDiagnosticsPromptScreen: View {
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($focusedAction, equals: .send)
 
-            Button("Always Send") {
-                showAlwaysConfirmation = true
+            if model.allowsAlwaysSend {
+                Button("Always Send") {
+                    showAlwaysConfirmation = true
+                }
+                .buttonStyle(TVSettingsPaneRowStyle())
+                .focused($focusedAction, equals: .always)
             }
-            .buttonStyle(TVSettingsPaneRowStyle())
-            .focused($focusedAction, equals: .always)
         }
     }
 
