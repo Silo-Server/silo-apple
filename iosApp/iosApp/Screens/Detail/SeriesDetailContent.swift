@@ -96,7 +96,6 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
             factsLine: PhoneHeroMetadata.seriesFactsLine(from: detail),
-            overlayData: OverlayData.from(detail),
             actions: { actionStack },
             belowOverview: belowOverview
         )

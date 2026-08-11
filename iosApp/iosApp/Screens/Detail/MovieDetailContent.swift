@@ -100,7 +100,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
             factsLine: PhoneHeroMetadata.movieFactsLine(from: detail, version: effectiveVersion),
-            overlayData: OverlayData.from(detail),
             actions: { actionStack },
             belowOverview: belowOverview
         )

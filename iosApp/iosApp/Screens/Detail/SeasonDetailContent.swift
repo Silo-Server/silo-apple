@@ -87,7 +87,6 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             ratingChip: nil,
             overview: detail.overview,
             factsLine: [],
-            overlayData: OverlayData.from(detail),
             actions: { actionStack },
             belowOverview: belowOverview
         )
