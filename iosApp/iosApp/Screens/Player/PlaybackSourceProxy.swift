@@ -1850,9 +1850,9 @@ private final class PlaybackSourceResource {
             // later claim into chunks with no window left to protect.
             windowOwnerServeID = nil
         }
-        // Safe lock nesting: the fetcher never calls back into the resource
-        // while holding its own lock, so stateLock → fetcher.lock is the
-        // only order that ever occurs.
+        // Safe lock nesting: coversInFlight reads a callback-free published
+        // snapshot. Its tiny lock never waits on the fetcher's state queue,
+        // whose callbacks may need this resource lock.
         let fetcher = chunkFetcher
         for (id, waiter) in dataWaiters {
             if cause == nil || fetcher?.coversInFlight(offset: waiter.offset) == true {

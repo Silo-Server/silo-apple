@@ -208,13 +208,30 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
 
     private final class ChunkRecorder {
         private let lock = NSLock()
-        private var storedCount = 0
+        private var storedByteCounts: [Int] = []
+        private var deliveredRanges: [ClosedRange<Int64>] = []
         private var failureCauses: [PlaybackOriginReconnectPolicy.EndCause] = []
+        private var failureStatuses: [Int?] = []
+        private var sessionMissingCount = 0
+        private var requestBeginCount = 0
+        private var requestEndCount = 0
 
         var stores: Int {
             lock.lock()
             defer { lock.unlock() }
-            return storedCount
+            return storedByteCounts.count
+        }
+
+        var storedBytes: [Int] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedByteCounts
+        }
+
+        var ranges: [ClosedRange<Int64>] {
+            lock.lock()
+            defer { lock.unlock() }
+            return deliveredRanges
         }
 
         var causes: [PlaybackOriginReconnectPolicy.EndCause] {
@@ -223,16 +240,89 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             return failureCauses
         }
 
-        func recordStore() {
+        var statuses: [Int?] {
             lock.lock()
-            storedCount += 1
+            defer { lock.unlock() }
+            return failureStatuses
+        }
+
+        var missingSessions: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return sessionMissingCount
+        }
+
+        var requestCounts: (began: Int, ended: Int) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (requestBeginCount, requestEndCount)
+        }
+
+        func recordStore(_ data: Data = Data()) {
+            lock.lock()
+            storedByteCounts.append(data.count)
             lock.unlock()
         }
 
-        func recordFailure(_ cause: PlaybackOriginReconnectPolicy.EndCause) {
+        func recordRange(_ range: ClosedRange<Int64>) {
+            lock.lock()
+            deliveredRanges.append(range)
+            lock.unlock()
+        }
+
+        func recordFailure(
+            _ cause: PlaybackOriginReconnectPolicy.EndCause,
+            statusCode: Int? = nil
+        ) {
             lock.lock()
             failureCauses.append(cause)
+            failureStatuses.append(statusCode)
             lock.unlock()
+        }
+
+        func recordSessionMissing() {
+            lock.lock()
+            sessionMissingCount += 1
+            lock.unlock()
+        }
+
+        func recordBegin() {
+            lock.lock()
+            requestBeginCount += 1
+            lock.unlock()
+        }
+
+        func recordEnd() {
+            lock.lock()
+            requestEndCount += 1
+            lock.unlock()
+        }
+    }
+
+    private final class ChunkCallbackRaceRecorder: @unchecked Sendable {
+        let storeEntered = DispatchSemaphore(value: 0)
+        let releaseStore = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var events: [String] = []
+
+        var snapshot: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return events
+        }
+
+        func record(_ event: String) {
+            lock.lock()
+            events.append(event)
+            lock.unlock()
+        }
+
+        func blockInStore() -> PlaybackOriginReconnectPolicy.EndCause? {
+            record("store-enter")
+            storeEntered.signal()
+            _ = releaseStore.wait(timeout: .now() + 2)
+            record("store-exit")
+            return nil
         }
     }
 
@@ -252,11 +342,24 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             case fullResponseAfterWeakETag
             case partialChangedAfterWeakETag
             case alwaysFullChangedEntity
+            case chunkFullChangedHeadersOnly
+            case chunkFullMatchingHeadersOnly
+            case chunkByteZeroFullBody
+            case chunkByteZeroShortFullBody
+            case chunkPreconditionFailed
+            case chunkSessionMissing404
+            case chunkMalformed206Unit
+            case chunkMalformed206Ordering
+            case chunkMalformed206Total
+            case chunkOversized206
+            case chunkShort206OversizedBody
+            case chunkShortEOF206
         }
 
         struct Request: Equatable {
             let range: String?
             let ifRange: String?
+            let ifMatch: String?
         }
 
         private let totalBytes: Int64 = 64 * 1024 * 1024
@@ -266,6 +369,7 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
         private let lock = NSLock()
         private var connections: [ObjectIdentifier: NWConnection] = [:]
         private var requests: [Request] = []
+        private var bodyBytesSent = 0
         private(set) var port: UInt16 = 0
 
         init(behavior: ReopenBehavior) throws {
@@ -284,6 +388,12 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             lock.lock()
             defer { lock.unlock() }
             return requests
+        }
+
+        func observedBodyBytesSent() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return bodyBytesSent
         }
 
         func start() async throws {
@@ -350,8 +460,9 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
         private func respond(_ connection: NWConnection, request: String) {
             let range = header("range", in: request)
             let ifRange = header("if-range", in: request)
+            let ifMatch = header("if-match", in: request)
             lock.lock()
-            requests.append(Request(range: range, ifRange: ifRange))
+            requests.append(Request(range: range, ifRange: ifRange, ifMatch: ifMatch))
             let requestNumber = requests.count
             lock.unlock()
 
@@ -360,10 +471,184 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
                     Int64(value[marker.upperBound...].split(separator: "-")[0])
                 } ?? 0
             } ?? 0
+            let requestedEnd = range.flatMap { value -> Int64? in
+                guard let marker = value.range(of: "bytes=") else { return nil }
+                let bounds = value[marker.upperBound...].split(
+                    separator: "-",
+                    omittingEmptySubsequences: false
+                )
+                guard bounds.count == 2, !bounds[1].isEmpty else { return nil }
+                return Int64(bounds[1])
+            }
+            if behavior == .chunkFullChangedHeadersOnly
+                || behavior == .chunkFullMatchingHeadersOnly {
+                let responseETag = behavior == .chunkFullChangedHeadersOnly
+                    ? "\"entity-v2\""
+                    : "\"entity-v1\""
+                let header = [
+                    "HTTP/1.1 200 OK",
+                    "Content-Length: \(totalBytes)",
+                    "ETag: \(responseETag)",
+                    "Content-Type: application/octet-stream",
+                    "Connection: keep-alive",
+                    "",
+                    ""
+                ].joined(separator: "\r\n")
+                // CFNetwork does not publish this loopback response until the
+                // first body frame arrives. Send one byte, then deliberately
+                // keep the response open. A completion-handler fetcher still
+                // cannot classify it until its idle timeout; a delegate
+                // rejects it as soon as the headers are published.
+                connection.send(content: Data(header.utf8), completion: .contentProcessed {
+                    error in
+                    guard error == nil else { return }
+                    connection.send(content: Data([0xEE]), completion: .idempotent)
+                })
+                return
+            }
+            if behavior == .chunkByteZeroFullBody
+                || behavior == .chunkByteZeroShortFullBody {
+                let responseBytes = behavior == .chunkByteZeroShortFullBody
+                    ? Int64(64 * 1024)
+                    : totalBytes
+                let header = [
+                    "HTTP/1.1 200 OK",
+                    "Content-Length: \(responseBytes)",
+                    "ETag: \"entity-v1\"",
+                    "Content-Type: application/octet-stream",
+                    "Connection: close",
+                    "",
+                    ""
+                ].joined(separator: "\r\n")
+                connection.send(content: Data(header.utf8), completion: .contentProcessed {
+                    [weak self] error in
+                    guard let self, error == nil else { return }
+                    self.sendBody(connection, remaining: responseBytes)
+                })
+                return
+            }
+            if behavior == .chunkPreconditionFailed {
+                let header = [
+                    "HTTP/1.1 412 Precondition Failed",
+                    "Content-Length: 0",
+                    "ETag: \"entity-v2\"",
+                    "Connection: close",
+                    "",
+                    ""
+                ].joined(separator: "\r\n")
+                connection.send(
+                    content: Data(header.utf8),
+                    contentContext: .finalMessage,
+                    isComplete: true,
+                    completion: .idempotent
+                )
+                return
+            }
+            if behavior == .chunkSessionMissing404 {
+                let prefix = Data(
+                    "{\"code\":\"playback_session_not_found\"}".utf8
+                ) + Data(repeating: 0x20, count: 4096)
+                let header = [
+                    "HTTP/1.1 404 Not Found",
+                    "Content-Length: \(totalBytes)",
+                    "Content-Type: application/json",
+                    "Connection: close",
+                    "",
+                    ""
+                ].joined(separator: "\r\n")
+                connection.send(content: Data(header.utf8), completion: .contentProcessed {
+                    [weak self] error in
+                    guard let self, error == nil else { return }
+                    self.sendBody(
+                        connection,
+                        firstChunk: prefix,
+                        remaining: self.totalBytes - Int64(prefix.count)
+                    )
+                })
+                return
+            }
+            if behavior == .chunkMalformed206Unit
+                || behavior == .chunkMalformed206Ordering
+                || behavior == .chunkMalformed206Total
+                || behavior == .chunkOversized206 {
+                let requestedEnd = requestedEnd ?? offset
+                let contentRange: String
+                switch behavior {
+                case .chunkMalformed206Unit:
+                    contentRange = "items \(offset)-\(requestedEnd)/\(totalBytes)"
+                case .chunkMalformed206Ordering:
+                    contentRange = "bytes \(offset + 1)-\(offset)/\(totalBytes)"
+                case .chunkMalformed206Total:
+                    contentRange = "bytes \(offset)-\(requestedEnd)/\(requestedEnd)"
+                case .chunkOversized206:
+                    contentRange = "bytes \(offset)-\(requestedEnd + 1)/\(totalBytes)"
+                default:
+                    fatalError("unreachable")
+                }
+                let header = [
+                    "HTTP/1.1 206 Partial Content",
+                    "Content-Range: \(contentRange)",
+                    "Content-Length: \(totalBytes - offset)",
+                    "ETag: \"entity-v1\"",
+                    "Content-Type: application/octet-stream",
+                    "Connection: keep-alive",
+                    "",
+                    ""
+                ].joined(separator: "\r\n")
+                connection.send(content: Data(header.utf8), completion: .contentProcessed {
+                    error in
+                    guard error == nil else { return }
+                    connection.send(content: Data([0xEE]), completion: .idempotent)
+                })
+                return
+            }
+            if behavior == .chunkShort206OversizedBody {
+                let declaredBytes: Int64 = 64 * 1024
+                let declaredEnd = offset + declaredBytes - 1
+                let header = [
+                    "HTTP/1.1 206 Partial Content",
+                    "Content-Range: bytes \(offset)-\(declaredEnd)/\(totalBytes)",
+                    "Content-Length: \(totalBytes - offset)",
+                    "ETag: \"entity-v1\"",
+                    "Content-Type: application/octet-stream",
+                    "Connection: close",
+                    "",
+                    ""
+                ].joined(separator: "\r\n")
+                connection.send(content: Data(header.utf8), completion: .contentProcessed {
+                    [weak self] error in
+                    guard let self, error == nil else { return }
+                    self.sendBody(connection, remaining: self.totalBytes - offset)
+                })
+                return
+            }
+            if behavior == .chunkShortEOF206 {
+                let declaredBytes: Int64 = 64 * 1024
+                let entityTotal = offset + declaredBytes
+                let declaredEnd = entityTotal - 1
+                let header = [
+                    "HTTP/1.1 206 Partial Content",
+                    "Content-Range: bytes \(offset)-\(declaredEnd)/\(entityTotal)",
+                    "Content-Length: \(declaredBytes)",
+                    "ETag: \"entity-v1\"",
+                    "Content-Type: application/octet-stream",
+                    "Connection: close",
+                    "",
+                    ""
+                ].joined(separator: "\r\n")
+                connection.send(content: Data(header.utf8), completion: .contentProcessed {
+                    [weak self] error in
+                    guard let self, error == nil else { return }
+                    self.sendBody(connection, remaining: declaredBytes)
+                })
+                return
+            }
             if behavior == .delayedInitialWindow
                 || behavior == .delayedInitialWindowWithoutValidator {
-                let byteCount = 64 * 1024
                 let isWindow = requestNumber == 1
+                let byteCount = isWindow
+                    ? 64 * 1024
+                    : Int((requestedEnd ?? (offset + 64 * 1024 - 1)) - offset + 1)
                 let end = isWindow
                     ? totalBytes - 1
                     : offset + Int64(byteCount) - 1
@@ -463,7 +748,19 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
                  .partialMissingETag,
                  .partialChangedAfterWeakETag,
                  .alwaysChangedEntity,
-                 .invalidContentRange:
+                 .invalidContentRange,
+                 .chunkFullChangedHeadersOnly,
+                 .chunkFullMatchingHeadersOnly,
+                 .chunkByteZeroFullBody,
+                 .chunkByteZeroShortFullBody,
+                 .chunkPreconditionFailed,
+                 .chunkSessionMissing404,
+                 .chunkMalformed206Unit,
+                 .chunkMalformed206Ordering,
+                 .chunkMalformed206Total,
+                 .chunkOversized206,
+                 .chunkShort206OversizedBody,
+                 .chunkShortEOF206:
                 fullResponse = false
             }
             if fullResponse {
@@ -491,7 +788,7 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
                 return
             }
 
-            let end = totalBytes - 1
+            let end = requestedEnd ?? totalBytes - 1
             let responseETag: String?
             if behavior == .fullResponseAfterWeakETag {
                 responseETag = "W/\"entity-v1\""
@@ -516,7 +813,7 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             var headerLines = [
                 "HTTP/1.1 206 Partial Content",
                 "Content-Range: \(contentRange)",
-                "Content-Length: \(totalBytes - offset)",
+                "Content-Length: \(end - offset + 1)",
                 "Content-Type: application/octet-stream",
                 "Connection: close",
                 "",
@@ -528,7 +825,7 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             let header = headerLines.joined(separator: "\r\n")
             connection.send(content: Data(header.utf8), completion: .contentProcessed { [weak self] error in
                 guard let self, error == nil else { return }
-                self.sendBody(connection, remaining: self.totalBytes - offset)
+                self.sendBody(connection, remaining: end - offset + 1)
             })
         }
 
@@ -559,9 +856,29 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
                 content: Data(repeating: 0xAB, count: count),
                 completion: .contentProcessed { [weak self] error in
                     guard error == nil else { return }
+                    self?.recordBodyBytesSent(count)
                     self?.sendBody(connection, remaining: remaining - Int64(count))
                 }
             )
+        }
+
+        private func sendBody(
+            _ connection: NWConnection,
+            firstChunk: Data,
+            remaining: Int64
+        ) {
+            connection.send(content: firstChunk, completion: .contentProcessed {
+                [weak self] error in
+                guard let self, error == nil else { return }
+                self.recordBodyBytesSent(firstChunk.count)
+                self.sendBody(connection, remaining: remaining)
+            })
+        }
+
+        private func recordBodyBytesSent(_ count: Int) {
+            lock.lock()
+            bodyBytesSent += count
+            lock.unlock()
         }
     }
 
@@ -902,7 +1219,8 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
         XCTAssertEqual(cache.stats().originBytesTransferred, transferredBeforeChunk)
         let requests = origin.observedRequests()
         XCTAssertEqual(requests.count, 2)
-        XCTAssertEqual(requests[1].ifRange, "\"entity-v1\"")
+        XCTAssertNil(requests[1].ifRange)
+        XCTAssertEqual(requests[1].ifMatch, "\"entity-v1\"")
     }
 
     func testEarlyChunkWaitsForWindowEntityBeforeCaching() async throws {
@@ -938,7 +1256,7 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
         let fetchedWithWindowEntity = await waitUntil {
             origin.observedRequests().contains {
                 $0.range?.hasPrefix("bytes=\(farOffset)-") == true
-                    && $0.ifRange == "\"entity-v2\""
+                    && $0.ifMatch == "\"entity-v2\""
             }
         }
         XCTAssertTrue(fetchedWithWindowEntity)
@@ -946,7 +1264,8 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             $0.range?.hasPrefix("bytes=\(farOffset)-") == true
         }
         XCTAssertEqual(chunkRequests.count, 1)
-        XCTAssertEqual(chunkRequests[0].ifRange, "\"entity-v2\"")
+        XCTAssertNil(chunkRequests[0].ifRange)
+        XCTAssertEqual(chunkRequests[0].ifMatch, "\"entity-v2\"")
         let completed = await waitUntil { reader.result.completed }
         XCTAssertTrue(completed)
         XCTAssertNil(reader.result.error)
@@ -1031,7 +1350,444 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             $0.range?.hasPrefix("bytes=\(farOffset)-") == true
         }
         XCTAssertEqual(chunkRequests.count, 1)
-        XCTAssertEqual(chunkRequests[0].ifRange, "\"entity-v1\"")
+        XCTAssertNil(chunkRequests[0].ifRange)
+        XCTAssertEqual(chunkRequests[0].ifMatch, "\"entity-v1\"")
+    }
+
+    func testChunkFetcherRejectsChangedFullResponseAtHeaders() async throws {
+        let origin = try StubOrigin(behavior: .chunkFullChangedHeadersOnly)
+        try await origin.start()
+        defer { origin.stop() }
+        let recorder = ChunkRecorder()
+        let fetcher = PlaybackOriginChunkFetcher(
+            originURL: origin.url,
+            originHeaders: [:],
+            entityETagProvider: { "\"entity-v1\"" },
+            requiresEntityValidation: true,
+            callbacks: PlaybackOriginChunkFetcher.Callbacks(
+                store: { _, data, _, _ in
+                    recorder.recordStore(data)
+                    return nil
+                },
+                didStore: { recorder.recordRange($0) },
+                didReceiveResponse: { _ in },
+                didDetectSessionMissing: {},
+                didFail: { _, cause, _ in recorder.recordFailure(cause) },
+                beginRequest: { recorder.recordBegin() },
+                endRequest: { recorder.recordEnd() }
+            )
+        )
+        defer { fetcher.cancel() }
+
+        let offset: Int64 = 8 * 1024 * 1024
+        fetcher.ensureFetch(covering: offset, totalLength: offset + 1)
+
+        let rejected = await waitUntil(timeout: 1) {
+            recorder.causes == [.entityChanged]
+        }
+        XCTAssertTrue(rejected, "changed 200 headers must be rejected before its body or idle timeout")
+        XCTAssertEqual(recorder.stores, 0)
+        XCTAssertTrue(recorder.ranges.isEmpty)
+        XCTAssertEqual(recorder.requestCounts.began, 1)
+        XCTAssertEqual(recorder.requestCounts.ended, 1)
+        let request = try XCTUnwrap(origin.observedRequests().first)
+        XCTAssertEqual(request.range, "bytes=\(offset)-\(offset)")
+        XCTAssertNil(request.ifRange)
+        XCTAssertEqual(request.ifMatch, "\"entity-v1\"")
+    }
+
+    func testChunkFetcherRejectsRangeIgnoredFullResponseAtHeaders() async throws {
+        let origin = try StubOrigin(behavior: .chunkFullMatchingHeadersOnly)
+        try await origin.start()
+        defer { origin.stop() }
+        let recorder = ChunkRecorder()
+        let fetcher = PlaybackOriginChunkFetcher(
+            originURL: origin.url,
+            originHeaders: [:],
+            entityETagProvider: { "\"entity-v1\"" },
+            requiresEntityValidation: true,
+            callbacks: PlaybackOriginChunkFetcher.Callbacks(
+                store: { _, data, _, _ in
+                    recorder.recordStore(data)
+                    return nil
+                },
+                didStore: { recorder.recordRange($0) },
+                didReceiveResponse: { _ in },
+                didDetectSessionMissing: {},
+                didFail: { _, cause, _ in recorder.recordFailure(cause) },
+                beginRequest: { recorder.recordBegin() },
+                endRequest: { recorder.recordEnd() }
+            )
+        )
+        defer { fetcher.cancel() }
+
+        let offset: Int64 = 8 * 1024 * 1024
+        fetcher.ensureFetch(covering: offset, totalLength: offset + 1)
+
+        let rejected = await waitUntil(timeout: 1) {
+            recorder.causes == [.rangeIgnored]
+        }
+        XCTAssertTrue(rejected, "matching 200 headers must be rejected before its body or idle timeout")
+        XCTAssertEqual(recorder.stores, 0)
+        XCTAssertTrue(recorder.ranges.isEmpty)
+        XCTAssertEqual(recorder.requestCounts.began, 1)
+        XCTAssertEqual(recorder.requestCounts.ended, 1)
+        let request = try XCTUnwrap(origin.observedRequests().first)
+        XCTAssertEqual(request.range, "bytes=\(offset)-\(offset)")
+        XCTAssertNil(request.ifRange)
+        XCTAssertEqual(request.ifMatch, "\"entity-v1\"")
+    }
+
+    func testChunkFetcherBoundsByteZeroFullResponseToRequestedRange() async throws {
+        let origin = try StubOrigin(behavior: .chunkByteZeroFullBody)
+        try await origin.start()
+        defer { origin.stop() }
+        let recorder = ChunkRecorder()
+        let fetcher = PlaybackOriginChunkFetcher(
+            originURL: origin.url,
+            originHeaders: [:],
+            entityETagProvider: { "\"entity-v1\"" },
+            requiresEntityValidation: true,
+            callbacks: PlaybackOriginChunkFetcher.Callbacks(
+                store: { _, data, _, _ in
+                    recorder.recordStore(data)
+                    return nil
+                },
+                didStore: { recorder.recordRange($0) },
+                didReceiveResponse: { _ in },
+                didDetectSessionMissing: {},
+                didFail: { _, cause, _ in recorder.recordFailure(cause) },
+                beginRequest: { recorder.recordBegin() },
+                endRequest: { recorder.recordEnd() }
+            )
+        )
+        defer { fetcher.cancel() }
+
+        let requestedBytes = PlaybackOriginRoutingPolicy.chunkBytes
+        fetcher.ensureFetch(covering: 0, totalLength: requestedBytes)
+
+        let stored = await waitUntil(timeout: 5) {
+            recorder.storedBytes == [Int(requestedBytes)]
+        }
+        XCTAssertTrue(stored)
+        XCTAssertEqual(recorder.ranges, [0...(requestedBytes - 1)])
+        XCTAssertTrue(recorder.causes.isEmpty)
+        XCTAssertEqual(recorder.requestCounts.began, 1)
+        XCTAssertEqual(recorder.requestCounts.ended, 1)
+        let request = try XCTUnwrap(origin.observedRequests().first)
+        XCTAssertEqual(request.range, "bytes=0-\(requestedBytes - 1)")
+        XCTAssertNil(request.ifRange)
+        XCTAssertEqual(request.ifMatch, "\"entity-v1\"")
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertLessThan(origin.observedBodyBytesSent(), 64 * 1024 * 1024)
+    }
+
+    func testChunkFetcherCancelWaitsForCallbackQuiescenceAndBalancesRequests() async throws {
+        let origin = try StubOrigin(behavior: .partialSameEntity)
+        try await origin.start()
+        defer { origin.stop() }
+        let recorder = ChunkCallbackRaceRecorder()
+        let fetcher = PlaybackOriginChunkFetcher(
+            originURL: origin.url,
+            originHeaders: [:],
+            entityETagProvider: { "\"entity-v1\"" },
+            requiresEntityValidation: true,
+            callbacks: PlaybackOriginChunkFetcher.Callbacks(
+                store: { _, _, _, _ in recorder.blockInStore() },
+                didStore: { _ in recorder.record("did-store") },
+                didReceiveResponse: { _ in recorder.record("response") },
+                didDetectSessionMissing: { recorder.record("session-missing") },
+                didFail: { _, _, _ in recorder.record("failure") },
+                beginRequest: { recorder.record("begin") },
+                endRequest: { recorder.record("end") }
+            )
+        )
+        defer { fetcher.cancel() }
+
+        let offset: Int64 = 8 * 1024 * 1024
+        fetcher.ensureFetch(covering: offset, totalLength: offset + 1)
+        XCTAssertEqual(recorder.storeEntered.wait(timeout: .now() + 2), .success)
+
+        let cancelStarted = DispatchSemaphore(value: 0)
+        let cancelReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            cancelStarted.signal()
+            fetcher.cancel()
+            recorder.record("cancel-return")
+            cancelReturned.signal()
+        }
+        XCTAssertEqual(cancelStarted.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(cancelReturned.wait(timeout: .now() + 0.1), .timedOut)
+
+        recorder.releaseStore.signal()
+        XCTAssertEqual(cancelReturned.wait(timeout: .now() + 2), .success)
+        let eventsAtReturn = recorder.snapshot
+        XCTAssertEqual(
+            eventsAtReturn,
+            ["begin", "store-enter", "store-exit", "response", "end", "did-store", "cancel-return"]
+        )
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(recorder.snapshot, eventsAtReturn, "late transport callbacks must remain silent")
+        fetcher.ensureFetch(covering: offset + 1, totalLength: offset + 2)
+        XCTAssertEqual(recorder.snapshot, eventsAtReturn, "cancelled fetcher must reject new admission")
+    }
+
+    func testChunkFetcherMapsBodylessIfMatch412ToEntityChanged() async throws {
+        let origin = try StubOrigin(behavior: .chunkPreconditionFailed)
+        try await origin.start()
+        defer { origin.stop() }
+        let recorder = ChunkRecorder()
+        let fetcher = PlaybackOriginChunkFetcher(
+            originURL: origin.url,
+            originHeaders: [:],
+            entityETagProvider: { "\"entity-v1\"" },
+            requiresEntityValidation: true,
+            callbacks: PlaybackOriginChunkFetcher.Callbacks(
+                store: { _, data, _, _ in
+                    recorder.recordStore(data)
+                    return nil
+                },
+                didStore: { recorder.recordRange($0) },
+                didReceiveResponse: { _ in },
+                didDetectSessionMissing: { recorder.recordSessionMissing() },
+                didFail: { _, cause, status in
+                    recorder.recordFailure(cause, statusCode: status)
+                },
+                beginRequest: { recorder.recordBegin() },
+                endRequest: { recorder.recordEnd() }
+            )
+        )
+        defer { fetcher.cancel() }
+
+        let offset: Int64 = 8 * 1024 * 1024
+        fetcher.ensureFetch(covering: offset, totalLength: offset + 1)
+
+        let changed = await waitUntil { recorder.causes == [.entityChanged] }
+        XCTAssertTrue(changed)
+        XCTAssertEqual(recorder.statuses, [412])
+        XCTAssertEqual(recorder.stores, 0)
+        XCTAssertEqual(recorder.missingSessions, 0)
+        XCTAssertEqual(recorder.requestCounts.began, 1)
+        XCTAssertEqual(recorder.requestCounts.ended, 1)
+        XCTAssertEqual(origin.observedBodyBytesSent(), 0)
+        let request = try XCTUnwrap(origin.observedRequests().first)
+        XCTAssertEqual(request.ifMatch, "\"entity-v1\"")
+    }
+
+    func testChunkFetcherBounds404DiagnosticAndDetectsSessionMissingSentinel() async throws {
+        let origin = try StubOrigin(behavior: .chunkSessionMissing404)
+        try await origin.start()
+        defer { origin.stop() }
+        let recorder = ChunkRecorder()
+        let fetcher = PlaybackOriginChunkFetcher(
+            originURL: origin.url,
+            originHeaders: [:],
+            callbacks: PlaybackOriginChunkFetcher.Callbacks(
+                store: { _, data, _, _ in
+                    recorder.recordStore(data)
+                    return nil
+                },
+                didStore: { recorder.recordRange($0) },
+                didReceiveResponse: { _ in },
+                didDetectSessionMissing: { recorder.recordSessionMissing() },
+                didFail: { _, cause, status in
+                    recorder.recordFailure(cause, statusCode: status)
+                },
+                beginRequest: { recorder.recordBegin() },
+                endRequest: { recorder.recordEnd() }
+            )
+        )
+        defer { fetcher.cancel() }
+
+        let offset: Int64 = 8 * 1024 * 1024
+        fetcher.ensureFetch(covering: offset, totalLength: offset + 1)
+
+        let failed = await waitUntil { recorder.causes == [.httpFatal(404)] }
+        XCTAssertTrue(failed)
+        XCTAssertEqual(recorder.statuses, [404])
+        XCTAssertEqual(recorder.missingSessions, 1)
+        XCTAssertEqual(recorder.stores, 0)
+        XCTAssertEqual(recorder.requestCounts.began, 1)
+        XCTAssertEqual(recorder.requestCounts.ended, 1)
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertGreaterThanOrEqual(origin.observedBodyBytesSent(), 4096)
+        XCTAssertLessThan(origin.observedBodyBytesSent(), 64 * 1024 * 1024)
+    }
+
+    func testChunkFetcherRejectsMalformedAndOversizedContentRanges() async throws {
+        let behaviors: [StubOrigin.ReopenBehavior] = [
+            .chunkMalformed206Unit,
+            .chunkMalformed206Ordering,
+            .chunkMalformed206Total,
+            .chunkOversized206,
+        ]
+        let offset: Int64 = 8 * 1024 * 1024
+
+        for behavior in behaviors {
+            let origin = try StubOrigin(behavior: behavior)
+            try await origin.start()
+            let recorder = ChunkRecorder()
+            let fetcher = PlaybackOriginChunkFetcher(
+                originURL: origin.url,
+                originHeaders: [:],
+                entityETagProvider: { "\"entity-v1\"" },
+                requiresEntityValidation: true,
+                callbacks: PlaybackOriginChunkFetcher.Callbacks(
+                    store: { _, data, _, _ in
+                        recorder.recordStore(data)
+                        return nil
+                    },
+                    didStore: { recorder.recordRange($0) },
+                    didReceiveResponse: { _ in },
+                    didDetectSessionMissing: { recorder.recordSessionMissing() },
+                    didFail: { _, cause, status in
+                        recorder.recordFailure(cause, statusCode: status)
+                    },
+                    beginRequest: { recorder.recordBegin() },
+                    endRequest: { recorder.recordEnd() }
+                )
+            )
+
+            fetcher.ensureFetch(covering: offset, totalLength: offset + 1)
+            let rejected = await waitUntil { recorder.causes == [.rangeIgnored] }
+            XCTAssertTrue(rejected, "behavior \(behavior)")
+            XCTAssertEqual(recorder.statuses, [206], "behavior \(behavior)")
+            XCTAssertEqual(recorder.stores, 0, "behavior \(behavior)")
+            XCTAssertEqual(recorder.requestCounts.began, 1, "behavior \(behavior)")
+            XCTAssertEqual(recorder.requestCounts.ended, 1, "behavior \(behavior)")
+            fetcher.cancel()
+            origin.stop()
+        }
+    }
+
+    func testChunkFetcherRejectsShortNonEOF206() async throws {
+        let origin = try StubOrigin(behavior: .chunkShort206OversizedBody)
+        try await origin.start()
+        defer { origin.stop() }
+        let recorder = ChunkRecorder()
+        let fetcher = PlaybackOriginChunkFetcher(
+            originURL: origin.url,
+            originHeaders: [:],
+            entityETagProvider: { "\"entity-v1\"" },
+            requiresEntityValidation: true,
+            callbacks: PlaybackOriginChunkFetcher.Callbacks(
+                store: { _, data, _, _ in
+                    recorder.recordStore(data)
+                    return nil
+                },
+                didStore: { recorder.recordRange($0) },
+                didReceiveResponse: { _ in },
+                didDetectSessionMissing: { recorder.recordSessionMissing() },
+                didFail: { _, cause, status in
+                    recorder.recordFailure(cause, statusCode: status)
+                },
+                beginRequest: { recorder.recordBegin() },
+                endRequest: { recorder.recordEnd() }
+            )
+        )
+        defer { fetcher.cancel() }
+
+        let offset: Int64 = 8 * 1024 * 1024
+        let requestedBytes = PlaybackOriginRoutingPolicy.chunkBytes
+        fetcher.ensureFetch(covering: offset, totalLength: offset + requestedBytes)
+
+        let rejected = await waitUntil { recorder.causes == [.rangeIgnored] }
+        XCTAssertTrue(rejected)
+        XCTAssertEqual(recorder.statuses, [206])
+        XCTAssertEqual(recorder.stores, 0)
+        XCTAssertTrue(recorder.ranges.isEmpty)
+        XCTAssertEqual(recorder.requestCounts.began, 1)
+        XCTAssertEqual(recorder.requestCounts.ended, 1)
+    }
+
+    func testChunkFetcherAcceptsShort206OnlyAtEntityEOF() async throws {
+        let origin = try StubOrigin(behavior: .chunkShortEOF206)
+        try await origin.start()
+        defer { origin.stop() }
+        let recorder = ChunkRecorder()
+        let fetcher = PlaybackOriginChunkFetcher(
+            originURL: origin.url,
+            originHeaders: [:],
+            entityETagProvider: { "\"entity-v1\"" },
+            requiresEntityValidation: true,
+            callbacks: PlaybackOriginChunkFetcher.Callbacks(
+                store: { _, data, _, _ in
+                    recorder.recordStore(data)
+                    return nil
+                },
+                didStore: { recorder.recordRange($0) },
+                didReceiveResponse: { _ in },
+                didDetectSessionMissing: { recorder.recordSessionMissing() },
+                didFail: { _, cause, status in
+                    recorder.recordFailure(cause, statusCode: status)
+                },
+                beginRequest: { recorder.recordBegin() },
+                endRequest: { recorder.recordEnd() }
+            )
+        )
+        defer { fetcher.cancel() }
+
+        let offset: Int64 = 8 * 1024 * 1024
+        let requestedBytes = PlaybackOriginRoutingPolicy.chunkBytes
+        fetcher.ensureFetch(covering: offset, totalLength: offset + requestedBytes)
+
+        let declaredBytes: Int64 = 64 * 1024
+        let stored = await waitUntil { recorder.storedBytes == [Int(declaredBytes)] }
+        XCTAssertTrue(stored)
+        XCTAssertEqual(recorder.ranges, [offset...(offset + declaredBytes - 1)])
+        XCTAssertTrue(recorder.causes.isEmpty)
+        XCTAssertEqual(recorder.requestCounts.began, 1)
+        XCTAssertEqual(recorder.requestCounts.ended, 1)
+        let transmitted = await waitUntil {
+            origin.observedBodyBytesSent() == Int(declaredBytes)
+        }
+        XCTAssertTrue(transmitted)
+    }
+
+    func testChunkFetcherBoundsShortByteZero200ToContentLength() async throws {
+        let origin = try StubOrigin(behavior: .chunkByteZeroShortFullBody)
+        try await origin.start()
+        defer { origin.stop() }
+        let recorder = ChunkRecorder()
+        let fetcher = PlaybackOriginChunkFetcher(
+            originURL: origin.url,
+            originHeaders: [:],
+            entityETagProvider: { "\"entity-v1\"" },
+            requiresEntityValidation: true,
+            callbacks: PlaybackOriginChunkFetcher.Callbacks(
+                store: { _, data, _, _ in
+                    recorder.recordStore(data)
+                    return nil
+                },
+                didStore: { recorder.recordRange($0) },
+                didReceiveResponse: { _ in },
+                didDetectSessionMissing: { recorder.recordSessionMissing() },
+                didFail: { _, cause, status in
+                    recorder.recordFailure(cause, statusCode: status)
+                },
+                beginRequest: { recorder.recordBegin() },
+                endRequest: { recorder.recordEnd() }
+            )
+        )
+        defer { fetcher.cancel() }
+
+        let requestedBytes = PlaybackOriginRoutingPolicy.chunkBytes
+        fetcher.ensureFetch(covering: 0, totalLength: requestedBytes)
+
+        let entityBytes: Int64 = 64 * 1024
+        let stored = await waitUntil { recorder.storedBytes == [Int(entityBytes)] }
+        XCTAssertTrue(stored)
+        XCTAssertEqual(recorder.ranges, [0...(entityBytes - 1)])
+        XCTAssertTrue(recorder.causes.isEmpty)
+        XCTAssertEqual(recorder.requestCounts.began, 1)
+        XCTAssertEqual(recorder.requestCounts.ended, 1)
+        let transmitted = await waitUntil {
+            origin.observedBodyBytesSent() == Int(entityBytes)
+        }
+        XCTAssertTrue(transmitted)
+        let request = try XCTUnwrap(origin.observedRequests().first)
+        XCTAssertEqual(request.range, "bytes=0-\(requestedBytes - 1)")
+        XCTAssertEqual(request.ifMatch, "\"entity-v1\"")
     }
 
     func testChunkFetcherUsesValidatorLearnedAfterConstruction() async throws {
@@ -1077,8 +1833,8 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
         let validatedRequest = requests.first {
             $0.range == "bytes=\(validatedOffset)-\(validatedOffset)"
         }
-        XCTAssertNil(unvalidatedRequest?.ifRange)
-        XCTAssertEqual(validatedRequest?.ifRange, "\"entity-v1\"")
+        XCTAssertNil(unvalidatedRequest?.ifMatch)
+        XCTAssertEqual(validatedRequest?.ifMatch, "\"entity-v1\"")
     }
 
     func testResumeCapableChunkFetcherRejectsResponsesWithoutEstablishedValidator() async throws {
@@ -1120,6 +1876,7 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
         XCTAssertEqual(recorder.stores, 0)
         XCTAssertEqual(origin.observedRequests().count, 2)
         XCTAssertTrue(origin.observedRequests().allSatisfy { $0.ifRange == nil })
+        XCTAssertTrue(origin.observedRequests().allSatisfy { $0.ifMatch == nil })
     }
 
     func testWeakETagIsNotSentAsIfRangeOrMisclassifiedAsEntityChange() async throws {
