@@ -30,11 +30,29 @@ enum SharedStorage {
     static let mirroredAccessTokenAccount = "com.continuum.topshelf.accessToken"
     static let mirroredProfileTokenAccount = "com.continuum.topshelf.profileToken"
 
+    static func accessTokenAccount(for serverID: String) -> String {
+        "com.continuum.\(serverID).accessToken"
+    }
+
+    static func refreshTokenAccount(for serverID: String) -> String {
+        "com.continuum.\(serverID).refreshToken"
+    }
+
+    static func profileTokenAccount(for serverID: String) -> String {
+        "com.continuum.\(serverID).profileToken"
+    }
+
+    static func accountEpochAccount(for serverID: String) -> String {
+        "com.continuum.\(serverID).accountEpoch"
+    }
+
     /// UserDefaults keys shared between the app and the Top Shelf
     /// extension. Centralised here so the extension, `AuthService`,
     /// `TokenStore`, and `ServerRegistry` can't drift.
     static let serverUrlKey = "serverUrl"
+    static let activeServerIdKey = "activeServerId"
     static let profileIdKey = "profileId"
+    static let profileLaunchStateKey = "profileLaunchState.v1"
 
     /// Breadcrumb keys the Top Shelf extension writes after each run.
     /// The main app prints these on launch so device builds without a log
@@ -156,11 +174,22 @@ struct SharedKeychain {
 
     let service: String
     let accessGroup: String?
+    let audience: KeychainAudience
 
     init(service: String = SharedStorage.keychainService,
-         accessGroup: String? = SharedStorage.keychainAccessGroup) {
+         accessGroup: String? = SharedStorage.keychainAccessGroup,
+         audience: KeychainAudience = .currentUser) {
         self.service = service
         self.accessGroup = accessGroup
+        self.audience = audience
+    }
+
+    func withAudience(_ audience: KeychainAudience) -> SharedKeychain {
+        SharedKeychain(
+            service: service,
+            accessGroup: accessGroup,
+            audience: audience
+        )
     }
 
     /// Returns `true` when the value was successfully written. Callers
@@ -194,6 +223,22 @@ struct SharedKeychain {
         if let found = read(account: account, accessGroup: accessGroup) {
             return found
         }
+        #if os(tvOS)
+        // Account credentials written before Runs-as-Current-User were stored
+        // in the ordinary persona Keychain. Copy them into the shared account
+        // audience only after a verified write, then retire that one legacy
+        // copy. Profile tokens never take this path because their audience is
+        // intentionally current-user scoped.
+        if audience == .userIndependent {
+            let legacyKeychain = withAudience(.currentUser)
+            if let legacy = legacyKeychain.get(account) {
+                if set(legacy, for: account) {
+                    legacyKeychain.delete(account)
+                }
+                return legacy
+            }
+        }
+        #endif
         // Transparent migration: pre-access-group entries live in the
         // app's bundle-id-based default access group. Once the app has
         // a `keychain-access-groups` entitlement, SecItemCopyMatching
@@ -263,6 +308,11 @@ struct SharedKeychain {
         if let accessGroup {
             query[kSecAttrAccessGroup as String] = accessGroup
         }
+        #if os(tvOS)
+        if audience == .userIndependent {
+            query[kSecUseUserIndependentKeychain as String] = kCFBooleanTrue
+        }
+        #endif
         return query
     }
 }

@@ -83,6 +83,7 @@ enum StartupContentPrefetcher {
                 profilesTask = nil
             }
             ResponseCache.shared.set(profiles, for: CacheKey.profiles)
+            await AuthService.shared.reconcileAvailableProfiles(profiles)
             prefetchProfileArtwork(for: profiles)
             return profiles
         } catch {
@@ -111,6 +112,7 @@ enum StartupContentPrefetcher {
     static func fetchHomeSections() async throws -> SectionsResponse {
         let profileGeneration = profileScopedGeneration
         let homeGeneration = homeSectionsGeneration
+        let requestProfileID = AuthService.shared.profileId
         let task: Task<SectionsResponse, Error>
         if let homeSectionsTask {
             task = homeSectionsTask
@@ -137,8 +139,20 @@ enum StartupContentPrefetcher {
                homeSectionsGeneration == homeGeneration {
                 homeSectionsTask = nil
             }
+            if let requestProfileID,
+               Self.indicatesInvalidProfile(error) {
+                await AuthService.shared.recoverFromInvalidProfile(
+                    expectedProfileID: requestProfileID
+                )
+            }
             throw error
         }
+    }
+
+    private static func indicatesInvalidProfile(_ error: Error) -> Bool {
+        guard let error = error as? HTTPError else { return false }
+        return error.serverErrorCode == "profile_unverified"
+            || error.statusCode == 404
     }
 
     static func prefetchRecommendations() {

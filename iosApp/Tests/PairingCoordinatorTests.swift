@@ -137,18 +137,26 @@ final class ServerSessionPersistenceTests: XCTestCase {
             standard.removePersistentDomain(forName: standardName)
         }
 
+        let defaults = SharedDefaults(suite: suite, standard: standard)
+        let launchPreferences = ProfileLaunchPreferences(defaults: defaults)
         let registry = ServerRegistry(
-            defaults: SharedDefaults(suite: suite, standard: standard),
-            keychain: SharedKeychain(service: "ServerSessionPersistenceTests.\(UUID().uuidString)", accessGroup: nil)
+            defaults: defaults,
+            keychain: SharedKeychain(service: "ServerSessionPersistenceTests.\(UUID().uuidString)", accessGroup: nil),
+            launchPreferences: launchPreferences
         )
         let serverID = ServerRegistry.serverId(for: "https://home.example")
         registry.addOrUpdate(ServerEntry(
             id: serverID,
             url: "https://home.example",
             fetchedName: "Home",
-            profileId: "OLD-PROFILE",
             lastUsedAt: Date()
         ))
+        launchPreferences.remember(
+            profileID: "OLD-PROFILE",
+            requiresPIN: false,
+            accountEpoch: "old-account",
+            for: serverID
+        )
 
         registry.addOrUpdate(ServerEntry(
             id: serverID,
@@ -158,7 +166,7 @@ final class ServerSessionPersistenceTests: XCTestCase {
             lastUsedAt: Date()
         ), preservingProfile: false)
 
-        XCTAssertNil(registry.entry(with: serverID)?.profileId)
+        XCTAssertNil(launchPreferences.rememberedProfile(for: serverID))
         XCTAssertEqual(registry.entry(with: serverID)?.fetchedName, "Home Renamed")
         XCTAssertEqual(registry.entry(with: serverID)?.displayName, "Home Renamed")
     }

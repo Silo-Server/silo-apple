@@ -8,6 +8,7 @@ struct ProfileSelectionView: View {
     var router: AppRouter
     var journeyLabels: [String] = ["Server", "Account", "Profile"]
     @State private var viewModel = ProfileSelectionViewModel()
+    @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var pinEntryContext: PINEntryContext?
     @State private var showCreateProfile: Bool = false
     @State private var showSignOutConfirm: Bool = false
@@ -248,6 +249,10 @@ struct ProfileSelectionView: View {
     }
 
     private var tileRow: some View {
+        let rememberedProfileID = launchPreferences.rememberedProfile(
+            for: ServerRegistry.shared.activeServerId
+        )?.profileID
+        let preferredProfileID = rememberedProfileID ?? viewModel.profiles.first?.id
         let grid = LazyVGrid(
             columns: [GridItem(.adaptive(minimum: tileMinWidth, maximum: tileMaxWidth), spacing: tileSpacing)],
             spacing: rowSpacing
@@ -255,7 +260,8 @@ struct ProfileSelectionView: View {
             ForEach(viewModel.profiles) { profile in
                 ProfileTile(
                     profile: profile,
-                    prefersDefaultFocus: profile.id == viewModel.profiles.first?.id,
+                    isLastUsed: profile.id == rememberedProfileID,
+                    prefersDefaultFocus: profile.id == preferredProfileID,
                     defaultFocusNamespace: profileFocusNamespace
                 ) {
                     handleProfileTap(profile)

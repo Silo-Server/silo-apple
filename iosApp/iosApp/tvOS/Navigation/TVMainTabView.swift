@@ -1094,8 +1094,7 @@ struct TVMainTabView: View {
     }
 
     private func switchProfile() {
-        AuthService.shared.profileId = nil
-        router.showProfileSelection()
+        router.switchProfile()
     }
 
     private func loadCurrentProfile() async {
@@ -1134,6 +1133,9 @@ struct TVMainTabView: View {
         guard entry.id != registry.activeServerId else { return }
         Task {
             await registry.switchTo(serverId: entry.id)
+            if AuthService.shared.isLoggedIn {
+                _ = await AuthService.shared.resolveActiveProfileForSession()
+            }
             await MainActor.run {
                 selectedRoot = .home
                 currentProfile = nil

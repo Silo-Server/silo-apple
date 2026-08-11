@@ -281,8 +281,7 @@ struct TVSettingsView: View {
     }
 
     private func switchProfile() {
-        AuthService.shared.profileId = nil
-        router.showProfileSelection()
+        router.switchProfile()
     }
 
     private func enterDetailPane(for category: TVSettingsCategory) {
@@ -304,6 +303,9 @@ struct TVSettingsView: View {
     }
 
     private func initialDetailFocus(for category: TVSettingsCategory) -> TVSettingsDetailFocus {
+        if category == .general {
+            return .generalProfileLaunch
+        }
         if category == .subtitles,
            viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance {
             return .subtitleUseDeviceSettings
@@ -539,6 +541,9 @@ struct TVSettingsView: View {
 
 enum TVSettingsDetailFocus: Hashable {
     case top
+    case generalProfileLaunch
+    case generalCardPreset
+    case generalTopMenu
     case playbackAudioLanguage
     case playbackNextUpPrompt
     case subtitleBehavior

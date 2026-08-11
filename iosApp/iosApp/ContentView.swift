@@ -102,6 +102,10 @@ struct ContentView: View {
                 router.expiredSession()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .continuumProfileSelectionRequired)) { _ in
+            guard AuthService.shared.isLoggedIn else { return }
+            router.showProfileSelection()
+        }
         #if os(iOS) || os(tvOS)
         .onReceive(NotificationCenter.default.publisher(for: .diagnosticsPendingReportCreated)) { _ in
             guard router.authState == .authenticated else { return }
@@ -490,10 +494,10 @@ struct ContentView: View {
             targetState = .needsServerSetup
         } else if !hasStoredAccessToken {
             targetState = .needsLogin
-        } else if !api.hasProfile {
-            targetState = .needsProfile
         } else {
-            targetState = .authenticated
+            targetState = await api.resolveActiveProfileForSession()
+                ? .authenticated
+                : .needsProfile
         }
 
         StartupContentPrefetcher.prefetchForInitialRoute(targetState)
@@ -525,11 +529,12 @@ struct ContentView: View {
     /// post-hoc. Run off the critical launch path.
     private static func logTopShelfDiagnostics() async {
         let suite = SharedStorage.suite
-        let keychain = SharedKeychain()
+        let accountKeychain = SharedKeychain(audience: .userIndependent)
+        let profileKeychain = SharedKeychain(audience: .currentUser)
         let hasServerURL = suite.string(forKey: SharedStorage.serverUrlKey) != nil
         let hasProfileID = suite.string(forKey: SharedStorage.profileIdKey) != nil
-        let hasAccess = keychain.get(SharedStorage.mirroredAccessTokenAccount) != nil
-        let hasProfile = keychain.get(SharedStorage.mirroredProfileTokenAccount) != nil
+        let hasAccess = accountKeychain.get(SharedStorage.mirroredAccessTokenAccount) != nil
+        let hasProfile = profileKeychain.get(SharedStorage.mirroredProfileTokenAccount) != nil
         let lastRun = suite.string(forKey: SharedStorage.topShelfLastRunAtKey) ?? "<never>"
         let hasLastStatus = suite.string(forKey: SharedStorage.topShelfLastStatusKey) != nil
         print("[TopShelfDiag] hasServerURL=\(hasServerURL) hasProfileID=\(hasProfileID) mirroredAccess=\(hasAccess) mirroredProfile=\(hasProfile)")
@@ -605,7 +610,10 @@ struct ContentView: View {
                 print("[DebugAutoLogin] no selectable profile")
                 return
             }
-            try await AuthService.shared.selectProfile(profileId: profile.id)
+            try await AuthService.shared.selectProfile(
+                profileId: profile.id,
+                requiresPIN: profile.hasPin
+            )
             StartupContentPrefetcher.prefetchAuthenticatedContent()
             await PlayerSettings.shared.refreshFromServer()
             router.resetToHome()
@@ -2121,8 +2129,7 @@ struct MainTabView: View {
         List {
             Section {
                 Button("Switch Profile") {
-                    AuthService.shared.profileId = nil
-                    router.showProfileSelection()
+                    router.switchProfile()
                 }
                 .foregroundColor(.continuumOnSurface)
             }

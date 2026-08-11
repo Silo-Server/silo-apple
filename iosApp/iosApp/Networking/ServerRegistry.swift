@@ -18,9 +18,6 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// Filled on first successful connect and refreshed on server activation.
     var fetchedName: String?
 
-    /// Remembered profile for this server. Set after `selectProfile`.
-    var profileId: String?
-
     /// When this server was last activated. Used only for sorting the
     /// list; not part of identity.
     var lastUsedAt: Date
@@ -29,6 +26,55 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     var displayName: String {
         if let name = fetchedName, !name.isEmpty { return name }
         return url
+    }
+
+    /// Read only while migrating the pre-profile-launch registry schema. New
+    /// registry writes deliberately omit profile identity because the server
+    /// list is shared across Apple TV users while profile choice is not.
+    fileprivate(set) var legacyProfileId: String?
+
+    init(
+        id: String,
+        url: String,
+        fetchedName: String?,
+        profileId: String? = nil,
+        lastUsedAt: Date
+    ) {
+        self.id = id
+        self.url = url
+        self.fetchedName = fetchedName
+        self.lastUsedAt = lastUsedAt
+        self.legacyProfileId = profileId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case url
+        case fetchedName
+        case profileId
+        case lastUsedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        url = try container.decode(String.self, forKey: .url)
+        fetchedName = try container.decodeIfPresent(String.self, forKey: .fetchedName)
+        lastUsedAt = try container.decode(Date.self, forKey: .lastUsedAt)
+        legacyProfileId = try container.decodeIfPresent(String.self, forKey: .profileId)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(url, forKey: .url)
+        try container.encodeIfPresent(fetchedName, forKey: .fetchedName)
+        // Retain pre-split profile identity only until its current-user
+        // launch mapping has been durably written and read back. New entries
+        // always leave this nil, so normal registry payloads contain no
+        // profile identity.
+        try container.encodeIfPresent(legacyProfileId, forKey: .profileId)
+        try container.encode(lastUsedAt, forKey: .lastUsedAt)
     }
 }
 
@@ -39,20 +85,25 @@ private struct RegistryState: Codable {
     var entries: [ServerEntry]
 }
 
+private struct SharedRegistryState: Codable {
+    var entries: [ServerEntry]
+}
+
 /// Owns the list of known Silo servers and which one is currently
 /// active. Singleton via `.shared`; observed by SwiftUI via `@Observable`.
 ///
 /// Per-server persistence splits across two stores:
 /// - **UserDefaults** (`continuumServerRegistry.v1`): the server list and
-///   active ID, JSON-encoded. Non-secret metadata.
+///   active ID on iOS/macOS. tvOS stores the shared list in the
+///   user-independent Keychain and the active ID in current-user defaults.
 /// - **Keychain** (`SharedKeychain` service `com.continuum.app`, account
 ///   `com.continuum.<id>.{accessToken,refreshToken,profileToken}`): per-
 ///   server tokens, activated by `TokenStore.switchActiveServer`.
 ///
-/// The registry is the single source of truth for URL + profileId + name.
+/// The registry is the single source of truth for URL + name.
 /// TokenStore is the single source of truth for tokens. They coordinate
 /// through `switchActiveServer` — the registry writes the active ID and
-/// the active URL/profileId to UserDefaults, then tells TokenStore to
+/// the active URL to UserDefaults, then tells TokenStore to
 /// retarget its Keychain slot.
 @Observable
 final class ServerRegistry {
@@ -60,6 +111,7 @@ final class ServerRegistry {
 
     private static let defaultsKey = "continuumServerRegistry.v1"
     private static let migratedKey = "continuumServerRegistry.migrated.v1"
+    private static let sharedTVRegistryAccount = "com.continuum.serverRegistry.v2"
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "ServerRegistry"
@@ -74,13 +126,17 @@ final class ServerRegistry {
 
     private let defaults: SharedDefaults
     private let keychain: SharedKeychain
+    private let launchPreferences: ProfileLaunchPreferences
 
     init(defaults: SharedDefaults = .shared,
-         keychain: SharedKeychain = SharedKeychain()) {
+         keychain: SharedKeychain = SharedKeychain(),
+         launchPreferences: ProfileLaunchPreferences = .shared) {
         self.defaults = defaults
         self.keychain = keychain
+        self.launchPreferences = launchPreferences
         load()
         migrateLegacyIfNeeded()
+        migrateLegacyProfileMappingsIfNeeded()
     }
 
     // MARK: - Sync accessors (SwiftUI-safe)
@@ -91,7 +147,7 @@ final class ServerRegistry {
     }
 
     var activeServerUrl: String { activeServer?.url ?? "" }
-    var activeProfileId: String? { activeServer?.profileId }
+    var activeProfileId: String? { defaults.string(forKey: SharedStorage.profileIdKey) }
     var hasActiveServer: Bool { activeServer != nil }
 
     // MARK: - Lookups
@@ -111,17 +167,14 @@ final class ServerRegistry {
 
     // MARK: - Mutations
 
-    /// Insert or update an entry. Preserves an existing `profileId` when the
-    /// incoming entry leaves it nil, so callers that only know the URL and
-    /// fetched name do not clobber remembered session state.
+    /// Insert or update an entry. `preservingProfile` remains as an account-
+    /// replacement signal for existing callers; profile state itself lives in
+    /// `ProfileLaunchPreferences`, never in the shared registry payload.
     @discardableResult
     func addOrUpdate(_ entry: ServerEntry, preservingProfile: Bool = true) -> ServerEntry {
         registerDiagnosticsSensitiveHosts([entry])
         var merged = entry
         if let existing = self.entries.first(where: { $0.id == entry.id }) {
-            if preservingProfile, merged.profileId == nil {
-                merged.profileId = existing.profileId
-            }
             if merged.fetchedName == nil || merged.fetchedName?.isEmpty == true {
                 merged.fetchedName = existing.fetchedName
             }
@@ -131,14 +184,11 @@ final class ServerRegistry {
         } else {
             self.entries.append(merged)
         }
+        if !preservingProfile {
+            launchPreferences.clearRememberedProfile(for: entry.id)
+        }
         persist()
         return merged
-    }
-
-    func setProfileId(_ profileId: String?, for serverId: String) {
-        guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return }
-        entries[idx].profileId = profileId
-        persist()
     }
 
     func updateFetchedName(for serverId: String, fetchedName: String?) {
@@ -155,7 +205,8 @@ final class ServerRegistry {
 
     // MARK: - Server switching
 
-    /// Activate a server. Updates the active ID, mirrors URL + profileId
+    /// Activate a server. Updates the active ID, mirrors the URL, clears the
+    /// previous request profile,
     /// into the legacy `UserDefaults` keys (read by sync callers like
     /// `ProfileAvatarView` and `AuthService`), and retargets `TokenStore`
     /// at the new server's Keychain slot.
@@ -223,11 +274,7 @@ final class ServerRegistry {
         guard !abortIfCancelled || !Task.isCancelled else { return false }
 
         defaults.set(entry.url, forKey: "serverUrl")
-        if let pid = entry.profileId {
-            defaults.set(pid, forKey: "profileId")
-        } else {
-            defaults.removeObject(forKey: "profileId")
-        }
+        defaults.removeObject(forKey: SharedStorage.profileIdKey)
         #if os(iOS) || os(tvOS)
         // Activating a server restores its saved profile via the mirror above,
         // bypassing AuthService's profileId setter. Fail diagnostics closed
@@ -236,6 +283,7 @@ final class ServerRegistry {
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
         activeServerId = serverId
+        defaults.set(serverId, forKey: SharedStorage.activeServerIdKey)
         touchLastUsed(serverId)
         await TokenStore.shared.switchActiveServer(serverId: serverId)
         #if os(iOS) || os(tvOS)
@@ -290,12 +338,9 @@ final class ServerRegistry {
         }
         #endif
         await TokenStore.shared.deleteTokens(for: serverId)
-        if let idx = entries.firstIndex(where: { $0.id == serverId }) {
-            entries[idx].profileId = nil
-            persist()
-        }
+        launchPreferences.clearRememberedProfile(for: serverId)
         if serverId == activeServerId {
-            defaults.removeObject(forKey: "profileId")
+            defaults.removeObject(forKey: SharedStorage.profileIdKey)
         }
     }
 
@@ -339,21 +384,20 @@ final class ServerRegistry {
             }
         }
         await TokenStore.shared.deleteTokens(for: serverId)
+        launchPreferences.clearRememberedProfile(for: serverId)
         entries.removeAll(where: { $0.id == serverId })
         if removesActiveServer {
             let fallback = entries.sorted { $0.lastUsedAt > $1.lastUsedAt }.first
             activeServerId = fallback?.id
             if let fallback {
                 defaults.set(fallback.url, forKey: "serverUrl")
-                if let pid = fallback.profileId {
-                    defaults.set(pid, forKey: "profileId")
-                } else {
-                    defaults.removeObject(forKey: "profileId")
-                }
+                defaults.set(fallback.id, forKey: SharedStorage.activeServerIdKey)
+                defaults.removeObject(forKey: SharedStorage.profileIdKey)
                 await TokenStore.shared.switchActiveServer(serverId: fallback.id)
             } else {
                 defaults.removeObject(forKey: "serverUrl")
-                defaults.removeObject(forKey: "profileId")
+                defaults.removeObject(forKey: SharedStorage.activeServerIdKey)
+                defaults.removeObject(forKey: SharedStorage.profileIdKey)
                 await TokenStore.shared.switchActiveServer(serverId: "")
             }
             #if os(iOS) || os(tvOS)
@@ -403,6 +447,25 @@ final class ServerRegistry {
     // MARK: - Persistence
 
     private func load() {
+        #if os(tvOS)
+        let sharedKeychain = keychain.withAudience(.userIndependent)
+        if let encoded = sharedKeychain.get(Self.sharedTVRegistryAccount),
+           let data = encoded.data(using: .utf8),
+           let state = try? JSONDecoder().decode(SharedRegistryState.self, from: data) {
+            entries = state.entries
+            activeServerId = defaults.string(forKey: SharedStorage.activeServerIdKey)
+        } else if let data = defaults.data(forKey: Self.defaultsKey),
+                  let legacy = try? JSONDecoder().decode(RegistryState.self, from: data) {
+            entries = legacy.entries
+            activeServerId = legacy.activeServerId
+            persist()
+        }
+        if activeServerId == nil || !entries.contains(where: { $0.id == activeServerId }) {
+            activeServerId = entries.sorted { $0.lastUsedAt > $1.lastUsedAt }.first?.id
+        }
+        registerDiagnosticsSensitiveHosts(entries)
+        mirrorActiveServer()
+        #else
         guard let data = defaults.data(forKey: Self.defaultsKey) else { return }
         do {
             let state = try JSONDecoder().decode(RegistryState.self, from: data)
@@ -421,11 +484,9 @@ final class ServerRegistry {
             persist()
             if let active = activeServer {
                 defaults.set(active.url, forKey: SharedStorage.serverUrlKey)
-                if let pid = active.profileId {
-                    defaults.set(pid, forKey: SharedStorage.profileIdKey)
-                }
             }
         }
+        #endif
     }
 
     /// Diagnostics log lines replace known server hostnames with hashed
@@ -442,6 +503,24 @@ final class ServerRegistry {
     }
 
     private func persist() {
+        #if os(tvOS)
+        do {
+            let data = try JSONEncoder().encode(SharedRegistryState(entries: entries))
+            guard let encoded = String(data: data, encoding: .utf8) else { return }
+            let sharedKeychain = keychain.withAudience(.userIndependent)
+            if sharedKeychain.set(encoded, for: Self.sharedTVRegistryAccount),
+               sharedKeychain.get(Self.sharedTVRegistryAccount) == encoded {
+                defaults.removeObject(forKey: Self.defaultsKey)
+            }
+            if let activeServerId {
+                defaults.set(activeServerId, forKey: SharedStorage.activeServerIdKey)
+            } else {
+                defaults.removeObject(forKey: SharedStorage.activeServerIdKey)
+            }
+        } catch {
+            Self.logger.error("Registry encode failed: \(error.localizedDescription, privacy: .public)")
+        }
+        #else
         let state = RegistryState(activeServerId: activeServerId, entries: entries)
         do {
             let data = try JSONEncoder().encode(state)
@@ -449,6 +528,71 @@ final class ServerRegistry {
         } catch {
             Self.logger.error("Registry encode failed: \(error.localizedDescription, privacy: .public)")
         }
+        #endif
+    }
+
+    private func mirrorActiveServer() {
+        guard let active = activeServer else {
+            defaults.removeObject(forKey: SharedStorage.serverUrlKey)
+            defaults.removeObject(forKey: SharedStorage.activeServerIdKey)
+            return
+        }
+        defaults.set(active.url, forKey: SharedStorage.serverUrlKey)
+        defaults.set(active.id, forKey: SharedStorage.activeServerIdKey)
+    }
+
+    /// Move the old registry-owned profile ID into the current user's launch
+    /// store. The legacy field remains encoded until the destination mapping
+    /// and account epoch can be read back, making interruption retry-safe.
+    private func migrateLegacyProfileMappingsIfNeeded() {
+        let accountKeychain = keychain.withAudience(.userIndependent)
+        let profileKeychain = keychain.withAudience(.currentUser)
+        var changed = false
+
+        for index in entries.indices {
+            guard let profileID = entries[index].legacyProfileId,
+                  !profileID.isEmpty else { continue }
+            let serverID = entries[index].id
+            let accessKey = TokenStore.accessTokenKey(for: serverID)
+            let epochKey = TokenStore.accountEpochKey(for: serverID)
+
+            guard accountKeychain.get(accessKey) != nil else {
+                // A signed-out legacy entry has no account to which the old
+                // profile could safely be bound.
+                entries[index].legacyProfileId = nil
+                changed = true
+                continue
+            }
+
+            let accountEpoch: String
+            if let existing = accountKeychain.get(epochKey), !existing.isEmpty {
+                accountEpoch = existing
+            } else {
+                let generated = UUID().uuidString
+                guard accountKeychain.set(generated, for: epochKey),
+                      accountKeychain.get(epochKey) == generated else {
+                    continue
+                }
+                accountEpoch = generated
+            }
+
+            launchPreferences.migrateLegacyProfile(
+                profileID: profileID,
+                requiresPIN: profileKeychain.get(
+                    TokenStore.profileTokenKey(for: serverID)
+                ) != nil,
+                accountEpoch: accountEpoch,
+                for: serverID
+            )
+            guard launchPreferences.rememberedProfile(for: serverID)?.profileID == profileID,
+                  launchPreferences.rememberedProfile(for: serverID)?.accountEpoch == accountEpoch else {
+                continue
+            }
+            entries[index].legacyProfileId = nil
+            changed = true
+        }
+
+        if changed { persist() }
     }
 
     // MARK: - Migration from legacy single-server state
@@ -473,14 +617,14 @@ final class ServerRegistry {
         let normalized = Self.normalize(url: raw)
         let id = Self.serverId(for: normalized)
 
-        let legacyToNew: [(legacy: String, new: String)] = [
-            ("com.continuum.app.accessToken",  TokenStore.accessTokenKey(for: id)),
-            ("com.continuum.app.refreshToken", TokenStore.refreshTokenKey(for: id)),
-            ("com.continuum.app.profileToken", TokenStore.profileTokenKey(for: id)),
+        let legacyToNew: [(legacy: String, new: String, audience: KeychainAudience)] = [
+            ("com.continuum.app.accessToken", TokenStore.accessTokenKey(for: id), .userIndependent),
+            ("com.continuum.app.refreshToken", TokenStore.refreshTokenKey(for: id), .userIndependent),
+            ("com.continuum.app.profileToken", TokenStore.profileTokenKey(for: id), .currentUser),
         ]
-        for (legacy, new) in legacyToNew {
+        for (legacy, new, audience) in legacyToNew {
             if let v = keychain.get(legacy) {
-                keychain.set(v, for: new)
+                keychain.withAudience(audience).set(v, for: new)
             }
             keychain.delete(legacy)
         }

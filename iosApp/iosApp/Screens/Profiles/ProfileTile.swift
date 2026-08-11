@@ -49,6 +49,7 @@ private let focusScale: CGFloat = 1.05
 /// tile lifts with a white ring and a colored halo matching its tint.
 struct ProfileTile: View {
     let profile: UserProfile
+    var isLastUsed: Bool = false
     var prefersDefaultFocus: Bool = false
     var defaultFocusNamespace: Namespace.ID? = nil
     let action: () -> Void
@@ -60,45 +61,45 @@ struct ProfileTile: View {
     }
 
     var body: some View {
-        VStack(spacing: 20) {
-            tileBody
-                .frame(width: tileSize, height: tileSize)
-                // Focus ring sits *outside* the tile so it never crops
-                // content. Inset by a negative amount so the stroke
-                // extends past the tile bounds.
-                .overlay(
-                    RoundedRectangle(cornerRadius: tileCornerRadius + 4, style: .continuous)
-                        .inset(by: -4)
-                        .stroke(isFocused ? Color.white : Color.clear, lineWidth: 4)
-                )
-                .scaleEffect(isFocused ? focusScale : 1.0)
-                // Stacked shadows: a colored halo from the tint + a
-                // neutral drop shadow for lift. The halo is what sells
-                // the "this profile is alive" feel when focused.
-                .shadow(color: tint.opacity(isFocused ? 0.55 : 0),
-                        radius: isFocused ? 44 : 0, y: 0)
-                .shadow(color: .black.opacity(isFocused ? 0.5 : 0),
-                        radius: isFocused ? 22 : 0, y: isFocused ? 14 : 0)
+        Button(action: action) {
+            VStack(spacing: 20) {
+                tileBody
+                    .frame(width: tileSize, height: tileSize)
+                    // Focus ring sits *outside* the tile so it never crops
+                    // content. Inset by a negative amount so the stroke
+                    // extends past the tile bounds.
+                    .overlay {
+                        RoundedRectangle(cornerRadius: tileCornerRadius + 4)
+                            .inset(by: -4)
+                            .stroke(isFocused ? Color.white : Color.clear, lineWidth: 4)
+                    }
+                    .scaleEffect(isFocused ? focusScale : 1.0)
+                    // Stacked shadows: a colored halo from the tint + a
+                    // neutral drop shadow for lift. The halo is what sells
+                    // the "this profile is alive" feel when focused.
+                    .shadow(color: tint.opacity(isFocused ? 0.55 : 0),
+                            radius: isFocused ? 44 : 0, y: 0)
+                    .shadow(color: .black.opacity(isFocused ? 0.5 : 0),
+                            radius: isFocused ? 22 : 0, y: isFocused ? 14 : 0)
 
-            Text(profile.name)
-                .font(.system(size: nameSize, weight: isFocused ? .semibold : .medium))
-                .foregroundStyle(isFocused ? .white : .white.opacity(0.72))
-                .lineLimit(1)
+                Text(profile.name)
+                    .font(.system(size: nameSize, weight: isFocused ? .semibold : .medium))
+                    .foregroundStyle(isFocused ? .white : .white.opacity(0.72))
+                    .lineLimit(1)
+            }
+            .contentShape(.rect)
         }
+        .buttonStyle(.plain)
         .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isFocused)
-        .contentShape(Rectangle())
-        .focusable(true)
         .focused($isFocused)
-        .onTapGesture(perform: action)
         #if os(tvOS)
         // Lets the first profile tile claim initial focus instead of the
         // engine landing on the top-right Sign Out / Change Server chips.
         .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
         .focusEffectDisabled()
         #endif
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
         .accessibilityLabel(profile.name)
+        .accessibilityValue(accessibilityValue)
     }
 
     @ViewBuilder
@@ -138,6 +139,22 @@ struct ProfileTile: View {
                         }
                     }
                     Spacer()
+                }
+                .padding(12)
+            }
+
+            if isLastUsed {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Text("LAST USED")
+                            .font(.caption.bold())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(.black.opacity(0.48), in: .capsule)
+                        Spacer()
+                    }
                 }
                 .padding(12)
             }
@@ -184,6 +201,14 @@ struct ProfileTile: View {
             .padding(8)
             .background(Circle().fill(Color.black.opacity(0.35)))
     }
+
+    private var accessibilityValue: String {
+        var values: [String] = []
+        if isLastUsed { values.append("Last used") }
+        if profile.hasPin { values.append("PIN protected") }
+        if profile.isChild { values.append("Child profile") }
+        return values.joined(separator: ", ")
+    }
 }
 
 /// Add-profile tile. Matches the real profile tiles in size and focus
@@ -196,45 +221,45 @@ struct AddProfileTile: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        VStack(spacing: 20) {
-            ZStack {
-                RoundedRectangle(cornerRadius: tileCornerRadius, style: .continuous)
-                    .fill(Color.white.opacity(isFocused ? 0.14 : 0.06))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: tileCornerRadius, style: .continuous)
-                            .strokeBorder(
-                                style: StrokeStyle(lineWidth: 2, dash: [8, 6])
-                            )
-                            .foregroundStyle(Color.white.opacity(isFocused ? 0.7 : 0.28))
-                    )
+        Button(action: action) {
+            VStack(spacing: 20) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: tileCornerRadius)
+                        .fill(Color.white.opacity(isFocused ? 0.14 : 0.06))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: tileCornerRadius)
+                                .strokeBorder(
+                                    style: StrokeStyle(lineWidth: 2, dash: [8, 6])
+                                )
+                                .foregroundStyle(Color.white.opacity(isFocused ? 0.7 : 0.28))
+                        }
 
-                Image(systemName: "plus")
-                    .font(.system(size: 84, weight: .light))
-                    .foregroundStyle(.white.opacity(isFocused ? 1.0 : 0.6))
+                    Image(systemName: "plus")
+                        .font(.system(size: 84, weight: .light))
+                        .foregroundStyle(.white.opacity(isFocused ? 1.0 : 0.6))
+                }
+                .frame(width: tileSize, height: tileSize)
+                .overlay {
+                    RoundedRectangle(cornerRadius: tileCornerRadius + 4)
+                        .inset(by: -4)
+                        .stroke(isFocused ? Color.white : Color.clear, lineWidth: 4)
+                }
+                .scaleEffect(isFocused ? focusScale : 1.0)
+                .shadow(color: .black.opacity(isFocused ? 0.5 : 0),
+                        radius: isFocused ? 22 : 0, y: isFocused ? 14 : 0)
+
+                Text("Add Profile")
+                    .font(.system(size: nameSize, weight: isFocused ? .semibold : .medium))
+                    .foregroundStyle(isFocused ? .white : .white.opacity(0.55))
             }
-            .frame(width: tileSize, height: tileSize)
-            .overlay(
-                RoundedRectangle(cornerRadius: tileCornerRadius + 4, style: .continuous)
-                    .inset(by: -4)
-                    .stroke(isFocused ? Color.white : Color.clear, lineWidth: 4)
-            )
-            .scaleEffect(isFocused ? focusScale : 1.0)
-            .shadow(color: .black.opacity(isFocused ? 0.5 : 0),
-                    radius: isFocused ? 22 : 0, y: isFocused ? 14 : 0)
-
-            Text("Add Profile")
-                .font(.system(size: nameSize, weight: isFocused ? .semibold : .medium))
-                .foregroundStyle(isFocused ? .white : .white.opacity(0.55))
+            .contentShape(.rect)
         }
+        .buttonStyle(.plain)
         .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isFocused)
-        .contentShape(Rectangle())
-        .focusable(true)
         .focused($isFocused)
-        .onTapGesture(perform: action)
         #if os(tvOS)
         .focusEffectDisabled()
         #endif
-        .accessibilityAddTraits(.isButton)
         .accessibilityLabel("Add Profile")
     }
 }

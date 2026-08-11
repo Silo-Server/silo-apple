@@ -48,7 +48,10 @@ class ProfileSelectionViewModel {
     /// Select a profile that has no PIN and navigate to home.
     func selectProfile(_ profile: UserProfile, router: AppRouter) async {
         do {
-            try await auth.selectProfile(profileId: profile.id)
+            try await auth.selectProfile(
+                profileId: profile.id,
+                requiresPIN: profile.hasPin
+            )
             StartupContentPrefetcher.prefetchAuthenticatedContent()
             await PlayerSettings.shared.refreshFromServer()
             router.resetToHome()
@@ -59,7 +62,11 @@ class ProfileSelectionViewModel {
 
     /// Select a profile with a PIN.
     func selectProfileWithPIN(_ profile: UserProfile, pin: String, router: AppRouter) async throws {
-        try await auth.selectProfile(profileId: profile.id, pin: pin)
+        try await auth.selectProfile(
+            profileId: profile.id,
+            pin: pin,
+            requiresPIN: profile.hasPin
+        )
         StartupContentPrefetcher.prefetchAuthenticatedContent()
         await PlayerSettings.shared.refreshFromServer()
         router.resetToHome()
@@ -72,7 +79,11 @@ class ProfileSelectionViewModel {
         guard let primaryProfile else {
             throw ProfileManagementError.primaryProfileUnavailable
         }
-        try await auth.selectProfile(profileId: primaryProfile.id)
+        try await auth.selectProfile(
+            profileId: primaryProfile.id,
+            requiresPIN: primaryProfile.hasPin,
+            rememberSelection: false
+        )
         isUsingTemporaryManagementContext = true
     }
 
@@ -80,14 +91,18 @@ class ProfileSelectionViewModel {
         guard let primaryProfile else {
             throw ProfileManagementError.primaryProfileUnavailable
         }
-        try await auth.selectProfile(profileId: primaryProfile.id, pin: pin)
+        try await auth.selectProfile(
+            profileId: primaryProfile.id,
+            pin: pin,
+            requiresPIN: primaryProfile.hasPin,
+            rememberSelection: false
+        )
         isUsingTemporaryManagementContext = true
     }
 
     func clearTemporaryManagementContextIfNeeded() async {
         guard isUsingTemporaryManagementContext else { return }
-        auth.profileId = nil
-        await TokenStore.shared.setProfileToken(nil)
+        _ = await auth.deactivateProfile(preserveRememberedProfile: true)
         isUsingTemporaryManagementContext = false
     }
 }

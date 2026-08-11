@@ -33,7 +33,7 @@ struct AppleDeviceIdentity: Sendable {
     private static let keychainAccount = "com.continuum.device.identity"
 
     private static func loadOrCreateID() -> String {
-        let keychain = SharedKeychain()
+        let keychain = SharedKeychain(audience: .userIndependent)
         if let existing = keychain.get(keychainAccount), !existing.isEmpty {
             return existing
         }

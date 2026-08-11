@@ -9,6 +9,11 @@ extension Notification.Name {
     /// Posted when a playback-only remote handoff session expires. The TV
     /// restores its persistent identity instead of routing the app to login.
     static let temporaryRemoteAuthExpired = Notification.Name("temporaryRemoteAuthExpired")
+    /// Posted when the account remains valid but the selected profile was
+    /// removed or its saved PIN proof is no longer accepted.
+    static let continuumProfileSelectionRequired = Notification.Name(
+        "continuumProfileSelectionRequired"
+    )
 }
 
 /// Central navigation controller for the Continuum iOS app.
@@ -232,6 +237,17 @@ class AppRouter {
         authState = .needsProfile
     }
 
+    /// User-initiated profile switching has one persistence and cache
+    /// boundary regardless of which menu or settings surface initiated it.
+    func switchProfile() {
+        Task {
+            guard await completeRequestedProfileSwitch() else { return }
+            await MainActor.run {
+                self.showProfileSelection()
+            }
+        }
+    }
+
     /// Transition to the authenticated home screen.
     func resetToHome() {
         recordScreenBreadcrumb(target: "home", action: "reset")
@@ -319,6 +335,20 @@ class AppRouter {
             return false
         }
         return await AuthService.shared.signOut()
+        #else
+        return false
+        #endif
+    }
+
+    private func completeRequestedProfileSwitch() async -> Bool {
+        if await AuthService.shared.beginExplicitProfileSelection() {
+            return true
+        }
+        #if os(tvOS)
+        guard await RemotePlaybackIdentityManager.shared.end() else {
+            return false
+        }
+        return await AuthService.shared.beginExplicitProfileSelection()
         #else
         return false
         #endif

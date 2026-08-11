@@ -10,6 +10,7 @@ import SwiftUI
 struct SettingsView: View {
     @State private var viewModel = SettingsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var launchPreferences = ProfileLaunchPreferences.shared
     @Environment(AppRouter.self) private var router
     @State private var showSignOutConfirm = false
     #if os(iOS)
@@ -111,17 +112,26 @@ struct SettingsView: View {
             .buttonStyle(.plain)
             .accessibilityHint("Switches to a different profile")
 
-        } footer: {
-            if viewModel.userInfo?.isAdmin == true {
-                Text("Signed in as an administrator.")
-                    .foregroundStyle(Color.continuumSecondaryText)
+            Picker("Profile at Launch", selection: $launchPreferences.behavior) {
+                ForEach(ProfileLaunchBehavior.allCases) { behavior in
+                    Text(behavior.title).tag(behavior)
+                }
             }
+            .accessibilityHint(launchPreferences.behavior.standardDescription)
+
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(launchPreferences.behavior.standardDescription)
+                if viewModel.userInfo?.isAdmin == true {
+                    Text("Signed in as an administrator.")
+                }
+            }
+            .foregroundStyle(Color.continuumSecondaryText)
         }
     }
 
     private func switchProfile() {
-        AuthService.shared.profileId = nil
-        router.showProfileSelection()
+        router.switchProfile()
     }
 
     private var displayName: String {

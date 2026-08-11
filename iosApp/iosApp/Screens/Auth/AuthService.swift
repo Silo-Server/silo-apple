@@ -4,15 +4,15 @@ import Foundation
 /// Swift `HTTPClient`.
 ///
 /// Shares the same token/profile storage as `ContinuumAPI` via
-/// ``TokenStore/shared``. The sync `serverUrl`/`profileId` accessors
-/// read from `ServerRegistry.shared.activeServer` and, on write, update
-/// both the registry (source of truth) and the legacy `UserDefaults`
-/// keys that older sync callers still read.
+/// ``TokenStore/shared``. Server metadata lives in `ServerRegistry`; active
+/// profile identity is a separate current-user request scope coordinated with
+/// `ProfileLaunchPreferences`.
 final class AuthService: @unchecked Sendable {
     static let shared = AuthService()
     private let defaults = SharedDefaults.shared
     private let serverIdentityResolver: ServerIdentityResolver
     private let serverRegistry: ServerRegistry
+    private let launchPreferences: ProfileLaunchPreferences
 
     enum SignOutAuthorization: Equatable, Sendable {
         case allowed(account: RefreshAccountIdentity?)
@@ -21,10 +21,12 @@ final class AuthService: @unchecked Sendable {
 
     init(
         serverIdentityResolver: ServerIdentityResolver = ServerIdentityResolver(),
-        serverRegistry: ServerRegistry = .shared
+        serverRegistry: ServerRegistry = .shared,
+        launchPreferences: ProfileLaunchPreferences = .shared
     ) {
         self.serverIdentityResolver = serverIdentityResolver
         self.serverRegistry = serverRegistry
+        self.launchPreferences = launchPreferences
     }
 
     // MARK: - Stored State Accessors
@@ -34,39 +36,10 @@ final class AuthService: @unchecked Sendable {
     /// legacy `UserDefaults["serverUrl"]` slot for sync readers.
     var serverUrl: String { ServerRegistry.shared.activeServerUrl }
 
-    /// Selected profile for the active server. Writes route through the
-    /// registry (so switching servers and coming back restores the last
-    /// profile for this server) and mirror to the legacy
-    /// `UserDefaults["profileId"]` key that sync callers still read.
-    /// Clearing also invalidates the profile token so the next request
-    /// doesn't send a stale `X-Profile-Token` header.
-    ///
-    /// Every write re-evaluates diagnostics eligibility (see the setter): the
-    /// active profile changes through many paths beyond `selectProfile` —
-    /// clearing it to enter profile selection, per-tab profile switches — and a
-    /// child profile can't manage diagnostics, so the synchronous
-    /// breadcrumb/sentinel gate must fail closed on any change until the new
-    /// profile is confirmed non-child.
-    var profileId: String? {
-        get { defaults.string(forKey: SharedStorage.profileIdKey) }
-        set {
-            if let activeId = ServerRegistry.shared.activeServerId {
-                ServerRegistry.shared.setProfileId(newValue, for: activeId)
-            }
-            defaults.set(newValue, forKey: SharedStorage.profileIdKey)
-            if newValue == nil {
-                Task { await TokenStore.shared.setProfileToken(nil) }
-            }
-            #if os(iOS) || os(tvOS)
-            // Fail the breadcrumb/session/exit-sentinel gate closed on every
-            // profile change, not just the `selectProfile` path, so early
-            // navigation/playback breadcrumbs (or the tvOS marker) can't be
-            // captured under the previous profile's eligibility before the
-            // async child-profile re-check lands.
-            DiagnosticsCoordinator.activeProfileDidChange()
-            #endif
-        }
-    }
+    /// Active request profile. Mutations must use the transition APIs below so
+    /// profile ID, verification proof, caches, diagnostics, and Top Shelf stay
+    /// on one identity boundary.
+    var profileId: String? { defaults.string(forKey: SharedStorage.profileIdKey) }
 
     var hasServer: Bool { ServerRegistry.shared.hasActiveServer }
 
@@ -77,7 +50,8 @@ final class AuthService: @unchecked Sendable {
         guard let id = ServerRegistry.shared.activeServerId, !id.isEmpty else {
             return false
         }
-        return SharedKeychain().get(TokenStore.accessTokenKey(for: id)) != nil
+        return SharedKeychain(audience: .userIndependent)
+            .get(TokenStore.accessTokenKey(for: id)) != nil
     }
 
     var hasProfile: Bool { profileId != nil }
@@ -264,6 +238,9 @@ final class AuthService: @unchecked Sendable {
             if Task.isCancelled { throw CancellationError() }
             throw HTTPError.requestIdentityChanged
         }
+        if let serverID = serverRegistry.activeServerId {
+            launchPreferences.clearRememberedProfile(for: serverID)
+        }
         await TokenStore.shared.clearTokens()
         await TokenStore.shared.saveTokens(
             accessToken: accessToken,
@@ -279,26 +256,243 @@ final class AuthService: @unchecked Sendable {
         try await ContinuumAPI.shared.listProfiles()
     }
 
-    func selectProfile(profileId: String, pin: String? = nil) async throws {
-        // `ContinuumAPI.selectProfile` already calls `TokenStore.setProfileId`,
-        // which writes UserDefaults. Duplicating the write here is what created
-        // the dual-writer pattern that stranded a stale `profileId` in the
-        // simulator's device-level plist across reinstalls.
-        try await ContinuumAPI.shared.selectProfile(profileId: profileId, pin: pin)
-        // Persist through the profileId setter so the registry entry
-        // for the active server also records the selection, enabling
-        // automatic restoration when the user switches back. The setter also
-        // re-evaluates diagnostics eligibility (an adult→child switch must
-        // disarm breadcrumb/session/exit-sentinel capture even though the
-        // server/account binding is unchanged).
-        self.profileId = profileId
-        await clearPerProfileCaches()
+    func selectProfile(
+        profileId: String,
+        pin: String? = nil,
+        requiresPIN: Bool = false,
+        rememberSelection: Bool = true
+    ) async throws {
+        guard let expectedAccount = await TokenStore.shared.refreshAccountIdentity() else {
+            throw ProfileTransitionError.noActiveAccount
+        }
+        guard !(await TokenStore.shared.hasTemporaryScope()) else {
+            throw ProfileTransitionError.temporaryIdentityActive
+        }
+
+        let profileToken = try await ContinuumAPI.shared.verifyProfileSelection(
+            profileId: profileId,
+            pin: pin
+        )
+        if requiresPIN, profileToken == nil {
+            throw ProfileTransitionError.identityChanged
+        }
+        try await activateProfile(
+            profileID: profileId,
+            profileToken: profileToken,
+            requiresPIN: requiresPIN,
+            rememberSelection: rememberSelection,
+            expectedAccount: expectedAccount
+        )
         // Re-probe AI capabilities for the newly-selected profile. Fire and
         // forget — gating defaults to "unavailable" until the probes land,
         // so nothing blocks on this.
         Task { @MainActor in
             await AICapabilities.shared.refresh()
             await RequestsFeatureStore.shared.refresh()
+        }
+    }
+
+    /// Resolve the active server's launch policy. Returns `true` only when a
+    /// complete remembered identity was restored; callers otherwise present
+    /// Who's Watching while retaining the account session.
+    func resolveActiveProfileForSession() async -> Bool {
+        guard let serverID = serverRegistry.activeServerId,
+              let expectedAccount = await TokenStore.shared.refreshAccountIdentity(),
+              let accountEpoch = await TokenStore.shared.getOrCreateAccountEpoch() else {
+            return false
+        }
+        let profileToken = await TokenStore.shared.getProfileToken()
+        let knownProfileIDs: Set<String>? = await MainActor.run {
+            ResponseCache.shared
+                .get(CacheKey.profiles, as: [UserProfile].self)
+                .map { Set($0.map(\.id)) }
+        }
+        let resolution = launchPreferences.resolution(
+            for: serverID,
+            accountEpoch: accountEpoch,
+            hasStoredProfileToken: profileToken != nil,
+            knownProfileIDs: knownProfileIDs
+        )
+
+        if case .needsSelection = resolution,
+           let remembered = launchPreferences.rememberedProfile(for: serverID),
+           knownProfileIDs?.contains(remembered.profileID) == false {
+            launchPreferences.clearRememberedProfile(for: serverID)
+        }
+
+        switch resolution {
+        case .needsSelection:
+            _ = await deactivateProfile(
+                preserveRememberedProfile: true,
+                markSelectionRequired: false
+            )
+            return false
+
+        case .restore(let remembered):
+            do {
+                try await activateProfile(
+                    profileID: remembered.profileID,
+                    profileToken: remembered.requiredPINAtSelection ? profileToken : nil,
+                    requiresPIN: remembered.requiredPINAtSelection,
+                    rememberSelection: false,
+                    expectedAccount: expectedAccount
+                )
+                return true
+            } catch {
+                _ = await deactivateProfile(
+                    preserveRememberedProfile: true,
+                    markSelectionRequired: false
+                )
+                return false
+            }
+        }
+    }
+
+    /// Persist an explicit switch request before clearing request identity so
+    /// killing the app on the picker cannot make Automatic silently restore
+    /// the previous profile.
+    func beginExplicitProfileSelection() async -> Bool {
+        await PlayerSettings.shared.flushPendingDeviceSettings()
+        return await deactivateProfile(
+            preserveRememberedProfile: true,
+            markSelectionRequired: true
+        )
+    }
+
+    /// Clear active profile identity while retaining the account session.
+    /// This path owns the HTTP transition barrier for launch, explicit switch,
+    /// and temporary profile-management cleanup.
+    func deactivateProfile(
+        preserveRememberedProfile: Bool,
+        markSelectionRequired: Bool = false
+    ) async -> Bool {
+        guard !(await TokenStore.shared.hasTemporaryScope()) else { return false }
+        let serverID = serverRegistry.activeServerId
+        let expectedAccount = await TokenStore.shared.refreshAccountIdentity()
+
+        if markSelectionRequired, let serverID {
+            launchPreferences.markSelectionRequired(for: serverID)
+        }
+        if !preserveRememberedProfile, let serverID {
+            launchPreferences.clearRememberedProfile(for: serverID)
+        }
+
+        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            if markSelectionRequired, let serverID {
+                launchPreferences.clearSelectionRequired(for: serverID)
+            }
+            return false
+        }
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileWillChange()
+        #endif
+        await HTTPClient.shared.cancelInFlightRequests()
+        let committed = await TokenStore.shared.deactivateProfile(
+            expectedAccount: expectedAccount
+        )
+        if committed {
+            await clearPerProfileCaches()
+        } else if markSelectionRequired, let serverID {
+            launchPreferences.clearSelectionRequired(for: serverID)
+        }
+        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
+        return committed
+    }
+
+    private func activateProfile(
+        profileID: String,
+        profileToken: String?,
+        requiresPIN: Bool,
+        rememberSelection: Bool,
+        expectedAccount: RefreshAccountIdentity
+    ) async throws {
+        guard let serverID = serverRegistry.activeServerId,
+              let accountEpoch = await TokenStore.shared.getOrCreateAccountEpoch() else {
+            throw ProfileTransitionError.accountEpochUnavailable
+        }
+        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            throw CancellationError()
+        }
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileWillChange()
+        #endif
+        await HTTPClient.shared.cancelInFlightRequests()
+        guard !Task.isCancelled,
+              await TokenStore.shared.activateProfile(
+                profileID: profileID,
+                profileToken: profileToken,
+                expectedAccount: expectedAccount
+              ) else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            #if os(iOS) || os(tvOS)
+            DiagnosticsCoordinator.activeProfileDidChange()
+            #endif
+            if Task.isCancelled { throw CancellationError() }
+            throw ProfileTransitionError.identityChanged
+        }
+        if rememberSelection {
+            launchPreferences.remember(
+                profileID: profileID,
+                requiresPIN: requiresPIN,
+                accountEpoch: accountEpoch,
+                for: serverID
+            )
+        }
+        await clearPerProfileCaches()
+        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
+    }
+
+    /// Reconcile a fresh account-level profile list with the current request
+    /// identity. A removed profile returns to Who's Watching without touching
+    /// the still-valid account tokens.
+    func reconcileAvailableProfiles(_ profiles: [UserProfile]) async {
+        guard let activeProfileID = profileId,
+              !profiles.contains(where: { $0.id == activeProfileID }) else {
+            return
+        }
+        await recoverFromInvalidProfile(expectedProfileID: activeProfileID)
+    }
+
+    /// Recover from the server's profile-specific 403/404 responses. The
+    /// expected ID prevents a late failed request from clearing a profile the
+    /// user selected after that request started.
+    func recoverFromInvalidProfile(expectedProfileID: String) async {
+        guard profileId == expectedProfileID else { return }
+        let serverID = serverRegistry.activeServerId
+        let expectedAccount = await TokenStore.shared.refreshAccountIdentity()
+        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            return
+        }
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileWillChange()
+        #endif
+        await HTTPClient.shared.cancelInFlightRequests()
+        let committed = await TokenStore.shared.deactivateProfile(
+            expectedAccount: expectedAccount,
+            expectedProfileID: expectedProfileID
+        )
+        if committed {
+            if let serverID {
+                launchPreferences.clearRememberedProfile(for: serverID)
+            }
+            await clearPerProfileCaches()
+        }
+        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
+        guard committed else { return }
+        await MainActor.run {
+            NotificationCenter.default.post(
+                name: .continuumProfileSelectionRequired,
+                object: expectedProfileID
+            )
         }
     }
 
@@ -311,7 +505,9 @@ final class AuthService: @unchecked Sendable {
         for prefix in CacheKey.perProfilePrefixes {
             ResponseCache.shared.removeAll(withPrefix: prefix)
         }
-        ResponseCache.shared.remove(CacheKey.profiles)
+        // Profiles are account-scoped and are the offline source for Who's
+        // Watching. Keep that list across profile transitions; server/account
+        // boundaries still clear it through `clearAllCaches()`.
         // Overlay prefs are user-scoped on the server (not profile-scoped),
         // so a profile switch within one account doesn't strictly require
         // a re-fetch. We still clear: (a) freshness — a remote web edit

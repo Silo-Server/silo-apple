@@ -247,11 +247,19 @@ struct ServerListView: View {
         guard entry.id != registry.activeServerId else {
             // Already active: re-evaluate in case tokens expired and
             // the UI just needs to catch up.
-            refreshAuthState()
+            Task {
+                if AuthService.shared.isLoggedIn {
+                    _ = await AuthService.shared.resolveActiveProfileForSession()
+                }
+                await MainActor.run { refreshAuthState() }
+            }
             return
         }
         Task {
             await registry.switchTo(serverId: entry.id)
+            if AuthService.shared.isLoggedIn {
+                _ = await AuthService.shared.resolveActiveProfileForSession()
+            }
             await MainActor.run { refreshAuthState() }
         }
     }
@@ -260,6 +268,9 @@ struct ServerListView: View {
         let wasActive = entry.id == registry.activeServerId
         Task {
             await registry.remove(serverId: entry.id)
+            if wasActive, AuthService.shared.isLoggedIn {
+                _ = await AuthService.shared.resolveActiveProfileForSession()
+            }
             await MainActor.run {
                 removeTarget = nil
                 if wasActive { refreshAuthState() }

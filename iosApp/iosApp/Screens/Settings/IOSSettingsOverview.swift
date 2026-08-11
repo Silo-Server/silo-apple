@@ -12,6 +12,7 @@ struct IOSSettingsOverview: View {
 
     @Environment(AppRouter.self) private var router
     @State private var navPrefs = AppNavPreferences.shared
+    @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var searchText = ""
 
     var body: some View {
@@ -29,6 +30,10 @@ struct IOSSettingsOverview: View {
                         isAdministrator: viewModel.userInfo?.isAdmin == true,
                         action: switchProfile
                     )
+
+                    if matchesProfileLaunch {
+                        profileLaunchSection
+                    }
 
                     SettingsSearchField(text: $searchText)
 
@@ -74,6 +79,28 @@ struct IOSSettingsOverview: View {
         .continuumNavigationBarBackgroundHidden()
         .continuumToolbarColorSchemeDark()
         .onAppear(perform: navPrefs.refresh)
+    }
+
+    private var profileLaunchSection: some View {
+        SettingsOverviewSection("Account") {
+            Menu {
+                Picker("Profile at Launch", selection: $launchPreferences.behavior) {
+                    ForEach(ProfileLaunchBehavior.allCases) { behavior in
+                        Text(behavior.title).tag(behavior)
+                    }
+                }
+            } label: {
+                SettingsOverviewRow(
+                    title: "Profile at Launch",
+                    subtitle: launchPreferences.behavior.standardDescription,
+                    systemImage: "person.crop.circle.badge.clock",
+                    tint: .purple,
+                    value: launchPreferences.behavior.title
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(launchPreferences.behavior.standardDescription)
+        }
     }
 
     private var pageHeader: some View {
@@ -358,8 +385,7 @@ struct IOSSettingsOverview: View {
     }
 
     private func switchProfile() {
-        AuthService.shared.profileId = nil
-        router.showProfileSelection()
+        router.switchProfile()
     }
 
     private func subtitleLanguageName(_ tag: String) -> String {
@@ -431,6 +457,10 @@ struct IOSSettingsOverview: View {
         matches("sign out", "account")
     }
 
+    private var matchesProfileLaunch: Bool {
+        matches("profile", "launch", "automatic", "ask every time", "who's watching", "account")
+    }
+
     private var matchesPlaybackSection: Bool {
         matchesPlayback || matchesSubtitles || matchesDownloads
     }
@@ -441,6 +471,7 @@ struct IOSSettingsOverview: View {
 
     private var hasSearchResults: Bool {
         matchesInterface
+            || matchesProfileLaunch
             || matchesPlaybackSection
             || (diagnosticsModel.shouldShowSettings && matchesDiagnostics)
             || matchesLibrarySection
