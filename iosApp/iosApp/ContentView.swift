@@ -1552,6 +1552,19 @@ struct MainTabView: View {
         )) {
             AudioFullPlayerView()
         }
+        // Fade the presenting content to black as soon as the player cover
+        // starts sliding up. The detail hero extends bright artwork under the
+        // status bar, and the cover spring's slow ease-out tail leaves that
+        // band as the last uncovered thing on screen — reading as a stutter
+        // at the top of the wipe. Black under black makes the tail (and the
+        // status-bar/rotation changes at completion) invisible.
+        .overlay {
+            if router.presentedPlayer != nil {
+                Color.black.ignoresSafeArea()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: router.presentedPlayer == nil)
         .fullScreenCover(item: $router.presentedPlayer) { payload in
             PlayerView(
                 contentId: payload.contentId,

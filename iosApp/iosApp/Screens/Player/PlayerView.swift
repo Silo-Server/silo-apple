@@ -32,6 +32,18 @@ struct PlayerView: View {
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
+    /// The player's container size, tracked so the HUD can wait out the
+    /// portrait→landscape rotation that `activatePlayer()` starts after the
+    /// full-screen cover presents. Mounting the HUD during that re-layout
+    /// walks the close button across the screen; instead it stays unmounted
+    /// (only black video surface shows) until geometry settles, then fades
+    /// in at its final position.
+    @State private var playerContainerSize: CGSize = .zero
+    /// Deferred `.statusBarHidden()` flag. Hiding the bar while the cover is
+    /// still sliding up animates the top safe area mid-transition, which
+    /// reads as a stutter at the top of the wipe; flip it only after the
+    /// presentation has settled (the bar is invisible over black anyway).
+    @State private var hidesStatusBar = false
     #endif
     #if os(tvOS)
     @State private var remoteIdentityNotice: RemotePlaybackIdentityManager.ActiveIdentity?
@@ -201,7 +213,7 @@ struct PlayerView: View {
                     // force-quitting the app. tvOS gets this via Menu in
                     // `onExitCommand`; macOS keeps its controls (and Escape)
                     // during loading.
-                    if viewModel.isLoading {
+                    if viewModel.isLoading, hudGeometryReady {
                         loadingCloseButton
                     }
 
@@ -213,11 +225,13 @@ struct PlayerView: View {
                             viewModel: viewModel,
                             onDismiss: { dismissPlayer() }
                         )
-                        MobilePlayerControls(
-                            viewModel: viewModel,
-                            orientationCoordinator: orientationCoordinator,
-                            onDismiss: { dismissPlayer() }
-                        )
+                        if hudGeometryReady {
+                            MobilePlayerControls(
+                                viewModel: viewModel,
+                                orientationCoordinator: orientationCoordinator,
+                                onDismiss: { dismissPlayer() }
+                            )
+                        }
                     }
                     #endif
 
@@ -236,6 +250,14 @@ struct PlayerView: View {
                 }
             }
         }
+        #if os(iOS)
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { size in
+            playerContainerSize = size
+        }
+        .animation(.easeOut(duration: 0.18), value: hudGeometryReady)
+        #endif
         #if os(tvOS)
         // Physical Play/Pause on the Siri remote always toggles playback
         // and brings the transport bar back.
@@ -307,6 +329,9 @@ struct PlayerView: View {
             }
             #if os(iOS)
             orientationCoordinator.activatePlayer()
+            orientationCoordinator.afterActivePresentationTransition {
+                hidesStatusBar = true
+            }
             #endif
             activeViewModel.applyArtworkURLHints(posterURL: posterURLHint, backdropURL: backdropURLHint)
             activeViewModel.loadAndPlay(
@@ -362,7 +387,13 @@ struct PlayerView: View {
             }
             #endif
         }
+        #if os(iOS)
+        // Deferred (see `hidesStatusBar`) rather than the unconditional
+        // `continuumStatusBarHidden()` the other full-screen surfaces use.
+        .statusBarHidden(hidesStatusBar)
+        #else
         .continuumStatusBarHidden()
+        #endif
         #if !os(tvOS)
         .navigationBarHidden(true)
         #endif
@@ -477,6 +508,20 @@ struct PlayerView: View {
     }
 
     #if !os(tvOS)
+    /// True once the player frame has the orientation the HUD will live in,
+    /// so controls mount directly at their final positions. Only landscape-
+    /// locked iPhone playback ever has to wait (for the post-present
+    /// rotation); every other configuration is ready immediately.
+    private var hudGeometryReady: Bool {
+        #if os(iOS)
+        guard orientationCoordinator.isLandscapeLocked,
+              UIDevice.current.userInterfaceIdiom == .phone else { return true }
+        return playerContainerSize.width > playerContainerSize.height
+        #else
+        return true
+        #endif
+    }
+
     /// Close control shown while the player is still loading/buffering, in
     /// the same spot (and glass style) as the close button in
     /// `MobilePlayerControls`' top strip so the two read as one control.

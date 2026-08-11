@@ -84,6 +84,22 @@ final class PlayerOrientationCoordinator {
         rotateIntoLandscape: Bool,
         attemptDeviceRotation: Bool
     ) {
+        // If a presentation (the player's full-screen cover) is mid-flight,
+        // rotating now makes the scene re-layout fight the cover animation —
+        // the slide-up visibly stutters near the end. Wait for the
+        // transition to finish, then rotate behind the settled black cover.
+        if rotateIntoLandscape,
+           let coordinator = topmostPresentationTransitionCoordinator(),
+           coordinator.isAnimated {
+            coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+                self?.updateOrientationPolicy(
+                    rotateIntoLandscape: rotateIntoLandscape,
+                    attemptDeviceRotation: attemptDeviceRotation
+                )
+            }
+            return
+        }
+
         let scenes = activeWindowScenes()
         for scene in scenes {
             for window in scene.windows {
@@ -123,6 +139,36 @@ final class PlayerOrientationCoordinator {
         for child in viewController.children {
             notifyOrientationChange(for: child)
         }
+    }
+
+    /// Runs `block` after the in-flight presentation transition (the player
+    /// cover sliding up) completes — immediately if nothing is animating.
+    /// Lets late-stage chrome changes (status bar hide, rotation) stay out
+    /// of the cover animation's final frames, where they read as a stutter.
+    func afterActivePresentationTransition(_ block: @escaping () -> Void) {
+        if let coordinator = topmostPresentationTransitionCoordinator(),
+           coordinator.isAnimated {
+            coordinator.animate(alongsideTransition: nil) { _ in block() }
+        } else {
+            block()
+        }
+    }
+
+    /// Transition coordinator of the deepest presented view controller, if
+    /// one is currently animating (i.e. the player cover is sliding up).
+    private func topmostPresentationTransitionCoordinator() -> UIViewControllerTransitionCoordinator? {
+        for scene in activeWindowScenes() {
+            for window in scene.windows {
+                var viewController = window.rootViewController
+                while let presented = viewController?.presentedViewController {
+                    viewController = presented
+                }
+                if let coordinator = viewController?.transitionCoordinator {
+                    return coordinator
+                }
+            }
+        }
+        return nil
     }
 
     private func activeWindowScenes() -> [UIWindowScene] {

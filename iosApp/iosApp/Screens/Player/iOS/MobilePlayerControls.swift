@@ -147,50 +147,74 @@ struct MobilePlayerControls: View {
 
             Spacer(minLength: 12)
 
-            if viewModel.avPlayerBackend != nil {
-                if pictureInPicture.isSupported {
-                    controlButton(
-                        systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter"
-                    ) {
-                        pictureInPicture.toggle()
-                    }
-                    .disabled(!pictureInPicture.isPossible)
-                    .accessibilityLabel(
-                        pictureInPicture.isActive
-                            ? "Stop Picture in Picture"
-                            : "Start Picture in Picture"
-                    )
-                }
+            // Both trailing slots are reserved from the first frame. The
+            // backend (and its external-playback verdict) resolves a beat
+            // after the player appears; conditional buttons here would pop
+            // in right-aligned and shove their neighbors sideways. A slot
+            // that ends up unused (CoreMedia route, AirPlay disallowed)
+            // just stays empty trailing space.
+            pipSlot
+            airPlaySlot
+        }
+    }
 
-                // Only shown where the receiver could actually fetch the
-                // media. On routes whose URL is authenticated by a request
-                // header, AirPlay video would leave the TV on a 401.
-                if viewModel.supportsExternalPlayback {
-                    AirPlayRoutePicker { isPresentingRoutes in
-                        // The route sheet is a UIKit presentation the auto-hide
-                        // timer knows nothing about; pin the controls so it can't
-                        // dismantle the picker mid-selection.
-                        if isPresentingRoutes {
-                            viewModel.pinControlsVisible()
-                        } else {
-                            viewModel.resumeAutoHide()
-                        }
-                    }
-                    .frame(width: 44, height: 44)
+    @ViewBuilder
+    private var pipSlot: some View {
+        if viewModel.avPlayerBackend != nil, pictureInPicture.isSupported {
+            controlButton(
+                systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter"
+            ) {
+                pictureInPicture.toggle()
+            }
+            .disabled(!pictureInPicture.isPossible)
+            .accessibilityLabel(
+                pictureInPicture.isActive
+                    ? "Stop Picture in Picture"
+                    : "Start Picture in Picture"
+            )
+        } else {
+            Color.clear
+                .frame(width: 40, height: 40)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// Only interactive where the receiver could actually fetch the media.
+    /// On routes whose URL is authenticated by a request header, AirPlay
+    /// video would leave the TV on a 401.
+    @ViewBuilder
+    private var airPlaySlot: some View {
+        if viewModel.avPlayerBackend != nil, viewModel.supportsExternalPlayback {
+            AirPlayRoutePicker { isPresentingRoutes in
+                // The route sheet is a UIKit presentation the auto-hide
+                // timer knows nothing about; pin the controls so it can't
+                // dismantle the picker mid-selection.
+                if isPresentingRoutes {
+                    viewModel.pinControlsVisible()
+                } else {
+                    viewModel.resumeAutoHide()
                 }
             }
+            .frame(width: 44, height: 44)
+        } else {
+            Color.clear
+                .frame(width: 44, height: 44)
+                .accessibilityHidden(true)
         }
     }
 
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 1) {
-            if let eyebrow = titleEyebrow {
-                Text(eyebrow)
-                    .font(.system(size: 10, weight: .semibold))
-                    .tracking(0.8)
-                    .foregroundStyle(.white.opacity(0.65))
-                    .lineLimit(1)
-            }
+            // The eyebrow's line is reserved even before metadata resolves
+            // (a beat after launch) so the title doesn't jump down when the
+            // context line fills in.
+            Text(titleEyebrow ?? " ")
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(0.8)
+                .foregroundStyle(.white.opacity(0.65))
+                .lineLimit(1)
+                .opacity(titleEyebrow == nil ? 0 : 1)
+                .accessibilityHidden(titleEyebrow == nil)
             Text(heroTitle)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white)
@@ -521,10 +545,13 @@ struct MobilePlayerControls: View {
                 .opacity(noTracks ? 0.4 : 1)
                 .accessibilityLabel("Audio & Subtitles")
 
-            if !viewModel.chapters.isEmpty {
-                chaptersMenu(style: style)
-                    .accessibilityLabel("Chapters")
-            }
+            // Always present so the row doesn't re-layout when chapters
+            // resolve (they arrive after FFmpeg opens the stream); same
+            // disabled treatment as the track menu when there are none.
+            chaptersMenu(style: style)
+                .disabled(viewModel.chapters.isEmpty)
+                .opacity(viewModel.chapters.isEmpty ? 0.4 : 1)
+                .accessibilityLabel("Chapters")
 
             lockControl(compact: style != .full)
 
