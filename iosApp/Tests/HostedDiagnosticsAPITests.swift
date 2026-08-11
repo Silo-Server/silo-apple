@@ -1228,6 +1228,49 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(DiagnosticsCoordinator.canBeginUpload(status: .available))
     }
 
+    func testHostedCredentialGateRejectsSameServerAccountReplacementButAllowsTokenRefresh() {
+        let serverID = "same-server"
+        let generation = UUID()
+        let captured = RefreshAccountIdentity(
+            serverId: serverID,
+            serverURL: "https://silo.example",
+            credentialGenerationID: generation
+        )
+
+        // Ordinary access-token rotation does not replace the credential
+        // owner, so TokenStore preserves this identity and an in-flight hosted
+        // upload may continue.
+        XCTAssertTrue(DiagnosticsCoordinator.hostedCredentialIdentityMatches(
+            expected: captured,
+            current: captured,
+            serverRegistryID: serverID
+        ))
+
+        // A complete A -> B login on the same server changes only the owner
+        // generation. That must invalidate both an in-flight /currentUser
+        // response and a bundle waiting to POST.
+        let replacement = RefreshAccountIdentity(
+            serverId: serverID,
+            serverURL: captured.serverURL,
+            credentialGenerationID: UUID()
+        )
+        XCTAssertFalse(DiagnosticsCoordinator.hostedCredentialIdentityMatches(
+            expected: captured,
+            current: replacement,
+            serverRegistryID: serverID
+        ))
+        XCTAssertFalse(DiagnosticsCoordinator.hostedCredentialIdentityMatches(
+            expected: captured,
+            current: nil,
+            serverRegistryID: serverID
+        ))
+        XCTAssertFalse(DiagnosticsCoordinator.hostedCredentialIdentityMatches(
+            expected: captured,
+            current: captured,
+            serverRegistryID: "different-server"
+        ))
+    }
+
     func testOfflinePersistentCaptureUsesPinnedConservativeV1Contract() throws {
         let snapshot = DiagnosticsCoordinator.hostedPersistentCaptureFallbackSnapshot(
             serverRegistryID: "local-server-registry-id",

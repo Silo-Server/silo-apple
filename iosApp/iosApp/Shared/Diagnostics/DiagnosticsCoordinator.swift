@@ -153,6 +153,10 @@ actor DiagnosticsCoordinator {
     private var cachedStatusDestination: DiagnosticsDestinationChoice?
     private var cachedStatusServerRegistryID: String?
     private var cachedStatusAccessTokenFingerprint: String?
+    /// Credential-owner epoch associated with the exact live hosted status
+    /// response. Kept separate from the persisted snapshot because it is
+    /// process-local and exists only as a pre-POST race guard.
+    private var cachedHostedCredentialIdentity: RefreshAccountIdentity?
 
     init(
         api: DiagnosticsAPI = .shared,
@@ -252,6 +256,8 @@ actor DiagnosticsCoordinator {
     private func refreshHostedStatus() async throws -> DiagnosticsStatusSnapshot {
         let requestServerRegistryID = ServerRegistry.shared.activeServerId
         guard let requestServerRegistryID,
+              let requestCredentialIdentity = await TokenStore.shared.refreshAccountIdentity(),
+              requestCredentialIdentity.serverId == requestServerRegistryID,
               await Self.currentAccessTokenFingerprint() != nil else {
             throw DiagnosticsCoordinatorError.identityChanged
         }
@@ -260,6 +266,11 @@ actor DiagnosticsCoordinator {
         async let currentUserRequest = continuumAPI.currentUser()
         let (capabilities, user) = try await (capabilitiesRequest, currentUserRequest)
         guard requestServerRegistryID == ServerRegistry.shared.activeServerId,
+              Self.hostedCredentialIdentityMatches(
+                expected: requestCredentialIdentity,
+                current: await TokenStore.shared.refreshAccountIdentity(),
+                serverRegistryID: requestServerRegistryID
+              ),
               let accessTokenFingerprint = await Self.currentAccessTokenFingerprint() else {
             throw DiagnosticsCoordinatorError.identityChanged
         }
@@ -277,6 +288,7 @@ actor DiagnosticsCoordinator {
         cachedStatusDestination = .hosted
         cachedStatusServerRegistryID = requestServerRegistryID
         cachedStatusAccessTokenFingerprint = accessTokenFingerprint
+        cachedHostedCredentialIdentity = requestCredentialIdentity
         persistLastKnownSnapshot(
             snapshot,
             serverRegistryID: requestServerRegistryID,
@@ -778,6 +790,14 @@ actor DiagnosticsCoordinator {
     ) async -> DiagnosticsUploadDecision {
         do {
             let destinationServerRegistryID = ServerRegistry.shared.activeServerId
+            guard let destinationCredentialIdentity = context.hostedCredentialIdentity,
+                  Self.hostedCredentialIdentityMatches(
+                    expected: destinationCredentialIdentity,
+                    current: await TokenStore.shared.refreshAccountIdentity(),
+                    serverRegistryID: destinationServerRegistryID
+                  ) else {
+                return .keptRetryable
+            }
             // Capture the limit from the exact capability snapshot that made
             // this context. `buildBundle` awaits Keychain access and permits
             // actor reentrancy; consulting the coordinator-wide cache after it
@@ -814,7 +834,11 @@ actor DiagnosticsCoordinator {
                   bundle.manifest.playbackSessionIds.isEmpty,
                   bundle.manifest.destination.serverInstanceID == context.destinationServerInstanceID,
                   await Self.currentAccessTokenFingerprint() != nil,
-                  ServerRegistry.shared.activeServerId == destinationServerRegistryID else {
+                  Self.hostedCredentialIdentityMatches(
+                    expected: destinationCredentialIdentity,
+                    current: await TokenStore.shared.refreshAccountIdentity(),
+                    serverRegistryID: ServerRegistry.shared.activeServerId
+                  ) else {
                 return .keptRetryable
             }
             // An unchanged committed envelope may already exist remotely after
@@ -830,6 +854,21 @@ actor DiagnosticsCoordinator {
                 // The collector create request is allowed only after the exact
                 // sanitized envelope is durable and replayable across a crash.
                 try pendingStore.saveHostedEnvelope(bundle, for: report)
+            }
+
+            // Persisting a new envelope performs several synchronous file
+            // writes. TokenStore is a separate actor, so a same-server account
+            // replacement can complete concurrently even while this
+            // coordinator is occupied by those writes. Revalidate at the
+            // literal network handoff boundary; otherwise the durable
+            // account-A envelope could still be POSTed after account B takes
+            // ownership of the active credentials.
+            guard Self.hostedCredentialIdentityMatches(
+                expected: destinationCredentialIdentity,
+                current: await TokenStore.shared.refreshAccountIdentity(),
+                serverRegistryID: ServerRegistry.shared.activeServerId
+            ) else {
+                return .keptRetryable
             }
 
             let response = try await hostedAPI.upload(
@@ -1022,10 +1061,14 @@ actor DiagnosticsCoordinator {
         let snapshot: DiagnosticsStatusSnapshot
         let usedLastKnownSnapshot: Bool
         let usedHostedFallback: Bool
+        let hostedCredentialIdentity: RefreshAccountIdentity?
         do {
             snapshot = try await refreshStatus(destination: destination)
             usedLastKnownSnapshot = false
             usedHostedFallback = false
+            hostedCredentialIdentity = destination == .hosted
+                ? cachedHostedCredentialIdentity
+                : nil
         } catch {
             // A persistent capture (crash/hang/abnormal-exit) must survive being
             // offline: fall back to the last-known-good status/binding so it is
@@ -1047,6 +1090,7 @@ actor DiagnosticsCoordinator {
                 snapshot = fallback.snapshot
                 usedLastKnownSnapshot = fallback.requiresCachedProfileEligibility
                 usedHostedFallback = true
+                hostedCredentialIdentity = nil
             } else {
                 guard let fallback = lastKnownSnapshotForActiveServer(destination: destination) else {
                     return nil
@@ -1054,6 +1098,7 @@ actor DiagnosticsCoordinator {
                 snapshot = fallback
                 usedLastKnownSnapshot = true
                 usedHostedFallback = false
+                hostedCredentialIdentity = nil
             }
         }
 
@@ -1112,12 +1157,26 @@ actor DiagnosticsCoordinator {
             osVersion: Self.osVersion(),
             destinationServerInstanceID: snapshot.status.serverInstanceID,
             maxBundleBytes: snapshot.status.maxBundleBytes,
-            availabilityStatus: snapshot.status.status
+            availabilityStatus: snapshot.status.status,
+            hostedCredentialIdentity: hostedCredentialIdentity
         )
     }
 
     nonisolated static func canBeginUpload(status: DiagnosticsAvailabilityStatus) -> Bool {
         status == .available
+    }
+
+    /// A hosted binding is valid only while the exact credential owner that
+    /// produced `/currentUser` remains active. The generation intentionally
+    /// survives transparent access-token refresh, but changes on login,
+    /// sign-out, or credential retargeting — including a replacement account
+    /// on the same server URL.
+    nonisolated static func hostedCredentialIdentityMatches(
+        expected: RefreshAccountIdentity,
+        current: RefreshAccountIdentity?,
+        serverRegistryID: String?
+    ) -> Bool {
+        expected.serverId == serverRegistryID && current == expected
     }
 
     private struct HostedPersistentCaptureFallback {

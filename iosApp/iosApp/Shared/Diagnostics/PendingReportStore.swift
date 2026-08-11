@@ -194,6 +194,11 @@ struct DiagnosticsCaptureContext {
     var destinationServerInstanceID: String? = nil
     var maxBundleBytes: Int? = nil
     var availabilityStatus: DiagnosticsAvailabilityStatus = .available
+    /// Process-local credential-owner epoch that produced a live hosted
+    /// binding. It is never serialized into the report; the upload path uses
+    /// it only to prevent evidence captured for account A from crossing a
+    /// same-server account replacement before the collector POST.
+    var hostedCredentialIdentity: RefreshAccountIdentity? = nil
 
     var destinationChoice: DiagnosticsDestinationChoice {
         binding.destinationChoice
@@ -214,7 +219,8 @@ struct DiagnosticsCaptureContext {
             osVersion: osVersion,
             destinationServerInstanceID: destinationServerInstanceID,
             maxBundleBytes: maxBundleBytes,
-            availabilityStatus: availabilityStatus
+            availabilityStatus: availabilityStatus,
+            hostedCredentialIdentity: hostedCredentialIdentity
         )
     }
 
