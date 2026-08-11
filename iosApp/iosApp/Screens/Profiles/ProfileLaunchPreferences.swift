@@ -16,7 +16,7 @@ final class ProfileLaunchPreferences {
     init(defaults: SharedDefaults = .shared) {
         self.defaults = defaults
         self.state = ProfileLaunchState.load(from: defaults)
-        persist()
+        _ = persist()
     }
 
     var behavior: ProfileLaunchBehavior {
@@ -24,7 +24,7 @@ final class ProfileLaunchPreferences {
         set {
             guard state.behavior != newValue else { return }
             state.behavior = newValue
-            persist()
+            _ = persist()
         }
     }
 
@@ -55,52 +55,68 @@ final class ProfileLaunchPreferences {
         )
     }
 
+    @discardableResult
     func remember(
         profileID: String,
         requiresPIN: Bool,
         accountEpoch: String,
         for serverID: String
-    ) {
+    ) -> Bool {
+        let previousState = state
         state.rememberedByServerID[serverID] = RememberedProfile(
             profileID: profileID,
             requiredPINAtSelection: requiresPIN,
             accountEpoch: accountEpoch
         )
         state.selectionRequiredServerIDs.remove(serverID)
-        persist()
+        guard persist() else {
+            state = previousState
+            return false
+        }
+        return true
     }
 
     func markSelectionRequired(for serverID: String) {
         state.selectionRequiredServerIDs.insert(serverID)
-        persist()
+        _ = persist()
     }
 
     func clearSelectionRequired(for serverID: String) {
         guard state.selectionRequiredServerIDs.remove(serverID) != nil else { return }
-        persist()
+        _ = persist()
     }
 
-    func clearRememberedProfile(for serverID: String) {
+    @discardableResult
+    func clearRememberedProfile(for serverID: String) -> Bool {
+        let previousState = state
         let removedProfile = state.rememberedByServerID.removeValue(forKey: serverID) != nil
         let removedPending = state.selectionRequiredServerIDs.remove(serverID) != nil
-        guard removedProfile || removedPending else { return }
-        persist()
+        guard removedProfile || removedPending else { return true }
+        guard persist() else {
+            state = previousState
+            return false
+        }
+        return true
     }
 
+    @discardableResult
     func migrateLegacyProfile(
         profileID: String?,
         requiresPIN: Bool,
         accountEpoch: String?,
         for serverID: String
-    ) {
+    ) -> Bool {
+        if let existing = state.rememberedByServerID[serverID] {
+            return existing.profileID == profileID && existing.accountEpoch == accountEpoch
+        }
         guard state.rememberedByServerID[serverID] == nil,
               let profileID,
               !profileID.isEmpty,
               let accountEpoch,
               !accountEpoch.isEmpty else {
-            return
+            return false
         }
-        remember(
+        return remember(
             profileID: profileID,
             requiresPIN: requiresPIN,
             accountEpoch: accountEpoch,
@@ -108,14 +124,14 @@ final class ProfileLaunchPreferences {
         )
     }
 
-    private func persist() {
+    private func persist() -> Bool {
         do {
-            defaults.set(
-                try JSONEncoder().encode(state),
-                forKey: SharedStorage.profileLaunchStateKey
-            )
+            let data = try JSONEncoder().encode(state)
+            defaults.set(data, forKey: SharedStorage.profileLaunchStateKey)
+            return defaults.data(forKey: SharedStorage.profileLaunchStateKey) == data
         } catch {
             Self.logger.error("Profile launch state encode failed: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 }

@@ -256,13 +256,6 @@ actor ContinuumAPI {
             try await reportPlaybackProgress(sessionId: components[3], report: report)
             return
         }
-        if components.count == 5,
-           components[0] == "api", components[1] == "v1",
-           components[2] == "profiles", components[4] == "select" {
-            let request = try requireBody(body, as: SelectProfileBody.self)
-            try await selectProfile(profileId: components[3], pin: request.pin)
-            return
-        }
         if components.count == 4,
            components[0] == "api", components[1] == "v1",
            components[2] == "watched" {
@@ -885,12 +878,6 @@ actor ContinuumAPI {
     func listProfiles() async throws -> [UserProfile] {
         let response: ProfilesResponse = try await http.get("/api/v1/profiles")
         return response.profiles.map(\.asUserProfile)
-    }
-
-    func selectProfile(profileId: String, pin: String?) async throws {
-        let token = try await verifyProfileSelection(profileId: profileId, pin: pin)
-        await tokenStore.setProfileToken(token)
-        await tokenStore.setProfileId(profileId)
     }
 
     /// Verifies a protected profile without mutating process-wide identity.

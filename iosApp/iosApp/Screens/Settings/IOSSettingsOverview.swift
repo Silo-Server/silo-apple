@@ -31,14 +31,10 @@ struct IOSSettingsOverview: View {
                         action: switchProfile
                     )
 
-                    if matchesProfileLaunch {
-                        profileLaunchSection
-                    }
-
                     SettingsSearchField(text: $searchText)
 
                     if hasSearchResults {
-                        interfaceSection
+                        preferencesSection
                         playbackSection
 
                         if diagnosticsModel.shouldShowSettings && matchesDiagnostics {
@@ -81,28 +77,6 @@ struct IOSSettingsOverview: View {
         .onAppear(perform: navPrefs.refresh)
     }
 
-    private var profileLaunchSection: some View {
-        SettingsOverviewSection("Account") {
-            Menu {
-                Picker("Profile at Launch", selection: $launchPreferences.behavior) {
-                    ForEach(ProfileLaunchBehavior.allCases) { behavior in
-                        Text(behavior.title).tag(behavior)
-                    }
-                }
-            } label: {
-                SettingsOverviewRow(
-                    title: "Profile at Launch",
-                    subtitle: launchPreferences.behavior.standardDescription,
-                    systemImage: "person.crop.circle.badge.clock",
-                    tint: .purple,
-                    value: launchPreferences.behavior.title
-                )
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint(launchPreferences.behavior.standardDescription)
-        }
-    }
-
     private var pageHeader: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text("Settings")
@@ -118,21 +92,42 @@ struct IOSSettingsOverview: View {
     }
 
     @ViewBuilder
-    private var interfaceSection: some View {
-        if matchesInterface {
-            SettingsOverviewSection("Interface") {
-                NavigationLink {
-                    InterfaceCustomizationView()
-                } label: {
-                    SettingsOverviewRow(
-                        title: "Interface",
-                        subtitle: "Navigation, cards, and poster presentation",
-                        systemImage: "rectangle.3.group.fill",
-                        tint: .indigo,
-                        value: uiCustomization.cardPresentation.preset?.title ?? "Custom"
-                    )
+    private var preferencesSection: some View {
+        if matchesGeneral || matchesInterface {
+            SettingsOverviewSection("Preferences") {
+                if matchesGeneral {
+                    NavigationLink {
+                        GeneralSettingsView()
+                    } label: {
+                        SettingsOverviewRow(
+                            title: "General",
+                            subtitle: "Profile selection and app startup",
+                            systemImage: "gearshape.fill",
+                            tint: .purple,
+                            value: launchPreferences.behavior.title
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+
+                if matchesGeneral && matchesInterface {
+                    SettingsOverviewDivider()
+                }
+
+                if matchesInterface {
+                    NavigationLink {
+                        InterfaceCustomizationView()
+                    } label: {
+                        SettingsOverviewRow(
+                            title: "Interface",
+                            subtitle: "Navigation, cards, and poster presentation",
+                            systemImage: "rectangle.3.group.fill",
+                            tint: .indigo,
+                            value: uiCustomization.cardPresentation.preset?.title ?? "Custom"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
     }
@@ -216,91 +211,16 @@ struct IOSSettingsOverview: View {
 
     private var librarySection: some View {
         SettingsOverviewSection("Library & Data") {
-            if matchesAudiobooks {
-                SettingsOverviewToggleRow(
-                    title: "Show Audiobooks",
-                    subtitle: "Add Audiobooks to the main navigation",
-                    systemImage: "book.closed.fill",
-                    tint: .indigo,
-                    isOn: Binding(
-                        get: { navPrefs.showAudiobooks },
-                        set: { navPrefs.setShowAudiobooks($0) }
-                    )
+            SettingsOverviewToggleRow(
+                title: "Show Audiobooks",
+                subtitle: "Add Audiobooks to the main navigation",
+                systemImage: "book.closed.fill",
+                tint: .indigo,
+                isOn: Binding(
+                    get: { navPrefs.showAudiobooks },
+                    set: { navPrefs.setShowAudiobooks($0) }
                 )
-            }
-
-            if matchesAudiobooks && matchesWatchlist {
-                SettingsOverviewDivider()
-            }
-
-            if matchesWatchlist {
-                NavigationLink {
-                    WatchlistView()
-                } label: {
-                    SettingsOverviewRow(
-                        title: "Watchlist",
-                        subtitle: "Titles you plan to watch",
-                        systemImage: "bookmark.fill",
-                        tint: .orange
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-
-            if (matchesAudiobooks || matchesWatchlist) && matchesFavorites {
-                SettingsOverviewDivider()
-            }
-
-            if matchesFavorites {
-                NavigationLink {
-                    FavoritesView()
-                } label: {
-                    SettingsOverviewRow(
-                        title: "Favorites",
-                        subtitle: "Your saved movies and shows",
-                        systemImage: "heart.fill",
-                        tint: .red
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-
-            if (matchesAudiobooks || matchesWatchlist || matchesFavorites) && matchesHistory {
-                SettingsOverviewDivider()
-            }
-
-            if matchesHistory {
-                NavigationLink {
-                    HistoryView()
-                } label: {
-                    SettingsOverviewRow(
-                        title: "Watch History",
-                        subtitle: "Review recently watched titles",
-                        systemImage: "clock.fill",
-                        tint: .gray
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-
-            if (matchesAudiobooks || matchesWatchlist || matchesFavorites || matchesHistory)
-                && matchesCollections {
-                SettingsOverviewDivider()
-            }
-
-            if matchesCollections {
-                NavigationLink {
-                    CollectionsView()
-                } label: {
-                    SettingsOverviewRow(
-                        title: "Collections",
-                        subtitle: "Browse grouped movies and shows",
-                        systemImage: "square.stack.fill",
-                        tint: .purple
-                    )
-                }
-                .buttonStyle(.plain)
-            }
+            )
         }
     }
 
@@ -412,6 +332,10 @@ struct IOSSettingsOverview: View {
         matches("interface", "appearance", "navigation", "menu", "cards", "posters", "captions")
     }
 
+    private var matchesGeneral: Bool {
+        matches("general", "profile", "launch", "startup", "automatic", "ask every time", "who's watching")
+    }
+
     private var matchesSubtitles: Bool {
         matches("subtitles", "captions", "language", "behavior", "appearance")
     }
@@ -429,22 +353,6 @@ struct IOSSettingsOverview: View {
         matches("audiobooks", "navigation", "library")
     }
 
-    private var matchesWatchlist: Bool {
-        matches("watchlist", "saved", "library")
-    }
-
-    private var matchesFavorites: Bool {
-        matches("favorites", "saved", "library")
-    }
-
-    private var matchesHistory: Bool {
-        matches("watch history", "recently watched", "history", "library")
-    }
-
-    private var matchesCollections: Bool {
-        matches("collections", "groups", "library")
-    }
-
     private var matchesConnectionSection: Bool {
         matches("server", "connection", viewModel.serverDisplayName)
     }
@@ -457,21 +365,17 @@ struct IOSSettingsOverview: View {
         matches("sign out", "account")
     }
 
-    private var matchesProfileLaunch: Bool {
-        matches("profile", "launch", "automatic", "ask every time", "who's watching", "account")
-    }
-
     private var matchesPlaybackSection: Bool {
         matchesPlayback || matchesSubtitles || matchesDownloads
     }
 
     private var matchesLibrarySection: Bool {
-        matchesAudiobooks || matchesWatchlist || matchesFavorites || matchesHistory || matchesCollections
+        matchesAudiobooks
     }
 
     private var hasSearchResults: Bool {
-        matchesInterface
-            || matchesProfileLaunch
+        matchesGeneral
+            || matchesInterface
             || matchesPlaybackSection
             || (diagnosticsModel.shouldShowSettings && matchesDiagnostics)
             || matchesLibrarySection

@@ -100,10 +100,14 @@ class ProfileSelectionViewModel {
         isUsingTemporaryManagementContext = true
     }
 
-    func clearTemporaryManagementContextIfNeeded() async {
-        guard isUsingTemporaryManagementContext else { return }
-        _ = await auth.deactivateProfile(preserveRememberedProfile: true)
-        isUsingTemporaryManagementContext = false
+    @discardableResult
+    func clearTemporaryManagementContextIfNeeded() async -> Bool {
+        guard isUsingTemporaryManagementContext else { return true }
+        let deactivated = await auth.deactivateProfile(preserveRememberedProfile: true)
+        if deactivated {
+            isUsingTemporaryManagementContext = false
+        }
+        return deactivated
     }
 }
 

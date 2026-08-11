@@ -55,7 +55,6 @@ struct SettingsView: View {
         List {
             accountSection
             preferencesSection
-            librarySection
             connectionSection
             aboutSection
             signOutSection
@@ -112,21 +111,11 @@ struct SettingsView: View {
             .buttonStyle(.plain)
             .accessibilityHint("Switches to a different profile")
 
-            Picker("Profile at Launch", selection: $launchPreferences.behavior) {
-                ForEach(ProfileLaunchBehavior.allCases) { behavior in
-                    Text(behavior.title).tag(behavior)
-                }
-            }
-            .accessibilityHint(launchPreferences.behavior.standardDescription)
-
         } footer: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(launchPreferences.behavior.standardDescription)
-                if viewModel.userInfo?.isAdmin == true {
-                    Text("Signed in as an administrator.")
-                }
+            if viewModel.userInfo?.isAdmin == true {
+                Text("Signed in as an administrator.")
+                    .foregroundStyle(Color.continuumSecondaryText)
             }
-            .foregroundStyle(Color.continuumSecondaryText)
         }
     }
 
@@ -170,6 +159,17 @@ struct SettingsView: View {
 
     private var preferencesSection: some View {
         Section {
+            NavigationLink {
+                GeneralSettingsView()
+            } label: {
+                SettingsRowLabel(
+                    title: "General",
+                    systemImage: "gearshape.fill",
+                    color: .purple,
+                    value: launchPreferences.behavior.title
+                )
+            }
+
             NavigationLink {
                 InterfaceCustomizationView()
             } label: {
@@ -220,36 +220,6 @@ struct SettingsView: View {
     private func subtitleLanguageName(_ tag: String) -> String {
         if tag == PlaybackPrefSentinel.none || tag.isEmpty { return "None" }
         return PlaybackLanguageOption.label(forCode: tag)
-    }
-
-    // MARK: - Library
-
-    private var librarySection: some View {
-        Section("Library") {
-            NavigationLink {
-                WatchlistView()
-            } label: {
-                SettingsRowLabel(title: "Watchlist", systemImage: "bookmark.fill", color: .orange)
-            }
-
-            NavigationLink {
-                FavoritesView()
-            } label: {
-                SettingsRowLabel(title: "Favorites", systemImage: "heart.fill", color: .red)
-            }
-
-            NavigationLink {
-                HistoryView()
-            } label: {
-                SettingsRowLabel(title: "Watch History", systemImage: "clock.fill", color: .gray)
-            }
-
-            NavigationLink {
-                CollectionsView()
-            } label: {
-                SettingsRowLabel(title: "Collections", systemImage: "square.stack.fill", color: .purple)
-            }
-        }
     }
 
     // MARK: - Connection

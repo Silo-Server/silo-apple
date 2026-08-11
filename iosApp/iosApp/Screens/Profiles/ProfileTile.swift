@@ -50,8 +50,6 @@ private let focusScale: CGFloat = 1.05
 struct ProfileTile: View {
     let profile: UserProfile
     var isLastUsed: Bool = false
-    var prefersDefaultFocus: Bool = false
-    var defaultFocusNamespace: Namespace.ID? = nil
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
@@ -92,12 +90,6 @@ struct ProfileTile: View {
         .buttonStyle(.plain)
         .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isFocused)
         .focused($isFocused)
-        #if os(tvOS)
-        // Lets the first profile tile claim initial focus instead of the
-        // engine landing on the top-right Sign Out / Change Server chips.
-        .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
-        .focusEffectDisabled()
-        #endif
         .accessibilityLabel(profile.name)
         .accessibilityValue(accessibilityValue)
     }

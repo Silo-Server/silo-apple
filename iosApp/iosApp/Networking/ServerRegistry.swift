@@ -502,31 +502,35 @@ final class ServerRegistry {
         #endif
     }
 
-    private func persist() {
+    @discardableResult
+    private func persist() -> Bool {
         #if os(tvOS)
         do {
             let data = try JSONEncoder().encode(SharedRegistryState(entries: entries))
-            guard let encoded = String(data: data, encoding: .utf8) else { return }
+            guard let encoded = String(data: data, encoding: .utf8) else { return false }
             let sharedKeychain = keychain.withAudience(.userIndependent)
-            if sharedKeychain.set(encoded, for: Self.sharedTVRegistryAccount),
-               sharedKeychain.get(Self.sharedTVRegistryAccount) == encoded {
-                defaults.removeObject(forKey: Self.defaultsKey)
-            }
+            guard sharedKeychain.set(encoded, for: Self.sharedTVRegistryAccount),
+                  sharedKeychain.get(Self.sharedTVRegistryAccount) == encoded else { return false }
+            defaults.removeObject(forKey: Self.defaultsKey)
             if let activeServerId {
                 defaults.set(activeServerId, forKey: SharedStorage.activeServerIdKey)
             } else {
                 defaults.removeObject(forKey: SharedStorage.activeServerIdKey)
             }
+            return true
         } catch {
             Self.logger.error("Registry encode failed: \(error.localizedDescription, privacy: .public)")
+            return false
         }
         #else
         let state = RegistryState(activeServerId: activeServerId, entries: entries)
         do {
             let data = try JSONEncoder().encode(state)
             defaults.set(data, forKey: Self.defaultsKey)
+            return defaults.data(forKey: Self.defaultsKey) == data
         } catch {
             Self.logger.error("Registry encode failed: \(error.localizedDescription, privacy: .public)")
+            return false
         }
         #endif
     }
@@ -547,8 +551,6 @@ final class ServerRegistry {
     private func migrateLegacyProfileMappingsIfNeeded() {
         let accountKeychain = keychain.withAudience(.userIndependent)
         let profileKeychain = keychain.withAudience(.currentUser)
-        var changed = false
-
         for index in entries.indices {
             guard let profileID = entries[index].legacyProfileId,
                   !profileID.isEmpty else { continue }
@@ -559,8 +561,11 @@ final class ServerRegistry {
             guard accountKeychain.get(accessKey) != nil else {
                 // A signed-out legacy entry has no account to which the old
                 // profile could safely be bound.
+                let legacyProfileID = entries[index].legacyProfileId
                 entries[index].legacyProfileId = nil
-                changed = true
+                if !persist() {
+                    entries[index].legacyProfileId = legacyProfileID
+                }
                 continue
             }
 
@@ -576,23 +581,21 @@ final class ServerRegistry {
                 accountEpoch = generated
             }
 
-            launchPreferences.migrateLegacyProfile(
+            guard launchPreferences.migrateLegacyProfile(
                 profileID: profileID,
                 requiresPIN: profileKeychain.get(
                     TokenStore.profileTokenKey(for: serverID)
                 ) != nil,
                 accountEpoch: accountEpoch,
                 for: serverID
-            )
-            guard launchPreferences.rememberedProfile(for: serverID)?.profileID == profileID,
-                  launchPreferences.rememberedProfile(for: serverID)?.accountEpoch == accountEpoch else {
+            ) else {
                 continue
             }
             entries[index].legacyProfileId = nil
-            changed = true
+            if !persist() {
+                entries[index].legacyProfileId = profileID
+            }
         }
-
-        if changed { persist() }
     }
 
     // MARK: - Migration from legacy single-server state
@@ -607,12 +610,17 @@ final class ServerRegistry {
     /// act as the active-server mirror read by sync callers.
     private func migrateLegacyIfNeeded() {
         guard !defaults.bool(forKey: Self.migratedKey) else { return }
-        defer { defaults.set(true, forKey: Self.migratedKey) }
-        guard entries.isEmpty else { return }
+        guard entries.isEmpty else {
+            defaults.set(true, forKey: Self.migratedKey)
+            return
+        }
 
         guard let raw = defaults.string(forKey: "serverUrl")?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else { return }
+              !raw.isEmpty else {
+            defaults.set(true, forKey: Self.migratedKey)
+            return
+        }
 
         let normalized = Self.normalize(url: raw)
         let id = Self.serverId(for: normalized)
@@ -622,11 +630,13 @@ final class ServerRegistry {
             ("com.continuum.app.refreshToken", TokenStore.refreshTokenKey(for: id), .userIndependent),
             ("com.continuum.app.profileToken", TokenStore.profileTokenKey(for: id), .currentUser),
         ]
+        var copiedLegacyAccounts: [String] = []
         for (legacy, new, audience) in legacyToNew {
             if let v = keychain.get(legacy) {
-                keychain.withAudience(audience).set(v, for: new)
+                let destination = keychain.withAudience(audience)
+                guard destination.set(v, for: new), destination.get(new) == v else { return }
+                copiedLegacyAccounts.append(legacy)
             }
-            keychain.delete(legacy)
         }
 
         let entry = ServerEntry(
@@ -646,7 +656,15 @@ final class ServerRegistry {
         if normalized != raw {
             defaults.set(normalized, forKey: "serverUrl")
         }
-        persist()
+        guard persist() else {
+            self.entries = []
+            self.activeServerId = nil
+            return
+        }
+        for legacy in copiedLegacyAccounts {
+            guard keychain.delete(legacy) else { return }
+        }
+        defaults.set(true, forKey: Self.migratedKey)
         Self.logger.info("Migrated legacy single-server state to registry id=\(id, privacy: .public)")
     }
 }

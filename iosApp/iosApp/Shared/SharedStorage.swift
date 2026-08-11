@@ -89,6 +89,20 @@ private enum RuntimeConfiguration {
         return nil
     }()
 
+    static let usesUserIndependentKeychain: Bool = {
+        if let value = Bundle.main.object(
+            forInfoDictionaryKey: "ContinuumUsesUserIndependentKeychain"
+        ) as? Bool {
+            return value
+        }
+        guard let value = Bundle.main.object(
+            forInfoDictionaryKey: "ContinuumUsesUserIndependentKeychain"
+        ) as? String else {
+            return false
+        }
+        return ["1", "true", "yes"].contains(value.lowercased())
+    }()
+
     static let legacyTeamPrefix: String? = {
         if let group = sharedKeychainAccessGroup,
            let dot = group.firstIndex(of: ".") {
@@ -175,20 +189,24 @@ struct SharedKeychain {
     let service: String
     let accessGroup: String?
     let audience: KeychainAudience
+    let usesUserIndependentKeychain: Bool
 
     init(service: String = SharedStorage.keychainService,
          accessGroup: String? = SharedStorage.keychainAccessGroup,
-         audience: KeychainAudience = .currentUser) {
+         audience: KeychainAudience = .currentUser,
+         usesUserIndependentKeychain: Bool = RuntimeConfiguration.usesUserIndependentKeychain) {
         self.service = service
         self.accessGroup = accessGroup
         self.audience = audience
+        self.usesUserIndependentKeychain = usesUserIndependentKeychain
     }
 
     func withAudience(_ audience: KeychainAudience) -> SharedKeychain {
         SharedKeychain(
             service: service,
             accessGroup: accessGroup,
-            audience: audience
+            audience: audience,
+            usesUserIndependentKeychain: usesUserIndependentKeychain
         )
     }
 
@@ -273,9 +291,13 @@ struct SharedKeychain {
         return groups
     }
 
-    func delete(_ account: String) {
+    @discardableResult
+    func delete(_ account: String) -> Bool {
         let query = baseQuery(account: account)
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        if status == errSecSuccess || status == errSecItemNotFound { return true }
+        Self.logger.error("Keychain delete failed for account \(account, privacy: .public): status=\(status, privacy: .public)")
+        return false
     }
 
     // MARK: - Private
@@ -309,7 +331,7 @@ struct SharedKeychain {
             query[kSecAttrAccessGroup as String] = accessGroup
         }
         #if os(tvOS)
-        if audience == .userIndependent {
+        if audience == .userIndependent, usesUserIndependentKeychain {
             query[kSecUseUserIndependentKeychain as String] = kCFBooleanTrue
         }
         #endif

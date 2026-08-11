@@ -258,7 +258,8 @@ struct ProfileSelectionView: View {
             spacing: rowSpacing
         ) {
             ForEach(viewModel.profiles) { profile in
-                ProfileTile(
+                #if os(tvOS)
+                TVProfileTile(
                     profile: profile,
                     isLastUsed: profile.id == rememberedProfileID,
                     prefersDefaultFocus: profile.id == preferredProfileID,
@@ -266,6 +267,14 @@ struct ProfileSelectionView: View {
                 ) {
                     handleProfileTap(profile)
                 }
+                #else
+                ProfileTile(
+                    profile: profile,
+                    isLastUsed: profile.id == rememberedProfileID
+                ) {
+                    handleProfileTap(profile)
+                }
+                #endif
             }
             AddProfileTile { handleAddProfileTap() }
         }

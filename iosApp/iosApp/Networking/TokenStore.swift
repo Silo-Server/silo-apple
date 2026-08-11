@@ -714,20 +714,24 @@ actor TokenStore {
         return cachedProfileToken
     }
 
-    func setProfileToken(_ token: String?) {
+    @discardableResult
+    func setProfileToken(_ token: String?) -> Bool {
         if temporaryScope != nil {
             if let token { temporaryScope?.profileToken = token }
-            return
+            return token != nil
         }
-        guard !activeServerId.isEmpty else { return }
+        guard !activeServerId.isEmpty else { return false }
         ensureLoaded()
-        cachedProfileToken = token
+        let persisted: Bool
         if let token {
-            profileKeychain.set(token, for: profileTokenKey)
+            persisted = profileKeychain.set(token, for: profileTokenKey)
         } else {
-            profileKeychain.delete(profileTokenKey)
+            persisted = profileKeychain.delete(profileTokenKey)
         }
+        guard persisted else { return false }
+        cachedProfileToken = token
         mirrorActiveTokensForExtension()
+        return true
     }
 
     func getOrCreateAccountEpoch() -> String? {
@@ -771,13 +775,15 @@ actor TokenStore {
             return false
         }
         ensureLoaded()
+        let persisted: Bool
+        if let profileToken {
+            persisted = profileKeychain.set(profileToken, for: profileTokenKey)
+        } else {
+            persisted = profileKeychain.delete(profileTokenKey)
+        }
+        guard persisted else { return false }
         cachedProfileToken = profileToken
         defaults.set(profileID, forKey: profileIdDefaultsKey)
-        if let profileToken {
-            profileKeychain.set(profileToken, for: profileTokenKey)
-        } else {
-            profileKeychain.delete(profileTokenKey)
-        }
         mirrorActiveTokensForExtension()
         return true
     }
@@ -799,11 +805,12 @@ actor TokenStore {
             return false
         }
         ensureLoaded()
+        if !activeServerId.isEmpty,
+           !profileKeychain.delete(profileTokenKey) {
+            return false
+        }
         defaults.removeObject(forKey: profileIdDefaultsKey)
         cachedProfileToken = nil
-        if !activeServerId.isEmpty {
-            profileKeychain.delete(profileTokenKey)
-        }
         mirrorActiveTokensForExtension()
         return true
     }

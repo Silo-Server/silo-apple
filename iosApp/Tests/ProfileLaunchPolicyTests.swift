@@ -325,6 +325,26 @@ final class ProfileLaunchIdentityTests: XCTestCase {
         XCTAssertEqual(profileID, "remote-profile")
     }
 
+    func testFailedKeychainWriteDoesNotPublishProfileProof() async throws {
+        let suiteName = "ProfileLaunchIdentityTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let store = TokenStore(
+            keychain: SharedKeychain(
+                service: "ProfileLaunchIdentityTests.\(UUID().uuidString)",
+                accessGroup: "invalid.access.group"
+            ),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await store.switchActiveServer(serverId: "server-a")
+
+        let persisted = await store.setProfileToken("proof")
+
+        XCTAssertFalse(persisted)
+        let profileToken = await store.getProfileToken()
+        XCTAssertNil(profileToken)
+    }
+
     private struct TokenHarness {
         let store: TokenStore
         let keychain: SharedKeychain
@@ -365,6 +385,24 @@ final class ProfileLaunchIdentityTests: XCTestCase {
             suiteName: suiteName,
             serverID: "server-a"
         )
+    }
+}
+
+@MainActor
+final class InvalidProfileRecoveryTests: XCTestCase {
+    func testOnlyExplicitProfileErrorsTriggerRecovery() {
+        XCTAssertTrue(StartupContentPrefetcher.indicatesInvalidProfile(
+            HTTPError.http(statusCode: 403, body: #"{"error":"profile_unverified"}"#)
+        ))
+        XCTAssertTrue(StartupContentPrefetcher.indicatesInvalidProfile(
+            HTTPError.http(statusCode: 404, body: #"{"error":"profile_not_found"}"#)
+        ))
+        XCTAssertFalse(StartupContentPrefetcher.indicatesInvalidProfile(
+            HTTPError.http(statusCode: 404, body: #"{"error":"content_not_found"}"#)
+        ))
+        XCTAssertFalse(StartupContentPrefetcher.indicatesInvalidProfile(
+            HTTPError.http(statusCode: 404, body: nil)
+        ))
     }
 }
 

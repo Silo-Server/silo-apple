@@ -245,14 +245,7 @@ struct ServerListView: View {
 
     private func switchTo(_ entry: ServerEntry) {
         guard entry.id != registry.activeServerId else {
-            // Already active: re-evaluate in case tokens expired and
-            // the UI just needs to catch up.
-            Task {
-                if AuthService.shared.isLoggedIn {
-                    _ = await AuthService.shared.resolveActiveProfileForSession()
-                }
-                await MainActor.run { refreshAuthState() }
-            }
+            refreshAuthState()
             return
         }
         Task {

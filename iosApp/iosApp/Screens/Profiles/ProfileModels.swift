@@ -44,11 +44,6 @@ struct UserProfile: Codable, Identifiable, Hashable {
     }
 }
 
-/// Request body for selecting a profile.
-struct SelectProfileBody: Codable {
-    let pin: String?
-}
-
 /// Request body for creating a new profile.
 struct CreateProfileBody: Codable {
     let name: String

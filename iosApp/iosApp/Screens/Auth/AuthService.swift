@@ -274,7 +274,7 @@ final class AuthService: @unchecked Sendable {
             pin: pin
         )
         if requiresPIN, profileToken == nil {
-            throw ProfileTransitionError.identityChanged
+            throw ProfileTransitionError.missingPINProof
         }
         try await activateProfile(
             profileID: profileId,
@@ -369,6 +369,9 @@ final class AuthService: @unchecked Sendable {
         guard !(await TokenStore.shared.hasTemporaryScope()) else { return false }
         let serverID = serverRegistry.activeServerId
         let expectedAccount = await TokenStore.shared.refreshAccountIdentity()
+        let removedRememberedProfile = preserveRememberedProfile
+            ? nil
+            : launchPreferences.rememberedProfile(for: serverID)
 
         if markSelectionRequired, let serverID {
             launchPreferences.markSelectionRequired(for: serverID)
@@ -381,6 +384,7 @@ final class AuthService: @unchecked Sendable {
             if markSelectionRequired, let serverID {
                 launchPreferences.clearSelectionRequired(for: serverID)
             }
+            restoreRememberedProfile(removedRememberedProfile, for: serverID)
             return false
         }
         #if os(iOS) || os(tvOS)
@@ -394,6 +398,9 @@ final class AuthService: @unchecked Sendable {
             await clearPerProfileCaches()
         } else if markSelectionRequired, let serverID {
             launchPreferences.clearSelectionRequired(for: serverID)
+        }
+        if !committed {
+            restoreRememberedProfile(removedRememberedProfile, for: serverID)
         }
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         #if os(iOS) || os(tvOS)
@@ -409,8 +416,10 @@ final class AuthService: @unchecked Sendable {
         rememberSelection: Bool,
         expectedAccount: RefreshAccountIdentity
     ) async throws {
-        guard let serverID = serverRegistry.activeServerId,
-              let accountEpoch = await TokenStore.shared.getOrCreateAccountEpoch() else {
+        guard let serverID = serverRegistry.activeServerId else {
+            throw ProfileTransitionError.noActiveServer
+        }
+        guard let accountEpoch = await TokenStore.shared.getOrCreateAccountEpoch() else {
             throw ProfileTransitionError.accountEpochUnavailable
         }
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
@@ -434,18 +443,41 @@ final class AuthService: @unchecked Sendable {
             throw ProfileTransitionError.identityChanged
         }
         if rememberSelection {
-            launchPreferences.remember(
+            guard launchPreferences.remember(
                 profileID: profileID,
                 requiresPIN: requiresPIN,
                 accountEpoch: accountEpoch,
                 for: serverID
-            )
+            ) else {
+                _ = await TokenStore.shared.deactivateProfile(
+                    expectedAccount: expectedAccount,
+                    expectedProfileID: profileID
+                )
+                await HTTPClient.shared.endIdentityTransition(transitionLease)
+                #if os(iOS) || os(tvOS)
+                DiagnosticsCoordinator.activeProfileDidChange()
+                #endif
+                throw ProfileTransitionError.accountEpochUnavailable
+            }
         }
         await clearPerProfileCaches()
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
         #endif
+    }
+
+    private func restoreRememberedProfile(
+        _ remembered: RememberedProfile?,
+        for serverID: String?
+    ) {
+        guard let remembered, let serverID else { return }
+        launchPreferences.remember(
+            profileID: remembered.profileID,
+            requiresPIN: remembered.requiredPINAtSelection,
+            accountEpoch: remembered.accountEpoch,
+            for: serverID
+        )
     }
 
     /// Reconcile a fresh account-level profile list with the current request

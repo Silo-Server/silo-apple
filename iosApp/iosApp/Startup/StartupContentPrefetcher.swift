@@ -149,10 +149,9 @@ enum StartupContentPrefetcher {
         }
     }
 
-    private static func indicatesInvalidProfile(_ error: Error) -> Bool {
+    static func indicatesInvalidProfile(_ error: Error) -> Bool {
         guard let error = error as? HTTPError else { return false }
-        return error.serverErrorCode == "profile_unverified"
-            || error.statusCode == 404
+        return ["profile_unverified", "profile_not_found"].contains(error.serverErrorCode)
     }
 
     static func prefetchRecommendations() {

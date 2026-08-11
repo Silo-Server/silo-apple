@@ -19,14 +19,16 @@ tags:
 - **Exploration baseline:** `silo-apple` `fdb5225`; `silo-server` `origin/main`
   `2dc7d5e36`; `silo-android` `origin/main` `3efdbd90`
 
-### Implementation validation
+## Implementation validation
 
-- Focused policy, identity, migration, and session-persistence tests: 14 passed.
+- Focused policy, identity, migration, session-persistence, and recovery tests: 15 passed.
 - Full iOS simulator suite: 1,273 passed; the same 8 failures reproduce on the untouched
   `fdb5225` baseline.
 - Clean iOS, tvOS, and macOS builds passed.
 - Signed iOS simulator flow passed for Ask Every Time, two Automatic cold launches, interrupted
   explicit switching, Last Used presentation, and deep-link gating/draining.
+- The iOS General page and Profile at Launch picker passed visual inspection at the default and
+  XXXL Dynamic Type sizes, with readable labels and no clipping.
 - Signed tvOS simulator flow passed for the setting/focus UI, Ask Every Time cold launch, and the
   current-user/user-independent-keychain simulated entitlements in both the app and Top Shelf.
 - Physical Apple TV validation remains required for switching between multiple real tvOS users;
@@ -472,18 +474,22 @@ personal build pass.
 
 ### iOS/iPadOS
 
-- Add **Profile at Launch** to the account section in `IOSSettingsOverview`.
-- Present a native picker or menu with Automatic and Ask Every Time.
+- Add a **General** destination to the Preferences section in `IOSSettingsOverview`.
+- Put **Profile at Launch** on the General detail page and present Automatic and Ask Every Time
+  with a native navigation-style picker.
 - Keep the existing account card as the Switch Profile action.
+- Remove the Watchlist, Favorites, Watch History, and Collections shortcuts from Settings. Those
+  personal-library destinations remain available through the app's normal navigation.
 
 ### macOS
 
-- Add the same setting to the existing `SettingsView` account section.
+- Add the same General detail page to the existing `SettingsView` preferences section.
 - Use platform-native picker presentation and the same shared state store.
+- Remove the Watchlist, Favorites, Watch History, and Collections shortcuts from Settings.
 
 ### tvOS
 
-- Add a **Profile at Launch** detail row/picker to the Account or Interface settings pane.
+- Add a **Profile at Launch** detail row/picker to the existing General settings pane.
 - Copy for Automatic references the current Apple TV user.
 - Keep the profile rail row and top-menu action as explicit Switch Profile actions.
 - The profile grid focuses the last-used tile when available.
@@ -643,8 +649,8 @@ Use a signed-in physical device; the Simulator does not prove Apple TV user stor
   shared preference keys.
 - New `iosApp/iosApp/Screens/Profiles/ProfileLaunchPreferences.swift` — local launch behavior,
   remembered mapping, migration, and resolver.
-- `iosApp/iosApp/Screens/Settings/IOSSettingsOverview.swift` and `SettingsView.swift` — iOS/macOS
-  setting.
+- `iosApp/iosApp/Screens/Settings/GeneralSettingsView.swift`, `IOSSettingsOverview.swift`, and
+  `SettingsView.swift` — iOS/macOS General destination and setting.
 - `iosApp/iosApp/tvOS/Screens/Settings/TVSettingsView.swift` and settings components — tvOS setting
   and focus restoration.
 - `iosApp/iosApp/tvOS/Navigation/TVMainTabView.swift` — centralized explicit switch action.
