@@ -723,7 +723,7 @@ actor DiagnosticsCoordinator {
         }
     }
 
-    private func handleHostedUploadError(
+    func handleHostedUploadError(
         _ error: HostedDiagnosticsAPIError,
         report: PendingReport
     ) -> DiagnosticsUploadDecision {

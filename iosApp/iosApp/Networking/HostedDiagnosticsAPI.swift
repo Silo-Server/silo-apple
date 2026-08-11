@@ -250,8 +250,17 @@ actor HostedDiagnosticsAPI {
             uploadRequest,
             as: HostedReportStatusResponse.self
         )
-        guard accepted.reportID.caseInsensitiveCompare(reportIDString) == .orderedSame else {
+        guard accepted.reportID.caseInsensitiveCompare(reportIDString) == .orderedSame,
+              !created.shortID.isEmpty,
+              accepted.shortID == created.shortID else {
             throw HostedDiagnosticsAPIError.remoteReportIdentityMismatch
+        }
+        guard accepted.state == .processing || accepted.state == .ready else {
+            // A 202 is durable only when the collector confirms that the
+            // bundle is owned and queued/processed. Treat every other state as
+            // a malformed acknowledgement so the pending evidence is kept for
+            // an idempotent retry.
+            throw HostedDiagnosticsAPIError.invalidResponse
         }
 
         var statusRequest = try request(path: "v1/reports/\(reportIDString)", method: "GET")
@@ -259,7 +268,8 @@ actor HostedDiagnosticsAPI {
         var status = accepted
         do {
             let refreshed = try await perform(statusRequest, as: HostedReportStatusResponse.self)
-            guard refreshed.reportID.caseInsensitiveCompare(reportIDString) == .orderedSame else {
+            guard refreshed.reportID.caseInsensitiveCompare(reportIDString) == .orderedSame,
+                  refreshed.shortID == created.shortID else {
                 throw HostedDiagnosticsAPIError.remoteReportIdentityMismatch
             }
             status = refreshed

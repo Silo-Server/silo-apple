@@ -141,6 +141,85 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         )
     }
 
+    func testPutAcceptanceWrongShortIDRetainsPendingEvidence() async throws {
+        let fixture = try makePendingHostedReport(label: "wrong-short-id")
+        let bundle = Data("wrong-short-id-bundle".utf8)
+        let reportID = fixture.report.id
+        HostedDiagnosticsStubProtocol.configurePutAcceptance(
+            reportID: reportID,
+            bundle: bundle,
+            body: #"{"report_id":"\#(reportID.uuidString.lowercased())","short_id":"SILO-WRONG9999","state":"processing"}"#
+        )
+
+        let error = await captureHostedUploadError(reportID: reportID, bundle: bundle)
+
+        XCTAssertEqual(error, .remoteReportIdentityMismatch)
+        await assertRetryRetains(error, fixture: fixture)
+        XCTAssertFalse(HostedDiagnosticsStubProtocol.requests().contains { $0.method == "GET" })
+    }
+
+    func testPutAcceptanceNonDurableStatesRetainPendingEvidence() async throws {
+        for state in ["receiving", "uploaded", "rejected", "deleting", "deleted"] {
+            let fixture = try makePendingHostedReport(label: "non-durable-\(state)")
+            let bundle = Data("non-durable-\(state)-bundle".utf8)
+            let reportID = fixture.report.id
+            HostedDiagnosticsStubProtocol.configurePutAcceptance(
+                reportID: reportID,
+                bundle: bundle,
+                body: #"{"report_id":"\#(reportID.uuidString.lowercased())","short_id":"SILO-APPLE1234","state":"\#(state)"}"#
+            )
+
+            let error = await captureHostedUploadError(reportID: reportID, bundle: bundle)
+
+            XCTAssertEqual(error, .invalidResponse, state)
+            await assertRetryRetains(error, fixture: fixture, message: state)
+            XCTAssertFalse(
+                HostedDiagnosticsStubProtocol.requests().contains { $0.method == "GET" },
+                state
+            )
+        }
+    }
+
+    func testMalformedPutAcceptanceRetainsPendingEvidence() async throws {
+        let fixture = try makePendingHostedReport(label: "malformed-put")
+        let bundle = Data("malformed-put-bundle".utf8)
+        HostedDiagnosticsStubProtocol.configurePutAcceptance(
+            reportID: fixture.report.id,
+            bundle: bundle,
+            body: #"{"report_id":broken-json"#
+        )
+
+        let error = await captureHostedUploadError(
+            reportID: fixture.report.id,
+            bundle: bundle
+        )
+
+        guard case .underlying = error else {
+            return XCTFail("Expected malformed 202 to produce a retryable decode failure, got \(error)")
+        }
+        await assertRetryRetains(error, fixture: fixture)
+        XCTAssertFalse(HostedDiagnosticsStubProtocol.requests().contains { $0.method == "GET" })
+    }
+
+    func testReadyPutAcceptanceIsDurable() async throws {
+        let reportID = try XCTUnwrap(UUID(uuidString: "eeeeeeee-dddd-cccc-bbbb-aaaaaaaaaaaa"))
+        let bundle = Data("ready-put-bundle".utf8)
+        HostedDiagnosticsStubProtocol.configurePutAcceptance(
+            reportID: reportID,
+            bundle: bundle,
+            body: #"{"report_id":"\#(reportID.uuidString.lowercased())","short_id":"SILO-APPLE1234","state":"ready"}"#
+        )
+
+        let response = try await makeHostedUploadAPI().upload(
+            reportID: reportID,
+            manifest: makeManifest(),
+            bundleData: bundle
+        )
+
+        XCTAssertEqual(response.shortID, "SILO-APPLE1234")
+        XCTAssertEqual(response.state, .processing, "the subsequent GET may return the latest state")
+    }
+
     func testHostedCaptureContextKeepsLocalOwnershipHashOutOfManifest() throws {
         let binding = DiagnosticsBinding.hosted(
             serverRegistryID: "aHR0cHM6Ly9wZXJzb25hbC5leGFtcGxl",
@@ -887,6 +966,113 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         )
     }
 
+    private func makePendingHostedReport(
+        label: String
+    ) throws -> (store: PendingReportStore, report: PendingReport) {
+        let capturedAt = Date()
+        let binding = DiagnosticsBinding.hosted(
+            serverRegistryID: "collector-acknowledgement-test-server",
+            accountUserID: "collector-acknowledgement-test-account"
+        )
+        let context = DiagnosticsCaptureContext(
+            binding: binding,
+            profileID: nil,
+            consentMode: .manual,
+            noticeVersion: 1,
+            appVersion: "1.0",
+            appBuild: "7",
+            platform: .ios,
+            osVersion: "26.0",
+            destinationServerInstanceID: HostedDiagnosticsCapabilities.pinnedCollectorID
+        )
+        let manifest = context.makeManifestDraft(
+            type: .manual,
+            capturedAt: capturedAt,
+            crash: nil,
+            deviceSummary: DiagnosticsManifest.DeviceSummary(
+                manufacturer: "Apple",
+                model: "iPhone",
+                os: "26.0",
+                formFactor: "phone"
+            ),
+            playbackSessionIDs: [],
+            consentMode: .manual
+        )
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "HostedAcknowledgement-\(label)-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let store = PendingReportStore(rootDirectory: root)
+        let report = try store.save(PendingReportCapture(
+            binding: binding,
+            profileID: nil,
+            type: .manual,
+            fingerprint: label,
+            capturedAt: capturedAt,
+            manifest: manifest,
+            deviceSnapshot: makeDeviceSnapshot(capturedAt: capturedAt),
+            artifacts: [
+                PendingReportArtifact(
+                    relativePath: "logs.jsonl",
+                    data: Data("local evidence must survive".utf8)
+                ),
+            ]
+        ))
+        return (store, report)
+    }
+
+    private func makeHostedUploadAPI() throws -> HostedDiagnosticsAPI {
+        HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: "install-acknowledgement-test",
+                    installationToken: "acknowledgement-test-token"
+                )
+            )
+        )
+    }
+
+    private func captureHostedUploadError(
+        reportID: UUID,
+        bundle: Data
+    ) async -> HostedDiagnosticsAPIError {
+        do {
+            _ = try await makeHostedUploadAPI().upload(
+                reportID: reportID,
+                manifest: makeManifest(),
+                bundleData: bundle
+            )
+            XCTFail("Expected hosted PUT acknowledgement to be rejected")
+            return .underlying("unexpected test success")
+        } catch let error as HostedDiagnosticsAPIError {
+            return error
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+            return .underlying(String(describing: error))
+        }
+    }
+
+    private func assertRetryRetains(
+        _ error: HostedDiagnosticsAPIError,
+        fixture: (store: PendingReportStore, report: PendingReport),
+        message: String = "",
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let coordinator = DiagnosticsCoordinator(pendingStore: fixture.store)
+        let decision = await coordinator.handleHostedUploadError(error, report: fixture.report)
+        XCTAssertEqual(decision, .keptRetryable, message, file: file, line: line)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: fixture.report.directoryURL.path),
+            message,
+            file: file,
+            line: line
+        )
+    }
+
     private func decodeLogLines(_ data: Data) -> [DiagnosticsLogLine] {
         let decoder = DiagnosticsJSONCoding.makeDecoder()
         return data
@@ -1108,6 +1294,7 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
         case upload(reportID: UUID, bundle: Data)
         case invalidTokenRecovery(reportID: UUID, bundle: Data)
         case statusFailureAfterAccepted(reportID: UUID, bundle: Data)
+        case putAcceptance(reportID: UUID, bundle: Data, body: String)
         case capabilities(collectorID: String)
     }
 
@@ -1137,6 +1324,14 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
     static func configureStatusFailureAfterAccepted(reportID: UUID, bundle: Data) {
         lock.withLock {
             mode = .statusFailureAfterAccepted(reportID: reportID, bundle: bundle)
+            captured = []
+            rejectedRevokedToken = false
+        }
+    }
+
+    static func configurePutAcceptance(reportID: UUID, bundle: Data, body: String) {
+        lock.withLock {
+            mode = .putAcceptance(reportID: reportID, bundle: bundle, body: body)
             captured = []
             rejectedRevokedToken = false
         }
@@ -1230,6 +1425,15 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
                     reportID: reportID,
                     expectedBundle: expectedBundle
                 )
+            case .putAcceptance(let reportID, let expectedBundle, let responseBody):
+                return Self.uploadResponse(
+                    request: request,
+                    url: url,
+                    body: body,
+                    reportID: reportID,
+                    expectedBundle: expectedBundle,
+                    putResponseBody: responseBody
+                )
             }
         }
         respond(statusCode: response.0, body: response.1)
@@ -1242,7 +1446,8 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
         url: URL,
         body: Data,
         reportID: UUID,
-        expectedBundle: Data
+        expectedBundle: Data,
+        putResponseBody: String? = nil
     ) -> (Int, String) {
         let id = reportID.uuidString.lowercased()
         switch (request.httpMethod, url.path) {
@@ -1254,7 +1459,11 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
             guard body == expectedBundle else {
                 return (400, #"{"error":"archive_mismatch"}"#)
             }
-            return (202, #"{"report_id":"\#(id)","short_id":"SILO-APPLE1234","state":"processing"}"#)
+            return (
+                202,
+                putResponseBody
+                    ?? #"{"report_id":"\#(id)","short_id":"SILO-APPLE1234","state":"processing"}"#
+            )
         case ("GET", "/v1/reports/\(id)"):
             return (200, #"{"report_id":"\#(id)","short_id":"SILO-APPLE1234","state":"processing"}"#)
         default:
