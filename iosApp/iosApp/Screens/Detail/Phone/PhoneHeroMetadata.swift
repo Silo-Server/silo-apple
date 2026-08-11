@@ -17,26 +17,26 @@ enum PhoneHeroMetadata {
     // MARK: - Source row
 
     static func movieSourceTokens(from detail: ItemDetail) -> [String] {
-        if detail.type == "episode" {
+        if detail.type.lowercased() == "episode" {
             var tokens: [String] = []
-            if let label = episodeNumberLabel(from: detail) { tokens.append(label) }
-            if let genres = detail.genres, !genres.isEmpty {
-                tokens.append(contentsOf: genres.prefix(1))
+            if let label = HeroEditorialMetadata.episodeIdentity(
+                season: detail.seasonNumber,
+                episode: detail.episodeNumber,
+                style: .detail
+            ) {
+                tokens.append(label)
             }
+            tokens.append(contentsOf: HeroEditorialMetadata.normalizedGenres(detail.genres, limit: 1))
             return tokens
         }
         var tokens: [String] = [typeLabel(detail: detail)]
-        if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
-        }
+        tokens.append(contentsOf: HeroEditorialMetadata.normalizedGenres(detail.genres, limit: 2))
         return tokens
     }
 
     static func seriesSourceTokens(from detail: ItemDetail) -> [String] {
         var tokens: [String] = ["TV Show"]
-        if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
-        }
+        tokens.append(contentsOf: HeroEditorialMetadata.normalizedGenres(detail.genres, limit: 2))
         return tokens
     }
 
@@ -44,24 +44,19 @@ enum PhoneHeroMetadata {
         var tokens: [String] = []
         let count = detail.episodeCount ?? episodeCount
         if count > 0 { tokens.append("\(count) Episode\(count == 1 ? "" : "s")") }
-        if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
-        }
+        tokens.append(contentsOf: HeroEditorialMetadata.normalizedGenres(detail.genres, limit: 2))
         return tokens
     }
 
     static func contentRatingChip(from detail: ItemDetail) -> String? {
-        guard let rating = detail.contentRating?
-            .trimmingCharacters(in: .whitespaces), !rating.isEmpty
-        else { return nil }
-        return rating
+        HeroEditorialMetadata.normalizedValue(detail.contentRating)
     }
 
     // MARK: - Facts row
 
     static func movieFactsLine(from detail: ItemDetail) -> [PhoneHeroFactToken] {
         var tokens: [PhoneHeroFactToken] = []
-        if detail.type == "episode",
+        if detail.type.lowercased() == "episode",
            let airDate = DetailDateFormatting.abbreviatedDate(detail.airDate) {
             tokens.append(.text(airDate))
         } else if let year = detail.year, year > 0 {
@@ -70,8 +65,8 @@ enum PhoneHeroMetadata {
         if let runtime = detail.runtime, runtime > 0 {
             tokens.append(.text(formatRuntime(runtime)))
         }
-        if let imdb = detail.ratingImdb {
-            tokens.append(.text(String(format: "★ %.1f", imdb)))
+        if let imdb = HeroEditorialMetadata.imdbRatingText(detail.ratingImdb) {
+            tokens.append(.text("★ \(imdb)"))
         }
         return tokens
     }
@@ -82,8 +77,8 @@ enum PhoneHeroMetadata {
         if let count = detail.seasonCount, count > 0 {
             tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
         }
-        if let imdb = detail.ratingImdb {
-            tokens.append(.text(String(format: "★ %.1f", imdb)))
+        if let imdb = HeroEditorialMetadata.imdbRatingText(detail.ratingImdb) {
+            tokens.append(.text("★ \(imdb)"))
         }
         return tokens
     }
@@ -91,15 +86,13 @@ enum PhoneHeroMetadata {
     // MARK: - Eyebrow
 
     static func eyebrow(from detail: ItemDetail) -> String? {
-        if detail.type == "episode" {
-            if let seriesTitle = detail.seriesTitle?
-                .trimmingCharacters(in: .whitespaces), !seriesTitle.isEmpty {
+        if detail.type.lowercased() == "episode" {
+            if let seriesTitle = HeroEditorialMetadata.normalizedValue(detail.seriesTitle) {
                 return seriesTitle
             }
         }
-        if let status = detail.status?
-            .trimmingCharacters(in: .whitespaces), !status.isEmpty,
-           detail.type == "series" {
+        if let status = HeroEditorialMetadata.normalizedValue(detail.status),
+           detail.type.lowercased() == "series" {
             switch status.lowercased() {
             case "continuing", "returning series", "returning":
                 return "Continuing Series"
@@ -133,23 +126,6 @@ enum PhoneHeroMetadata {
     }
 
     // MARK: - Helpers
-
-    private static func episodeNumberLabel(from detail: ItemDetail) -> String? {
-        let seasonPart: String?
-        if let season = detail.seasonNumber {
-            seasonPart = season == 0 ? "Specials" : "Season \(season)"
-        } else {
-            seasonPart = nil
-        }
-        let episodePart = detail.episodeNumber.flatMap { n in n > 0 ? "Episode \(n)" : nil }
-
-        switch (seasonPart, episodePart) {
-        case let (.some(s), .some(e)): return "\(s) \u{00B7} \(e)"
-        case let (.some(s), .none):    return s
-        case let (.none, .some(e)):    return e
-        case (.none, .none):           return nil
-        }
-    }
 
     private static func typeLabel(detail: ItemDetail) -> String {
         switch detail.type.lowercased() {

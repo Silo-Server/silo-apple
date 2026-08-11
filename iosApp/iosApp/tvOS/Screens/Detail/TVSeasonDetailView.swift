@@ -277,9 +277,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
         } else if !episodes.isEmpty {
             tokens.append("\(episodes.count) Episode\(episodes.count == 1 ? "" : "s")")
         }
-        if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
-        }
+        tokens.append(contentsOf: HeroEditorialMetadata.normalizedGenres(detail.genres, limit: 2))
         return tokens
     }
 

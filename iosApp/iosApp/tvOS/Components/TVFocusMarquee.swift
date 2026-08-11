@@ -25,7 +25,7 @@ struct TVMarqueeContent: Equatable {
     let logoUrl: String?
     /// Editorial badge chips, currently the uppercased content rating.
     let badges: [String]
-    /// Dot-joined meta tokens after the badges: year · genre · runtime,
+    /// Dot-joined editorial tokens before the content-rating badge: year · runtime · IMDb · genres,
     /// or `S2 E7 · episode title · 45 min · 23 min left` for episodes.
     let metaParts: [String]
     let synopsis: String?
@@ -43,10 +43,16 @@ extension TVMarqueeContent {
 
         var meta: [String] = []
         if isEpisode {
-            if let token = Self.episodeToken(season: item.seasonNumber, episode: item.episodeNumber) {
+            if let token = HeroEditorialMetadata.episodeIdentity(
+                season: item.seasonNumber,
+                episode: item.episodeNumber,
+                style: .compact
+            ) {
                 meta.append(token)
             }
-            meta.append(item.title)
+            if let title = HeroEditorialMetadata.normalizedValue(item.title) {
+                meta.append(title)
+            }
             if let length = Self.lengthText(runtimeMinutes: item.runtime, durationSeconds: item.durationSeconds) {
                 meta.append(length)
             }
@@ -54,15 +60,18 @@ extension TVMarqueeContent {
                 meta.append(timeLeft)
             }
         } else {
-            if let year = item.year, year > 0 { meta.append(String(year)) }
-            if let genre = item.genres?.first(where: { !$0.isEmpty }) { meta.append(genre) }
-            if let length = Self.lengthText(runtimeMinutes: item.runtime, durationSeconds: item.durationSeconds) {
-                meta.append(length)
-            }
-            if let rating = item.ratingImdb { meta.append(String(format: "%.1f", rating)) }
+            meta = HeroEditorialMetadata.browseMetadataParts(
+                year: item.year,
+                runtime: Self.lengthText(
+                    runtimeMinutes: item.runtime,
+                    durationSeconds: item.durationSeconds
+                ),
+                imdbRating: item.ratingImdb,
+                genres: item.genres
+            )
         }
 
-        let badges = Self.nonEmpty(item.contentRating).map {
+        let badges = HeroEditorialMetadata.normalizedValue(item.contentRating).map {
             [$0.uppercased()]
         } ?? []
 
@@ -72,7 +81,9 @@ extension TVMarqueeContent {
             eyebrow: rowTitle,
             // Episodes headline with their series (`SEVERANCE`); the
             // episode itself moves to the meta line per §5.4.
-            title: isEpisode ? (item.seriesTitle ?? item.title) : item.title,
+            title: isEpisode
+                ? (HeroEditorialMetadata.normalizedValue(item.seriesTitle) ?? item.title)
+                : item.title,
             logoUrl: item.logoUrl,
             badges: badges,
             metaParts: meta,
@@ -111,15 +122,6 @@ extension TVMarqueeContent {
     }
 
     // MARK: Formatting
-
-    private static func episodeToken(season: Int?, episode: Int?) -> String? {
-        switch (season, episode) {
-        case let (season?, episode?): return "S\(season) E\(episode)"
-        case let (season?, nil): return "Season \(season)"
-        case let (nil, episode?): return "Episode \(episode)"
-        default: return nil
-        }
-    }
 
     /// `23 min left` for items with a live resume point, mirroring the
     /// progress rules MediaRow uses for its bars.
@@ -432,6 +434,7 @@ struct TVFocusMarquee: View {
         guard let content else { return "" }
         let parts = [content.eyebrow, content.title]
             + content.metaParts
+            + content.badges
             + [content.synopsis ?? "", enrichment?.detailLine ?? ""]
         return parts
             .filter { !$0.isEmpty }
@@ -584,15 +587,15 @@ private struct TVMarqueeBlock: View {
     private var metaLine: some View {
         if !content.badges.isEmpty || !content.metaParts.isEmpty {
             HStack(spacing: 10) {
-                ForEach(content.badges, id: \.self) { badge in
-                    badgeChip(badge)
-                }
-
                 if !content.metaParts.isEmpty {
                     Text(content.metaParts.joined(separator: " · "))
                         .font(.system(size: scale.metaSize, weight: .medium))
                         .foregroundStyle(Color.continuumSecondaryText)
                         .lineLimit(1)
+                }
+
+                ForEach(content.badges, id: \.self) { badge in
+                    badgeChip(badge)
                 }
             }
         }
