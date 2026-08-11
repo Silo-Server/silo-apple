@@ -108,6 +108,34 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertFalse(String(decoding: create.body, as: UTF8.self).contains("silo-account-token"))
     }
 
+    func testHostedDeleteUsesAnonymousCredentialAndAcceptsIdempotentNotFound() async throws {
+        let reportID = try XCTUnwrap(UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+        let credential = HostedDiagnosticsCredential(
+            installationID: "install-delete-test",
+            installationToken: "hosted-delete-token"
+        )
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(credential: credential)
+        )
+
+        for statusCode in [204, 404] {
+            HostedDiagnosticsStubProtocol.configureDelete(
+                reportID: reportID,
+                statusCode: statusCode
+            )
+            try await api.deleteReport(reportID: reportID)
+            let request = try XCTUnwrap(HostedDiagnosticsStubProtocol.requests().last)
+            XCTAssertEqual(request.method, "DELETE")
+            XCTAssertEqual(request.path, "/v1/reports/\(reportID.uuidString.lowercased())")
+            XCTAssertEqual(request.authorization, "Bearer hosted-delete-token")
+            XCTAssertNil(request.profileHeader)
+            XCTAssertNil(request.profileTokenHeader)
+            XCTAssertNil(request.siloDeviceIDHeader)
+        }
+    }
+
     func testValidatedPutAcceptanceSurvivesInformationalStatusFailure() async throws {
         let reportID = try XCTUnwrap(UUID(uuidString: "99999999-8888-7777-6666-555555555555"))
         let bundle = Data("accepted-before-status-failure".utf8)
@@ -383,7 +411,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             appVersion: token,
             appBuild: "7",
             platform: .ios,
-            osVersion: "26.0",
+            osVersion: "wss://[host:0123456789ab]/items/42",
             destinationServerInstanceID: HostedDiagnosticsCapabilities.pinnedCollectorID
         )
         let draft = context.makeManifestDraft(
@@ -423,6 +451,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             redactionTokens: [token]
         )
         XCTAssertEqual(bundle.manifest.report.appVersion, "[redacted_token]")
+        XCTAssertEqual(bundle.manifest.report.osVersion, "wss://redacted.invalid/items/{id}")
         XCTAssertFalse(String(decoding: bundle.manifestData, as: UTF8.self).contains(token))
 
         let tar = try gunzip(bundle.bundleData)
@@ -482,7 +511,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             level: .info,
             category: .playback,
             tag: "CMP playback_session_id=\(privateLogSessionID)",
-            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log route selected",
+            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log wss://[host:0123456789ab]/items/42 route selected",
             attrs: [
                 "sink": .string("HDMI"),
                 "width": .int(3840),
@@ -571,6 +600,10 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                     relativePath: "breadcrumbs.jsonl",
                     data: Data(breadcrumbLine.appending("\n").utf8)
                 ),
+                PendingReportArtifact(
+                    relativePath: "crash/tombstone.pb",
+                    data: Data("opaque-private-native-trace".utf8)
+                ),
             ]
         ))
         let localBindingSidecar = try Data(contentsOf: report.directoryURL.appendingPathComponent(
@@ -579,6 +612,11 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let renderedLocalBinding = String(decoding: localBindingSidecar, as: UTF8.self)
         XCTAssertFalse(renderedLocalBinding.contains("private-local-server-registry-id"))
         XCTAssertFalse(renderedLocalBinding.contains("private-local-account-id"))
+        let localDeviceData = try Data(
+            contentsOf: report.directoryURL.appendingPathComponent("device.json")
+        )
+        XCTAssertTrue(String(decoding: localDeviceData, as: UTF8.self).contains("uid_hash"))
+        XCTAssertTrue(String(decoding: localDeviceData, as: UTF8.self).contains("route_hashes"))
         let api = HostedDiagnosticsAPI(
             baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
             session: makeSession(),
@@ -595,6 +633,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let tar = try gunzip(bundle.bundleData)
         let logsData = try tarEntry(named: "logs.jsonl", in: tar)
         let breadcrumbsData = try tarEntry(named: "breadcrumbs.jsonl", in: tar)
+        let hostedDeviceData = try tarEntry(named: "device.json", in: tar)
         let hostedLog = try XCTUnwrap(decodeLogLines(logsData).first)
         let hostedBreadcrumb = try XCTUnwrap(decodeLogLines(breadcrumbsData).first)
 
@@ -629,8 +668,18 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             XCTAssertFalse(renderedEvidence.contains(forbidden), forbidden)
         }
         XCTAssertTrue(hostedLog.msg.contains("[redacted_private_id]"))
+        XCTAssertTrue(hostedLog.msg.contains("wss://redacted.invalid/items/{id}"))
+        XCTAssertFalse(hostedLog.msg.contains("[host:"))
         XCTAssertTrue(hostedBreadcrumb.tag.contains("[redacted_private_id]"))
         XCTAssertEqual(bundle.manifest.playbackSessionIds, [])
+        XCTAssertFalse(bundle.manifest.archive.entries.contains("crash/tombstone.pb"))
+        XCTAssertFalse(String(decoding: hostedDeviceData, as: UTF8.self).contains("uid_hash"))
+        XCTAssertFalse(String(decoding: hostedDeviceData, as: UTF8.self).contains("route_hashes"))
+        XCTAssertEqual(bundle.manifest.logSummary.lines, 1)
+        XCTAssertEqual(
+            bundle.manifest.logSummary.bytesGz,
+            try DiagnosticsBundleBuilder.gzip(logsData).count
+        )
         XCTAssertEqual(
             bundle.manifest.destination.serverInstanceID,
             HostedDiagnosticsCapabilities.pinnedCollectorID
@@ -787,6 +836,323 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(rendered, "collector_auth=[redacted_token]")
     }
 
+    func testHostedEnvelopeIsFrozenUntilDefinitiveStaleConsentThenReframedFromSanitizedEvidence() throws {
+        let oldToken = "old-opaque-token-that-must-stay-redacted"
+        let fixture = try makePendingHostedReport(label: "frozen-envelope")
+        try FileManager.default.createDirectory(
+            at: fixture.report.directoryURL.appendingPathComponent("crash", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("token=\(oldToken)".utf8).write(
+            to: fixture.report.directoryURL.appendingPathComponent("crash/stack.txt"),
+            options: .atomic
+        )
+        let builder = DiagnosticsBundleBuilder()
+        let first = try builder.build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0,
+            redactionTokens: [oldToken]
+        )
+        try fixture.store.saveHostedEnvelope(first, for: fixture.report)
+
+        let exact: DiagnosticsBundleBuildResult
+        switch fixture.store.loadHostedEnvelope(for: fixture.report) {
+        case .available(let cached):
+            exact = cached
+        default:
+            XCTFail("The committed hosted envelope must load")
+            return
+        }
+        XCTAssertEqual(exact.manifestData, first.manifestData)
+        XCTAssertEqual(exact.bundleData, first.bundleData)
+
+        fixture.store.markHostedConsentRefreshRequired(fixture.report)
+        let refreshed = try builder.reframeHosted(
+            cached: exact,
+            consent: DiagnosticsManifest.Consent(mode: .manual, noticeVersion: 2)
+        )
+        XCTAssertEqual(refreshed.manifest.consent.noticeVersion, 2)
+        let refreshedTar = try gunzip(refreshed.bundleData)
+        let refreshedStack = try tarEntry(named: "crash/stack.txt", in: refreshedTar)
+        XCTAssertFalse(String(decoding: refreshedStack, as: UTF8.self).contains(oldToken))
+        XCTAssertEqual(
+            Array(refreshed.archiveEntries.dropFirst()).map(\.data),
+            Array(first.archiveEntries.dropFirst()).map(\.data)
+        )
+        XCTAssertNotEqual(refreshed.bundleData, first.bundleData)
+
+        try fixture.store.saveHostedEnvelope(refreshed, for: fixture.report)
+        guard case .available(let persisted) = fixture.store.loadHostedEnvelope(for: fixture.report) else {
+            XCTFail("The reframed hosted envelope must load")
+            return
+        }
+        XCTAssertEqual(persisted.manifestData, refreshed.manifestData)
+        XCTAssertEqual(persisted.bundleData, refreshed.bundleData)
+    }
+
+    func testIncompleteHostedEnvelopeStagingIsDiscardedBeforeAnyNetworkBoundary() throws {
+        let fixture = try makePendingHostedReport(label: "staging-recovery")
+        let staging = fixture.report.directoryURL.appendingPathComponent(
+            ".hosted-envelope-staging-\(UUID().uuidString.lowercased())",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data("partial".utf8).write(to: staging.appendingPathComponent("manifest.json"))
+
+        guard case .missing = fixture.store.loadHostedEnvelope(for: fixture.report) else {
+            return XCTFail("A never-published staging directory must be safely rebuildable")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+    }
+
+    func testCommittedHostedEnvelopeDetectsEntryCorruptionAndKeepsRawEvidence() throws {
+        let fixture = try makePendingHostedReport(label: "published-corruption")
+        let bundle = try DiagnosticsBundleBuilder().build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0
+        )
+        try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
+        let generation = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: fixture.report.directoryURL,
+                includingPropertiesForKeys: nil
+            ).first {
+                $0.lastPathComponent.hasPrefix(".hosted-envelope-")
+                    && !$0.lastPathComponent.hasPrefix(".hosted-envelope-staging-")
+            }
+        )
+        try Data("tampered-device-evidence".utf8).write(
+            to: generation.appendingPathComponent("entries/device.json"),
+            options: .atomic
+        )
+
+        guard case .corrupt = fixture.store.loadHostedEnvelope(for: fixture.report) else {
+            return XCTFail("A committed generation with altered members must fail closed")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+    }
+
+    func testHostedProcessingAndRejectionStateRetainLocalEvidence() throws {
+        let fixture = try makePendingHostedReport(label: "processing-state")
+
+        fixture.store.markHostedProcessing(fixture.report, shortID: "SILO-PROCESSING")
+        var persisted = try XCTUnwrap(
+            fixture.store.listReports(for: fixture.report.binding.binding, now: Date()).first
+        )
+        XCTAssertEqual(persisted.state.hostedRemoteShortID, "SILO-PROCESSING")
+        XCTAssertFalse(persisted.state.isPermanentFailure)
+
+        fixture.store.markHostedRejected(persisted, code: "privacy_artifact_rejected")
+        persisted = try XCTUnwrap(
+            fixture.store.listReports(for: fixture.report.binding.binding, now: Date()).first
+        )
+        XCTAssertNil(persisted.state.hostedRemoteShortID)
+        XCTAssertEqual(persisted.state.hostedRejectionCode, "privacy_artifact_rejected")
+        XCTAssertTrue(persisted.state.isPermanentFailure)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+    }
+
+    func testHostedDeleteIntentRemovesEvidenceAndRetriesUntilCollectorAccepts() async throws {
+        let fixture = try makePendingHostedReport(label: "durable-delete-intent")
+        let bundle = try DiagnosticsBundleBuilder().build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0
+        )
+        try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
+        let root = fixture.report.directoryURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let backup = root.appendingPathComponent("delete-crash-backup", isDirectory: true)
+        try FileManager.default.copyItem(at: fixture.report.directoryURL, to: backup)
+        defer { try? FileManager.default.removeItem(at: backup) }
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: "install-delete-retry",
+                    installationToken: "delete-retry-token"
+                )
+            )
+        )
+        let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
+
+        HostedDiagnosticsStubProtocol.configureDelete(
+            reportID: fixture.report.id,
+            statusCode: 503
+        )
+        let erased = await coordinator.delete(report: fixture.report)
+        XCTAssertFalse(erased)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+
+        // Model a process stop after the atomic intent write but before the
+        // report directory removal. Loading the durable queue must finish the
+        // local erasure before the report can reappear or be sent.
+        try FileManager.default.copyItem(at: backup, to: fixture.report.directoryURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        let retryBatch = fixture.store.prepareHostedDeletionRetries()
+        XCTAssertEqual(retryBatch.reportIDs, [fixture.report.id])
+        XCTAssertFalse(retryBatch.hasBlockedLocalEvidence)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        let intentBytes = try Data(
+            contentsOf: root.appendingPathComponent("hosted-deletion-intents.json")
+        )
+        let renderedIntent = String(decoding: intentBytes, as: UTF8.self)
+        XCTAssertTrue(renderedIntent.contains(fixture.report.id.uuidString.lowercased()))
+        XCTAssertFalse(renderedIntent.contains(fixture.report.binding.serverInstanceID))
+        XCTAssertFalse(renderedIntent.contains(fixture.report.binding.accountUserID))
+
+        HostedDiagnosticsStubProtocol.configureDelete(
+            reportID: fixture.report.id,
+            statusCode: 204
+        )
+        _ = await coordinator.pendingReportsForCurrentBinding()
+        XCTAssertTrue(fixture.store.hostedDeletionIntents().isEmpty)
+    }
+
+    func testTurnOffStagesRemoteErasureBeforePurgingHostedEvidence() async throws {
+        let fixture = try makePendingHostedReport(label: "turn-off-delete")
+        let bundle = try DiagnosticsBundleBuilder().build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0
+        )
+        try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
+        HostedDiagnosticsStubProtocol.configureDelete(
+            reportID: fixture.report.id,
+            statusCode: 503
+        )
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: "install-turn-off",
+                    installationToken: "turn-off-delete-token"
+                )
+            )
+        )
+        let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
+
+        let erased = await coordinator.turnOffAndDelete(binding: fixture.report.binding.binding)
+        XCTAssertFalse(erased)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertEqual(fixture.store.hostedDeletionIntents(), [fixture.report.id])
+    }
+
+    func testHostedDeletionIntentIsNotClearedOrUploadableWhileLocalEvidenceCannotBeRemoved() async throws {
+        let fixture = try makePendingHostedReport(
+            label: "blocked-local-erasure",
+            hostedDeletionRemover: { _ in throw DiagnosticsStoreError.invalidHostedEnvelope }
+        )
+        let bundle = try DiagnosticsBundleBuilder().build(
+            report: fixture.report,
+            logLines: [],
+            droppedLogLines: 0
+        )
+        try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
+        let root = fixture.report.directoryURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let backup = root.appendingPathComponent("blocked-delete-backup", isDirectory: true)
+        try FileManager.default.copyItem(at: fixture.report.directoryURL, to: backup)
+        defer { try? FileManager.default.removeItem(at: backup) }
+
+        try fixture.store.stageHostedDeletionAndDelete(fixture.report)
+        try FileManager.default.copyItem(at: backup, to: fixture.report.directoryURL)
+
+        let batch = fixture.store.prepareHostedDeletionRetries()
+        XCTAssertTrue(batch.reportIDs.isEmpty)
+        XCTAssertTrue(batch.hasBlockedLocalEvidence)
+        XCTAssertFalse(fixture.store.completeHostedDeletion(reportID: fixture.report.id))
+        XCTAssertEqual(fixture.store.hostedDeletionIntents(), [fixture.report.id])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+
+        HostedDiagnosticsStubProtocol.configureDelete(
+            reportID: fixture.report.id,
+            statusCode: 204
+        )
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: "install-blocked-delete",
+                    installationToken: "blocked-delete-token"
+                )
+            )
+        )
+        let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
+        let visible = await coordinator.pendingReports(for: fixture.report.binding.binding)
+        XCTAssertTrue(visible.isEmpty)
+        let uploadDecision = await coordinator.upload(report: fixture.report)
+        XCTAssertEqual(uploadDecision, .keptRetryable)
+        XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+    }
+
+    func testHostedRemoteLifecycleKeepsEvidenceUntilReportIsReady() async throws {
+        for state in [DiagnosticsRemoteReportState.processing, .rejected, .ready] {
+            let fixture = try makePendingHostedReport(label: "remote-\(state.rawValue)")
+            let shortID = "SILO-\(state.rawValue.uppercased())"
+            fixture.store.markHostedProcessing(fixture.report, shortID: shortID)
+            HostedDiagnosticsStubProtocol.configureReportStatus(
+                reportID: fixture.report.id,
+                shortID: shortID,
+                state: state,
+                errorCode: state == .rejected ? "privacy_artifact_rejected" : nil
+            )
+            let api = HostedDiagnosticsAPI(
+                baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+                session: makeSession(),
+                credentialStore: HostedTestCredentialStore(
+                    credential: HostedDiagnosticsCredential(
+                        installationID: "install-lifecycle-test",
+                        installationToken: "lifecycle-test-token"
+                    )
+                )
+            )
+            let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
+
+            let pending = await coordinator.pendingReports(for: fixture.report.binding.binding)
+
+            if state == .ready {
+                XCTAssertTrue(pending.isEmpty)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+            } else {
+                let persisted = try XCTUnwrap(pending.first)
+                XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+                if state == .processing {
+                    XCTAssertEqual(persisted.state.hostedRemoteShortID, shortID)
+                    XCTAssertNil(persisted.state.hostedRejectionCode)
+                } else {
+                    XCTAssertNil(persisted.state.hostedRemoteShortID)
+                    XCTAssertEqual(persisted.state.hostedRejectionCode, "privacy_artifact_rejected")
+                }
+            }
+        }
+    }
+
+    func testHostedPermanentValidationFailureKeepsEvidenceForReview() async throws {
+        let fixture = try makePendingHostedReport(label: "permanent-hosted-rejection")
+        let coordinator = DiagnosticsCoordinator(pendingStore: fixture.store)
+
+        let decision = await coordinator.handleHostedUploadError(
+            .http(statusCode: 422, code: "privacy_artifact_rejected"),
+            report: fixture.report
+        )
+
+        XCTAssertEqual(decision, .keptRejected(code: "privacy_artifact_rejected"))
+        let persisted = try XCTUnwrap(
+            fixture.store.listReports(for: fixture.report.binding.binding, now: Date()).first
+        )
+        XCTAssertEqual(persisted.state.hostedRejectionCode, "privacy_artifact_rejected")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+    }
+
     func testCapabilitiesArePublicAndMapCollectorIdentity() async throws {
         HostedDiagnosticsStubProtocol.configureCapabilities()
         let api = HostedDiagnosticsAPI(
@@ -827,6 +1193,39 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         } catch let error as HostedDiagnosticsAPIError {
             XCTAssertEqual(error, .collectorIdentityMismatch)
         }
+    }
+
+    func testCapabilitiesRejectCollectorWithoutSchemaV1BeforeSend() async throws {
+        HostedDiagnosticsStubProtocol.configureCapabilities(acceptedSchemaVersions: [2])
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(credential: nil)
+        )
+
+        do {
+            _ = try await api.capabilities()
+            XCTFail("A collector that cannot accept schema v1 must fail closed")
+        } catch let error as HostedDiagnosticsAPIError {
+            XCTAssertEqual(error, .collectorIdentityMismatch)
+        }
+    }
+
+    func testCapabilitiesPreserveValidDisabledAndStorageUnavailableStatuses() async throws {
+        for status in [DiagnosticsAvailabilityStatus.disabled, .storageUnavailable] {
+            HostedDiagnosticsStubProtocol.configureCapabilities(status: status)
+            let api = HostedDiagnosticsAPI(
+                baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+                session: makeSession(),
+                credentialStore: HostedTestCredentialStore(credential: nil)
+            )
+
+            let capabilities = try await api.capabilities()
+
+            XCTAssertEqual(capabilities.status, status)
+            XCTAssertFalse(DiagnosticsCoordinator.canBeginUpload(status: capabilities.status))
+        }
+        XCTAssertTrue(DiagnosticsCoordinator.canBeginUpload(status: .available))
     }
 
     func testOfflinePersistentCaptureUsesPinnedConservativeV1Contract() throws {
@@ -894,6 +1293,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             "invalid_content_length",
             "invalid_json",
             "invalid_platform",
+            "hosted_consent_required",
+            "privacy_artifact_rejected",
+            "upload_attempt_limit_exceeded",
         ]
         for code in permanentCodes {
             XCTAssertEqual(
@@ -960,14 +1362,24 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 "form_factor": .string("phone"),
             ]),
             display: .object(["mode": .string("not_collected")]),
-            audio: .object(["passthrough": .string("unknown")]),
+            audio: .object([
+                "outputs": .array([
+                    .object([
+                        "type": .string("HDMI"),
+                        "uid_hash": .string("stable-route-fingerprint"),
+                    ]),
+                ]),
+                "route_hashes": .array([.string("legacy-stable-route-fingerprint")]),
+                "passthrough": .string("unknown"),
+            ]),
             videoCodecs: .string("not_collected"),
             network: .object(["transport": .string("not_collected")])
         )
     }
 
     private func makePendingHostedReport(
-        label: String
+        label: String,
+        hostedDeletionRemover: ((URL) throws -> Void)? = nil
     ) throws -> (store: PendingReportStore, report: PendingReport) {
         let capturedAt = Date()
         let binding = DiagnosticsBinding.hosted(
@@ -1003,7 +1415,10 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             isDirectory: true
         )
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        let store = PendingReportStore(rootDirectory: root)
+        let store = PendingReportStore(
+            rootDirectory: root,
+            hostedDeletionRemover: hostedDeletionRemover
+        )
         let report = try store.save(PendingReportCapture(
             binding: binding,
             profileID: nil,
@@ -1295,12 +1710,25 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
         case invalidTokenRecovery(reportID: UUID, bundle: Data)
         case statusFailureAfterAccepted(reportID: UUID, bundle: Data)
         case putAcceptance(reportID: UUID, bundle: Data, body: String)
-        case capabilities(collectorID: String)
+        case delete(reportID: UUID, statusCode: Int)
+        case reportStatus(
+            reportID: UUID,
+            shortID: String,
+            state: DiagnosticsRemoteReportState,
+            errorCode: String?
+        )
+        case capabilities(
+            status: DiagnosticsAvailabilityStatus,
+            collectorID: String,
+            acceptedSchemaVersions: [Int]
+        )
     }
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var mode: Mode = .capabilities(
-        collectorID: HostedDiagnosticsCapabilities.pinnedCollectorID
+        status: .available,
+        collectorID: HostedDiagnosticsCapabilities.pinnedCollectorID,
+        acceptedSchemaVersions: [1]
     )
     nonisolated(unsafe) private static var captured: [CapturedRequest] = []
     nonisolated(unsafe) private static var rejectedRevokedToken = false
@@ -1337,11 +1765,43 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
         }
     }
 
-    static func configureCapabilities(
-        collectorID: String = HostedDiagnosticsCapabilities.pinnedCollectorID
+    static func configureReportStatus(
+        reportID: UUID,
+        shortID: String,
+        state: DiagnosticsRemoteReportState,
+        errorCode: String?
     ) {
         lock.withLock {
-            mode = .capabilities(collectorID: collectorID)
+            mode = .reportStatus(
+                reportID: reportID,
+                shortID: shortID,
+                state: state,
+                errorCode: errorCode
+            )
+            captured = []
+            rejectedRevokedToken = false
+        }
+    }
+
+    static func configureDelete(reportID: UUID, statusCode: Int) {
+        lock.withLock {
+            mode = .delete(reportID: reportID, statusCode: statusCode)
+            captured = []
+            rejectedRevokedToken = false
+        }
+    }
+
+    static func configureCapabilities(
+        status: DiagnosticsAvailabilityStatus = .available,
+        collectorID: String = HostedDiagnosticsCapabilities.pinnedCollectorID,
+        acceptedSchemaVersions: [Int] = [1]
+    ) {
+        lock.withLock {
+            mode = .capabilities(
+                status: status,
+                collectorID: collectorID,
+                acceptedSchemaVersions: acceptedSchemaVersions
+            )
             captured = []
             rejectedRevokedToken = false
         }
@@ -1388,8 +1848,15 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
 
         let response = Self.lock.withLock { () -> (Int, String) in
             switch Self.mode {
-            case .capabilities(let collectorID):
-                return (200, #"{"status":"available","collector_id":"\#(collectorID)","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1}"#)
+            case .capabilities(let status, let collectorID, let acceptedSchemaVersions):
+                let versions = acceptedSchemaVersions.map(String.init).joined(separator: ",")
+                return (200, #"{"status":"\#(status.rawValue)","collector_id":"\#(collectorID)","accepted_schema_versions":[\#(versions)],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1}"#)
+            case .reportStatus(let reportID, let shortID, let state, let errorCode):
+                let error = errorCode.map { #","error_code":"\#($0)""# } ?? ""
+                return (
+                    200,
+                    #"{"report_id":"\#(reportID.uuidString.lowercased())","short_id":"\#(shortID)","state":"\#(state.rawValue)"\#(error)}"#
+                )
             case .upload(let reportID, let expectedBundle):
                 return Self.uploadResponse(
                     request: request,
@@ -1434,6 +1901,18 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
                     expectedBundle: expectedBundle,
                     putResponseBody: responseBody
                 )
+            case .delete(let reportID, let statusCode):
+                guard request.httpMethod == "DELETE",
+                      url.path == "/v1/reports/\(reportID.uuidString.lowercased())" else {
+                    return (404, #"{"error":"report_not_found"}"#)
+                }
+                if statusCode == 204 {
+                    return (204, "")
+                }
+                if statusCode == 404 {
+                    return (404, #"{"error":"report_not_found"}"#)
+                }
+                return (statusCode, #"{"error":"unavailable"}"#)
             }
         }
         respond(statusCode: response.0, body: response.1)

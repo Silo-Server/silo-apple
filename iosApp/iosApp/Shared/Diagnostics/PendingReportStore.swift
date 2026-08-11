@@ -93,6 +93,10 @@ struct PendingReportState: Codable, Equatable {
     /// reports live 7 days, so the same crash would re-prompt on a later
     /// foreground.
     var promptDeclined: Bool
+    var hostedEnvelopeGeneration: String?
+    var hostedConsentRefreshRequired: Bool
+    var hostedRemoteShortID: String?
+    var hostedRejectionCode: String?
 
     static let empty = PendingReportState(needsServerUpdate: false)
 
@@ -101,19 +105,35 @@ struct PendingReportState: Codable, Equatable {
     /// A declined prompt is not a permanent failure — the report can still be
     /// sent manually and auto-uploads under Always.
     var isPermanentFailure: Bool {
-        needsServerUpdate || tooLarge
+        needsServerUpdate || tooLarge || hostedRejectionCode != nil
     }
 
     enum CodingKeys: String, CodingKey {
         case needsServerUpdate = "needs_server_update"
         case tooLarge = "too_large"
         case promptDeclined = "prompt_declined"
+        case hostedEnvelopeGeneration = "hosted_envelope_generation"
+        case hostedConsentRefreshRequired = "hosted_consent_refresh_required"
+        case hostedRemoteShortID = "hosted_remote_short_id"
+        case hostedRejectionCode = "hosted_rejection_code"
     }
 
-    init(needsServerUpdate: Bool, tooLarge: Bool = false, promptDeclined: Bool = false) {
+    init(
+        needsServerUpdate: Bool,
+        tooLarge: Bool = false,
+        promptDeclined: Bool = false,
+        hostedEnvelopeGeneration: String? = nil,
+        hostedConsentRefreshRequired: Bool = false,
+        hostedRemoteShortID: String? = nil,
+        hostedRejectionCode: String? = nil
+    ) {
         self.needsServerUpdate = needsServerUpdate
         self.tooLarge = tooLarge
         self.promptDeclined = promptDeclined
+        self.hostedEnvelopeGeneration = hostedEnvelopeGeneration
+        self.hostedConsentRefreshRequired = hostedConsentRefreshRequired
+        self.hostedRemoteShortID = hostedRemoteShortID
+        self.hostedRejectionCode = hostedRejectionCode
     }
 
     init(from decoder: Decoder) throws {
@@ -121,7 +141,28 @@ struct PendingReportState: Codable, Equatable {
         needsServerUpdate = try container.decodeIfPresent(Bool.self, forKey: .needsServerUpdate) ?? false
         tooLarge = try container.decodeIfPresent(Bool.self, forKey: .tooLarge) ?? false
         promptDeclined = try container.decodeIfPresent(Bool.self, forKey: .promptDeclined) ?? false
+        hostedEnvelopeGeneration = try container.decodeIfPresent(
+            String.self,
+            forKey: .hostedEnvelopeGeneration
+        )
+        hostedConsentRefreshRequired = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .hostedConsentRefreshRequired
+        ) ?? false
+        hostedRemoteShortID = try container.decodeIfPresent(String.self, forKey: .hostedRemoteShortID)
+        hostedRejectionCode = try container.decodeIfPresent(String.self, forKey: .hostedRejectionCode)
     }
+}
+
+enum HostedEnvelopeLoadResult {
+    case missing
+    case available(DiagnosticsBundleBuildResult)
+    case corrupt
+}
+
+struct HostedDeletionRetryBatch {
+    let reportIDs: [UUID]
+    let hasBlockedLocalEvidence: Bool
 }
 
 struct PendingReportArtifact: Equatable {
@@ -152,6 +193,7 @@ struct DiagnosticsCaptureContext {
     let osVersion: String
     var destinationServerInstanceID: String? = nil
     var maxBundleBytes: Int? = nil
+    var availabilityStatus: DiagnosticsAvailabilityStatus = .available
 
     var destinationChoice: DiagnosticsDestinationChoice {
         binding.destinationChoice
@@ -171,7 +213,8 @@ struct DiagnosticsCaptureContext {
             platform: platform,
             osVersion: osVersion,
             destinationServerInstanceID: destinationServerInstanceID,
-            maxBundleBytes: maxBundleBytes
+            maxBundleBytes: maxBundleBytes,
+            availabilityStatus: availabilityStatus
         )
     }
 
@@ -223,13 +266,24 @@ final class PendingReportStore {
     private static let maxPendingPerBinding = 3
     private static let seenFingerprintsFile = "seen-fingerprints.json"
     private static let throttleFile = "auto-upload-throttle.json"
+    private static let hostedDeletionIntentsFile = "hosted-deletion-intents.json"
+    private static let hostedEnvelopePrefix = ".hosted-envelope-"
+    private static let hostedEnvelopeStagingPrefix = ".hosted-envelope-staging-"
 
     private let rootDirectory: URL
     private let fileManager: FileManager
+    private let hostedDeletionRemover: (URL) throws -> Void
     private let lock = NSLock()
 
-    init(rootDirectory: URL? = nil, fileManager: FileManager = .default) {
+    init(
+        rootDirectory: URL? = nil,
+        fileManager: FileManager = .default,
+        hostedDeletionRemover: ((URL) throws -> Void)? = nil
+    ) {
         self.fileManager = fileManager
+        self.hostedDeletionRemover = hostedDeletionRemover ?? { url in
+            try fileManager.removeItem(at: url)
+        }
         self.rootDirectory = rootDirectory ?? DiagnosticsStorageRoot.baseDirectory(fileManager: fileManager)
             .appendingPathComponent("Diagnostics", isDirectory: true)
     }
@@ -263,7 +317,6 @@ final class PendingReportStore {
             fingerprint: capture.fingerprint
         )
 
-        var didPublishReportDirectory = false
         do {
             try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
             try excludeFromBackup(stagingDirectory)
@@ -289,12 +342,8 @@ final class PendingReportStore {
             }
 
             try fileManager.moveItem(at: stagingDirectory, to: reportDirectory)
-            didPublishReportDirectory = true
         } catch {
             try? fileManager.removeItem(at: stagingDirectory)
-            if didPublishReportDirectory {
-                try? fileManager.removeItem(at: reportDirectory)
-            }
             throw error
         }
 
@@ -354,6 +403,117 @@ final class PendingReportStore {
         defer { lock.unlock() }
 
         try? fileManager.removeItem(at: report.directoryURL)
+    }
+
+    /// Makes a hosted erasure request durable before removing the evidence it
+    /// refers to. The collector DELETE endpoint is idempotent, so a response
+    /// lost after acceptance can be retried safely without retaining logs.
+    func stageHostedDeletionAndDelete(_ report: PendingReport, now: Date = Date()) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let current = loadReport(from: report.directoryURL) else { return }
+        if current.binding.binding.destinationChoice == .hosted,
+           current.state.hostedEnvelopeGeneration != nil || current.state.hostedRemoteShortID != nil {
+            var intents = loadHostedDeletionIntentsLocked()
+            intents[current.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
+            try saveHostedDeletionIntentsLocked(intents)
+        }
+        try fileManager.removeItem(at: current.directoryURL)
+    }
+
+    /// Stages every potentially remote hosted report before clearing a
+    /// binding's local evidence for the Turn Off and Delete action.
+    func stageHostedDeletionsAndPurge(binding: DiagnosticsBinding, now: Date = Date()) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let reports = scanReportsLocked().filter { $0.binding.binding == binding }
+        var intents = loadHostedDeletionIntentsLocked()
+        for report in reports where report.binding.binding.destinationChoice == .hosted
+            && (report.state.hostedEnvelopeGeneration != nil || report.state.hostedRemoteShortID != nil) {
+            intents[report.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
+        }
+        try saveHostedDeletionIntentsLocked(intents)
+        for report in reports {
+            try fileManager.removeItem(at: report.directoryURL)
+        }
+    }
+
+    func stageHostedDeletionsAndPurge(serverInstanceID: String, now: Date = Date()) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let reports = scanReportsLocked().filter { $0.binding.serverInstanceID == serverInstanceID }
+        var intents = loadHostedDeletionIntentsLocked()
+        for report in reports where report.binding.binding.destinationChoice == .hosted
+            && (report.state.hostedEnvelopeGeneration != nil || report.state.hostedRemoteShortID != nil) {
+            intents[report.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
+        }
+        try saveHostedDeletionIntentsLocked(intents)
+        for report in reports {
+            try fileManager.removeItem(at: report.directoryURL)
+        }
+    }
+
+    func hostedDeletionIntents() -> [UUID] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return loadHostedDeletionIntentsLocked().keys.compactMap(UUID.init(uuidString:))
+    }
+
+    func prepareHostedDeletionRetries() -> HostedDeletionRetryBatch {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let reportIDs = loadHostedDeletionIntentsLocked().keys.compactMap(UUID.init(uuidString:))
+        var ready: [UUID] = []
+        var blocked = false
+        // If the process stopped after the intent's atomic write but before
+        // removing raw evidence, finish that local half before any retry can
+        // rediscover or upload the report.
+        for reportID in reportIDs {
+            let directory = pendingDirectory.appendingPathComponent(
+                reportID.uuidString.lowercased(),
+                isDirectory: true
+            )
+            if fileManager.fileExists(atPath: directory.path) {
+                try? hostedDeletionRemover(directory)
+            }
+            if fileManager.fileExists(atPath: directory.path) {
+                blocked = true
+            } else {
+                ready.append(reportID)
+            }
+        }
+        return HostedDeletionRetryBatch(
+            reportIDs: ready,
+            hasBlockedLocalEvidence: blocked
+        )
+    }
+
+    @discardableResult
+    func completeHostedDeletion(reportID: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let directory = pendingDirectory.appendingPathComponent(
+            reportID.uuidString.lowercased(),
+            isDirectory: true
+        )
+        if fileManager.fileExists(atPath: directory.path) {
+            try? hostedDeletionRemover(directory)
+        }
+        guard !fileManager.fileExists(atPath: directory.path) else { return false }
+        var intents = loadHostedDeletionIntentsLocked()
+        intents.removeValue(forKey: reportID.uuidString.lowercased())
+        do {
+            try saveHostedDeletionIntentsLocked(intents)
+            return true
+        } catch {
+            return false
+        }
     }
 
     func hasSeenFingerprint(_ fingerprint: String, now: Date = Date()) -> Bool {
@@ -456,6 +616,196 @@ final class PendingReportStore {
         )
     }
 
+    func loadHostedEnvelope(for report: PendingReport) -> HostedEnvelopeLoadResult {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let current = loadReport(from: report.directoryURL) else { return .corrupt }
+        if let generation = current.state.hostedEnvelopeGeneration {
+            guard UUID(uuidString: generation) != nil else { return .corrupt }
+            let directory = current.directoryURL.appendingPathComponent(
+                Self.hostedEnvelopePrefix + generation,
+                isDirectory: true
+            )
+            guard let bundle = readHostedEnvelope(report: current, from: directory) else {
+                return .corrupt
+            }
+            return .available(bundle)
+        }
+
+        let children = (try? fileManager.contentsOfDirectory(
+            at: current.directoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey]
+        )) ?? []
+        for child in children where child.lastPathComponent.hasPrefix(Self.hostedEnvelopeStagingPrefix) {
+            // The network request is made only after a published generation is
+            // committed to state. An interrupted staging write therefore has
+            // never crossed the send boundary and is safe to discard/rebuild.
+            try? fileManager.removeItem(at: child)
+        }
+        let recoverable = children
+            .filter {
+                $0.lastPathComponent.hasPrefix(Self.hostedEnvelopePrefix)
+                    && !$0.lastPathComponent.hasPrefix(Self.hostedEnvelopeStagingPrefix)
+            }
+            .sorted { lhs, rhs in
+                let left = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+                let right = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+                return (left ?? .distantPast) > (right ?? .distantPast)
+            }
+        for directory in recoverable {
+            let generation = String(directory.lastPathComponent.dropFirst(Self.hostedEnvelopePrefix.count))
+            guard UUID(uuidString: generation) != nil,
+                  let bundle = readHostedEnvelope(report: current, from: directory) else {
+                continue
+            }
+            var state = current.state
+            state.hostedEnvelopeGeneration = generation
+            try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+            return .available(bundle)
+        }
+        return recoverable.isEmpty ? .missing : .corrupt
+    }
+
+    func saveHostedEnvelope(_ bundle: DiagnosticsBundleBuildResult, for report: PendingReport) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let current = loadReport(from: report.directoryURL) else {
+            throw DiagnosticsStoreError.unreadableReport(report.id)
+        }
+        try validateHostedEnvelope(bundle, report: current)
+        let generation = UUID().uuidString.lowercased()
+        let staging = current.directoryURL.appendingPathComponent(
+            Self.hostedEnvelopeStagingPrefix + generation,
+            isDirectory: true
+        )
+        let published = current.directoryURL.appendingPathComponent(
+            Self.hostedEnvelopePrefix + generation,
+            isDirectory: true
+        )
+        try? fileManager.removeItem(at: staging)
+        do {
+            try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+            try excludeFromBackup(staging)
+            try bundle.manifestData.write(
+                to: staging.appendingPathComponent("manifest.json"),
+                options: .atomic
+            )
+            try bundle.bundleData.write(
+                to: staging.appendingPathComponent("bundle.tar.gz"),
+                options: .atomic
+            )
+            let entriesRoot = staging.appendingPathComponent("entries", isDirectory: true)
+            for entry in bundle.archiveEntries {
+                let target = entriesRoot.appendingPathComponent(entry.relativePath)
+                try fileManager.createDirectory(
+                    at: target.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try entry.data.write(to: target, options: .atomic)
+            }
+            try fileManager.moveItem(at: staging, to: published)
+
+            var state = current.state
+            state.hostedEnvelopeGeneration = generation
+            state.hostedConsentRefreshRequired = false
+            try writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+
+            let siblings = (try? fileManager.contentsOfDirectory(
+                at: current.directoryURL,
+                includingPropertiesForKeys: nil
+            )) ?? []
+            for sibling in siblings where sibling != published
+                && sibling.lastPathComponent.hasPrefix(Self.hostedEnvelopePrefix) {
+                try? fileManager.removeItem(at: sibling)
+            }
+        } catch {
+            try? fileManager.removeItem(at: staging)
+            throw error
+        }
+    }
+
+    func markHostedConsentRefreshRequired(_ report: PendingReport) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let current = loadReport(from: report.directoryURL) else { return }
+        var state = current.state
+        state.hostedConsentRefreshRequired = true
+        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+    }
+
+    func markHostedProcessing(_ report: PendingReport, shortID: String) {
+        guard !shortID.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let current = loadReport(from: report.directoryURL) else { return }
+        var state = current.state
+        state.hostedRemoteShortID = shortID
+        state.hostedRejectionCode = nil
+        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+    }
+
+    func markHostedRejected(_ report: PendingReport, code: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let current = loadReport(from: report.directoryURL) else { return }
+        var state = current.state
+        state.hostedRemoteShortID = nil
+        state.hostedRejectionCode = code?.isEmpty == false ? code : "rejected"
+        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+    }
+
+    private func readHostedEnvelope(
+        report: PendingReport,
+        from directory: URL
+    ) -> DiagnosticsBundleBuildResult? {
+        do {
+            let manifestData = try Data(contentsOf: directory.appendingPathComponent("manifest.json"))
+            let manifest = try DiagnosticsJSONCoding.makeDecoder().decode(
+                DiagnosticsManifest.self,
+                from: manifestData
+            )
+            let bundleData = try Data(contentsOf: directory.appendingPathComponent("bundle.tar.gz"))
+            let entriesRoot = directory.appendingPathComponent("entries", isDirectory: true)
+            let entries = try manifest.archive.entries.map { path in
+                guard DiagnosticsManifest.Archive.allowedEntries.contains(path) else {
+                    throw DiagnosticsStoreError.invalidArtifactPath(path)
+                }
+                return PendingReportArtifact(
+                    relativePath: path,
+                    data: try Data(contentsOf: entriesRoot.appendingPathComponent(path))
+                )
+            }
+            let result = DiagnosticsBundleBuildResult(
+                manifest: manifest,
+                manifestData: manifestData,
+                bundleData: bundleData,
+                archiveEntries: entries
+            )
+            try validateHostedEnvelope(result, report: report)
+            return result
+        } catch {
+            return nil
+        }
+    }
+
+    private func validateHostedEnvelope(
+        _ bundle: DiagnosticsBundleBuildResult,
+        report: PendingReport
+    ) throws {
+        try bundle.manifest.validate()
+        try DiagnosticsBundleBuilder(fileManager: fileManager).validateCachedHostedEnvelope(bundle)
+        guard report.binding.binding.destinationChoice == .hosted,
+              bundle.manifest.report.capturedAt == report.binding.capturedAt,
+              bundle.manifest.report.type == report.binding.type else {
+            throw DiagnosticsStoreError.invalidHostedEnvelope
+        }
+    }
+
     func resetForTests() {
         lock.lock()
         defer { lock.unlock() }
@@ -552,6 +902,25 @@ final class PendingReportStore {
         try? data.write(to: rootDirectory.appendingPathComponent(fileName), options: .atomic)
     }
 
+    private func loadHostedDeletionIntentsLocked() -> [String: String] {
+        readJSON(
+            [String: String].self,
+            from: rootDirectory.appendingPathComponent(Self.hostedDeletionIntentsFile)
+        ) ?? [:]
+    }
+
+    private func saveHostedDeletionIntentsLocked(_ intents: [String: String]) throws {
+        try ensureDirectory(rootDirectory)
+        let url = rootDirectory.appendingPathComponent(Self.hostedDeletionIntentsFile)
+        if intents.isEmpty {
+            if fileManager.fileExists(atPath: url.path) {
+                try fileManager.removeItem(at: url)
+            }
+        } else {
+            try writeJSON(intents, to: url)
+        }
+    }
+
     private func ensureDirectory(_ directory: URL) throws {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try excludeFromBackup(directory)
@@ -582,6 +951,7 @@ final class PendingReportStore {
 enum DiagnosticsStoreError: Error, Equatable {
     case invalidArtifactPath(String)
     case unreadableReport(UUID)
+    case invalidHostedEnvelope
 }
 
 enum DiagnosticsDates {

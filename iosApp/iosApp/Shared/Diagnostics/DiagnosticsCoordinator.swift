@@ -99,6 +99,8 @@ final class DiagnosticsProfileEligibilityStore {
 
 enum DiagnosticsUploadDecision: Equatable {
     case uploaded(DiagnosticsUploadResponse)
+    case keptProcessing(shortID: String)
+    case keptRejected(code: String?)
     case keptRetryable
     case keptNeedsServerUpdate
     case keptTooLarge
@@ -427,14 +429,81 @@ actor DiagnosticsCoordinator {
     }
 
     func pendingReportsForCurrentBinding() async -> [PendingReport] {
+        _ = await drainHostedDeletionIntents()
         guard let context = await captureContext(requirePersistentCapture: false) else {
             return []
         }
-        return pendingStore.listReports(for: context.binding, now: Date())
+        return await pendingReports(for: context.binding)
     }
 
-    func pendingReports(for binding: DiagnosticsBinding) -> [PendingReport] {
-        pendingStore.listReports(for: binding, now: Date())
+    func pendingReports(for binding: DiagnosticsBinding) async -> [PendingReport] {
+        _ = await drainHostedDeletionIntents()
+        let deleting = Set(pendingStore.hostedDeletionIntents())
+        let reports = pendingStore.listReports(for: binding, now: Date()).filter {
+            !deleting.contains($0.id)
+        }
+        for report in reports where report.binding.binding.destinationChoice == .hosted
+            && report.state.hostedRemoteShortID != nil
+            && report.state.hostedRejectionCode == nil {
+            _ = await pollHostedStatus(report)
+        }
+        return pendingStore.listReports(for: binding, now: Date()).filter {
+            !deleting.contains($0.id)
+        }
+    }
+
+    @discardableResult
+    func delete(report: PendingReport) async -> Bool {
+        do {
+            try pendingStore.stageHostedDeletionAndDelete(report)
+        } catch {
+            return false
+        }
+        return await drainHostedDeletionIntents()
+    }
+
+    /// Implements the user-facing Turn Off and Delete boundary. Potentially
+    /// remote hosted reports become durable UUID-only deletion intents before
+    /// their local logs are removed; retries need no Silo account/server data.
+    @discardableResult
+    func turnOffAndDelete(binding: DiagnosticsBinding) async -> Bool {
+        let staged: Bool
+        do {
+            try pendingStore.stageHostedDeletionsAndPurge(binding: binding)
+            staged = true
+        } catch {
+            staged = false
+        }
+        RecentSessionTracker.shared.purge(binding: binding)
+        Self.purgeBreadcrumbJournal()
+        DiagLog.ring.clear()
+        #if os(tvOS)
+        ExitSentinel.shared.purge()
+        #endif
+        guard staged else { return false }
+        return await drainHostedDeletionIntents()
+    }
+
+    @discardableResult
+    func retryHostedDeletions() async -> Bool {
+        await drainHostedDeletionIntents()
+    }
+
+    @discardableResult
+    private func drainHostedDeletionIntents() async -> Bool {
+        let batch = pendingStore.prepareHostedDeletionRetries()
+        var completedAll = !batch.hasBlockedLocalEvidence
+        for reportID in batch.reportIDs {
+            do {
+                try await hostedAPI.deleteReport(reportID: reportID)
+                if !pendingStore.completeHostedDeletion(reportID: reportID) {
+                    completedAll = false
+                }
+            } catch {
+                completedAll = false
+            }
+        }
+        return completedAll
     }
 
     func buildBundle(for report: PendingReport) async throws -> DiagnosticsBundleBuildResult {
@@ -558,7 +627,17 @@ actor DiagnosticsCoordinator {
     }
 
     func upload(report: PendingReport) async -> DiagnosticsUploadDecision {
+        guard !pendingStore.hostedDeletionIntents().contains(report.id) else {
+            return .keptRetryable
+        }
         let destination = report.binding.binding.destinationChoice
+        if destination == .hosted, report.state.hostedRemoteShortID != nil {
+            // Once the collector has durably accepted the bytes, completion no
+            // longer depends on a fresh capability or Silo consent request.
+            // Poll first so a temporary kill switch, storage outage, or Silo
+            // connectivity failure cannot strand a processing report locally.
+            return await pollHostedStatus(report)
+        }
         // A non-persistent capture context is nil only when the status refresh
         // failed (offline or identity mid-change) — the destination was never
         // actually checked. Returning keptDestinationMismatch here would show
@@ -574,7 +653,9 @@ actor DiagnosticsCoordinator {
         guard report.isUploadable(to: context.binding) else {
             return .keptDestinationMismatch
         }
-
+        guard Self.canBeginUpload(status: context.availabilityStatus) else {
+            return .keptRetryable
+        }
         // The server attributes an upload to the profile in the X-Profile-Id
         // header (HTTPClient sends the *currently active* profile) and rejects
         // it as profile_mismatch (HTTP 400) when that disagrees with the
@@ -611,15 +692,22 @@ actor DiagnosticsCoordinator {
         } else {
             refreshedMode = currentConsent.mode.manifestMode
         }
+        if destination == .hosted {
+            return await uploadHosted(
+                report: report,
+                context: context,
+                consent: DiagnosticsManifest.Consent(
+                    mode: refreshedMode,
+                    noticeVersion: currentConsent.noticeVersion
+                )
+            )
+        }
+
         let report = pendingStore.updatingConsent(
             report,
             mode: refreshedMode,
             noticeVersion: currentConsent.noticeVersion
         )
-
-        if destination == .hosted {
-            return await uploadHosted(report: report, context: context)
-        }
 
         do {
             // Snapshot the destination *identity* before building the bundle.
@@ -685,7 +773,8 @@ actor DiagnosticsCoordinator {
 
     private func uploadHosted(
         report: PendingReport,
-        context: DiagnosticsCaptureContext
+        context: DiagnosticsCaptureContext,
+        consent: DiagnosticsManifest.Consent
     ) async -> DiagnosticsUploadDecision {
         do {
             let destinationServerRegistryID = ServerRegistry.shared.activeServerId
@@ -696,7 +785,31 @@ actor DiagnosticsCoordinator {
             // different-account refresh.
             let maximumBundleBytes = context.maxBundleBytes
                 ?? HostedDiagnosticsCapabilities.conservativeCaptureStatus.maxBundleBytes
-            let bundle = try await buildBundle(for: report)
+            let bundle: DiagnosticsBundleBuildResult
+            let mustPersistEnvelope: Bool
+            switch pendingStore.loadHostedEnvelope(for: report) {
+            case .corrupt:
+                pendingStore.markHostedRejected(report, code: "invalid_hosted_envelope")
+                return .keptRejected(code: "invalid_hosted_envelope")
+            case .available(let cached):
+                if report.state.hostedConsentRefreshRequired {
+                    bundle = try bundleBuilder.reframeHosted(cached: cached, consent: consent)
+                    mustPersistEnvelope = true
+                } else {
+                    // Policy and credential rotation cannot change an already
+                    // committed create envelope after an ambiguous response.
+                    bundle = cached
+                    mustPersistEnvelope = false
+                }
+            case .missing:
+                let framedReport = pendingStore.updatingConsent(
+                    report,
+                    mode: consent.mode,
+                    noticeVersion: consent.noticeVersion
+                )
+                bundle = try await buildBundle(for: framedReport)
+                mustPersistEnvelope = true
+            }
             guard bundle.manifest.report.profileID == nil,
                   bundle.manifest.playbackSessionIds.isEmpty,
                   bundle.manifest.destination.serverInstanceID == context.destinationServerInstanceID,
@@ -704,9 +817,19 @@ actor DiagnosticsCoordinator {
                   ServerRegistry.shared.activeServerId == destinationServerRegistryID else {
                 return .keptRetryable
             }
-            guard bundle.bundleData.count <= maximumBundleBytes else {
+            // An unchanged committed envelope may already exist remotely after
+            // an ambiguous POST. Its exact retry must reach the collector's
+            // acceptance-time idempotency path even if a later policy lowers
+            // the advertised limit. New or explicitly reframed envelopes use
+            // the current live bound.
+            guard !mustPersistEnvelope || bundle.bundleData.count <= maximumBundleBytes else {
                 pendingStore.markTooLarge(report)
                 return .keptTooLarge
+            }
+            if mustPersistEnvelope {
+                // The collector create request is allowed only after the exact
+                // sanitized envelope is durable and replayable across a crash.
+                try pendingStore.saveHostedEnvelope(bundle, for: report)
             }
 
             let response = try await hostedAPI.upload(
@@ -714,8 +837,12 @@ actor DiagnosticsCoordinator {
                 manifest: bundle.manifest,
                 bundleData: bundle.bundleData
             )
-            pendingStore.delete(report)
-            return .uploaded(response)
+            if response.state == .ready {
+                pendingStore.delete(report)
+                return .uploaded(response)
+            }
+            pendingStore.markHostedProcessing(report, shortID: response.shortID)
+            return .keptProcessing(shortID: response.shortID)
         } catch let error as HostedDiagnosticsAPIError {
             return handleHostedUploadError(error, report: report)
         } catch {
@@ -729,15 +856,11 @@ actor DiagnosticsCoordinator {
     ) -> DiagnosticsUploadDecision {
         switch error {
         case .reportIdentityMismatch:
-            pendingStore.delete(report)
-            return .discardedInvalidLocalBundle
+            pendingStore.markHostedRejected(report, code: "report_identity_mismatch")
+            return .keptRejected(code: "report_identity_mismatch")
         case .rejected(let code):
-            return handleHostedHTTPFailure(
-                statusCode: 422,
-                code: code,
-                report: report,
-                terminalRemoteState: true
-            )
+            pendingStore.markHostedRejected(report, code: code)
+            return .keptRejected(code: code)
         case .http(let statusCode, let code):
             return handleHostedHTTPFailure(
                 statusCode: statusCode,
@@ -750,18 +873,45 @@ actor DiagnosticsCoordinator {
         }
     }
 
+    private func pollHostedStatus(_ report: PendingReport) async -> DiagnosticsUploadDecision {
+        guard let expectedShortID = report.state.hostedRemoteShortID else {
+            return .keptRetryable
+        }
+        do {
+            let status = try await hostedAPI.reportStatus(reportID: report.id)
+            guard status.shortID == expectedShortID else {
+                pendingStore.markHostedRejected(report, code: "invalid_response")
+                return .keptRejected(code: "invalid_response")
+            }
+            switch status.state {
+            case .ready:
+                let response = DiagnosticsUploadResponse(
+                    reportId: status.reportID,
+                    shortId: status.shortID,
+                    state: .ready
+                )
+                pendingStore.delete(report)
+                return .uploaded(response)
+            case .processing:
+                return .keptProcessing(shortID: expectedShortID)
+            case .rejected, .deleting, .deleted:
+                pendingStore.markHostedRejected(report, code: status.errorCode ?? status.state.rawValue)
+                return .keptRejected(code: status.errorCode ?? status.state.rawValue)
+            case .receiving, .uploaded:
+                return .keptRetryable
+            }
+        } catch {
+            return .keptRetryable
+        }
+    }
+
     private func handleHostedHTTPFailure(
         statusCode: Int,
         code: String?,
-        report: PendingReport,
-        terminalRemoteState: Bool = false
+        report: PendingReport
     ) -> DiagnosticsUploadDecision {
         switch Self.hostedHTTPFailureDisposition(statusCode: statusCode, code: code) {
         case .retryable:
-            if terminalRemoteState {
-                pendingStore.delete(report)
-                return .discardedInvalidLocalBundle
-            }
             return .keptRetryable
         case .needsServerUpdate:
             pendingStore.markNeedsServerUpdate(report)
@@ -770,6 +920,7 @@ actor DiagnosticsCoordinator {
             pendingStore.markTooLarge(report)
             return .keptTooLarge
         case .staleConsent:
+            pendingStore.markHostedConsentRefreshRequired(report)
             consentStore.setMode(
                 .ask,
                 for: report.binding.binding,
@@ -777,8 +928,9 @@ actor DiagnosticsCoordinator {
             )
             return .keptStaleConsent
         case .invalidLocalBundle:
-            pendingStore.delete(report)
-            return .discardedInvalidLocalBundle
+            let rejectionCode = code?.isEmpty == false ? code : "invalid_hosted_envelope"
+            pendingStore.markHostedRejected(report, code: rejectionCode)
+            return .keptRejected(code: rejectionCode)
         }
     }
 
@@ -809,7 +961,9 @@ actor DiagnosticsCoordinator {
              "archive_metadata_mismatch", "report_conflict", "unsupported_media_type",
              "size_mismatch", "archive_mismatch", "invalid_bundle",
              "sensitive_header_rejected", "content_length_required",
-             "invalid_content_length", "invalid_json", "invalid_platform":
+             "invalid_content_length", "invalid_json", "invalid_platform",
+             "hosted_consent_required", "privacy_artifact_rejected",
+             "upload_attempt_limit_exceeded":
             return .invalidLocalBundle
         default:
             return .retryable
@@ -957,8 +1111,13 @@ actor DiagnosticsCoordinator {
             platform: Self.platform(),
             osVersion: Self.osVersion(),
             destinationServerInstanceID: snapshot.status.serverInstanceID,
-            maxBundleBytes: snapshot.status.maxBundleBytes
+            maxBundleBytes: snapshot.status.maxBundleBytes,
+            availabilityStatus: snapshot.status.status
         )
+    }
+
+    nonisolated static func canBeginUpload(status: DiagnosticsAvailabilityStatus) -> Bool {
+        status == .available
     }
 
     private struct HostedPersistentCaptureFallback {
@@ -1087,18 +1246,18 @@ actor DiagnosticsCoordinator {
         }
 
         if let binding {
-            purgeDiagnostics(for: binding)
+            await purgeDiagnostics(for: binding)
         }
         Self.purgeBreadcrumbJournal()
         return binding != nil
     }
 
-    func purgeDiagnosticsForServerRegistryID(_ serverId: String) {
+    func purgeDiagnosticsForServerRegistryID(_ serverId: String) async {
         let hostedServerInstanceID = DiagnosticsBinding.hosted(
             serverRegistryID: serverId,
             accountUserID: "local-purge"
         ).serverInstanceID
-        pendingStore.purge(serverInstanceID: hostedServerInstanceID)
+        try? pendingStore.stageHostedDeletionsAndPurge(serverInstanceID: hostedServerInstanceID)
         consentStore.remove(serverInstanceID: hostedServerInstanceID)
         profileEligibilityStore.remove(serverInstanceID: hostedServerInstanceID)
         let serverInstanceIDs = Self.ServerBindingIndex.serverInstanceIDs(for: serverId)
@@ -1115,6 +1274,7 @@ actor DiagnosticsCoordinator {
         }
         Self.ServerBindingIndex.remove(serverId: serverId)
         Self.purgeBreadcrumbJournal()
+        _ = await drainHostedDeletionIntents()
     }
 
     #if os(tvOS)
@@ -1301,16 +1461,10 @@ actor DiagnosticsCoordinator {
         return Data(rendered.joined(separator: "\n").appending("\n").utf8)
     }
 
-    private func purgeDiagnostics(for binding: DiagnosticsBinding) {
-        pendingStore.purge(binding: binding)
+    private func purgeDiagnostics(for binding: DiagnosticsBinding) async {
+        _ = await turnOffAndDelete(binding: binding)
         consentStore.remove(binding: binding)
-        RecentSessionTracker.shared.purge(binding: binding)
-        Self.purgeBreadcrumbJournal()
-        DiagLog.ring.clear()
         clearContext(for: binding)
-        #if os(tvOS)
-        ExitSentinel.shared.purge()
-        #endif
     }
 
     /// After purging a binding (e.g. an active-server sign-out) the pending

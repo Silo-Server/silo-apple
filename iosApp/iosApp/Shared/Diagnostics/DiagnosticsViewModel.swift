@@ -69,6 +69,7 @@ final class DiagnosticsViewModel {
     }
 
     func load(profile: UserProfile?) async {
+        _ = await coordinator.retryHostedDeletions()
         canManageDiagnostics = DiagnosticsConsentStore.canManageDiagnostics(profile: profile)
         guard canManageDiagnostics else {
             prompt = nil
@@ -94,6 +95,7 @@ final class DiagnosticsViewModel {
     }
 
     func handleForeground() async {
+        _ = await coordinator.retryHostedDeletions()
         guard prompt == nil else { return }
         // Collapse overlapping triggers (auth-state, server/profile,
         // notification, scene-phase) into a single refresh. The guard is set
@@ -162,12 +164,27 @@ final class DiagnosticsViewModel {
         consentStore.setMode(
             mode,
             for: snapshot.binding,
-            noticeVersion: snapshot.status.consentNoticeVersion
+            noticeVersion: snapshot.status.consentNoticeVersion,
+            purgeImmediately: mode != .never
         )
         consentMode = mode
         if mode == .never {
+            isWorking = true
+            let erased = await coordinator.turnOffAndDelete(binding: snapshot.binding)
+            isWorking = false
             pendingReports = []
             prompt = nil
+            if !erased {
+                let hasLocalEvidence = !pendingStore.listReports(
+                    for: snapshot.binding,
+                    now: Date()
+                ).isEmpty
+                notice = DiagnosticsNotice(
+                    message: hasLocalEvidence
+                        ? "Crash Reports is off. Some local reports could not be deleted and will retry."
+                        : "Crash Reports is off. Remote deletion is queued and will retry."
+                )
+            }
         } else {
             await reloadLocalState(for: snapshot)
             if mode == .always, featureState.isUploadAvailable {
@@ -209,7 +226,15 @@ final class DiagnosticsViewModel {
     }
 
     func delete(_ report: PendingReport) async {
-        pendingStore.delete(report)
+        isWorking = true
+        let erased = await coordinator.delete(report: report)
+        isWorking = false
+        if !erased {
+            let message = pendingStore.report(id: report.id) == nil
+                ? "The local report was deleted. Remote deletion is queued and will retry."
+                : "The report could not be deleted. Please try again."
+            notice = DiagnosticsNotice(message: message)
+        }
         await reloadLocalStateIfPossible()
     }
 
@@ -314,12 +339,17 @@ final class DiagnosticsViewModel {
     }
 
     private func reloadLocalState(for snapshot: DiagnosticsStatusSnapshot) async {
-        pendingReports = await coordinator.pendingReports(for: snapshot.binding)
         let record = consentStore.record(
             for: snapshot.binding,
             currentNoticeVersion: snapshot.status.consentNoticeVersion
         )
         consentMode = record.mode
+        if record.mode == .never {
+            _ = await coordinator.turnOffAndDelete(binding: snapshot.binding)
+            pendingReports = []
+        } else {
+            pendingReports = await coordinator.pendingReports(for: snapshot.binding)
+        }
         sentHistory = consentStore.sentHistory(for: snapshot.binding)
         debugLoggingEnabled = consentStore.debugLoggingEnabled
     }
@@ -371,6 +401,13 @@ final class DiagnosticsViewModel {
                 return "Sent as \(response.shortID) (\(state.rawValue))."
             }
             return "Sent as \(response.shortID)."
+        case .keptProcessing(let shortID):
+            return "Received as \(shortID); Silo Diagnostics is validating it."
+        case .keptRejected(let code):
+            if let code, !code.isEmpty {
+                return "Collector rejected the report (\(code)); the local copy was kept."
+            }
+            return "Collector rejected the report; the local copy was kept."
         case .keptRetryable:
             return "Report kept; Silo will retry."
         case .keptNeedsServerUpdate:

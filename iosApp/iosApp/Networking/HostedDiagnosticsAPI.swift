@@ -163,7 +163,12 @@ actor HostedDiagnosticsAPI {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 10
         let response = try await perform(request, as: HostedDiagnosticsCapabilities.self)
-        guard response.collectorId == HostedDiagnosticsCapabilities.pinnedCollectorID else {
+        guard response.collectorId == HostedDiagnosticsCapabilities.pinnedCollectorID,
+              response.acceptedSchemaVersions.contains(1),
+              response.maxBundleBytes > 0,
+              response.maxManifestBytes > 0,
+              response.retentionDays == HostedDiagnosticsCapabilities.conservativeCaptureStatus.retentionDays,
+              response.consentNoticeVersion > 0 else {
             throw HostedDiagnosticsAPIError.collectorIdentityMismatch
         }
         return response
@@ -187,6 +192,38 @@ actor HostedDiagnosticsAPI {
             bundleData: bundleData,
             canRefreshCredential: true
         )
+    }
+
+    func reportStatus(reportID: UUID) async throws -> HostedReportStatusResponse {
+        guard let credential = credentialStore.load() else {
+            throw HostedDiagnosticsAPIError.credentialPersistenceFailed
+        }
+        let reportIDString = reportID.uuidString.lowercased()
+        var request = try self.request(path: "v1/reports/\(reportIDString)", method: "GET")
+        authorize(&request, token: credential.installationToken)
+        let status = try await perform(request, as: HostedReportStatusResponse.self)
+        guard status.reportID.caseInsensitiveCompare(reportIDString) == .orderedSame,
+              !status.shortID.isEmpty else {
+            throw HostedDiagnosticsAPIError.remoteReportIdentityMismatch
+        }
+        return status
+    }
+
+    func deleteReport(reportID: UUID) async throws {
+        guard let credential = credentialStore.load() else {
+            throw HostedDiagnosticsAPIError.credentialPersistenceFailed
+        }
+        let reportIDString = reportID.uuidString.lowercased()
+        var request = try self.request(path: "v1/reports/\(reportIDString)", method: "DELETE")
+        authorize(&request, token: credential.installationToken)
+        do {
+            try await performNoContent(request)
+        } catch HostedDiagnosticsAPIError.http(statusCode: 404, code: "report_not_found") {
+            // A repeated DELETE can observe 404 after the service has scrubbed
+            // the report's installation link. It also means a locally staged
+            // envelope never crossed the create boundary. Both satisfy the
+            // erasure request for this anonymous installation.
+        }
     }
 
     private func upload(
@@ -277,11 +314,20 @@ actor HostedDiagnosticsAPI {
             throw HostedDiagnosticsAPIError.remoteReportIdentityMismatch
         } catch {
             // The validated 202 response means R2 ownership is durable. Status
-            // refresh is informational; a transient/malformed GET must not
-            // retain and rebuild an already accepted report.
+            // refresh is informational; the caller keeps the local report and
+            // can poll again without rebuilding the accepted envelope.
         }
-        if status.state == .rejected {
-            throw HostedDiagnosticsAPIError.rejected(status.errorCode)
+        switch status.state {
+        case .rejected, .deleting, .deleted:
+            throw HostedDiagnosticsAPIError.rejected(status.errorCode ?? status.state.rawValue)
+        case .receiving, .uploaded:
+            // A stale/non-canonical GET must not weaken the validated durable
+            // PUT acknowledgement. The public API exposes only processing or
+            // ready after acceptance, but retaining the PUT state fails safe
+            // if that contract ever regresses.
+            status = accepted
+        case .processing, .ready:
+            break
         }
         return DiagnosticsUploadResponse(
             reportId: status.reportID,
@@ -389,6 +435,29 @@ actor HostedDiagnosticsAPI {
             throw HostedDiagnosticsAPIError.underlying(String(describing: error))
         }
     }
+
+    private func performNoContent(_ request: URLRequest) async throws {
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw HostedDiagnosticsAPIError.invalidResponse
+            }
+            guard httpResponse.statusCode == 204 else {
+                let envelope = try? DiagnosticsJSONCoding.makeDecoder().decode(
+                    HostedErrorEnvelope.self,
+                    from: data
+                )
+                throw HostedDiagnosticsAPIError.http(
+                    statusCode: httpResponse.statusCode,
+                    code: envelope?.error
+                )
+            }
+        } catch let error as HostedDiagnosticsAPIError {
+            throw error
+        } catch {
+            throw HostedDiagnosticsAPIError.underlying(String(describing: error))
+        }
+    }
 }
 
 private final class HostedDiagnosticsSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
@@ -457,7 +526,7 @@ private struct HostedCreateReportResponse: Decodable {
     }
 }
 
-private struct HostedReportStatusResponse: Decodable {
+struct HostedReportStatusResponse: Decodable {
     let reportID: String
     let shortID: String
     let state: DiagnosticsRemoteReportState

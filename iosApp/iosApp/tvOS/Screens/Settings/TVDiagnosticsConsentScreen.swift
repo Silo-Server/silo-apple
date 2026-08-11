@@ -52,7 +52,9 @@ struct TVDiagnosticsConsentScreen: View {
             } else if proposedMode == .never {
                 TVSettingsConfirmationOverlay(
                     title: "Turn Off Crash Reports?",
-                    message: "Pending reports for this server account will be deleted.",
+                    message: model.selectedDestination == .hosted
+                        ? "Pending local reports will be deleted. Reports already received by Silo Diagnostics will also be queued for deletion."
+                        : "Pending reports for this server account will be deleted.",
                     confirmTitle: "Turn Off and Delete",
                     cancel: cancelConfirmation,
                     confirm: { confirm(.never) }

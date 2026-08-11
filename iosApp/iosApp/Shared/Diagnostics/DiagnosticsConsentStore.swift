@@ -127,7 +127,8 @@ final class DiagnosticsConsentStore {
         _ mode: DiagnosticsConsentChoice,
         for binding: DiagnosticsBinding,
         noticeVersion: Int,
-        now: Date = Date()
+        now: Date = Date(),
+        purgeImmediately: Bool = true
     ) {
         lock.lock()
         var records = loadRecords()
@@ -140,7 +141,7 @@ final class DiagnosticsConsentStore {
         saveRecords(records)
         lock.unlock()
 
-        if mode == .never {
+        if mode == .never, purgeImmediately {
             onNeverSelected(binding)
         }
     }

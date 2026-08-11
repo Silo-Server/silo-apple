@@ -25,6 +25,22 @@ final class ConsentStoreTests: XCTestCase {
         XCTAssertFalse(store.persistentCaptureEnabled(for: binding, currentNoticeVersion: 1))
     }
 
+    func testNeverCanDeferPurgeUntilHostedDeletionIntentIsDurable() {
+        var purged: [DiagnosticsBinding] = []
+        let store = makeStore { binding in purged.append(binding) }
+        let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")
+
+        store.setMode(
+            .never,
+            for: binding,
+            noticeVersion: 1,
+            purgeImmediately: false
+        )
+
+        XCTAssertTrue(purged.isEmpty)
+        XCTAssertFalse(store.persistentCaptureEnabled(for: binding, currentNoticeVersion: 1))
+    }
+
     func testPersistentCaptureConsentIsIndependentOfDebugLogging() {
         let store = makeStore()
         let binding = DiagnosticsBinding(serverInstanceID: "srv-a", accountUserID: "42")

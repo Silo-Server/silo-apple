@@ -6,6 +6,9 @@ struct DiagnosticsBundleBuildResult {
     let manifest: DiagnosticsManifest
     let manifestData: Data
     let bundleData: Data
+    /// Sanitized members retained locally so stale hosted consent can be
+    /// reframed without ever reopening raw evidence under a rotated token set.
+    let archiveEntries: [PendingReportArtifact]
 }
 
 struct DiagnosticsBundleBuilder {
@@ -28,9 +31,15 @@ struct DiagnosticsBundleBuilder {
         let destinationSafeLogsData = isHosted
             ? Self.sanitizeHostedLogJSONL(rawLogsData)
             : rawLogsData
+        let hostedNormalizedLogsData = isHosted
+            ? Self.normalizeHostedTextualIdentifiers(
+                name: "logs.jsonl",
+                data: destinationSafeLogsData
+            )
+            : destinationSafeLogsData
         let logsData = Self.scrubTextualEntry(
             name: "logs.jsonl",
-            data: destinationSafeLogsData,
+            data: hostedNormalizedLogsData,
             tokens: redactionTokens
         )
         let logsGzipSize = (try? Self.gzip(logsData).count) ?? 0
@@ -43,38 +52,125 @@ struct DiagnosticsBundleBuilder {
         )
 
         var entries: [(String, Data)] = []
-        func appendEntry(_ name: String, _ data: Data) {
-            let destinationSafeData = isHosted && name == "breadcrumbs.jsonl"
-                ? Self.sanitizeHostedLogJSONL(data)
-                : data
+        func appendEntry(_ name: String, _ data: Data) throws {
+            let destinationSafeData: Data
+            if isHosted, name == "breadcrumbs.jsonl" {
+                destinationSafeData = Self.sanitizeHostedLogJSONL(data)
+            } else if isHosted, name == "device.json" {
+                destinationSafeData = try Self.sanitizeHostedDeviceJSON(data)
+            } else {
+                destinationSafeData = data
+            }
+            let hostedSafeData = isHosted
+                ? Self.normalizeHostedTextualIdentifiers(name: name, data: destinationSafeData)
+                : destinationSafeData
             entries.append((
                 name,
                 Self.scrubTextualEntry(
                     name: name,
-                    data: destinationSafeData,
+                    data: hostedSafeData,
                     tokens: redactionTokens
                 )
             ))
         }
 
         let manifestDraftData = try DiagnosticsJSONCoding.makeEncoder().encode(draft)
-        appendEntry("manifest.json", manifestDraftData)
-        appendEntry("device.json", try readRequired("device.json", from: report.directoryURL))
-        appendEntry("logs.jsonl", logsData)
+        try appendEntry("manifest.json", manifestDraftData)
+        try appendEntry("device.json", try readRequired("device.json", from: report.directoryURL))
+        try appendEntry("logs.jsonl", logsData)
 
         if let crash = draft.crash {
-            appendEntry("crash/summary.json", try DiagnosticsJSONCoding.makeEncoder().encode(crash))
+            try appendEntry("crash/summary.json", try DiagnosticsJSONCoding.makeEncoder().encode(crash))
         }
 
         for artifact in ["crash/stack.txt", "crash/tombstone.pb", "crash/metrickit.json", "breadcrumbs.jsonl"] {
+            // Native tombstones are opaque binary evidence. The hosted
+            // collector cannot inspect them for private identifiers, so keep
+            // this artifact available only to the existing self-hosted path.
+            if isHosted, artifact == "crash/tombstone.pb" {
+                continue
+            }
             let url = report.directoryURL.appendingPathComponent(artifact)
             guard fileManager.fileExists(atPath: url.path),
                   !entries.contains(where: { $0.0 == artifact }) else {
                 continue
             }
-            appendEntry(artifact, try Data(contentsOf: url))
+            try appendEntry(artifact, try Data(contentsOf: url))
         }
 
+        return try finalize(entries: entries, isHosted: isHosted, redactionTokens: redactionTokens)
+    }
+
+    func reframeHosted(
+        cached: DiagnosticsBundleBuildResult,
+        consent: DiagnosticsManifest.Consent
+    ) throws -> DiagnosticsBundleBuildResult {
+        guard cached.manifest.destination.serverInstanceID == HostedDiagnosticsCapabilities.pinnedCollectorID,
+              cached.manifest.report.profileID == nil,
+              cached.manifest.playbackSessionIds.isEmpty,
+              !cached.manifest.archive.entries.contains("crash/tombstone.pb"),
+              cached.archiveEntries.map(\.relativePath) == cached.manifest.archive.entries,
+              let embedded = cached.archiveEntries.first,
+              embedded.relativePath == "manifest.json" else {
+            throw DiagnosticsBundleError.invalidHostedEnvelope
+        }
+        var draft = try DiagnosticsJSONCoding.makeDecoder().decode(
+            DiagnosticsManifestDraft.self,
+            from: embedded.data
+        )
+        draft.consent = consent
+        var entries = cached.archiveEntries.map { ($0.relativePath, $0.data) }
+        entries[0] = (
+            "manifest.json",
+            try DiagnosticsJSONCoding.makeEncoder().encode(draft)
+        )
+        return try finalize(entries: entries, isHosted: true, redactionTokens: [])
+    }
+
+    func validateCachedHostedEnvelope(_ cached: DiagnosticsBundleBuildResult) throws {
+        guard cached.manifest.destination.serverInstanceID == HostedDiagnosticsCapabilities.pinnedCollectorID,
+              cached.manifest.report.profileID == nil,
+              cached.manifest.playbackSessionIds.isEmpty,
+              !cached.manifest.archive.entries.contains("crash/tombstone.pb"),
+              cached.archiveEntries.map(\.relativePath) == cached.manifest.archive.entries,
+              cached.archiveEntries.first?.relativePath == "manifest.json",
+              cached.archiveEntries.contains(where: { $0.relativePath == "device.json" }),
+              cached.manifestData == (try DiagnosticsJSONCoding.makeEncoder().encode(cached.manifest)) else {
+            throw DiagnosticsBundleError.invalidHostedEnvelope
+        }
+
+        let entries = cached.archiveEntries.map { ($0.relativePath, $0.data) }
+        let tarData = try Self.makeTar(entries: entries)
+        let bundleData = try Self.gzip(tarData)
+        guard bundleData == cached.bundleData,
+              cached.manifest.archive.bytes == bundleData.count,
+              cached.manifest.archive.uncompressedBytes == tarData.count,
+              cached.manifest.archive.sha256 == DiagnosticsSHA256.hex(data: bundleData) else {
+            throw DiagnosticsBundleError.invalidHostedEnvelope
+        }
+
+        let draft = try DiagnosticsJSONCoding.makeDecoder().decode(
+            DiagnosticsManifestDraft.self,
+            from: cached.archiveEntries[0].data
+        )
+        guard draft.finalized(archive: cached.manifest.archive) == cached.manifest else {
+            throw DiagnosticsBundleError.invalidHostedEnvelope
+        }
+    }
+
+    private func finalize(
+        entries: [(String, Data)],
+        isHosted: Bool,
+        redactionTokens: [String]
+    ) throws -> DiagnosticsBundleBuildResult {
+        guard let embeddedManifest = entries.first,
+              embeddedManifest.0 == "manifest.json" else {
+            throw DiagnosticsBundleError.invalidHostedEnvelope
+        }
+        let draft = try DiagnosticsJSONCoding.makeDecoder().decode(
+            DiagnosticsManifestDraft.self,
+            from: embeddedManifest.1
+        )
         let tarData = try Self.makeTar(entries: entries)
         let bundleData = try Self.gzip(tarData)
         let archive = DiagnosticsManifest.Archive(
@@ -85,9 +181,16 @@ struct DiagnosticsBundleBuilder {
         )
         let manifest = draft.finalized(archive: archive)
         try manifest.validate()
+        let finalizedManifestData = try DiagnosticsJSONCoding.makeEncoder().encode(manifest)
+        let hostedNormalizedManifestData = isHosted
+            ? Self.normalizeHostedTextualIdentifiers(
+                name: "manifest.json",
+                data: finalizedManifestData
+            )
+            : finalizedManifestData
         let manifestData = Self.scrubTextualEntry(
             name: "manifest.json",
-            data: try DiagnosticsJSONCoding.makeEncoder().encode(manifest),
+            data: hostedNormalizedManifestData,
             tokens: redactionTokens
         )
         // The upload APIs consume both representations below. Decode the
@@ -103,7 +206,10 @@ struct DiagnosticsBundleBuilder {
         return DiagnosticsBundleBuildResult(
             manifest: sanitizedManifest,
             manifestData: manifestData,
-            bundleData: bundleData
+            bundleData: bundleData,
+            archiveEntries: entries.map {
+                PendingReportArtifact(relativePath: $0.0, data: $0.1)
+            }
         )
     }
 
@@ -152,16 +258,20 @@ struct DiagnosticsBundleBuilder {
                     return nil
                 }
                 let registered = hostedAttributeRegistry[line.cat] ?? [:]
-                let safeAttributes = line.attrs?.filter { key, value in
+                var safeAttributes = line.attrs?.filter { key, value in
                     registered[key]?.accepts(value) == true
+                }
+                if line.cat == .network,
+                   case .string(let path) = safeAttributes?["path"] {
+                    safeAttributes?["path"] = .string(templateHostedPrivatePathSegments(path))
                 }
                 let sanitized = DiagnosticsLogLine(
                     ts: line.ts,
                     run: line.run,
                     lvl: line.lvl,
                     cat: line.cat,
-                    tag: sanitizeHostedPrivateIdentifierAssignments(in: line.tag),
-                    msg: sanitizeHostedPrivateIdentifierAssignments(in: line.msg),
+                    tag: sanitizeHostedMessage(line.tag),
+                    msg: sanitizeHostedMessage(line.msg),
                     attrs: safeAttributes?.isEmpty == false ? safeAttributes : nil
                 )
                 guard let encoded = try? encoder.encode(sanitized) else {
@@ -175,6 +285,41 @@ struct DiagnosticsBundleBuilder {
         return Data(rendered.joined(separator: "\n").appending("\n").utf8)
     }
 
+    static func sanitizeHostedDeviceJSON(_ data: Data) throws -> Data {
+        let snapshot = try DiagnosticsJSONCoding.makeDecoder().decode(
+            DeviceSnapshotPayload.self,
+            from: data
+        )
+        let sanitized = DeviceSnapshotPayload(
+            capturedAt: snapshot.capturedAt,
+            provenance: snapshot.provenance,
+            identity: removeHostedHardwareRouteHashes(from: snapshot.identity),
+            display: removeHostedHardwareRouteHashes(from: snapshot.display),
+            audio: removeHostedHardwareRouteHashes(from: snapshot.audio),
+            videoCodecs: removeHostedHardwareRouteHashes(from: snapshot.videoCodecs),
+            network: removeHostedHardwareRouteHashes(from: snapshot.network)
+        )
+        try sanitized.validate()
+        return try DiagnosticsJSONCoding.makeEncoder().encode(sanitized)
+    }
+
+    private static func removeHostedHardwareRouteHashes(
+        from value: DiagnosticsJSONValue
+    ) -> DiagnosticsJSONValue {
+        switch value {
+        case .array(let values):
+            return .array(values.map { removeHostedHardwareRouteHashes(from: $0) })
+        case .object(let object):
+            return .object(object.reduce(into: [:]) { result, entry in
+                let normalizedKey = entry.key.lowercased().filter { $0.isLetter || $0.isNumber }
+                guard !hostedHardwareRouteHashKeys.contains(normalizedKey) else { return }
+                result[entry.key] = removeHostedHardwareRouteHashes(from: entry.value)
+            })
+        default:
+            return value
+        }
+    }
+
     private static func sanitizeHostedPrivateIdentifierAssignments(in value: String) -> String {
         let range = NSRange(location: 0, length: (value as NSString).length)
         return hostedPrivateIdentifierAssignmentRegex.stringByReplacingMatches(
@@ -182,6 +327,81 @@ struct DiagnosticsBundleBuilder {
             options: [],
             range: range,
             withTemplate: "[redacted_private_id]"
+        )
+    }
+
+    private static func sanitizeHostedMessage(_ value: String) -> String {
+        let identifiersRemoved = sanitizeHostedPrivateIdentifierAssignments(in: value)
+        let hostsNormalized = replaceMatches(
+            of: hostedStableHostTokenRegex,
+            in: identifiersRemoved,
+            with: "redacted.invalid"
+        )
+        return templateHostedURLPaths(in: hostsNormalized)
+    }
+
+    private static func normalizeHostedTextualIdentifiers(name: String, data: Data) -> Data {
+        guard textualEntryNames.contains(name) else { return data }
+        guard let value = String(data: data, encoding: .utf8) else {
+            return Data("[redaction_failed: non-utf8 content dropped]".utf8)
+        }
+        return Data(sanitizeHostedMessage(value).utf8)
+    }
+
+    private static func templateHostedURLPaths(in value: String) -> String {
+        let nsValue = value as NSString
+        var rendered = value
+        let fullRange = NSRange(location: 0, length: nsValue.length)
+        let matches = hostedAuthorityURLRegex.matches(in: value, range: fullRange)
+        for match in matches.reversed() {
+            let candidate = nsValue.substring(with: match.range)
+            let trailing = candidate.reversed().prefix { hostedTrailingURLPunctuation.contains($0) }
+            let trailingText = String(trailing.reversed())
+            let core = String(candidate.dropLast(trailingText.count))
+            guard var components = URLComponents(string: core) else { continue }
+            let templatedPath = templateHostedPrivatePathSegments(components.percentEncodedPath)
+                .replacingOccurrences(of: "{id}", with: "%7Bid%7D")
+            components.percentEncodedPath = templatedPath
+            guard let encoded = components.string else { continue }
+            let sanitized = encoded.replacingOccurrences(
+                of: "%7Bid%7D",
+                with: "{id}",
+                options: .caseInsensitive
+            )
+            let range = Range(match.range, in: rendered)!
+            rendered.replaceSubrange(range, with: sanitized + trailingText)
+        }
+        return rendered
+    }
+
+    private static func templateHostedPrivatePathSegments(_ value: String) -> String {
+        value.split(separator: "/", omittingEmptySubsequences: false)
+            .map { segment in
+                let candidate = String(segment)
+                return isHostedPrivatePathSegment(candidate) ? "{id}" : candidate
+            }
+            .joined(separator: "/")
+    }
+
+    private static func isHostedPrivatePathSegment(_ value: String) -> Bool {
+        let range = NSRange(location: 0, length: (value as NSString).length)
+        return hostedUUIDPathSegmentRegex.firstMatch(in: value, range: range) != nil
+            || hostedNumericPathSegmentRegex.firstMatch(in: value, range: range) != nil
+            || hostedHexPathSegmentRegex.firstMatch(in: value, range: range) != nil
+            || hostedOpaquePathSegmentRegex.firstMatch(in: value, range: range) != nil
+    }
+
+    private static func replaceMatches(
+        of regex: NSRegularExpression,
+        in value: String,
+        with replacement: String
+    ) -> String {
+        let range = NSRange(location: 0, length: (value as NSString).length)
+        return regex.stringByReplacingMatches(
+            in: value,
+            options: [],
+            range: range,
+            withTemplate: replacement
         )
     }
 
@@ -197,6 +417,33 @@ struct DiagnosticsBundleBuilder {
         }
         return regex
     }()
+
+    private static let hostedStableHostTokenRegex = try! NSRegularExpression(
+        pattern: #"(?i)(?:\[host:[0-9a-f]{12}\]|\bhost_[0-9a-f]{16}\b)"#
+    )
+    private static let hostedAuthorityURLRegex = try! NSRegularExpression(
+        pattern: #"(?i)\b(?:https?|wss?)://[^\s<>\"']+"#
+    )
+    private static let hostedUUIDPathSegmentRegex = try! NSRegularExpression(
+        pattern: #"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"#
+    )
+    private static let hostedNumericPathSegmentRegex = try! NSRegularExpression(
+        pattern: #"^[0-9]+$"#
+    )
+    private static let hostedHexPathSegmentRegex = try! NSRegularExpression(
+        pattern: #"(?i)^[0-9a-f]{16,}$"#
+    )
+    private static let hostedOpaquePathSegmentRegex = try! NSRegularExpression(
+        pattern: #"^[A-Za-z0-9_-]{20,}$"#
+    )
+    private static let hostedTrailingURLPunctuation: Set<Character> = [
+        ".", ",", ";", ":", "!", "?", ")", "]",
+    ]
+    private static let hostedHardwareRouteHashKeys: Set<String> = [
+        "uidhash",
+        "routehash",
+        "routehashes",
+    ]
 
     private enum HostedAttributeType {
         case string
@@ -349,7 +596,7 @@ struct DiagnosticsBundleBuilder {
         header[155] = 32
     }
 
-    private static func gzip(_ data: Data) throws -> Data {
+    static func gzip(_ data: Data) throws -> Data {
         var stream = z_stream()
         let initStatus = deflateInit2_(
             &stream,
@@ -400,5 +647,6 @@ struct DiagnosticsBundleBuilder {
 enum DiagnosticsBundleError: Error, Equatable {
     case invalidEntryName(String)
     case gzipFailed(Int32)
+    case invalidHostedEnvelope
 }
 #endif

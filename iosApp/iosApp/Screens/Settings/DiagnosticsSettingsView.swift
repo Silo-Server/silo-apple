@@ -101,7 +101,11 @@ struct DiagnosticsSettingsView: View {
                 }
                 Button("Cancel", role: .cancel, action: cancelModeChange)
             } message: {
-                Text("Pending reports for this server account will be deleted. The in-memory basic log will continue running and is never sent without an explicit action.")
+                if model.selectedDestination == .hosted {
+                    Text("Pending local reports will be deleted. Reports already received by Silo Diagnostics will also be queued for deletion. The in-memory basic log will continue running and is never sent without an explicit action.")
+                } else {
+                    Text("Pending reports for this server account will be deleted. The in-memory basic log will continue running and is never sent without an explicit action.")
+                }
             }
         } header: {
             Text("Capture")
