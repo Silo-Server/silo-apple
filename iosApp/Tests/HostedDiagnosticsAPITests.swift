@@ -513,13 +513,16 @@ final class HostedDiagnosticsAPITests: XCTestCase {
     func testHostedFrozenLogsAndBreadcrumbsDropPrivatePlaybackAttributes() async throws {
         let privateLogSessionID = "private-server-playback-session-log"
         let privateBreadcrumbSessionID = "private-server-playback-session-breadcrumb"
+        let canonicalRunID = "0198a8f8-6c2d-7e31-8f44-62d198a10111"
+        let privateBareUUID = "1198a8f8-6c2d-7e31-8f44-62d198a10112"
         let logLine = try XCTUnwrap(DiagLog.renderedLine(
             level: .info,
             category: .playback,
-            tag: "CMP playback_session_id=\(privateLogSessionID)",
-            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log wss://[host:0123456789ab]/items/42 http://127.0.0.1:49152/master.m3u8 host=127.0.0.1 http://127.42.7.9:49153/playlist.m3u8 \"host\":\"127.42.7.9\" \"playback_session_id\":\"private-json-session\" peer 127.42.7.8 route selected",
+            tag: "CMP playback_session_id=\(privateLogSessionID) file_abcdefgh",
+            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log wss://[host:0123456789ab]/items/42 http://127.0.0.1:49152/master.m3u8 host=127.0.0.1 http://127.42.7.9:49153/playlist.m3u8 \"host\":\"127.42.7.9\" \"playback_session_id\":\"private-json-session\" request \(privateBareUUID) item_42 plan_abcdefgh item_count request_cancelled peer 127.42.7.8 route selected",
             attrs: [
                 "sink": .string("HDMI"),
+                "fmt": .string("content_abcdefgh"),
                 "width": .int(3840),
                 "session_id": .string(privateLogSessionID),
                 "play_method": .string("transcode"),
@@ -527,12 +530,12 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 "reason": .string("private-route-reason"),
             ],
             timestamp: Date(timeIntervalSince1970: 1_700_000_000),
-            captureSessionID: "failed-run"
+            captureSessionID: canonicalRunID
         ))
         let breadcrumbLine = try XCTUnwrap(DiagLog.renderedLine(
             level: .info,
             category: .playback,
-            tag: "PlaybackSessionBridge session_id=\(privateBreadcrumbSessionID)",
+            tag: "PlaybackSessionBridge session_id=\(privateBreadcrumbSessionID) media_abcdefgh",
             message: "playback_session_id=\(privateBreadcrumbSessionID) itemId=private-item-breadcrumb mediaId=private-media-breadcrumb playback stopped",
             attrs: [
                 "decoder": .string("VideoToolbox"),
@@ -543,7 +546,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 "reason": .string("private-stop-reason"),
             ],
             timestamp: Date(timeIntervalSince1970: 1_700_000_001),
-            captureSessionID: "failed-run"
+            captureSessionID: canonicalRunID
         ))
         let capturedAt = Date(timeIntervalSince1970: 1_700_000_002)
         let binding = DiagnosticsBinding.hosted(
@@ -581,7 +584,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 formFactor: "tv"
             ),
             playbackSessionIDs: [privateLogSessionID, privateBreadcrumbSessionID],
-            captureSessionID: "failed-run"
+            captureSessionID: canonicalRunID
         )
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "HostedAttributePrivacy-\(UUID().uuidString)",
@@ -645,6 +648,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let hostedBreadcrumb = try XCTUnwrap(decodeLogLines(breadcrumbsData).first)
 
         XCTAssertEqual(hostedLog.attrs, [
+            "fmt": .string("[redacted_private_id]"),
             "sink": .string("HDMI"),
             "width": .int(3840),
         ])
@@ -675,10 +679,21 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             "127.0.0.1",
             "127.42.7.9",
             "127.42.7.8",
+            privateBareUUID,
+            "file_abcdefgh",
+            "item_42",
+            "plan_abcdefgh",
+            "content_abcdefgh",
+            "media_abcdefgh",
         ] {
             XCTAssertFalse(renderedEvidence.contains(forbidden), forbidden)
         }
         XCTAssertTrue(hostedLog.msg.contains("[redacted_private_id]"))
+        XCTAssertTrue(hostedLog.msg.contains("item_count"))
+        XCTAssertTrue(hostedLog.msg.contains("request_cancelled"))
+        XCTAssertEqual(hostedLog.run, canonicalRunID)
+        XCTAssertEqual(hostedBreadcrumb.run, canonicalRunID)
+        XCTAssertEqual(bundle.manifest.report.captureSessionID, canonicalRunID)
         XCTAssertTrue(hostedLog.msg.contains("wss://redacted.invalid/items/{id}"))
         XCTAssertTrue(
             hostedLog.msg.contains("http://redacted.invalid/master.m3u8"),
@@ -711,16 +726,25 @@ final class HostedDiagnosticsAPITests: XCTestCase {
     func testHostedMetricKitBundleDropsContainerPathsAndNormalizesLoopbackOnlyForHosted() throws {
         let capturedAt = Date(timeIntervalSince1970: 1_700_100_000)
         let privateContainerID = "01234567-89ab-4def-8123-456789abcdef"
+        let privateBareUUID = "1198a8f8-6c2d-7e31-8f44-62d198a10112"
+        let privateBareItemID = "item_42"
+        let privateBarePlanID = "plan_abcdefgh"
+        let privateManifestID = "content_abcdefgh"
+        let privateDeviceSummaryID = "device_abcdefgh"
+        let metricKitBinaryUUID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
         let privatePath = "/private/var/mobile/Containers/Data/Application/\(privateContainerID)/Silo.app/Silo"
+        let rawStack = Data(
+            "frame \(privateBareUUID) \(privateBareItemID) \(privateBarePlanID)\n".utf8
+        )
         let rawMetricKit = try JSONSerialization.data(withJSONObject: [
             "diagnosticMetaData": [
                 "virtualMemoryRegionInfo": "mapped image \(privatePath)",
-                "exceptionReason": "container[\(privatePath)] loopback request http://127.0.0.1:49152/items/42 failed",
+                "exceptionReason": "container[\(privatePath)] loopback request http://127.0.0.1:49152/items/42 failed for \(privateBareUUID) \(privateBareItemID) \(privateBarePlanID)",
             ],
             "callStacks": [
                 "callStackRootFrames": [[
                     "binaryName": "libsystem_kernel.dylib",
-                    "binaryUUID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                    "binaryUUID": metricKitBinaryUUID,
                     "symbolName": "__pthread_kill",
                     "offsetIntoBinaryTextSegment": 42,
                     "address": 4_294_967_296,
@@ -738,7 +762,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 profileID: nil,
                 consentMode: .manual,
                 noticeVersion: 1,
-                appVersion: "1.0",
+                appVersion: "1.0 \(privateManifestID)",
                 appBuild: "7",
                 platform: .ios,
                 osVersion: "26.0",
@@ -749,9 +773,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 type: .crash,
                 capturedAt: capturedAt,
                 crash: DiagnosticsCrashInfo(
-                    summary: "Crash reported by MetricKit: libsystem_kernel.dylib at \(privatePath)",
-                    stackExcerpt: "libsystem_kernel.dylib at \(privatePath)",
-                    thread: "worker http://[::1]:49152/items/42",
+                    summary: "Crash reported by MetricKit: libsystem_kernel.dylib at \(privatePath) \(privateBareUUID)",
+                    stackExcerpt: "libsystem_kernel.dylib at \(privatePath) \(privateBareItemID)",
+                    thread: "worker http://[::1]:49152/items/42 \(privateBarePlanID)",
                     foreground: true,
                     source: .metrickit,
                     provenance: .metricReportingPeriod,
@@ -761,7 +785,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 ),
                 deviceSummary: DiagnosticsManifest.DeviceSummary(
                     manufacturer: "Apple",
-                    model: "iPhone",
+                    model: "iPhone \(privateDeviceSummaryID)",
                     os: "26.0",
                     formFactor: "phone"
                 ),
@@ -783,6 +807,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 deviceSnapshot: makeDeviceSnapshot(capturedAt: capturedAt),
                 artifacts: [
                     PendingReportArtifact(relativePath: "crash/metrickit.json", data: rawMetricKit),
+                    PendingReportArtifact(relativePath: "crash/stack.txt", data: rawStack),
                 ]
             ))
         }
@@ -802,9 +827,11 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         )
         let hostedTar = try gunzip(hostedBundle.bundleData)
         let hostedMetricKit = try tarEntry(named: "crash/metrickit.json", in: hostedTar)
+        let hostedStack = try tarEntry(named: "crash/stack.txt", in: hostedTar)
         let hostedEmbeddedManifest = try tarEntry(named: "manifest.json", in: hostedTar)
         let hostedEvidence = String(
-            decoding: hostedMetricKit + hostedEmbeddedManifest + hostedBundle.manifestData,
+            decoding: hostedMetricKit + hostedStack + hostedEmbeddedManifest
+                + hostedBundle.manifestData,
             as: UTF8.self
         )
 
@@ -815,12 +842,19 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             "/private/var",
             "127.0.0.1",
             "[::1]",
+            privateBareUUID,
+            privateBareItemID,
+            privateBarePlanID,
+            privateManifestID,
+            privateDeviceSummaryID,
         ] {
             XCTAssertFalse(hostedEvidence.contains(forbidden), forbidden)
         }
         XCTAssertFalse(hostedEvidence.contains("libsystem_kernel.dylib"))
         XCTAssertFalse(hostedEvidence.contains(#""address""#))
         XCTAssertTrue(hostedEvidence.contains("apple-native-library"))
+        XCTAssertTrue(hostedEvidence.contains(metricKitBinaryUUID))
+        XCTAssertTrue(hostedEvidence.contains("[redacted_private_id]"))
         XCTAssertTrue(hostedEvidence.contains("[redacted_path]"))
         XCTAssertTrue(hostedEvidence.contains("http://redacted.invalid:49152/items/{id}"))
 
@@ -842,6 +876,52 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             in: gunzip(selfHostedBundle.bundleData)
         )
         XCTAssertEqual(selfHostedMetricKit, rawMetricKit)
+        let selfHostedStack = try tarEntry(
+            named: "crash/stack.txt",
+            in: gunzip(selfHostedBundle.bundleData)
+        )
+        XCTAssertEqual(selfHostedStack, rawStack)
+        let selfHostedManifest = try DiagnosticsJSONCoding.makeDecoder().decode(
+            DiagnosticsManifest.self,
+            from: selfHostedBundle.manifestData
+        )
+        XCTAssertTrue(selfHostedManifest.crash?.summary.contains(privateBareUUID) == true)
+        XCTAssertTrue(selfHostedManifest.crash?.stackExcerpt?.contains(privateBareItemID) == true)
+        XCTAssertTrue(selfHostedManifest.crash?.thread?.contains(privateBarePlanID) == true)
+        XCTAssertTrue(selfHostedManifest.report.appVersion.contains(privateManifestID))
+        XCTAssertTrue(selfHostedManifest.deviceSummary.model.contains(privateDeviceSummaryID))
+    }
+
+    func testHostedDeviceSnapshotRedactsBarePrivateIdentifiersInNestedValues() throws {
+        let privateUUID = "1198a8f8-6c2d-7e31-8f44-62d198a10112"
+        let snapshot = DeviceSnapshotPayload(
+            capturedAt: DiagnosticsTimestamp.string(from: Date(timeIntervalSince1970: 1_700_200_000)),
+            provenance: .preFailure,
+            identity: .object([
+                "manufacturer": .string("Apple"),
+                "model": .string("iPhone item_42"),
+            ]),
+            display: .object([
+                "mode": .string("request_cancelled"),
+            ]),
+            audio: .object([
+                "status": .array([.string("plan_abcdefgh"), .string(privateUUID)]),
+            ]),
+            videoCodecs: .array([
+                .object(["decoder": .string("file_abcdefgh")]),
+            ]),
+            network: .object(["transport": .string("not_collected")])
+        )
+        let raw = try DiagnosticsJSONCoding.makeEncoder().encode(snapshot)
+        let sanitized = try DiagnosticsBundleBuilder.sanitizeHostedDeviceJSON(raw)
+        let rendered = String(decoding: sanitized, as: UTF8.self)
+
+        for forbidden in [privateUUID, "item_42", "plan_abcdefgh", "file_abcdefgh"] {
+            XCTAssertFalse(rendered.contains(forbidden), forbidden)
+        }
+        XCTAssertTrue(rendered.contains("[redacted_private_id]"))
+        XCTAssertTrue(rendered.contains("request_cancelled"))
+        XCTAssertTrue(String(decoding: raw, as: UTF8.self).contains(privateUUID))
     }
 
     func testManualHostedBundleIsDeterministicAcrossLiveRingAndDebugChanges() async throws {

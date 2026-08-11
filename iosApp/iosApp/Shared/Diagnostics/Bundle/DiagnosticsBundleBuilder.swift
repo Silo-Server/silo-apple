@@ -44,8 +44,12 @@ struct DiagnosticsBundleBuilder {
         )
         let logsGzipSize = (try? Self.gzip(logsData).count) ?? 0
         var draft = report.manifest
-        if isHosted, let crash = draft.crash {
-            draft.crash = Self.sanitizeHostedCrashInfo(crash)
+        if isHosted {
+            draft.report = Self.sanitizeHostedReport(draft.report)
+            draft.deviceSummary = Self.sanitizeHostedDeviceSummary(draft.deviceSummary)
+            if let crash = draft.crash {
+                draft.crash = Self.sanitizeHostedCrashInfo(crash)
+            }
         }
         draft.logSummary = makeLogSummary(
             logsData: logsData,
@@ -63,6 +67,8 @@ struct DiagnosticsBundleBuilder {
                 destinationSafeData = try Self.sanitizeHostedDeviceJSON(data)
             } else if isHosted, name == "crash/metrickit.json" {
                 destinationSafeData = try Self.sanitizeHostedMetricKitJSON(data)
+            } else if isHosted, name == "crash/stack.txt" {
+                destinationSafeData = Self.sanitizeHostedCrashTextData(data)
             } else {
                 destinationSafeData = data
             }
@@ -270,6 +276,7 @@ struct DiagnosticsBundleBuilder {
                    case .string(let path) = safeAttributes?["path"] {
                     safeAttributes?["path"] = .string(templateHostedPrivatePathSegments(path))
                 }
+                safeAttributes = safeAttributes?.mapValues(sanitizeHostedJSONValue)
                 let sanitized = DiagnosticsLogLine(
                     ts: line.ts,
                     run: line.run,
@@ -345,7 +352,13 @@ struct DiagnosticsBundleBuilder {
                 // otherwise ambiguous network-identity key globally.
                 guard normalizedKey != "virtualmemoryregioninfo",
                       normalizedKey != "address" else { return }
-                result[entry.key] = sanitizeHostedMetricKitValue(entry.value)
+                if normalizedKey == "binaryuuid",
+                   let binaryUUID = entry.value as? String,
+                   isHostedMetricKitBinaryUUID(binaryUUID) {
+                    result[entry.key] = binaryUUID
+                } else {
+                    result[entry.key] = sanitizeHostedMetricKitValue(entry.value)
+                }
             }
         }
         if let array = value as? [Any] {
@@ -355,6 +368,15 @@ struct DiagnosticsBundleBuilder {
             return sanitizeHostedCrashText(string)
         }
         return value
+    }
+
+    private static func isHostedMetricKitBinaryUUID(_ value: String) -> Bool {
+        let range = NSRange(location: 0, length: (value as NSString).length)
+        guard let match = hostedExactMetricKitBinaryUUIDRegex.firstMatch(
+            in: value,
+            range: range
+        ) else { return false }
+        return match.range == range
     }
 
     private static func sanitizeHostedCrashInfo(
@@ -373,6 +395,32 @@ struct DiagnosticsBundleBuilder {
         )
     }
 
+    private static func sanitizeHostedReport(
+        _ report: DiagnosticsManifest.Report
+    ) -> DiagnosticsManifest.Report {
+        DiagnosticsManifest.Report(
+            type: report.type,
+            capturedAt: report.capturedAt,
+            captureSessionID: report.captureSessionID,
+            appVersion: sanitizeHostedMessage(report.appVersion),
+            appBuild: sanitizeHostedMessage(report.appBuild),
+            platform: report.platform,
+            osVersion: sanitizeHostedMessage(report.osVersion),
+            profileID: nil
+        )
+    }
+
+    private static func sanitizeHostedDeviceSummary(
+        _ summary: DiagnosticsManifest.DeviceSummary
+    ) -> DiagnosticsManifest.DeviceSummary {
+        DiagnosticsManifest.DeviceSummary(
+            manufacturer: sanitizeHostedMessage(summary.manufacturer),
+            model: sanitizeHostedMessage(summary.model),
+            os: sanitizeHostedMessage(summary.os),
+            formFactor: sanitizeHostedMessage(summary.formFactor)
+        )
+    }
+
     private static func sanitizeHostedCrashText(_ value: String) -> String {
         let identifiersNormalized = sanitizeHostedMessage(value)
         let nativeLibrariesNormalized = replaceMatches(
@@ -383,10 +431,19 @@ struct DiagnosticsBundleBuilder {
         return redactHostedAbsolutePaths(in: nativeLibrariesNormalized)
     }
 
+    private static func sanitizeHostedCrashTextData(_ data: Data) -> Data {
+        guard let value = String(data: data, encoding: .utf8) else {
+            return Data("[redaction_failed: non-utf8 content dropped]".utf8)
+        }
+        return Data(sanitizeHostedCrashText(value).utf8)
+    }
+
     private static func removeHostedDevicePrivateFields(
         from value: DiagnosticsJSONValue
     ) -> DiagnosticsJSONValue {
         switch value {
+        case .string(let string):
+            return .string(sanitizeHostedMessage(string))
         case .array(let values):
             return .array(values.map { removeHostedDevicePrivateFields(from: $0) })
         case .object(let object):
@@ -395,6 +452,21 @@ struct DiagnosticsBundleBuilder {
                 guard !hostedDevicePrivateFieldKeys.contains(normalizedKey) else { return }
                 result[entry.key] = removeHostedDevicePrivateFields(from: entry.value)
             })
+        default:
+            return value
+        }
+    }
+
+    private static func sanitizeHostedJSONValue(
+        _ value: DiagnosticsJSONValue
+    ) -> DiagnosticsJSONValue {
+        switch value {
+        case .string(let string):
+            return .string(sanitizeHostedMessage(string))
+        case .array(let values):
+            return .array(values.map(sanitizeHostedJSONValue))
+        case .object(let object):
+            return .object(object.mapValues(sanitizeHostedJSONValue))
         default:
             return value
         }
@@ -421,6 +493,15 @@ struct DiagnosticsBundleBuilder {
     }
 
     private static func sanitizeHostedMessage(_ value: String) -> String {
+        sanitizeHostedBarePrivateIdentifiers(
+            in: sanitizeHostedContainerText(value)
+        )
+    }
+
+    /// Applies container-safe transformations that do not rewrite canonical
+    /// report, capture, log-run, or MetricKit binary UUID fields. JSON members
+    /// receive bare private-ID redaction structurally before this final pass.
+    private static func sanitizeHostedContainerText(_ value: String) -> String {
         let hostsNormalized = replaceMatches(
             of: hostedStableHostTokenRegex,
             in: value,
@@ -436,6 +517,28 @@ struct DiagnosticsBundleBuilder {
             with: "redacted.invalid"
         )
         return templateHostedURLPaths(in: loopbackNormalized)
+    }
+
+    private static func sanitizeHostedBarePrivateIdentifiers(in value: String) -> String {
+        var rendered = replaceMatches(
+            of: hostedBareUUIDRegex,
+            in: value,
+            with: "[redacted_private_id]"
+        )
+        let source = rendered as NSString
+        let range = NSRange(location: 0, length: source.length)
+        let matches = hostedBarePrivateIdentifierRegex.matches(in: rendered, range: range)
+        for match in matches.reversed() {
+            guard match.numberOfRanges == 2,
+                  match.range(at: 1).location != NSNotFound else { continue }
+            let token = source.substring(with: match.range(at: 1)).lowercased()
+            guard !hostedSafeSemanticIdentifierTokens.contains(token) else { continue }
+            rendered = (rendered as NSString).replacingCharacters(
+                in: match.range(at: 1),
+                with: "[redacted_private_id]"
+            )
+        }
+        return rendered
     }
 
     private static func redactHostedAbsolutePaths(in value: String) -> String {
@@ -464,7 +567,7 @@ struct DiagnosticsBundleBuilder {
         guard let value = String(data: data, encoding: .utf8) else {
             return Data("[redaction_failed: non-utf8 content dropped]".utf8)
         }
-        return Data(sanitizeHostedMessage(value).utf8)
+        return Data(sanitizeHostedContainerText(value).utf8)
     }
 
     private static func templateHostedURLPaths(in value: String) -> String {
@@ -576,6 +679,24 @@ struct DiagnosticsBundleBuilder {
     private static let hostedOpaquePathSegmentRegex = try! NSRegularExpression(
         pattern: #"^[A-Za-z0-9_-]{20,}$"#
     )
+    private static let hostedBareUUIDRegex = try! NSRegularExpression(
+        pattern: #"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#
+    )
+    private static let hostedBarePrivateIdentifierRegex = try! NSRegularExpression(
+        pattern: #"(?i)(?<![A-Za-z0-9])((?:ps|playback|session|file|item|media|plan|attempt|profile|account|user|device|content|library|request|req|correlation|server|subtitle|track|run)[_-](?:[0-9]+|[A-Za-z0-9][A-Za-z0-9_-]{7,}))(?![A-Za-z0-9_-])"#
+    )
+    private static let hostedExactMetricKitBinaryUUIDRegex = try! NSRegularExpression(
+        pattern: #"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#
+    )
+    private static let hostedSafeSemanticIdentifierTokens: Set<String> = [
+        "file_not_found",
+        "item_count",
+        "plan_invalidated",
+        "playback_unavailable",
+        "request_cancelled",
+        "request_completed",
+        "session_unavailable",
+    ]
     private static let hostedTrailingURLPunctuation: Set<Character> = [
         ".", ",", ";", ":", "!", "?", ")", "]",
     ]
