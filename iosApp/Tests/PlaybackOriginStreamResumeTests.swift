@@ -209,6 +209,8 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
     private final class ChunkRecorder {
         private let lock = NSLock()
         private var storedByteCounts: [Int] = []
+        private var storedEntityTotals: [Int64?] = []
+        private var receivedEntityTotals: [Int64?] = []
         private var deliveredRanges: [ClosedRange<Int64>] = []
         private var failureCauses: [PlaybackOriginReconnectPolicy.EndCause] = []
         private var failureStatuses: [Int?] = []
@@ -226,6 +228,18 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             lock.lock()
             defer { lock.unlock() }
             return storedByteCounts
+        }
+
+        var storedTotals: [Int64?] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedEntityTotals
+        }
+
+        var responseTotals: [Int64?] {
+            lock.lock()
+            defer { lock.unlock() }
+            return receivedEntityTotals
         }
 
         var ranges: [ClosedRange<Int64>] {
@@ -258,9 +272,16 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             return (requestBeginCount, requestEndCount)
         }
 
-        func recordStore(_ data: Data = Data()) {
+        func recordStore(_ data: Data = Data(), total: Int64? = nil) {
             lock.lock()
             storedByteCounts.append(data.count)
+            storedEntityTotals.append(total)
+            lock.unlock()
+        }
+
+        func recordResponse(total: Int64?) {
+            lock.lock()
+            receivedEntityTotals.append(total)
             lock.unlock()
         }
 
@@ -346,6 +367,7 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             case chunkFullMatchingHeadersOnly
             case chunkByteZeroFullBody
             case chunkByteZeroShortFullBody
+            case chunkByteZeroUnknownLengthShortBody
             case chunkPreconditionFailed
             case chunkSessionMissing404
             case chunkMalformed206Unit
@@ -514,6 +536,23 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
                 let header = [
                     "HTTP/1.1 200 OK",
                     "Content-Length: \(responseBytes)",
+                    "ETag: \"entity-v1\"",
+                    "Content-Type: application/octet-stream",
+                    "Connection: close",
+                    "",
+                    ""
+                ].joined(separator: "\r\n")
+                connection.send(content: Data(header.utf8), completion: .contentProcessed {
+                    [weak self] error in
+                    guard let self, error == nil else { return }
+                    self.sendBody(connection, remaining: responseBytes)
+                })
+                return
+            }
+            if behavior == .chunkByteZeroUnknownLengthShortBody {
+                let responseBytes: Int64 = 64 * 1024
+                let header = [
+                    "HTTP/1.1 200 OK",
                     "ETag: \"entity-v1\"",
                     "Content-Type: application/octet-stream",
                     "Connection: close",
@@ -753,6 +792,7 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
                  .chunkFullMatchingHeadersOnly,
                  .chunkByteZeroFullBody,
                  .chunkByteZeroShortFullBody,
+                 .chunkByteZeroUnknownLengthShortBody,
                  .chunkPreconditionFailed,
                  .chunkSessionMissing404,
                  .chunkMalformed206Unit,
@@ -1755,12 +1795,12 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             entityETagProvider: { "\"entity-v1\"" },
             requiresEntityValidation: true,
             callbacks: PlaybackOriginChunkFetcher.Callbacks(
-                store: { _, data, _, _ in
-                    recorder.recordStore(data)
+                store: { _, data, total, _ in
+                    recorder.recordStore(data, total: total)
                     return nil
                 },
                 didStore: { recorder.recordRange($0) },
-                didReceiveResponse: { _ in },
+                didReceiveResponse: { recorder.recordResponse(total: $0) },
                 didDetectSessionMissing: { recorder.recordSessionMissing() },
                 didFail: { _, cause, status in
                     recorder.recordFailure(cause, statusCode: status)
@@ -1775,9 +1815,14 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
         fetcher.ensureFetch(covering: 0, totalLength: requestedBytes)
 
         let entityBytes: Int64 = 64 * 1024
-        let stored = await waitUntil { recorder.storedBytes == [Int(entityBytes)] }
+        let stored = await waitUntil {
+            recorder.storedBytes == [Int(entityBytes)]
+                && recorder.responseTotals == [entityBytes]
+        }
         XCTAssertTrue(stored)
         XCTAssertEqual(recorder.ranges, [0...(entityBytes - 1)])
+        XCTAssertEqual(recorder.storedTotals, [entityBytes])
+        XCTAssertEqual(recorder.responseTotals, [entityBytes])
         XCTAssertTrue(recorder.causes.isEmpty)
         XCTAssertEqual(recorder.requestCounts.began, 1)
         XCTAssertEqual(recorder.requestCounts.ended, 1)
@@ -1785,6 +1830,54 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
             origin.observedBodyBytesSent() == Int(entityBytes)
         }
         XCTAssertTrue(transmitted)
+        let request = try XCTUnwrap(origin.observedRequests().first)
+        XCTAssertEqual(request.range, "bytes=0-\(requestedBytes - 1)")
+        XCTAssertEqual(request.ifMatch, "\"entity-v1\"")
+    }
+
+    func testChunkFetcherAcceptsShortUnknownLengthByteZero200AtEOF() async throws {
+        let origin = try StubOrigin(behavior: .chunkByteZeroUnknownLengthShortBody)
+        try await origin.start()
+        defer { origin.stop() }
+        let recorder = ChunkRecorder()
+        let fetcher = PlaybackOriginChunkFetcher(
+            originURL: origin.url,
+            originHeaders: [:],
+            entityETagProvider: { "\"entity-v1\"" },
+            requiresEntityValidation: true,
+            callbacks: PlaybackOriginChunkFetcher.Callbacks(
+                store: { _, data, total, _ in
+                    recorder.recordStore(data, total: total)
+                    return nil
+                },
+                didStore: { recorder.recordRange($0) },
+                didReceiveResponse: { recorder.recordResponse(total: $0) },
+                didDetectSessionMissing: { recorder.recordSessionMissing() },
+                didFail: { _, cause, status in
+                    recorder.recordFailure(cause, statusCode: status)
+                },
+                beginRequest: { recorder.recordBegin() },
+                endRequest: { recorder.recordEnd() }
+            )
+        )
+        defer { fetcher.cancel() }
+
+        let requestedBytes = PlaybackOriginRoutingPolicy.chunkBytes
+        fetcher.ensureFetch(covering: 0, totalLength: requestedBytes)
+
+        let entityBytes: Int64 = 64 * 1024
+        let stored = await waitUntil {
+            recorder.storedBytes == [Int(entityBytes)]
+                && recorder.responseTotals == [entityBytes]
+        }
+        XCTAssertTrue(stored)
+        XCTAssertEqual(recorder.ranges, [0...(entityBytes - 1)])
+        XCTAssertEqual(recorder.storedTotals, [entityBytes])
+        XCTAssertEqual(recorder.responseTotals, [entityBytes])
+        XCTAssertTrue(recorder.causes.isEmpty)
+        XCTAssertEqual(recorder.requestCounts.began, 1)
+        XCTAssertEqual(recorder.requestCounts.ended, 1)
+        XCTAssertEqual(origin.observedBodyBytesSent(), Int(entityBytes))
         let request = try XCTUnwrap(origin.observedRequests().first)
         XCTAssertEqual(request.range, "bytes=0-\(requestedBytes - 1)")
         XCTAssertEqual(request.ifMatch, "\"entity-v1\"")

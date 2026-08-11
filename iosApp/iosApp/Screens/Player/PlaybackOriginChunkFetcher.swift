@@ -40,7 +40,12 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
     )
 
     private enum AcceptedResponse {
-        case media(total: Int64?, entityETag: String?, byteLimit: Int)
+        case media(
+            total: Int64?,
+            entityETag: String?,
+            byteLimit: Int,
+            acceptsShortEOF: Bool
+        )
         case notFound
     }
 
@@ -298,7 +303,8 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
                     entityETag: PlaybackOriginStream.strongETag(
                         http.value(forHTTPHeaderField: "ETag")
                     ),
-                    byteLimit: Int(min(parsed.count, Int64(state.range.count)))
+                    byteLimit: Int(min(parsed.count, Int64(state.range.count))),
+                    acceptsShortEOF: false
                 ),
                 taskID: taskID
             )
@@ -324,7 +330,8 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
                     entityETag: PlaybackOriginStream.strongETag(
                         http.value(forHTTPHeaderField: "ETag")
                     ),
-                    byteLimit: byteLimit
+                    byteLimit: byteLimit,
+                    acceptsShortEOF: http.expectedContentLength < 0
                 ),
                 taskID: taskID
             )
@@ -406,7 +413,7 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
         guard var state = attempts[taskID] else { return }
         state.response = response
         switch response {
-        case .media(_, _, let byteLimit):
+        case .media(_, _, let byteLimit, _):
             state.body.reserveCapacity(byteLimit)
         case .notFound:
             state.body.reserveCapacity(4096)
@@ -430,7 +437,7 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
             return true
         }
         switch state.response {
-        case .media(_, _, let byteLimit):
+        case .media(_, _, let byteLimit, _):
             let remaining = max(0, byteLimit - state.body.count)
             if remaining > 0 {
                 state.body.append(contentsOf: data.prefix(remaining))
@@ -488,8 +495,9 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
             return
         }
         switch state.response {
-        case .media(_, _, let byteLimit):
-            guard state.body.count == byteLimit else {
+        case .media(_, _, let byteLimit, let acceptsShortEOF):
+            guard state.body.count == byteLimit
+                    || (acceptsShortEOF && !state.body.isEmpty) else {
                 failLocked(
                     id: state.id,
                     range: state.range,
@@ -498,7 +506,10 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
                 )
                 return
             }
-            completeMediaLocked(state)
+            let inferredTotal = acceptsShortEOF && state.body.count < byteLimit
+                ? Int64(state.body.count)
+                : nil
+            completeMediaLocked(state, inferredTotal: inferredTotal)
         case .notFound:
             completeNotFoundLocked(state)
         case nil:
@@ -512,14 +523,14 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
         }
     }
 
-    private func completeMediaLocked(_ state: AttemptState) {
-        guard case .media(let total, let responseETag, _) = state.response else { return }
+    private func completeMediaLocked(_ state: AttemptState, inferredTotal: Int64? = nil) {
+        guard case .media(let total, let responseETag, _, _) = state.response else { return }
         storeAndFinishLocked(
             id: state.id,
             range: state.range,
             attempt: state.attempt,
             body: state.body,
-            total: total,
+            total: inferredTotal ?? total,
             responseETag: responseETag
         )
     }
