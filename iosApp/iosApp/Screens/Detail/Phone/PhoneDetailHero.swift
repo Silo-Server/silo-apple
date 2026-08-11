@@ -1,6 +1,24 @@
 #if !os(tvOS)
 import SwiftUI
 
+#if os(iOS)
+import UIKit
+#endif
+
+/// Device gate for detail-page presentations that are designed specifically
+/// for iPad. A landscape iPhone can have a regular size class and a container
+/// wider than the iPad breakpoint, so neither signal identifies an iPad by
+/// itself.
+enum MobileDetailLayout {
+    static var supportsExpandedPresentation: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .pad
+        #else
+        true
+        #endif
+    }
+}
+
 /// Adaptive iOS detail hero. Compact containers retain the phone's
 /// backdrop-first, centered editorial composition. At regular iPad detail
 /// widths, poster art and a left-aligned editorial column share a single
@@ -38,7 +56,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     private let expandedLayoutBreakpoint: CGFloat = 640
 
     private var backdropHeight: CGFloat {
-        horizontalSizeClass == .regular ? 420 : 360
+        MobileDetailLayout.supportsExpandedPresentation && horizontalSizeClass == .regular
+            ? 420
+            : 360
     }
 
     var body: some View {
@@ -58,6 +78,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     }
 
     private var usesExpandedLayout: Bool {
+        guard MobileDetailLayout.supportsExpandedPresentation else { return false }
         if availableWidth > 0 {
             return availableWidth >= expandedLayoutBreakpoint
         }
@@ -306,7 +327,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// and pushed Play toward the fold. This keeps the logo dominant without
     /// crowding out the actions it exists to introduce.
     private var compactLogoHeight: CGFloat {
-        horizontalSizeClass == .regular ? 168 : 132
+        MobileDetailLayout.supportsExpandedPresentation && horizontalSizeClass == .regular
+            ? 168
+            : 132
     }
 
     @ViewBuilder

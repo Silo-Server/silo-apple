@@ -78,7 +78,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
     }
 
     private var heroToContentSpacing: CGFloat {
-        horizontalSizeClass == .regular ? 16 : 32
+        MobileDetailLayout.supportsExpandedPresentation && horizontalSizeClass == .regular
+            ? 16
+            : 32
     }
 
     // MARK: - Hero
