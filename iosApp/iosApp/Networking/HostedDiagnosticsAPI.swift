@@ -216,14 +216,11 @@ actor HostedDiagnosticsAPI {
         let reportIDString = reportID.uuidString.lowercased()
         var request = try self.request(path: "v1/reports/\(reportIDString)", method: "DELETE")
         authorize(&request, token: credential.installationToken)
-        do {
-            try await performNoContent(request)
-        } catch HostedDiagnosticsAPIError.http(statusCode: 404, code: "report_not_found") {
-            // A repeated DELETE can observe 404 after the service has scrubbed
-            // the report's installation link. It also means a locally staged
-            // envelope never crossed the create boundary. Both satisfy the
-            // erasure request for this anonymous installation.
-        }
+        // The collector returns 204 for both an owned report and a valid
+        // not-yet-created UUID after durably recording its global tombstone.
+        // A 404 therefore means this installation did not prove ownership; it
+        // must remain retryable rather than silently clearing local intent.
+        try await performNoContent(request)
     }
 
     private func upload(

@@ -157,6 +157,17 @@ actor DiagnosticsCoordinator {
     /// response. Kept separate from the persisted snapshot because it is
     /// process-local and exists only as a pre-POST race guard.
     private var cachedHostedCredentialIdentity: RefreshAccountIdentity?
+    /// Hosted creates can suspend while resolving identity, registering the
+    /// installation, and transferring bytes. Keep that interval explicit so a
+    /// concurrent user erasure can make the UUID durable without racing a
+    /// pre-POST 404 and then allowing the create to resurrect the report.
+    private var hostedUploadsInFlight: [UUID: DiagnosticsBinding] = [:]
+    /// UUIDs that crossed the collector handoff in this process. This small,
+    /// evidence-free receipt closes the opposite ordering: a READY response can
+    /// remove the pending directory just before a queued Turn Off action runs.
+    /// The receipt lives only for this process and is removed after DELETE is
+    /// confirmed; ordinary sent-history semantics remain unchanged.
+    private var hostedNetworkCandidates: [UUID: DiagnosticsBinding] = [:]
 
     init(
         api: DiagnosticsAPI = .shared,
@@ -467,7 +478,14 @@ actor DiagnosticsCoordinator {
     @discardableResult
     func delete(report: PendingReport) async -> Bool {
         do {
-            try pendingStore.stageHostedDeletionAndDelete(report)
+            // Explicit deletion of a hosted report always stages its UUID,
+            // including an unsent report and a report whose READY response just
+            // removed local evidence. The collector records a bounded
+            // preemptive tombstone for a not-yet-created UUID.
+            try pendingStore.stageHostedDeletionAndDelete(
+                report,
+                forceRemoteIntent: report.binding.binding.destinationChoice == .hosted
+            )
         } catch {
             return false
         }
@@ -481,7 +499,17 @@ actor DiagnosticsCoordinator {
     func turnOffAndDelete(binding: DiagnosticsBinding) async -> Bool {
         let staged: Bool
         do {
-            try pendingStore.stageHostedDeletionsAndPurge(binding: binding)
+            let additionalReportIDs = Set(
+                hostedUploadsInFlight.compactMap { reportID, candidateBinding in
+                    candidateBinding == binding ? reportID : nil
+                } + hostedNetworkCandidates.compactMap { reportID, candidateBinding in
+                    candidateBinding == binding ? reportID : nil
+                }
+            )
+            try pendingStore.stageHostedDeletionsAndPurge(
+                binding: binding,
+                additionalRemoteReportIDs: additionalReportIDs
+            )
             staged = true
         } catch {
             staged = false
@@ -505,11 +533,17 @@ actor DiagnosticsCoordinator {
     private func drainHostedDeletionIntents() async -> Bool {
         let batch = pendingStore.prepareHostedDeletionRetries()
         var completedAll = !batch.hasBlockedLocalEvidence
-        for reportID in batch.reportIDs {
+        let activeUploads = Set(hostedUploadsInFlight.keys)
+        if batch.reportIDs.contains(where: activeUploads.contains) {
+            completedAll = false
+        }
+        for reportID in batch.reportIDs where !activeUploads.contains(reportID) {
             do {
                 try await hostedAPI.deleteReport(reportID: reportID)
                 if !pendingStore.completeHostedDeletion(reportID: reportID) {
                     completedAll = false
+                } else {
+                    hostedNetworkCandidates.removeValue(forKey: reportID)
                 }
             } catch {
                 completedAll = false
@@ -639,6 +673,47 @@ actor DiagnosticsCoordinator {
     }
 
     func upload(report: PendingReport) async -> DiagnosticsUploadDecision {
+        let destination = report.binding.binding.destinationChoice
+        if destination == .hosted, report.state.hostedRemoteShortID == nil {
+            guard beginHostedUploadFence(for: report) else {
+                return .keptRetryable
+            }
+            let decision = await performUpload(report: report)
+            _ = await endHostedUploadFence(reportID: report.id)
+            return decision
+        }
+        return await performUpload(report: report)
+    }
+
+    /// Internal visibility gives the deterministic race tests a real fence to
+    /// exercise without adding timing sleeps around URLSession callbacks.
+    @discardableResult
+    func beginHostedUploadFence(for report: PendingReport) -> Bool {
+        guard report.binding.binding.destinationChoice == .hosted,
+              report.state.hostedRemoteShortID == nil,
+              hostedUploadsInFlight[report.id] == nil,
+              !pendingStore.hostedDeletionIntents().contains(report.id),
+              pendingStore.report(id: report.id) != nil else {
+            return false
+        }
+        hostedUploadsInFlight[report.id] = report.binding.binding
+        return true
+    }
+
+    /// Marks the exact point after which a collector create may have been
+    /// accepted even if the response is lost.
+    func markHostedNetworkHandoff(reportID: UUID) {
+        guard let binding = hostedUploadsInFlight[reportID] else { return }
+        hostedNetworkCandidates[reportID] = binding
+    }
+
+    @discardableResult
+    func endHostedUploadFence(reportID: UUID) async -> Bool {
+        hostedUploadsInFlight.removeValue(forKey: reportID)
+        return await drainHostedDeletionIntents()
+    }
+
+    private func performUpload(report: PendingReport) async -> DiagnosticsUploadDecision {
         guard !pendingStore.hostedDeletionIntents().contains(report.id) else {
             return .keptRetryable
         }
@@ -648,6 +723,7 @@ actor DiagnosticsCoordinator {
             // longer depends on a fresh capability or Silo consent request.
             // Poll first so a temporary kill switch, storage outage, or Silo
             // connectivity failure cannot strand a processing report locally.
+            hostedNetworkCandidates[report.id] = report.binding.binding
             return await pollHostedStatus(report)
         }
         // A non-persistent capture context is nil only when the status refresh
@@ -871,6 +947,21 @@ actor DiagnosticsCoordinator {
                 return .keptRetryable
             }
 
+            // The credential lookup above is the final suspension before the
+            // POST. Re-check consent, erasure, and local ownership
+            // synchronously after it so Turn Off/Delete cannot slip between
+            // this gate and the network handoff.
+            let currentConsent = consentStore.record(
+                for: report.binding.binding,
+                currentNoticeVersion: context.noticeVersion
+            )
+            guard currentConsent.mode != .never,
+                  !pendingStore.hostedDeletionIntents().contains(report.id),
+                  pendingStore.report(id: report.id) != nil else {
+                return .keptRetryable
+            }
+
+            markHostedNetworkHandoff(reportID: report.id)
             let response = try await hostedAPI.upload(
                 reportID: report.id,
                 manifest: bundle.manifest,
@@ -916,6 +1007,10 @@ actor DiagnosticsCoordinator {
         guard let expectedShortID = report.state.hostedRemoteShortID else {
             return .keptRetryable
         }
+        // A READY response removes the pending directory. Retain the UUID-only
+        // ownership candidate before suspending so a queued Turn Off action can
+        // still erase the remote report whichever actor continuation wins.
+        hostedNetworkCandidates[report.id] = report.binding.binding
         do {
             let status = try await hostedAPI.reportStatus(reportID: report.id)
             guard status.shortID == expectedShortID else {
@@ -1316,7 +1411,17 @@ actor DiagnosticsCoordinator {
             serverRegistryID: serverId,
             accountUserID: "local-purge"
         ).serverInstanceID
-        try? pendingStore.stageHostedDeletionsAndPurge(serverInstanceID: hostedServerInstanceID)
+        let additionalReportIDs = Set(
+            hostedUploadsInFlight.compactMap { reportID, binding in
+                binding.serverInstanceID == hostedServerInstanceID ? reportID : nil
+            } + hostedNetworkCandidates.compactMap { reportID, binding in
+                binding.serverInstanceID == hostedServerInstanceID ? reportID : nil
+            }
+        )
+        try? pendingStore.stageHostedDeletionsAndPurge(
+            serverInstanceID: hostedServerInstanceID,
+            additionalRemoteReportIDs: additionalReportIDs
+        )
         consentStore.remove(serverInstanceID: hostedServerInstanceID)
         profileEligibilityStore.remove(serverInstanceID: hostedServerInstanceID)
         let serverInstanceIDs = Self.ServerBindingIndex.serverInstanceIDs(for: serverId)

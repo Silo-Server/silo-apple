@@ -44,6 +44,9 @@ struct DiagnosticsBundleBuilder {
         )
         let logsGzipSize = (try? Self.gzip(logsData).count) ?? 0
         var draft = report.manifest
+        if isHosted, let crash = draft.crash {
+            draft.crash = Self.sanitizeHostedCrashInfo(crash)
+        }
         draft.logSummary = makeLogSummary(
             logsData: logsData,
             logsGzipSize: logsGzipSize,
@@ -58,6 +61,8 @@ struct DiagnosticsBundleBuilder {
                 destinationSafeData = Self.sanitizeHostedLogJSONL(data)
             } else if isHosted, name == "device.json" {
                 destinationSafeData = try Self.sanitizeHostedDeviceJSON(data)
+            } else if isHosted, name == "crash/metrickit.json" {
+                destinationSafeData = try Self.sanitizeHostedMetricKitJSON(data)
             } else {
                 destinationSafeData = data
             }
@@ -293,27 +298,102 @@ struct DiagnosticsBundleBuilder {
         let sanitized = DeviceSnapshotPayload(
             capturedAt: snapshot.capturedAt,
             provenance: snapshot.provenance,
-            identity: removeHostedHardwareRouteHashes(from: snapshot.identity),
-            display: removeHostedHardwareRouteHashes(from: snapshot.display),
-            audio: removeHostedHardwareRouteHashes(from: snapshot.audio),
-            videoCodecs: removeHostedHardwareRouteHashes(from: snapshot.videoCodecs),
-            network: removeHostedHardwareRouteHashes(from: snapshot.network)
+            identity: removeHostedDevicePrivateFields(from: snapshot.identity),
+            display: removeHostedDevicePrivateFields(from: snapshot.display),
+            audio: removeHostedDevicePrivateFields(from: snapshot.audio),
+            videoCodecs: removeHostedDevicePrivateFields(from: snapshot.videoCodecs),
+            network: removeHostedDevicePrivateFields(from: snapshot.network)
         )
         try sanitized.validate()
         return try DiagnosticsJSONCoding.makeEncoder().encode(sanitized)
     }
 
-    private static func removeHostedHardwareRouteHashes(
+    /// MetricKit's JSON representation is useful crash evidence, but it can
+    /// include a process-container path in `virtualMemoryRegionInfo` and other
+    /// free-form strings. Keep the raw payload on disk for self-hosted reports;
+    /// hosted archives instead drop that field and structurally sanitize every
+    /// remaining string so a JSON escape or key ordering change cannot bypass
+    /// destination-specific redaction.
+    static func sanitizeHostedMetricKitJSON(_ data: Data) throws -> Data {
+        let raw: Any
+        do {
+            raw = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+        } catch {
+            throw DiagnosticsBundleError.invalidHostedEnvelope
+        }
+        let sanitized = sanitizeHostedMetricKitValue(raw)
+        guard JSONSerialization.isValidJSONObject(sanitized) else {
+            throw DiagnosticsBundleError.invalidHostedEnvelope
+        }
+        do {
+            return try JSONSerialization.data(
+                withJSONObject: sanitized,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            )
+        } catch {
+            throw DiagnosticsBundleError.invalidHostedEnvelope
+        }
+    }
+
+    private static func sanitizeHostedMetricKitValue(_ value: Any) -> Any {
+        if let object = value as? [String: Any] {
+            return object.reduce(into: [String: Any]()) { result, entry in
+                let normalizedKey = entry.key.lowercased().filter { $0.isLetter || $0.isNumber }
+                // `address` is an ASLR-sensitive absolute frame address. The
+                // binary UUID plus offset retain the symbolication value, so
+                // hosted reports omit it and the collector can reject this
+                // otherwise ambiguous network-identity key globally.
+                guard normalizedKey != "virtualmemoryregioninfo",
+                      normalizedKey != "address" else { return }
+                result[entry.key] = sanitizeHostedMetricKitValue(entry.value)
+            }
+        }
+        if let array = value as? [Any] {
+            return array.map(sanitizeHostedMetricKitValue)
+        }
+        if let string = value as? String {
+            return sanitizeHostedCrashText(string)
+        }
+        return value
+    }
+
+    private static func sanitizeHostedCrashInfo(
+        _ crash: DiagnosticsCrashInfo
+    ) -> DiagnosticsCrashInfo {
+        DiagnosticsCrashInfo(
+            summary: sanitizeHostedCrashText(crash.summary),
+            stackExcerpt: crash.stackExcerpt.map(sanitizeHostedCrashText),
+            thread: crash.thread.map(sanitizeHostedCrashText),
+            foreground: crash.foreground,
+            source: crash.source,
+            provenance: crash.provenance,
+            occurredAt: crash.occurredAt,
+            occurredAtStart: crash.occurredAtStart,
+            occurredAtEnd: crash.occurredAtEnd
+        )
+    }
+
+    private static func sanitizeHostedCrashText(_ value: String) -> String {
+        let identifiersNormalized = sanitizeHostedMessage(value)
+        let nativeLibrariesNormalized = replaceMatches(
+            of: hostedNativeLibraryRegex,
+            in: identifiersNormalized,
+            with: "apple-native-library"
+        )
+        return redactHostedAbsolutePaths(in: nativeLibrariesNormalized)
+    }
+
+    private static func removeHostedDevicePrivateFields(
         from value: DiagnosticsJSONValue
     ) -> DiagnosticsJSONValue {
         switch value {
         case .array(let values):
-            return .array(values.map { removeHostedHardwareRouteHashes(from: $0) })
+            return .array(values.map { removeHostedDevicePrivateFields(from: $0) })
         case .object(let object):
             return .object(object.reduce(into: [:]) { result, entry in
                 let normalizedKey = entry.key.lowercased().filter { $0.isLetter || $0.isNumber }
-                guard !hostedHardwareRouteHashKeys.contains(normalizedKey) else { return }
-                result[entry.key] = removeHostedHardwareRouteHashes(from: entry.value)
+                guard !hostedDevicePrivateFieldKeys.contains(normalizedKey) else { return }
+                result[entry.key] = removeHostedDevicePrivateFields(from: entry.value)
             })
         default:
             return value
@@ -330,14 +410,53 @@ struct DiagnosticsBundleBuilder {
         )
     }
 
+    private static func sanitizeHostedNetworkIdentityAssignments(in value: String) -> String {
+        let range = NSRange(location: 0, length: (value as NSString).length)
+        return hostedNetworkIdentityAssignmentRegex.stringByReplacingMatches(
+            in: value,
+            options: [],
+            range: range,
+            withTemplate: "[redacted_network_identity]"
+        )
+    }
+
     private static func sanitizeHostedMessage(_ value: String) -> String {
-        let identifiersRemoved = sanitizeHostedPrivateIdentifierAssignments(in: value)
         let hostsNormalized = replaceMatches(
             of: hostedStableHostTokenRegex,
-            in: identifiersRemoved,
+            in: value,
             with: "redacted.invalid"
         )
-        return templateHostedURLPaths(in: hostsNormalized)
+        let identifiersRemoved = sanitizeHostedPrivateIdentifierAssignments(in: hostsNormalized)
+        let networkAssignmentsRemoved = sanitizeHostedNetworkIdentityAssignments(
+            in: identifiersRemoved
+        )
+        let loopbackNormalized = replaceMatches(
+            of: hostedLoopbackHostRegex,
+            in: networkAssignmentsRemoved,
+            with: "redacted.invalid"
+        )
+        return templateHostedURLPaths(in: loopbackNormalized)
+    }
+
+    private static func redactHostedAbsolutePaths(in value: String) -> String {
+        let source = value as NSString
+        let range = NSRange(location: 0, length: source.length)
+        let matches = hostedAbsolutePathRegex.matches(in: value, range: range)
+        var rendered = value
+        for match in matches.reversed() {
+            guard match.numberOfRanges == 3,
+                  match.range(at: 1).location != NSNotFound else {
+                continue
+            }
+            let candidate = source.substring(with: match.range(at: 2))
+            guard !candidate.hasPrefix("//") else { continue }
+            let prefix = source.substring(with: match.range(at: 1))
+            rendered = (rendered as NSString).replacingCharacters(
+                in: match.range,
+                with: prefix + "[redacted_path]"
+            )
+        }
+        return rendered
     }
 
     private static func normalizeHostedTextualIdentifiers(name: String, data: Data) -> Data {
@@ -411,15 +530,36 @@ struct DiagnosticsBundleBuilder {
         // so neither a private value nor a rejected identity-like key reaches
         // the collector. The matcher accepts camelCase and snake_case and
         // covers current playback/file/item/media/plan identifiers.
-        let pattern = #"(?i)\b(playback[_-]?session[_-]?id|session[_-]?id|(?:plan|selected|effective|requested|media)?[_-]?file[_-]?id|item[_-]?id|media[_-]?id|plan[_-]?id|playback[_-]?attempt[_-]?id|plan[_-]?attempt[_-]?key|subtitle[_-]?id|track[_-]?id)\s*[:=]\s*(?:\"(?:\\.|[^\"\\\r\n])*\"|'[^'\r\n]*'|[^\s,;)\]}]+)"#
+        let pattern = #"(?i)(?:\"|')?\b(playback[_-]?session[_-]?id|session[_-]?id|(?:plan|selected|effective|requested|media)?[_-]?file[_-]?id|item[_-]?id|media[_-]?id|plan[_-]?id|playback[_-]?attempt[_-]?id|plan[_-]?attempt[_-]?key|subtitle[_-]?id|track[_-]?id)(?:\"|')?\s*[:=]\s*(?:\"(?:\\.|[^\"\\\r\n])*\"|'[^'\r\n]*'|[^\s,;)\]}]+)"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
             preconditionFailure("Hosted diagnostics identifier redaction regex must compile")
         }
         return regex
     }()
 
+    private static let hostedNetworkIdentityAssignmentRegex: NSRegularExpression = {
+        // The public collector rejects raw network-identity assignment keys
+        // even when their values are already canonical. Remove the complete
+        // hosted assignment while leaving canonical manifest keys such as
+        // server_instance_id untouched.
+        let pattern = #"(?i)(?:\"|')?\b(host|hostname|server|origin|endpoint|address|url|(?:server|base|origin)[_-]?url)(?:\"|')?\s*[:=]\s*(?:\"(?:\\.|[^\"\\\r\n])*\"|'[^'\r\n]*'|[^\s,;)\]}]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            preconditionFailure("Hosted diagnostics network redaction regex must compile")
+        }
+        return regex
+    }()
+
     private static let hostedStableHostTokenRegex = try! NSRegularExpression(
         pattern: #"(?i)(?:\[host:[0-9a-f]{12}\]|\bhost_[0-9a-f]{16}\b)"#
+    )
+    private static let hostedLoopbackHostRegex = try! NSRegularExpression(
+        pattern: #"(?i)(?:(?<![A-Za-z0-9.-])(?:localhost|127(?:\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3})(?![A-Za-z0-9.-])|\[::1\]|(?<![A-Fa-f0-9:])::1(?![A-Fa-f0-9:]))"#
+    )
+    private static let hostedAbsolutePathRegex = try! NSRegularExpression(
+        pattern: #"(?m)(^|[^A-Za-z0-9/])(/[^\s\"'<>\\]+)"#
+    )
+    private static let hostedNativeLibraryRegex = try! NSRegularExpression(
+        pattern: #"(?i)(?<![A-Za-z0-9_+-])(?:[A-Za-z0-9_+-]+\.)+(?:dylib|so)(?:\.[0-9]+)*(?![A-Za-z0-9_.-])"#
     )
     private static let hostedAuthorityURLRegex = try! NSRegularExpression(
         pattern: #"(?i)\b(?:https?|wss?)://[^\s<>\"']+"#
@@ -439,10 +579,32 @@ struct DiagnosticsBundleBuilder {
     private static let hostedTrailingURLPunctuation: Set<Character> = [
         ".", ",", ";", ":", "!", "?", ")", "]",
     ]
-    private static let hostedHardwareRouteHashKeys: Set<String> = [
+    private static let hostedDevicePrivateFieldKeys: Set<String> = [
         "uidhash",
         "routehash",
         "routehashes",
+        "host",
+        "hostname",
+        "server",
+        "serverurl",
+        "baseurl",
+        "origin",
+        "originurl",
+        "endpoint",
+        "address",
+        "url",
+        "ip",
+        "ipaddress",
+        "deviceid",
+        "deviceaddress",
+        "serial",
+        "serialnumber",
+        "imei",
+        "meid",
+        "mac",
+        "macaddress",
+        "ssid",
+        "bssid",
     ]
 
     private enum HostedAttributeType {

@@ -108,7 +108,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertFalse(String(decoding: create.body, as: UTF8.self).contains("silo-account-token"))
     }
 
-    func testHostedDeleteUsesAnonymousCredentialAndAcceptsIdempotentNotFound() async throws {
+    func testHostedDeleteUsesAnonymousCredentialAndRequiresDurableNoContentReceipt() async throws {
         let reportID = try XCTUnwrap(UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
         let credential = HostedDiagnosticsCredential(
             installationID: "install-delete-test",
@@ -120,20 +120,26 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             credentialStore: HostedTestCredentialStore(credential: credential)
         )
 
-        for statusCode in [204, 404] {
-            HostedDiagnosticsStubProtocol.configureDelete(
-                reportID: reportID,
-                statusCode: statusCode
-            )
+        HostedDiagnosticsStubProtocol.configureDelete(reportID: reportID, statusCode: 204)
+        try await api.deleteReport(reportID: reportID)
+        var request = try XCTUnwrap(HostedDiagnosticsStubProtocol.requests().last)
+        XCTAssertEqual(request.method, "DELETE")
+        XCTAssertEqual(request.path, "/v1/reports/\(reportID.uuidString.lowercased())")
+        XCTAssertEqual(request.authorization, "Bearer hosted-delete-token")
+        XCTAssertNil(request.profileHeader)
+        XCTAssertNil(request.profileTokenHeader)
+        XCTAssertNil(request.siloDeviceIDHeader)
+
+        HostedDiagnosticsStubProtocol.configureDelete(reportID: reportID, statusCode: 404)
+        do {
             try await api.deleteReport(reportID: reportID)
-            let request = try XCTUnwrap(HostedDiagnosticsStubProtocol.requests().last)
-            XCTAssertEqual(request.method, "DELETE")
-            XCTAssertEqual(request.path, "/v1/reports/\(reportID.uuidString.lowercased())")
-            XCTAssertEqual(request.authorization, "Bearer hosted-delete-token")
-            XCTAssertNil(request.profileHeader)
-            XCTAssertNil(request.profileTokenHeader)
-            XCTAssertNil(request.siloDeviceIDHeader)
+            XCTFail("A foreign/unowned report must keep the erasure intent retryable")
+        } catch let error as HostedDiagnosticsAPIError {
+            XCTAssertEqual(error, .http(statusCode: 404, code: "report_not_found"))
         }
+        request = try XCTUnwrap(HostedDiagnosticsStubProtocol.requests().last)
+        XCTAssertEqual(request.method, "DELETE")
+        XCTAssertEqual(request.path, "/v1/reports/\(reportID.uuidString.lowercased())")
     }
 
     func testValidatedPutAcceptanceSurvivesInformationalStatusFailure() async throws {
@@ -511,7 +517,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             level: .info,
             category: .playback,
             tag: "CMP playback_session_id=\(privateLogSessionID)",
-            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log wss://[host:0123456789ab]/items/42 route selected",
+            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log wss://[host:0123456789ab]/items/42 http://127.0.0.1:49152/master.m3u8 host=127.0.0.1 http://127.42.7.9:49153/playlist.m3u8 \"host\":\"127.42.7.9\" \"playback_session_id\":\"private-json-session\" peer 127.42.7.8 route selected",
             attrs: [
                 "sink": .string("HDMI"),
                 "width": .int(3840),
@@ -617,6 +623,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         )
         XCTAssertTrue(String(decoding: localDeviceData, as: UTF8.self).contains("uid_hash"))
         XCTAssertTrue(String(decoding: localDeviceData, as: UTF8.self).contains("route_hashes"))
+        XCTAssertTrue(String(decoding: localDeviceData, as: UTF8.self).contains("server_url"))
         let api = HostedDiagnosticsAPI(
             baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
             session: makeSession(),
@@ -660,21 +667,36 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             "private-stop-reason",
             "private-file-log",
             "private-plan-log",
+            "private-json-session",
             "private-item-breadcrumb",
             "private-media-breadcrumb",
             binding.serverInstanceID,
             "private-local-account-id",
+            "127.0.0.1",
+            "127.42.7.9",
+            "127.42.7.8",
         ] {
             XCTAssertFalse(renderedEvidence.contains(forbidden), forbidden)
         }
         XCTAssertTrue(hostedLog.msg.contains("[redacted_private_id]"))
         XCTAssertTrue(hostedLog.msg.contains("wss://redacted.invalid/items/{id}"))
+        XCTAssertTrue(
+            hostedLog.msg.contains("http://redacted.invalid/master.m3u8"),
+            hostedLog.msg
+        )
+        XCTAssertTrue(
+            hostedLog.msg.contains("http://redacted.invalid/playlist.m3u8"),
+            hostedLog.msg
+        )
+        XCTAssertFalse(hostedLog.msg.contains("host="), hostedLog.msg)
         XCTAssertFalse(hostedLog.msg.contains("[host:"))
         XCTAssertTrue(hostedBreadcrumb.tag.contains("[redacted_private_id]"))
         XCTAssertEqual(bundle.manifest.playbackSessionIds, [])
         XCTAssertFalse(bundle.manifest.archive.entries.contains("crash/tombstone.pb"))
         XCTAssertFalse(String(decoding: hostedDeviceData, as: UTF8.self).contains("uid_hash"))
         XCTAssertFalse(String(decoding: hostedDeviceData, as: UTF8.self).contains("route_hashes"))
+        XCTAssertFalse(String(decoding: hostedDeviceData, as: UTF8.self).contains("server_url"))
+        XCTAssertFalse(String(decoding: hostedDeviceData, as: UTF8.self).contains("127.0.0.1"))
         XCTAssertEqual(bundle.manifest.logSummary.lines, 1)
         XCTAssertEqual(
             bundle.manifest.logSummary.bytesGz,
@@ -684,6 +706,142 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             bundle.manifest.destination.serverInstanceID,
             HostedDiagnosticsCapabilities.pinnedCollectorID
         )
+    }
+
+    func testHostedMetricKitBundleDropsContainerPathsAndNormalizesLoopbackOnlyForHosted() throws {
+        let capturedAt = Date(timeIntervalSince1970: 1_700_100_000)
+        let privateContainerID = "01234567-89ab-4def-8123-456789abcdef"
+        let privatePath = "/private/var/mobile/Containers/Data/Application/\(privateContainerID)/Silo.app/Silo"
+        let rawMetricKit = try JSONSerialization.data(withJSONObject: [
+            "diagnosticMetaData": [
+                "virtualMemoryRegionInfo": "mapped image \(privatePath)",
+                "exceptionReason": "container[\(privatePath)] loopback request http://127.0.0.1:49152/items/42 failed",
+            ],
+            "callStacks": [
+                "callStackRootFrames": [[
+                    "binaryName": "libsystem_kernel.dylib",
+                    "binaryUUID": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                    "symbolName": "__pthread_kill",
+                    "offsetIntoBinaryTextSegment": 42,
+                    "address": 4_294_967_296,
+                ]],
+            ],
+        ], options: [.sortedKeys, .withoutEscapingSlashes])
+
+        func saveReport(
+            binding: DiagnosticsBinding,
+            destinationServerInstanceID: String,
+            rootLabel: String
+        ) throws -> PendingReport {
+            let context = DiagnosticsCaptureContext(
+                binding: binding,
+                profileID: nil,
+                consentMode: .manual,
+                noticeVersion: 1,
+                appVersion: "1.0",
+                appBuild: "7",
+                platform: .ios,
+                osVersion: "26.0",
+                destinationServerInstanceID: destinationServerInstanceID
+            )
+            let occurredAt = DiagnosticsTimestamp.string(from: capturedAt)
+            let manifest = context.makeManifestDraft(
+                type: .crash,
+                capturedAt: capturedAt,
+                crash: DiagnosticsCrashInfo(
+                    summary: "Crash reported by MetricKit: libsystem_kernel.dylib at \(privatePath)",
+                    stackExcerpt: "libsystem_kernel.dylib at \(privatePath)",
+                    thread: "worker http://[::1]:49152/items/42",
+                    foreground: true,
+                    source: .metrickit,
+                    provenance: .metricReportingPeriod,
+                    occurredAt: occurredAt,
+                    occurredAtStart: occurredAt,
+                    occurredAtEnd: occurredAt
+                ),
+                deviceSummary: DiagnosticsManifest.DeviceSummary(
+                    manufacturer: "Apple",
+                    model: "iPhone",
+                    os: "26.0",
+                    formFactor: "phone"
+                ),
+                playbackSessionIDs: []
+            )
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+                "HostedMetricKit-\(rootLabel)-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+            let store = PendingReportStore(rootDirectory: root)
+            return try store.save(PendingReportCapture(
+                binding: binding,
+                profileID: nil,
+                type: .crash,
+                fingerprint: rootLabel,
+                capturedAt: capturedAt,
+                manifest: manifest,
+                deviceSnapshot: makeDeviceSnapshot(capturedAt: capturedAt),
+                artifacts: [
+                    PendingReportArtifact(relativePath: "crash/metrickit.json", data: rawMetricKit),
+                ]
+            ))
+        }
+
+        let hostedReport = try saveReport(
+            binding: .hosted(
+                serverRegistryID: "private-source-server",
+                accountUserID: "private-source-account"
+            ),
+            destinationServerInstanceID: HostedDiagnosticsCapabilities.pinnedCollectorID,
+            rootLabel: "hosted"
+        )
+        let hostedBundle = try DiagnosticsBundleBuilder().build(
+            report: hostedReport,
+            logLines: [],
+            droppedLogLines: 0
+        )
+        let hostedTar = try gunzip(hostedBundle.bundleData)
+        let hostedMetricKit = try tarEntry(named: "crash/metrickit.json", in: hostedTar)
+        let hostedEmbeddedManifest = try tarEntry(named: "manifest.json", in: hostedTar)
+        let hostedEvidence = String(
+            decoding: hostedMetricKit + hostedEmbeddedManifest + hostedBundle.manifestData,
+            as: UTF8.self
+        )
+
+        for forbidden in [
+            "virtualMemoryRegionInfo",
+            privateContainerID,
+            privatePath,
+            "/private/var",
+            "127.0.0.1",
+            "[::1]",
+        ] {
+            XCTAssertFalse(hostedEvidence.contains(forbidden), forbidden)
+        }
+        XCTAssertFalse(hostedEvidence.contains("libsystem_kernel.dylib"))
+        XCTAssertFalse(hostedEvidence.contains(#""address""#))
+        XCTAssertTrue(hostedEvidence.contains("apple-native-library"))
+        XCTAssertTrue(hostedEvidence.contains("[redacted_path]"))
+        XCTAssertTrue(hostedEvidence.contains("http://redacted.invalid:49152/items/{id}"))
+
+        let selfHostedReport = try saveReport(
+            binding: DiagnosticsBinding(
+                serverInstanceID: "self-hosted-server-instance",
+                accountUserID: "self-hosted-account"
+            ),
+            destinationServerInstanceID: "self-hosted-server-instance",
+            rootLabel: "self-hosted"
+        )
+        let selfHostedBundle = try DiagnosticsBundleBuilder().build(
+            report: selfHostedReport,
+            logLines: [],
+            droppedLogLines: 0
+        )
+        let selfHostedMetricKit = try tarEntry(
+            named: "crash/metrickit.json",
+            in: gunzip(selfHostedBundle.bundleData)
+        )
+        XCTAssertEqual(selfHostedMetricKit, rawMetricKit)
     }
 
     func testManualHostedBundleIsDeterministicAcrossLiveRingAndDebugChanges() async throws {
@@ -1042,6 +1200,77 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertFalse(erased)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
         XCTAssertEqual(fixture.store.hostedDeletionIntents(), [fixture.report.id])
+    }
+
+    func testHostedUploadFenceDefersExplicitDeleteUntilNetworkHandoffSettles() async throws {
+        let fixture = try makePendingHostedReport(label: "delete-during-create")
+        HostedDiagnosticsStubProtocol.configureDelete(
+            reportID: fixture.report.id,
+            statusCode: 204
+        )
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: "install-create-delete-race",
+                    installationToken: "create-delete-race-token"
+                )
+            )
+        )
+        let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
+
+        let began = await coordinator.beginHostedUploadFence(for: fixture.report)
+        XCTAssertTrue(began)
+        await coordinator.markHostedNetworkHandoff(reportID: fixture.report.id)
+
+        // Delete wins locally and durably, but the collector request waits
+        // until the possibly accepted create has stopped using this UUID.
+        let erasedWhileUploading = await coordinator.delete(report: fixture.report)
+        XCTAssertFalse(erasedWhileUploading)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertEqual(fixture.store.hostedDeletionIntents(), [fixture.report.id])
+        XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+
+        let erasedAfterUpload = await coordinator.endHostedUploadFence(reportID: fixture.report.id)
+        XCTAssertTrue(erasedAfterUpload)
+        XCTAssertTrue(fixture.store.hostedDeletionIntents().isEmpty)
+        XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().map(\.method), ["DELETE"])
+    }
+
+    func testTurnOffErasesReadyHandoffAfterPendingDirectoryIsAlreadyGone() async throws {
+        let fixture = try makePendingHostedReport(label: "turn-off-after-ready")
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: "install-ready-turn-off-race",
+                    installationToken: "ready-turn-off-race-token"
+                )
+            )
+        )
+        let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
+
+        let began = await coordinator.beginHostedUploadFence(for: fixture.report)
+        XCTAssertTrue(began)
+        await coordinator.markHostedNetworkHandoff(reportID: fixture.report.id)
+        fixture.store.delete(fixture.report) // READY response removes evidence first.
+        _ = await coordinator.endHostedUploadFence(reportID: fixture.report.id)
+
+        HostedDiagnosticsStubProtocol.configureDelete(
+            reportID: fixture.report.id,
+            statusCode: 204
+        )
+        let erased = await coordinator.turnOffAndDelete(binding: fixture.report.binding.binding)
+
+        XCTAssertTrue(erased)
+        XCTAssertTrue(fixture.store.hostedDeletionIntents().isEmpty)
+        XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().map(\.method), ["DELETE"])
+        XCTAssertEqual(
+            HostedDiagnosticsStubProtocol.requests().map(\.path),
+            ["/v1/reports/\(fixture.report.id.uuidString.lowercased())"]
+        )
     }
 
     func testHostedDeletionIntentIsNotClearedOrUploadableWhileLocalEvidenceCannotBeRemoved() async throws {
@@ -1416,7 +1645,11 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 "passthrough": .string("unknown"),
             ]),
             videoCodecs: .string("not_collected"),
-            network: .object(["transport": .string("not_collected")])
+            network: .object([
+                "transport": .string("not_collected"),
+                "host": .string("127.0.0.1"),
+                "server_url": .string("http://127.0.0.1:49152/items/42"),
+            ])
         )
     }
 

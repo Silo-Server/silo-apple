@@ -414,23 +414,36 @@ final class PendingReportStore {
     /// Makes a hosted erasure request durable before removing the evidence it
     /// refers to. The collector DELETE endpoint is idempotent, so a response
     /// lost after acceptance can be retried safely without retaining logs.
-    func stageHostedDeletionAndDelete(_ report: PendingReport, now: Date = Date()) throws {
+    func stageHostedDeletionAndDelete(
+        _ report: PendingReport,
+        forceRemoteIntent: Bool = false,
+        now: Date = Date()
+    ) throws {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let current = loadReport(from: report.directoryURL) else { return }
-        if current.binding.binding.destinationChoice == .hosted,
-           current.state.hostedEnvelopeGeneration != nil || current.state.hostedRemoteShortID != nil {
+        let current = loadReport(from: report.directoryURL)
+        let deletionCandidate = current ?? report
+        if deletionCandidate.binding.binding.destinationChoice == .hosted,
+           (forceRemoteIntent
+            || deletionCandidate.state.hostedEnvelopeGeneration != nil
+            || deletionCandidate.state.hostedRemoteShortID != nil) {
             var intents = loadHostedDeletionIntentsLocked()
-            intents[current.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
+            intents[deletionCandidate.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
             try saveHostedDeletionIntentsLocked(intents)
         }
-        try fileManager.removeItem(at: current.directoryURL)
+        if let current {
+            try fileManager.removeItem(at: current.directoryURL)
+        }
     }
 
     /// Stages every potentially remote hosted report before clearing a
     /// binding's local evidence for the Turn Off and Delete action.
-    func stageHostedDeletionsAndPurge(binding: DiagnosticsBinding, now: Date = Date()) throws {
+    func stageHostedDeletionsAndPurge(
+        binding: DiagnosticsBinding,
+        additionalRemoteReportIDs: Set<UUID> = [],
+        now: Date = Date()
+    ) throws {
         lock.lock()
         defer { lock.unlock() }
 
@@ -440,13 +453,22 @@ final class PendingReportStore {
             && (report.state.hostedEnvelopeGeneration != nil || report.state.hostedRemoteShortID != nil) {
             intents[report.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
         }
+        if binding.destinationChoice == .hosted {
+            for reportID in additionalRemoteReportIDs {
+                intents[reportID.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
+            }
+        }
         try saveHostedDeletionIntentsLocked(intents)
         for report in reports {
             try fileManager.removeItem(at: report.directoryURL)
         }
     }
 
-    func stageHostedDeletionsAndPurge(serverInstanceID: String, now: Date = Date()) throws {
+    func stageHostedDeletionsAndPurge(
+        serverInstanceID: String,
+        additionalRemoteReportIDs: Set<UUID> = [],
+        now: Date = Date()
+    ) throws {
         lock.lock()
         defer { lock.unlock() }
 
@@ -455,6 +477,9 @@ final class PendingReportStore {
         for report in reports where report.binding.binding.destinationChoice == .hosted
             && (report.state.hostedEnvelopeGeneration != nil || report.state.hostedRemoteShortID != nil) {
             intents[report.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
+        }
+        for reportID in additionalRemoteReportIDs {
+            intents[reportID.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
         }
         try saveHostedDeletionIntentsLocked(intents)
         for report in reports {
