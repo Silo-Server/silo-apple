@@ -1255,7 +1255,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let began = await coordinator.beginHostedUploadFence(for: fixture.report)
         XCTAssertTrue(began)
         await coordinator.markHostedNetworkHandoff(reportID: fixture.report.id)
-        fixture.store.delete(fixture.report) // READY response removes evidence first.
+        try fixture.store.recordHostedReadyAndDelete(fixture.report)
         _ = await coordinator.endHostedUploadFence(reportID: fixture.report.id)
 
         HostedDiagnosticsStubProtocol.configureDelete(
@@ -1271,6 +1271,71 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             HostedDiagnosticsStubProtocol.requests().map(\.path),
             ["/v1/reports/\(fixture.report.id.uuidString.lowercased())"]
         )
+    }
+
+    func testReadyReceiptSurvivesRestartAndTurnOffErasesRemoteReport() async throws {
+        let fixture = try makePendingHostedReport(label: "ready-restart-turn-off")
+        let root = fixture.report.directoryURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        try fixture.store.recordHostedReadyAndDelete(fixture.report)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertEqual(
+            fixture.store.hostedReadyReceiptIDs(for: fixture.report.binding.binding),
+            [fixture.report.id]
+        )
+
+        // Reconstruct the store to prove the erasure capability is durable,
+        // rather than relying on the coordinator's process-local candidate.
+        let restoredStore = PendingReportStore(rootDirectory: root)
+        XCTAssertEqual(
+            restoredStore.hostedReadyReceiptIDs(for: fixture.report.binding.binding),
+            [fixture.report.id]
+        )
+        HostedDiagnosticsStubProtocol.configureDelete(
+            reportID: fixture.report.id,
+            statusCode: 204
+        )
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: "install-ready-restart",
+                    installationToken: "ready-restart-token"
+                )
+            )
+        )
+        let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: restoredStore)
+
+        let erased = await coordinator.turnOffAndDelete(binding: fixture.report.binding.binding)
+
+        XCTAssertTrue(erased)
+        XCTAssertTrue(restoredStore.hostedDeletionIntents().isEmpty)
+        XCTAssertTrue(restoredStore.hostedReadyReceiptIDs().isEmpty)
+        XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().map(\.method), ["DELETE"])
+    }
+
+    func testReadyReceiptHidesEvidenceAcrossInterruptedLocalRemoval() async throws {
+        let fixture = try makePendingHostedReport(
+            label: "ready-delete-crash",
+            hostedDeletionRemover: { _ in throw DiagnosticsStoreError.invalidHostedEnvelope }
+        )
+        let root = fixture.report.directoryURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+
+        XCTAssertThrowsError(try fixture.store.recordHostedReadyAndDelete(fixture.report))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertEqual(fixture.store.hostedReadyReceiptIDs(), [fixture.report.id])
+        XCTAssertTrue(fixture.store.listReports(now: Date()).isEmpty)
+
+        // A fresh process with a working filesystem remover finishes the local
+        // half before the report can be listed or uploaded again.
+        let restoredStore = PendingReportStore(rootDirectory: root)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertTrue(restoredStore.listReports(now: Date()).isEmpty)
+        XCTAssertEqual(restoredStore.hostedReadyReceiptIDs(), [fixture.report.id])
     }
 
     func testHostedDeletionIntentIsNotClearedOrUploadableWhileLocalEvidenceCannotBeRemoved() async throws {
@@ -1351,6 +1416,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             if state == .ready {
                 XCTAssertTrue(pending.isEmpty)
                 XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+                XCTAssertEqual(fixture.store.hostedReadyReceiptIDs(), [fixture.report.id])
             } else {
                 let persisted = try XCTUnwrap(pending.first)
                 XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))

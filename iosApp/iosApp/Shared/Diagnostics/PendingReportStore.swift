@@ -165,6 +165,16 @@ struct HostedDeletionRetryBatch {
     let hasBlockedLocalEvidence: Bool
 }
 
+private struct HostedReadyReceipt: Codable, Equatable {
+    let binding: DiagnosticsBinding
+    let readyAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case binding
+        case readyAt = "ready_at"
+    }
+}
+
 struct PendingReportArtifact: Equatable {
     let relativePath: String
     let data: Data
@@ -268,11 +278,17 @@ struct DiagnosticsCaptureContext {
 final class PendingReportStore {
     static let shared = PendingReportStore()
     static let expiryInterval: TimeInterval = 7 * 24 * 60 * 60
+    /// READY receipts outlive the collector's 30-day retention window with a
+    /// local-report-lifetime margin. They contain no evidence or remote short
+    /// ID—only the random report UUID and its local consent binding.
+    static let hostedReadyReceiptInterval: TimeInterval = 37 * 24 * 60 * 60
 
     private static let maxPendingPerBinding = 3
+    private static let maxHostedReadyReceipts = 4_096
     private static let seenFingerprintsFile = "seen-fingerprints.json"
     private static let throttleFile = "auto-upload-throttle.json"
     private static let hostedDeletionIntentsFile = "hosted-deletion-intents.json"
+    private static let hostedReadyReceiptsFile = "hosted-ready-receipts.json"
     private static let hostedEnvelopePrefix = ".hosted-envelope-"
     private static let hostedEnvelopeStagingPrefix = ".hosted-envelope-staging-"
 
@@ -292,6 +308,9 @@ final class PendingReportStore {
         }
         self.rootDirectory = rootDirectory ?? DiagnosticsStorageRoot.baseDirectory(fileManager: fileManager)
             .appendingPathComponent("Diagnostics", isDirectory: true)
+        lock.lock()
+        try? reconcileHostedReadyReceiptsLocked(now: Date())
+        lock.unlock()
     }
 
     var pendingDirectory: URL {
@@ -411,6 +430,42 @@ final class PendingReportStore {
         try? fileManager.removeItem(at: report.directoryURL)
     }
 
+    /// Publishes an evidence-free UUID/binding receipt before removing a READY
+    /// report. This makes a later Turn Off and Delete action able to erase the
+    /// remote report after an app restart, and makes an interrupted local
+    /// removal non-uploadable when the store is reconstructed.
+    func recordHostedReadyAndDelete(_ report: PendingReport, now: Date = Date()) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard report.binding.binding.destinationChoice == .hosted else {
+            throw DiagnosticsStoreError.invalidHostedEnvelope
+        }
+        try pruneHostedReadyReceiptsLocked(now: now)
+        var receipts = loadHostedReadyReceiptsLocked()
+        receipts[report.id.uuidString.lowercased()] = HostedReadyReceipt(
+            binding: report.binding.binding,
+            readyAt: DiagnosticsTimestamp.string(from: now)
+        )
+        try saveHostedReadyReceiptsLocked(receipts)
+        if fileManager.fileExists(atPath: report.directoryURL.path) {
+            try hostedDeletionRemover(report.directoryURL)
+        }
+    }
+
+    func hostedReadyReceiptIDs(for binding: DiagnosticsBinding? = nil) -> [UUID] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        try? pruneHostedReadyReceiptsLocked(now: Date())
+        return loadHostedReadyReceiptsLocked()
+            .compactMap { key, receipt in
+                guard binding == nil || receipt.binding == binding else { return nil }
+                return UUID(uuidString: key)
+            }
+            .sorted { $0.uuidString < $1.uuidString }
+    }
+
     /// Makes a hosted erasure request durable before removing the evidence it
     /// refers to. The collector DELETE endpoint is idempotent, so a response
     /// lost after acceptance can be retried safely without retaining logs.
@@ -424,10 +479,12 @@ final class PendingReportStore {
 
         let current = loadReport(from: report.directoryURL)
         let deletionCandidate = current ?? report
-        if deletionCandidate.binding.binding.destinationChoice == .hosted,
-           (forceRemoteIntent
-            || deletionCandidate.state.hostedEnvelopeGeneration != nil
-            || deletionCandidate.state.hostedRemoteShortID != nil) {
+        let readyReceipt = loadHostedReadyReceiptsLocked()[report.id.uuidString.lowercased()]
+        let crossedCreateBoundary = deletionCandidate.binding.binding.destinationChoice == .hosted
+            && (forceRemoteIntent
+                || deletionCandidate.state.hostedEnvelopeGeneration != nil
+                || deletionCandidate.state.hostedRemoteShortID != nil)
+        if readyReceipt != nil || crossedCreateBoundary {
             var intents = loadHostedDeletionIntentsLocked()
             intents[deletionCandidate.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
             try saveHostedDeletionIntentsLocked(intents)
@@ -454,6 +511,10 @@ final class PendingReportStore {
             intents[report.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
         }
         if binding.destinationChoice == .hosted {
+            for (reportID, receipt) in loadHostedReadyReceiptsLocked()
+                where receipt.binding == binding {
+                intents[reportID] = DiagnosticsTimestamp.string(from: now)
+            }
             for reportID in additionalRemoteReportIDs {
                 intents[reportID.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
             }
@@ -477,6 +538,10 @@ final class PendingReportStore {
         for report in reports where report.binding.binding.destinationChoice == .hosted
             && (report.state.hostedEnvelopeGeneration != nil || report.state.hostedRemoteShortID != nil) {
             intents[report.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
+        }
+        for (reportID, receipt) in loadHostedReadyReceiptsLocked()
+            where receipt.binding.serverInstanceID == serverInstanceID {
+            intents[reportID] = DiagnosticsTimestamp.string(from: now)
         }
         for reportID in additionalRemoteReportIDs {
             intents[reportID.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
@@ -537,6 +602,13 @@ final class PendingReportStore {
             try? hostedDeletionRemover(directory)
         }
         guard !fileManager.fileExists(atPath: directory.path) else { return false }
+        var receipts = loadHostedReadyReceiptsLocked()
+        receipts.removeValue(forKey: reportID.uuidString.lowercased())
+        do {
+            try saveHostedReadyReceiptsLocked(receipts)
+        } catch {
+            return false
+        }
         var intents = loadHostedDeletionIntentsLocked()
         intents.removeValue(forKey: reportID.uuidString.lowercased())
         do {
@@ -845,13 +917,21 @@ final class PendingReportStore {
     }
 
     private func scanReportsLocked() -> [PendingReport] {
+        try? pruneHostedReadyReceiptsLocked(now: Date())
+        let readyReportIDs = Set(loadHostedReadyReceiptsLocked().keys)
         guard let urls = try? fileManager.contentsOfDirectory(
             at: pendingDirectory,
             includingPropertiesForKeys: [.isDirectoryKey]
         ) else {
             return []
         }
-        return urls.compactMap(loadReport(from:))
+        return urls.compactMap { url in
+            if readyReportIDs.contains(url.lastPathComponent.lowercased()) {
+                try? hostedDeletionRemover(url)
+                return nil
+            }
+            return loadReport(from: url)
+        }
     }
 
     private func loadReport(from directory: URL) -> PendingReport? {
@@ -952,6 +1032,64 @@ final class PendingReportStore {
         }
     }
 
+    private func loadHostedReadyReceiptsLocked() -> [String: HostedReadyReceipt] {
+        readJSON(
+            [String: HostedReadyReceipt].self,
+            from: rootDirectory.appendingPathComponent(Self.hostedReadyReceiptsFile)
+        ) ?? [:]
+    }
+
+    private func saveHostedReadyReceiptsLocked(
+        _ receipts: [String: HostedReadyReceipt]
+    ) throws {
+        guard receipts.count <= Self.maxHostedReadyReceipts,
+              receipts.keys.allSatisfy({ UUID(uuidString: $0) != nil }),
+              receipts.values.allSatisfy({ $0.binding.destinationChoice == .hosted }) else {
+            throw DiagnosticsStoreError.invalidHostedReadyReceipt
+        }
+        try ensureDirectory(rootDirectory)
+        let url = rootDirectory.appendingPathComponent(Self.hostedReadyReceiptsFile)
+        if receipts.isEmpty {
+            if fileManager.fileExists(atPath: url.path) {
+                try fileManager.removeItem(at: url)
+            }
+        } else {
+            try writeJSON(receipts, to: url)
+        }
+    }
+
+    private func pruneHostedReadyReceiptsLocked(now: Date) throws {
+        let receipts = loadHostedReadyReceiptsLocked()
+        let deletionIntents = Set(loadHostedDeletionIntentsLocked().keys)
+        let retained = receipts.filter { reportID, receipt in
+            let directory = pendingDirectory.appendingPathComponent(reportID, isDirectory: true)
+            if fileManager.fileExists(atPath: directory.path) {
+                // Never let age pruning resurrect raw evidence whose local
+                // removal has been failing; the receipt remains the upload
+                // exclusion marker until the directory is actually absent.
+                return true
+            }
+            guard let readyAt = DiagnosticsDates.date(from: receipt.readyAt) else {
+                return deletionIntents.contains(reportID)
+            }
+            return deletionIntents.contains(reportID)
+                || now.timeIntervalSince(readyAt) <= Self.hostedReadyReceiptInterval
+        }
+        if retained != receipts {
+            try saveHostedReadyReceiptsLocked(retained)
+        }
+    }
+
+    private func reconcileHostedReadyReceiptsLocked(now: Date) throws {
+        try pruneHostedReadyReceiptsLocked(now: now)
+        for reportID in loadHostedReadyReceiptsLocked().keys {
+            let directory = pendingDirectory.appendingPathComponent(reportID, isDirectory: true)
+            if fileManager.fileExists(atPath: directory.path) {
+                try? hostedDeletionRemover(directory)
+            }
+        }
+    }
+
     private func ensureDirectory(_ directory: URL) throws {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try excludeFromBackup(directory)
@@ -983,6 +1121,7 @@ enum DiagnosticsStoreError: Error, Equatable {
     case invalidArtifactPath(String)
     case unreadableReport(UUID)
     case invalidHostedEnvelope
+    case invalidHostedReadyReceipt
 }
 
 enum DiagnosticsDates {

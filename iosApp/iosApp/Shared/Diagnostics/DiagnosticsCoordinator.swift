@@ -968,7 +968,7 @@ actor DiagnosticsCoordinator {
                 bundleData: bundle.bundleData
             )
             if response.state == .ready {
-                pendingStore.delete(report)
+                try pendingStore.recordHostedReadyAndDelete(report)
                 return .uploaded(response)
             }
             pendingStore.markHostedProcessing(report, shortID: response.shortID)
@@ -1024,7 +1024,7 @@ actor DiagnosticsCoordinator {
                     shortId: status.shortID,
                     state: .ready
                 )
-                pendingStore.delete(report)
+                try pendingStore.recordHostedReadyAndDelete(report)
                 return .uploaded(response)
             case .processing:
                 return .keptProcessing(shortID: expectedShortID)
