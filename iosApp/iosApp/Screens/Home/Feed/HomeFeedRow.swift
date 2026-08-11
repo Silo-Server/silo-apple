@@ -40,7 +40,7 @@ struct HomeFeedRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: HomeFeedMetrics.headerGap) {
             HomeSectionHeader(
-                title: displayTitle,
+                title: section.title,
                 icon: isResume ? "play.circle.fill" : nil,
                 style: headerStyle
             )
@@ -99,26 +99,6 @@ struct HomeFeedRow: View {
     private func watchedAction(for item: SectionItem) -> ((Bool) async -> Bool)? {
         guard let onSetWatched else { return nil }
         return { played in await onSetWatched(item, played) }
-    }
-
-    /// Server section titles read like query descriptions — "Recently
-    /// Released in Movies", "Recently Added in TV Shows". Trimming the
-    /// "in <library>" tail leaves a curated-sounding label without needing
-    /// a server change, and the library context is already implied by the
-    /// artwork in the row.
-    ///
-    /// Only generated titles are trimmed: an admin-named custom section
-    /// ("Made in Britain") is someone's deliberate choice, and cutting at
-    /// the *last* " in " keeps a generated title whose label itself contains
-    /// "in" from losing more than the library tail. `customized` is not a
-    /// useful guard here — the server sets it for any profile override
-    /// (position, item limit), not just a renamed title.
-    private var displayTitle: String {
-        guard section.isCustom != true,
-              let range = section.title.range(of: " in ", options: [.caseInsensitive, .backwards]) else {
-            return section.title
-        }
-        return String(section.title[..<range.lowerBound])
     }
 }
 #endif
