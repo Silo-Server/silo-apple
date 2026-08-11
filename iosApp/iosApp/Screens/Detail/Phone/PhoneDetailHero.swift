@@ -31,6 +31,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var availableWidth: CGFloat = 0
     @State private var showFullOverview = false
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
@@ -58,6 +59,13 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     }
 
     private var usesExpandedLayout: Bool {
+        // The expanded branch can keep reporting its landscape width for one
+        // more layout pass after an iPhone rotates back to portrait. Let the
+        // updated size classes break that feedback loop immediately so the
+        // poster and two-column composition cannot survive in portrait.
+        if horizontalSizeClass == .compact, verticalSizeClass == .regular {
+            return false
+        }
         if availableWidth > 0 {
             return availableWidth >= expandedLayoutBreakpoint
         }
