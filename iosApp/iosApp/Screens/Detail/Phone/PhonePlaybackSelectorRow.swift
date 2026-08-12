@@ -86,7 +86,7 @@ struct PhonePlaybackSelectorRow: View {
 
     private var usesPopoverLayout: Bool {
         #if os(iOS)
-        horizontalSizeClass == .regular
+        MobileDetailLayout.supportsExpandedPresentation && horizontalSizeClass == .regular
         #else
         false
         #endif

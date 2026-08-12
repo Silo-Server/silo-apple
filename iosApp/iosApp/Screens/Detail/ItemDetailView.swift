@@ -79,6 +79,11 @@ private struct ItemDetailPhoneContent: View {
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
     @State private var controlRequestBox: ControlRequestBox?
+    /// Top overscroll of the detail scroll view (pt). The interactive zoom
+    /// pull-down always begins as top overscroll, so this drives the
+    /// in-place fade of the custom top chrome; if the pull is cancelled the
+    /// bounce-back restores it to zero and the chrome fades back in.
+    @State private var chromeOverscroll: CGFloat = 0
     #endif
     @Environment(AppRouter.self) private var router
 
@@ -194,20 +199,18 @@ private struct ItemDetailPhoneContent: View {
                 : "You're offline. Connect to a network to stream, or play a downloaded title.")
         }
         #if os(iOS)
-        .toolbar {
-            if let detail = viewModel.detail, isDirectlyPlayable(detail) {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        playOnTV(currentControlRequest(for: detail))
-                    } label: {
-                        Image(systemName: siloControl.hasActiveSession
-                            ? "appletvremote.gen4.fill"
-                            : "appletvremote.gen4")
-                    }
-                    .tint(.continuumOnSurface)
-                    .accessibilityLabel("Remote Control")
-                }
-            }
+        // The system bar owns its items' animation during the interactive
+        // zoom dismiss and slides them horizontally, which reads as broken
+        // chrome. Hide the bar and draw the same buttons as an overlay so
+        // they can fade in place the instant the pull-down starts.
+        .toolbar(.hidden, for: .navigationBar)
+        .overlay(alignment: .top) {
+            detailChrome
+        }
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentOffset.y + geometry.contentInsets.top
+        } action: { _, offset in
+            chromeOverscroll = max(0, -offset)
         }
         .sheet(item: $controlRequestBox) { box in
             SiloControlTargetPickerView(request: box.request, controller: siloControl)
@@ -216,11 +219,92 @@ private struct ItemDetailPhoneContent: View {
     }
 
     #if os(iOS)
+    /// Custom top chrome standing in for the hidden navigation bar: back,
+    /// sidebar toggle (iPad), and the remote-control action. Fades out in
+    /// place over the first points of the zoom pull-down instead of
+    /// inheriting the system bar's sideways slide.
+    private var detailChrome: some View {
+        HStack(spacing: 8) {
+            Button {
+                router.goBack()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color.continuumOnSurface)
+                    .frame(
+                        width: ContinuumTheme.topBarIconHitSize,
+                        height: ContinuumTheme.topBarIconHitSize
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .siloGlass(in: Circle(), interactive: true)
+            .accessibilityLabel("Back")
+
+            SidebarToggleButton()
+
+            Spacer()
+
+            if let detail = viewModel.detail, let request = chromeControlRequest(for: detail) {
+                Button {
+                    playOnTV(request)
+                } label: {
+                    Image(systemName: siloControl.hasActiveSession
+                        ? "appletvremote.gen4.fill"
+                        : "appletvremote.gen4")
+                        .foregroundStyle(Color.continuumOnSurface)
+                        .frame(
+                            width: ContinuumTheme.topBarIconHitSize,
+                            height: ContinuumTheme.topBarIconHitSize
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .siloGlass(in: Circle(), interactive: true)
+                .accessibilityLabel("Remote Control")
+            }
+        }
+        .padding(.horizontal, 12)
+        .opacity(chromeOpacity)
+        .allowsHitTesting(chromeOpacity > 0.5)
+    }
+
+    /// Fully opaque at rest, gone within the first ~30 pt of pull so the
+    /// chrome reads as fading in place rather than travelling with the card.
+    /// The 6 pt dead zone keeps casual scroll bounce from flickering it.
+    private var chromeOpacity: CGFloat {
+        guard chromeOverscroll > 6 else { return 1 }
+        return max(0, 1 - (chromeOverscroll - 6) / 24)
+    }
+
     /// True when the loaded detail routes to `MovieDetailContent` — the only
     /// branch whose primary item maps to a single playback request. Series,
     /// season, and audiobook containers have no single "this item" to cast.
     private func isDirectlyPlayable(_ detail: ItemDetail) -> Bool {
         !detail.isAudiobook && detail.type != "season" && detail.type != "series"
+    }
+
+    /// The cast request behind the chrome's remote button, or nil to hide it.
+    /// Movies/episodes cast themselves; series/season pages cast the same
+    /// next-up episode their Play button targets. Audiobooks have no cast
+    /// support, and the container button waits for the episode list so the
+    /// remote can't race ahead of the page's own Play action.
+    private func chromeControlRequest(for detail: ItemDetail) -> SiloControlPlaybackRequest? {
+        if isDirectlyPlayable(detail) {
+            return currentControlRequest(for: detail)
+        }
+        guard let nextUp = nextUpEpisode(for: detail) else { return nil }
+        return currentControlRequest(
+            contentId: nextUp.contentId,
+            fileId: nextUpPlaybackFileId(resolvedFileId: preferredNextUpFileId),
+            audioTrackIndex: preferredNextUpAudioTrackIndex,
+            subtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
+            startFromBeginning: false,
+            resumePosition: playableResumePosition(
+                position: nextUp.userData?.positionSeconds,
+                duration: nextUp.userData?.durationSeconds
+            )
+        )
     }
 
     /// Builds the cast request for the visible movie/episode using the

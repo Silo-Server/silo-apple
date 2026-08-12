@@ -1,6 +1,24 @@
 #if !os(tvOS)
 import SwiftUI
 
+#if os(iOS)
+import UIKit
+#endif
+
+/// Device gate for detail-page presentations that are designed specifically
+/// for iPad. A landscape iPhone can have a regular size class and a container
+/// wider than the iPad breakpoint, so neither signal identifies an iPad by
+/// itself.
+enum MobileDetailLayout {
+    static var supportsExpandedPresentation: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .pad
+        #else
+        true
+        #endif
+    }
+}
+
 /// Adaptive iOS detail hero. Compact containers retain the phone's
 /// backdrop-first, centered editorial composition. At regular iPad detail
 /// widths, poster art and a left-aligned editorial column share a single
@@ -21,9 +39,6 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     let ratingChip: String?
     let overview: String?
     let factsLine: [PhoneHeroFactToken]
-    /// Overlay data for the backdrop. `nil` skips overlay rendering
-    /// (e.g. when the detail payload didn't carry an OverlaySummary).
-    var overlayData: OverlayData? = nil
     @ViewBuilder let actions: () -> Actions
     /// Affordance rendered directly under the overview (e.g. the on-view
     /// description-translation control). Pass `{ EmptyView() }` when there's
@@ -33,12 +48,13 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var availableWidth: CGFloat = 0
     @State private var showFullOverview = false
-    @EnvironmentObject private var overlayStore: OverlayPrefsStore
 
     private let expandedLayoutBreakpoint: CGFloat = 640
 
     private var backdropHeight: CGFloat {
-        horizontalSizeClass == .regular ? 420 : 360
+        MobileDetailLayout.supportsExpandedPresentation && horizontalSizeClass == .regular
+            ? 420
+            : 360
     }
 
     var body: some View {
@@ -58,6 +74,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     }
 
     private var usesExpandedLayout: Bool {
+        guard MobileDetailLayout.supportsExpandedPresentation else { return false }
         if availableWidth > 0 {
             return availableWidth >= expandedLayoutBreakpoint
         }
@@ -162,14 +179,6 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 endPoint: .bottom
             )
 
-            if let overlayData, overlayStore.enabled {
-                CardOverlays(
-                    data: overlayData,
-                    prefs: overlayStore.prefs,
-                    variant: .hero
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
         }
         .backgroundExtensionEffect()
         .allowsHitTesting(false)
@@ -196,15 +205,6 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     private var backdropBlock: some View {
         ZStack(alignment: .bottom) {
             backdrop
-            if let overlayData, overlayStore.enabled {
-                CardOverlays(
-                    data: overlayData,
-                    prefs: overlayStore.prefs,
-                    variant: .hero
-                )
-                .frame(height: backdropHeight)
-                .frame(maxWidth: .infinity)
-            }
             bottomFade
         }
         .frame(height: backdropHeight)
@@ -306,7 +306,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// and pushed Play toward the fold. This keeps the logo dominant without
     /// crowding out the actions it exists to introduce.
     private var compactLogoHeight: CGFloat {
-        horizontalSizeClass == .regular ? 168 : 132
+        MobileDetailLayout.supportsExpandedPresentation && horizontalSizeClass == .regular
+            ? 168
+            : 132
     }
 
     @ViewBuilder

@@ -63,7 +63,9 @@ struct SeasonDetailContent<BelowOverview: View>: View {
     }
 
     private var heroToContentSpacing: CGFloat {
-        horizontalSizeClass == .regular ? 16 : 32
+        MobileDetailLayout.supportsExpandedPresentation && horizontalSizeClass == .regular
+            ? 16
+            : 32
     }
 
     // MARK: - Hero
@@ -85,7 +87,6 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             ratingChip: nil,
             overview: detail.overview,
             factsLine: [],
-            overlayData: OverlayData.from(detail),
             actions: { actionStack },
             belowOverview: belowOverview
         )

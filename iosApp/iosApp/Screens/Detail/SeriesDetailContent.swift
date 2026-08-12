@@ -75,7 +75,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     }
 
     private var heroToContentSpacing: CGFloat {
-        horizontalSizeClass == .regular ? 16 : 32
+        MobileDetailLayout.supportsExpandedPresentation && horizontalSizeClass == .regular
+            ? 16
+            : 32
     }
 
     // MARK: - Hero
@@ -94,7 +96,6 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
             factsLine: PhoneHeroMetadata.seriesFactsLine(from: detail),
-            overlayData: OverlayData.from(detail),
             actions: { actionStack },
             belowOverview: belowOverview
         )
