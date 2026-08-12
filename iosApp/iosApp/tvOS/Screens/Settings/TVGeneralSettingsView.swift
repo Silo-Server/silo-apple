@@ -13,12 +13,26 @@ struct TVGeneralSettingsPane: View {
     @State private var showsMenuEditor = false
     @State private var registry = ServerRegistry.shared
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
+    let activeProfile: UserProfile?
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
+    let changePairedProfile: () -> Void
+    private let appleTVUserContext = AppleTVUserContext.current
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TVSettingsSectionHeader("PROFILE")
+            TVSettingsSectionHeader("APPLE TV USER")
+
+            TVSettingsPickerRow(
+                title: "Paired Silo Profile",
+                value: pairedProfileName,
+                action: changePairedProfile
+            )
+            .focused(detailFocus, equals: .generalAppleTVUser)
+
+            TVSettingsFooter(pairingDescription)
+
+            TVSettingsSectionHeader("PROFILE AT LAUNCH")
 
             TVSettingsPickerRow(
                 title: "Profile at Launch",
@@ -141,6 +155,24 @@ struct TVGeneralSettingsPane: View {
             in: preferences.resolvedPrimaryMenuItems(),
             libraries: libraries
         ).count
+    }
+
+    private var pairedProfileName: String {
+        guard let serverID = registry.activeServerId,
+              let remembered = launchPreferences.rememberedProfile(for: serverID) else {
+            return "Not paired"
+        }
+        guard let activeProfile,
+              activeProfile.id == remembered.profileID else {
+            return "Saved profile"
+        }
+        return activeProfile.name
+    }
+
+    private var pairingDescription: String {
+        let base = appleTVUserContext.pairingDescription
+        guard launchPreferences.behavior == .askEveryLaunch else { return base }
+        return "\(base) Ask Every Time is on, so Silo will still show Who's Watching at launch."
     }
 
     @ViewBuilder

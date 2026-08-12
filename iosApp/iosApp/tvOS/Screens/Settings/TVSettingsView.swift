@@ -304,7 +304,7 @@ struct TVSettingsView: View {
 
     private func initialDetailFocus(for category: TVSettingsCategory) -> TVSettingsDetailFocus {
         if category == .general {
-            return .generalProfileLaunch
+            return .generalAppleTVUser
         }
         if category == .subtitles,
            viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance {
@@ -448,7 +448,11 @@ struct TVSettingsView: View {
     private var paneContent: some View {
         switch selectedCategory {
         case .general:
-            TVGeneralSettingsPane(detailFocus: $detailFocus)
+            TVGeneralSettingsPane(
+                activeProfile: viewModel.activeProfile,
+                detailFocus: $detailFocus,
+                changePairedProfile: switchProfile
+            )
         case .playback:
             TVPlaybackSettingsPane(
                 viewModel: viewModel,
@@ -541,6 +545,7 @@ struct TVSettingsView: View {
 
 enum TVSettingsDetailFocus: Hashable {
     case top
+    case generalAppleTVUser
     case generalProfileLaunch
     case generalCardPreset
     case generalTopMenu

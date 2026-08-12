@@ -4,7 +4,7 @@ import SwiftUI
 /// tvOS focus behavior for the shared profile presentation.
 struct TVProfileTile: View {
     let profile: UserProfile
-    var isLastUsed: Bool = false
+    var isRemembered: Bool = false
     var prefersDefaultFocus: Bool = false
     var defaultFocusNamespace: Namespace.ID? = nil
     let action: () -> Void
@@ -12,7 +12,7 @@ struct TVProfileTile: View {
     var body: some View {
         ProfileTile(
             profile: profile,
-            isLastUsed: isLastUsed,
+            isRemembered: isRemembered,
             action: action
         )
         // Lets the first profile tile claim initial focus instead of the

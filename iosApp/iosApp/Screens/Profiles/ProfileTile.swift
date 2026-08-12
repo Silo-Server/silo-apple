@@ -49,7 +49,7 @@ private let focusScale: CGFloat = 1.05
 /// tile lifts with a white ring and a colored halo matching its tint.
 struct ProfileTile: View {
     let profile: UserProfile
-    var isLastUsed: Bool = false
+    var isRemembered: Bool = false
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
@@ -135,12 +135,14 @@ struct ProfileTile: View {
                 .padding(12)
             }
 
-            if isLastUsed {
+            if isRemembered {
                 VStack {
                     Spacer()
                     HStack {
-                        Text("LAST USED")
+                        Text(rememberedBadgeLabel)
                             .font(.caption.bold())
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
                             .foregroundStyle(.white)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
@@ -196,10 +198,26 @@ struct ProfileTile: View {
 
     private var accessibilityValue: String {
         var values: [String] = []
-        if isLastUsed { values.append("Last used") }
+        if isRemembered { values.append(rememberedAccessibilityValue) }
         if profile.hasPin { values.append("PIN protected") }
         if profile.isChild { values.append("Child profile") }
         return values.joined(separator: ", ")
+    }
+
+    private var rememberedBadgeLabel: String {
+        #if os(tvOS)
+        "APPLE TV USER"
+        #else
+        "LAST USED"
+        #endif
+    }
+
+    private var rememberedAccessibilityValue: String {
+        #if os(tvOS)
+        "Paired with this Apple TV user"
+        #else
+        "Last used"
+        #endif
     }
 }
 

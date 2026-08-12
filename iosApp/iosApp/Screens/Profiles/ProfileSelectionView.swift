@@ -267,7 +267,7 @@ struct ProfileSelectionView: View {
                 #if os(tvOS)
                 TVProfileTile(
                     profile: profile,
-                    isLastUsed: profile.id == rememberedProfileID,
+                    isRemembered: profile.id == rememberedProfileID,
                     prefersDefaultFocus: profile.id == preferredProfileID,
                     defaultFocusNamespace: profileFocusNamespace
                 ) {
@@ -276,7 +276,7 @@ struct ProfileSelectionView: View {
                 #else
                 ProfileTile(
                     profile: profile,
-                    isLastUsed: profile.id == rememberedProfileID
+                    isRemembered: profile.id == rememberedProfileID
                 ) {
                     handleProfileTap(profile)
                 }
