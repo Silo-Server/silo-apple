@@ -1036,20 +1036,32 @@ class PlayerViewModel {
             let selectedSubtitle = selectedSubtitleIndex.flatMap { selectedIndex in
                 plan.subtitle.inventory.first(where: { $0.combinedIndex == selectedIndex })
             }
+            // Exactly one identity is armed — arming both would publish and
+            // select the same subtitle twice. Embedded wins wherever the
+            // plan's delivery maps to an engine that selects the stream
+            // itself: that identity routes to the instant local tap, while
+            // the server sidecar for an embedded track is a 47-75s
+            // extraction fallback. The sidecar identity is the fallback for
+            // genuinely external tracks and for deliveries that carry no
+            // embedded streams.
             let embeddedFFmpegIndex: Int? = selectedSubtitle.flatMap { item in
-                // A sidecar is the server-selected artifact even when it was
-                // extracted from an embedded stream. Arming both identities
-                // would publish and select the same subtitle twice.
-                guard item.source == "embedded", item.delivery != "sidecar" else { return nil }
+                guard item.source == "embedded",
+                      ApplePlaybackV3PlanAdapter.deliverySupportsEmbeddedSubtitleSelection(
+                          plan.delivery
+                      ) else {
+                    return nil
+                }
                 return ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
                     serverCombinedIndex: item.combinedIndex,
                     in: selectedVersion
                 )
             }
-            let sidecarTrackId: Int64? = selectedSubtitle.flatMap { item in
-                guard item.delivery == "sidecar" else { return nil }
-                return SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex)
-            }
+            let sidecarTrackId: Int64? = embeddedFFmpegIndex == nil
+                ? selectedSubtitle.flatMap { item in
+                    guard item.delivery == "sidecar" else { return nil }
+                    return SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex)
+                }
+                : nil
             var request = copyForRecovery(
                 preferredFileId: plan.effectiveMediaFileId,
                 preferredAudioTrackIndex: plan.selectedTracks.audio?.index,
@@ -7705,6 +7717,22 @@ class PlayerViewModel {
     }
     #endif
 
+    /// Embedded ffmpeg stream indices a server-extracted sidecar of the same
+    /// stream must not shadow: the armed V3 intent and the live selection.
+    /// Both identify a row selection still depends on, and the embedded row
+    /// resolves through the local tap rather than a server VTT extraction.
+    private var embeddedFFmpegIndicesExemptFromSidecarShadowing: Set<Int> {
+        var exempt: Set<Int> = []
+        if let pendingSubtitleFfIndex, pendingSubtitleFfIndex >= 0 {
+            exempt.insert(pendingSubtitleFfIndex)
+        }
+        if let selectedSubtitleId,
+           let ffIndex = subtitleTracks.first(where: { $0.trackId == selectedSubtitleId })?.ffIndex {
+            exempt.insert(ffIndex)
+        }
+        return exempt
+    }
+
     /// Append sidecar tracks to `subtitleTracks` as synthesised
     /// `PlayerTrack` rows so the picker shows every available caption
     /// track alongside embedded ones. Called on main by the session.
@@ -7718,21 +7746,33 @@ class PlayerViewModel {
         var existingEmbedded = subtitleTracks.filter { track in
             !SubtitleTrackIdSpace.isSidecar(track.trackId)
         }
+        // An embedded stream whose row is being kept for the armed or live
+        // selection also suppresses its own sidecar descriptor, so the picker
+        // still shows exactly one row per stream.
+        var suppressedSidecarIndices: Set<Int> = []
         if let version = currentSelectedVersion {
-            let shadowedEmbeddedFFmpegIndices: Set<Int> = Set(descriptors.compactMap { descriptor in
-                guard descriptor.source?.caseInsensitiveCompare("embedded") == .orderedSame else {
-                    return nil
+            let exempt = embeddedFFmpegIndicesExemptFromSidecarShadowing
+            var shadowedEmbeddedFFmpegIndices: Set<Int> = []
+            for descriptor in descriptors {
+                guard descriptor.source?.caseInsensitiveCompare("embedded") == .orderedSame,
+                      let ffIndex = ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
+                          serverCombinedIndex: descriptor.index,
+                          in: version
+                      ) else {
+                    continue
                 }
-                return ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
-                    serverCombinedIndex: descriptor.index,
-                    in: version
-                )
-            })
+                if exempt.contains(ffIndex),
+                   existingEmbedded.contains(where: { $0.ffIndex == ffIndex }) {
+                    suppressedSidecarIndices.insert(descriptor.index)
+                } else {
+                    shadowedEmbeddedFFmpegIndices.insert(ffIndex)
+                }
+            }
             existingEmbedded.removeAll { track in
                 track.ffIndex.map { shadowedEmbeddedFFmpegIndices.contains($0) } == true
             }
         }
-        for d in descriptors {
+        for d in descriptors where !suppressedSidecarIndices.contains(d.index) {
             let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: d.index)
             existingEmbedded.append(PlayerTrack(
                 trackId: trackId,
@@ -7759,9 +7799,11 @@ class PlayerViewModel {
         )
 
         var restoredPrimarySidecar = false
+        // The intent survives an append that does not carry its track — a
+        // later registration pass may still deliver it.
         if let pendingTrackId = pendingSidecarSubtitleTrackId {
-            pendingSidecarSubtitleTrackId = nil
             if subtitleTracks.contains(where: { $0.trackId == pendingTrackId }) {
+                pendingSidecarSubtitleTrackId = nil
                 restoredPrimarySidecar = true
                 if selectedSubtitleId != pendingTrackId {
                     selectedSubtitleId = pendingTrackId
@@ -7844,18 +7886,31 @@ class PlayerViewModel {
     /// `onSidecarTracksRegistered` are layered in separately.
     private func applyTrackList(_ tracks: [PlayerTrack]) {
         audioTracks = tracks.filter { $0.kind == .audio }
+        // Sidecars can register before the replacement track list arrives, so
+        // the exemption applies in this direction too: the armed embedded
+        // identity keeps its stream row and drops the extracted sidecar row.
+        let exemptEmbeddedFFmpegIndices = embeddedFFmpegIndicesExemptFromSidecarShadowing
+        var supersededSidecarTrackIds: Set<Int64> = []
         let shadowedEmbeddedFFmpegIndices: Set<Int> = {
             guard let version = currentSelectedVersion else { return [] }
-            return Set(subtitleTracks.compactMap { track in
+            var shadowed: Set<Int> = []
+            for track in subtitleTracks {
                 guard SubtitleTrackIdSpace.isSidecar(track.trackId),
-                      let combinedIndex = track.srcId else {
-                    return nil
+                      let combinedIndex = track.srcId,
+                      let ffIndex = ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
+                          serverCombinedIndex: combinedIndex,
+                          in: version
+                      ) else {
+                    continue
                 }
-                return ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
-                    serverCombinedIndex: combinedIndex,
-                    in: version
-                )
-            })
+                if exemptEmbeddedFFmpegIndices.contains(ffIndex),
+                   tracks.contains(where: { $0.kind == .sub && $0.ffIndex == ffIndex }) {
+                    supersededSidecarTrackIds.insert(track.trackId)
+                } else {
+                    shadowed.insert(ffIndex)
+                }
+            }
+            return shadowed
         }()
         let embeddedSubs = tracks.filter { track in
             guard track.kind == .sub else { return false }
@@ -7867,7 +7922,10 @@ class PlayerViewModel {
         // `onSidecarTracksRegistered`) and synthetic live AI tracks (from
         // the live-subtitle seam). Both live outside the embedded-stream
         // id space, so a track-list refresh must not drop them.
-        let existingSidecars = subtitleTracks.filter { SubtitleTrackIdSpace.isSidecar($0.trackId) }
+        let existingSidecars = subtitleTracks.filter {
+            SubtitleTrackIdSpace.isSidecar($0.trackId)
+                && !supersededSidecarTrackIds.contains($0.trackId)
+        }
         let existingLive = subtitleTracks.filter { SubtitleTrackIdSpace.isAILive($0.trackId) }
         subtitleTracks = embeddedSubs + existingSidecars + existingLive
 

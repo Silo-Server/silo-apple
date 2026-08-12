@@ -588,14 +588,33 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
         XCTAssertEqual(renewal.preferredFileId, 42)
         XCTAssertEqual(renewal.preferredAudioTrackIndex, 3)
-        XCTAssertNil(renewal.preferredSubtitleTrackIndex)
+        // The server extracts embedded text tracks into sidecars, but a
+        // local-container delivery can still tap the stream directly, so the
+        // embedded identity is armed and the sidecar identity stays clear.
+        XCTAssertEqual(renewal.preferredSubtitleTrackIndex, 5)
         XCTAssertEqual(renewal.preferredProtocolV3SubtitleIndex, 2)
-        XCTAssertEqual(
-            renewal.preferredSidecarSubtitleTrackId,
-            SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 2)
-        )
+        XCTAssertNil(renewal.preferredSidecarSubtitleTrackId)
         XCTAssertEqual(renewal.preferredQualityOverride, "720p")
         XCTAssertFalse(renewal.startFromBeginning)
+
+        // An HLS delivery hands AVFoundation segmented output with no
+        // embedded streams to tap, so the sidecar identity is armed instead.
+        let hlsRenewal = original.adoptingProtocolV3Intent(
+            plan: makePlan(
+                delivery: "server_transcode_hls",
+                streamProtocol: "hls",
+                selectedSubtitleIndex: 2,
+                subtitleMode: "render",
+                subtitleInventory: [selectedSubtitle]
+            ),
+            selectedVersion: version,
+            activeQualityId: "720p"
+        )
+        XCTAssertNil(hlsRenewal.preferredSubtitleTrackIndex)
+        XCTAssertEqual(
+            hlsRenewal.preferredSidecarSubtitleTrackId,
+            SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 2)
+        )
     }
 
     func testAdoptedSubtitleOffPlanClearsDurableSubtitleIntent() {

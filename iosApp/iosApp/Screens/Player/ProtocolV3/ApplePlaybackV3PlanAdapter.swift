@@ -211,6 +211,22 @@ enum ApplePlaybackV3PlanAdapter {
         return embedded[embeddedOrdinal].index
     }
 
+    /// Whether a plan delivery still hands the client the source's own
+    /// embedded subtitle streams, so an embedded track identity can be
+    /// selected locally instead of through a server-extracted sidecar. Both
+    /// non-HLS deliveries resolve to local-container engines in
+    /// `makeExecutionPlan`; HLS deliveries hand AVFoundation segmented output
+    /// the client cannot demux subtitles from.
+    static func deliverySupportsEmbeddedSubtitleSelection(_ delivery: String) -> Bool {
+        switch delivery {
+        case PlaybackProtocolV3.PlanDelivery.originalHTTP,
+             PlaybackProtocolV3.PlanDelivery.remuxProgressive:
+            return true
+        default:
+            return false
+        }
+    }
+
     static func makeExecutionPlan(
         v3: PreparedPlaybackV3,
         basePlan: PlaybackExecutionPlan,
