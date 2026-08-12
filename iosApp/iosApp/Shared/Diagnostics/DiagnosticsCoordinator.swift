@@ -461,7 +461,20 @@ actor DiagnosticsCoordinator {
 
     func pendingReports(for binding: DiagnosticsBinding) async -> [PendingReport] {
         _ = await drainHostedDeletionIntents()
-        let deleting = Set(pendingStore.hostedDeletionIntents())
+        let deleting: Set<UUID>
+        if binding.destinationChoice == .hosted {
+            guard let hostedDeletionIntents = try? pendingStore.hostedDeletionIntents() else {
+                // An unreadable erasure ledger may contain an intent/READY
+                // marker for any surviving hosted directory. Keep all such
+                // evidence quarantined rather than polling or presenting it.
+                return []
+            }
+            deleting = Set(hostedDeletionIntents)
+        } else {
+            // Hosted erasure bookkeeping does not govern the compatibility
+            // path to a user's own Silo server.
+            deleting = []
+        }
         let reports = pendingStore.listReports(for: binding, now: Date()).filter {
             !deleting.contains($0.id)
         }
@@ -532,7 +545,7 @@ actor DiagnosticsCoordinator {
     @discardableResult
     private func drainHostedDeletionIntents() async -> Bool {
         let batch = pendingStore.prepareHostedDeletionRetries()
-        var completedAll = !batch.hasBlockedLocalEvidence
+        var completedAll = !batch.hasBlockedLocalEvidence && !batch.hasCorruptLedger
         let activeUploads = Set(hostedUploadsInFlight.keys)
         if batch.reportIDs.contains(where: activeUploads.contains) {
             completedAll = false
@@ -689,10 +702,11 @@ actor DiagnosticsCoordinator {
     /// exercise without adding timing sleeps around URLSession callbacks.
     @discardableResult
     func beginHostedUploadFence(for report: PendingReport) -> Bool {
-        guard report.binding.binding.destinationChoice == .hosted,
+        guard let deletionIntents = try? pendingStore.hostedDeletionIntents(),
+              report.binding.binding.destinationChoice == .hosted,
               report.state.hostedRemoteShortID == nil,
               hostedUploadsInFlight[report.id] == nil,
-              !pendingStore.hostedDeletionIntents().contains(report.id),
+              !deletionIntents.contains(report.id),
               pendingStore.report(id: report.id) != nil else {
             return false
         }
@@ -714,10 +728,13 @@ actor DiagnosticsCoordinator {
     }
 
     private func performUpload(report: PendingReport) async -> DiagnosticsUploadDecision {
-        guard !pendingStore.hostedDeletionIntents().contains(report.id) else {
-            return .keptRetryable
-        }
         let destination = report.binding.binding.destinationChoice
+        if destination == .hosted {
+            guard let deletionIntents = try? pendingStore.hostedDeletionIntents(),
+                  !deletionIntents.contains(report.id) else {
+                return .keptRetryable
+            }
+        }
         if destination == .hosted, report.state.hostedRemoteShortID != nil {
             // Once the collector has durably accepted the bytes, completion no
             // longer depends on a fresh capability or Silo consent request.
@@ -884,6 +901,8 @@ actor DiagnosticsCoordinator {
             let bundle: DiagnosticsBundleBuildResult
             let mustPersistEnvelope: Bool
             switch pendingStore.loadHostedEnvelope(for: report) {
+            case .quarantined:
+                return .keptRetryable
             case .corrupt:
                 pendingStore.markHostedRejected(report, code: "invalid_hosted_envelope")
                 return .keptRejected(code: "invalid_hosted_envelope")
@@ -955,8 +974,9 @@ actor DiagnosticsCoordinator {
                 for: report.binding.binding,
                 currentNoticeVersion: context.noticeVersion
             )
-            guard currentConsent.mode != .never,
-                  !pendingStore.hostedDeletionIntents().contains(report.id),
+            guard let deletionIntents = try? pendingStore.hostedDeletionIntents(),
+                  currentConsent.mode != .never,
+                  !deletionIntents.contains(report.id),
                   pendingStore.report(id: report.id) != nil else {
                 return .keptRetryable
             }

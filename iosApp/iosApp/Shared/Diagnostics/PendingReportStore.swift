@@ -158,11 +158,15 @@ enum HostedEnvelopeLoadResult {
     case missing
     case available(DiagnosticsBundleBuildResult)
     case corrupt
+    /// An erasure ledger exists but cannot be trusted. The report remains on
+    /// disk, hidden and non-uploadable, until the ledger can be recovered.
+    case quarantined
 }
 
 struct HostedDeletionRetryBatch {
     let reportIDs: [UUID]
     let hasBlockedLocalEvidence: Bool
+    let hasCorruptLedger: Bool
 }
 
 private struct HostedReadyReceipt: Codable, Equatable {
@@ -173,6 +177,11 @@ private struct HostedReadyReceipt: Codable, Equatable {
         case binding
         case readyAt = "ready_at"
     }
+}
+
+private struct HostedErasureLedgers {
+    let deletionIntents: [String: String]
+    let readyReceipts: [String: HostedReadyReceipt]
 }
 
 struct PendingReportArtifact: Equatable {
@@ -285,6 +294,11 @@ final class PendingReportStore {
 
     private static let maxPendingPerBinding = 3
     private static let maxHostedReadyReceipts = 4_096
+    private static let maxHostedDeletionIntents = 4_096
+    /// Bounds defensive reads before allocating ledger contents. Four thousand
+    /// receipts fit comfortably below this ceiling while corrupt/hostile files
+    /// cannot consume unbounded memory at launch.
+    static let maxHostedErasureLedgerBytes = 2 * 1024 * 1024
     private static let seenFingerprintsFile = "seen-fingerprints.json"
     private static let throttleFile = "auto-upload-throttle.json"
     private static let hostedDeletionIntentsFile = "hosted-deletion-intents.json"
@@ -324,6 +338,12 @@ final class PendingReportStore {
         defer { lock.unlock() }
 
         try ensureDirectory(rootDirectory)
+        if capture.binding.destinationChoice == .hosted {
+            // Do not create newly uploadable hosted evidence while existing
+            // erasure state is quarantined. Missing ledgers are the one valid
+            // empty state; present-but-unreadable files throw here.
+            _ = try loadHostedErasureLedgersLocked()
+        }
         try cleanupExpiredLocked(now: capture.capturedAt)
 
         let reportDirectory = pendingDirectory.appendingPathComponent(capture.id.uuidString.lowercased(), isDirectory: true)
@@ -442,7 +462,7 @@ final class PendingReportStore {
             throw DiagnosticsStoreError.invalidHostedEnvelope
         }
         try pruneHostedReadyReceiptsLocked(now: now)
-        var receipts = loadHostedReadyReceiptsLocked()
+        var receipts = try loadHostedErasureLedgersLocked().readyReceipts
         receipts[report.id.uuidString.lowercased()] = HostedReadyReceipt(
             binding: report.binding.binding,
             readyAt: DiagnosticsTimestamp.string(from: now)
@@ -453,12 +473,12 @@ final class PendingReportStore {
         }
     }
 
-    func hostedReadyReceiptIDs(for binding: DiagnosticsBinding? = nil) -> [UUID] {
+    func hostedReadyReceiptIDs(for binding: DiagnosticsBinding? = nil) throws -> [UUID] {
         lock.lock()
         defer { lock.unlock() }
 
-        try? pruneHostedReadyReceiptsLocked(now: Date())
-        return loadHostedReadyReceiptsLocked()
+        try pruneHostedReadyReceiptsLocked(now: Date())
+        return try loadHostedErasureLedgersLocked().readyReceipts
             .compactMap { key, receipt in
                 guard binding == nil || receipt.binding == binding else { return nil }
                 return UUID(uuidString: key)
@@ -477,15 +497,16 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
+        let erasureState = try loadHostedErasureLedgersLocked()
         let current = loadReport(from: report.directoryURL)
         let deletionCandidate = current ?? report
-        let readyReceipt = loadHostedReadyReceiptsLocked()[report.id.uuidString.lowercased()]
+        let readyReceipt = erasureState.readyReceipts[report.id.uuidString.lowercased()]
         let crossedCreateBoundary = deletionCandidate.binding.binding.destinationChoice == .hosted
             && (forceRemoteIntent
                 || deletionCandidate.state.hostedEnvelopeGeneration != nil
                 || deletionCandidate.state.hostedRemoteShortID != nil)
         if readyReceipt != nil || crossedCreateBoundary {
-            var intents = loadHostedDeletionIntentsLocked()
+            var intents = erasureState.deletionIntents
             intents[deletionCandidate.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
             try saveHostedDeletionIntentsLocked(intents)
         }
@@ -504,14 +525,15 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
+        let erasureState = try loadHostedErasureLedgersLocked()
         let reports = scanReportsLocked().filter { $0.binding.binding == binding }
-        var intents = loadHostedDeletionIntentsLocked()
+        var intents = erasureState.deletionIntents
         for report in reports where report.binding.binding.destinationChoice == .hosted
             && (report.state.hostedEnvelopeGeneration != nil || report.state.hostedRemoteShortID != nil) {
             intents[report.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
         }
         if binding.destinationChoice == .hosted {
-            for (reportID, receipt) in loadHostedReadyReceiptsLocked()
+            for (reportID, receipt) in erasureState.readyReceipts
                 where receipt.binding == binding {
                 intents[reportID] = DiagnosticsTimestamp.string(from: now)
             }
@@ -533,13 +555,14 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
+        let erasureState = try loadHostedErasureLedgersLocked()
         let reports = scanReportsLocked().filter { $0.binding.serverInstanceID == serverInstanceID }
-        var intents = loadHostedDeletionIntentsLocked()
+        var intents = erasureState.deletionIntents
         for report in reports where report.binding.binding.destinationChoice == .hosted
             && (report.state.hostedEnvelopeGeneration != nil || report.state.hostedRemoteShortID != nil) {
             intents[report.id.uuidString.lowercased()] = DiagnosticsTimestamp.string(from: now)
         }
-        for (reportID, receipt) in loadHostedReadyReceiptsLocked()
+        for (reportID, receipt) in erasureState.readyReceipts
             where receipt.binding.serverInstanceID == serverInstanceID {
             intents[reportID] = DiagnosticsTimestamp.string(from: now)
         }
@@ -552,18 +575,30 @@ final class PendingReportStore {
         }
     }
 
-    func hostedDeletionIntents() -> [UUID] {
+    func hostedDeletionIntents() throws -> [UUID] {
         lock.lock()
         defer { lock.unlock() }
 
-        return loadHostedDeletionIntentsLocked().keys.compactMap(UUID.init(uuidString:))
+        return try loadHostedErasureLedgersLocked().deletionIntents.keys
+            .compactMap(UUID.init(uuidString:))
+            .sorted { $0.uuidString < $1.uuidString }
     }
 
     func prepareHostedDeletionRetries() -> HostedDeletionRetryBatch {
         lock.lock()
         defer { lock.unlock() }
 
-        let reportIDs = loadHostedDeletionIntentsLocked().keys.compactMap(UUID.init(uuidString:))
+        let erasureState: HostedErasureLedgers
+        do {
+            erasureState = try loadHostedErasureLedgersLocked()
+        } catch {
+            return HostedDeletionRetryBatch(
+                reportIDs: [],
+                hasBlockedLocalEvidence: true,
+                hasCorruptLedger: true
+            )
+        }
+        let reportIDs = erasureState.deletionIntents.keys.compactMap(UUID.init(uuidString:))
         var ready: [UUID] = []
         var blocked = false
         // If the process stopped after the intent's atomic write but before
@@ -585,7 +620,8 @@ final class PendingReportStore {
         }
         return HostedDeletionRetryBatch(
             reportIDs: ready,
-            hasBlockedLocalEvidence: blocked
+            hasBlockedLocalEvidence: blocked,
+            hasCorruptLedger: false
         )
     }
 
@@ -594,6 +630,12 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
+        let erasureState: HostedErasureLedgers
+        do {
+            erasureState = try loadHostedErasureLedgersLocked()
+        } catch {
+            return false
+        }
         let directory = pendingDirectory.appendingPathComponent(
             reportID.uuidString.lowercased(),
             isDirectory: true
@@ -602,14 +644,14 @@ final class PendingReportStore {
             try? hostedDeletionRemover(directory)
         }
         guard !fileManager.fileExists(atPath: directory.path) else { return false }
-        var receipts = loadHostedReadyReceiptsLocked()
+        var receipts = erasureState.readyReceipts
         receipts.removeValue(forKey: reportID.uuidString.lowercased())
         do {
             try saveHostedReadyReceiptsLocked(receipts)
         } catch {
             return false
         }
-        var intents = loadHostedDeletionIntentsLocked()
+        var intents = erasureState.deletionIntents
         intents.removeValue(forKey: reportID.uuidString.lowercased())
         do {
             try saveHostedDeletionIntentsLocked(intents)
@@ -723,6 +765,11 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
+        do {
+            _ = try loadHostedErasureLedgersLocked()
+        } catch {
+            return .quarantined
+        }
         guard let current = loadReport(from: report.directoryURL) else { return .corrupt }
         if let generation = current.state.hostedEnvelopeGeneration {
             guard UUID(uuidString: generation) != nil else { return .corrupt }
@@ -774,6 +821,7 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
+        _ = try loadHostedErasureLedgersLocked()
         guard let current = loadReport(from: report.directoryURL) else {
             throw DiagnosticsStoreError.unreadableReport(report.id)
         }
@@ -917,8 +965,14 @@ final class PendingReportStore {
     }
 
     private func scanReportsLocked() -> [PendingReport] {
-        try? pruneHostedReadyReceiptsLocked(now: Date())
-        let readyReportIDs = Set(loadHostedReadyReceiptsLocked().keys)
+        let erasureState: HostedErasureLedgers?
+        do {
+            try pruneHostedReadyReceiptsLocked(now: Date())
+            erasureState = try loadHostedErasureLedgersLocked()
+        } catch {
+            erasureState = nil
+        }
+        let readyReportIDs = Set(erasureState.map { Array($0.readyReceipts.keys) } ?? [])
         guard let urls = try? fileManager.contentsOfDirectory(
             at: pendingDirectory,
             includingPropertiesForKeys: [.isDirectoryKey]
@@ -930,7 +984,11 @@ final class PendingReportStore {
                 try? hostedDeletionRemover(url)
                 return nil
             }
-            return loadReport(from: url)
+            guard let report = loadReport(from: url) else { return nil }
+            if report.binding.binding.destinationChoice == .hosted, erasureState == nil {
+                return nil
+            }
+            return report
         }
     }
 
@@ -945,6 +1003,13 @@ final class PendingReportStore {
     }
 
     private func cleanupExpiredLocked(now: Date) throws {
+        let hostedErasureStateIsReadable = (try? loadHostedErasureLedgersLocked()) != nil
+        if !hostedErasureStateIsReadable {
+            // Without trustworthy erasure state an unreadable directory could
+            // be the only surviving copy of a report already marked READY or
+            // deleting. Preserve every hosted directory; self-hosted expiry
+            // remains independent of this collector-local state.
+        }
         guard let urls = try? fileManager.contentsOfDirectory(
             at: pendingDirectory,
             includingPropertiesForKeys: nil
@@ -953,7 +1018,13 @@ final class PendingReportStore {
         }
         for url in urls {
             guard let report = loadReport(from: url) else {
-                try? fileManager.removeItem(at: url)
+                if hostedErasureStateIsReadable {
+                    try? fileManager.removeItem(at: url)
+                }
+                continue
+            }
+            if report.binding.binding.destinationChoice == .hosted,
+               !hostedErasureStateIsReadable {
                 continue
             }
             if now.timeIntervalSince(report.binding.capturedAtDate) > Self.expiryInterval {
@@ -1013,14 +1084,43 @@ final class PendingReportStore {
         try? data.write(to: rootDirectory.appendingPathComponent(fileName), options: .atomic)
     }
 
-    private func loadHostedDeletionIntentsLocked() -> [String: String] {
-        readJSON(
+    private func loadHostedErasureLedgersLocked() throws -> HostedErasureLedgers {
+        HostedErasureLedgers(
+            deletionIntents: try loadHostedDeletionIntentsLocked(),
+            readyReceipts: try loadHostedReadyReceiptsLocked()
+        )
+    }
+
+    private func loadHostedDeletionIntentsLocked() throws -> [String: String] {
+        let corruption = DiagnosticsStoreError.corruptHostedDeletionIntents
+        guard let data = try readHostedLedgerDataLocked(
+            fileName: Self.hostedDeletionIntentsFile,
+            corruptionError: corruption
+        ) else {
+            return [:]
+        }
+        guard let intents = try? DiagnosticsJSONCoding.makeDecoder().decode(
             [String: String].self,
-            from: rootDirectory.appendingPathComponent(Self.hostedDeletionIntentsFile)
-        ) ?? [:]
+            from: data
+        ), !intents.isEmpty,
+           intents.count <= Self.maxHostedDeletionIntents,
+           intents.allSatisfy({ reportID, createdAt in
+               UUID(uuidString: reportID) != nil
+                   && DiagnosticsDates.date(from: createdAt) != nil
+           }) else {
+            throw corruption
+        }
+        return intents
     }
 
     private func saveHostedDeletionIntentsLocked(_ intents: [String: String]) throws {
+        guard intents.count <= Self.maxHostedDeletionIntents,
+              intents.allSatisfy({ reportID, createdAt in
+                  UUID(uuidString: reportID) != nil
+                      && DiagnosticsDates.date(from: createdAt) != nil
+              }) else {
+            throw DiagnosticsStoreError.invalidHostedDeletionIntent
+        }
         try ensureDirectory(rootDirectory)
         let url = rootDirectory.appendingPathComponent(Self.hostedDeletionIntentsFile)
         if intents.isEmpty {
@@ -1032,11 +1132,27 @@ final class PendingReportStore {
         }
     }
 
-    private func loadHostedReadyReceiptsLocked() -> [String: HostedReadyReceipt] {
-        readJSON(
+    private func loadHostedReadyReceiptsLocked() throws -> [String: HostedReadyReceipt] {
+        let corruption = DiagnosticsStoreError.corruptHostedReadyReceipts
+        guard let data = try readHostedLedgerDataLocked(
+            fileName: Self.hostedReadyReceiptsFile,
+            corruptionError: corruption
+        ) else {
+            return [:]
+        }
+        guard let receipts = try? DiagnosticsJSONCoding.makeDecoder().decode(
             [String: HostedReadyReceipt].self,
-            from: rootDirectory.appendingPathComponent(Self.hostedReadyReceiptsFile)
-        ) ?? [:]
+            from: data
+        ), !receipts.isEmpty,
+           receipts.count <= Self.maxHostedReadyReceipts,
+           receipts.allSatisfy({ reportID, receipt in
+               UUID(uuidString: reportID) != nil
+                   && receipt.binding.destinationChoice == .hosted
+                   && DiagnosticsDates.date(from: receipt.readyAt) != nil
+           }) else {
+            throw corruption
+        }
+        return receipts
     }
 
     private func saveHostedReadyReceiptsLocked(
@@ -1044,7 +1160,10 @@ final class PendingReportStore {
     ) throws {
         guard receipts.count <= Self.maxHostedReadyReceipts,
               receipts.keys.allSatisfy({ UUID(uuidString: $0) != nil }),
-              receipts.values.allSatisfy({ $0.binding.destinationChoice == .hosted }) else {
+              receipts.values.allSatisfy({
+                  $0.binding.destinationChoice == .hosted
+                      && DiagnosticsDates.date(from: $0.readyAt) != nil
+              }) else {
             throw DiagnosticsStoreError.invalidHostedReadyReceipt
         }
         try ensureDirectory(rootDirectory)
@@ -1059,8 +1178,9 @@ final class PendingReportStore {
     }
 
     private func pruneHostedReadyReceiptsLocked(now: Date) throws {
-        let receipts = loadHostedReadyReceiptsLocked()
-        let deletionIntents = Set(loadHostedDeletionIntentsLocked().keys)
+        let erasureState = try loadHostedErasureLedgersLocked()
+        let receipts = erasureState.readyReceipts
+        let deletionIntents = Set(erasureState.deletionIntents.keys)
         let retained = receipts.filter { reportID, receipt in
             let directory = pendingDirectory.appendingPathComponent(reportID, isDirectory: true)
             if fileManager.fileExists(atPath: directory.path) {
@@ -1082,11 +1202,53 @@ final class PendingReportStore {
 
     private func reconcileHostedReadyReceiptsLocked(now: Date) throws {
         try pruneHostedReadyReceiptsLocked(now: now)
-        for reportID in loadHostedReadyReceiptsLocked().keys {
+        for reportID in try loadHostedErasureLedgersLocked().readyReceipts.keys {
             let directory = pendingDirectory.appendingPathComponent(reportID, isDirectory: true)
             if fileManager.fileExists(atPath: directory.path) {
                 try? hostedDeletionRemover(directory)
             }
+        }
+    }
+
+    /// Reads only a regular, bounded file. File attributes are inspected
+    /// directly because `fileExists` follows symbolic links and reports a
+    /// dangling link as absent. Only a genuine no-such-file result represents
+    /// empty state; a race, unreadable inode, directory, symlink, or oversized
+    /// payload is quarantined as corruption.
+    private func readHostedLedgerDataLocked(
+        fileName: String,
+        corruptionError: DiagnosticsStoreError
+    ) throws -> Data? {
+        let url = rootDirectory.appendingPathComponent(fileName)
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try fileManager.attributesOfItem(atPath: url.path)
+        } catch {
+            let nsError = error as NSError
+            let missingCodes = [
+                CocoaError.Code.fileNoSuchFile.rawValue,
+                CocoaError.Code.fileReadNoSuchFile.rawValue,
+            ]
+            if nsError.domain == NSCocoaErrorDomain,
+               missingCodes.contains(nsError.code) {
+                return nil
+            }
+            throw corruptionError
+        }
+        do {
+            guard attributes[.type] as? FileAttributeType == .typeRegular,
+                  let fileSize = attributes[.size] as? NSNumber,
+                  fileSize.int64Value >= 0,
+                  fileSize.int64Value <= Int64(Self.maxHostedErasureLedgerBytes) else {
+                throw corruptionError
+            }
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            guard data.count <= Self.maxHostedErasureLedgerBytes else {
+                throw corruptionError
+            }
+            return data
+        } catch {
+            throw corruptionError
         }
     }
 
@@ -1121,7 +1283,10 @@ enum DiagnosticsStoreError: Error, Equatable {
     case invalidArtifactPath(String)
     case unreadableReport(UUID)
     case invalidHostedEnvelope
+    case invalidHostedDeletionIntent
     case invalidHostedReadyReceipt
+    case corruptHostedDeletionIntents
+    case corruptHostedReadyReceipts
 }
 
 enum DiagnosticsDates {

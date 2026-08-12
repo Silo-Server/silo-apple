@@ -1249,7 +1249,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             statusCode: 204
         )
         _ = await coordinator.pendingReportsForCurrentBinding()
-        XCTAssertTrue(fixture.store.hostedDeletionIntents().isEmpty)
+        XCTAssertTrue(try fixture.store.hostedDeletionIntents().isEmpty)
     }
 
     func testTurnOffStagesRemoteErasureBeforePurgingHostedEvidence() async throws {
@@ -1279,7 +1279,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let erased = await coordinator.turnOffAndDelete(binding: fixture.report.binding.binding)
         XCTAssertFalse(erased)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
-        XCTAssertEqual(fixture.store.hostedDeletionIntents(), [fixture.report.id])
+        XCTAssertEqual(try fixture.store.hostedDeletionIntents(), [fixture.report.id])
     }
 
     func testHostedUploadFenceDefersExplicitDeleteUntilNetworkHandoffSettles() async throws {
@@ -1309,12 +1309,12 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let erasedWhileUploading = await coordinator.delete(report: fixture.report)
         XCTAssertFalse(erasedWhileUploading)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
-        XCTAssertEqual(fixture.store.hostedDeletionIntents(), [fixture.report.id])
+        XCTAssertEqual(try fixture.store.hostedDeletionIntents(), [fixture.report.id])
         XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
 
         let erasedAfterUpload = await coordinator.endHostedUploadFence(reportID: fixture.report.id)
         XCTAssertTrue(erasedAfterUpload)
-        XCTAssertTrue(fixture.store.hostedDeletionIntents().isEmpty)
+        XCTAssertTrue(try fixture.store.hostedDeletionIntents().isEmpty)
         XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().map(\.method), ["DELETE"])
     }
 
@@ -1345,7 +1345,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let erased = await coordinator.turnOffAndDelete(binding: fixture.report.binding.binding)
 
         XCTAssertTrue(erased)
-        XCTAssertTrue(fixture.store.hostedDeletionIntents().isEmpty)
+        XCTAssertTrue(try fixture.store.hostedDeletionIntents().isEmpty)
         XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().map(\.method), ["DELETE"])
         XCTAssertEqual(
             HostedDiagnosticsStubProtocol.requests().map(\.path),
@@ -1361,7 +1361,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         try fixture.store.recordHostedReadyAndDelete(fixture.report)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
         XCTAssertEqual(
-            fixture.store.hostedReadyReceiptIDs(for: fixture.report.binding.binding),
+            try fixture.store.hostedReadyReceiptIDs(for: fixture.report.binding.binding),
             [fixture.report.id]
         )
 
@@ -1369,7 +1369,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         // rather than relying on the coordinator's process-local candidate.
         let restoredStore = PendingReportStore(rootDirectory: root)
         XCTAssertEqual(
-            restoredStore.hostedReadyReceiptIDs(for: fixture.report.binding.binding),
+            try restoredStore.hostedReadyReceiptIDs(for: fixture.report.binding.binding),
             [fixture.report.id]
         )
         HostedDiagnosticsStubProtocol.configureDelete(
@@ -1391,8 +1391,8 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let erased = await coordinator.turnOffAndDelete(binding: fixture.report.binding.binding)
 
         XCTAssertTrue(erased)
-        XCTAssertTrue(restoredStore.hostedDeletionIntents().isEmpty)
-        XCTAssertTrue(restoredStore.hostedReadyReceiptIDs().isEmpty)
+        XCTAssertTrue(try restoredStore.hostedDeletionIntents().isEmpty)
+        XCTAssertTrue(try restoredStore.hostedReadyReceiptIDs().isEmpty)
         XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().map(\.method), ["DELETE"])
     }
 
@@ -1407,7 +1407,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
         XCTAssertThrowsError(try fixture.store.recordHostedReadyAndDelete(fixture.report))
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
-        XCTAssertEqual(fixture.store.hostedReadyReceiptIDs(), [fixture.report.id])
+        XCTAssertEqual(try fixture.store.hostedReadyReceiptIDs(), [fixture.report.id])
         XCTAssertTrue(fixture.store.listReports(now: Date()).isEmpty)
 
         // A fresh process with a working filesystem remover finishes the local
@@ -1415,7 +1415,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let restoredStore = PendingReportStore(rootDirectory: root)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
         XCTAssertTrue(restoredStore.listReports(now: Date()).isEmpty)
-        XCTAssertEqual(restoredStore.hostedReadyReceiptIDs(), [fixture.report.id])
+        XCTAssertEqual(try restoredStore.hostedReadyReceiptIDs(), [fixture.report.id])
     }
 
     func testHostedDeletionIntentIsNotClearedOrUploadableWhileLocalEvidenceCannotBeRemoved() async throws {
@@ -1443,7 +1443,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(batch.reportIDs.isEmpty)
         XCTAssertTrue(batch.hasBlockedLocalEvidence)
         XCTAssertFalse(fixture.store.completeHostedDeletion(reportID: fixture.report.id))
-        XCTAssertEqual(fixture.store.hostedDeletionIntents(), [fixture.report.id])
+        XCTAssertEqual(try fixture.store.hostedDeletionIntents(), [fixture.report.id])
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
 
         HostedDiagnosticsStubProtocol.configureDelete(
@@ -1466,6 +1466,98 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let uploadDecision = await coordinator.upload(report: fixture.report)
         XCTAssertEqual(uploadDecision, .keptRetryable)
         XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+    }
+
+    func testMalformedDeletionIntentLedgerQuarantinesSurvivingEvidence() async throws {
+        try await assertMalformedHostedErasureLedgerQuarantinesEvidence(.deletionIntents)
+    }
+
+    func testMalformedReadyReceiptLedgerQuarantinesSurvivingEvidence() async throws {
+        try await assertMalformedHostedErasureLedgerQuarantinesEvidence(.readyReceipts)
+    }
+
+    func testHostedErasureLedgersRejectUnreadableNonRegularAndOversizedFiles() throws {
+        for kind in HostedErasureLedgerKind.allCases {
+            let unreadable = try makePendingHostedReport(label: "unreadable-\(kind.fileName)")
+            let unreadableURL = hostedErasureLedgerURL(for: unreadable.report, kind: kind)
+            try Data("{}".utf8).write(to: unreadableURL, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0],
+                ofItemAtPath: unreadableURL.path
+            )
+            assertHostedErasureLedgerLoadFails(
+                store: unreadable.store,
+                kind: kind,
+                expectedError: kind.corruptionError
+            )
+            XCTAssertTrue(unreadable.store.listReports(now: Date()).isEmpty)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: unreadable.report.directoryURL.path))
+
+            let nonRegular = try makePendingHostedReport(label: "non-regular-\(kind.fileName)")
+            let nonRegularURL = hostedErasureLedgerURL(for: nonRegular.report, kind: kind)
+            try FileManager.default.createDirectory(
+                at: nonRegularURL,
+                withIntermediateDirectories: false
+            )
+            assertHostedErasureLedgerLoadFails(
+                store: nonRegular.store,
+                kind: kind,
+                expectedError: kind.corruptionError
+            )
+            XCTAssertTrue(nonRegular.store.listReports(now: Date()).isEmpty)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: nonRegular.report.directoryURL.path))
+
+            let danglingLink = try makePendingHostedReport(label: "dangling-link-\(kind.fileName)")
+            let danglingLinkURL = hostedErasureLedgerURL(for: danglingLink.report, kind: kind)
+            try FileManager.default.createSymbolicLink(
+                at: danglingLinkURL,
+                withDestinationURL: danglingLinkURL.appendingPathExtension("missing")
+            )
+            assertHostedErasureLedgerLoadFails(
+                store: danglingLink.store,
+                kind: kind,
+                expectedError: kind.corruptionError
+            )
+            XCTAssertTrue(danglingLink.store.listReports(now: Date()).isEmpty)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: danglingLink.report.directoryURL.path))
+
+            let oversized = try makePendingHostedReport(label: "oversized-\(kind.fileName)")
+            let oversizedURL = hostedErasureLedgerURL(for: oversized.report, kind: kind)
+            var oversizedJSON = Data(
+                repeating: 0x20,
+                count: PendingReportStore.maxHostedErasureLedgerBytes + 1
+            )
+            oversizedJSON.append(Data("{}".utf8))
+            try oversizedJSON.write(to: oversizedURL, options: .atomic)
+            assertHostedErasureLedgerLoadFails(
+                store: oversized.store,
+                kind: kind,
+                expectedError: kind.corruptionError
+            )
+            XCTAssertTrue(oversized.store.listReports(now: Date()).isEmpty)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: oversized.report.directoryURL.path))
+        }
+    }
+
+    func testMissingHostedErasureLedgersAreTheOnlyEmptyState() throws {
+        let fixture = try makePendingHostedReport(label: "missing-erasure-ledgers")
+
+        XCTAssertTrue(try fixture.store.hostedDeletionIntents().isEmpty)
+        XCTAssertTrue(try fixture.store.hostedReadyReceiptIDs().isEmpty)
+        XCTAssertEqual(fixture.store.listReports(now: Date()).map(\.id), [fixture.report.id])
+
+        for kind in HostedErasureLedgerKind.allCases {
+            let existingEmpty = try makePendingHostedReport(label: "empty-\(kind.fileName)")
+            let ledgerURL = hostedErasureLedgerURL(for: existingEmpty.report, kind: kind)
+            try Data("{}".utf8).write(to: ledgerURL, options: .atomic)
+            assertHostedErasureLedgerLoadFails(
+                store: existingEmpty.store,
+                kind: kind,
+                expectedError: kind.corruptionError
+            )
+            XCTAssertTrue(existingEmpty.store.listReports(now: Date()).isEmpty)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: existingEmpty.report.directoryURL.path))
+        }
     }
 
     func testHostedRemoteLifecycleKeepsEvidenceUntilReportIsReady() async throws {
@@ -1496,7 +1588,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             if state == .ready {
                 XCTAssertTrue(pending.isEmpty)
                 XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
-                XCTAssertEqual(fixture.store.hostedReadyReceiptIDs(), [fixture.report.id])
+                XCTAssertEqual(try fixture.store.hostedReadyReceiptIDs(), [fixture.report.id])
             } else {
                 let persisted = try XCTUnwrap(pending.first)
                 XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
@@ -1797,6 +1889,128 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 "server_url": .string("http://127.0.0.1:49152/items/42"),
             ])
         )
+    }
+
+    private enum HostedErasureLedgerKind: CaseIterable {
+        case deletionIntents
+        case readyReceipts
+
+        var fileName: String {
+            switch self {
+            case .deletionIntents:
+                return "hosted-deletion-intents.json"
+            case .readyReceipts:
+                return "hosted-ready-receipts.json"
+            }
+        }
+
+        var corruptionError: DiagnosticsStoreError {
+            switch self {
+            case .deletionIntents:
+                return .corruptHostedDeletionIntents
+            case .readyReceipts:
+                return .corruptHostedReadyReceipts
+            }
+        }
+    }
+
+    private func assertMalformedHostedErasureLedgerQuarantinesEvidence(
+        _ kind: HostedErasureLedgerKind
+    ) async throws {
+        let fixture = try makePendingHostedReport(label: "corrupt-\(kind.fileName)")
+        fixture.store.markHostedProcessing(fixture.report, shortID: "SILO-QUARANTINED")
+        let processingReport = try XCTUnwrap(
+            fixture.store.listReports(now: Date()).first(where: { $0.id == fixture.report.id })
+        )
+        let ledgerURL = hostedErasureLedgerURL(for: fixture.report, kind: kind)
+        let corruptBytes = Data(#"{"truncated": "ledger""#.utf8)
+        try corruptBytes.write(to: ledgerURL, options: .atomic)
+        let restoredStore = PendingReportStore(
+            rootDirectory: fixture.report.directoryURL
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+        )
+
+        assertHostedErasureLedgerLoadFails(
+            store: restoredStore,
+            kind: kind,
+            expectedError: kind.corruptionError
+        )
+        guard case .quarantined = restoredStore.loadHostedEnvelope(for: processingReport) else {
+            return XCTFail("A corrupt \(kind.fileName) must quarantine hosted envelope loading")
+        }
+        XCTAssertTrue(restoredStore.listReports(now: Date()).isEmpty)
+        XCTAssertNil(restoredStore.report(id: fixture.report.id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+
+        HostedDiagnosticsStubProtocol.configureReportStatus(
+            reportID: fixture.report.id,
+            shortID: "SILO-QUARANTINED",
+            state: .ready,
+            errorCode: nil
+        )
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: "install-corrupt-ledger",
+                    installationToken: "corrupt-ledger-token"
+                )
+            )
+        )
+        let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: restoredStore)
+
+        let uploadDecision = await coordinator.upload(report: processingReport)
+        XCTAssertEqual(uploadDecision, .keptRetryable)
+        XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+
+        let retryBatch = restoredStore.prepareHostedDeletionRetries()
+        XCTAssertTrue(retryBatch.reportIDs.isEmpty)
+        XCTAssertTrue(retryBatch.hasBlockedLocalEvidence)
+        XCTAssertTrue(retryBatch.hasCorruptLedger)
+        let drained = await coordinator.retryHostedDeletions()
+        XCTAssertFalse(drained)
+        XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+
+        let turnedOff = await coordinator.turnOffAndDelete(
+            binding: fixture.report.binding.binding
+        )
+        XCTAssertFalse(turnedOff)
+        XCTAssertEqual(try Data(contentsOf: ledgerURL), corruptBytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertTrue(restoredStore.listReports(now: Date()).isEmpty)
+        XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+    }
+
+    private func assertHostedErasureLedgerLoadFails(
+        store: PendingReportStore,
+        kind: HostedErasureLedgerKind,
+        expectedError: DiagnosticsStoreError,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        do {
+            switch kind {
+            case .deletionIntents:
+                _ = try store.hostedDeletionIntents()
+            case .readyReceipts:
+                _ = try store.hostedReadyReceiptIDs()
+            }
+            XCTFail("Expected \(kind.fileName) load to fail closed", file: file, line: line)
+        } catch {
+            XCTAssertEqual(error as? DiagnosticsStoreError, expectedError, file: file, line: line)
+        }
+    }
+
+    private func hostedErasureLedgerURL(
+        for report: PendingReport,
+        kind: HostedErasureLedgerKind
+    ) -> URL {
+        report.directoryURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent(kind.fileName)
     }
 
     private func makePendingHostedReport(
