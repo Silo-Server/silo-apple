@@ -8,6 +8,7 @@ class ProfileSelectionViewModel {
     var isRefreshing: Bool = false
     var error: ErrorState?
     private(set) var isUsingTemporaryManagementContext: Bool = false
+    private var temporaryManagementProfileID: String?
 
     private let auth = AuthService.shared
 
@@ -84,6 +85,7 @@ class ProfileSelectionViewModel {
             requiresPIN: primaryProfile.hasPin,
             rememberSelection: false
         )
+        temporaryManagementProfileID = primaryProfile.id
         isUsingTemporaryManagementContext = true
     }
 
@@ -97,17 +99,24 @@ class ProfileSelectionViewModel {
             requiresPIN: primaryProfile.hasPin,
             rememberSelection: false
         )
+        temporaryManagementProfileID = primaryProfile.id
         isUsingTemporaryManagementContext = true
     }
 
     @discardableResult
     func clearTemporaryManagementContextIfNeeded() async -> Bool {
-        guard isUsingTemporaryManagementContext else { return true }
-        let deactivated = await auth.deactivateProfile(preserveRememberedProfile: true)
-        if deactivated {
+        guard isUsingTemporaryManagementContext,
+              let temporaryManagementProfileID else { return true }
+        let deactivated = await auth.deactivateProfile(
+            preserveRememberedProfile: true,
+            expectedProfileID: temporaryManagementProfileID
+        )
+        let temporaryContextIsGone = auth.profileId != temporaryManagementProfileID
+        if deactivated || temporaryContextIsGone {
             isUsingTemporaryManagementContext = false
+            self.temporaryManagementProfileID = nil
         }
-        return deactivated
+        return deactivated || temporaryContextIsGone
     }
 }
 

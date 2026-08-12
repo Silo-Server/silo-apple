@@ -138,7 +138,7 @@ final class ProfileLaunchPolicyTests: XCTestCase {
 
         let preferences = ProfileLaunchPreferences(defaults: defaults)
         preferences.behavior = .askEveryLaunch
-        preferences.markSelectionRequired(for: serverID)
+        XCTAssertTrue(preferences.markSelectionRequired(for: serverID))
         preferences.remember(
             profileID: "profile-a",
             requiresPIN: true,

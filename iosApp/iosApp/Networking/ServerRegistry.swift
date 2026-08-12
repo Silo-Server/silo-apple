@@ -214,7 +214,10 @@ final class ServerRegistry {
     /// Ordering matters: legacy mirrors are written *before* the observable
     /// `activeServerId` change so any view that reacts to the change reads
     /// consistent UserDefaults values.
-    func switchTo(serverId: String) async {
+    func switchTo(
+        serverId: String,
+        resolveDestinationProfile: Bool = false
+    ) async {
         guard entries.contains(where: { $0.id == serverId }) else {
             Self.logger.error("switchTo called with unknown server id")
             return
@@ -235,6 +238,14 @@ final class ServerRegistry {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return
         }
+        if resolveDestinationProfile, AuthService.shared.isLoggedIn {
+            _ = await AuthService.shared.resolveActiveProfileForSession(
+                holding: transitionLease
+            )
+        }
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         await refreshFeaturesAfterServerSwitch()
     }
@@ -255,6 +266,9 @@ final class ServerRegistry {
         // lease. Finish the registry/default commit even if cancellation
         // arrives now; aborting would publish a split A/B routing state.
         _ = await commitSwitchTo(serverId: serverId, abortIfCancelled: false)
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
     }
 
     func refreshFeaturesAfterGatedServerSwitch() async {
@@ -286,11 +300,6 @@ final class ServerRegistry {
         defaults.set(serverId, forKey: SharedStorage.activeServerIdKey)
         touchLastUsed(serverId)
         await TokenStore.shared.switchActiveServer(serverId: serverId)
-        #if os(iOS) || os(tvOS)
-        // URL, active id, and credential slot now agree; it is safe to resolve
-        // the restored profile against the newly selected server.
-        DiagnosticsCoordinator.activeProfileDidChange()
-        #endif
         return true
     }
 
@@ -347,7 +356,10 @@ final class ServerRegistry {
     /// Remove a server entirely (entry + tokens). If it was active, the
     /// next-most-recent server becomes active; if none remain, the active
     /// slot is cleared.
-    func remove(serverId: String) async {
+    func remove(
+        serverId: String,
+        resolveFallbackProfile: Bool = false
+    ) async {
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
             return
         }
@@ -400,15 +412,22 @@ final class ServerRegistry {
                 defaults.removeObject(forKey: SharedStorage.profileIdKey)
                 await TokenStore.shared.switchActiveServer(serverId: "")
             }
-            #if os(iOS) || os(tvOS)
-            // Removing the active server restores a different profile (the
-            // fallback's, or none) via the mirror above without AuthService's
-            // setter. Fail the diagnostics gate closed until the new active
-            // profile is confirmed, same as `switchTo`.
-            DiagnosticsCoordinator.activeProfileDidChange()
-            #endif
         }
         persist()
+        if removesActiveServer,
+           resolveFallbackProfile,
+           AuthService.shared.isLoggedIn {
+            _ = await AuthService.shared.resolveActiveProfileForSession(
+                holding: transitionLease
+            )
+        }
+        #if os(iOS) || os(tvOS)
+        if removesActiveServer {
+            // Keep diagnostics closed until the fallback identity is fully
+            // restored or deliberately left at Who's Watching.
+            DiagnosticsCoordinator.activeProfileDidChange()
+        }
+        #endif
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         if removesActiveServer {
             await MainActor.run {

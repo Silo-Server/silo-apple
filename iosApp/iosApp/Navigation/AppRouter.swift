@@ -306,7 +306,10 @@ class AppRouter {
             let serverId = ServerRegistry.shared.activeServerId
             guard await completeRequestedSignOut() else { return }
             if let serverId {
-                await ServerRegistry.shared.remove(serverId: serverId)
+                await ServerRegistry.shared.remove(
+                    serverId: serverId,
+                    resolveFallbackProfile: true
+                )
             }
             await MainActor.run {
                 let auth = AuthService.shared

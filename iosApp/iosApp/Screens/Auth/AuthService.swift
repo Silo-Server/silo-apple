@@ -296,6 +296,30 @@ final class AuthService: @unchecked Sendable {
     /// complete remembered identity was restored; callers otherwise present
     /// Who's Watching while retaining the account session.
     func resolveActiveProfileForSession() async -> Bool {
+        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            return false
+        }
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileWillChange()
+        #endif
+        await HTTPClient.shared.cancelInFlightRequests()
+        let resolved = await resolveActiveProfileForSession(holding: transitionLease)
+        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
+        return resolved
+    }
+
+    /// Resolve launch policy while a server transition already owns the HTTP
+    /// identity gate. The gate stays closed until the destination's profile
+    /// ID and proof have been committed (or deliberately cleared).
+    func resolveActiveProfileForSession(
+        holding transitionLease: HTTPIdentityTransitionLease
+    ) async -> Bool {
+        guard await HTTPClient.shared.isIdentityTransitionActive(transitionLease) else {
+            return false
+        }
         guard let serverID = serverRegistry.activeServerId,
               let expectedAccount = await TokenStore.shared.refreshAccountIdentity(),
               let accountEpoch = await TokenStore.shared.getOrCreateAccountEpoch() else {
@@ -322,26 +346,24 @@ final class AuthService: @unchecked Sendable {
 
         switch resolution {
         case .needsSelection:
-            _ = await deactivateProfile(
-                preserveRememberedProfile: true,
-                markSelectionRequired: false
+            let committed = await TokenStore.shared.deactivateProfile(
+                expectedAccount: expectedAccount
             )
+            if committed { await clearPerProfileCaches() }
             return false
 
         case .restore(let remembered):
-            do {
-                try await activateProfile(
-                    profileID: remembered.profileID,
-                    profileToken: remembered.requiredPINAtSelection ? profileToken : nil,
-                    requiresPIN: remembered.requiredPINAtSelection,
-                    rememberSelection: false,
-                    expectedAccount: expectedAccount
-                )
+            let committed = await TokenStore.shared.activateProfile(
+                profileID: remembered.profileID,
+                profileToken: remembered.requiredPINAtSelection ? profileToken : nil,
+                expectedAccount: expectedAccount
+            )
+            if committed {
+                await clearPerProfileCaches()
                 return true
-            } catch {
-                _ = await deactivateProfile(
-                    preserveRememberedProfile: true,
-                    markSelectionRequired: false
+            } else {
+                _ = await TokenStore.shared.deactivateProfile(
+                    expectedAccount: expectedAccount
                 )
                 return false
             }
@@ -364,9 +386,11 @@ final class AuthService: @unchecked Sendable {
     /// and temporary profile-management cleanup.
     func deactivateProfile(
         preserveRememberedProfile: Bool,
-        markSelectionRequired: Bool = false
+        markSelectionRequired: Bool = false,
+        expectedProfileID: String? = nil
     ) async -> Bool {
         guard !(await TokenStore.shared.hasTemporaryScope()) else { return false }
+        if let expectedProfileID, profileId != expectedProfileID { return false }
         let serverID = serverRegistry.activeServerId
         let expectedAccount = await TokenStore.shared.refreshAccountIdentity()
         let removedRememberedProfile = preserveRememberedProfile
@@ -374,7 +398,9 @@ final class AuthService: @unchecked Sendable {
             : launchPreferences.rememberedProfile(for: serverID)
 
         if markSelectionRequired, let serverID {
-            launchPreferences.markSelectionRequired(for: serverID)
+            guard launchPreferences.markSelectionRequired(for: serverID) else {
+                return false
+            }
         }
         if !preserveRememberedProfile, let serverID {
             launchPreferences.clearRememberedProfile(for: serverID)
@@ -392,7 +418,8 @@ final class AuthService: @unchecked Sendable {
         #endif
         await HTTPClient.shared.cancelInFlightRequests()
         let committed = await TokenStore.shared.deactivateProfile(
-            expectedAccount: expectedAccount
+            expectedAccount: expectedAccount,
+            expectedProfileID: expectedProfileID
         )
         if committed {
             await clearPerProfileCaches()

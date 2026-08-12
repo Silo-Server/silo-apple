@@ -1387,7 +1387,9 @@ func mainTabSupportsDestination(
     case .builtin(.home), .builtin(.forYou), .builtin(.calendar):
         return true
     case .library(let libraryId, _):
-        return availableLibraries.contains { $0.id == libraryId }
+        return availableLibraries.contains {
+            $0.id == libraryId && (showAudiobooks || !$0.isAudiobookLibrary)
+        }
     case .section, .collection:
         return false
     }

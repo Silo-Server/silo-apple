@@ -249,10 +249,10 @@ struct ServerListView: View {
             return
         }
         Task {
-            await registry.switchTo(serverId: entry.id)
-            if AuthService.shared.isLoggedIn {
-                _ = await AuthService.shared.resolveActiveProfileForSession()
-            }
+            await registry.switchTo(
+                serverId: entry.id,
+                resolveDestinationProfile: true
+            )
             await MainActor.run { refreshAuthState() }
         }
     }
@@ -260,10 +260,10 @@ struct ServerListView: View {
     private func remove(_ entry: ServerEntry) {
         let wasActive = entry.id == registry.activeServerId
         Task {
-            await registry.remove(serverId: entry.id)
-            if wasActive, AuthService.shared.isLoggedIn {
-                _ = await AuthService.shared.resolveActiveProfileForSession()
-            }
+            await registry.remove(
+                serverId: entry.id,
+                resolveFallbackProfile: wasActive
+            )
             await MainActor.run {
                 removeTarget = nil
                 if wasActive { refreshAuthState() }

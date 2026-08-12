@@ -76,9 +76,16 @@ final class ProfileLaunchPreferences {
         return true
     }
 
-    func markSelectionRequired(for serverID: String) {
+    @discardableResult
+    func markSelectionRequired(for serverID: String) -> Bool {
+        guard !state.selectionRequiredServerIDs.contains(serverID) else { return true }
+        let previousState = state
         state.selectionRequiredServerIDs.insert(serverID)
-        _ = persist()
+        guard persist() else {
+            state = previousState
+            return false
+        }
+        return true
     }
 
     func clearSelectionRequired(for serverID: String) {

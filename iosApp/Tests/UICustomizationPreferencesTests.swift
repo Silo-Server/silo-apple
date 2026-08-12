@@ -474,6 +474,14 @@ final class UICustomizationPreferencesTests: XCTestCase {
                 showAudiobooks: false
             )
         )
+        XCTAssertFalse(
+            mainTabSupportsDestination(
+                .library(libraryId: audiobook.id, label: audiobook.name),
+                availableLibraries: [audiobook],
+                showAudiobooks: false
+            ),
+            "the opt-out also hides a directly pinned audiobook library"
+        )
     }
 
     func testMainTabLibrarySnapshotRejectsPreviousProfileWithOverlappingId() throws {

@@ -848,7 +848,9 @@ struct TVMainTabView: View {
             case .builtin(.forYou): root = .recommendations
             case .builtin(.calendar): root = .calendar
             case .library(let libraryId, let label):
-                root = libraries.contains(where: { $0.id == libraryId })
+                root = libraries.contains(where: {
+                    $0.id == libraryId && (navPrefs.showAudiobooks || !$0.isAudiobookLibrary)
+                })
                     ? .libraryShortcut(libraryId: libraryId, label: label)
                     : nil
             case .section, .collection:
@@ -1133,10 +1135,10 @@ struct TVMainTabView: View {
     private func switchToServer(_ entry: ServerEntry) {
         guard entry.id != registry.activeServerId else { return }
         Task {
-            await registry.switchTo(serverId: entry.id)
-            if AuthService.shared.isLoggedIn {
-                _ = await AuthService.shared.resolveActiveProfileForSession()
-            }
+            await registry.switchTo(
+                serverId: entry.id,
+                resolveDestinationProfile: true
+            )
             await MainActor.run {
                 selectedRoot = .home
                 currentProfile = nil
