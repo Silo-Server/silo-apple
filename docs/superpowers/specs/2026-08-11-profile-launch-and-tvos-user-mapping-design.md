@@ -34,6 +34,32 @@ tags:
 - Physical Apple TV validation remains required for switching between multiple real tvOS users;
   the simulator cannot establish that OS-level isolation boundary.
 
+## 2026-08-12 follow-up: return timeout policy
+
+The device-local setting is now named **Profile Selection** and offers four choices:
+
+| Setting | Cold launch | Return from a real background interval |
+|---|---|---|
+| **Automatic** | Restore the last valid profile | Keep the active profile |
+| **Every Time** | Show “Who’s Watching?” | Show “Who’s Watching?” |
+| **After 1 Hour** | Show the picker if the persisted away interval has expired | Show the picker after one hour away |
+| **After 12 Hours** | Show the picker if the persisted away interval has expired | Show the picker after twelve hours away |
+
+This controls the active profile session, not the server account session. When a policy expires,
+Silo keeps the account signed in, retires the old profile identity and profile-scoped work, and asks
+for the selected profile's PIN through the existing picker when required. Automatic remains the
+migration and new-install default.
+
+Only a real `.background` transition starts the persisted clock; `.inactive` transitions do not.
+Background audio and Picture in Picture keep the profile session active, and a clock starts if that
+playback ends while Silo remains backgrounded. Content deep links stay queued until a new profile is
+active, and personalized Top Shelf content is unavailable after the policy requires selection. The
+preference remains local to the device or current Apple TV user and requires no server change.
+
+The follow-up validation adds exact one-hour/twelve-hour boundary tests, persisted-state and legacy
+decoding coverage, a signed iOS Every Time background/return flow, and signed iOS/tvOS visual checks.
+The tvOS four-option sheet was also verified with every wrapped description visible and stable focus.
+
 ## 1. Summary
 
 Give people an explicit choice for what happens when a new Silo app session starts:
@@ -102,7 +128,8 @@ to authenticate the same Silo account again.
 - No cloud-synced launch preference. This is a local device/viewer policy.
 - No manual map from deprecated `TVUserIdentifier` values to Silo profile IDs.
 - No changes to profile CRUD, household permissions, or PIN rules.
-- No timeout-based “lock after N minutes” in v1. That is a separate privacy-lock feature.
+- No timeout-based “lock after N minutes” in v1. The 2026-08-12 follow-up above supersedes this
+  original scope boundary.
 - No Android implementation in this repository.
 
 ## 4. Product Decisions

@@ -30,6 +30,9 @@ final class ProfileLaunchPreferences {
             guard state.behavior != newValue else { return }
             let previousState = state
             state.behavior = newValue
+            if newValue == .automatic {
+                state.backgroundedAt = nil
+            }
             if !persist() {
                 state = previousState
                 _ = persist()
@@ -54,14 +57,20 @@ final class ProfileLaunchPreferences {
         for serverID: String,
         accountEpoch: String?,
         hasStoredProfileToken: Bool,
-        knownProfileIDs: Set<String>? = nil
+        knownProfileIDs: Set<String>? = nil,
+        now: Date = .now
     ) -> ProfileLaunchResolution {
         state.resolution(
             for: serverID,
             accountEpoch: accountEpoch,
             hasStoredProfileToken: hasStoredProfileToken,
-            knownProfileIDs: knownProfileIDs
+            knownProfileIDs: knownProfileIDs,
+            now: now
         )
+    }
+
+    func requiresSelectionAfterBackground(at now: Date = .now) -> Bool {
+        state.requiresSelectionAfterBackground(at: now)
     }
 
     @discardableResult
@@ -78,6 +87,37 @@ final class ProfileLaunchPreferences {
             accountEpoch: accountEpoch
         )
         state.selectionRequiredServerIDs.remove(serverID)
+        state.backgroundedAt = nil
+        guard persist() else {
+            state = previousState
+            return false
+        }
+        return true
+    }
+
+    /// Persist the start of a real background interval. Inactive transitions
+    /// such as alerts and Control Center never call this path.
+    @discardableResult
+    func markBackgrounded(at date: Date = .now) -> Bool {
+        guard behavior != .automatic else {
+            return clearBackgroundedAt()
+        }
+        let previousState = state
+        state.backgroundedAt = date
+        guard persist() else {
+            state = previousState
+            return false
+        }
+        return true
+    }
+
+    /// End the current away interval after a non-expired foreground return or
+    /// when background playback means the profile is still actively in use.
+    @discardableResult
+    func clearBackgroundedAt() -> Bool {
+        guard state.backgroundedAt != nil else { return true }
+        let previousState = state
+        state.backgroundedAt = nil
         guard persist() else {
             state = previousState
             return false

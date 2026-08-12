@@ -7,8 +7,11 @@ struct ContentView: View {
     @State private var router = AppRouter()
     @State private var serverRegistry = ServerRegistry.shared
     @State private var audioStore = AudioPlaybackStore()
+    @State private var launchPreferences = ProfileLaunchPreferences.shared
+    @State private var isApplyingProfileReturnPolicy = false
     #if os(iOS)
     @State private var siloControl = SiloControlClient()
+    @State private var pictureInPicture = PictureInPictureCoordinator.shared
     #endif
     @State private var debugPlayContentId: String?
     @State private var didAttemptDebugAutoPlay = false
@@ -259,6 +262,20 @@ struct ContentView: View {
             }
             #endif
 
+            if newPhase == .background {
+                markProfileAwayStartIfNeeded()
+            } else if newPhase == .active,
+                      router.authState == .authenticated {
+                if keepsProfileActiveInBackground {
+                    launchPreferences.clearBackgroundedAt()
+                } else if launchPreferences.requiresSelectionAfterBackground() {
+                    Task { await applyProfileReturnPolicy() }
+                    return
+                } else {
+                    launchPreferences.clearBackgroundedAt()
+                }
+            }
+
             // Cover the transient-failure case Codex flagged on #41:
             // initial overlay hydration runs once in the auth-state
             // task above. If that fetch transiently failed and the
@@ -299,6 +316,77 @@ struct ContentView: View {
             Task { await DownloadManager.shared.onAppActive() }
             #endif
         }
+        .onChange(of: audioStore.player.isPlaying) { _, _ in
+            updateProfileAwayStartForBackgroundPlayback()
+        }
+        #if os(iOS)
+        .onChange(of: pictureInPicture.isEngaged) { _, _ in
+            updateProfileAwayStartForBackgroundPlayback()
+        }
+        #endif
+    }
+
+    /// Background audio and PiP are still active use of the selected profile,
+    /// so their running time does not count toward a profile-selection timeout.
+    private var keepsProfileActiveInBackground: Bool {
+        if audioStore.player.isPlaying { return true }
+        #if os(iOS)
+        if pictureInPicture.isEngaged { return true }
+        #endif
+        return false
+    }
+
+    private func markProfileAwayStartIfNeeded(at date: Date = .now) {
+        guard router.authState == .authenticated,
+              AuthService.shared.profileId != nil else { return }
+        if keepsProfileActiveInBackground {
+            launchPreferences.clearBackgroundedAt()
+        } else {
+            launchPreferences.markBackgrounded(at: date)
+        }
+    }
+
+    /// If background playback starts, stop the away clock. If it later stops
+    /// while Silo is still hidden, begin a fresh interval at that point.
+    private func updateProfileAwayStartForBackgroundPlayback() {
+        guard scenePhase == .background else { return }
+        markProfileAwayStartIfNeeded()
+    }
+
+    /// Turn an expired away interval into the same durable identity boundary
+    /// as an explicit profile switch. The account and remembered-profile hint
+    /// remain available to Who's Watching.
+    @MainActor
+    private func applyProfileReturnPolicy() async {
+        guard !isApplyingProfileReturnPolicy,
+              router.authState == .authenticated,
+              !keepsProfileActiveInBackground,
+              launchPreferences.requiresSelectionAfterBackground(),
+              let expectedProfileID = AuthService.shared.profileId else {
+            return
+        }
+        isApplyingProfileReturnPolicy = true
+        defer { isApplyingProfileReturnPolicy = false }
+
+        // Retire player UI and audio state while the old profile still owns
+        // request identity, then close the HTTP dispatch gate and clear every
+        // profile-scoped cache through AuthService.
+        router.presentedPlayer = nil
+        audioStore.dismissFullPlayer()
+        await audioStore.player.close()
+
+        guard router.authState == .authenticated,
+              !keepsProfileActiveInBackground,
+              launchPreferences.requiresSelectionAfterBackground() else {
+            return
+        }
+        let deactivated = await AuthService.shared.deactivateProfile(
+            preserveRememberedProfile: true,
+            markSelectionRequired: true,
+            expectedProfileID: expectedProfileID
+        )
+        guard deactivated else { return }
+        router.showProfileSelection()
     }
 
     #if os(iOS) || os(tvOS)
@@ -408,6 +496,14 @@ struct ContentView: View {
 
         guard url.scheme?.lowercased() == "continuum",
               let host = url.host?.lowercased() else { return }
+
+        // A content link received while the app is returning must not race the
+        // timeout lock and briefly open data for the previous profile. The
+        // authenticated-state task drains it after profile selection succeeds.
+        guard !launchPreferences.requiresSelectionAfterBackground() else {
+            pendingDeepLink = url
+            return
+        }
 
         if host == "downloads" {
             guard router.authState == .authenticated else {

@@ -5,6 +5,18 @@ final class ProfileLaunchPolicyTests: XCTestCase {
     private let serverID = "server-a"
     private let accountEpoch = "account-a"
 
+    func testProfileSelectionPoliciesKeepStableOrderAndLegacyEveryTimeRawValue() {
+        XCTAssertEqual(
+            ProfileLaunchBehavior.allCases,
+            [.automatic, .askEveryLaunch, .afterOneHour, .afterTwelveHours]
+        )
+        XCTAssertEqual(ProfileLaunchBehavior.askEveryLaunch.rawValue, "askEveryLaunch")
+        XCTAssertNil(ProfileLaunchBehavior.automatic.awayTimeout)
+        XCTAssertNil(ProfileLaunchBehavior.askEveryLaunch.awayTimeout)
+        XCTAssertEqual(ProfileLaunchBehavior.afterOneHour.awayTimeout, 60 * 60)
+        XCTAssertEqual(ProfileLaunchBehavior.afterTwelveHours.awayTimeout, 12 * 60 * 60)
+    }
+
     func testDefaultStateUsesAutomaticAndRequiresAProfile() {
         let state = ProfileLaunchState()
 
@@ -39,6 +51,91 @@ final class ProfileLaunchPolicyTests: XCTestCase {
             .needsSelection
         )
         XCTAssertEqual(state.rememberedByServerID[serverID], remembered)
+    }
+
+    func testEveryTimeRequiresARealBackgroundIntervalOnWarmReturn() {
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        var state = ProfileLaunchState(behavior: .askEveryLaunch)
+
+        XCTAssertFalse(state.requiresSelectionAfterBackground(at: start))
+
+        state.backgroundedAt = start
+        XCTAssertTrue(state.requiresSelectionAfterBackground(at: start))
+    }
+
+    func testTimedPoliciesRestoreBeforeAndRequireAtTimeout() {
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let remembered = RememberedProfile(
+            profileID: "profile-a",
+            requiredPINAtSelection: false,
+            accountEpoch: accountEpoch
+        )
+        var oneHour = ProfileLaunchState(
+            behavior: .afterOneHour,
+            rememberedByServerID: [serverID: remembered],
+            backgroundedAt: start
+        )
+
+        XCTAssertEqual(
+            oneHour.resolution(
+                for: serverID,
+                accountEpoch: accountEpoch,
+                hasStoredProfileToken: false,
+                now: start.addingTimeInterval(3_599)
+            ),
+            .restore(remembered)
+        )
+        XCTAssertEqual(
+            oneHour.resolution(
+                for: serverID,
+                accountEpoch: accountEpoch,
+                hasStoredProfileToken: false,
+                now: start.addingTimeInterval(3_600)
+            ),
+            .needsSelection
+        )
+
+        oneHour.behavior = .afterTwelveHours
+        XCTAssertFalse(
+            oneHour.requiresSelectionAtLaunch(
+                at: start.addingTimeInterval((12 * 60 * 60) - 1)
+            )
+        )
+        XCTAssertTrue(
+            oneHour.requiresSelectionAtLaunch(
+                at: start.addingTimeInterval(12 * 60 * 60)
+            )
+        )
+    }
+
+    func testAutomaticIgnoresAStaleBackgroundMarker() {
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let state = ProfileLaunchState(
+            behavior: .automatic,
+            backgroundedAt: start
+        )
+
+        XCTAssertFalse(
+            state.requiresSelectionAtLaunch(
+                at: start.addingTimeInterval(24 * 60 * 60)
+            )
+        )
+        XCTAssertFalse(
+            state.requiresSelectionAfterBackground(
+                at: start.addingTimeInterval(24 * 60 * 60)
+            )
+        )
+    }
+
+    func testLegacyLaunchStateWithoutBackgroundMarkerStillDecodes() throws {
+        let legacy = Data(
+            #"{"behavior":"automatic","rememberedByServerID":{},"selectionRequiredServerIDs":[]}"#.utf8
+        )
+
+        let decoded = try JSONDecoder().decode(ProfileLaunchState.self, from: legacy)
+
+        XCTAssertEqual(decoded.behavior, .automatic)
+        XCTAssertNil(decoded.backgroundedAt)
     }
 
     func testAutomaticRestoresPINlessProfileOffline() {
@@ -138,6 +235,9 @@ final class ProfileLaunchPolicyTests: XCTestCase {
 
         let preferences = ProfileLaunchPreferences(defaults: defaults)
         preferences.behavior = .askEveryLaunch
+        XCTAssertTrue(preferences.markBackgrounded(
+            at: Date(timeIntervalSinceReferenceDate: 1_000)
+        ))
         XCTAssertTrue(preferences.markSelectionRequired(for: serverID))
         preferences.remember(
             profileID: "profile-a",
@@ -157,6 +257,26 @@ final class ProfileLaunchPolicyTests: XCTestCase {
             )
         )
         XCTAssertFalse(restored.state.selectionRequiredServerIDs.contains(serverID))
+        XCTAssertNil(restored.state.backgroundedAt)
+    }
+
+    func testBackgroundMarkerPersistsAndClearsAcrossProcessRestores() throws {
+        let suiteName = "ProfileLaunchPolicyTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let start = Date(timeIntervalSinceReferenceDate: 2_000)
+
+        let preferences = ProfileLaunchPreferences(defaults: defaults)
+        preferences.behavior = .afterOneHour
+        XCTAssertTrue(preferences.markBackgrounded(at: start))
+        XCTAssertEqual(
+            ProfileLaunchPreferences(defaults: defaults).state.backgroundedAt,
+            start
+        )
+
+        XCTAssertTrue(preferences.clearBackgroundedAt())
+        XCTAssertNil(ProfileLaunchPreferences(defaults: defaults).state.backgroundedAt)
     }
 
     func testBehaviorRollsBackWhenPersistenceFails() throws {
@@ -191,7 +311,7 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         ))
     }
 
-    func testTopShelfRequiresAutomaticMatchingCurrentUserIdentity() {
+    func testTopShelfRespectsProfileSelectionPolicyAndMatchingCurrentUserIdentity() {
         let pinless = RememberedProfile(
             profileID: "profile-a",
             requiredPINAtSelection: false,
@@ -226,6 +346,27 @@ final class ProfileLaunchPolicyTests: XCTestCase {
             activeProfileID: "profile-a",
             accountEpoch: accountEpoch,
             hasStoredProfileToken: true
+        ))
+
+        let start = Date(timeIntervalSinceReferenceDate: 3_000)
+        state.behavior = .afterOneHour
+        state.selectionRequiredServerIDs.remove(serverID)
+        state.backgroundedAt = start
+        XCTAssertTrue(TopShelfProfilePolicy.allowsPersonalizedContent(
+            state: state,
+            serverID: serverID,
+            activeProfileID: "profile-a",
+            accountEpoch: accountEpoch,
+            hasStoredProfileToken: false,
+            now: start.addingTimeInterval(3_599)
+        ))
+        XCTAssertFalse(TopShelfProfilePolicy.allowsPersonalizedContent(
+            state: state,
+            serverID: serverID,
+            activeProfileID: "profile-a",
+            accountEpoch: accountEpoch,
+            hasStoredProfileToken: false,
+            now: start.addingTimeInterval(3_600)
         ))
     }
 

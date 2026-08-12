@@ -35,10 +35,11 @@ struct TVGeneralSettingsPane: View {
             TVSettingsSectionHeader("PROFILE AT LAUNCH")
 
             TVSettingsPickerRow(
-                title: "Profile at Launch",
+                title: "Profile Selection",
                 value: launchPreferences.behavior.title
             ) { activePicker = .profileLaunch }
             .focused(detailFocus, equals: .generalProfileLaunch)
+            .accessibilityHint(launchPreferences.behavior.tvDescription)
 
             TVSettingsFooter(launchPreferences.behavior.tvDescription)
 
@@ -202,7 +203,7 @@ struct TVGeneralSettingsPane: View {
         switch picker {
         case .profileLaunch:
             TVSettingsPickerSheet(
-                title: "Profile at Launch",
+                title: "Profile Selection",
                 options: TVSettingsOptions.profileLaunch,
                 selection: $launchPreferences.behaviorID
             )

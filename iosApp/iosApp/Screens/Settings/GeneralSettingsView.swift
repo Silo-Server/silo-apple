@@ -10,7 +10,7 @@ struct GeneralSettingsView: View {
         List {
             SettingsPageHeader(
                 title: "General",
-                subtitle: "Choose how Silo starts on this device.",
+                subtitle: "Choose what happens when you open Silo on this device.",
                 systemImage: "gearshape.fill",
                 tint: .purple
             )
@@ -26,9 +26,11 @@ struct GeneralSettingsView: View {
 
     private var profileSection: some View {
         Section {
-            Picker("Profile at Launch", selection: $launchPreferences.behavior) {
+            Picker("Profile Selection", selection: $launchPreferences.behavior) {
                 ForEach(ProfileLaunchBehavior.allCases) { behavior in
-                    Text(behavior.title).tag(behavior)
+                    Text(behavior.title)
+                        .accessibilityHint(behavior.standardDescription)
+                        .tag(behavior)
                 }
             }
             .foregroundStyle(Color.continuumOnSurface)
@@ -37,6 +39,7 @@ struct GeneralSettingsView: View {
             #else
             .pickerStyle(.navigationLink)
             #endif
+            .accessibilityValue(launchPreferences.behavior.title)
             .accessibilityHint(launchPreferences.behavior.standardDescription)
         } header: {
             Text("Profiles")

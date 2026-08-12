@@ -333,7 +333,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesGeneral: Bool {
-        matches("general", "profile", "launch", "startup", "automatic", "ask every time", "who's watching")
+        matches("general", "profile", "selection", "launch", "startup", "automatic", "every time", "hours", "who's watching", "pin")
     }
 
     private var matchesSubtitles: Bool {

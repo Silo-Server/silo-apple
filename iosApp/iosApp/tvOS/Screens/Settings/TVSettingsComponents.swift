@@ -7,6 +7,7 @@ import SwiftUI
 struct TVSettingsOption: Identifiable, Hashable {
     let id: String
     let label: String
+    var detail: String? = nil
     var previewFontName: String? = nil
 }
 
@@ -18,7 +19,7 @@ enum TVSettingsOptions {
 
     static let profileLaunch: [TVSettingsOption] =
         ProfileLaunchBehavior.allCases.map {
-            .init(id: $0.rawValue, label: $0.title)
+            .init(id: $0.rawValue, label: $0.title, detail: $0.tvDescription)
         }
 
     /// The shared cross-client quality presets, optionally led by a
@@ -712,10 +713,22 @@ struct TVSettingsPickerSheet: View {
     }
 
     private var preferredCardHeight: CGFloat {
-        let rowHeight: CGFloat = options.contains { $0.previewFontName != nil } ? 88 : 72
         let chromeHeight: CGFloat = subtitlePreviewAppearance == nil ? 158 : 344
         let disabledMessageHeight: CGFloat = disabledMessage == nil ? 0 : 72
-        return chromeHeight + disabledMessageHeight + CGFloat(options.count) * rowHeight
+        let rowsHeight = options.reduce(CGFloat(0)) { $0 + estimatedRowHeight(for: $1) }
+        return chromeHeight + disabledMessageHeight + rowsHeight
+    }
+
+    /// Per-row height estimate including the list gap. Detail text wraps at
+    /// the card's fixed ~590pt text column, roughly 54 characters of 20pt
+    /// system text per line; rounding lines up leaves breathing room below
+    /// the last row instead of clipping a wrapped description.
+    private func estimatedRowHeight(for option: TVSettingsOption) -> CGFloat {
+        if let detail = option.detail {
+            let detailLines = max(1.0, (Double(detail.count) / 54).rounded(.up))
+            return 88 + CGFloat(detailLines) * 26
+        }
+        return option.previewFontName != nil ? 88 : 72
     }
 
     private func focusSelection() {
@@ -781,6 +794,13 @@ private struct TVSettingsPickerOptionRow: View {
                         .font(.system(size: 27, weight: isSelected ? .semibold : .medium))
                         .lineLimit(1)
 
+                    if let detail = option.detail {
+                        Text(detail)
+                            .font(.system(size: 20))
+                            .opacity(0.72)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     if let previewFontName = option.previewFontName {
                         Text("Subtitle sample")
                             .font(.custom(previewFontName, size: 22))
@@ -799,6 +819,7 @@ private struct TVSettingsPickerOptionRow: View {
         .buttonStyle(TVSettingsPaneRowStyle(isSelected: isSelected))
         .focused($focusedOptionID, equals: option.id)
         .accessibilityLabel(option.label)
+        .accessibilityHint(option.detail ?? "")
         .accessibilityValue(isSelected ? "Selected" : "")
     }
 }
