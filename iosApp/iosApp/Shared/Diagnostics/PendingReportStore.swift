@@ -108,6 +108,12 @@ struct PendingReportState: Codable, Equatable {
         needsServerUpdate || tooLarge || hostedRejectionCode != nil
     }
 
+    /// The collector has accepted this hosted report and local actions should
+    /// poll its status rather than offering to send it again.
+    var isAwaitingHostedStatus: Bool {
+        hostedRemoteShortID != nil && hostedRejectionCode == nil
+    }
+
     enum CodingKeys: String, CodingKey {
         case needsServerUpdate = "needs_server_update"
         case tooLarge = "too_large"
@@ -526,6 +532,22 @@ final class PendingReportStore {
         lock.lock()
         defer { lock.unlock() }
 
+        try stageHostedDeletionAndDeleteLocked(
+            report,
+            forceRemoteIntent: forceRemoteIntent,
+            now: now
+        )
+    }
+
+    /// Lock-held implementation shared by explicit deletion and automatic
+    /// retention. Any report that may have crossed the collector create
+    /// boundary gets a UUID-only deletion intent before its evidence leaves
+    /// disk, so expiry and capacity eviction cannot destroy the erasure handle.
+    private func stageHostedDeletionAndDeleteLocked(
+        _ report: PendingReport,
+        forceRemoteIntent: Bool = false,
+        now: Date
+    ) throws {
         let erasureState = try loadHostedErasureLedgersLocked()
         let current = loadReport(from: report.directoryURL)
         let deletionCandidate = current ?? report
@@ -1076,7 +1098,11 @@ final class PendingReportStore {
                 continue
             }
             if now.timeIntervalSince(report.binding.capturedAtDate) > Self.expiryInterval {
-                try? fileManager.removeItem(at: url)
+                if report.binding.binding.destinationChoice == .hosted {
+                    try stageHostedDeletionAndDeleteLocked(report, now: now)
+                } else {
+                    try? fileManager.removeItem(at: url)
+                }
             }
         }
         pruneFingerprintStateLocked(now: now)
@@ -1090,7 +1116,15 @@ final class PendingReportStore {
             return
         }
         for report in reports.prefix(reports.count - Self.maxPendingPerBinding) {
-            try? fileManager.removeItem(at: report.directoryURL)
+            if report.binding.binding.destinationChoice == .hosted {
+                // The new report is already committed by this point. If the
+                // ledger or removal write fails, retain the extra evidence and
+                // retry cleanup later rather than reporting a failed capture
+                // whose directory actually exists.
+                try? stageHostedDeletionAndDeleteLocked(report, now: Date())
+            } else {
+                try? fileManager.removeItem(at: report.directoryURL)
+            }
         }
     }
 

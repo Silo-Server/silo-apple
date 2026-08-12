@@ -1711,6 +1711,94 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         }
     }
 
+    func testHostedCapacityEvictionStagesRemoteDeletionBeforeRemovingEvidence() throws {
+        let fixture = try makePendingHostedReport(label: "capacity-erasure")
+        fixture.store.markHostedProcessing(fixture.report, shortID: "SILO-CAPACITY")
+        let capturedAt = fixture.report.binding.capturedAtDate
+
+        for index in 1...3 {
+            _ = try saveAdditionalHostedReport(
+                in: fixture.store,
+                binding: fixture.report.binding.binding,
+                label: "capacity-erasure-\(index)",
+                capturedAt: capturedAt.addingTimeInterval(TimeInterval(index))
+            )
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertEqual(try fixture.store.hostedDeletionIntents(), [fixture.report.id])
+    }
+
+    func testHostedExpiryStagesRemoteDeletionBeforeRemovingEvidence() throws {
+        let fixture = try makePendingHostedReport(label: "expiry-erasure")
+        fixture.store.markHostedProcessing(fixture.report, shortID: "SILO-EXPIRY")
+        let afterExpiry = fixture.report.binding.capturedAtDate
+            .addingTimeInterval(PendingReportStore.expiryInterval + 1)
+
+        let reports = fixture.store.listReports(
+            for: fixture.report.binding.binding,
+            now: afterExpiry
+        )
+
+        XCTAssertTrue(reports.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertEqual(try fixture.store.hostedDeletionIntents(), [fixture.report.id])
+    }
+
+    func testBackgroundReadyPollRecordsSentHistory() async throws {
+        let fixture = try makePendingHostedReport(label: "ready-history")
+        let shortID = "SILO-HISTORY"
+        fixture.store.markHostedProcessing(fixture.report, shortID: shortID)
+        HostedDiagnosticsStubProtocol.configureReportStatus(
+            reportID: fixture.report.id,
+            shortID: shortID,
+            state: .ready,
+            errorCode: nil
+        )
+        let suiteName = "HostedDiagnosticsAPITests.history.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+        }
+        let consentStore = DiagnosticsConsentStore(
+            defaults: SharedDefaults(suite: suite, standard: suite),
+            onNeverSelected: { _ in }
+        )
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: "install-ready-history",
+                    installationToken: "ready-history-token"
+                )
+            )
+        )
+        let coordinator = DiagnosticsCoordinator(
+            hostedAPI: api,
+            consentStore: consentStore,
+            pendingStore: fixture.store
+        )
+
+        let pending = await coordinator.pendingReports(for: fixture.report.binding.binding)
+
+        XCTAssertTrue(pending.isEmpty)
+        XCTAssertEqual(
+            consentStore.sentHistory(for: fixture.report.binding.binding).map(\.shortID),
+            [shortID]
+        )
+    }
+
+    func testHostedProcessingStateIsAwaitingStatusInsteadOfAnotherPrompt() throws {
+        let fixture = try makePendingHostedReport(label: "processing-prompt")
+        fixture.store.markHostedProcessing(fixture.report, shortID: "SILO-PROCESSING")
+
+        let report = try XCTUnwrap(fixture.store.report(id: fixture.report.id))
+
+        XCTAssertTrue(report.state.isAwaitingHostedStatus)
+        XCTAssertFalse(report.state.isPermanentFailure)
+    }
+
     func testHostedRemoteLifecycleKeepsEvidenceUntilReportIsReady() async throws {
         for state in [DiagnosticsRemoteReportState.processing, .rejected, .ready] {
             let fixture = try makePendingHostedReport(label: "remote-\(state.rawValue)")
@@ -2224,6 +2312,53 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             ]
         ))
         return (store, report)
+    }
+
+    private func saveAdditionalHostedReport(
+        in store: PendingReportStore,
+        binding: DiagnosticsBinding,
+        label: String,
+        capturedAt: Date
+    ) throws -> PendingReport {
+        let context = DiagnosticsCaptureContext(
+            binding: binding,
+            profileID: nil,
+            consentMode: .manual,
+            noticeVersion: 1,
+            appVersion: "1.0",
+            appBuild: "7",
+            platform: .ios,
+            osVersion: "26.0",
+            destinationServerInstanceID: HostedDiagnosticsCapabilities.pinnedCollectorID
+        )
+        let manifest = context.makeManifestDraft(
+            type: .manual,
+            capturedAt: capturedAt,
+            crash: nil,
+            deviceSummary: DiagnosticsManifest.DeviceSummary(
+                manufacturer: "Apple",
+                model: "iPhone",
+                os: "26.0",
+                formFactor: "phone"
+            ),
+            playbackSessionIDs: [],
+            consentMode: .manual
+        )
+        return try store.save(PendingReportCapture(
+            binding: binding,
+            profileID: nil,
+            type: .manual,
+            fingerprint: label,
+            capturedAt: capturedAt,
+            manifest: manifest,
+            deviceSnapshot: makeDeviceSnapshot(capturedAt: capturedAt),
+            artifacts: [
+                PendingReportArtifact(
+                    relativePath: "logs.jsonl",
+                    data: Data("additional hosted evidence".utf8)
+                ),
+            ]
+        ))
     }
 
     private func makePendingSelfHostedReports(

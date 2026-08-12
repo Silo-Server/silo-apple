@@ -50,6 +50,8 @@ final class DiagnosticsViewModel {
     private let consentStore: DiagnosticsConsentStore
     private let pendingStore: PendingReportStore
     private let destinationStore: DiagnosticsDestinationStore
+    private let statusRefresher: (DiagnosticsDestinationChoice) async throws -> DiagnosticsStatusSnapshot
+    private let cachedStatusProvider: (DiagnosticsDestinationChoice) async -> DiagnosticsStatusSnapshot?
     private var statusSnapshot: DiagnosticsStatusSnapshot?
     private var generation = 0
     private var isHandlingForeground = false
@@ -58,12 +60,20 @@ final class DiagnosticsViewModel {
         coordinator: DiagnosticsCoordinator = .shared,
         consentStore: DiagnosticsConsentStore = .shared,
         pendingStore: PendingReportStore = .shared,
-        destinationStore: DiagnosticsDestinationStore = .shared
+        destinationStore: DiagnosticsDestinationStore = .shared,
+        statusRefresher: ((DiagnosticsDestinationChoice) async throws -> DiagnosticsStatusSnapshot)? = nil,
+        cachedStatusProvider: ((DiagnosticsDestinationChoice) async -> DiagnosticsStatusSnapshot?)? = nil
     ) {
         self.coordinator = coordinator
         self.consentStore = consentStore
         self.pendingStore = pendingStore
         self.destinationStore = destinationStore
+        self.statusRefresher = statusRefresher ?? { destination in
+            try await coordinator.refreshStatus(destination: destination)
+        }
+        self.cachedStatusProvider = cachedStatusProvider ?? { destination in
+            await coordinator.cachedStatusForActiveServer(destination: destination)
+        }
         self.selectedDestination = destinationStore.selectedDestination
         self.debugLoggingEnabled = consentStore.debugLoggingEnabled
     }
@@ -136,6 +146,7 @@ final class DiagnosticsViewModel {
             report.binding.type != .manual
                 && !report.state.isPermanentFailure
                 && !report.state.promptDeclined
+                && !report.state.isAwaitingHostedStatus
                 && DiagnosticsPromptPolicy.isEligible(
                     reportBinding: report.binding.binding,
                     currentBinding: snapshot.binding,
@@ -196,7 +207,9 @@ final class DiagnosticsViewModel {
     func setDestination(_ destination: DiagnosticsDestinationChoice) async {
         guard destination != selectedDestination else { return }
         generation &+= 1
+        let refreshGeneration = generation
         destinationStore.select(destination)
+        DiagnosticsCoordinator.diagnosticsDestinationWillChange()
         selectedDestination = destination
         statusSnapshot = nil
         featureState = .loading
@@ -204,7 +217,10 @@ final class DiagnosticsViewModel {
         sentHistory = []
         prompt = nil
         notice = nil
-        await refreshStatusAndLocalState()
+        await refreshStatusAndLocalState(
+            destination: destination,
+            expectedGeneration: refreshGeneration
+        )
     }
 
     func createAndSendManualReport() async {
@@ -311,21 +327,49 @@ final class DiagnosticsViewModel {
     }
 
     private func refreshStatusAndLocalState() async {
+        await refreshStatusAndLocalState(
+            destination: selectedDestination,
+            expectedGeneration: generation
+        )
+    }
+
+    private func refreshStatusAndLocalState(
+        destination: DiagnosticsDestinationChoice,
+        expectedGeneration: Int
+    ) async {
         do {
-            let snapshot = try await coordinator.refreshStatus(destination: selectedDestination)
+            let snapshot = try await statusRefresher(destination)
+            guard isCurrent(destination: destination, generation: expectedGeneration) else {
+                return
+            }
             statusSnapshot = snapshot
             featureState = Self.featureState(for: snapshot.status.status)
-            await reloadLocalState(for: snapshot)
+            await reloadLocalState(
+                for: snapshot,
+                destination: destination,
+                expectedGeneration: expectedGeneration
+            )
         } catch let error as HTTPError where error.statusCode == 404 {
+            guard isCurrent(destination: destination, generation: expectedGeneration) else {
+                return
+            }
             statusSnapshot = nil
             featureState = .permanentlyHidden
             pendingReports = []
             sentHistory = []
         } catch {
-            statusSnapshot = await coordinator.cachedStatusForActiveServer(destination: selectedDestination)
+            let cachedStatus = await cachedStatusProvider(destination)
+            guard isCurrent(destination: destination, generation: expectedGeneration) else {
+                return
+            }
+            statusSnapshot = cachedStatus
             featureState = .offline
-            if let statusSnapshot {
-                await reloadLocalState(for: statusSnapshot)
+            if let cachedStatus {
+                await reloadLocalState(
+                    for: cachedStatus,
+                    destination: destination,
+                    expectedGeneration: expectedGeneration
+                )
             } else {
                 pendingReports = []
                 sentHistory = []
@@ -335,23 +379,54 @@ final class DiagnosticsViewModel {
 
     private func reloadLocalStateIfPossible() async {
         guard let statusSnapshot else { return }
-        await reloadLocalState(for: statusSnapshot)
+        await reloadLocalState(
+            for: statusSnapshot,
+            destination: selectedDestination,
+            expectedGeneration: generation
+        )
     }
 
     private func reloadLocalState(for snapshot: DiagnosticsStatusSnapshot) async {
+        await reloadLocalState(
+            for: snapshot,
+            destination: selectedDestination,
+            expectedGeneration: generation
+        )
+    }
+
+    private func reloadLocalState(
+        for snapshot: DiagnosticsStatusSnapshot,
+        destination: DiagnosticsDestinationChoice,
+        expectedGeneration: Int
+    ) async {
+        guard isCurrent(destination: destination, generation: expectedGeneration) else {
+            return
+        }
         let record = consentStore.record(
             for: snapshot.binding,
             currentNoticeVersion: snapshot.status.consentNoticeVersion
         )
-        consentMode = record.mode
+        let reports: [PendingReport]
         if record.mode == .never {
             _ = await coordinator.turnOffAndDelete(binding: snapshot.binding)
-            pendingReports = []
+            reports = []
         } else {
-            pendingReports = await coordinator.pendingReports(for: snapshot.binding)
+            reports = await coordinator.pendingReports(for: snapshot.binding)
         }
+        guard isCurrent(destination: destination, generation: expectedGeneration) else {
+            return
+        }
+        consentMode = record.mode
+        pendingReports = reports
         sentHistory = consentStore.sentHistory(for: snapshot.binding)
         debugLoggingEnabled = consentStore.debugLoggingEnabled
+    }
+
+    private func isCurrent(
+        destination: DiagnosticsDestinationChoice,
+        generation expectedGeneration: Int
+    ) -> Bool {
+        generation == expectedGeneration && selectedDestination == destination
     }
 
     private func uploadAutomaticallyEligibleReports(binding: DiagnosticsBinding) async {

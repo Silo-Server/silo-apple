@@ -13,9 +13,9 @@ struct TVDiagnosticsDestinationScreen: View {
 
             VStack(alignment: .leading, spacing: 24) {
                 Text("Send Reports To")
-                    .font(.system(size: 48, weight: .bold))
+                    .font(.largeTitle.bold())
                 Text("Silo Diagnostics is the default and does not require diagnostics storage on your own server.")
-                    .font(.system(size: 24))
+                    .font(.title2)
                     .foregroundStyle(Color.continuumSecondaryText)
 
                 Button("Silo Diagnostics") {

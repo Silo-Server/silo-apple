@@ -97,6 +97,23 @@ enum ServerRegistryError: LocalizedError {
     }
 }
 
+private final class ActiveServerIDSnapshot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: String?
+
+    func read() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedValue
+    }
+
+    func write(_ value: String?) {
+        lock.lock()
+        storedValue = value
+        lock.unlock()
+    }
+}
+
 /// Owns the list of known Silo servers and which one is currently
 /// active. Singleton via `.shared`; observed by SwiftUI via `@Observable`.
 ///
@@ -117,6 +134,15 @@ enum ServerRegistryError: LocalizedError {
 final class ServerRegistry {
     static let shared = ServerRegistry()
 
+    private let activeServerSnapshot = ActiveServerIDSnapshot()
+
+    /// Actor-safe identity snapshot for background coordinators. SwiftUI uses
+    /// the observable instance property below, while async services use this
+    /// lock-protected mirror instead of racing that mutable UI state.
+    static var activeServerIDSnapshot: String? {
+        shared.activeServerSnapshot.read()
+    }
+
     private static let defaultsKey = "continuumServerRegistry.v1"
     private static let migratedKey = "continuumServerRegistry.migrated.v1"
     private static let sharedTVRegistryAccount = "com.continuum.serverRegistry.v2"
@@ -130,7 +156,9 @@ final class ServerRegistry {
     // through `persist()` to keep UserDefaults and `@Observable` views in
     // sync.
     private(set) var entries: [ServerEntry] = []
-    private(set) var activeServerId: String?
+    private(set) var activeServerId: String? {
+        didSet { activeServerSnapshot.write(activeServerId) }
+    }
 
     private let defaults: SharedDefaults
     private let keychain: SharedKeychain
@@ -150,6 +178,7 @@ final class ServerRegistry {
         load()
         migrateLegacyIfNeeded()
         migrateLegacyProfileMappingsIfNeeded()
+        activeServerSnapshot.write(activeServerId)
     }
 
     // MARK: - Sync accessors (SwiftUI-safe)

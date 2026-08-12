@@ -26,7 +26,7 @@ struct TVDiagnosticsPromptScreen: View {
                         .frame(maxWidth: 1050, alignment: .leading)
                     if model.selectedDestination == .hosted {
                         Text(model.hostedPrivacyDisclosure)
-                            .font(.system(size: 21))
+                            .font(.body)
                             .foregroundStyle(Color.continuumSecondaryText.opacity(0.82))
                             .frame(maxWidth: 1050, alignment: .leading)
                     }

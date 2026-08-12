@@ -125,6 +125,9 @@ actor DiagnosticsCoordinator {
     })
     nonisolated private static let breadcrumbContextLock = NSLock()
     nonisolated(unsafe) private static var breadcrumbConsentContext: BreadcrumbConsentContext?
+    /// Blocks last-known consent fallback between a destination selection and
+    /// the first successful status refresh for that destination.
+    nonisolated(unsafe) private static var destinationTransitionInProgress = false
     /// Whether the profile active right now may capture diagnostics. Breadcrumb
     /// capture is a synchronous gate, but child-profile eligibility needs an
     /// async lookup, so it is cached here and re-resolved on profile switches
@@ -153,6 +156,9 @@ actor DiagnosticsCoordinator {
     private var cachedStatusDestination: DiagnosticsDestinationChoice?
     private var cachedStatusServerRegistryID: String?
     private var cachedStatusAccessTokenFingerprint: String?
+    /// Only the newest status request may publish cache, consent, or capture
+    /// context after actor reentrancy lets another refresh start.
+    private var statusRefreshGeneration: UInt64 = 0
     /// Credential-owner epoch associated with the exact live hosted status
     /// response. Kept separate from the persisted snapshot because it is
     /// process-local and exists only as a pre-POST race guard.
@@ -194,20 +200,28 @@ actor DiagnosticsCoordinator {
     func refreshStatus(
         destination: DiagnosticsDestinationChoice? = nil
     ) async throws -> DiagnosticsStatusSnapshot {
+        statusRefreshGeneration &+= 1
+        let requestGeneration = statusRefreshGeneration
         let destination = destination ?? destinationStore.selectedDestination
         if destination == .hosted {
             do {
-                return try await refreshHostedStatus()
+                return try await refreshHostedStatus(requestGeneration: requestGeneration)
             } catch {
+                guard requestGeneration == statusRefreshGeneration else {
+                    throw DiagnosticsCoordinatorError.identityChanged
+                }
                 if Self.isTransientCaptureFallbackFailure(error),
                    let fallback = await hostedPersistentCaptureFallback() {
+                    guard requestGeneration == statusRefreshGeneration else {
+                        throw DiagnosticsCoordinatorError.identityChanged
+                    }
                     _ = await activateHostedPersistentCaptureFallback(fallback)
                 }
                 throw error
             }
         }
 
-        let requestServerRegistryID = ServerRegistry.shared.activeServerId
+        let requestServerRegistryID = ServerRegistry.activeServerIDSnapshot
         guard requestServerRegistryID != nil,
               await Self.currentAccessTokenFingerprint() != nil else {
             throw DiagnosticsCoordinatorError.identityChanged
@@ -221,7 +235,8 @@ actor DiagnosticsCoordinator {
         // token refresh HTTPClient may perform during these calls is not
         // misread as an identity change. A genuine change — server switch or
         // sign-out — still flips the server id or drops the token.
-        guard requestServerRegistryID == ServerRegistry.shared.activeServerId,
+        guard requestGeneration == statusRefreshGeneration,
+              requestServerRegistryID == ServerRegistry.activeServerIDSnapshot,
               let accessTokenFingerprint = await Self.currentAccessTokenFingerprint() else {
             throw DiagnosticsCoordinatorError.identityChanged
         }
@@ -254,7 +269,7 @@ actor DiagnosticsCoordinator {
         Task {
             await reevaluateActiveProfileBreadcrumbEligibility(generation: eligibilityGeneration)
         }
-        if let serverId = ServerRegistry.shared.activeServerId {
+        if let serverId = ServerRegistry.activeServerIDSnapshot {
             Self.ServerBindingIndex.record(
                 serverId: serverId,
                 serverInstanceID: status.serverInstanceID
@@ -264,8 +279,10 @@ actor DiagnosticsCoordinator {
         return snapshot
     }
 
-    private func refreshHostedStatus() async throws -> DiagnosticsStatusSnapshot {
-        let requestServerRegistryID = ServerRegistry.shared.activeServerId
+    private func refreshHostedStatus(
+        requestGeneration: UInt64
+    ) async throws -> DiagnosticsStatusSnapshot {
+        let requestServerRegistryID = ServerRegistry.activeServerIDSnapshot
         guard let requestServerRegistryID,
               let requestCredentialIdentity = await TokenStore.shared.refreshAccountIdentity(),
               requestCredentialIdentity.serverId == requestServerRegistryID,
@@ -276,7 +293,8 @@ actor DiagnosticsCoordinator {
         async let capabilitiesRequest = hostedAPI.capabilities()
         async let currentUserRequest = continuumAPI.currentUser()
         let (capabilities, user) = try await (capabilitiesRequest, currentUserRequest)
-        guard requestServerRegistryID == ServerRegistry.shared.activeServerId,
+        guard requestGeneration == statusRefreshGeneration,
+              requestServerRegistryID == ServerRegistry.activeServerIDSnapshot,
               Self.hostedCredentialIdentityMatches(
                 expected: requestCredentialIdentity,
                 current: await TokenStore.shared.refreshAccountIdentity(),
@@ -333,7 +351,7 @@ actor DiagnosticsCoordinator {
         destination: DiagnosticsDestinationChoice? = nil
     ) async -> DiagnosticsStatusSnapshot? {
         let destination = destination ?? destinationStore.selectedDestination
-        guard cachedStatusServerRegistryID == ServerRegistry.shared.activeServerId,
+        guard cachedStatusServerRegistryID == ServerRegistry.activeServerIDSnapshot,
               cachedStatusDestination == destination,
               let cachedStatusAccessTokenFingerprint,
               cachedStatusAccessTokenFingerprint == (await Self.currentAccessTokenFingerprint()) else {
@@ -350,7 +368,7 @@ actor DiagnosticsCoordinator {
     private func lastKnownSnapshotForActiveServer(
         destination: DiagnosticsDestinationChoice
     ) -> DiagnosticsStatusSnapshot? {
-        guard let activeServerId = ServerRegistry.shared.activeServerId else {
+        guard let activeServerId = ServerRegistry.activeServerIDSnapshot else {
             return nil
         }
         if cachedStatusServerRegistryID == activeServerId,
@@ -411,7 +429,7 @@ actor DiagnosticsCoordinator {
         guard let activeProfileID = AuthService.shared.profileId else {
             return false
         }
-        let serverRegistryID = ServerRegistry.shared.activeServerId
+        let serverRegistryID = ServerRegistry.activeServerIDSnapshot
         let lookup = await profileLookupResult(activeProfileID)
         let isChild: Bool?
         switch lookup {
@@ -425,7 +443,7 @@ actor DiagnosticsCoordinator {
         // A profile/server switch can happen while `/profiles` is in flight.
         // Never publish the result into the new identity's synchronous gate.
         guard activeProfileID == AuthService.shared.profileId,
-              serverRegistryID == ServerRegistry.shared.activeServerId,
+              serverRegistryID == ServerRegistry.activeServerIDSnapshot,
               binding == Self.currentDiagnosticsBinding else {
             return nil
         }
@@ -481,7 +499,12 @@ actor DiagnosticsCoordinator {
         for report in reports where report.binding.binding.destinationChoice == .hosted
             && report.state.hostedRemoteShortID != nil
             && report.state.hostedRejectionCode == nil {
-            _ = await pollHostedStatus(report)
+            if case .uploaded(let response) = await pollHostedStatus(report) {
+                consentStore.recordSent(
+                    shortID: response.shortID,
+                    for: report.binding.binding
+                )
+            }
         }
         return pendingStore.listReports(for: binding, now: Date()).filter {
             !deleting.contains($0.id)
@@ -849,13 +872,13 @@ actor DiagnosticsCoordinator {
             // manifest's report.profile_id. The next attempt's `isUploadable`
             // check above reclassifies a genuine account move as a destination
             // mismatch precisely.
-            let destinationServerRegistryID = ServerRegistry.shared.activeServerId
+            let destinationServerRegistryID = ServerRegistry.activeServerIDSnapshot
             let destinationProfileID = await TokenStore.shared.getProfileId()
             let capturedProfileID = report.manifest.report.profileID
             let bundle = try await buildBundle(for: report)
             let activeProfileID = await TokenStore.shared.getProfileId()
             guard await Self.currentAccessTokenFingerprint() != nil,
-                  ServerRegistry.shared.activeServerId == destinationServerRegistryID,
+                  ServerRegistry.activeServerIDSnapshot == destinationServerRegistryID,
                   activeProfileID == destinationProfileID,
                   !Self.isProfileUploadMismatch(
                     captured: capturedProfileID,
@@ -892,7 +915,7 @@ actor DiagnosticsCoordinator {
         consent: DiagnosticsManifest.Consent
     ) async -> DiagnosticsUploadDecision {
         do {
-            let destinationServerRegistryID = ServerRegistry.shared.activeServerId
+            let destinationServerRegistryID = ServerRegistry.activeServerIDSnapshot
             guard let destinationCredentialIdentity = context.hostedCredentialIdentity,
                   Self.hostedCredentialIdentityMatches(
                     expected: destinationCredentialIdentity,
@@ -942,7 +965,7 @@ actor DiagnosticsCoordinator {
                   Self.hostedCredentialIdentityMatches(
                     expected: destinationCredentialIdentity,
                     current: await TokenStore.shared.refreshAccountIdentity(),
-                    serverRegistryID: ServerRegistry.shared.activeServerId
+                    serverRegistryID: ServerRegistry.activeServerIDSnapshot
                   ) else {
                 return .keptRetryable
             }
@@ -971,7 +994,7 @@ actor DiagnosticsCoordinator {
             guard Self.hostedCredentialIdentityMatches(
                 expected: destinationCredentialIdentity,
                 current: await TokenStore.shared.refreshAccountIdentity(),
-                serverRegistryID: ServerRegistry.shared.activeServerId
+                serverRegistryID: ServerRegistry.activeServerIDSnapshot
             ) else {
                 return .keptRetryable
             }
@@ -1156,7 +1179,7 @@ actor DiagnosticsCoordinator {
         // destination. Same stable identity as the single-shot pre-POST check:
         // server registry id + profile, token presence only (a transparent
         // token refresh mid-upload must not abort the sequence).
-        let destinationServerRegistryID = ServerRegistry.shared.activeServerId
+        let destinationServerRegistryID = ServerRegistry.activeServerIDSnapshot
         let destinationProfileID = await TokenStore.shared.getProfileId()
         do {
             return try await api.uploadChunked(
@@ -1164,7 +1187,7 @@ actor DiagnosticsCoordinator {
                 bundleData: bundle.bundleData,
                 destinationUnchanged: {
                     guard await Self.currentAccessTokenFingerprint() != nil else { return false }
-                    guard ServerRegistry.shared.activeServerId == destinationServerRegistryID else { return false }
+                    guard ServerRegistry.activeServerIDSnapshot == destinationServerRegistryID else { return false }
                     let activeProfileID = await TokenStore.shared.getProfileId()
                     return activeProfileID == destinationProfileID
                 }
@@ -1316,14 +1339,19 @@ actor DiagnosticsCoordinator {
     /// Sending still calls `refreshHostedStatus()` and therefore requires a
     /// live capability response with the exact pinned collector identity.
     private func hostedPersistentCaptureFallback() async -> HostedPersistentCaptureFallback? {
-        guard let serverRegistryID = ServerRegistry.shared.activeServerId,
-              let accessTokenFingerprint = await Self.currentAccessTokenFingerprint() else {
+        guard let requestCredentialIdentity = await TokenStore.shared.refreshAccountIdentity(),
+              await Self.currentAccessTokenFingerprint() != nil else {
             return nil
         }
+        let serverRegistryID = requestCredentialIdentity.serverId
 
         if let user = try? await continuumAPI.currentUser(),
-           serverRegistryID == ServerRegistry.shared.activeServerId,
-           accessTokenFingerprint == (await Self.currentAccessTokenFingerprint()),
+           Self.hostedCredentialIdentityMatches(
+               expected: requestCredentialIdentity,
+               current: await TokenStore.shared.refreshAccountIdentity(),
+               serverRegistryID: ServerRegistry.activeServerIDSnapshot
+           ),
+           let accessTokenFingerprint = await Self.currentAccessTokenFingerprint(),
            let accountUserID = user.id,
            !accountUserID.isEmpty {
             let snapshot = Self.hostedPersistentCaptureFallbackSnapshot(
@@ -1342,7 +1370,12 @@ actor DiagnosticsCoordinator {
             )
         }
 
-        guard let previous = lastKnownSnapshotForActiveServer(destination: .hosted) else {
+        guard Self.hostedCredentialIdentityMatches(
+            expected: requestCredentialIdentity,
+            current: await TokenStore.shared.refreshAccountIdentity(),
+            serverRegistryID: ServerRegistry.activeServerIDSnapshot
+        ), await Self.currentAccessTokenFingerprint() != nil,
+              let previous = lastKnownSnapshotForActiveServer(destination: .hosted) else {
             return nil
         }
         return HostedPersistentCaptureFallback(
@@ -1848,8 +1881,15 @@ actor DiagnosticsCoordinator {
         noticeVersion: Int,
         statusAvailable: Bool
     ) {
+        // A request for the previous destination may finish after the picker
+        // persisted a new choice. It may refresh its own cache, but it must not
+        // reopen the synchronous capture gate for that stale destination.
+        guard binding.destinationChoice == destinationStore.selectedDestination else {
+            return
+        }
         Self.breadcrumbContextLock.lock()
         let previousBinding = Self.breadcrumbConsentContext?.binding
+        Self.destinationTransitionInProgress = false
         Self.breadcrumbConsentContext = BreadcrumbConsentContext(
             binding: binding,
             noticeVersion: noticeVersion,
@@ -1903,12 +1943,14 @@ actor DiagnosticsCoordinator {
     /// callers treat as "capture disabled".
     nonisolated private static func resolvedBreadcrumbContext() -> BreadcrumbConsentContext? {
         breadcrumbContextLock.lock()
+        let transitionInProgress = destinationTransitionInProgress
         let context = breadcrumbConsentContext
         breadcrumbContextLock.unlock()
+        guard !transitionInProgress else { return nil }
         if let context {
             return context
         }
-        guard let serverId = ServerRegistry.shared.activeServerId,
+        guard let serverId = ServerRegistry.activeServerIDSnapshot,
               let snapshot = LastKnownStatusStore.snapshot(
                 for: serverId,
                 destination: DiagnosticsDestinationStore.shared.selectedDestination
@@ -1957,6 +1999,39 @@ actor DiagnosticsCoordinator {
     nonisolated static func authenticationStateBecameUnavailable() {
         _ = beginActiveProfileEligibilityResolution(invalidateCurrent: true)
     }
+
+    /// Close and rotate the synchronous capture gate before persisting a new
+    /// diagnostics destination. Until that destination refreshes successfully,
+    /// capture stays off instead of inheriting the old destination's consent.
+    nonisolated static func diagnosticsDestinationWillChange() {
+        breadcrumbContextLock.lock()
+        let previousBinding = breadcrumbConsentContext?.binding
+        breadcrumbConsentContext = nil
+        destinationTransitionInProgress = true
+        activeProfileBreadcrumbEligible = false
+        activeProfileEligibilityGeneration &+= 1
+        breadcrumbContextLock.unlock()
+
+        if let previousBinding {
+            RecentSessionTracker.shared.purge(binding: previousBinding)
+        }
+        purgeBreadcrumbJournal()
+        DiagLog.ring.clear()
+        #if os(tvOS)
+        ExitSentinel.shared.disarmCurrentRun()
+        #endif
+    }
+
+    #if DEBUG
+    nonisolated static func installBreadcrumbConsentContextForTests(
+        _ context: BreadcrumbConsentContext?
+    ) {
+        breadcrumbContextLock.lock()
+        breadcrumbConsentContext = context
+        destinationTransitionInProgress = false
+        breadcrumbContextLock.unlock()
+    }
+    #endif
 
     /// Re-evaluate breadcrumb eligibility for the profile now active. Call on
     /// profile switches: a child profile can't manage diagnostics, so breadcrumb
