@@ -3,6 +3,55 @@ import XCTest
 
 @MainActor
 final class DiagnosticsViewModelTests: XCTestCase {
+    func testEquivalentStatusRefreshesShareAnEpoch() {
+        var epoch = DiagnosticsStatusRefreshEpoch()
+
+        let firstHosted = epoch.begin(destination: .hosted)
+        let secondHosted = epoch.begin(destination: .hosted)
+
+        XCTAssertEqual(firstHosted, secondHosted)
+        XCTAssertTrue(epoch.isCurrent(firstHosted, destination: .hosted))
+
+        let selfHosted = epoch.begin(destination: .selfHosted)
+        XCTAssertNotEqual(firstHosted, selfHosted)
+        XCTAssertFalse(epoch.isCurrent(firstHosted, destination: .hosted))
+        XCTAssertTrue(epoch.isCurrent(selfHosted, destination: .selfHosted))
+    }
+
+    func testLoadSynchronizesDestinationChangedByAnotherViewModel() async throws {
+        let suiteName = "diagnostics-view-model-shared-destination-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        suite.removePersistentDomain(forName: suiteName)
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        let destinationStore = DiagnosticsDestinationStore(defaults: defaults)
+        destinationStore.select(.hosted)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "DiagnosticsViewModel-shared-destination-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+            UserDefaults().removePersistentDomain(forName: suiteName)
+        }
+        let pendingStore = PendingReportStore(rootDirectory: root)
+        let coordinator = DiagnosticsCoordinator(
+            destinationStore: destinationStore,
+            pendingStore: pendingStore
+        )
+        let model = DiagnosticsViewModel(
+            coordinator: coordinator,
+            pendingStore: pendingStore,
+            destinationStore: destinationStore
+        )
+
+        destinationStore.select(.selfHosted)
+        await model.load(profile: nil)
+
+        XCTAssertEqual(model.selectedDestination, .selfHosted)
+        XCTAssertTrue(model.pendingReports.isEmpty)
+        XCTAssertNil(model.prompt)
+    }
+
     func testOutOfOrderDestinationRefreshCannotPublishStaleState() async throws {
         let suiteName = "diagnostics-view-model-\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))

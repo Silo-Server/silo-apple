@@ -79,7 +79,8 @@ final class DiagnosticsViewModel {
     }
 
     func load(profile: UserProfile?) async {
-        _ = await coordinator.retryHostedDeletions()
+        synchronizeSelectedDestination()
+        await coordinator.scheduleHostedDeletionMaintenance()
         canManageDiagnostics = DiagnosticsConsentStore.canManageDiagnostics(profile: profile)
         guard canManageDiagnostics else {
             prompt = nil
@@ -105,7 +106,8 @@ final class DiagnosticsViewModel {
     }
 
     func handleForeground() async {
-        _ = await coordinator.retryHostedDeletions()
+        synchronizeSelectedDestination()
+        await coordinator.scheduleHostedDeletionMaintenance()
         guard prompt == nil else { return }
         // Collapse overlapping triggers (auth-state, server/profile,
         // notification, scene-phase) into a single refresh. The guard is set
@@ -427,6 +429,23 @@ final class DiagnosticsViewModel {
         generation expectedGeneration: Int
     ) -> Bool {
         generation == expectedGeneration && selectedDestination == destination
+    }
+
+    /// Settings and the app-level crash prompt own separate view models. Read
+    /// through their shared store at every hydration boundary so neither can
+    /// keep presenting or sending against a destination changed by the other.
+    private func synchronizeSelectedDestination() {
+        let persistedDestination = destinationStore.selectedDestination
+        guard persistedDestination != selectedDestination else { return }
+        generation &+= 1
+        selectedDestination = persistedDestination
+        statusSnapshot = nil
+        featureState = .loading
+        pendingReports = []
+        sentHistory = []
+        consentMode = .ask
+        prompt = nil
+        notice = nil
     }
 
     private func uploadAutomaticallyEligibleReports(binding: DiagnosticsBinding) async {

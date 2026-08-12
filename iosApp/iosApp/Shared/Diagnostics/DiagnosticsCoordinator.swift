@@ -9,6 +9,26 @@ struct DiagnosticsStatusSnapshot: Equatable, Codable {
     let binding: DiagnosticsBinding
 }
 
+/// Equivalent refreshes share an epoch. Only an actual destination change
+/// invalidates an in-flight result, so a batch of MetricKit payloads can all
+/// resolve the same current capture context without dropping earlier items.
+struct DiagnosticsStatusRefreshEpoch {
+    private(set) var generation: UInt64 = 0
+    private(set) var destination: DiagnosticsDestinationChoice?
+
+    mutating func begin(destination: DiagnosticsDestinationChoice) -> UInt64 {
+        if self.destination != destination {
+            generation &+= 1
+            self.destination = destination
+        }
+        return generation
+    }
+
+    func isCurrent(_ generation: UInt64, destination: DiagnosticsDestinationChoice) -> Bool {
+        self.generation == generation && self.destination == destination
+    }
+}
+
 struct DiagnosticsProfileEligibilityRecord: Codable, Equatable {
     let binding: DiagnosticsBinding
     let profileID: String
@@ -156,9 +176,7 @@ actor DiagnosticsCoordinator {
     private var cachedStatusDestination: DiagnosticsDestinationChoice?
     private var cachedStatusServerRegistryID: String?
     private var cachedStatusAccessTokenFingerprint: String?
-    /// Only the newest status request may publish cache, consent, or capture
-    /// context after actor reentrancy lets another refresh start.
-    private var statusRefreshGeneration: UInt64 = 0
+    private var statusRefreshEpoch = DiagnosticsStatusRefreshEpoch()
     /// Credential-owner epoch associated with the exact live hosted status
     /// response. Kept separate from the persisted snapshot because it is
     /// process-local and exists only as a pre-POST race guard.
@@ -174,6 +192,7 @@ actor DiagnosticsCoordinator {
     /// The receipt lives only for this process and is removed after DELETE is
     /// confirmed; ordinary sent-history semantics remain unchanged.
     private var hostedNetworkCandidates: [UUID: DiagnosticsBinding] = [:]
+    private var hostedDeletionMaintenanceTask: Task<Void, Never>?
 
     init(
         api: DiagnosticsAPI = .shared,
@@ -200,19 +219,18 @@ actor DiagnosticsCoordinator {
     func refreshStatus(
         destination: DiagnosticsDestinationChoice? = nil
     ) async throws -> DiagnosticsStatusSnapshot {
-        statusRefreshGeneration &+= 1
-        let requestGeneration = statusRefreshGeneration
         let destination = destination ?? destinationStore.selectedDestination
+        let requestGeneration = statusRefreshEpoch.begin(destination: destination)
         if destination == .hosted {
             do {
                 return try await refreshHostedStatus(requestGeneration: requestGeneration)
             } catch {
-                guard requestGeneration == statusRefreshGeneration else {
+                guard statusRefreshEpoch.isCurrent(requestGeneration, destination: destination) else {
                     throw DiagnosticsCoordinatorError.identityChanged
                 }
                 if Self.isTransientCaptureFallbackFailure(error),
                    let fallback = await hostedPersistentCaptureFallback() {
-                    guard requestGeneration == statusRefreshGeneration else {
+                    guard statusRefreshEpoch.isCurrent(requestGeneration, destination: destination) else {
                         throw DiagnosticsCoordinatorError.identityChanged
                     }
                     _ = await activateHostedPersistentCaptureFallback(fallback)
@@ -235,7 +253,7 @@ actor DiagnosticsCoordinator {
         // token refresh HTTPClient may perform during these calls is not
         // misread as an identity change. A genuine change — server switch or
         // sign-out — still flips the server id or drops the token.
-        guard requestGeneration == statusRefreshGeneration,
+        guard statusRefreshEpoch.isCurrent(requestGeneration, destination: destination),
               requestServerRegistryID == ServerRegistry.activeServerIDSnapshot,
               let accessTokenFingerprint = await Self.currentAccessTokenFingerprint() else {
             throw DiagnosticsCoordinatorError.identityChanged
@@ -293,7 +311,7 @@ actor DiagnosticsCoordinator {
         async let capabilitiesRequest = hostedAPI.capabilities()
         async let currentUserRequest = continuumAPI.currentUser()
         let (capabilities, user) = try await (capabilitiesRequest, currentUserRequest)
-        guard requestGeneration == statusRefreshGeneration,
+        guard statusRefreshEpoch.isCurrent(requestGeneration, destination: .hosted),
               requestServerRegistryID == ServerRegistry.activeServerIDSnapshot,
               Self.hostedCredentialIdentityMatches(
                 expected: requestCredentialIdentity,
@@ -470,7 +488,6 @@ actor DiagnosticsCoordinator {
     }
 
     func pendingReportsForCurrentBinding() async -> [PendingReport] {
-        _ = await drainHostedDeletionIntents()
         guard let context = await captureContext(requirePersistentCapture: false) else {
             return []
         }
@@ -478,7 +495,6 @@ actor DiagnosticsCoordinator {
     }
 
     func pendingReports(for binding: DiagnosticsBinding) async -> [PendingReport] {
-        _ = await drainHostedDeletionIntents()
         let deleting: Set<UUID>
         if binding.destinationChoice == .hosted {
             guard let hostedDeletionIntents = try? pendingStore.hostedDeletionIntents() else {
@@ -571,19 +587,40 @@ actor DiagnosticsCoordinator {
     }
 
     @discardableResult
-    func retryHostedDeletions() async -> Bool {
-        await drainHostedDeletionIntents()
+    func retryHostedDeletions(maximumAttempts: Int? = nil) async -> Bool {
+        await drainHostedDeletionIntents(maximumAttempts: maximumAttempts)
+    }
+
+    /// Foreground settings/prompt hydration must not wait behind remote
+    /// maintenance. Coalesce triggers and bound each pass; future foregrounds
+    /// continue draining the durable queue.
+    func scheduleHostedDeletionMaintenance() {
+        guard hostedDeletionMaintenanceTask == nil else { return }
+        hostedDeletionMaintenanceTask = Task { [weak self] in
+            await self?.runHostedDeletionMaintenance()
+        }
+    }
+
+    private func runHostedDeletionMaintenance() async {
+        defer { hostedDeletionMaintenanceTask = nil }
+        _ = await drainHostedDeletionIntents(maximumAttempts: 4)
     }
 
     @discardableResult
-    private func drainHostedDeletionIntents() async -> Bool {
+    private func drainHostedDeletionIntents(maximumAttempts: Int? = nil) async -> Bool {
         let batch = pendingStore.prepareHostedDeletionRetries()
         var completedAll = !batch.hasBlockedLocalEvidence && !batch.hasCorruptLedger
         let activeUploads = Set(hostedUploadsInFlight.keys)
         if batch.reportIDs.contains(where: activeUploads.contains) {
             completedAll = false
         }
-        for reportID in batch.reportIDs where !activeUploads.contains(reportID) {
+        let readyReportIDs = batch.reportIDs.filter { !activeUploads.contains($0) }
+        let attemptCount = maximumAttempts.map { max(0, $0) } ?? readyReportIDs.count
+        let attemptedReportIDs = Array(readyReportIDs.prefix(attemptCount))
+        if attemptedReportIDs.count < readyReportIDs.count {
+            completedAll = false
+        }
+        for reportID in attemptedReportIDs {
             do {
                 try await hostedAPI.deleteReport(reportID: reportID)
                 if !pendingStore.completeHostedDeletion(reportID: reportID) {

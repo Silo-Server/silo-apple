@@ -353,6 +353,35 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         }
     }
 
+    func testConcurrentInstallationCredentialRequestsAreSingleFlight() async throws {
+        let credentialStore = HostedTestCredentialStore(credential: nil)
+        let unusedReportID = try XCTUnwrap(
+            UUID(uuidString: "01234567-89ab-cdef-0123-456789abcdef")
+        )
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: credentialStore
+        )
+        HostedDiagnosticsStubProtocol.configure(
+            reportID: unusedReportID,
+            bundle: Data()
+        )
+
+        async let first = api.installationCredential(platform: .ios)
+        async let second = api.installationCredential(platform: .ios)
+        let credentials = try await [first, second]
+
+        XCTAssertEqual(credentials[0], credentials[1])
+        XCTAssertEqual(credentialStore.saveCount, 1)
+        XCTAssertEqual(
+            HostedDiagnosticsStubProtocol.requests().count {
+                $0.method == "POST" && $0.path == "/v1/installations"
+            },
+            1
+        )
+    }
+
     func testRevokedInstallationTokenIsClearedAndReregisteredOnce() async throws {
         let reportID = try XCTUnwrap(UUID(uuidString: "12345678-90ab-cdef-1234-567890abcdef"))
         let bundle = Data("credential-recovery-bundle".utf8)
@@ -1249,8 +1278,61 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             reportID: fixture.report.id,
             statusCode: 204
         )
-        _ = await coordinator.pendingReportsForCurrentBinding()
+        _ = await coordinator.retryHostedDeletions()
         XCTAssertTrue(try fixture.store.hostedDeletionIntents().isEmpty)
+    }
+
+    func testForegroundDeletionMaintenanceBoundsEachRetryPass() async throws {
+        let fixture = try makePendingHostedReport(label: "bounded-delete-0")
+        let capturedAt = fixture.report.binding.capturedAtDate
+        let reports = try [
+            fixture.report,
+            saveAdditionalHostedReport(
+                in: fixture.store,
+                binding: fixture.report.binding.binding,
+                label: "bounded-delete-1",
+                capturedAt: capturedAt.addingTimeInterval(1)
+            ),
+            saveAdditionalHostedReport(
+                in: fixture.store,
+                binding: fixture.report.binding.binding,
+                label: "bounded-delete-2",
+                capturedAt: capturedAt.addingTimeInterval(2)
+            ),
+        ]
+        for report in reports {
+            try fixture.store.stageHostedDeletionAndDelete(
+                report,
+                forceRemoteIntent: true
+            )
+        }
+        HostedDiagnosticsStubProtocol.configureDelete(
+            reportID: reports[0].id,
+            statusCode: 204
+        )
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: "install-bounded-delete",
+                    installationToken: "bounded-delete-token"
+                )
+            )
+        )
+        let coordinator = DiagnosticsCoordinator(
+            hostedAPI: api,
+            pendingStore: fixture.store
+        )
+
+        let completedAll = await coordinator.retryHostedDeletions(maximumAttempts: 2)
+
+        XCTAssertFalse(completedAll)
+        XCTAssertEqual(
+            HostedDiagnosticsStubProtocol.requests().count { $0.method == "DELETE" },
+            2
+        )
+        XCTAssertFalse(try fixture.store.hostedDeletionIntents().isEmpty)
     }
 
     func testTurnOffStagesRemoteErasureBeforePurgingHostedEvidence() async throws {

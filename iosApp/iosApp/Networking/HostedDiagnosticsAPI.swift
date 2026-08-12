@@ -133,6 +133,10 @@ actor HostedDiagnosticsAPI {
     private let baseURL: URL
     private let session: URLSession
     private let credentialStore: any HostedDiagnosticsCredentialStoring
+    /// A Task, rather than a boolean, makes first-run registration single
+    /// flight across actor reentrancy: every concurrent upload awaits and uses
+    /// the exact credential that wins persistence.
+    private var installationCredentialTask: Task<HostedDiagnosticsCredential, Error>?
 
     init(
         baseURL: URL = HostedDiagnosticsAPI.defaultBaseURL,
@@ -215,6 +219,7 @@ actor HostedDiagnosticsAPI {
         }
         let reportIDString = reportID.uuidString.lowercased()
         var request = try self.request(path: "v1/reports/\(reportIDString)", method: "DELETE")
+        request.timeoutInterval = 10
         authorize(&request, token: credential.installationToken)
         // The collector returns 204 for both an owned report and a valid
         // not-yet-created UUID after durably recording its global tombstone.
@@ -333,11 +338,25 @@ actor HostedDiagnosticsAPI {
         )
     }
 
-    private func installationCredential(platform: Platform) async throws -> HostedDiagnosticsCredential {
+    /// Internal so the single-flight boundary can be exercised without
+    /// creating unrelated remote report state in tests.
+    func installationCredential(platform: Platform) async throws -> HostedDiagnosticsCredential {
         if let existing = credentialStore.load() {
             return existing
         }
+        if let installationCredentialTask {
+            return try await installationCredentialTask.value
+        }
 
+        let task = Task {
+            try await registerInstallation(platform: platform)
+        }
+        installationCredentialTask = task
+        defer { installationCredentialTask = nil }
+        return try await task.value
+    }
+
+    private func registerInstallation(platform: Platform) async throws -> HostedDiagnosticsCredential {
         let body = HostedInstallationRequest(
             platform: platform,
             appID: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
