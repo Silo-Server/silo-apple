@@ -7,6 +7,7 @@ import SwiftUI
 /// `docs/tvos-focus.md`.
 struct TVGeneralSettingsPane: View {
     @State private var preferences = UICustomizationPreferences.shared
+    @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var navPrefs = TVNavPreferences.shared
     @State private var activePicker: PickerKind?
     @State private var showsMenuEditor = false
@@ -17,6 +18,16 @@ struct TVGeneralSettingsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            TVSettingsSectionHeader("PROFILE")
+
+            TVSettingsPickerRow(
+                title: "Profile at Launch",
+                value: launchPreferences.behavior.title
+            ) { activePicker = .profileLaunch }
+            .focused(detailFocus, equals: .generalProfileLaunch)
+
+            TVSettingsFooter(launchPreferences.behavior.tvDescription)
+
             if let message = preferences.capabilityMessage {
                 TVSettingsSectionHeader("SERVER SUPPORT")
                 TVSettingsFooter(message)
@@ -26,7 +37,7 @@ struct TVGeneralSettingsPane: View {
                 TVSettingsSectionHeader("SYNC SOURCE")
                 if preferences.cardPresentationUsesDeviceOverride {
                     familySettingsButton
-                        .focused(detailFocus, equals: .top)
+                        .focused(detailFocus, equals: .generalCardPreset)
                 } else {
                     familySettingsButton
                 }
@@ -74,7 +85,7 @@ struct TVGeneralSettingsPane: View {
                 ) {
                     navPrefs.setShowAudiobooks(!navPrefs.showAudiobooks)
                 }
-                .focused(detailFocus, equals: .top)
+                .focused(detailFocus, equals: .generalTopMenu)
 
                 TVSettingsFooter("This server uses the legacy device-local menu preference. Adds an Audiobooks tab when an audiobook library is available.")
             } else {
@@ -142,7 +153,7 @@ struct TVGeneralSettingsPane: View {
         if preferences.cardPresentationUsesDeviceOverride || !preferences.allowsEditing {
             row.disabled(true)
         } else {
-            row.focused(detailFocus, equals: .top)
+            row.focused(detailFocus, equals: .generalCardPreset)
         }
     }
 
@@ -157,6 +168,12 @@ struct TVGeneralSettingsPane: View {
     @ViewBuilder
     private func pickerSheet(for picker: PickerKind) -> some View {
         switch picker {
+        case .profileLaunch:
+            TVSettingsPickerSheet(
+                title: "Profile at Launch",
+                options: TVSettingsOptions.profileLaunch,
+                selection: $launchPreferences.behaviorID
+            )
         case .preset:
             TVSettingsPickerSheet(
                 title: "Card Preset",
@@ -213,6 +230,7 @@ struct TVGeneralSettingsPane: View {
     }
 
     private enum PickerKind: String, Identifiable {
+        case profileLaunch
         case preset
         case posterSize
         case caption

@@ -186,7 +186,7 @@ final class SiloControlClient {
 
     func launch(_ request: SiloControlPlaybackRequest) async {
         guard let activeServer = ServerRegistry.shared.activeServer,
-              let profileId = activeServer.profileId,
+              let profileId = ServerRegistry.shared.activeProfileId,
               !profileId.isEmpty else {
             errorMessage = "Choose a server before controlling a TV."
             return

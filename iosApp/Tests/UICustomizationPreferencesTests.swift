@@ -445,6 +445,45 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
     }
 
+    func testAudiobookOptOutHidesCustomizedMainMenuDestination() {
+        let audiobook = Library(
+            id: 5,
+            name: "Audiobooks",
+            type: "audiobooks",
+            sortOrder: 0,
+            posterUrl: nil
+        )
+        let menu = PrimaryMenuPreference(items: [
+            .builtin(.home),
+            .builtin(.audiobooks),
+            .builtin(.calendar),
+        ])
+
+        XCTAssertEqual(
+            projectedMainTabDestinations(
+                primaryMenu: menu,
+                availableLibraries: [audiobook],
+                showAudiobooks: false
+            ).map(\.id),
+            [.app(.home), .app(.calendar)]
+        )
+        XCTAssertFalse(
+            mainTabSupportsDestination(
+                .builtin(.audiobooks),
+                availableLibraries: [audiobook],
+                showAudiobooks: false
+            )
+        )
+        XCTAssertFalse(
+            mainTabSupportsDestination(
+                .library(libraryId: audiobook.id, label: audiobook.name),
+                availableLibraries: [audiobook],
+                showAudiobooks: false
+            ),
+            "the opt-out also hides a directly pinned audiobook library"
+        )
+    }
+
     func testMainTabLibrarySnapshotRejectsPreviousProfileWithOverlappingId() throws {
         let serverId = "server"
         let firstProfile = try XCTUnwrap(

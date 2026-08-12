@@ -21,15 +21,35 @@ struct TopShelfHTTPClient {
     }
 
     let defaults: SharedDefaults
-    let keychain: SharedKeychain
+    let accountKeychain: SharedKeychain
+    let profileKeychain: SharedKeychain
     let session: URLSession
 
     init(defaults: SharedDefaults = .shared,
          keychain: SharedKeychain = SharedKeychain(),
          session: URLSession = .shared) {
         self.defaults = defaults
-        self.keychain = keychain
+        self.accountKeychain = keychain.withAudience(.userIndependent)
+        self.profileKeychain = keychain.withAudience(.currentUser)
         self.session = session
+    }
+
+    var isPersonalizedContentAllowed: Bool {
+        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey) else {
+            return false
+        }
+        let state = ProfileLaunchState.load(from: defaults)
+        return TopShelfProfilePolicy.allowsPersonalizedContent(
+            state: state,
+            serverID: serverID,
+            activeProfileID: defaults.string(forKey: SharedStorage.profileIdKey),
+            accountEpoch: accountKeychain.get(
+                SharedStorage.accountEpochAccount(for: serverID)
+            ),
+            hasStoredProfileToken: profileKeychain.get(
+                SharedStorage.profileTokenAccount(for: serverID)
+            ) != nil
+        )
     }
 
     func fetchHomeSections() async throws -> TopShelfSectionsResponse {
@@ -47,9 +67,13 @@ struct TopShelfHTTPClient {
     // MARK: - Private
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
-        guard let serverUrl = defaults.string(forKey: SharedStorage.serverUrlKey),
+        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey),
+              isPersonalizedContentAllowed,
+              let serverUrl = defaults.string(forKey: SharedStorage.serverUrlKey),
               !serverUrl.isEmpty,
-              let accessToken = keychain.get(SharedStorage.mirroredAccessTokenAccount)
+              let accessToken = accountKeychain.get(
+                SharedStorage.accessTokenAccount(for: serverID)
+              )
         else {
             throw Error.notAuthenticated
         }
@@ -69,7 +93,9 @@ struct TopShelfHTTPClient {
         if let profileId = defaults.string(forKey: SharedStorage.profileIdKey) {
             request.setValue(profileId, forHTTPHeaderField: "X-Profile-Id")
         }
-        if let profileToken = keychain.get(SharedStorage.mirroredProfileTokenAccount) {
+        if let profileToken = profileKeychain.get(
+            SharedStorage.profileTokenAccount(for: serverID)
+        ) {
             request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token")
         }
 

@@ -24,6 +24,13 @@ final class ContentProvider: TVTopShelfContentProvider {
         )
 
         let http = TopShelfHTTPClient()
+        guard http.isPersonalizedContentAllowed else {
+            defaults.set(
+                "profile-selection-required",
+                forKey: SharedStorage.topShelfLastStatusKey
+            )
+            return nil
+        }
         let response: TopShelfSectionsResponse
         do {
             response = try await http.fetchHomeSections()

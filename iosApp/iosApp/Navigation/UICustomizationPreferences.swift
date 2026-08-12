@@ -1660,8 +1660,7 @@ final class UICustomizationPreferences {
         guard let server = ServerRegistry.shared.activeServer,
               ServerRegistry.shared.activeServerId == server.id,
               let profileId = AuthService.shared.profileId,
-              !profileId.isEmpty,
-              server.profileId == profileId else { return nil }
+              !profileId.isEmpty else { return nil }
         return HTTPRequestIdentity(
             serverId: server.id,
             serverURL: server.url,

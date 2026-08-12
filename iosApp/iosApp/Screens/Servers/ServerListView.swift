@@ -245,13 +245,14 @@ struct ServerListView: View {
 
     private func switchTo(_ entry: ServerEntry) {
         guard entry.id != registry.activeServerId else {
-            // Already active: re-evaluate in case tokens expired and
-            // the UI just needs to catch up.
             refreshAuthState()
             return
         }
         Task {
-            await registry.switchTo(serverId: entry.id)
+            guard await registry.switchTo(
+                serverId: entry.id,
+                resolveDestinationProfile: true
+            ) else { return }
             await MainActor.run { refreshAuthState() }
         }
     }
@@ -259,7 +260,10 @@ struct ServerListView: View {
     private func remove(_ entry: ServerEntry) {
         let wasActive = entry.id == registry.activeServerId
         Task {
-            await registry.remove(serverId: entry.id)
+            guard await registry.remove(
+                serverId: entry.id,
+                resolveFallbackProfile: wasActive
+            ) else { return }
             await MainActor.run {
                 removeTarget = nil
                 if wasActive { refreshAuthState() }

@@ -49,6 +49,7 @@
 // SILO_NOTIFICATION_SERVICE_ENTITLEMENTS = NotificationService/NotificationService.personal.entitlements
 // SILO_TV_ENTITLEMENTS                   = SiloTV.personal.entitlements
 // SILO_TOPSHELF_ENTITLEMENTS             = TopShelf/TopShelf.personal.entitlements
+// SILO_USER_INDEPENDENT_KEYCHAIN          = NO
 //
 // Note: Top Shelf → host-app state handoff uses that App Group, so the
 // Apple TV Home Screen rows stay empty when you build under a Personal

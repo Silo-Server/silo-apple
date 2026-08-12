@@ -134,6 +134,9 @@ enum TemporaryAuthScopeEndResult: Equatable, Sendable {
 actor TokenStore {
     static let shared = TokenStore()
 
+    static let accountCredentialAudience: KeychainAudience = .userIndependent
+    static let profileCredentialAudience: KeychainAudience = .currentUser
+
     private let keychain: SharedKeychain
     private let defaults: SharedDefaults
 
@@ -147,13 +150,16 @@ actor TokenStore {
     // computed properties below both derive their keys here so a future
     // scheme change only touches these three funcs.
     static func accessTokenKey(for serverId: String) -> String {
-        "com.continuum.\(serverId).accessToken"
+        SharedStorage.accessTokenAccount(for: serverId)
     }
     static func refreshTokenKey(for serverId: String) -> String {
-        "com.continuum.\(serverId).refreshToken"
+        SharedStorage.refreshTokenAccount(for: serverId)
     }
     static func profileTokenKey(for serverId: String) -> String {
-        "com.continuum.\(serverId).profileToken"
+        SharedStorage.profileTokenAccount(for: serverId)
+    }
+    static func accountEpochKey(for serverId: String) -> String {
+        SharedStorage.accountEpochAccount(for: serverId)
     }
 
     /// Server whose tokens are currently cached in `cached*` and returned
@@ -485,8 +491,8 @@ actor TokenStore {
 
             cachedAccessToken = accessValue
             cachedRefreshToken = value
-            keychain.set(accessValue, for: Self.accessTokenKey(for: serverId))
-            keychain.set(value, for: Self.refreshTokenKey(for: serverId))
+            accountKeychain.set(accessValue, for: Self.accessTokenKey(for: serverId))
+            accountKeychain.set(value, for: Self.refreshTokenKey(for: serverId))
             // Account refresh must not re-mirror a stale profile credential
             // during an in-progress profile transition.
             mirrorActiveAccessValueForExtension()
@@ -554,9 +560,10 @@ actor TokenStore {
             cachedAccessToken = nil
             cachedRefreshToken = nil
             cachedProfileToken = nil
-            keychain.delete(Self.accessTokenKey(for: serverId))
-            keychain.delete(Self.refreshTokenKey(for: serverId))
-            keychain.delete(Self.profileTokenKey(for: serverId))
+            accountKeychain.delete(Self.accessTokenKey(for: serverId))
+            accountKeychain.delete(Self.refreshTokenKey(for: serverId))
+            accountKeychain.delete(Self.accountEpochKey(for: serverId))
+            profileKeychain.delete(Self.profileTokenKey(for: serverId))
             defaults.removeObject(forKey: profileIdDefaultsKey)
             clearMirroredTokensForExtension()
             return .persistentSessionCleared
@@ -613,7 +620,7 @@ actor TokenStore {
             ensureLoaded()
             return cachedAccessToken
         }
-        return keychain.get(Self.accessTokenKey(for: serverId))
+        return accountKeychain.get(Self.accessTokenKey(for: serverId))
     }
 
     /// Minimal launch-time check for whether the active server has a stored
@@ -624,7 +631,7 @@ actor TokenStore {
         if loadedForServerId == activeServerId {
             return cachedAccessToken != nil
         }
-        cachedAccessToken = keychain.get(Self.accessTokenKey(for: serverId))
+        cachedAccessToken = accountKeychain.get(Self.accessTokenKey(for: serverId))
         return cachedAccessToken != nil
     }
 
@@ -639,8 +646,9 @@ actor TokenStore {
         persistentCredentialGenerationID = UUID()
         cachedAccessToken = accessToken
         cachedRefreshToken = refreshToken
-        keychain.set(accessToken, for: accessTokenKey)
-        keychain.set(refreshToken, for: refreshTokenKey)
+        accountKeychain.set(accessToken, for: accessTokenKey)
+        accountKeychain.set(refreshToken, for: refreshTokenKey)
+        accountKeychain.set(UUID().uuidString, for: accountEpochKey)
         mirrorActiveTokensForExtension()
     }
 
@@ -659,9 +667,10 @@ actor TokenStore {
         cachedRefreshToken = nil
         cachedProfileToken = nil
         guard !activeServerId.isEmpty else { return }
-        keychain.delete(accessTokenKey)
-        keychain.delete(refreshTokenKey)
-        keychain.delete(profileTokenKey)
+        accountKeychain.delete(accessTokenKey)
+        accountKeychain.delete(refreshTokenKey)
+        accountKeychain.delete(accountEpochKey)
+        profileKeychain.delete(profileTokenKey)
         defaults.removeObject(forKey: profileIdDefaultsKey)
         clearMirroredTokensForExtension()
     }
@@ -670,9 +679,10 @@ actor TokenStore {
     /// removing a server or signing out from a non-active server.
     func deleteTokens(for serverId: String) {
         guard !serverId.isEmpty else { return }
-        keychain.delete(Self.accessTokenKey(for: serverId))
-        keychain.delete(Self.refreshTokenKey(for: serverId))
-        keychain.delete(Self.profileTokenKey(for: serverId))
+        accountKeychain.delete(Self.accessTokenKey(for: serverId))
+        accountKeychain.delete(Self.refreshTokenKey(for: serverId))
+        accountKeychain.delete(Self.accountEpochKey(for: serverId))
+        profileKeychain.delete(Self.profileTokenKey(for: serverId))
         if serverId == activeServerId {
             persistentCredentialGenerationID = UUID()
             cachedAccessToken = nil
@@ -704,20 +714,105 @@ actor TokenStore {
         return cachedProfileToken
     }
 
-    func setProfileToken(_ token: String?) {
+    @discardableResult
+    func setProfileToken(_ token: String?) -> Bool {
         if temporaryScope != nil {
             if let token { temporaryScope?.profileToken = token }
-            return
+            return token != nil
         }
-        guard !activeServerId.isEmpty else { return }
+        guard !activeServerId.isEmpty else { return false }
         ensureLoaded()
-        cachedProfileToken = token
+        let persisted: Bool
         if let token {
-            keychain.set(token, for: profileTokenKey)
+            persisted = profileKeychain.set(token, for: profileTokenKey)
         } else {
-            keychain.delete(profileTokenKey)
+            persisted = profileKeychain.delete(profileTokenKey)
         }
+        guard persisted else { return false }
+        cachedProfileToken = token
         mirrorActiveTokensForExtension()
+        return true
+    }
+
+    func getOrCreateAccountEpoch() -> String? {
+        guard temporaryScope == nil else { return nil }
+        return getOrCreateAccountEpoch(for: activeServerId)
+    }
+
+    func getOrCreateAccountEpoch(for serverID: String) -> String? {
+        guard !serverID.isEmpty else { return nil }
+        let epochKey = Self.accountEpochKey(for: serverID)
+        let accessKey = Self.accessTokenKey(for: serverID)
+        if let existing = accountKeychain.get(epochKey), !existing.isEmpty {
+            return existing
+        }
+        guard accountKeychain.get(accessKey) != nil else { return nil }
+        let epoch = UUID().uuidString
+        guard accountKeychain.set(epoch, for: epochKey) else { return nil }
+        return epoch
+    }
+
+    func hasStoredProfileToken(for serverID: String) -> Bool {
+        guard !serverID.isEmpty else { return false }
+        if serverID == activeServerId {
+            ensureLoaded()
+            return cachedProfileToken != nil
+        }
+        return profileKeychain.get(Self.profileTokenKey(for: serverID)) != nil
+    }
+
+    /// Commits profile ID and verification proof in one actor turn after the
+    /// caller has closed HTTP dispatch. Persistent mutations fail closed while
+    /// a temporary remote-playback identity owns request authentication.
+    func activateProfile(
+        profileID: String,
+        profileToken: String?,
+        expectedAccount: RefreshAccountIdentity
+    ) -> Bool {
+        guard temporaryScope == nil,
+              refreshAccountIdentity() == expectedAccount,
+              !profileID.isEmpty else {
+            return false
+        }
+        ensureLoaded()
+        let persisted: Bool
+        if let profileToken {
+            persisted = profileKeychain.set(profileToken, for: profileTokenKey)
+        } else {
+            persisted = profileKeychain.delete(profileTokenKey)
+        }
+        guard persisted else { return false }
+        cachedProfileToken = profileToken
+        defaults.set(profileID, forKey: profileIdDefaultsKey)
+        mirrorActiveTokensForExtension()
+        return true
+    }
+
+    /// Clears the complete persistent profile identity atomically. The account
+    /// session remains installed so the profile picker can load household
+    /// profiles without forcing another sign-in.
+    func deactivateProfile(
+        expectedAccount: RefreshAccountIdentity?,
+        expectedProfileID: String? = nil
+    ) -> Bool {
+        guard temporaryScope == nil else { return false }
+        if let expectedAccount,
+           refreshAccountIdentity() != expectedAccount {
+            return false
+        }
+        if let expectedProfileID,
+           defaults.string(forKey: profileIdDefaultsKey) != expectedProfileID {
+            return false
+        }
+        ensureLoaded()
+        if !activeServerId.isEmpty,
+           !profileKeychain.delete(profileTokenKey) {
+            return false
+        }
+        defaults.removeObject(forKey: profileIdDefaultsKey)
+        cachedProfileToken = nil
+        mirrorActiveTokensForExtension()
+        return true
     }
 
     // MARK: - Server URL
@@ -736,6 +831,13 @@ actor TokenStore {
     private var accessTokenKey: String { Self.accessTokenKey(for: activeServerId) }
     private var refreshTokenKey: String { Self.refreshTokenKey(for: activeServerId) }
     private var profileTokenKey: String { Self.profileTokenKey(for: activeServerId) }
+    private var accountEpochKey: String { Self.accountEpochKey(for: activeServerId) }
+    private var accountKeychain: SharedKeychain {
+        keychain.withAudience(Self.accountCredentialAudience)
+    }
+    private var profileKeychain: SharedKeychain {
+        keychain.withAudience(Self.profileCredentialAudience)
+    }
 
     private func ensureLoaded() {
         guard loadedForServerId != activeServerId else { return }
@@ -744,9 +846,9 @@ actor TokenStore {
             cachedRefreshToken = nil
             cachedProfileToken = nil
         } else {
-            cachedAccessToken = keychain.get(accessTokenKey)
-            cachedRefreshToken = keychain.get(refreshTokenKey)
-            cachedProfileToken = keychain.get(profileTokenKey)
+            cachedAccessToken = accountKeychain.get(accessTokenKey)
+            cachedRefreshToken = accountKeychain.get(refreshTokenKey)
+            cachedProfileToken = profileKeychain.get(profileTokenKey)
         }
         loadedForServerId = activeServerId
     }
@@ -758,17 +860,17 @@ actor TokenStore {
     private func mirrorActiveTokensForExtension() {
         if cachedAccessToken != lastMirroredAccessToken {
             if let accessToken = cachedAccessToken {
-                keychain.set(accessToken, for: SharedStorage.mirroredAccessTokenAccount)
+                accountKeychain.set(accessToken, for: SharedStorage.mirroredAccessTokenAccount)
             } else {
-                keychain.delete(SharedStorage.mirroredAccessTokenAccount)
+                accountKeychain.delete(SharedStorage.mirroredAccessTokenAccount)
             }
             lastMirroredAccessToken = cachedAccessToken
         }
         if cachedProfileToken != lastMirroredProfileToken {
             if let profileToken = cachedProfileToken {
-                keychain.set(profileToken, for: SharedStorage.mirroredProfileTokenAccount)
+                profileKeychain.set(profileToken, for: SharedStorage.mirroredProfileTokenAccount)
             } else {
-                keychain.delete(SharedStorage.mirroredProfileTokenAccount)
+                profileKeychain.delete(SharedStorage.mirroredProfileTokenAccount)
             }
             lastMirroredProfileToken = cachedProfileToken
         }
@@ -777,18 +879,18 @@ actor TokenStore {
     private func mirrorActiveAccessValueForExtension() {
         if cachedAccessToken != lastMirroredAccessToken {
             if let value = cachedAccessToken {
-                keychain.set(value, for: SharedStorage.mirroredAccessTokenAccount)
+                accountKeychain.set(value, for: SharedStorage.mirroredAccessTokenAccount)
                 lastMirroredAccessToken = value
             } else {
-                keychain.delete(SharedStorage.mirroredAccessTokenAccount)
+                accountKeychain.delete(SharedStorage.mirroredAccessTokenAccount)
                 lastMirroredAccessToken = nil
             }
         }
     }
 
     private func clearMirroredTokensForExtension() {
-        keychain.delete(SharedStorage.mirroredAccessTokenAccount)
-        keychain.delete(SharedStorage.mirroredProfileTokenAccount)
+        accountKeychain.delete(SharedStorage.mirroredAccessTokenAccount)
+        profileKeychain.delete(SharedStorage.mirroredProfileTokenAccount)
         lastMirroredAccessToken = nil
         lastMirroredProfileToken = nil
     }

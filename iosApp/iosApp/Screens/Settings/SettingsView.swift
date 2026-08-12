@@ -10,6 +10,7 @@ import SwiftUI
 struct SettingsView: View {
     @State private var viewModel = SettingsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var launchPreferences = ProfileLaunchPreferences.shared
     @Environment(AppRouter.self) private var router
     @State private var showSignOutConfirm = false
     #if os(iOS)
@@ -54,7 +55,6 @@ struct SettingsView: View {
         List {
             accountSection
             preferencesSection
-            librarySection
             connectionSection
             aboutSection
             signOutSection
@@ -120,8 +120,7 @@ struct SettingsView: View {
     }
 
     private func switchProfile() {
-        AuthService.shared.profileId = nil
-        router.showProfileSelection()
+        router.switchProfile()
     }
 
     private var displayName: String {
@@ -160,6 +159,17 @@ struct SettingsView: View {
 
     private var preferencesSection: some View {
         Section {
+            NavigationLink {
+                GeneralSettingsView()
+            } label: {
+                SettingsRowLabel(
+                    title: "General",
+                    systemImage: "gearshape.fill",
+                    color: .purple,
+                    value: launchPreferences.behavior.title
+                )
+            }
+
             NavigationLink {
                 InterfaceCustomizationView()
             } label: {
@@ -210,36 +220,6 @@ struct SettingsView: View {
     private func subtitleLanguageName(_ tag: String) -> String {
         if tag == PlaybackPrefSentinel.none || tag.isEmpty { return "None" }
         return PlaybackLanguageOption.label(forCode: tag)
-    }
-
-    // MARK: - Library
-
-    private var librarySection: some View {
-        Section("Library") {
-            NavigationLink {
-                WatchlistView()
-            } label: {
-                SettingsRowLabel(title: "Watchlist", systemImage: "bookmark.fill", color: .orange)
-            }
-
-            NavigationLink {
-                FavoritesView()
-            } label: {
-                SettingsRowLabel(title: "Favorites", systemImage: "heart.fill", color: .red)
-            }
-
-            NavigationLink {
-                HistoryView()
-            } label: {
-                SettingsRowLabel(title: "Watch History", systemImage: "clock.fill", color: .gray)
-            }
-
-            NavigationLink {
-                CollectionsView()
-            } label: {
-                SettingsRowLabel(title: "Collections", systemImage: "square.stack.fill", color: .purple)
-            }
-        }
     }
 
     // MARK: - Connection

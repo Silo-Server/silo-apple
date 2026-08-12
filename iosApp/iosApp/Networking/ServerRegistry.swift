@@ -18,9 +18,6 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// Filled on first successful connect and refreshed on server activation.
     var fetchedName: String?
 
-    /// Remembered profile for this server. Set after `selectProfile`.
-    var profileId: String?
-
     /// When this server was last activated. Used only for sorting the
     /// list; not part of identity.
     var lastUsedAt: Date
@@ -29,6 +26,55 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     var displayName: String {
         if let name = fetchedName, !name.isEmpty { return name }
         return url
+    }
+
+    /// Read only while migrating the pre-profile-launch registry schema. New
+    /// registry writes deliberately omit profile identity because the server
+    /// list is shared across Apple TV users while profile choice is not.
+    fileprivate(set) var legacyProfileId: String?
+
+    init(
+        id: String,
+        url: String,
+        fetchedName: String?,
+        profileId: String? = nil,
+        lastUsedAt: Date
+    ) {
+        self.id = id
+        self.url = url
+        self.fetchedName = fetchedName
+        self.lastUsedAt = lastUsedAt
+        self.legacyProfileId = profileId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case url
+        case fetchedName
+        case profileId
+        case lastUsedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        url = try container.decode(String.self, forKey: .url)
+        fetchedName = try container.decodeIfPresent(String.self, forKey: .fetchedName)
+        lastUsedAt = try container.decode(Date.self, forKey: .lastUsedAt)
+        legacyProfileId = try container.decodeIfPresent(String.self, forKey: .profileId)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(url, forKey: .url)
+        try container.encodeIfPresent(fetchedName, forKey: .fetchedName)
+        // Retain pre-split profile identity only until its current-user
+        // launch mapping has been durably written and read back. New entries
+        // always leave this nil, so normal registry payloads contain no
+        // profile identity.
+        try container.encodeIfPresent(legacyProfileId, forKey: .profileId)
+        try container.encode(lastUsedAt, forKey: .lastUsedAt)
     }
 }
 
@@ -39,20 +85,33 @@ private struct RegistryState: Codable {
     var entries: [ServerEntry]
 }
 
+private struct SharedRegistryState: Codable {
+    var entries: [ServerEntry]
+}
+
+enum ServerRegistryError: LocalizedError {
+    case persistenceFailed
+
+    var errorDescription: String? {
+        "Silo couldn't save the server list. Please try again."
+    }
+}
+
 /// Owns the list of known Silo servers and which one is currently
 /// active. Singleton via `.shared`; observed by SwiftUI via `@Observable`.
 ///
 /// Per-server persistence splits across two stores:
 /// - **UserDefaults** (`continuumServerRegistry.v1`): the server list and
-///   active ID, JSON-encoded. Non-secret metadata.
+///   active ID on iOS/macOS. tvOS stores the shared list in the
+///   user-independent Keychain and the active ID in current-user defaults.
 /// - **Keychain** (`SharedKeychain` service `com.continuum.app`, account
 ///   `com.continuum.<id>.{accessToken,refreshToken,profileToken}`): per-
 ///   server tokens, activated by `TokenStore.switchActiveServer`.
 ///
-/// The registry is the single source of truth for URL + profileId + name.
+/// The registry is the single source of truth for URL + name.
 /// TokenStore is the single source of truth for tokens. They coordinate
 /// through `switchActiveServer` — the registry writes the active ID and
-/// the active URL/profileId to UserDefaults, then tells TokenStore to
+/// the active URL to UserDefaults, then tells TokenStore to
 /// retarget its Keychain slot.
 @Observable
 final class ServerRegistry {
@@ -60,6 +119,7 @@ final class ServerRegistry {
 
     private static let defaultsKey = "continuumServerRegistry.v1"
     private static let migratedKey = "continuumServerRegistry.migrated.v1"
+    private static let sharedTVRegistryAccount = "com.continuum.serverRegistry.v2"
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "ServerRegistry"
@@ -74,13 +134,22 @@ final class ServerRegistry {
 
     private let defaults: SharedDefaults
     private let keychain: SharedKeychain
+    private let launchPreferences: ProfileLaunchPreferences
+    private let persistenceOverride: (([ServerEntry], String?) -> Bool)?
 
-    init(defaults: SharedDefaults = .shared,
-         keychain: SharedKeychain = SharedKeychain()) {
+    init(
+        defaults: SharedDefaults = .shared,
+        keychain: SharedKeychain = SharedKeychain(),
+        launchPreferences: ProfileLaunchPreferences = .shared,
+        persistenceOverride: (([ServerEntry], String?) -> Bool)? = nil
+    ) {
         self.defaults = defaults
         self.keychain = keychain
+        self.launchPreferences = launchPreferences
+        self.persistenceOverride = persistenceOverride
         load()
         migrateLegacyIfNeeded()
+        migrateLegacyProfileMappingsIfNeeded()
     }
 
     // MARK: - Sync accessors (SwiftUI-safe)
@@ -91,7 +160,7 @@ final class ServerRegistry {
     }
 
     var activeServerUrl: String { activeServer?.url ?? "" }
-    var activeProfileId: String? { activeServer?.profileId }
+    var activeProfileId: String? { defaults.string(forKey: SharedStorage.profileIdKey) }
     var hasActiveServer: Bool { activeServer != nil }
 
     // MARK: - Lookups
@@ -111,17 +180,14 @@ final class ServerRegistry {
 
     // MARK: - Mutations
 
-    /// Insert or update an entry. Preserves an existing `profileId` when the
-    /// incoming entry leaves it nil, so callers that only know the URL and
-    /// fetched name do not clobber remembered session state.
+    /// Insert or update an entry. `preservingProfile` remains as an account-
+    /// replacement signal for existing callers; profile state itself lives in
+    /// `ProfileLaunchPreferences`, never in the shared registry payload.
     @discardableResult
-    func addOrUpdate(_ entry: ServerEntry, preservingProfile: Bool = true) -> ServerEntry {
-        registerDiagnosticsSensitiveHosts([entry])
+    func addOrUpdate(_ entry: ServerEntry, preservingProfile: Bool = true) -> ServerEntry? {
+        let previousEntries = entries
         var merged = entry
         if let existing = self.entries.first(where: { $0.id == entry.id }) {
-            if preservingProfile, merged.profileId == nil {
-                merged.profileId = existing.profileId
-            }
             if merged.fetchedName == nil || merged.fetchedName?.isEmpty == true {
                 merged.fetchedName = existing.fetchedName
             }
@@ -131,31 +197,35 @@ final class ServerRegistry {
         } else {
             self.entries.append(merged)
         }
-        persist()
+        guard persist() else {
+            entries = previousEntries
+            _ = persist()
+            return nil
+        }
+        registerDiagnosticsSensitiveHosts([entry])
+        if !preservingProfile {
+            launchPreferences.clearRememberedProfile(for: entry.id)
+        }
         return merged
     }
 
-    func setProfileId(_ profileId: String?, for serverId: String) {
-        guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return }
-        entries[idx].profileId = profileId
-        persist()
-    }
-
-    func updateFetchedName(for serverId: String, fetchedName: String?) {
-        guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return }
+    @discardableResult
+    func updateFetchedName(for serverId: String, fetchedName: String?) -> Bool {
+        guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return false }
+        let previousEntries = entries
         if let name = fetchedName, !name.isEmpty { entries[idx].fetchedName = name }
-        persist()
-    }
-
-    private func touchLastUsed(_ serverId: String) {
-        guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return }
-        entries[idx].lastUsedAt = Date()
-        persist()
+        guard persist() else {
+            entries = previousEntries
+            _ = persist()
+            return false
+        }
+        return true
     }
 
     // MARK: - Server switching
 
-    /// Activate a server. Updates the active ID, mirrors URL + profileId
+    /// Activate a server. Updates the active ID, mirrors the URL, clears the
+    /// previous request profile,
     /// into the legacy `UserDefaults` keys (read by sync callers like
     /// `ProfileAvatarView` and `AuthService`), and retargets `TokenStore`
     /// at the new server's Keychain slot.
@@ -163,47 +233,75 @@ final class ServerRegistry {
     /// Ordering matters: legacy mirrors are written *before* the observable
     /// `activeServerId` change so any view that reacts to the change reads
     /// consistent UserDefaults values.
-    func switchTo(serverId: String) async {
+    @discardableResult
+    func switchTo(
+        serverId: String,
+        resolveDestinationProfile: Bool = false
+    ) async -> Bool {
         guard entries.contains(where: { $0.id == serverId }) else {
             Self.logger.error("switchTo called with unknown server id")
-            return
+            return false
         }
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
-            return
+            return false
         }
         guard !Task.isCancelled else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
         await HTTPClient.shared.cancelInFlightRequests()
         guard !Task.isCancelled else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
-        guard await commitSwitchTo(serverId: serverId, abortIfCancelled: true) else {
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileWillChange()
+        #endif
+        let committed = await commitSwitchTo(serverId: serverId, abortIfCancelled: true)
+        guard committed else {
+            #if os(iOS) || os(tvOS)
+            DiagnosticsCoordinator.activeProfileDidChange()
+            #endif
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
+        if resolveDestinationProfile, AuthService.shared.isLoggedIn {
+            _ = await AuthService.shared.resolveActiveProfileForSession(
+                holding: transitionLease
+            )
+        }
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         await refreshFeaturesAfterServerSwitch()
+        return true
     }
 
     /// Commit while the caller already holds HTTPClient's transition lease.
     /// Pairing uses this to publish its new tokens, defaults, and observable
     /// active server with no ungated A/B routing interval.
+    @discardableResult
     func commitSwitchTo(
         serverId: String,
         holding transitionLease: HTTPIdentityTransitionLease
-    ) async {
+    ) async -> Bool {
         guard entries.contains(where: { $0.id == serverId }),
               await HTTPClient.shared.isIdentityTransitionActive(transitionLease) else {
             Self.logger.error("gated switchTo called without its identity transition")
-            return
+            return false
         }
         // Pairing has already written the new credential slot under this
         // lease. Finish the registry/default commit even if cancellation
         // arrives now; aborting would publish a split A/B routing state.
-        _ = await commitSwitchTo(serverId: serverId, abortIfCancelled: false)
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileWillChange()
+        #endif
+        let committed = await commitSwitchTo(serverId: serverId, abortIfCancelled: false)
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
+        return committed
     }
 
     func refreshFeaturesAfterGatedServerSwitch() async {
@@ -222,27 +320,29 @@ final class ServerRegistry {
         await AuthService.shared.clearCachesForServerChange()
         guard !abortIfCancelled || !Task.isCancelled else { return false }
 
+        let previousEntries = entries
+        let previousActiveServerID = activeServerId
+        let previousServerURL = defaults.string(forKey: SharedStorage.serverUrlKey)
+        let previousMirroredServerID = defaults.string(forKey: SharedStorage.activeServerIdKey)
+        let previousProfileID = defaults.string(forKey: SharedStorage.profileIdKey)
+
         defaults.set(entry.url, forKey: "serverUrl")
-        if let pid = entry.profileId {
-            defaults.set(pid, forKey: "profileId")
-        } else {
-            defaults.removeObject(forKey: "profileId")
-        }
-        #if os(iOS) || os(tvOS)
-        // Activating a server restores its saved profile via the mirror above,
-        // bypassing AuthService's profileId setter. Fail diagnostics closed
-        // synchronously, but do not start `/profiles` while URL routing and the
-        // active token slot still refer to different servers.
-        DiagnosticsCoordinator.activeProfileWillChange()
-        #endif
+        defaults.set(serverId, forKey: SharedStorage.activeServerIdKey)
+        defaults.removeObject(forKey: SharedStorage.profileIdKey)
         activeServerId = serverId
-        touchLastUsed(serverId)
+        if let index = entries.firstIndex(where: { $0.id == serverId }) {
+            entries[index].lastUsedAt = Date()
+        }
+        guard persist() else {
+            entries = previousEntries
+            activeServerId = previousActiveServerID
+            _ = persist()
+            defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
+            defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
+            defaults.set(previousProfileID, forKey: SharedStorage.profileIdKey)
+            return false
+        }
         await TokenStore.shared.switchActiveServer(serverId: serverId)
-        #if os(iOS) || os(tvOS)
-        // URL, active id, and credential slot now agree; it is safe to resolve
-        // the restored profile against the newly selected server.
-        DiagnosticsCoordinator.activeProfileDidChange()
-        #endif
         return true
     }
 
@@ -290,29 +390,30 @@ final class ServerRegistry {
         }
         #endif
         await TokenStore.shared.deleteTokens(for: serverId)
-        if let idx = entries.firstIndex(where: { $0.id == serverId }) {
-            entries[idx].profileId = nil
-            persist()
-        }
+        launchPreferences.clearRememberedProfile(for: serverId)
         if serverId == activeServerId {
-            defaults.removeObject(forKey: "profileId")
+            defaults.removeObject(forKey: SharedStorage.profileIdKey)
         }
     }
 
     /// Remove a server entirely (entry + tokens). If it was active, the
     /// next-most-recent server becomes active; if none remain, the active
     /// slot is cleared.
-    func remove(serverId: String) async {
+    @discardableResult
+    func remove(
+        serverId: String,
+        resolveFallbackProfile: Bool = false
+    ) async -> Bool {
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
-            return
+            return false
         }
         guard !Task.isCancelled else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
         guard entries.contains(where: { $0.id == serverId }) else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
         let removesActiveServer = activeServerId == serverId
         #if os(iOS) || os(tvOS)
@@ -325,8 +426,13 @@ final class ServerRegistry {
         await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
         #endif
         guard !Task.isCancelled else {
+            #if os(iOS) || os(tvOS)
+            if removesActiveServer {
+                DiagnosticsCoordinator.activeProfileDidChange()
+            }
+            #endif
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
         if removesActiveServer {
             // Stop old-server responses and clear every process-wide cache
@@ -334,37 +440,69 @@ final class ServerRegistry {
             await HTTPClient.shared.cancelInFlightRequests()
             await AuthService.shared.clearCachesForServerChange()
             guard !Task.isCancelled else {
+                #if os(iOS) || os(tvOS)
+                DiagnosticsCoordinator.activeProfileDidChange()
+                #endif
                 await HTTPClient.shared.endIdentityTransition(transitionLease)
-                return
+                return false
             }
         }
-        await TokenStore.shared.deleteTokens(for: serverId)
+
+        let previousEntries = entries
+        let previousActiveServerID = activeServerId
+        let previousServerURL = defaults.string(forKey: SharedStorage.serverUrlKey)
+        let previousMirroredServerID = defaults.string(forKey: SharedStorage.activeServerIdKey)
+        let previousProfileID = defaults.string(forKey: SharedStorage.profileIdKey)
+
         entries.removeAll(where: { $0.id == serverId })
         if removesActiveServer {
             let fallback = entries.sorted { $0.lastUsedAt > $1.lastUsedAt }.first
-            activeServerId = fallback?.id
             if let fallback {
                 defaults.set(fallback.url, forKey: "serverUrl")
-                if let pid = fallback.profileId {
-                    defaults.set(pid, forKey: "profileId")
-                } else {
-                    defaults.removeObject(forKey: "profileId")
-                }
-                await TokenStore.shared.switchActiveServer(serverId: fallback.id)
+                defaults.set(fallback.id, forKey: SharedStorage.activeServerIdKey)
+                defaults.removeObject(forKey: SharedStorage.profileIdKey)
             } else {
                 defaults.removeObject(forKey: "serverUrl")
-                defaults.removeObject(forKey: "profileId")
-                await TokenStore.shared.switchActiveServer(serverId: "")
+                defaults.removeObject(forKey: SharedStorage.activeServerIdKey)
+                defaults.removeObject(forKey: SharedStorage.profileIdKey)
             }
-            #if os(iOS) || os(tvOS)
-            // Removing the active server restores a different profile (the
-            // fallback's, or none) via the mirror above without AuthService's
-            // setter. Fail the diagnostics gate closed until the new active
-            // profile is confirmed, same as `switchTo`.
-            DiagnosticsCoordinator.activeProfileDidChange()
-            #endif
+            activeServerId = fallback?.id
         }
-        persist()
+        guard persist() else {
+            entries = previousEntries
+            activeServerId = previousActiveServerID
+            _ = persist()
+            defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
+            defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
+            defaults.set(previousProfileID, forKey: SharedStorage.profileIdKey)
+            #if os(iOS) || os(tvOS)
+            if removesActiveServer {
+                DiagnosticsCoordinator.activeProfileDidChange()
+            }
+            #endif
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return false
+        }
+
+        if removesActiveServer {
+            await TokenStore.shared.switchActiveServer(serverId: activeServerId ?? "")
+        }
+        await TokenStore.shared.deleteTokens(for: serverId)
+        launchPreferences.clearRememberedProfile(for: serverId)
+        if removesActiveServer,
+           resolveFallbackProfile,
+           AuthService.shared.isLoggedIn {
+            _ = await AuthService.shared.resolveActiveProfileForSession(
+                holding: transitionLease
+            )
+        }
+        #if os(iOS) || os(tvOS)
+        if removesActiveServer {
+            // Keep diagnostics closed until the fallback identity is fully
+            // restored or deliberately left at Who's Watching.
+            DiagnosticsCoordinator.activeProfileDidChange()
+        }
+        #endif
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         if removesActiveServer {
             await MainActor.run {
@@ -377,6 +515,7 @@ final class ServerRegistry {
                 Task { await RequestsFeatureStore.shared.refresh() }
             }
         }
+        return true
     }
 
     // MARK: - ID derivation
@@ -403,6 +542,25 @@ final class ServerRegistry {
     // MARK: - Persistence
 
     private func load() {
+        #if os(tvOS)
+        let sharedKeychain = keychain.withAudience(.userIndependent)
+        if let encoded = sharedKeychain.get(Self.sharedTVRegistryAccount),
+           let data = encoded.data(using: .utf8),
+           let state = try? JSONDecoder().decode(SharedRegistryState.self, from: data) {
+            entries = state.entries
+            activeServerId = defaults.string(forKey: SharedStorage.activeServerIdKey)
+        } else if let data = defaults.data(forKey: Self.defaultsKey),
+                  let legacy = try? JSONDecoder().decode(RegistryState.self, from: data) {
+            entries = legacy.entries
+            activeServerId = legacy.activeServerId
+            persist()
+        }
+        if activeServerId == nil || !entries.contains(where: { $0.id == activeServerId }) {
+            activeServerId = entries.sorted { $0.lastUsedAt > $1.lastUsedAt }.first?.id
+        }
+        registerDiagnosticsSensitiveHosts(entries)
+        mirrorActiveServer()
+        #else
         guard let data = defaults.data(forKey: Self.defaultsKey) else { return }
         do {
             let state = try JSONDecoder().decode(RegistryState.self, from: data)
@@ -421,11 +579,9 @@ final class ServerRegistry {
             persist()
             if let active = activeServer {
                 defaults.set(active.url, forKey: SharedStorage.serverUrlKey)
-                if let pid = active.profileId {
-                    defaults.set(pid, forKey: SharedStorage.profileIdKey)
-                }
             }
         }
+        #endif
     }
 
     /// Diagnostics log lines replace known server hostnames with hashed
@@ -441,13 +597,108 @@ final class ServerRegistry {
         #endif
     }
 
-    private func persist() {
+    @discardableResult
+    private func persist() -> Bool {
+        if let persistenceOverride, !persistenceOverride(entries, activeServerId) {
+            return false
+        }
+        #if os(tvOS)
+        do {
+            let data = try JSONEncoder().encode(SharedRegistryState(entries: entries))
+            guard let encoded = String(data: data, encoding: .utf8) else { return false }
+            let sharedKeychain = keychain.withAudience(.userIndependent)
+            guard sharedKeychain.set(encoded, for: Self.sharedTVRegistryAccount),
+                  sharedKeychain.get(Self.sharedTVRegistryAccount) == encoded else { return false }
+            defaults.removeObject(forKey: Self.defaultsKey)
+            if let activeServerId {
+                defaults.set(activeServerId, forKey: SharedStorage.activeServerIdKey)
+                guard defaults.string(forKey: SharedStorage.activeServerIdKey) == activeServerId else {
+                    return false
+                }
+            } else {
+                defaults.removeObject(forKey: SharedStorage.activeServerIdKey)
+                guard defaults.string(forKey: SharedStorage.activeServerIdKey) == nil else {
+                    return false
+                }
+            }
+            return true
+        } catch {
+            Self.logger.error("Registry encode failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+        #else
         let state = RegistryState(activeServerId: activeServerId, entries: entries)
         do {
             let data = try JSONEncoder().encode(state)
             defaults.set(data, forKey: Self.defaultsKey)
+            return defaults.data(forKey: Self.defaultsKey) == data
         } catch {
             Self.logger.error("Registry encode failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+        #endif
+    }
+
+    private func mirrorActiveServer() {
+        guard let active = activeServer else {
+            defaults.removeObject(forKey: SharedStorage.serverUrlKey)
+            defaults.removeObject(forKey: SharedStorage.activeServerIdKey)
+            return
+        }
+        defaults.set(active.url, forKey: SharedStorage.serverUrlKey)
+        defaults.set(active.id, forKey: SharedStorage.activeServerIdKey)
+    }
+
+    /// Move the old registry-owned profile ID into the current user's launch
+    /// store. The legacy field remains encoded until the destination mapping
+    /// and account epoch can be read back, making interruption retry-safe.
+    private func migrateLegacyProfileMappingsIfNeeded() {
+        let accountKeychain = keychain.withAudience(.userIndependent)
+        let profileKeychain = keychain.withAudience(.currentUser)
+        for index in entries.indices {
+            guard let profileID = entries[index].legacyProfileId,
+                  !profileID.isEmpty else { continue }
+            let serverID = entries[index].id
+            let accessKey = TokenStore.accessTokenKey(for: serverID)
+            let epochKey = TokenStore.accountEpochKey(for: serverID)
+
+            guard accountKeychain.get(accessKey) != nil else {
+                // A signed-out legacy entry has no account to which the old
+                // profile could safely be bound.
+                let legacyProfileID = entries[index].legacyProfileId
+                entries[index].legacyProfileId = nil
+                if !persist() {
+                    entries[index].legacyProfileId = legacyProfileID
+                }
+                continue
+            }
+
+            let accountEpoch: String
+            if let existing = accountKeychain.get(epochKey), !existing.isEmpty {
+                accountEpoch = existing
+            } else {
+                let generated = UUID().uuidString
+                guard accountKeychain.set(generated, for: epochKey),
+                      accountKeychain.get(epochKey) == generated else {
+                    continue
+                }
+                accountEpoch = generated
+            }
+
+            guard launchPreferences.migrateLegacyProfile(
+                profileID: profileID,
+                requiresPIN: profileKeychain.get(
+                    TokenStore.profileTokenKey(for: serverID)
+                ) != nil,
+                accountEpoch: accountEpoch,
+                for: serverID
+            ) else {
+                continue
+            }
+            entries[index].legacyProfileId = nil
+            if !persist() {
+                entries[index].legacyProfileId = profileID
+            }
         }
     }
 
@@ -463,26 +714,33 @@ final class ServerRegistry {
     /// act as the active-server mirror read by sync callers.
     private func migrateLegacyIfNeeded() {
         guard !defaults.bool(forKey: Self.migratedKey) else { return }
-        defer { defaults.set(true, forKey: Self.migratedKey) }
-        guard entries.isEmpty else { return }
+        guard entries.isEmpty else {
+            defaults.set(true, forKey: Self.migratedKey)
+            return
+        }
 
         guard let raw = defaults.string(forKey: "serverUrl")?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else { return }
+              !raw.isEmpty else {
+            defaults.set(true, forKey: Self.migratedKey)
+            return
+        }
 
         let normalized = Self.normalize(url: raw)
         let id = Self.serverId(for: normalized)
 
-        let legacyToNew: [(legacy: String, new: String)] = [
-            ("com.continuum.app.accessToken",  TokenStore.accessTokenKey(for: id)),
-            ("com.continuum.app.refreshToken", TokenStore.refreshTokenKey(for: id)),
-            ("com.continuum.app.profileToken", TokenStore.profileTokenKey(for: id)),
+        let legacyToNew: [(legacy: String, new: String, audience: KeychainAudience)] = [
+            ("com.continuum.app.accessToken", TokenStore.accessTokenKey(for: id), .userIndependent),
+            ("com.continuum.app.refreshToken", TokenStore.refreshTokenKey(for: id), .userIndependent),
+            ("com.continuum.app.profileToken", TokenStore.profileTokenKey(for: id), .currentUser),
         ]
-        for (legacy, new) in legacyToNew {
+        var copiedLegacyAccounts: [String] = []
+        for (legacy, new, audience) in legacyToNew {
             if let v = keychain.get(legacy) {
-                keychain.set(v, for: new)
+                let destination = keychain.withAudience(audience)
+                guard destination.set(v, for: new), destination.get(new) == v else { return }
+                copiedLegacyAccounts.append(legacy)
             }
-            keychain.delete(legacy)
         }
 
         let entry = ServerEntry(
@@ -502,7 +760,15 @@ final class ServerRegistry {
         if normalized != raw {
             defaults.set(normalized, forKey: "serverUrl")
         }
-        persist()
+        guard persist() else {
+            self.entries = []
+            self.activeServerId = nil
+            return
+        }
+        for legacy in copiedLegacyAccounts {
+            guard keychain.delete(legacy) else { return }
+        }
+        defaults.set(true, forKey: Self.migratedKey)
         Self.logger.info("Migrated legacy single-server state to registry id=\(id, privacy: .public)")
     }
 }

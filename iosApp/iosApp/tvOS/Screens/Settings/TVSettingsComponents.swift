@@ -16,6 +16,11 @@ enum TVSettingsOptions {
     /// selecting it is a no-op rather than a write.
     static let customQualityId = "__custom__"
 
+    static let profileLaunch: [TVSettingsOption] =
+        ProfileLaunchBehavior.allCases.map {
+            .init(id: $0.rawValue, label: $0.title)
+        }
+
     /// The shared cross-client quality presets, optionally led by a
     /// description of a stored pair no preset covers.
     ///

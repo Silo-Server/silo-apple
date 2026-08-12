@@ -130,8 +130,7 @@ struct CalendarView: View {
                     onOpenSettings: { router.navigate(to: .settings) },
                     onOpenRequests: { router.navigate(to: .requestsHub) },
                     onSwitchProfile: {
-                        AuthService.shared.profileId = nil
-                        router.showProfileSelection()
+                        router.switchProfile()
                     },
                     onSwitchServer: { router.navigate(to: .serverList) },
                     onSignOut: { router.signOutAndReset() }

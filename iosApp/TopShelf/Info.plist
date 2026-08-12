@@ -22,6 +22,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ContinuumKeychainAccessGroup</key>
 	<string>$(AppIdentifierPrefix)org.siloserver.silo.shared</string>
+	<key>ContinuumUsesUserIndependentKeychain</key>
+	<string>$(SILO_USER_INDEPENDENT_KEYCHAIN)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

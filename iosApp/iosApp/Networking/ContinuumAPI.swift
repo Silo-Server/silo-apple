@@ -256,13 +256,6 @@ actor ContinuumAPI {
             try await reportPlaybackProgress(sessionId: components[3], report: report)
             return
         }
-        if components.count == 5,
-           components[0] == "api", components[1] == "v1",
-           components[2] == "profiles", components[4] == "select" {
-            let request = try requireBody(body, as: SelectProfileBody.self)
-            try await selectProfile(profileId: components[3], pin: request.pin)
-            return
-        }
         if components.count == 4,
            components[0] == "api", components[1] == "v1",
            components[2] == "watched" {
@@ -887,7 +880,11 @@ actor ContinuumAPI {
         return response.profiles.map(\.asUserProfile)
     }
 
-    func selectProfile(profileId: String, pin: String?) async throws {
+    /// Verifies a protected profile without mutating process-wide identity.
+    /// `AuthService` uses this to finish the network round trip first, then
+    /// commit profile ID and proof together behind HTTPClient's transition
+    /// barrier.
+    func verifyProfileSelection(profileId: String, pin: String?) async throws -> String? {
         // Profiles without a PIN: just record the selection locally; there's
         // nothing to verify and the server's /verify-pin rejects empty PINs
         // with 400. Mirrors `ProfileSelectionViewModel.onProfileTapped` on
@@ -900,13 +897,9 @@ actor ContinuumAPI {
             guard response.valid else {
                 throw APIError.httpError(statusCode: 401)
             }
-            if let token = response.profileToken {
-                await tokenStore.setProfileToken(token)
-            }
-        } else {
-            await tokenStore.setProfileToken(nil)
+            return response.profileToken
         }
-        await tokenStore.setProfileId(profileId)
+        return nil
     }
 
     func createProfile(

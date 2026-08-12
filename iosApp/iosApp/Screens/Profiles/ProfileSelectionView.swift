@@ -8,6 +8,7 @@ struct ProfileSelectionView: View {
     var router: AppRouter
     var journeyLabels: [String] = ["Server", "Account", "Profile"]
     @State private var viewModel = ProfileSelectionViewModel()
+    @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var pinEntryContext: PINEntryContext?
     @State private var showCreateProfile: Bool = false
     @State private var showSignOutConfirm: Bool = false
@@ -40,8 +41,14 @@ struct ProfileSelectionView: View {
 
             pickerContent
                 #if os(tvOS)
-                .disabled(isPINEntryPresented || showSignOutConfirm)
+                .disabled(
+                    viewModel.isClearingTemporaryManagementContext
+                        || isPINEntryPresented
+                        || showSignOutConfirm
+                )
                 .accessibilityHidden(isPINEntryPresented || showSignOutConfirm)
+                #else
+                .disabled(viewModel.isClearingTemporaryManagementContext)
                 #endif
         }
         .task {
@@ -248,18 +255,32 @@ struct ProfileSelectionView: View {
     }
 
     private var tileRow: some View {
+        let rememberedProfileID = launchPreferences.rememberedProfile(
+            for: ServerRegistry.shared.activeServerId
+        )?.profileID
+        let preferredProfileID = rememberedProfileID ?? viewModel.profiles.first?.id
         let grid = LazyVGrid(
             columns: [GridItem(.adaptive(minimum: tileMinWidth, maximum: tileMaxWidth), spacing: tileSpacing)],
             spacing: rowSpacing
         ) {
             ForEach(viewModel.profiles) { profile in
-                ProfileTile(
+                #if os(tvOS)
+                TVProfileTile(
                     profile: profile,
-                    prefersDefaultFocus: profile.id == viewModel.profiles.first?.id,
+                    isLastUsed: profile.id == rememberedProfileID,
+                    prefersDefaultFocus: profile.id == preferredProfileID,
                     defaultFocusNamespace: profileFocusNamespace
                 ) {
                     handleProfileTap(profile)
                 }
+                #else
+                ProfileTile(
+                    profile: profile,
+                    isLastUsed: profile.id == rememberedProfileID
+                ) {
+                    handleProfileTap(profile)
+                }
+                #endif
             }
             AddProfileTile { handleAddProfileTap() }
         }

@@ -102,6 +102,13 @@ struct ContentView: View {
                 router.expiredSession()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .continuumProfileSelectionRequired)) { _ in
+            guard shouldPresentProfileSelectionAfterRecovery(
+                isLoggedIn: AuthService.shared.isLoggedIn,
+                activeProfileID: AuthService.shared.profileId
+            ) else { return }
+            router.showProfileSelection()
+        }
         #if os(iOS) || os(tvOS)
         .onReceive(NotificationCenter.default.publisher(for: .diagnosticsPendingReportCreated)) { _ in
             guard router.authState == .authenticated else { return }
@@ -490,10 +497,10 @@ struct ContentView: View {
             targetState = .needsServerSetup
         } else if !hasStoredAccessToken {
             targetState = .needsLogin
-        } else if !api.hasProfile {
-            targetState = .needsProfile
         } else {
-            targetState = .authenticated
+            targetState = await api.resolveActiveProfileForSession()
+                ? .authenticated
+                : .needsProfile
         }
 
         StartupContentPrefetcher.prefetchForInitialRoute(targetState)
@@ -525,11 +532,12 @@ struct ContentView: View {
     /// post-hoc. Run off the critical launch path.
     private static func logTopShelfDiagnostics() async {
         let suite = SharedStorage.suite
-        let keychain = SharedKeychain()
+        let accountKeychain = SharedKeychain(audience: .userIndependent)
+        let profileKeychain = SharedKeychain(audience: .currentUser)
         let hasServerURL = suite.string(forKey: SharedStorage.serverUrlKey) != nil
         let hasProfileID = suite.string(forKey: SharedStorage.profileIdKey) != nil
-        let hasAccess = keychain.get(SharedStorage.mirroredAccessTokenAccount) != nil
-        let hasProfile = keychain.get(SharedStorage.mirroredProfileTokenAccount) != nil
+        let hasAccess = accountKeychain.get(SharedStorage.mirroredAccessTokenAccount) != nil
+        let hasProfile = profileKeychain.get(SharedStorage.mirroredProfileTokenAccount) != nil
         let lastRun = suite.string(forKey: SharedStorage.topShelfLastRunAtKey) ?? "<never>"
         let hasLastStatus = suite.string(forKey: SharedStorage.topShelfLastStatusKey) != nil
         print("[TopShelfDiag] hasServerURL=\(hasServerURL) hasProfileID=\(hasProfileID) mirroredAccess=\(hasAccess) mirroredProfile=\(hasProfile)")
@@ -605,7 +613,10 @@ struct ContentView: View {
                 print("[DebugAutoLogin] no selectable profile")
                 return
             }
-            try await AuthService.shared.selectProfile(profileId: profile.id)
+            try await AuthService.shared.selectProfile(
+                profileId: profile.id,
+                requiresPIN: profile.hasPin
+            )
             StartupContentPrefetcher.prefetchAuthenticatedContent()
             await PlayerSettings.shared.refreshFromServer()
             router.resetToHome()
@@ -755,6 +766,13 @@ struct ContentView: View {
                 .continuumBackground()
         }
     }
+}
+
+func shouldPresentProfileSelectionAfterRecovery(
+    isLoggedIn: Bool,
+    activeProfileID: String?
+) -> Bool {
+    isLoggedIn && activeProfileID == nil
 }
 
 #if os(iOS)
@@ -1285,7 +1303,8 @@ private struct MainTabSidebarDestination: Identifiable {
 /// destination-specific root for them.
 func projectedMainTabDestinations(
     primaryMenu: PrimaryMenuPreference?,
-    availableLibraries: [Library] = []
+    availableLibraries: [Library] = [],
+    showAudiobooks: Bool = true
 ) -> [MainTabDestination] {
     guard let primaryMenu else {
         return AppTab.visibleCases.map(MainTabDestination.app)
@@ -1296,7 +1315,11 @@ func projectedMainTabDestinations(
         : primaryMenu.items
     var destinations: [MainTabDestination] = []
     for item in menuItems {
-        guard mainTabSupportsDestination(item, availableLibraries: availableLibraries) else {
+        guard mainTabSupportsDestination(
+            item,
+            availableLibraries: availableLibraries,
+            showAudiobooks: showAudiobooks
+        ) else {
             continue
         }
         let destination: MainTabDestination?
@@ -1353,7 +1376,8 @@ func projectedMainTabDestinations(
 /// currently open simply stay out of the rendered navigation and editor.
 func mainTabSupportsDestination(
     _ item: PrimaryMenuItem,
-    availableLibraries: [Library]
+    availableLibraries: [Library],
+    showAudiobooks: Bool = true
 ) -> Bool {
     switch item {
     case .builtin(.movies):
@@ -1365,7 +1389,7 @@ func mainTabSupportsDestination(
             libraryMatchesPrimaryMenuCategory($0, category: .series)
         }
     case .builtin(.audiobooks):
-        return availableLibraries.contains {
+        return showAudiobooks && availableLibraries.contains {
             libraryMatchesPrimaryMenuCategory($0, category: .audiobooks)
         }
     case .builtin(.music):
@@ -1373,7 +1397,9 @@ func mainTabSupportsDestination(
     case .builtin(.home), .builtin(.forYou), .builtin(.calendar):
         return true
     case .library(let libraryId, _):
-        return availableLibraries.contains { $0.id == libraryId }
+        return availableLibraries.contains {
+            $0.id == libraryId && (showAudiobooks || !$0.isAudiobookLibrary)
+        }
     case .section, .collection:
         return false
     }
@@ -1452,6 +1478,9 @@ struct MainTabView: View {
     @Bindable var router: AppRouter
     @State private var selectedDestinationID: MainTabDestinationID = .app(.home)
     @State private var uiCustomization = UICustomizationPreferences.shared
+    /// The local audiobook opt-in is a final visibility gate even when a
+    /// synced/custom menu contains an Audiobooks destination.
+    @State private var navPrefs = AppNavPreferences.shared
     @State private var serverRegistry = ServerRegistry.shared
     /// Tagged with the server/profile that authorized the library list. A
     /// profile transition fails direct roots closed immediately, even before
@@ -1532,6 +1561,12 @@ struct MainTabView: View {
                 visibleDestinations: visibleDestinations
             )
         }
+        .onChange(of: navPrefs.showAudiobooks) { _, _ in
+            selectedDestinationID = resolvedVisibleMainTabDestination(
+                selectedDestinationID,
+                visibleDestinations: visibleDestinations
+            )
+        }
         .onChange(of: librarySnapshot) { _, _ in
             selectedDestinationID = resolvedVisibleMainTabDestination(
                 selectedDestinationID,
@@ -1599,7 +1634,8 @@ struct MainTabView: View {
             primaryMenu: uiCustomization.primaryMenu,
             availableLibraries: librarySnapshot.availableLibraries(
                 for: currentLibraryAuthority
-            )
+            ),
+            showAudiobooks: navPrefs.showAudiobooks
         )
         #if !os(tvOS)
         if DownloadManager.shared.downloadsEnabled,
@@ -2121,8 +2157,7 @@ struct MainTabView: View {
         List {
             Section {
                 Button("Switch Profile") {
-                    AuthService.shared.profileId = nil
-                    router.showProfileSelection()
+                    router.switchProfile()
                 }
                 .foregroundColor(.continuumOnSurface)
             }

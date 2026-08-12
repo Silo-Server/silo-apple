@@ -8,6 +8,9 @@ class ProfileSelectionViewModel {
     var isRefreshing: Bool = false
     var error: ErrorState?
     private(set) var isUsingTemporaryManagementContext: Bool = false
+    private(set) var isClearingTemporaryManagementContext: Bool = false
+    private var temporaryManagementProfileID: String?
+    private var temporaryManagementCleanupTask: Task<Bool, Never>?
 
     private let auth = AuthService.shared
 
@@ -48,7 +51,13 @@ class ProfileSelectionViewModel {
     /// Select a profile that has no PIN and navigate to home.
     func selectProfile(_ profile: UserProfile, router: AppRouter) async {
         do {
-            try await auth.selectProfile(profileId: profile.id)
+            guard await clearTemporaryManagementContextIfNeeded() else {
+                throw ProfileManagementError.temporaryContextCleanupFailed
+            }
+            try await auth.selectProfile(
+                profileId: profile.id,
+                requiresPIN: profile.hasPin
+            )
             StartupContentPrefetcher.prefetchAuthenticatedContent()
             await PlayerSettings.shared.refreshFromServer()
             router.resetToHome()
@@ -59,7 +68,14 @@ class ProfileSelectionViewModel {
 
     /// Select a profile with a PIN.
     func selectProfileWithPIN(_ profile: UserProfile, pin: String, router: AppRouter) async throws {
-        try await auth.selectProfile(profileId: profile.id, pin: pin)
+        guard await clearTemporaryManagementContextIfNeeded() else {
+            throw ProfileManagementError.temporaryContextCleanupFailed
+        }
+        try await auth.selectProfile(
+            profileId: profile.id,
+            pin: pin,
+            requiresPIN: profile.hasPin
+        )
         StartupContentPrefetcher.prefetchAuthenticatedContent()
         await PlayerSettings.shared.refreshFromServer()
         router.resetToHome()
@@ -72,7 +88,12 @@ class ProfileSelectionViewModel {
         guard let primaryProfile else {
             throw ProfileManagementError.primaryProfileUnavailable
         }
-        try await auth.selectProfile(profileId: primaryProfile.id)
+        try await auth.selectProfile(
+            profileId: primaryProfile.id,
+            requiresPIN: primaryProfile.hasPin,
+            rememberSelection: false
+        )
+        temporaryManagementProfileID = primaryProfile.id
         isUsingTemporaryManagementContext = true
     }
 
@@ -80,25 +101,53 @@ class ProfileSelectionViewModel {
         guard let primaryProfile else {
             throw ProfileManagementError.primaryProfileUnavailable
         }
-        try await auth.selectProfile(profileId: primaryProfile.id, pin: pin)
+        try await auth.selectProfile(
+            profileId: primaryProfile.id,
+            pin: pin,
+            requiresPIN: primaryProfile.hasPin,
+            rememberSelection: false
+        )
+        temporaryManagementProfileID = primaryProfile.id
         isUsingTemporaryManagementContext = true
     }
 
-    func clearTemporaryManagementContextIfNeeded() async {
-        guard isUsingTemporaryManagementContext else { return }
-        auth.profileId = nil
-        await TokenStore.shared.setProfileToken(nil)
-        isUsingTemporaryManagementContext = false
+    @discardableResult
+    func clearTemporaryManagementContextIfNeeded() async -> Bool {
+        if let temporaryManagementCleanupTask {
+            return await temporaryManagementCleanupTask.value
+        }
+        guard isUsingTemporaryManagementContext,
+              let temporaryManagementProfileID else { return true }
+        let cleanupTask = Task { @MainActor in
+            await auth.deactivateProfile(
+                preserveRememberedProfile: true,
+                expectedProfileID: temporaryManagementProfileID
+            )
+        }
+        isClearingTemporaryManagementContext = true
+        temporaryManagementCleanupTask = cleanupTask
+        let deactivated = await cleanupTask.value
+        temporaryManagementCleanupTask = nil
+        isClearingTemporaryManagementContext = false
+        let temporaryContextIsGone = auth.profileId != temporaryManagementProfileID
+        if deactivated || temporaryContextIsGone {
+            isUsingTemporaryManagementContext = false
+            self.temporaryManagementProfileID = nil
+        }
+        return deactivated || temporaryContextIsGone
     }
 }
 
 private enum ProfileManagementError: LocalizedError {
     case primaryProfileUnavailable
+    case temporaryContextCleanupFailed
 
     var errorDescription: String? {
         switch self {
         case .primaryProfileUnavailable:
             return "Couldn't find the primary profile needed to manage household profiles."
+        case .temporaryContextCleanupFailed:
+            return "Silo couldn't finish creating the profile. Please try selecting it again."
         }
     }
 }

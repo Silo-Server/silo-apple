@@ -230,6 +230,7 @@ targets:
     sources:
       - path: NotificationService
       - path: iosApp/Notifications/ApplePushDisplayMetadata.swift
+      - path: iosApp/Shared/KeychainAudience.swift
       - path: iosApp/Shared/SharedStorage.swift
     configFiles:
       Debug: Signing/SiloNotificationService.xcconfig
