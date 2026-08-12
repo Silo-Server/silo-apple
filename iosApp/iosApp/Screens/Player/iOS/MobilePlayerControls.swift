@@ -512,7 +512,17 @@ struct MobilePlayerControls: View {
     }
 
     private func actionRowContent(style: ActionRowStyle) -> some View {
-        let noTracks = viewModel.audioTracks.isEmpty && viewModel.subtitleTracks.isEmpty
+        // The Audio & Subtitles pill is only inert when the menu would have
+        // nothing at all in it. A track-less file can still offer subtitle
+        // search (and the explanation when search isn't configured), so those
+        // entry points keep the menu open. This also closes a pre-existing
+        // reachability gap: before, a file with no audio and no subtitle
+        // tracks disabled the pill outright, making subtitle search — the one
+        // feature that could fix exactly that file — impossible to reach.
+        let noTracks = viewModel.audioTracks.isEmpty
+            && viewModel.subtitleTracks.isEmpty
+            && !viewModel.subtitleSearchVisible
+            && !aiSubtitlesAvailable
         return HStack(spacing: 8) {
             qualityMenu(compact: style != .full)
 
@@ -677,7 +687,11 @@ struct MobilePlayerControls: View {
                     secondarySubtitlesSubmenu
                 }
             }
-            if aiSubtitlesAvailable || viewModel.subtitleSearchAvailable {
+            // The search term is the VISIBLE predicate, not the enabled one:
+            // the disabled row and its explanation live inside this section,
+            // so gating the section on enablement would hide the very thing
+            // that tells the user why search isn't offered.
+            if aiSubtitlesAvailable || viewModel.subtitleSearchVisible {
                 Section {
                     if aiSubtitlesAvailable {
                         Button {
@@ -686,12 +700,26 @@ struct MobilePlayerControls: View {
                             Label("AI Subtitles…", systemImage: "sparkles")
                         }
                     }
-                    if viewModel.subtitleSearchAvailable {
+                    if viewModel.subtitleSearchVisible {
                         Button {
                             activeSheet = .subtitleSearch
                         } label: {
-                            Label("Search Subtitles…", systemImage: "magnifyingglass")
+                            // Closure form so the reason can ride along as a
+                            // second `Text` — UIKit renders it as the menu
+                            // item's subtitle, the same pattern `trackMenuRow`
+                            // uses for track attributes. `.disabled` greys the
+                            // item natively via
+                            // `UIMenuElement.Attributes.disabled`.
+                            Label {
+                                Text("Search Subtitles…")
+                                if let reason = viewModel.subtitleSearchUnavailableReason {
+                                    Text(reason)
+                                }
+                            } icon: {
+                                Image(systemName: "magnifyingglass")
+                            }
                         }
+                        .disabled(!viewModel.subtitleSearchEnabled)
                     }
                 }
             }

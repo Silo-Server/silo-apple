@@ -105,6 +105,31 @@ struct SubtitleAIStatus: Codable {
     }
 }
 
+/// `GET /api/v1/subtitles/providers/status`. Whether the server has any
+/// external subtitle providers (OpenSubtitles / SubDL / Subsource)
+/// configured, so the client can disable the in-player "Search Subtitles…"
+/// entry point instead of running a fan-out search that can only return
+/// nothing.
+///
+/// **The decoder defaults `enabled` to `true`, not `false`** — unlike every
+/// other status model in this file. Subtitle search shipped long before this
+/// endpoint did, so anything short of an affirmative "no providers" must
+/// leave the feature usable or every not-yet-updated server regresses. Same
+/// rule as ``SubtitleProvidersStore``, which owns the full rationale.
+///
+/// `providers` is informational (the configured provider ids); nothing gates
+/// on it today.
+struct SubtitleProvidersStatus: Codable {
+    let enabled: Bool
+    let providers: [String]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        providers = try c.decodeIfPresent([String].self, forKey: .providers) ?? []
+    }
+}
+
 /// `GET /api/v1/subtitles/ai/quota`. The per-user ASR allowance. When
 /// `limited` is false the remaining fields are typically absent and the
 /// feature is effectively unmetered.

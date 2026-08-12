@@ -175,6 +175,7 @@ struct ContentView: View {
                 // failure-tolerant, so double-calling with `selectProfile` is safe.
                 await AICapabilities.shared.refresh()
                 await RequestsFeatureStore.shared.refresh()
+                await SubtitleProvidersStore.shared.refresh()
                 await uiCustomization.refresh()
                 #if os(iOS)
                 await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
@@ -285,6 +286,7 @@ struct ContentView: View {
             // happy path costs nothing.
             Task { await AICapabilities.shared.refresh() }
             Task { await RequestsFeatureStore.shared.refresh() }
+            Task { await SubtitleProvidersStore.shared.refresh() }
             Task { await uiCustomization.refresh() }
             #if os(iOS)
             Task {

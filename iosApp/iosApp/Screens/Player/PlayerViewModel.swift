@@ -5833,15 +5833,47 @@ class PlayerViewModel {
 
     // MARK: - Subtitle provider search (synchronous, no job machinery)
 
-    /// Whether in-player subtitle search is available: an active playback
-    /// session (the synthesized stream URL is session-scoped), a known media
-    /// file, and a backend that can host downloaded sidecars. False for
-    /// offline/local playback. Gates the "Search Subtitles…" entry row.
+    /// **Visibility** predicate for the "Search Subtitles…" entry row: an
+    /// active playback session (the synthesized stream URL is session-scoped),
+    /// a known media file, and a backend that can host downloaded sidecars.
+    /// False for offline/local playback, where the row is meaningless and is
+    /// hidden outright.
+    ///
+    /// This is the client-side half of the gate — it says nothing about
+    /// whether the *server* can actually service a search. See
+    /// ``subtitleSearchEnabled``.
     @MainActor
-    var subtitleSearchAvailable: Bool {
+    var subtitleSearchVisible: Bool {
         activePlaybackSessionId != nil
             && currentSelectedVersion?.fileId != nil
             && backendCapabilities.supportsExternalPrimarySubtitles
+    }
+
+    /// **Enablement** predicate: visible *and* the server actually has
+    /// external subtitle providers configured.
+    ///
+    /// The split exists because a server with no providers answers the search
+    /// endpoint `200 {"results": null}` — so without this the user picks a
+    /// language, waits out the 20–30s provider fan-out, and gets "No subtitles
+    /// found", which reads as a broken feature rather than an unconfigured
+    /// one. The row instead renders disabled with
+    /// ``subtitleSearchUnavailableReason``.
+    ///
+    /// ``SubtitleProvidersStore/isAvailable`` fails **open**: older servers
+    /// that 404 the provider-status probe keep a fully enabled row.
+    @MainActor
+    var subtitleSearchEnabled: Bool {
+        subtitleSearchVisible && SubtitleProvidersStore.shared.isAvailable
+    }
+
+    /// Why the visible "Search Subtitles…" row is disabled, or `nil` when it
+    /// is enabled (or not shown at all). Rendered in the row's value slot on
+    /// tvOS and as the menu-item subtitle on iOS, so the disabled state is
+    /// self-explaining rather than a mystery grey row.
+    @MainActor
+    var subtitleSearchUnavailableReason: String? {
+        guard subtitleSearchVisible, !subtitleSearchEnabled else { return nil }
+        return "Not set up on this server"
     }
 
     /// Run a provider search for the current media file. Synchronous on the

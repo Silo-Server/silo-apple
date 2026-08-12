@@ -10,9 +10,15 @@
 //  and auto-selects with no session restart (the same sidecar handoff the AI
 //  flow uses; see `PlayerViewModel.downloadSearchedSubtitle`).
 //
-//  Presented from ``TrackSelectionSheet`` next to the "AI Subtitles…" entry
-//  and gated on ``PlayerViewModel/subtitleSearchAvailable`` (needs an active
-//  server session — hidden for offline/local playback).
+//  Presented next to the "AI Subtitles…" entry — from the Audio & Subtitles
+//  menu in ``MobilePlayerControls`` (iOS) and the Subtitles pane's options
+//  column in ``TVPlayerInfoHUD`` (tvOS).
+//  The entry row is shown per ``PlayerViewModel/subtitleSearchVisible`` (needs
+//  an active server session — hidden for offline/local playback) and is only
+//  actionable per ``PlayerViewModel/subtitleSearchEnabled``, which additionally
+//  requires the server to have external providers configured; otherwise the row
+//  renders disabled with ``PlayerViewModel/subtitleSearchUnavailableReason``
+//  rather than running a search that can only come back empty.
 //
 //  Two-platform split mirrors ``SubtitleTranslateMenu``: iOS renders a
 //  sectioned `List` in a sheet; tvOS renders a centered floating panel with a

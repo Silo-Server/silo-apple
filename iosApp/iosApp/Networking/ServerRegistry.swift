@@ -383,6 +383,7 @@ final class ServerRegistry {
         await MainActor.run {
             AICapabilities.shared.reset()
             RequestsFeatureStore.shared.reset()
+            SubtitleProvidersStore.shared.reset()
             RequestsEventBus.shared.reset()
             // Re-probe against the just-activated server: a switch between
             // signed-in servers can keep authState at .authenticated, so
@@ -390,6 +391,10 @@ final class ServerRegistry {
             // until the next foreground. Fire-and-forget — the probe
             // degrades to disabled on any failure.
             Task { await RequestsFeatureStore.shared.refresh() }
+            // Same reason, opposite default: the reset above restored
+            // "available", so this re-probe is what *dims* the search row on
+            // a destination server that has no providers configured.
+            Task { await SubtitleProvidersStore.shared.refresh() }
         }
     }
 
@@ -537,11 +542,13 @@ final class ServerRegistry {
             await MainActor.run {
                 AICapabilities.shared.reset()
                 RequestsFeatureStore.shared.reset()
+                SubtitleProvidersStore.shared.reset()
                 RequestsEventBus.shared.reset()
                 // Same rationale as `switchTo`: the fallback server may
                 // already be signed in, with no auth-state change to
                 // trigger the usual probe.
                 Task { await RequestsFeatureStore.shared.refresh() }
+                Task { await SubtitleProvidersStore.shared.refresh() }
             }
         }
         return true

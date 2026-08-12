@@ -214,6 +214,58 @@ final class AIModelDecodingTests: XCTestCase {
         XCTAssertTrue(empty.onView == .off)
     }
 
+    // MARK: - Subtitle provider status (fail-OPEN, unlike every other status)
+
+    /// The full server shape, feature on.
+    func testSubtitleProvidersStatusEnabled() {
+        let status = decode(SubtitleProvidersStatus.self, """
+        {
+          "schema_version": 1,
+          "enabled": true,
+          "providers": ["opensubtitles", "subdl"]
+        }
+        """)
+        XCTAssertTrue(status.enabled)
+        XCTAssertTrue(status.providers == ["opensubtitles", "subdl"])
+    }
+
+    /// Only an affirmative `false` may disable the entry point.
+    func testSubtitleProvidersStatusExplicitlyDisabled() {
+        let status = decode(SubtitleProvidersStatus.self, """
+        { "schema_version": 1, "enabled": false, "providers": [] }
+        """)
+        XCTAssertFalse(status.enabled)
+        XCTAssertTrue(status.providers.isEmpty)
+    }
+
+    /// **The load-bearing case.** Unlike `SubtitleAIStatus` / `MetadataAIStatus`
+    /// — where an omitted `enabled` means "off" — this model must default to
+    /// `true`. Subtitle provider search shipped long before its status
+    /// endpoint, so a server answering without the key (or an older one whose
+    /// 404 the store also reads as "assume enabled") still has working search.
+    /// Flipping this default to `false` would disable the feature on every
+    /// server that hasn't updated yet, which is precisely the regression this
+    /// probe exists to avoid.
+    func testSubtitleProvidersStatusOmittedDefaultsEnabled() {
+        let status = decode(SubtitleProvidersStatus.self, "{}")
+        XCTAssertTrue(status.enabled)
+        XCTAssertTrue(status.providers.isEmpty)
+    }
+
+    /// A partial body (providers listed, `enabled` absent) also fails open,
+    /// and an absent `providers` list is not an error.
+    func testSubtitleProvidersStatusPartialBodyFailsOpen() {
+        let providersOnly = decode(SubtitleProvidersStatus.self, """
+        { "providers": ["opensubtitles"] }
+        """)
+        XCTAssertTrue(providersOnly.enabled)
+
+        let enabledOnly = decode(SubtitleProvidersStatus.self, """
+        { "enabled": true }
+        """)
+        XCTAssertTrue(enabledOnly.providers.isEmpty)
+    }
+
     // MARK: - Downloaded subtitles (handoff source)
 
     /// Decodes the REAL server shape (`internal/subtitles.DownloadedSubtitle`):

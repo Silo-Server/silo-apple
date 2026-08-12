@@ -85,6 +85,18 @@ actor ContinuumAI {
 
     // MARK: - Subtitle provider search
 
+    /// Whether the server has any external subtitle providers configured.
+    ///
+    /// Available to any authenticated user, and answered `200` by every
+    /// server that implements it (there is a fallback registration so it
+    /// never 404s on an instance where the feature is unwired). Servers
+    /// that predate the endpoint DO 404 — and those have working search, so
+    /// the caller must treat a thrown error as "assume enabled". See
+    /// ``SubtitleProvidersStore`` for that fail-open contract.
+    func subtitleProvidersStatus() async throws -> SubtitleProvidersStatus {
+        try await http.get("/api/v1/subtitles/providers/status")
+    }
+
     /// Synchronous fan-out search across the server's configured external
     /// subtitle providers. Can legitimately take 20–30s (per-provider
     /// timeouts), so it opts out of the fail-fast timeout via `.extended`.

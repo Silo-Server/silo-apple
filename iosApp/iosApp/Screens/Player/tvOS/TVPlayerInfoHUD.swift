@@ -46,18 +46,26 @@ struct TVPlayerInfoHUD: View {
     /// Audio / Subtitles / Chapters disappear when the stream has none of
     /// those — Infuse hides rather than disables, which keeps the bar tidy.
     ///
-    /// Subtitles also appear when the stream has *no* tracks but the server's
-    /// AI can produce them (ASR transcription, or translating an existing text
-    /// track). Without this, a file with no subtitles would hide the Subtitles
-    /// tab entirely — and with it the only entry point to "AI Subtitles…",
-    /// which is exactly the case where transcription is most useful. Uses the
-    /// same `hasActionableSource` probe the pane gates its AI row on.
+    /// Subtitles also appear when the stream has *no* tracks but the server
+    /// can still produce them: AI (ASR transcription, or translating an
+    /// existing text track), or a provider search. Without this, a file with
+    /// no subtitles would hide the Subtitles tab entirely — and with it the
+    /// only entry point to "AI Subtitles…" / "Search Subtitles…", which is
+    /// exactly the case where they are most useful. Uses the same
+    /// `hasActionableSource` probe the pane gates its AI row on.
+    ///
+    /// The search term is deliberately the **enabled** predicate, not the
+    /// visible one: a row that can't be acted on must never be the sole
+    /// reason its tab exists, or a track-less file on a server with no
+    /// providers would open a Subtitles tab containing one greyed-out row.
+    /// When the tab is present for another reason, the disabled row still
+    /// renders inside it and explains itself.
     private var availableTabs: [Tab] {
         var tabs: [Tab] = [.info, .stats, .video]
         if !viewModel.audioTracks.isEmpty { tabs.append(.audio) }
         if !viewModel.subtitleTracks.isEmpty
             || SubtitleTranslateMenu.hasActionableSource(viewModel)
-            || viewModel.subtitleSearchAvailable {
+            || viewModel.subtitleSearchEnabled {
             tabs.append(.subtitles)
         }
         if !viewModel.chapters.isEmpty { tabs.append(.chapters) }
@@ -431,6 +439,10 @@ private struct HUDRowButtonBody: View {
 private struct HUDSettingRow: View {
     let label: String
     let value: String
+    /// Optional secondary line under the label. Used to explain a disabled
+    /// row ("Not set up on this server") — the trailing `value` slot is only
+    /// ~165pt wide at 22pt semibold, which truncates any real sentence.
+    var detail: String? = nil
     var colorHex: String? = nil
     var systemImage: String? = nil
     let action: () -> Void
@@ -440,6 +452,7 @@ private struct HUDSettingRow: View {
             HUDSettingRowLabel(
                 label: label,
                 value: value,
+                detail: detail,
                 colorHex: colorHex,
                 systemImage: systemImage,
                 showsChevron: true
@@ -476,6 +489,7 @@ private struct HUDToggleRow: View {
 private struct HUDSettingRowLabel: View {
     let label: String
     let value: String
+    var detail: String? = nil
     var colorHex: String? = nil
     var systemImage: String? = nil
     let showsChevron: Bool
@@ -488,9 +502,20 @@ private struct HUDSettingRowLabel: View {
                 Image(systemName: systemImage)
                     .font(.system(size: 20, weight: .semibold))
             }
-            Text(label)
-                .font(.system(size: 22, weight: .medium))
-                .lineLimit(1)
+            // Second line mirrors `HUDTrackRowLabel`'s attributes line: 17pt,
+            // dimmed, focus-inverted. Only rendered when a `detail` is given,
+            // so ordinary rows keep their exact single-line metrics.
+            VStack(alignment: .leading, spacing: 3) {
+                Text(label)
+                    .font(.system(size: 22, weight: .medium))
+                    .lineLimit(1)
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 17))
+                        .foregroundStyle(isFocused ? .black.opacity(0.62) : .white.opacity(0.55))
+                        .lineLimit(1)
+                }
+            }
             Spacer(minLength: 18)
             HStack(spacing: 10) {
                 if let colorHex {
@@ -1630,6 +1655,10 @@ private struct SubtitlesPane: View {
         focusedOption = .translate
     }
 
+    /// Restoring focus to `.search` stays correct now that the row has a
+    /// disabled variant with no `.focused(...)` binding: the only way to open
+    /// this menu is the *enabled* row's action, so whenever this runs the
+    /// focusable row is the one on screen.
     private func closeSubtitleSearchMenu() {
         showSubtitleSearchMenu = false
         focusedOption = .search
@@ -1759,16 +1788,41 @@ private struct SubtitlesPane: View {
                 .focused($focusedOption, equals: .translate)
                 .id(Option.translate)
             }
-            if viewModel.subtitleSearchAvailable {
-                HUDSettingRow(
-                    label: "Search Subtitles…",
-                    value: "",
-                    systemImage: "magnifyingglass"
-                ) {
-                    showSubtitleSearchMenu = true
+            if viewModel.subtitleSearchVisible {
+                // Two mutually-exclusive variants rather than one row with
+                // modifiers applied conditionally: a non-focusable row must
+                // not carry a `.focused(...)` binding (same idiom as
+                // `TVGeneralSettingsView.presetRow`), or the focus engine
+                // holds a binding for a target it can never reach.
+                //
+                // The disabled variant also needs the explicit `.opacity`:
+                // `HUDSettingRowLabel` derives every color from
+                // `@Environment(\.isFocused)`, so `.disabled(true)` alone
+                // would render pixel-identical to an enabled unfocused row.
+                // Same treatment `HUDTrackRow` uses for its disabled rows.
+                if let reason = viewModel.subtitleSearchUnavailableReason {
+                    HUDSettingRow(
+                        label: "Search Subtitles…",
+                        value: "",
+                        detail: reason,
+                        systemImage: "magnifyingglass",
+                        action: {}
+                    )
+                    .disabled(true)
+                    .opacity(0.35)
+                    .accessibilityHint(reason)
+                    .id(Option.search)
+                } else {
+                    HUDSettingRow(
+                        label: "Search Subtitles…",
+                        value: "",
+                        systemImage: "magnifyingglass"
+                    ) {
+                        showSubtitleSearchMenu = true
+                    }
+                    .focused($focusedOption, equals: .search)
+                    .id(Option.search)
                 }
-                .focused($focusedOption, equals: .search)
-                .id(Option.search)
             }
             if viewModel.backendCapabilities.supportsSubtitleDelay {
                 HUDSettingRow(label: "Delay", value: delayText) {
