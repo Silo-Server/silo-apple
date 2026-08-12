@@ -425,29 +425,55 @@ final class PendingReportStore {
         listReports(now: now).first(where: { $0.id == id })
     }
 
-    func purge(binding: DiagnosticsBinding) {
+    @discardableResult
+    func purge(binding: DiagnosticsBinding) -> Bool {
         lock.lock()
         defer { lock.unlock() }
 
-        for report in scanReportsLocked() where report.binding.binding == binding {
-            try? fileManager.removeItem(at: report.directoryURL)
+        let reports = binding.destinationChoice == .selfHosted
+            ? scanSelfHostedReportsLocked()
+            : scanReportsLocked()
+        var removedAll = true
+        for report in reports where report.binding.binding == binding {
+            do {
+                try fileManager.removeItem(at: report.directoryURL)
+            } catch {
+                removedAll = false
+            }
         }
+        return removedAll
     }
 
     func purge(serverInstanceID: String) {
         lock.lock()
         defer { lock.unlock() }
 
-        for report in scanReportsLocked() where report.binding.serverInstanceID == serverInstanceID {
+        let bindingDestination = DiagnosticsBinding(
+            serverInstanceID: serverInstanceID,
+            accountUserID: ""
+        ).destinationChoice
+        let reports = bindingDestination == .selfHosted
+            ? scanSelfHostedReportsLocked()
+            : scanReportsLocked()
+        for report in reports where report.binding.serverInstanceID == serverInstanceID {
             try? fileManager.removeItem(at: report.directoryURL)
         }
     }
 
-    func delete(_ report: PendingReport) {
+    @discardableResult
+    func delete(_ report: PendingReport) -> Bool {
         lock.lock()
         defer { lock.unlock() }
 
-        try? fileManager.removeItem(at: report.directoryURL)
+        guard fileManager.fileExists(atPath: report.directoryURL.path) else {
+            return true
+        }
+        do {
+            try fileManager.removeItem(at: report.directoryURL)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Publishes an evidence-free UUID/binding receipt before removing a READY
@@ -494,6 +520,9 @@ final class PendingReportStore {
         forceRemoteIntent: Bool = false,
         now: Date = Date()
     ) throws {
+        guard report.binding.binding.destinationChoice == .hosted else {
+            throw DiagnosticsStoreError.invalidHostedEnvelope
+        }
         lock.lock()
         defer { lock.unlock() }
 
@@ -522,6 +551,9 @@ final class PendingReportStore {
         additionalRemoteReportIDs: Set<UUID> = [],
         now: Date = Date()
     ) throws {
+        guard binding.destinationChoice == .hosted else {
+            throw DiagnosticsStoreError.invalidHostedEnvelope
+        }
         lock.lock()
         defer { lock.unlock() }
 
@@ -989,6 +1021,22 @@ final class PendingReportStore {
                 return nil
             }
             return report
+        }
+    }
+
+    /// Enumerates only the compatibility path's local reports without
+    /// consulting collector erasure state. A corrupt hosted ledger must fail
+    /// hosted operations closed, but it has no authority over evidence stored
+    /// for a user's own Silo server.
+    private func scanSelfHostedReportsLocked() -> [PendingReport] {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: pendingDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) else {
+            return []
+        }
+        return urls.compactMap(loadReport(from:)).filter {
+            $0.binding.binding.destinationChoice == .selfHosted
         }
     }
 

@@ -5,6 +5,7 @@ import zlib
 final class HostedDiagnosticsAPITests: XCTestCase {
     override func tearDown() {
         HostedDiagnosticsStubProtocol.reset()
+        SelfHostedDiagnosticsStubProtocol.reset()
         super.tearDown()
     }
 
@@ -1650,6 +1651,66 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         }
     }
 
+    func testCorruptHostedLedgerDoesNotGovernSelfHostedLifecycle() async throws {
+        try await withTemporaryActiveSelfHostedServer { serverRegistryID in
+            for kind in HostedErasureLedgerKind.allCases {
+                let fixture = try makePendingSelfHostedReports(
+                    label: "self-hosted-\(kind.fileName)",
+                    count: 3
+                )
+                let ledgerURL = hostedErasureLedgerURL(for: fixture.reports[0], kind: kind)
+                let corruptBytes = Data(#"{"truncated": "hosted ledger""#.utf8)
+                try corruptBytes.write(to: ledgerURL, options: .atomic)
+                let restoredStore = PendingReportStore(rootDirectory: fixture.root)
+                let coordinator = try await makeSelfHostedCoordinator(
+                    pendingStore: restoredStore,
+                    serverRegistryID: serverRegistryID
+                )
+
+                let listed = await coordinator.pendingReports(for: fixture.binding)
+                XCTAssertEqual(listed.map(\.id), fixture.reports.map(\.id))
+
+                SelfHostedDiagnosticsStubProtocol.configure(
+                    serverInstanceID: fixture.binding.serverInstanceID,
+                    reportID: fixture.reports[0].id
+                )
+                let uploadDecision = await coordinator.upload(report: fixture.reports[0])
+                XCTAssertEqual(
+                    uploadDecision,
+                    .uploaded(DiagnosticsUploadResponse(
+                        reportId: fixture.reports[0].id.uuidString.lowercased(),
+                        shortId: "SILO-SELFHOSTED",
+                        state: .ready
+                    ))
+                )
+                XCTAssertFalse(FileManager.default.fileExists(
+                    atPath: fixture.reports[0].directoryURL.path
+                ))
+                XCTAssertEqual(SelfHostedDiagnosticsStubProtocol.requestedPaths(), [
+                    "/api/v1/diagnostics/status",
+                    "/api/v1/auth/me",
+                    "/api/v1/diagnostics/reports",
+                ])
+
+                let deleted = await coordinator.delete(report: fixture.reports[1])
+                XCTAssertTrue(deleted)
+                XCTAssertFalse(FileManager.default.fileExists(
+                    atPath: fixture.reports[1].directoryURL.path
+                ))
+
+                let turnedOff = await coordinator.turnOffAndDelete(binding: fixture.binding)
+                XCTAssertTrue(turnedOff)
+                XCTAssertFalse(FileManager.default.fileExists(
+                    atPath: fixture.reports[2].directoryURL.path
+                ))
+                let remaining = await coordinator.pendingReports(for: fixture.binding)
+                XCTAssertTrue(remaining.isEmpty)
+                XCTAssertEqual(try Data(contentsOf: ledgerURL), corruptBytes)
+                XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+            }
+        }
+    }
+
     func testHostedRemoteLifecycleKeepsEvidenceUntilReportIsReady() async throws {
         for state in [DiagnosticsRemoteReportState.processing, .rejected, .ready] {
             let fixture = try makePendingHostedReport(label: "remote-\(state.rawValue)")
@@ -2163,6 +2224,143 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             ]
         ))
         return (store, report)
+    }
+
+    private func makePendingSelfHostedReports(
+        label: String,
+        count: Int
+    ) throws -> (
+        root: URL,
+        store: PendingReportStore,
+        binding: DiagnosticsBinding,
+        reports: [PendingReport]
+    ) {
+        let binding = DiagnosticsBinding(
+            serverInstanceID: "self-hosted-diagnostics-instance",
+            accountUserID: "42"
+        )
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SelfHostedLedgerIsolation-\(label)-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let store = PendingReportStore(rootDirectory: root)
+        let reports = try (0..<count).map { index in
+            let capturedAt = Date().addingTimeInterval(TimeInterval(index))
+            let context = DiagnosticsCaptureContext(
+                binding: binding,
+                profileID: nil,
+                consentMode: .manual,
+                noticeVersion: 1,
+                appVersion: "1.0",
+                appBuild: "7",
+                platform: .ios,
+                osVersion: "26.0",
+                destinationServerInstanceID: binding.serverInstanceID
+            )
+            return try store.save(PendingReportCapture(
+                binding: binding,
+                profileID: nil,
+                type: .manual,
+                fingerprint: "\(label)-\(index)",
+                capturedAt: capturedAt,
+                manifest: context.makeManifestDraft(
+                    type: .manual,
+                    capturedAt: capturedAt,
+                    crash: nil,
+                    deviceSummary: DiagnosticsManifest.DeviceSummary(
+                        manufacturer: "Apple",
+                        model: "iPhone",
+                        os: "26.0",
+                        formFactor: "phone"
+                    ),
+                    playbackSessionIDs: [],
+                    consentMode: .manual
+                ),
+                deviceSnapshot: makeDeviceSnapshot(capturedAt: capturedAt),
+                artifacts: [
+                    PendingReportArtifact(relativePath: "logs.jsonl", data: Data()),
+                ]
+            ))
+        }
+        return (root, store, binding, reports)
+    }
+
+    private func makeSelfHostedCoordinator(
+        pendingStore: PendingReportStore,
+        serverRegistryID: String
+    ) async throws -> DiagnosticsCoordinator {
+        let suiteName = "HostedDiagnosticsAPITests.selfHosted.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+        }
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        let tokenStore = TokenStore(
+            keychain: SharedKeychain(service: suiteName, accessGroup: nil),
+            defaults: defaults
+        )
+        await tokenStore.switchActiveServer(serverId: serverRegistryID)
+        await tokenStore.setServerUrl("https://selfhost.test")
+        await tokenStore.saveTokens(
+            accessToken: "self-hosted-access-token",
+            refreshToken: "self-hosted-refresh-token"
+        )
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SelfHostedDiagnosticsStubProtocol.self]
+        let http = HTTPClient(
+            session: URLSession(configuration: configuration),
+            tokenStore: tokenStore
+        )
+        let destinationStore = DiagnosticsDestinationStore(defaults: defaults)
+        destinationStore.select(.selfHosted)
+        return DiagnosticsCoordinator(
+            api: DiagnosticsAPI(http: http),
+            hostedAPI: try makeHostedUploadAPI(),
+            continuumAPI: ContinuumAPI(http: http, tokenStore: tokenStore),
+            consentStore: DiagnosticsConsentStore(defaults: defaults),
+            destinationStore: destinationStore,
+            pendingStore: pendingStore
+        )
+    }
+
+    private func withTemporaryActiveSelfHostedServer<T>(
+        _ operation: (String) async throws -> T
+    ) async throws -> T {
+        let registry = ServerRegistry.shared
+        let previousActiveServerID = registry.activeServerId
+        let serverURL = "https://selfhost.test/\(UUID().uuidString.lowercased())"
+        let serverRegistryID = ServerRegistry.serverId(for: serverURL)
+        registry.addOrUpdate(ServerEntry(
+            id: serverRegistryID,
+            url: serverURL,
+            fetchedName: "Self-hosted diagnostics test",
+            profileId: nil,
+            lastUsedAt: Date()
+        ))
+        await registry.switchTo(serverId: serverRegistryID)
+        await TokenStore.shared.saveTokens(
+            accessToken: "global-self-hosted-access-token",
+            refreshToken: "global-self-hosted-refresh-token"
+        )
+        await TokenStore.shared.setProfileId(nil)
+
+        func cleanUp() async {
+            if let previousActiveServerID,
+               registry.entry(with: previousActiveServerID) != nil {
+                await registry.switchTo(serverId: previousActiveServerID)
+            }
+            await registry.remove(serverId: serverRegistryID)
+        }
+
+        do {
+            let result = try await operation(serverRegistryID)
+            await cleanUp()
+            return result
+        } catch {
+            await cleanUp()
+            throw error
+        }
     }
 
     private func makeHostedUploadAPI() throws -> HostedDiagnosticsAPI {
@@ -2712,6 +2910,89 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
         if !body.isEmpty {
             client?.urlProtocol(self, didLoad: Data(body.utf8))
         }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
+
+private final class SelfHostedDiagnosticsStubProtocol: URLProtocol {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var serverInstanceID = "self-hosted-diagnostics-instance"
+    nonisolated(unsafe) private static var reportID = UUID()
+    nonisolated(unsafe) private static var paths: [String] = []
+
+    static func configure(serverInstanceID: String, reportID: UUID) {
+        lock.withLock {
+            self.serverInstanceID = serverInstanceID
+            self.reportID = reportID
+            paths = []
+        }
+    }
+
+    static func requestedPaths() -> [String] {
+        lock.withLock { paths }
+    }
+
+    static func reset() {
+        lock.withLock {
+            serverInstanceID = "self-hosted-diagnostics-instance"
+            reportID = UUID()
+            paths = []
+        }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "selfhost.test"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let response = Self.lock.withLock { () -> (Int, String) in
+            Self.paths.append(url.path)
+            switch (request.httpMethod, url.path) {
+            case ("GET", "/api/v1/diagnostics/status"):
+                return (
+                    200,
+                    #"{"status":"available","server_instance_id":"\#(Self.serverInstanceID)","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1}"#
+                )
+            case ("GET", "/api/v1/auth/me"):
+                return (
+                    200,
+                    #"{"id":42,"username":"diagnostics-test","email":"diagnostics@example.invalid","role":"user","download_allowed":true,"impersonation":null}"#
+                )
+            case ("POST", "/api/v1/diagnostics/reports"):
+                return (
+                    201,
+                    #"{"report_id":"\#(Self.reportID.uuidString.lowercased())","short_id":"SILO-SELFHOSTED","state":"ready"}"#
+                )
+            default:
+                return (404, #"{"error":"not_found"}"#)
+            }
+        }
+        respond(statusCode: response.0, body: response.1)
+    }
+
+    override func stopLoading() {}
+
+    private func respond(statusCode: Int, body: String) {
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                url: url,
+                statusCode: statusCode,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+              ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
 }

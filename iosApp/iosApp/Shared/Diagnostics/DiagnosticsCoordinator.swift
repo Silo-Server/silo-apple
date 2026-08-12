@@ -490,6 +490,9 @@ actor DiagnosticsCoordinator {
 
     @discardableResult
     func delete(report: PendingReport) async -> Bool {
+        if report.binding.binding.destinationChoice == .selfHosted {
+            return pendingStore.delete(report)
+        }
         do {
             // Explicit deletion of a hosted report always stages its UUID,
             // including an unsent report and a report whose READY response just
@@ -497,7 +500,7 @@ actor DiagnosticsCoordinator {
             // preemptive tombstone for a not-yet-created UUID.
             try pendingStore.stageHostedDeletionAndDelete(
                 report,
-                forceRemoteIntent: report.binding.binding.destinationChoice == .hosted
+                forceRemoteIntent: true
             )
         } catch {
             return false
@@ -508,24 +511,30 @@ actor DiagnosticsCoordinator {
     /// Implements the user-facing Turn Off and Delete boundary. Potentially
     /// remote hosted reports become durable UUID-only deletion intents before
     /// their local logs are removed; retries need no Silo account/server data.
+    /// Self-hosted reports have no collector state, so they are purged directly
+    /// and remain independent of hosted erasure-ledger health.
     @discardableResult
     func turnOffAndDelete(binding: DiagnosticsBinding) async -> Bool {
-        let staged: Bool
-        do {
-            let additionalReportIDs = Set(
-                hostedUploadsInFlight.compactMap { reportID, candidateBinding in
-                    candidateBinding == binding ? reportID : nil
-                } + hostedNetworkCandidates.compactMap { reportID, candidateBinding in
-                    candidateBinding == binding ? reportID : nil
-                }
-            )
-            try pendingStore.stageHostedDeletionsAndPurge(
-                binding: binding,
-                additionalRemoteReportIDs: additionalReportIDs
-            )
-            staged = true
-        } catch {
-            staged = false
+        let erased: Bool
+        if binding.destinationChoice == .selfHosted {
+            erased = pendingStore.purge(binding: binding)
+        } else {
+            do {
+                let additionalReportIDs = Set(
+                    hostedUploadsInFlight.compactMap { reportID, candidateBinding in
+                        candidateBinding == binding ? reportID : nil
+                    } + hostedNetworkCandidates.compactMap { reportID, candidateBinding in
+                        candidateBinding == binding ? reportID : nil
+                    }
+                )
+                try pendingStore.stageHostedDeletionsAndPurge(
+                    binding: binding,
+                    additionalRemoteReportIDs: additionalReportIDs
+                )
+                erased = true
+            } catch {
+                erased = false
+            }
         }
         RecentSessionTracker.shared.purge(binding: binding)
         Self.purgeBreadcrumbJournal()
@@ -533,7 +542,8 @@ actor DiagnosticsCoordinator {
         #if os(tvOS)
         ExitSentinel.shared.purge()
         #endif
-        guard staged else { return false }
+        guard erased else { return false }
+        guard binding.destinationChoice == .hosted else { return true }
         return await drainHostedDeletionIntents()
     }
 
