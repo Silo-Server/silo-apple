@@ -69,9 +69,27 @@ final class SubtitleSession {
     private let renderer: SubtitleRenderer
     private let fetcher: SidecarSubtitleFetcher
 
+    private struct InstalledConvertedSidecar {
+        let urlIndex: Int
+        let format: SubtitleFormat
+        /// Whether the installed document actually carries `ArabicFallback`
+        /// Dialogue lines (drives the renderer's `FONT_NAME` suppression).
+        let usedArabicFallbackStyle: Bool
+        /// Whether the track has Arabic cues at all. Only these need
+        /// regenerating on a font-family change: a Latin-only track tracks
+        /// the new family through the live `FONT_NAME` override, while an
+        /// Arabic track may need a fallback style the old family didn't.
+        let containsArabicCues: Bool
+        /// Value of `installedSidecarGeneration` when this entry was
+        /// written. A reinstall that reconverted outside the lock must
+        /// re-check it before installing (see `installSidecarContent`).
+        let generation: UInt64
+    }
+
     /// Guards the lock-free mutable session state (`sidecarDescriptors`,
-    /// `sidecarCache`, `fetchTasks`, `liveSlots`, `stylingParams`). Mirrors
-    /// the `handleLock` idiom in `SubtitleRenderer`.
+    /// `sidecarCache`, `fetchTasks`, `installedConvertedSidecars`,
+    /// `liveSlots`, `stylingParams`). Mirrors the `handleLock` idiom in
+    /// `SubtitleRenderer`.
     ///
     /// The two playback backends call into this session from different
     /// queues — the CoreMedia route from `PlayerCore.controlQueue`, the
@@ -90,6 +108,22 @@ final class SubtitleSession {
         lock.lock()
         defer { lock.unlock() }
         return body()
+    }
+
+    /// Bump the slot's generation and return the new value. Call for every
+    /// change to what occupies the slot, clears included, so an in-flight
+    /// reinstall can detect that its target is gone. Caller holds `lock`.
+    @discardableResult
+    private func bumpInstalledGenerationLocked(_ slot: SubtitleSlot) -> UInt64 {
+        let next = (installedSidecarGeneration[slot] ?? 0) &+ 1
+        installedSidecarGeneration[slot] = next
+        return next
+    }
+
+    /// Forget the converted sidecar occupying the slot. Caller holds `lock`.
+    private func clearInstalledSidecarLocked(_ slot: SubtitleSlot) {
+        installedConvertedSidecars.removeValue(forKey: slot)
+        bumpInstalledGenerationLocked(slot)
     }
 
     /// Sidecar descriptors keyed by their server-assigned URL index.
@@ -113,6 +147,16 @@ final class SubtitleSession {
     /// Active per-slot fetch Task so switching tracks cancels the
     /// previous fetch cleanly. Guarded by `lock`.
     private var fetchTasks: [SubtitleSlot: Task<Void, Never>] = [:]
+
+    /// Converted sidecar currently installed in each libass slot. This is
+    /// enough to regenerate its synthetic styles from `sidecarCache` when
+    /// the user changes font family without refetching the track.
+    /// Guarded by `lock`.
+    private var installedConvertedSidecars: [SubtitleSlot: InstalledConvertedSidecar] = [:]
+
+    /// Monotonic per-slot counter, bumped on every mutation of the slot's
+    /// installed-track state — installs and clears alike. Guarded by `lock`.
+    private var installedSidecarGeneration: [SubtitleSlot: UInt64] = [:]
 
     /// Slots currently driven by a live AI subtitle track (cues streamed
     /// in via `feedLiveCue`). A live track must NOT be flushed on seek —
@@ -157,8 +201,36 @@ final class SubtitleSession {
     // MARK: - Configuration
 
     func applyStyling(_ params: SubtitleStylingOverride.Parameters) {
-        withLock { stylingParams = params }
+        let reinstallations: [(
+            slot: SubtitleSlot,
+            sidecar: InstalledConvertedSidecar,
+            content: String
+        )] = withLock {
+            let fontFamilyChanged = stylingParams.fontFamilyName != params.fontFamilyName
+            stylingParams = params
+            guard fontFamilyChanged else { return [] }
+            return installedConvertedSidecars.compactMap { slot, sidecar in
+                // Latin-only tracks track the new family through the live
+                // FONT_NAME override. A track with Arabic cues always needs
+                // reconversion: the new family may need a fallback style the
+                // old one didn't (or vice versa), and the override would
+                // otherwise flatten Arabic onto a non-covering family.
+                guard sidecar.containsArabicCues,
+                      let content = sidecarCache[sidecar.urlIndex] else { return nil }
+                return (slot, sidecar, content)
+            }
+        }
         renderer.applySettings(params)
+        for reinstallation in reinstallations {
+            installSidecarContent(
+                content: reinstallation.content,
+                codecHint: nil,
+                urlIndex: reinstallation.sidecar.urlIndex,
+                slot: reinstallation.slot,
+                knownFormat: reinstallation.sidecar.format,
+                requiredGeneration: reinstallation.sidecar.generation
+            )
+        }
     }
 
     var currentParams: SubtitleStylingOverride.Parameters {
@@ -205,6 +277,7 @@ final class SubtitleSession {
         withLock {
             _ = liveSlots.remove(slot)
             bitmapCueStores.removeValue(forKey: slot)
+            clearInstalledSidecarLocked(slot)
         }
         if isNativeASS {
             renderer.createTrack(
@@ -253,6 +326,7 @@ final class SubtitleSession {
         withLock {
             _ = liveSlots.remove(slot)
             bitmapCueStores.removeValue(forKey: slot)
+            clearInstalledSidecarLocked(slot)
         }
         publishStatus(slot: slot, .fetching)
 
@@ -305,7 +379,7 @@ final class SubtitleSession {
                 self.installSidecarContent(
                     content: result.content,
                     codecHint: descriptor.codec,
-                    url: descriptor.url,
+                    urlIndex: urlIndex,
                     slot: slot,
                     knownFormat: result.format
                 )
@@ -339,6 +413,7 @@ final class SubtitleSession {
         withLock {
             _ = liveSlots.remove(slot)
             bitmapCueStores.removeValue(forKey: slot)
+            clearInstalledSidecarLocked(slot)
         }
         renderer.dropTrack(slot: slot)
         publishStatus(slot: slot, .idle)
@@ -398,6 +473,7 @@ final class SubtitleSession {
         cancelFetchTask(for: slot)
         withLock {
             _ = liveSlots.remove(slot)
+            clearInstalledSidecarLocked(slot)
             bitmapCueStores[slot] = BitmapSubtitleCueStore(
                 retentionSeconds: retentionSeconds,
                 maxCueCount: maxCueCount
@@ -487,7 +563,10 @@ final class SubtitleSession {
     ///   - language: optional ISO language tag (also informational).
     func openLive(slot: SubtitleSlot, label: String? = nil, language: String? = nil) {
         cancelFetchTask(for: slot)
-        withLock { bitmapCueStores.removeValue(forKey: slot) }
+        withLock {
+            bitmapCueStores.removeValue(forKey: slot)
+            clearInstalledSidecarLocked(slot)
+        }
         let params = withLock { stylingParams }
         let header = SubtitleStylingOverride.syntheticHeader(
             params: params,
@@ -531,7 +610,10 @@ final class SubtitleSession {
     /// Close the live track in the given slot. Drops the libass track and
     /// clears the live-slot flag. Safe to call on a slot that isn't live.
     func closeLive(slot: SubtitleSlot) {
-        withLock { _ = liveSlots.remove(slot) }
+        withLock {
+            _ = liveSlots.remove(slot)
+            clearInstalledSidecarLocked(slot)
+        }
         renderer.dropTrack(slot: slot)
         publishStatus(slot: slot, .idle)
     }
@@ -552,6 +634,7 @@ final class SubtitleSession {
             fetchTasks.removeAll()
             sidecarCache.removeAll()
             sidecarDescriptors.removeAll()
+            for slot in SubtitleSlot.allCases { clearInstalledSidecarLocked(slot) }
             liveSlots.removeAll()
             bitmapCueStores.removeAll()
             return snapshot
@@ -577,36 +660,88 @@ final class SubtitleSession {
         }
     }
 
+    /// Convert (if needed) and install sidecar content into a slot.
+    ///
+    /// - Parameter requiredGeneration: set by the font-change reinstall
+    ///   path, which reconverts outside the lock. The install is abandoned
+    ///   unless the slot still holds the same installed entry it did when
+    ///   the reinstall was planned — otherwise a concurrent
+    ///   `closeSlot`/`openSidecar`/`openLive`/`openBitmapTrack`/
+    ///   `openEmbedded` would be undone by a late install.
     private func installSidecarContent(
         content: String,
         codecHint: String?,
-        url: URL,
+        urlIndex: Int,
         slot: SubtitleSlot,
-        knownFormat: SubtitleFormat? = nil
+        knownFormat: SubtitleFormat? = nil,
+        requiredGeneration: UInt64? = nil
     ) {
         let format = knownFormat ?? Self.codecToFormat(codecHint) ?? .vtt
         let isNativeASS = (format == .ass)
 
         let assDocument: String
+        let preservesScriptSpecificFonts: Bool
+        let containsArabicCues: Bool
         switch format {
         case .ass:
             assDocument = content
+            preservesScriptSpecificFonts = false
+            containsArabicCues = false
         case .vtt, .srt:
             let params = withLock { stylingParams }
-            assDocument = VTTToASSConverter.convert(
+            let hasArabicFallbackStyle = SubtitleStylingOverride
+                .arabicFallbackFontName(params: params) != nil
+            let conversion = VTTToASSConverter.convert(
                 vtt: content,
                 header: SubtitleStylingOverride.syntheticHeader(
                     params: params,
                     slot: slot
-                )
+                ),
+                hasArabicFallbackStyle: hasArabicFallbackStyle
             )
+            assDocument = conversion.assDocument
+            preservesScriptSpecificFonts = conversion.usedArabicFallbackStyle
+            containsArabicCues = conversion.containsArabicCues
         }
 
-        renderer.installFullASS(
-            slot: slot,
-            assDocument: assDocument,
-            isNativeASS: isNativeASS
-        )
+        // Bookkeeping, staleness check, and the install must be atomic with
+        // respect to slot changes: releasing the lock first would let a
+        // concurrent close/open slip between them and be resurrected by this
+        // install. Safe to hold `lock` here specifically because
+        // `installFullASS` only enqueues onto the renderer's serial
+        // `sessionQueue` and never calls back into the session — unlike the
+        // `.sync` renderer calls the lock's contract warns about. Ordering
+        // then follows from that queue: any later user action enqueues its
+        // renderer work after ours.
+        let installed = withLock { () -> Bool in
+            if let requiredGeneration,
+               installedSidecarGeneration[slot] != requiredGeneration
+                || installedConvertedSidecars[slot] == nil {
+                return false
+            }
+
+            if isNativeASS {
+                clearInstalledSidecarLocked(slot)
+            } else {
+                installedConvertedSidecars[slot] = InstalledConvertedSidecar(
+                    urlIndex: urlIndex,
+                    format: format,
+                    usedArabicFallbackStyle: preservesScriptSpecificFonts,
+                    containsArabicCues: containsArabicCues,
+                    generation: bumpInstalledGenerationLocked(slot)
+                )
+            }
+
+            renderer.installFullASS(
+                slot: slot,
+                assDocument: assDocument,
+                isNativeASS: isNativeASS,
+                preservesScriptSpecificFonts: preservesScriptSpecificFonts
+            )
+            return true
+        }
+        guard installed else { return }
+
         let stats = Self.dialogueStats(in: assDocument)
         let nowSeconds = currentPositionSecondsProvider?() ?? -1
         Self.logger.info(

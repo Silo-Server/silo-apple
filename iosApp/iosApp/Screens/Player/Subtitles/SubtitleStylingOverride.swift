@@ -7,8 +7,9 @@
 //
 //    1. `syntheticHeader(...)` — produces an ASS `[Script Info]` +
 //       `[V4+ Styles]` block with the user's preferences baked into the
-//       Default style. Used by `VTTToASSConverter` and by synthesized
-//       SRT→ASS wraps when we don't have an authored header.
+//       Default style plus an optional script-aware Arabic style. Used by
+//       `VTTToASSConverter` and by synthesized SRT→ASS wraps when we don't
+//       have an authored header.
 //
 //    2. `apply(to:isNativeASS:)` — applies `ass_set_selective_style_override`,
 //       `ass_set_font_scale`, and `ass_set_line_position` to a live
@@ -55,12 +56,19 @@ enum SubtitleStylingOverride {
         /// later; negative = earlier.
         var syncOffsetMs: Int
 
+        /// Thin user-requested outline in the 1080-line ASS playfield.
+        /// The 1-2 range keeps small text legible without producing a
+        /// sticker-like edge at larger sizes.
         var effectiveBorderSize: Double {
             if borderSize > 0 || systemTextEdgeStyle == .uniform
                 || systemTextEdgeStyle == .raised || systemTextEdgeStyle == .depressed {
-                return max(2, min(4, fontSize * 0.08))
+                return Self.outlineSize(for: fontSize)
             }
             return 0
+        }
+
+        static func outlineSize(for fontSize: Double) -> Double {
+            max(1, min(2, fontSize * 0.03))
         }
 
         /// The user's outline color applies to every outline the user asked
@@ -253,9 +261,10 @@ enum SubtitleStylingOverride {
     // MARK: - Synthetic ASS header
 
     /// Build a complete ASS script header with the user's preferences
-    /// applied to a `Default` style. Callers append an `[Events]` header
-    /// plus their own Dialogue lines. Used by `VTTToASSConverter` and by
-    /// the SRT-fallback path.
+    /// applied to a `Default` style and, when needed, an Arabic-capable
+    /// companion style. Callers append Dialogue lines to the included
+    /// `[Events]` section. Used by `VTTToASSConverter` and by the
+    /// SRT-fallback path.
     ///
     /// - Parameter params: user preferences snapshot.
     /// - Parameter slot: primary slot places subtitles near the bottom
@@ -302,26 +311,37 @@ enum SubtitleStylingOverride {
         s += "\n"
         s += "[V4+ Styles]\n"
         s += "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        s += "Style: Default,"
-        s += "\(params.fontFamilyName),"                       // Fontname
-        s += "\(Int(Parameters.referenceFontSize.rounded()))," // Fontsize
-        s += "\(primary),"                                     // PrimaryColour
-        s += "&H00FFFFFF,"                                     // SecondaryColour (karaoke flash)
-        s += "\(outline),"                                     // OutlineColour
-        s += "\(back),"                                        // BackColour
-        s += "0,0,0,0,"                                        // Bold, Italic, Underline, StrikeOut
-        s += "100,100,"                                        // ScaleX, ScaleY
-        s += "0,0,"                                            // Spacing, Angle
-        s += "\(borderStyle),"                                 // BorderStyle
-        s += "\(borderSize),"                                  // Outline / box padding
-        s += "\(shadow),"                                      // Shadow
-        s += "\(alignment),"                                   // Alignment
-        s += "60,60,\(marginV),"                               // MarginL, MarginR, MarginV
-        s += "1\n"                                             // Encoding
+        func appendStyle(named name: String, fontFamilyName: String) {
+            s += "Style: \(name),"
+            s += "\(fontFamilyName),"                              // Fontname
+            s += "\(Int(Parameters.referenceFontSize.rounded()))," // Fontsize
+            s += "\(primary),"                                     // PrimaryColour
+            s += "&H00FFFFFF,"                                     // SecondaryColour (karaoke flash)
+            s += "\(outline),"                                     // OutlineColour
+            s += "\(back),"                                        // BackColour
+            s += "0,0,0,0,"                                        // Bold, Italic, Underline, StrikeOut
+            s += "100,100,"                                        // ScaleX, ScaleY
+            s += "0,0,"                                            // Spacing, Angle
+            s += "\(borderStyle),"                                 // BorderStyle
+            s += "\(borderSize),"                                  // Outline / box padding
+            s += "\(shadow),"                                      // Shadow
+            s += "\(alignment),"                                   // Alignment
+            s += "60,60,\(marginV),"                               // MarginL, MarginR, MarginV
+            s += "1\n"                                             // Encoding
+        }
+        appendStyle(named: "Default", fontFamilyName: params.fontFamilyName)
+        if let arabicFallbackFontName = arabicFallbackFontName(params: params) {
+            appendStyle(named: "ArabicFallback", fontFamilyName: arabicFallbackFontName)
+        }
         s += "\n"
         s += "[Events]\n"
         s += "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
         return s
+    }
+
+    static func arabicFallbackFontName(params: Parameters) -> String? {
+        let resolved = SubtitleScriptFont.arabicFontFamily(for: params.fontFamilyName)
+        return resolved == params.fontFamilyName ? nil : resolved
     }
 
     // MARK: - Live renderer overrides
@@ -345,12 +365,16 @@ enum SubtitleStylingOverride {
     ///   physical size regardless of the content's aspect ratio. 1.0 when
     ///   the overlay is video-rect sized (no margins). Native ASS is never
     ///   compensated — authored typesetting must keep tracking the picture.
+    /// - Parameter preservesScriptSpecificFonts: true when a generated ASS
+    ///   document contains per-script font styles that must not be flattened
+    ///   by the renderer-wide Fontname override.
     static func apply(
         renderer: OpaquePointer?,
         params: Parameters,
         isNativeASS: Bool,
         slot: SubtitleSlot,
-        fontScaleCompensation: Double = 1.0
+        fontScaleCompensation: Double = 1.0,
+        preservesScriptSpecificFonts: Bool = false
     ) {
         guard let renderer else { return }
 
@@ -414,10 +438,9 @@ enum SubtitleStylingOverride {
         style.ScaleY = 1.0
         style.Spacing = 0
         style.Blur = 0
-        // Outline + shadow: both scale with `ScaledBorderAndShadow: yes`
-        // in the authored header, so keep them small relative to the
-        // authored FontSize=16 grid. Default 0.5 outline + 1.5 shadow
-        // matches the web player's "shadow" default (no heavy outline).
+        // Outline + shadow both scale with `ScaledBorderAndShadow: yes`.
+        // User-requested outlines stay within 1-2 points in the controlled
+        // 1080-line playfield so they remain an edge rather than a glyph box.
         style.Outline = params.effectiveBorderSize
         style.Shadow = params.assShadow
         style.BorderStyle = Int32(params.assBorderStyle)
@@ -454,14 +477,17 @@ enum SubtitleStylingOverride {
             // from glyph masks after rendering instead of enabling this bit.
             bits = systemBits
         } else {
-            bits =
-                Int32(ASS_OVERRIDE_BIT_FONT_NAME.rawValue) |
+            var controlledBits =
                 Int32(ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE.rawValue) |
                 Int32(ASS_OVERRIDE_BIT_COLORS.rawValue) |
                 Int32(ASS_OVERRIDE_BIT_ATTRIBUTES.rawValue) |
                 Int32(ASS_OVERRIDE_BIT_BORDER.rawValue) |
                 Int32(ASS_OVERRIDE_BIT_ALIGNMENT.rawValue) |
                 Int32(ASS_OVERRIDE_BIT_MARGINS.rawValue)
+            if !preservesScriptSpecificFonts {
+                controlledBits |= Int32(ASS_OVERRIDE_BIT_FONT_NAME.rawValue)
+            }
+            bits = controlledBits
         }
         ass_set_selective_style_override_enabled(renderer, bits)
     }

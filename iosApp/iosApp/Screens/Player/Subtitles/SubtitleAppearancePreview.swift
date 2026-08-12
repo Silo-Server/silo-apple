@@ -66,8 +66,13 @@ struct SubtitleAppearancePreview: View {
             || systemEdge == .uniform
         let outlineColor = hasOutline ? Color(hex: appearance.textOutlineColor) : .clear
         // Four hard directional shadows fake libass's uniform glyph
-        // outline; a soft radius reads as a glow instead.
-        let outlineOffset: CGFloat = max(1, sampleFontSize * 0.04)
+        // outline; a soft radius reads as a glow instead. The shared
+        // formula's 1-2 clamp is calibrated for the 1080-line playfield,
+        // so feed it the unscaled size and scale the result into preview
+        // space — clamping post-scale would flatten the whole ladder.
+        let outlineOffset = CGFloat(
+            SubtitleStylingOverride.Parameters.outlineSize(for: Double(playfieldFontSize))
+        ) * Self.fontScale
 
         let raisedColor = systemEdge == .raised ? Color.white.opacity(0.8) : .clear
         let depressedColor = systemEdge == .depressed ? Color.black.opacity(0.9) : .clear
@@ -113,10 +118,17 @@ struct SubtitleAppearancePreview: View {
         }
     }
 
-    private var sampleFontSize: CGFloat {
-        (appearance.systemRelativeFontScale.map {
+    /// The size playback would use in the 1080-line ASS playfield, before
+    /// the preview's own downscale. Shared styling formulas are calibrated
+    /// against this, not against `sampleFontSize`.
+    private var playfieldFontSize: CGFloat {
+        appearance.systemRelativeFontScale.map {
             SubtitleStylingOverride.Parameters.referenceFontSize * $0
-        } ?? appearance.fontSize.pointSize) * Self.fontScale
+        } ?? appearance.fontSize.pointSize
+    }
+
+    private var sampleFontSize: CGFloat {
+        playfieldFontSize * Self.fontScale
     }
 
     private var sampleFont: Font {

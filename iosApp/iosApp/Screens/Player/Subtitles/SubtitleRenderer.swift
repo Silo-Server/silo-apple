@@ -48,11 +48,18 @@ final class ASSTrackHandle {
     let ptr: UnsafeMutablePointer<ASS_Track>
     let isNativeASS: Bool   // true iff codec is ASS/SSA (author-styled)
     let flushesOnSeek: Bool
+    let preservesScriptSpecificFonts: Bool
 
-    init(ptr: UnsafeMutablePointer<ASS_Track>, isNativeASS: Bool, flushesOnSeek: Bool) {
+    init(
+        ptr: UnsafeMutablePointer<ASS_Track>,
+        isNativeASS: Bool,
+        flushesOnSeek: Bool,
+        preservesScriptSpecificFonts: Bool = false
+    ) {
         self.ptr = ptr
         self.isNativeASS = isNativeASS
         self.flushesOnSeek = flushesOnSeek
+        self.preservesScriptSpecificFonts = preservesScriptSpecificFonts
     }
 
     deinit {
@@ -288,7 +295,8 @@ final class SubtitleRenderer {
     func installFullASS(
         slot: SubtitleSlot,
         assDocument: String,
-        isNativeASS: Bool
+        isNativeASS: Bool,
+        preservesScriptSpecificFonts: Bool = false
     ) {
         sessionQueue.async { [weak self] in
             guard let self, let lib = self.library else { return }
@@ -312,7 +320,12 @@ final class SubtitleRenderer {
             )
             ass_set_check_readorder(track, 0)
 
-            let handle = ASSTrackHandle(ptr: track, isNativeASS: isNativeASS, flushesOnSeek: false)
+            let handle = ASSTrackHandle(
+                ptr: track,
+                isNativeASS: isNativeASS,
+                flushesOnSeek: false,
+                preservesScriptSpecificFonts: preservesScriptSpecificFonts
+            )
             self.handleLock.lock()
             switch slot {
             case .primary:   self.primary = handle
@@ -325,7 +338,8 @@ final class SubtitleRenderer {
                 params: self.currentParams,
                 isNativeASS: isNativeASS,
                 slot: slot,
-                fontScaleCompensation: self.fontScaleCompensation
+                fontScaleCompensation: self.fontScaleCompensation,
+                preservesScriptSpecificFonts: preservesScriptSpecificFonts
             )
         }
     }
@@ -497,14 +511,16 @@ final class SubtitleRenderer {
             params: currentParams,
             isNativeASS: primaryHandle?.isNativeASS ?? false,
             slot: .primary,
-            fontScaleCompensation: fontScaleCompensation
+            fontScaleCompensation: fontScaleCompensation,
+            preservesScriptSpecificFonts: primaryHandle?.preservesScriptSpecificFonts ?? false
         )
         SubtitleStylingOverride.apply(
             renderer: secondaryRenderer,
             params: currentParams,
             isNativeASS: secondaryHandle?.isNativeASS ?? false,
             slot: .secondary,
-            fontScaleCompensation: fontScaleCompensation
+            fontScaleCompensation: fontScaleCompensation,
+            preservesScriptSpecificFonts: secondaryHandle?.preservesScriptSpecificFonts ?? false
         )
     }
 

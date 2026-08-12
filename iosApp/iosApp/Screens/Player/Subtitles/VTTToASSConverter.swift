@@ -20,6 +20,19 @@ import Foundation
 
 enum VTTToASSConverter {
 
+    struct ConversionResult {
+        let assDocument: String
+        /// Whether any Dialogue actually selected `ArabicFallback`. Drives
+        /// the renderer's `FONT_NAME`-override suppression.
+        let usedArabicFallbackStyle: Bool
+        /// Whether any cue carries Arabic at all, independent of whether
+        /// the header offered a fallback style. Drives the session's
+        /// font-change reinstall: a track with Arabic cues must be
+        /// reconverted for the new family even when the old family covered
+        /// Arabic itself (no fallback style emitted).
+        let containsArabicCues: Bool
+    }
+
     /// Convert a WebVTT document body to a full ASS document.
     ///
     /// - Parameter vtt: the raw WebVTT content as served by the Continuum
@@ -28,11 +41,21 @@ enum VTTToASSConverter {
     ///   `[V4+ Styles]` + `[Events] Format:` header. Supplied by the
     ///   caller (`SubtitleStylingOverride.syntheticHeader`) so the user's
     ///   styling preferences are embedded at conversion time.
-    /// - Returns: a full ASS document. Always syntactically valid; returns
-    ///   just the header + empty Events section on catastrophic parse
-    ///   failure (never throws).
-    static func convert(vtt: String, header: String) -> String {
+    /// - Parameter hasArabicFallbackStyle: whether `header` contains the
+    ///   script-aware `ArabicFallback` style.
+    /// - Returns: the full ASS document, whether any emitted Dialogue
+    ///   selected `ArabicFallback`, and whether any cue contained Arabic.
+    ///   The document is always syntactically valid; catastrophic parse
+    ///   failure produces just the header and empty Events section
+    ///   (never throws).
+    static func convert(
+        vtt: String,
+        header: String,
+        hasArabicFallbackStyle: Bool
+    ) -> ConversionResult {
         var out = header
+        var usedArabicFallbackStyle = false
+        var containsArabicCues = false
         if !out.hasSuffix("\n") { out.append("\n") }
 
         // Normalise line endings so the scanner only has to handle `\n`.
@@ -106,12 +129,25 @@ enum VTTToASSConverter {
 
             let startTs = assTimestamp(millis: startMs)
             let endTs = assTimestamp(millis: endMs)
+            // Classify every cue regardless of header contents: the session
+            // needs `containsArabicCues` even when no fallback style exists.
+            let cueHasArabic = SubtitleScriptFont.containsArabicLetters(cueText)
+            if cueHasArabic { containsArabicCues = true }
+            let usesArabicFallback = hasArabicFallbackStyle && cueHasArabic
+            if usesArabicFallback {
+                usedArabicFallbackStyle = true
+            }
+            let style = usesArabicFallback ? "ArabicFallback" : "Default"
             // ASS Dialogue format:
             //   Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
-            out.append("Dialogue: 0,\(startTs),\(endTs),Default,,0,0,0,,\(cueText)\n")
+            out.append("Dialogue: 0,\(startTs),\(endTs),\(style),,0,0,0,,\(cueText)\n")
         }
 
-        return out
+        return ConversionResult(
+            assDocument: out,
+            usedArabicFallbackStyle: usedArabicFallbackStyle,
+            containsArabicCues: containsArabicCues
+        )
     }
 
     // MARK: - Block classification
