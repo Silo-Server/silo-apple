@@ -1560,6 +1560,96 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         }
     }
 
+    func testNoncanonicalLedgerKeysQuarantineEvidenceAfterRemovalFailure() async throws {
+        let reportID = try XCTUnwrap(
+            UUID(uuidString: "abcdef12-3456-4789-abcd-ef1234567890")
+        )
+        for kind in HostedErasureLedgerKind.allCases {
+            var removalAttempts = 0
+            let fixture = try makePendingHostedReport(
+                label: "noncanonical-\(kind.fileName)",
+                reportID: reportID,
+                hostedDeletionRemover: { _ in
+                    removalAttempts += 1
+                    throw DiagnosticsStoreError.invalidHostedEnvelope
+                }
+            )
+            let ledgerURL = hostedErasureLedgerURL(for: fixture.report, kind: kind)
+            switch kind {
+            case .deletionIntents:
+                let canonicalLedger = [
+                    reportID.uuidString.lowercased(): DiagnosticsTimestamp.string(from: Date()),
+                ]
+                let data = try DiagnosticsJSONCoding.makeEncoder().encode(canonicalLedger)
+                try data.write(to: ledgerURL, options: .atomic)
+                let retryBatch = fixture.store.prepareHostedDeletionRetries()
+                XCTAssertTrue(retryBatch.reportIDs.isEmpty)
+                XCTAssertTrue(retryBatch.hasBlockedLocalEvidence)
+            case .readyReceipts:
+                XCTAssertThrowsError(try fixture.store.recordHostedReadyAndDelete(fixture.report))
+            }
+            XCTAssertEqual(removalAttempts, 1)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+
+            let canonicalData = try Data(contentsOf: ledgerURL)
+            var ledger = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: canonicalData) as? [String: Any]
+            )
+            let canonicalKey = reportID.uuidString.lowercased()
+            let noncanonicalKey = reportID.uuidString.uppercased()
+            XCTAssertNotEqual(canonicalKey, noncanonicalKey)
+            let value = try XCTUnwrap(ledger.removeValue(forKey: canonicalKey))
+            ledger[noncanonicalKey] = value
+            let noncanonicalData = try JSONSerialization.data(
+                withJSONObject: ledger,
+                options: [.sortedKeys]
+            )
+            try noncanonicalData.write(to: ledgerURL, options: .atomic)
+
+            let restoredStore = PendingReportStore(
+                rootDirectory: fixture.report.directoryURL
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent(),
+                hostedDeletionRemover: { _ in
+                    removalAttempts += 1
+                    throw DiagnosticsStoreError.invalidHostedEnvelope
+                }
+            )
+            XCTAssertEqual(removalAttempts, 1, "corrupt state must not attempt destructive recovery")
+            assertHostedErasureLedgerLoadFails(
+                store: restoredStore,
+                kind: kind,
+                expectedError: kind.corruptionError
+            )
+            XCTAssertTrue(restoredStore.listReports(now: Date()).isEmpty)
+            XCTAssertNil(restoredStore.report(id: reportID))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+            guard case .quarantined = restoredStore.loadHostedEnvelope(for: fixture.report) else {
+                return XCTFail("A noncanonical \(kind.fileName) key must quarantine evidence")
+            }
+
+            let retryBatch = restoredStore.prepareHostedDeletionRetries()
+            XCTAssertTrue(retryBatch.reportIDs.isEmpty)
+            XCTAssertTrue(retryBatch.hasBlockedLocalEvidence)
+            XCTAssertTrue(retryBatch.hasCorruptLedger)
+            let coordinator = DiagnosticsCoordinator(
+                hostedAPI: try makeHostedUploadAPI(),
+                pendingStore: restoredStore
+            )
+            let uploadDecision = await coordinator.upload(report: fixture.report)
+            let drained = await coordinator.retryHostedDeletions()
+            let turnedOff = await coordinator.turnOffAndDelete(
+                binding: fixture.report.binding.binding
+            )
+            XCTAssertEqual(uploadDecision, .keptRetryable)
+            XCTAssertFalse(drained)
+            XCTAssertFalse(turnedOff)
+            XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+            XCTAssertEqual(try Data(contentsOf: ledgerURL), noncanonicalData)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        }
+    }
+
     func testHostedRemoteLifecycleKeepsEvidenceUntilReportIsReady() async throws {
         for state in [DiagnosticsRemoteReportState.processing, .rejected, .ready] {
             let fixture = try makePendingHostedReport(label: "remote-\(state.rawValue)")
@@ -2015,6 +2105,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
     private func makePendingHostedReport(
         label: String,
+        reportID: UUID = UUID(),
         hostedDeletionRemover: ((URL) throws -> Void)? = nil
     ) throws -> (store: PendingReportStore, report: PendingReport) {
         let capturedAt = Date()
@@ -2056,6 +2147,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             hostedDeletionRemover: hostedDeletionRemover
         )
         let report = try store.save(PendingReportCapture(
+            id: reportID,
             binding: binding,
             profileID: nil,
             type: .manual,

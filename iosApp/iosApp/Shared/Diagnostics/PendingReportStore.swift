@@ -1105,7 +1105,7 @@ final class PendingReportStore {
         ), !intents.isEmpty,
            intents.count <= Self.maxHostedDeletionIntents,
            intents.allSatisfy({ reportID, createdAt in
-               UUID(uuidString: reportID) != nil
+               Self.isCanonicalHostedReportID(reportID)
                    && DiagnosticsDates.date(from: createdAt) != nil
            }) else {
             throw corruption
@@ -1116,7 +1116,7 @@ final class PendingReportStore {
     private func saveHostedDeletionIntentsLocked(_ intents: [String: String]) throws {
         guard intents.count <= Self.maxHostedDeletionIntents,
               intents.allSatisfy({ reportID, createdAt in
-                  UUID(uuidString: reportID) != nil
+                  Self.isCanonicalHostedReportID(reportID)
                       && DiagnosticsDates.date(from: createdAt) != nil
               }) else {
             throw DiagnosticsStoreError.invalidHostedDeletionIntent
@@ -1146,7 +1146,7 @@ final class PendingReportStore {
         ), !receipts.isEmpty,
            receipts.count <= Self.maxHostedReadyReceipts,
            receipts.allSatisfy({ reportID, receipt in
-               UUID(uuidString: reportID) != nil
+               Self.isCanonicalHostedReportID(reportID)
                    && receipt.binding.destinationChoice == .hosted
                    && DiagnosticsDates.date(from: receipt.readyAt) != nil
            }) else {
@@ -1159,7 +1159,7 @@ final class PendingReportStore {
         _ receipts: [String: HostedReadyReceipt]
     ) throws {
         guard receipts.count <= Self.maxHostedReadyReceipts,
-              receipts.keys.allSatisfy({ UUID(uuidString: $0) != nil }),
+              receipts.keys.allSatisfy(Self.isCanonicalHostedReportID),
               receipts.values.allSatisfy({
                   $0.binding.destinationChoice == .hosted
                       && DiagnosticsDates.date(from: $0.readyAt) != nil
@@ -1175,6 +1175,14 @@ final class PendingReportStore {
         } else {
             try writeJSON(receipts, to: url)
         }
+    }
+
+    private static func isCanonicalHostedReportID(_ value: String) -> Bool {
+        // Ledger keys are also compared with lowercase report-directory names.
+        // Requiring one spelling prevents an equivalent UUID from bypassing
+        // READY/deletion quarantine through case-sensitive path lookup.
+        guard let reportID = UUID(uuidString: value) else { return false }
+        return value == reportID.uuidString.lowercased()
     }
 
     private func pruneHostedReadyReceiptsLocked(now: Date) throws {
