@@ -1135,10 +1135,10 @@ struct TVMainTabView: View {
     private func switchToServer(_ entry: ServerEntry) {
         guard entry.id != registry.activeServerId else { return }
         Task {
-            await registry.switchTo(
+            guard await registry.switchTo(
                 serverId: entry.id,
                 resolveDestinationProfile: true
-            )
+            ) else { return }
             await MainActor.run {
                 selectedRoot = .home
                 currentProfile = nil

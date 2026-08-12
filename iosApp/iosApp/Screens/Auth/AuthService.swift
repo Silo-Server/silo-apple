@@ -91,9 +91,13 @@ final class AuthService: @unchecked Sendable {
             profileId: nil,
             lastUsedAt: Date()
         )
-        ServerRegistry.shared.addOrUpdate(entry)
+        guard ServerRegistry.shared.addOrUpdate(entry) != nil else {
+            throw ServerRegistryError.persistenceFailed
+        }
         if ServerRegistry.shared.activeServerId != id {
-            await ServerRegistry.shared.switchTo(serverId: id)
+            guard await ServerRegistry.shared.switchTo(serverId: id) else {
+                throw ServerRegistryError.persistenceFailed
+            }
         }
 
         return status
@@ -196,14 +200,18 @@ final class AuthService: @unchecked Sendable {
         )
 
         // Only a successful accept commits the server/session boundary.
-        ServerRegistry.shared.addOrUpdate(ServerEntry(
+        guard ServerRegistry.shared.addOrUpdate(ServerEntry(
             id: id,
             url: endpoint.baseURL,
             fetchedName: fetchedName,
             profileId: nil,
             lastUsedAt: Date()
-        ), preservingProfile: false)
-        await ServerRegistry.shared.switchTo(serverId: id)
+        ), preservingProfile: false) != nil else {
+            throw ServerRegistryError.persistenceFailed
+        }
+        guard await ServerRegistry.shared.switchTo(serverId: id) else {
+            throw ServerRegistryError.persistenceFailed
+        }
         guard let expectedAccount = await TokenStore.shared.refreshAccountIdentity() else {
             throw HTTPError.serverUrlNotConfigured
         }

@@ -89,6 +89,14 @@ private struct SharedRegistryState: Codable {
     var entries: [ServerEntry]
 }
 
+enum ServerRegistryError: LocalizedError {
+    case persistenceFailed
+
+    var errorDescription: String? {
+        "Silo couldn't save the server list. Please try again."
+    }
+}
+
 /// Owns the list of known Silo servers and which one is currently
 /// active. Singleton via `.shared`; observed by SwiftUI via `@Observable`.
 ///
@@ -127,13 +135,18 @@ final class ServerRegistry {
     private let defaults: SharedDefaults
     private let keychain: SharedKeychain
     private let launchPreferences: ProfileLaunchPreferences
+    private let persistenceOverride: (([ServerEntry], String?) -> Bool)?
 
-    init(defaults: SharedDefaults = .shared,
-         keychain: SharedKeychain = SharedKeychain(),
-         launchPreferences: ProfileLaunchPreferences = .shared) {
+    init(
+        defaults: SharedDefaults = .shared,
+        keychain: SharedKeychain = SharedKeychain(),
+        launchPreferences: ProfileLaunchPreferences = .shared,
+        persistenceOverride: (([ServerEntry], String?) -> Bool)? = nil
+    ) {
         self.defaults = defaults
         self.keychain = keychain
         self.launchPreferences = launchPreferences
+        self.persistenceOverride = persistenceOverride
         load()
         migrateLegacyIfNeeded()
         migrateLegacyProfileMappingsIfNeeded()
@@ -171,8 +184,8 @@ final class ServerRegistry {
     /// replacement signal for existing callers; profile state itself lives in
     /// `ProfileLaunchPreferences`, never in the shared registry payload.
     @discardableResult
-    func addOrUpdate(_ entry: ServerEntry, preservingProfile: Bool = true) -> ServerEntry {
-        registerDiagnosticsSensitiveHosts([entry])
+    func addOrUpdate(_ entry: ServerEntry, preservingProfile: Bool = true) -> ServerEntry? {
+        let previousEntries = entries
         var merged = entry
         if let existing = self.entries.first(where: { $0.id == entry.id }) {
             if merged.fetchedName == nil || merged.fetchedName?.isEmpty == true {
@@ -184,23 +197,29 @@ final class ServerRegistry {
         } else {
             self.entries.append(merged)
         }
+        guard persist() else {
+            entries = previousEntries
+            _ = persist()
+            return nil
+        }
+        registerDiagnosticsSensitiveHosts([entry])
         if !preservingProfile {
             launchPreferences.clearRememberedProfile(for: entry.id)
         }
-        persist()
         return merged
     }
 
-    func updateFetchedName(for serverId: String, fetchedName: String?) {
-        guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return }
+    @discardableResult
+    func updateFetchedName(for serverId: String, fetchedName: String?) -> Bool {
+        guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return false }
+        let previousEntries = entries
         if let name = fetchedName, !name.isEmpty { entries[idx].fetchedName = name }
-        persist()
-    }
-
-    private func touchLastUsed(_ serverId: String) {
-        guard let idx = entries.firstIndex(where: { $0.id == serverId }) else { return }
-        entries[idx].lastUsedAt = Date()
-        persist()
+        guard persist() else {
+            entries = previousEntries
+            _ = persist()
+            return false
+        }
+        return true
     }
 
     // MARK: - Server switching
@@ -214,29 +233,37 @@ final class ServerRegistry {
     /// Ordering matters: legacy mirrors are written *before* the observable
     /// `activeServerId` change so any view that reacts to the change reads
     /// consistent UserDefaults values.
+    @discardableResult
     func switchTo(
         serverId: String,
         resolveDestinationProfile: Bool = false
-    ) async {
+    ) async -> Bool {
         guard entries.contains(where: { $0.id == serverId }) else {
             Self.logger.error("switchTo called with unknown server id")
-            return
+            return false
         }
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
-            return
+            return false
         }
         guard !Task.isCancelled else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
         await HTTPClient.shared.cancelInFlightRequests()
         guard !Task.isCancelled else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
-        guard await commitSwitchTo(serverId: serverId, abortIfCancelled: true) else {
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileWillChange()
+        #endif
+        let committed = await commitSwitchTo(serverId: serverId, abortIfCancelled: true)
+        guard committed else {
+            #if os(iOS) || os(tvOS)
+            DiagnosticsCoordinator.activeProfileDidChange()
+            #endif
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
         if resolveDestinationProfile, AuthService.shared.isLoggedIn {
             _ = await AuthService.shared.resolveActiveProfileForSession(
@@ -248,27 +275,33 @@ final class ServerRegistry {
         #endif
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         await refreshFeaturesAfterServerSwitch()
+        return true
     }
 
     /// Commit while the caller already holds HTTPClient's transition lease.
     /// Pairing uses this to publish its new tokens, defaults, and observable
     /// active server with no ungated A/B routing interval.
+    @discardableResult
     func commitSwitchTo(
         serverId: String,
         holding transitionLease: HTTPIdentityTransitionLease
-    ) async {
+    ) async -> Bool {
         guard entries.contains(where: { $0.id == serverId }),
               await HTTPClient.shared.isIdentityTransitionActive(transitionLease) else {
             Self.logger.error("gated switchTo called without its identity transition")
-            return
+            return false
         }
         // Pairing has already written the new credential slot under this
         // lease. Finish the registry/default commit even if cancellation
         // arrives now; aborting would publish a split A/B routing state.
-        _ = await commitSwitchTo(serverId: serverId, abortIfCancelled: false)
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileWillChange()
+        #endif
+        let committed = await commitSwitchTo(serverId: serverId, abortIfCancelled: false)
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
         #endif
+        return committed
     }
 
     func refreshFeaturesAfterGatedServerSwitch() async {
@@ -287,18 +320,28 @@ final class ServerRegistry {
         await AuthService.shared.clearCachesForServerChange()
         guard !abortIfCancelled || !Task.isCancelled else { return false }
 
+        let previousEntries = entries
+        let previousActiveServerID = activeServerId
+        let previousServerURL = defaults.string(forKey: SharedStorage.serverUrlKey)
+        let previousMirroredServerID = defaults.string(forKey: SharedStorage.activeServerIdKey)
+        let previousProfileID = defaults.string(forKey: SharedStorage.profileIdKey)
+
         defaults.set(entry.url, forKey: "serverUrl")
-        defaults.removeObject(forKey: SharedStorage.profileIdKey)
-        #if os(iOS) || os(tvOS)
-        // Activating a server restores its saved profile via the mirror above,
-        // bypassing AuthService's profileId setter. Fail diagnostics closed
-        // synchronously, but do not start `/profiles` while URL routing and the
-        // active token slot still refer to different servers.
-        DiagnosticsCoordinator.activeProfileWillChange()
-        #endif
-        activeServerId = serverId
         defaults.set(serverId, forKey: SharedStorage.activeServerIdKey)
-        touchLastUsed(serverId)
+        defaults.removeObject(forKey: SharedStorage.profileIdKey)
+        activeServerId = serverId
+        if let index = entries.firstIndex(where: { $0.id == serverId }) {
+            entries[index].lastUsedAt = Date()
+        }
+        guard persist() else {
+            entries = previousEntries
+            activeServerId = previousActiveServerID
+            _ = persist()
+            defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
+            defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
+            defaults.set(previousProfileID, forKey: SharedStorage.profileIdKey)
+            return false
+        }
         await TokenStore.shared.switchActiveServer(serverId: serverId)
         return true
     }
@@ -356,20 +399,21 @@ final class ServerRegistry {
     /// Remove a server entirely (entry + tokens). If it was active, the
     /// next-most-recent server becomes active; if none remain, the active
     /// slot is cleared.
+    @discardableResult
     func remove(
         serverId: String,
         resolveFallbackProfile: Bool = false
-    ) async {
+    ) async -> Bool {
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
-            return
+            return false
         }
         guard !Task.isCancelled else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
         guard entries.contains(where: { $0.id == serverId }) else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
         let removesActiveServer = activeServerId == serverId
         #if os(iOS) || os(tvOS)
@@ -382,8 +426,13 @@ final class ServerRegistry {
         await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
         #endif
         guard !Task.isCancelled else {
+            #if os(iOS) || os(tvOS)
+            if removesActiveServer {
+                DiagnosticsCoordinator.activeProfileDidChange()
+            }
+            #endif
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return
+            return false
         }
         if removesActiveServer {
             // Stop old-server responses and clear every process-wide cache
@@ -391,29 +440,55 @@ final class ServerRegistry {
             await HTTPClient.shared.cancelInFlightRequests()
             await AuthService.shared.clearCachesForServerChange()
             guard !Task.isCancelled else {
+                #if os(iOS) || os(tvOS)
+                DiagnosticsCoordinator.activeProfileDidChange()
+                #endif
                 await HTTPClient.shared.endIdentityTransition(transitionLease)
-                return
+                return false
             }
         }
-        await TokenStore.shared.deleteTokens(for: serverId)
-        launchPreferences.clearRememberedProfile(for: serverId)
+
+        let previousEntries = entries
+        let previousActiveServerID = activeServerId
+        let previousServerURL = defaults.string(forKey: SharedStorage.serverUrlKey)
+        let previousMirroredServerID = defaults.string(forKey: SharedStorage.activeServerIdKey)
+        let previousProfileID = defaults.string(forKey: SharedStorage.profileIdKey)
+
         entries.removeAll(where: { $0.id == serverId })
         if removesActiveServer {
             let fallback = entries.sorted { $0.lastUsedAt > $1.lastUsedAt }.first
-            activeServerId = fallback?.id
             if let fallback {
                 defaults.set(fallback.url, forKey: "serverUrl")
                 defaults.set(fallback.id, forKey: SharedStorage.activeServerIdKey)
                 defaults.removeObject(forKey: SharedStorage.profileIdKey)
-                await TokenStore.shared.switchActiveServer(serverId: fallback.id)
             } else {
                 defaults.removeObject(forKey: "serverUrl")
                 defaults.removeObject(forKey: SharedStorage.activeServerIdKey)
                 defaults.removeObject(forKey: SharedStorage.profileIdKey)
-                await TokenStore.shared.switchActiveServer(serverId: "")
             }
+            activeServerId = fallback?.id
         }
-        persist()
+        guard persist() else {
+            entries = previousEntries
+            activeServerId = previousActiveServerID
+            _ = persist()
+            defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
+            defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
+            defaults.set(previousProfileID, forKey: SharedStorage.profileIdKey)
+            #if os(iOS) || os(tvOS)
+            if removesActiveServer {
+                DiagnosticsCoordinator.activeProfileDidChange()
+            }
+            #endif
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return false
+        }
+
+        if removesActiveServer {
+            await TokenStore.shared.switchActiveServer(serverId: activeServerId ?? "")
+        }
+        await TokenStore.shared.deleteTokens(for: serverId)
+        launchPreferences.clearRememberedProfile(for: serverId)
         if removesActiveServer,
            resolveFallbackProfile,
            AuthService.shared.isLoggedIn {
@@ -440,6 +515,7 @@ final class ServerRegistry {
                 Task { await RequestsFeatureStore.shared.refresh() }
             }
         }
+        return true
     }
 
     // MARK: - ID derivation
@@ -523,6 +599,9 @@ final class ServerRegistry {
 
     @discardableResult
     private func persist() -> Bool {
+        if let persistenceOverride, !persistenceOverride(entries, activeServerId) {
+            return false
+        }
         #if os(tvOS)
         do {
             let data = try JSONEncoder().encode(SharedRegistryState(entries: entries))
@@ -533,8 +612,14 @@ final class ServerRegistry {
             defaults.removeObject(forKey: Self.defaultsKey)
             if let activeServerId {
                 defaults.set(activeServerId, forKey: SharedStorage.activeServerIdKey)
+                guard defaults.string(forKey: SharedStorage.activeServerIdKey) == activeServerId else {
+                    return false
+                }
             } else {
                 defaults.removeObject(forKey: SharedStorage.activeServerIdKey)
+                guard defaults.string(forKey: SharedStorage.activeServerIdKey) == nil else {
+                    return false
+                }
             }
             return true
         } catch {

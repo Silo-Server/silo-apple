@@ -159,6 +159,38 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         XCTAssertFalse(restored.state.selectionRequiredServerIDs.contains(serverID))
     }
 
+    func testBehaviorRollsBackWhenPersistenceFails() throws {
+        let suiteName = "ProfileLaunchPolicyTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        var allowsPersistence = true
+        let preferences = ProfileLaunchPreferences(
+            defaults: defaults,
+            persistenceOverride: { _ in allowsPersistence }
+        )
+
+        allowsPersistence = false
+        preferences.behavior = .askEveryLaunch
+
+        XCTAssertEqual(preferences.behavior, .automatic)
+    }
+
+    func testInvalidProfileNotificationCannotReplaceAnActiveProfile() {
+        XCTAssertTrue(shouldPresentProfileSelectionAfterRecovery(
+            isLoggedIn: true,
+            activeProfileID: nil
+        ))
+        XCTAssertFalse(shouldPresentProfileSelectionAfterRecovery(
+            isLoggedIn: true,
+            activeProfileID: "replacement-profile"
+        ))
+        XCTAssertFalse(shouldPresentProfileSelectionAfterRecovery(
+            isLoggedIn: false,
+            activeProfileID: nil
+        ))
+    }
+
     func testTopShelfRequiresAutomaticMatchingCurrentUserIdentity() {
         let pinless = RememberedProfile(
             profileID: "profile-a",

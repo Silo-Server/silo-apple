@@ -124,6 +124,51 @@ private let pendingPoll = DeviceLoginPollResponse(
 
 @MainActor
 final class ServerSessionPersistenceTests: XCTestCase {
+    func testRegistryMutationsRollBackWhenPersistenceFails() async throws {
+        let suiteName = "ServerSessionPersistenceTests.suite.\(UUID().uuidString)"
+        let standardName = "ServerSessionPersistenceTests.standard.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
+        defer {
+            suite.removePersistentDomain(forName: suiteName)
+            standard.removePersistentDomain(forName: standardName)
+        }
+        var allowsPersistence = true
+        let defaults = SharedDefaults(suite: suite, standard: standard)
+        let registry = ServerRegistry(
+            defaults: defaults,
+            keychain: SharedKeychain(
+                service: "ServerSessionPersistenceTests.\(UUID().uuidString)",
+                accessGroup: nil
+            ),
+            launchPreferences: ProfileLaunchPreferences(defaults: defaults),
+            persistenceOverride: { _, _ in allowsPersistence }
+        )
+        let first = ServerEntry(
+            id: "first",
+            url: "https://first.example",
+            fetchedName: "First",
+            lastUsedAt: Date()
+        )
+        let second = ServerEntry(
+            id: "second",
+            url: "https://second.example",
+            fetchedName: "Second",
+            lastUsedAt: Date()
+        )
+        XCTAssertNotNil(registry.addOrUpdate(first))
+
+        allowsPersistence = false
+        XCTAssertNil(registry.addOrUpdate(second))
+        XCTAssertNil(registry.entry(with: second.id))
+        let switched = await registry.switchTo(serverId: first.id)
+        XCTAssertFalse(switched)
+        XCTAssertNil(registry.activeServerId)
+        let removed = await registry.remove(serverId: first.id)
+        XCTAssertFalse(removed)
+        XCTAssertEqual(registry.entry(with: first.id), first)
+    }
+
     /// Companion authorization may install a different user's credentials for
     /// an existing URL. That boundary must not inherit the previous account's
     /// profile, while ordinary metadata upserts continue preserving it.

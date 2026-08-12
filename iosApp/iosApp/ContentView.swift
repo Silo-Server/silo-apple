@@ -103,7 +103,10 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .continuumProfileSelectionRequired)) { _ in
-            guard AuthService.shared.isLoggedIn else { return }
+            guard shouldPresentProfileSelectionAfterRecovery(
+                isLoggedIn: AuthService.shared.isLoggedIn,
+                activeProfileID: AuthService.shared.profileId
+            ) else { return }
             router.showProfileSelection()
         }
         #if os(iOS) || os(tvOS)
@@ -763,6 +766,13 @@ struct ContentView: View {
                 .continuumBackground()
         }
     }
+}
+
+func shouldPresentProfileSelectionAfterRecovery(
+    isLoggedIn: Bool,
+    activeProfileID: String?
+) -> Bool {
+    isLoggedIn && activeProfileID == nil
 }
 
 #if os(iOS)

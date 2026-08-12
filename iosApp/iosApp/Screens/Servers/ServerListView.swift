@@ -249,10 +249,10 @@ struct ServerListView: View {
             return
         }
         Task {
-            await registry.switchTo(
+            guard await registry.switchTo(
                 serverId: entry.id,
                 resolveDestinationProfile: true
-            )
+            ) else { return }
             await MainActor.run { refreshAuthState() }
         }
     }
@@ -260,10 +260,10 @@ struct ServerListView: View {
     private func remove(_ entry: ServerEntry) {
         let wasActive = entry.id == registry.activeServerId
         Task {
-            await registry.remove(
+            guard await registry.remove(
                 serverId: entry.id,
                 resolveFallbackProfile: wasActive
-            )
+            ) else { return }
             await MainActor.run {
                 removeTarget = nil
                 if wasActive { refreshAuthState() }

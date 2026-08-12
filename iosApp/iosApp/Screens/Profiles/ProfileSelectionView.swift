@@ -41,8 +41,14 @@ struct ProfileSelectionView: View {
 
             pickerContent
                 #if os(tvOS)
-                .disabled(isPINEntryPresented || showSignOutConfirm)
+                .disabled(
+                    viewModel.isClearingTemporaryManagementContext
+                        || isPINEntryPresented
+                        || showSignOutConfirm
+                )
                 .accessibilityHidden(isPINEntryPresented || showSignOutConfirm)
+                #else
+                .disabled(viewModel.isClearingTemporaryManagementContext)
                 #endif
         }
         .task {

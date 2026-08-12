@@ -310,19 +310,27 @@ final class ReceiverPairingCoordinator {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
         }
+        let previousTokenServerID = await TokenStore.shared.getActiveServerId()
         // From this first persistent mutation onward the transaction must
         // finish even if the pairing task is cancelled. Publishing failure
         // after committed credentials would make the phone and TV disagree.
-        ServerRegistry.shared.addOrUpdate(entry, preservingProfile: false)
+        guard ServerRegistry.shared.addOrUpdate(entry, preservingProfile: false) != nil else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return false
+        }
         await TokenStore.shared.setServerUrl(url)
         await TokenStore.shared.switchActiveServer(serverId: id)
         await TokenStore.shared.setProfileId(nil)
         await TokenStore.shared.setProfileToken(nil)
         await TokenStore.shared.saveTokens(accessToken: access, refreshToken: refresh)
-        await ServerRegistry.shared.commitSwitchTo(
+        guard await ServerRegistry.shared.commitSwitchTo(
             serverId: id,
             holding: transitionLease
-        )
+        ) else {
+            await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return false
+        }
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         await ServerRegistry.shared.refreshFeaturesAfterGatedServerSwitch()
         return true

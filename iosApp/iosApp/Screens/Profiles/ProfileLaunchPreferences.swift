@@ -11,10 +11,15 @@ final class ProfileLaunchPreferences {
     )
 
     private let defaults: SharedDefaults
+    private let persistenceOverride: ((ProfileLaunchState) -> Bool)?
     private(set) var state: ProfileLaunchState
 
-    init(defaults: SharedDefaults = .shared) {
+    init(
+        defaults: SharedDefaults = .shared,
+        persistenceOverride: ((ProfileLaunchState) -> Bool)? = nil
+    ) {
         self.defaults = defaults
+        self.persistenceOverride = persistenceOverride
         self.state = ProfileLaunchState.load(from: defaults)
         _ = persist()
     }
@@ -23,8 +28,12 @@ final class ProfileLaunchPreferences {
         get { state.behavior }
         set {
             guard state.behavior != newValue else { return }
+            let previousState = state
             state.behavior = newValue
-            _ = persist()
+            if !persist() {
+                state = previousState
+                _ = persist()
+            }
         }
     }
 
@@ -132,6 +141,9 @@ final class ProfileLaunchPreferences {
     }
 
     private func persist() -> Bool {
+        if let persistenceOverride, !persistenceOverride(state) {
+            return false
+        }
         do {
             let data = try JSONEncoder().encode(state)
             defaults.set(data, forKey: SharedStorage.profileLaunchStateKey)
