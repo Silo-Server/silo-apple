@@ -15,14 +15,18 @@ import Foundation
 
 enum SubtitleScriptFont {
     private static let arabicAlef: UniChar = 0x0627
+    /// Face to try when the category-mapped one is missing. Ships on every
+    /// Apple platform that carries Arabic at all, unlike Damascus (absent
+    /// on tvOS).
+    private static let universalArabicFamily = "Geeza Pro"
     private static let cacheLock = NSLock()
     private static var resolvedArabicFamilies: [String: String] = [:]
 
-    /// True when the cue carries any Arabic letter. The fallback faces
-    /// (Geeza Pro, Damascus) cover Latin too, so a mixed cue such as
-    /// `NARRATOR: مرحبا` costs nothing by taking the Arabic style, while
-    /// a majority test would send it down the Latin path and flatten the
-    /// Arabic run.
+    /// True when the cue carries any Arabic letter or Arabic-Indic digit.
+    /// The fallback faces (Geeza Pro, Damascus) cover Latin too, so a mixed
+    /// cue such as `NARRATOR: مرحبا` costs nothing by taking the Arabic
+    /// style, while a majority test would send it down the Latin path and
+    /// flatten the Arabic run.
     static func containsArabicLetters(_ text: String) -> Bool {
         // ASS override blocks (`{\i1}`) are markup, not cue text. A cue can
         // still contain a literal unmatched `{` — `translateCueBody` drops
@@ -35,7 +39,7 @@ enum SubtitleScriptFont {
         return scanForArabic(text, honoringOverrideBraces: false) ?? false
     }
 
-    /// Scan `text` for Arabic letters. Returns nil when
+    /// Scan `text` for Arabic-script content. Returns nil when
     /// `honoringOverrideBraces` is set and the braces never balanced,
     /// meaning the result would be based on a truncated scan.
     private static func scanForArabic(
@@ -65,7 +69,7 @@ enum SubtitleScriptFont {
                     continue
                 }
             }
-            guard !insideASSOverride, isLetter(scalar), isArabic(scalar) else { continue }
+            guard !insideASSOverride, isArabicScript(scalar) else { continue }
             containsArabic = true
         }
 
@@ -91,11 +95,20 @@ enum SubtitleScriptFont {
                 for: chosenFamily,
                 chosenFont: chosenFont
             )
-            if let mappedFont = availableFont(named: mappedFamily), coversArabic(mappedFont) {
-                resolved = mappedFamily
+            // The category-mapped face is a style preference, not a
+            // guarantee: Damascus is absent on tvOS, where
+            // `CTFontCreateWithName` silently substitutes Helvetica and
+            // `availableFont` rejects it. Fall through to the universal
+            // face before giving up, otherwise no ArabicFallback style is
+            // emitted and the FONT_NAME override flattens Arabic cues.
+            if let covering = coveringArabicFamily(mappedFamily) {
+                resolved = covering
+            } else if mappedFamily != universalArabicFamily,
+                      let covering = coveringArabicFamily(universalArabicFamily) {
+                resolved = covering
             } else {
                 // Preserve CoreText/libass's existing per-glyph fallback if
-                // the expected platform face is unavailable.
+                // no expected platform face is available.
                 resolved = chosenFamily
             }
         }
@@ -104,6 +117,12 @@ enum SubtitleScriptFont {
         resolvedArabicFamilies[chosenFamily] = resolved
         cacheLock.unlock()
         return resolved
+    }
+
+    /// `family` if it both resolves to itself and covers Arabic, else nil.
+    private static func coveringArabicFamily(_ family: String) -> String? {
+        guard let font = availableFont(named: family), coversArabic(font) else { return nil }
+        return family
     }
 
     private static func availableFont(named family: String) -> CTFont? {
@@ -128,7 +147,7 @@ enum SubtitleScriptFont {
         if let chosenFont, isSerif(chosenFont) {
             return "Damascus"
         }
-        return "Geeza Pro"
+        return universalArabicFamily
     }
 
     private static func isSerif(_ font: CTFont) -> Bool {
@@ -147,17 +166,25 @@ enum SubtitleScriptFont {
         CFCharacterSetIsCharacterMember(CTFontCopyCharacterSet(font), arabicAlef)
     }
 
-    private static func isLetter(_ scalar: Unicode.Scalar) -> Bool {
+    /// A scalar that needs an Arabic-capable face: inside an Arabic block
+    /// and either a letter or a decimal digit. Digits matter because the
+    /// Arabic-Indic sets (U+0660–0669, U+06F0–06F9) live in those blocks —
+    /// a digits-only cue such as `٢٠٢٦` would otherwise stay on `Default`
+    /// and be flattened onto a Latin family by the `FONT_NAME` override.
+    /// Punctuation and marks are excluded: they carry no script identity
+    /// on their own.
+    private static func isArabicScript(_ scalar: Unicode.Scalar) -> Bool {
+        guard isInArabicBlock(scalar) else { return false }
         switch scalar.properties.generalCategory {
         case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter,
-             .modifierLetter, .otherLetter:
+             .modifierLetter, .otherLetter, .decimalNumber:
             return true
         default:
             return false
         }
     }
 
-    private static func isArabic(_ scalar: Unicode.Scalar) -> Bool {
+    private static func isInArabicBlock(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
         case 0x0600...0x06FF,
              0x0750...0x077F,

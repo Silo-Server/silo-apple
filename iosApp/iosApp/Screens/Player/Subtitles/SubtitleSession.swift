@@ -169,6 +169,23 @@ final class SubtitleSession {
     /// when `applySubtitleStyling` is called. Guarded by `lock`.
     private var stylingParams: SubtitleStylingOverride.Parameters = .default
 
+    /// Monotonic counter bumped on every `stylingParams` change. A
+    /// conversion runs off a snapshot taken outside `lock`, so the install
+    /// gate re-checks this to reject a document generated from styling the
+    /// user has since replaced. Guarded by `lock`.
+    private var stylingGeneration: UInt64 = 0
+
+    /// Serial queue for font-change reinstalls. Reconverting a
+    /// feature-length sidecar is O(cues) and must not run on the settings
+    /// caller's queue. Serial rather than concurrent so a rapid sequence of
+    /// font changes across both slots can't fan out into simultaneous
+    /// whole-file conversions; slot independence makes the ordering
+    /// immaterial either way.
+    private let reinstallQueue = DispatchQueue(
+        label: "com.continuum.subtitle-session.reinstall",
+        qos: .userInitiated
+    )
+
     /// Per-slot cue stores for bitmap subtitle tracks (PGS/DVD). Bitmap
     /// tracks bypass libass entirely: the extractor feeds ready CGImage
     /// cues into the slot's store and the backend's display-link pump
@@ -207,7 +224,10 @@ final class SubtitleSession {
             content: String
         )] = withLock {
             let fontFamilyChanged = stylingParams.fontFamilyName != params.fontFamilyName
-            stylingParams = params
+            if stylingParams != params {
+                stylingParams = params
+                stylingGeneration &+= 1
+            }
             guard fontFamilyChanged else { return [] }
             return installedConvertedSidecars.compactMap { slot, sidecar in
                 // Latin-only tracks track the new family through the live
@@ -221,15 +241,22 @@ final class SubtitleSession {
             }
         }
         renderer.applySettings(params)
+        // Reconversion is unbounded work on the caller's queue (player
+        // settings / UI), so it lands on `reinstallQueue`. Arriving late is
+        // safe: the install gate rejects the document if the slot's
+        // generation moved (track switched or closed) or if the styling
+        // generation moved (a newer conversion supersedes this one).
         for reinstallation in reinstallations {
-            installSidecarContent(
-                content: reinstallation.content,
-                codecHint: nil,
-                urlIndex: reinstallation.sidecar.urlIndex,
-                slot: reinstallation.slot,
-                knownFormat: reinstallation.sidecar.format,
-                requiredGeneration: reinstallation.sidecar.generation
-            )
+            reinstallQueue.async { [weak self] in
+                self?.installSidecarContent(
+                    content: reinstallation.content,
+                    codecHint: nil,
+                    urlIndex: reinstallation.sidecar.urlIndex,
+                    slot: reinstallation.slot,
+                    knownFormat: reinstallation.sidecar.format,
+                    requiredGeneration: reinstallation.sidecar.generation
+                )
+            }
         }
     }
 
@@ -676,78 +703,115 @@ final class SubtitleSession {
         knownFormat: SubtitleFormat? = nil,
         requiredGeneration: UInt64? = nil
     ) {
+        enum InstallOutcome {
+            case installed
+            /// The slot no longer holds the entry this install targeted.
+            case abandoned
+            /// Styling changed under the conversion; convert again.
+            case restyled
+        }
+
         let format = knownFormat ?? Self.codecToFormat(codecHint) ?? .vtt
         let isNativeASS = (format == .ass)
 
-        let assDocument: String
-        let preservesScriptSpecificFonts: Bool
-        let containsArabicCues: Bool
-        switch format {
-        case .ass:
-            assDocument = content
-            preservesScriptSpecificFonts = false
-            containsArabicCues = false
-        case .vtt, .srt:
-            let params = withLock { stylingParams }
-            let hasArabicFallbackStyle = SubtitleStylingOverride
-                .arabicFallbackFontName(params: params) != nil
-            let conversion = VTTToASSConverter.convert(
-                vtt: content,
-                header: SubtitleStylingOverride.syntheticHeader(
-                    params: params,
-                    slot: slot
-                ),
-                hasArabicFallbackStyle: hasArabicFallbackStyle
-            )
-            assDocument = conversion.assDocument
-            preservesScriptSpecificFonts = conversion.usedArabicFallbackStyle
-            containsArabicCues = conversion.containsArabicCues
-        }
-
-        // Bookkeeping, staleness check, and the install must be atomic with
-        // respect to slot changes: releasing the lock first would let a
-        // concurrent close/open slip between them and be resurrected by this
-        // install. Safe to hold `lock` here specifically because
-        // `installFullASS` only enqueues onto the renderer's serial
-        // `sessionQueue` and never calls back into the session — unlike the
-        // `.sync` renderer calls the lock's contract warns about. Ordering
-        // then follows from that queue: any later user action enqueues its
-        // renderer work after ours.
-        let installed = withLock { () -> Bool in
-            if let requiredGeneration,
-               installedSidecarGeneration[slot] != requiredGeneration
-                || installedConvertedSidecars[slot] == nil {
-                return false
-            }
-
-            if isNativeASS {
-                clearInstalledSidecarLocked(slot)
-            } else {
-                installedConvertedSidecars[slot] = InstalledConvertedSidecar(
-                    urlIndex: urlIndex,
-                    format: format,
-                    usedArabicFallbackStyle: preservesScriptSpecificFonts,
-                    containsArabicCues: containsArabicCues,
-                    generation: bumpInstalledGenerationLocked(slot)
+        // Conversion bakes the styling snapshot into the document's header
+        // and style selection, and it runs outside `lock`. A font change
+        // landing in that window would otherwise install a document carrying
+        // the old families — permanently, since this is a fresh install with
+        // no reinstall scheduled for it, and the live FONT_NAME override is
+        // suppressed while `preservesScriptSpecificFonts` is set. Reconvert
+        // instead. Terminates because each retry requires the user to have
+        // changed styling again, and those changes are human-paced.
+        while true {
+            let assDocument: String
+            let preservesScriptSpecificFonts: Bool
+            let containsArabicCues: Bool
+            /// nil for authored ASS: it is passed through unmodified, so no
+            /// styling snapshot is embedded in it.
+            let conversionStylingGeneration: UInt64?
+            switch format {
+            case .ass:
+                assDocument = content
+                preservesScriptSpecificFonts = false
+                containsArabicCues = false
+                conversionStylingGeneration = nil
+            case .vtt, .srt:
+                let (params, generation) = withLock { (stylingParams, stylingGeneration) }
+                let hasArabicFallbackStyle = SubtitleStylingOverride
+                    .arabicFallbackFontName(params: params) != nil
+                let conversion = VTTToASSConverter.convert(
+                    vtt: content,
+                    header: SubtitleStylingOverride.syntheticHeader(
+                        params: params,
+                        slot: slot
+                    ),
+                    hasArabicFallbackStyle: hasArabicFallbackStyle
                 )
+                assDocument = conversion.assDocument
+                preservesScriptSpecificFonts = conversion.usedArabicFallbackStyle
+                containsArabicCues = conversion.containsArabicCues
+                conversionStylingGeneration = generation
             }
 
-            renderer.installFullASS(
-                slot: slot,
-                assDocument: assDocument,
-                isNativeASS: isNativeASS,
-                preservesScriptSpecificFonts: preservesScriptSpecificFonts
-            )
-            return true
-        }
-        guard installed else { return }
+            // Bookkeeping, staleness checks, and the install must be atomic
+            // with respect to slot changes: releasing the lock first would let
+            // a concurrent close/open slip between them and be resurrected by
+            // this install. Safe to hold `lock` here specifically because
+            // `installFullASS` only enqueues onto the renderer's serial
+            // `sessionQueue` and never calls back into the session — unlike the
+            // `.sync` renderer calls the lock's contract warns about. Ordering
+            // then follows from that queue: any later user action enqueues its
+            // renderer work after ours.
+            let outcome = withLock { () -> InstallOutcome in
+                if let requiredGeneration,
+                   installedSidecarGeneration[slot] != requiredGeneration
+                    || installedConvertedSidecars[slot] == nil {
+                    return .abandoned
+                }
+                if let conversionStylingGeneration,
+                   conversionStylingGeneration != stylingGeneration {
+                    return .restyled
+                }
 
-        let stats = Self.dialogueStats(in: assDocument)
-        let nowSeconds = currentPositionSecondsProvider?() ?? -1
-        Self.logger.info(
-            "[CMP-SUB] installed sidecar slot=\(slot.rawValue, privacy: .public) format=\(String(describing: format), privacy: .public) nativeASS=\(isNativeASS, privacy: .public) assChars=\(assDocument.count, privacy: .public) dialogueCount=\(stats.count, privacy: .public) first=\(stats.first ?? "nil", privacy: .public) last=\(stats.last ?? "nil", privacy: .public) now=\(nowSeconds, privacy: .public)"
-        )
-        publishStatus(slot: slot, .ready)
+                if isNativeASS {
+                    clearInstalledSidecarLocked(slot)
+                } else {
+                    installedConvertedSidecars[slot] = InstalledConvertedSidecar(
+                        urlIndex: urlIndex,
+                        format: format,
+                        usedArabicFallbackStyle: preservesScriptSpecificFonts,
+                        containsArabicCues: containsArabicCues,
+                        generation: bumpInstalledGenerationLocked(slot)
+                    )
+                }
+
+                renderer.installFullASS(
+                    slot: slot,
+                    assDocument: assDocument,
+                    isNativeASS: isNativeASS,
+                    preservesScriptSpecificFonts: preservesScriptSpecificFonts
+                )
+                return .installed
+            }
+            switch outcome {
+            case .abandoned:
+                return
+            case .restyled:
+                // The slot generation is untouched by a rejected install, so
+                // `requiredGeneration` stays valid for the next pass.
+                continue
+            case .installed:
+                break
+            }
+
+            let stats = Self.dialogueStats(in: assDocument)
+            let nowSeconds = currentPositionSecondsProvider?() ?? -1
+            Self.logger.info(
+                "[CMP-SUB] installed sidecar slot=\(slot.rawValue, privacy: .public) format=\(String(describing: format), privacy: .public) nativeASS=\(isNativeASS, privacy: .public) assChars=\(assDocument.count, privacy: .public) dialogueCount=\(stats.count, privacy: .public) first=\(stats.first ?? "nil", privacy: .public) last=\(stats.last ?? "nil", privacy: .public) now=\(nowSeconds, privacy: .public)"
+            )
+            publishStatus(slot: slot, .ready)
+            return
+        }
     }
 
     private static func dialogueStats(in assDocument: String) -> (count: Int, first: String?, last: String?) {
