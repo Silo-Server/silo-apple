@@ -1293,7 +1293,8 @@ private struct MainTabSidebarDestination: Identifiable {
 /// destination-specific root for them.
 func projectedMainTabDestinations(
     primaryMenu: PrimaryMenuPreference?,
-    availableLibraries: [Library] = []
+    availableLibraries: [Library] = [],
+    showAudiobooks: Bool = true
 ) -> [MainTabDestination] {
     guard let primaryMenu else {
         return AppTab.visibleCases.map(MainTabDestination.app)
@@ -1304,7 +1305,11 @@ func projectedMainTabDestinations(
         : primaryMenu.items
     var destinations: [MainTabDestination] = []
     for item in menuItems {
-        guard mainTabSupportsDestination(item, availableLibraries: availableLibraries) else {
+        guard mainTabSupportsDestination(
+            item,
+            availableLibraries: availableLibraries,
+            showAudiobooks: showAudiobooks
+        ) else {
             continue
         }
         let destination: MainTabDestination?
@@ -1361,7 +1366,8 @@ func projectedMainTabDestinations(
 /// currently open simply stay out of the rendered navigation and editor.
 func mainTabSupportsDestination(
     _ item: PrimaryMenuItem,
-    availableLibraries: [Library]
+    availableLibraries: [Library],
+    showAudiobooks: Bool = true
 ) -> Bool {
     switch item {
     case .builtin(.movies):
@@ -1373,7 +1379,7 @@ func mainTabSupportsDestination(
             libraryMatchesPrimaryMenuCategory($0, category: .series)
         }
     case .builtin(.audiobooks):
-        return availableLibraries.contains {
+        return showAudiobooks && availableLibraries.contains {
             libraryMatchesPrimaryMenuCategory($0, category: .audiobooks)
         }
     case .builtin(.music):
@@ -1460,6 +1466,9 @@ struct MainTabView: View {
     @Bindable var router: AppRouter
     @State private var selectedDestinationID: MainTabDestinationID = .app(.home)
     @State private var uiCustomization = UICustomizationPreferences.shared
+    /// The local audiobook opt-in is a final visibility gate even when a
+    /// synced/custom menu contains an Audiobooks destination.
+    @State private var navPrefs = AppNavPreferences.shared
     @State private var serverRegistry = ServerRegistry.shared
     /// Tagged with the server/profile that authorized the library list. A
     /// profile transition fails direct roots closed immediately, even before
@@ -1540,6 +1549,12 @@ struct MainTabView: View {
                 visibleDestinations: visibleDestinations
             )
         }
+        .onChange(of: navPrefs.showAudiobooks) { _, _ in
+            selectedDestinationID = resolvedVisibleMainTabDestination(
+                selectedDestinationID,
+                visibleDestinations: visibleDestinations
+            )
+        }
         .onChange(of: librarySnapshot) { _, _ in
             selectedDestinationID = resolvedVisibleMainTabDestination(
                 selectedDestinationID,
@@ -1607,7 +1622,8 @@ struct MainTabView: View {
             primaryMenu: uiCustomization.primaryMenu,
             availableLibraries: librarySnapshot.availableLibraries(
                 for: currentLibraryAuthority
-            )
+            ),
+            showAudiobooks: navPrefs.showAudiobooks
         )
         #if !os(tvOS)
         if DownloadManager.shared.downloadsEnabled,

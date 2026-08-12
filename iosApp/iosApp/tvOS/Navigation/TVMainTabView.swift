@@ -843,7 +843,8 @@ struct TVMainTabView: View {
             case .builtin(.movies): root = availableRoot(for: .movies)
             case .builtin(.series): root = availableRoot(for: .series)
             case .builtin(.music): root = availableRoot(for: .music)
-            case .builtin(.audiobooks): root = availableRoot(for: .audiobooks)
+            case .builtin(.audiobooks):
+                root = navPrefs.showAudiobooks ? availableRoot(for: .audiobooks) : nil
             case .builtin(.forYou): root = .recommendations
             case .builtin(.calendar): root = .calendar
             case .library(let libraryId, let label):
