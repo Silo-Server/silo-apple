@@ -176,6 +176,7 @@ enum OfflinePlaybackBuilder {
                 AudioTrack(
                     index: nil,
                     codec: track.codec,
+                    profile: nil,
                     channels: track.channels,
                     channelLayout: track.layout,
                     bitrate: track.bitrate,

@@ -1626,6 +1626,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         AudioTrack(
             index: index,
             codec: codec,
+            profile: nil,
             channels: 6,
             channelLayout: "5.1",
             bitrate: 640_000,
