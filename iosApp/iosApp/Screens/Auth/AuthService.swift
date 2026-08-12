@@ -367,6 +367,14 @@ final class AuthService: @unchecked Sendable {
                 expectedAccount: expectedAccount
             )
             if committed {
+                guard launchPreferences.clearBackgroundedAt() else {
+                    _ = await TokenStore.shared.deactivateProfile(
+                        expectedAccount: expectedAccount,
+                        expectedProfileID: remembered.profileID
+                    )
+                    await clearPerProfileCaches()
+                    return false
+                }
                 await clearPerProfileCaches()
                 return true
             } else {

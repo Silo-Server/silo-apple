@@ -1,6 +1,8 @@
 import SwiftUI
 #if os(iOS) || os(tvOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 struct ContentView: View {
@@ -129,6 +131,11 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
             ExitSentinel.shared.appWillTerminate()
+        }
+        #endif
+        #if os(macOS)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            markProfileAwayStartForTermination()
         }
         #endif
         .task {
@@ -346,6 +353,15 @@ struct ContentView: View {
         }
     }
 
+    /// macOS does not reliably publish a background scene phase before Cmd-Q.
+    /// Termination always ends active playback, so it starts an away interval
+    /// even when media was still playing at the time of the notification.
+    private func markProfileAwayStartForTermination(at date: Date = .now) {
+        guard AuthService.shared.isLoggedIn,
+              AuthService.shared.profileId != nil else { return }
+        launchPreferences.markBackgrounded(at: date)
+    }
+
     /// If background playback starts, stop the away clock. If it later stops
     /// while Silo is still hidden, begin a fresh interval at that point.
     private func updateProfileAwayStartForBackgroundPlayback() {
@@ -380,11 +396,31 @@ struct ContentView: View {
               launchPreferences.requiresSelectionAfterBackground() else {
             return
         }
-        let deactivated = await AuthService.shared.deactivateProfile(
+        var deactivated = await AuthService.shared.deactivateProfile(
             preserveRememberedProfile: true,
             markSelectionRequired: true,
             expectedProfileID: expectedProfileID
         )
+        #if os(tvOS)
+        if !deactivated {
+            let endedTemporaryIdentity = await RemotePlaybackIdentityManager.shared.end()
+            let hasTemporaryIdentity = await TokenStore.shared.hasTemporaryScope()
+            guard endedTemporaryIdentity || !hasTemporaryIdentity else {
+                return
+            }
+            guard router.authState == .authenticated,
+                  !keepsProfileActiveInBackground,
+                  launchPreferences.requiresSelectionAfterBackground(),
+                  AuthService.shared.profileId == expectedProfileID else {
+                return
+            }
+            deactivated = await AuthService.shared.deactivateProfile(
+                preserveRememberedProfile: true,
+                markSelectionRequired: true,
+                expectedProfileID: expectedProfileID
+            )
+        }
+        #endif
         guard deactivated else { return }
         router.showProfileSelection()
     }
