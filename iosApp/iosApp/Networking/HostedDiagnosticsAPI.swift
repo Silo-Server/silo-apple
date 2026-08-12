@@ -204,6 +204,7 @@ actor HostedDiagnosticsAPI {
         }
         let reportIDString = reportID.uuidString.lowercased()
         var request = try self.request(path: "v1/reports/\(reportIDString)", method: "GET")
+        request.timeoutInterval = 10
         authorize(&request, token: credential.installationToken)
         let status = try await perform(request, as: HostedReportStatusResponse.self)
         guard status.reportID.caseInsensitiveCompare(reportIDString) == .orderedSame,
@@ -303,6 +304,7 @@ actor HostedDiagnosticsAPI {
         }
 
         var statusRequest = try request(path: "v1/reports/\(reportIDString)", method: "GET")
+        statusRequest.timeoutInterval = 10
         authorize(&statusRequest, token: credential.installationToken)
         var status = accepted
         do {
@@ -364,6 +366,7 @@ actor HostedDiagnosticsAPI {
             appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
         )
         var request = try request(path: "v1/installations", method: "POST")
+        request.timeoutInterval = 10
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try DiagnosticsJSONCoding.makeEncoder().encode(body)
         let response = try await perform(request, as: HostedInstallationResponse.self)

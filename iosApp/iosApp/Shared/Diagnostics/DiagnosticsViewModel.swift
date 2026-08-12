@@ -174,6 +174,7 @@ final class DiagnosticsViewModel {
     func setConsentMode(_ mode: DiagnosticsConsentChoice) async {
         guard canManageDiagnostics, let snapshot = statusSnapshot else { return }
         guard mode != .always || allowsAlwaysSend else { return }
+        let operationGeneration = generation
         consentStore.setMode(
             mode,
             for: snapshot.binding,
@@ -184,6 +185,10 @@ final class DiagnosticsViewModel {
         if mode == .never {
             isWorking = true
             let erased = await coordinator.turnOffAndDelete(binding: snapshot.binding)
+            guard generation == operationGeneration,
+                  statusSnapshot?.binding == snapshot.binding else {
+                return
+            }
             isWorking = false
             pendingReports = []
             prompt = nil
@@ -215,10 +220,12 @@ final class DiagnosticsViewModel {
         selectedDestination = destination
         statusSnapshot = nil
         featureState = .loading
+        consentMode = .ask
         pendingReports = []
         sentHistory = []
         prompt = nil
         notice = nil
+        isWorking = false
         await refreshStatusAndLocalState(
             destination: destination,
             expectedGeneration: refreshGeneration

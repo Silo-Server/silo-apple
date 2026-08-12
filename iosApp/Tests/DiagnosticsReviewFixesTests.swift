@@ -286,6 +286,23 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertTrue(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
             HTTPError.http(statusCode: 503, body: nil)
         ))
+        XCTAssertTrue(DiagnosticsCoordinator.isTransientCaptureFallbackFailure(
+            HostedDiagnosticsAPIError.http(statusCode: 429, code: "rate_limited")
+        ))
+    }
+
+    func testSelfHostedBindingRejectsReservedHostedPrefix() {
+        XCTAssertNil(DiagnosticsBinding.selfHosted(
+            serverInstanceID: "hosted:spoofed-self-hosted-id",
+            accountUserID: "account"
+        ))
+        XCTAssertEqual(
+            DiagnosticsBinding.selfHosted(
+                serverInstanceID: "self-hosted-server",
+                accountUserID: "account"
+            )?.destinationChoice,
+            .selfHosted
+        )
     }
 
     func testCaptureFallbackFailsClosedOnDefinitiveFailures() {

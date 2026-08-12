@@ -57,6 +57,17 @@ extension DiagnosticsBinding {
         serverInstanceID.hasPrefix(Self.hostedPrefix) ? .hosted : .selfHosted
     }
 
+    static func selfHosted(
+        serverInstanceID: String,
+        accountUserID: String
+    ) -> DiagnosticsBinding? {
+        guard !serverInstanceID.hasPrefix(Self.hostedPrefix) else { return nil }
+        return DiagnosticsBinding(
+            serverInstanceID: serverInstanceID,
+            accountUserID: accountUserID
+        )
+    }
+
     static func hosted(serverRegistryID: String, accountUserID: String) -> DiagnosticsBinding {
         // This hash is local ownership state only. It scopes consent, pending
         // evidence, and retries to the Silo server/account that captured them.

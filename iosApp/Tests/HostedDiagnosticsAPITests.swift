@@ -91,10 +91,13 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             XCTAssertNotEqual(request.authorization, "Bearer silo-account-token")
         }
         let upload = try XCTUnwrap(requests.first(where: { $0.method == "PUT" }))
+        XCTAssertEqual(upload.timeoutInterval, 120)
         XCTAssertEqual(upload.contentType, "application/gzip")
         XCTAssertEqual(upload.contentLength, String(bundle.count))
         XCTAssertEqual(upload.uploadToken, "one-time-upload-token")
         XCTAssertEqual(upload.body, bundle)
+        let status = try XCTUnwrap(requests.first(where: { $0.method == "GET" }))
+        XCTAssertEqual(status.timeoutInterval, 10)
 
         let create = try XCTUnwrap(requests.first(where: { $0.path == "/v1/reports" }))
         let createJSON = try XCTUnwrap(
@@ -335,6 +338,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let requests = HostedDiagnosticsStubProtocol.requests()
         XCTAssertEqual(requests.map(\.path).first, "/v1/installations")
         let installation = try XCTUnwrap(requests.first)
+        XCTAssertEqual(installation.timeoutInterval, 10)
         XCTAssertNil(installation.authorization)
         XCTAssertNil(installation.cookieHeader)
         XCTAssertNil(installation.profileHeader)
@@ -549,7 +553,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             level: .info,
             category: .playback,
             tag: "CMP playback_session_id=\(privateLogSessionID) file_abcdefgh",
-            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log wss://[host:0123456789ab]/items/42 http://127.0.0.1:49152/master.m3u8 host=127.0.0.1 http://127.42.7.9:49153/playlist.m3u8 \"host\":\"127.42.7.9\" \"playback_session_id\":\"private-json-session\" request \(privateBareUUID) item_42 plan_abcdefgh item_count request_cancelled peer 127.42.7.8 route selected",
+            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log wss://[host:0123456789ab]/items/42 http://127.0.0.1:49152/master.m3u8 host=127.0.0.1 http://127.42.7.9:49153/playlist.m3u8 \"host\":\"127.42.7.9\" \"playback_session_id\":\"private-json-session\" request \(privateBareUUID) item_42 plan_abcdefgh item_count request_cancelled peer 127.42.7.8 file /Users/alice/private-title.mkv route selected",
             attrs: [
                 "sink": .string("HDMI"),
                 "fmt": .string("content_abcdefgh"),
@@ -715,9 +719,11 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             "plan_abcdefgh",
             "content_abcdefgh",
             "media_abcdefgh",
+            "/Users/alice/private-title.mkv",
         ] {
             XCTAssertFalse(renderedEvidence.contains(forbidden), forbidden)
         }
+        XCTAssertTrue(renderedEvidence.contains("[redacted_path]"))
         XCTAssertTrue(hostedLog.msg.contains("[redacted_private_id]"))
         XCTAssertTrue(hostedLog.msg.contains("item_count"))
         XCTAssertTrue(hostedLog.msg.contains("request_cancelled"))
@@ -1335,6 +1341,46 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertFalse(try fixture.store.hostedDeletionIntents().isEmpty)
     }
 
+    func testExplicitHostedDeletePrioritizesTheSelectedReport() async throws {
+        let fixture = try makePendingHostedReport(label: "selected-delete-backlog")
+        let selected = try saveAdditionalHostedReport(
+            in: fixture.store,
+            binding: fixture.report.binding.binding,
+            label: "selected-delete",
+            capturedAt: fixture.report.binding.capturedAtDate.addingTimeInterval(1)
+        )
+        try fixture.store.stageHostedDeletionAndDelete(
+            fixture.report,
+            forceRemoteIntent: true
+        )
+        HostedDiagnosticsStubProtocol.configureDelete(
+            reportID: selected.id,
+            statusCode: 204
+        )
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: "install-selected-delete",
+                    installationToken: "selected-delete-token"
+                )
+            )
+        )
+        let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
+
+        let erased = await coordinator.delete(report: selected)
+        XCTAssertTrue(erased)
+
+        let firstDelete = try XCTUnwrap(
+            HostedDiagnosticsStubProtocol.requests().first(where: { $0.method == "DELETE" })
+        )
+        XCTAssertEqual(
+            firstDelete.path,
+            "/v1/reports/\(selected.id.uuidString.lowercased())"
+        )
+    }
+
     func testTurnOffStagesRemoteErasureBeforePurgingHostedEvidence() async throws {
         let fixture = try makePendingHostedReport(label: "turn-off-delete")
         let bundle = try DiagnosticsBundleBuilder().build(
@@ -1871,6 +1917,57 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         )
     }
 
+    func testBackgroundReadyRemainsUploadedWhenLocalRemovalFails() async throws {
+        let fixture = try makePendingHostedReport(
+            label: "ready-local-removal-failure",
+            hostedDeletionRemover: { _ in
+                throw DiagnosticsStoreError.invalidHostedEnvelope
+            }
+        )
+        let shortID = "SILO-READY-LOCAL-FAILURE"
+        fixture.store.markHostedProcessing(fixture.report, shortID: shortID)
+        HostedDiagnosticsStubProtocol.configureReportStatus(
+            reportID: fixture.report.id,
+            shortID: shortID,
+            state: .ready,
+            errorCode: nil
+        )
+        let suiteName = "HostedDiagnosticsAPITests.ready.failure.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+        }
+        let consentStore = DiagnosticsConsentStore(
+            defaults: SharedDefaults(suite: suite, standard: suite),
+            onNeverSelected: { _ in }
+        )
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: "install-ready-local-failure",
+                    installationToken: "ready-local-failure-token"
+                )
+            )
+        )
+        let coordinator = DiagnosticsCoordinator(
+            hostedAPI: api,
+            consentStore: consentStore,
+            pendingStore: fixture.store
+        )
+
+        let pending = await coordinator.pendingReports(for: fixture.report.binding.binding)
+
+        XCTAssertTrue(pending.isEmpty)
+        XCTAssertEqual(
+            consentStore.sentHistory(for: fixture.report.binding.binding).map(\.shortID),
+            [shortID]
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertEqual(try fixture.store.hostedReadyReceiptIDs(), [fixture.report.id])
+    }
+
     func testHostedProcessingStateIsAwaitingStatusInsteadOfAnotherPrompt() throws {
         let fixture = try makePendingHostedReport(label: "processing-prompt")
         fixture.store.markHostedProcessing(fixture.report, shortID: "SILO-PROCESSING")
@@ -2102,6 +2199,27 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(draft.consent.mode, .prompt)
         XCTAssertNil(draft.report.profileID)
         XCTAssertEqual(draft.playbackSessionIds, [])
+    }
+
+    func testHostedEnvelopeHonorsBothAdvertisedSizeLimits() {
+        XCTAssertTrue(DiagnosticsCoordinator.hostedEnvelopeFitsAdvertisedLimits(
+            bundleBytes: 1_000,
+            manifestBytes: 500,
+            maximumBundleBytes: 1_000,
+            maximumManifestBytes: 500
+        ))
+        XCTAssertFalse(DiagnosticsCoordinator.hostedEnvelopeFitsAdvertisedLimits(
+            bundleBytes: 1_000,
+            manifestBytes: 501,
+            maximumBundleBytes: 1_000,
+            maximumManifestBytes: 500
+        ))
+        XCTAssertFalse(DiagnosticsCoordinator.hostedEnvelopeFitsAdvertisedLimits(
+            bundleBytes: 1_001,
+            manifestBytes: 500,
+            maximumBundleBytes: 1_000,
+            maximumManifestBytes: 500
+        ))
     }
 
     func testCollectorHTTPErrorDispositionDoesNotRetryPermanentValidationFailures() {
@@ -2845,6 +2963,7 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
         let uploadToken: String?
         let contentType: String?
         let contentLength: String?
+        let timeoutInterval: TimeInterval
         let body: Data
     }
 
@@ -2985,6 +3104,7 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
                 uploadToken: request.value(forHTTPHeaderField: "X-Upload-Token"),
                 contentType: request.value(forHTTPHeaderField: "Content-Type"),
                 contentLength: request.value(forHTTPHeaderField: "Content-Length"),
+                timeoutInterval: request.timeoutInterval,
                 body: body
             ))
         }

@@ -218,6 +218,7 @@ struct DiagnosticsCaptureContext {
     let osVersion: String
     var destinationServerInstanceID: String? = nil
     var maxBundleBytes: Int? = nil
+    var maxManifestBytes: Int? = nil
     var availabilityStatus: DiagnosticsAvailabilityStatus = .available
     /// Process-local credential-owner epoch that produced a live hosted
     /// binding. It is never serialized into the report; the upload path uses
@@ -244,6 +245,7 @@ struct DiagnosticsCaptureContext {
             osVersion: osVersion,
             destinationServerInstanceID: destinationServerInstanceID,
             maxBundleBytes: maxBundleBytes,
+            maxManifestBytes: maxManifestBytes,
             availabilityStatus: availabilityStatus,
             hostedCredentialIdentity: hostedCredentialIdentity
         )
@@ -1099,7 +1101,10 @@ final class PendingReportStore {
             }
             if now.timeIntervalSince(report.binding.capturedAtDate) > Self.expiryInterval {
                 if report.binding.binding.destinationChoice == .hosted {
-                    try stageHostedDeletionAndDeleteLocked(report, now: now)
+                    // Preserve the evidence for a later maintenance pass if
+                    // staging its durable remote deletion fails. An expired
+                    // report must not abort an unrelated new capture.
+                    try? stageHostedDeletionAndDeleteLocked(report, now: now)
                 } else {
                     try? fileManager.removeItem(at: url)
                 }

@@ -13,7 +13,7 @@ struct DiagnosticsPrompt: Identifiable, Equatable {
         let count = reports.count
         let types = Set(reports.map(\.binding.type))
         let recipient = reports.allSatisfy { $0.binding.binding.destinationChoice == .hosted }
-            ? "the Silo diagnostics team"
+            ? "the Silo Diagnostics team"
             : "your server administrator"
         if count == 1, let type = reports.first?.binding.type {
             return Self.singleMessage(for: type, recipient: recipient)

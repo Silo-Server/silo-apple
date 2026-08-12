@@ -261,10 +261,12 @@ actor DiagnosticsCoordinator {
         guard let accountUserID = user.id, !accountUserID.isEmpty else {
             throw DiagnosticsCoordinatorError.missingAccountUserID
         }
-        let binding = DiagnosticsBinding(
+        guard let binding = DiagnosticsBinding.selfHosted(
             serverInstanceID: status.serverInstanceID,
             accountUserID: accountUserID
-        )
+        ) else {
+            throw DiagnosticsCoordinatorError.reservedServerInstanceID
+        }
         let snapshot = DiagnosticsStatusSnapshot(status: status, binding: binding)
         cachedStatus = snapshot
         cachedStatusDestination = .selfHosted
@@ -544,7 +546,11 @@ actor DiagnosticsCoordinator {
         } catch {
             return false
         }
-        return await drainHostedDeletionIntents()
+        let erased = await deleteHostedReport(report.id)
+        if erased {
+            scheduleHostedDeletionMaintenance()
+        }
+        return erased
     }
 
     /// Implements the user-facing Turn Off and Delete boundary. Potentially
@@ -583,7 +589,7 @@ actor DiagnosticsCoordinator {
         #endif
         guard erased else { return false }
         guard binding.destinationChoice == .hosted else { return true }
-        return await drainHostedDeletionIntents()
+        return await drainHostedDeletionIntents(maximumAttempts: 4)
     }
 
     @discardableResult
@@ -635,6 +641,23 @@ actor DiagnosticsCoordinator {
         return completedAll
     }
 
+    private func deleteHostedReport(_ reportID: UUID) async -> Bool {
+        guard !hostedUploadsInFlight.keys.contains(reportID),
+              (try? pendingStore.hostedDeletionIntents().contains(reportID)) == true else {
+            return false
+        }
+        do {
+            try await hostedAPI.deleteReport(reportID: reportID)
+            let completed = pendingStore.completeHostedDeletion(reportID: reportID)
+            if completed {
+                hostedNetworkCandidates.removeValue(forKey: reportID)
+            }
+            return completed
+        } catch {
+            return false
+        }
+    }
+
     func buildBundle(for report: PendingReport) async throws -> DiagnosticsBundleBuildResult {
         let redactionTokens = Self.mergeRedactionTokens(
             await Self.currentTokenRedactionValues(),
@@ -646,8 +669,9 @@ actor DiagnosticsCoordinator {
         // another server or profile — carries capture-time logs and can replay
         // a byte-identical hosted create after an ambiguous response. The live
         // ring fallback remains only for legacy pending manual reports.
-        if let snapshotData = try? Data(contentsOf: logSnapshotURL(for: report)) {
-            let lines = String(decoding: snapshotData, as: UTF8.self)
+        if let snapshotData = try? Data(contentsOf: logSnapshotURL(for: report)),
+           let snapshotText = String(data: snapshotData, encoding: .utf8) {
+            let lines = snapshotText
                 .split(separator: "\n", omittingEmptySubsequences: true)
                 .map(String.init)
             return try bundleBuilder.build(
@@ -794,7 +818,7 @@ actor DiagnosticsCoordinator {
     @discardableResult
     func endHostedUploadFence(reportID: UUID) async -> Bool {
         hostedUploadsInFlight.removeValue(forKey: reportID)
-        return await drainHostedDeletionIntents()
+        return await drainHostedDeletionIntents(maximumAttempts: 4)
     }
 
     private func performUpload(report: PendingReport) async -> DiagnosticsUploadDecision {
@@ -968,6 +992,8 @@ actor DiagnosticsCoordinator {
             // different-account refresh.
             let maximumBundleBytes = context.maxBundleBytes
                 ?? HostedDiagnosticsCapabilities.conservativeCaptureStatus.maxBundleBytes
+            let maximumManifestBytes = context.maxManifestBytes
+                ?? HostedDiagnosticsCapabilities.conservativeCaptureStatus.maxManifestBytes
             let bundle: DiagnosticsBundleBuildResult
             let mustPersistEnvelope: Bool
             switch pendingStore.loadHostedEnvelope(for: report) {
@@ -1011,7 +1037,12 @@ actor DiagnosticsCoordinator {
             // acceptance-time idempotency path even if a later policy lowers
             // the advertised limit. New or explicitly reframed envelopes use
             // the current live bound.
-            guard !mustPersistEnvelope || bundle.bundleData.count <= maximumBundleBytes else {
+            guard !mustPersistEnvelope || Self.hostedEnvelopeFitsAdvertisedLimits(
+                bundleBytes: bundle.bundleData.count,
+                manifestBytes: bundle.manifestData.count,
+                maximumBundleBytes: maximumBundleBytes,
+                maximumManifestBytes: maximumManifestBytes
+            ) else {
                 pendingStore.markTooLarge(report)
                 return .keptTooLarge
             }
@@ -1058,7 +1089,11 @@ actor DiagnosticsCoordinator {
                 bundleData: bundle.bundleData
             )
             if response.state == .ready {
-                try pendingStore.recordHostedReadyAndDelete(report)
+                // If local READY bookkeeping cannot be committed, retain an
+                // awaiting-status marker so the accepted report is never
+                // presented for consent or uploaded again.
+                pendingStore.markHostedProcessing(report, shortID: response.shortID)
+                try? pendingStore.recordHostedReadyAndDelete(report)
                 return .uploaded(response)
             }
             pendingStore.markHostedProcessing(report, shortID: response.shortID)
@@ -1114,7 +1149,7 @@ actor DiagnosticsCoordinator {
                     shortId: status.shortID,
                     state: .ready
                 )
-                try pendingStore.recordHostedReadyAndDelete(report)
+                try? pendingStore.recordHostedReadyAndDelete(report)
                 return .uploaded(response)
             case .processing:
                 return .keptProcessing(shortID: expectedShortID)
@@ -1342,6 +1377,7 @@ actor DiagnosticsCoordinator {
             osVersion: Self.osVersion(),
             destinationServerInstanceID: snapshot.status.serverInstanceID,
             maxBundleBytes: snapshot.status.maxBundleBytes,
+            maxManifestBytes: snapshot.status.maxManifestBytes,
             availabilityStatus: snapshot.status.status,
             hostedCredentialIdentity: hostedCredentialIdentity
         )
@@ -1349,6 +1385,15 @@ actor DiagnosticsCoordinator {
 
     nonisolated static func canBeginUpload(status: DiagnosticsAvailabilityStatus) -> Bool {
         status == .available
+    }
+
+    nonisolated static func hostedEnvelopeFitsAdvertisedLimits(
+        bundleBytes: Int,
+        manifestBytes: Int,
+        maximumBundleBytes: Int,
+        maximumManifestBytes: Int
+    ) -> Bool {
+        bundleBytes <= maximumBundleBytes && manifestBytes <= maximumManifestBytes
     }
 
     /// A hosted binding is valid only while the exact credential owner that
@@ -1849,7 +1894,7 @@ actor DiagnosticsCoordinator {
             case .underlying, .invalidResponse:
                 return true
             case .http(let statusCode, _):
-                return (500...599).contains(statusCode)
+                return statusCode == 429 || (500...599).contains(statusCode)
             case .invalidBaseURL, .collectorIdentityMismatch,
                  .credentialPersistenceFailed, .reportIdentityMismatch,
                  .remoteReportIdentityMismatch, .rejected:
@@ -2343,5 +2388,6 @@ enum DiagnosticsCoordinatorError: Error, Equatable {
     case missingAccountUserID
     case missingCaptureContext
     case identityChanged
+    case reservedServerInstanceID
 }
 #endif

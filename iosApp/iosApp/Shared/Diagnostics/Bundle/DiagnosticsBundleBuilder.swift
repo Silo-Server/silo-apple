@@ -493,8 +493,10 @@ struct DiagnosticsBundleBuilder {
     }
 
     private static func sanitizeHostedMessage(_ value: String) -> String {
-        sanitizeHostedBarePrivateIdentifiers(
-            in: sanitizeHostedContainerText(value)
+        redactHostedAbsolutePaths(
+            in: sanitizeHostedBarePrivateIdentifiers(
+                in: sanitizeHostedContainerText(value)
+            )
         )
     }
 
@@ -567,6 +569,12 @@ struct DiagnosticsBundleBuilder {
         guard let value = String(data: data, encoding: .utf8) else {
             return Data("[redaction_failed: non-utf8 content dropped]".utf8)
         }
+        // JSON members have already passed through their typed structural
+        // sanitizers. Whole-assignment regexes deliberately remove a complete
+        // `key: value` pair from free-form text and would corrupt JSON syntax.
+        guard !name.hasSuffix(".json"), !name.hasSuffix(".jsonl") else {
+            return data
+        }
         return Data(sanitizeHostedContainerText(value).utf8)
     }
 
@@ -590,7 +598,7 @@ struct DiagnosticsBundleBuilder {
                 with: "{id}",
                 options: .caseInsensitive
             )
-            let range = Range(match.range, in: rendered)!
+            guard let range = Range(match.range, in: rendered) else { continue }
             rendered.replaceSubrange(range, with: sanitized + trailingText)
         }
         return rendered

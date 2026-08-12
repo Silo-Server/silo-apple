@@ -59,6 +59,11 @@ struct DiagnosticsPromptSheet: View {
             }
             .continuumGroupedListStyle()
             .navigationTitle(prompt.title)
+            .onChange(of: model.allowsAlwaysSend) { _, allowsAlwaysSend in
+                if !allowsAlwaysSend {
+                    showAlwaysConfirmation = false
+                }
+            }
         }
     }
 }
