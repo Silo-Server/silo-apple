@@ -555,7 +555,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             level: .info,
             category: .playback,
             tag: "CMP playback_session_id=\(privateLogSessionID) file_abcdefgh",
-            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log media=5.700124438 wss://[host:0123456789ab]/items/42 http://127.0.0.1:49152/master.m3u8 host=127.0.0.1 http://127.42.7.9:49153/playlist.m3u8 \"host\":\"127.42.7.9\" \"playback_session_id\":\"private-json-session\" request \(privateBareUUID) compact (\(privateCompactUUID)), uppercase \(privateUppercaseCompactUUID); item_42 plan_abcdefgh item_count request_cancelled peer 127.42.7.8 file /Users/alice/private-title.mkv route selected",
+            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log media=5.700124438 range=bytes=0-1023 bytes=67108864 wss://[host:0123456789ab]/items/42 http://127.0.0.1:49152/master.m3u8 host=127.0.0.1 http://127.42.7.9:49153/playlist.m3u8 \"host\":\"127.42.7.9\" \"playback_session_id\":\"private-json-session\" request \(privateBareUUID) compact (\(privateCompactUUID)), uppercase \(privateUppercaseCompactUUID); item_42 plan_abcdefgh item_count request_cancelled peer 127.42.7.8 file /Users/alice/private-title.mkv route selected",
             attrs: [
                 "sink": .string("HDMI"),
                 "fmt": .string("content_abcdefgh"),
@@ -731,6 +731,8 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(hostedLog.msg.contains("[redacted_private_id]"))
         XCTAssertTrue(hostedLog.msg.contains("mediaSeconds=5p700124438s"))
         XCTAssertFalse(hostedLog.msg.contains("media=5.700124438"))
+        XCTAssertTrue(hostedLog.msg.contains("range=bytes=0-1023"))
+        XCTAssertTrue(hostedLog.msg.contains("bytes=67108864B"))
         XCTAssertTrue(hostedLog.msg.contains("item_count"))
         XCTAssertTrue(hostedLog.msg.contains("request_cancelled"))
         XCTAssertEqual(hostedLog.run, canonicalRunID)

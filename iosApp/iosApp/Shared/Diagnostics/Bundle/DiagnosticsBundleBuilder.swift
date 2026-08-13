@@ -572,6 +572,10 @@ struct DiagnosticsBundleBuilder {
             for match in regex.matches(in: rendered, range: range).reversed() {
                 guard match.numberOfRanges == 4 else { continue }
                 let key = source.substring(with: match.range(at: 1))
+                if key.caseInsensitiveCompare("bytes") == .orderedSame,
+                   isHostedByteRangeValue(in: source, before: match.range.location) {
+                    continue
+                }
                 let delimiter = source.substring(with: match.range(at: 2))
                 let numeric = source.substring(with: match.range(at: 3))
                     .replacingOccurrences(of: ".", with: "p")
@@ -582,6 +586,12 @@ struct DiagnosticsBundleBuilder {
             }
         }
         return rendered
+    }
+
+    private static func isHostedByteRangeValue(in source: NSString, before location: Int) -> Bool {
+        let prefix = source.substring(to: location)
+        let range = NSRange(location: 0, length: (prefix as NSString).length)
+        return hostedByteRangeAssignmentPrefixRegex.firstMatch(in: prefix, range: range) != nil
     }
 
     private static func redactHostedAbsolutePaths(in value: String) -> String {
@@ -751,6 +761,9 @@ struct DiagnosticsBundleBuilder {
             pattern: #"(?i)\b(rate)(\s*[:=]\s*)(-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+))(?![0-9A-Za-z.])"#
         ), "x"),
     ]
+    private static let hostedByteRangeAssignmentPrefixRegex = try! NSRegularExpression(
+        pattern: #"(?i)\brange\s*[:=]\s*$"#
+    )
     private static let hostedBarePrivateIdentifierRegex = try! NSRegularExpression(
         pattern: #"(?i)(?<![A-Za-z0-9])((?:ps|playback|session|file|item|media|plan|attempt|profile|account|user|device|content|library|request|req|correlation|server|subtitle|track|run)[_-](?:[0-9]+|[A-Za-z0-9][A-Za-z0-9_-]{7,}))(?![A-Za-z0-9_-])"#
     )
