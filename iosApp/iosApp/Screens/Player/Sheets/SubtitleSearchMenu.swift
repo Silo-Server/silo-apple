@@ -81,6 +81,29 @@ struct SubtitleSearchMenu: View {
     }
 
     var body: some View {
+        platformBody
+            // The provider probe is async and fails open, so this menu can
+            // already be on screen when the server's "no providers configured"
+            // answer lands — the entry row's `.disabled(...)` only gates
+            // *opening* it. Catch the flip here so an idle language list stops
+            // inviting a search that can't work; `search(language:)` guards the
+            // action itself for the narrower race where the pick beats this.
+            //
+            // Keyed on the reason rather than `subtitleSearchEnabled` because
+            // the reason is non-nil for exactly the unconfigured-provider case:
+            // the *visibility* half of that predicate also drops when the
+            // playback session momentarily has no id, and hijacking the menu
+            // for that would be a false positive.
+            .onChange(of: viewModel.subtitleSearchUnavailableReason) { _, _ in
+                reflectUnavailabilityIfIdle()
+            }
+            // Covers the sliver where the probe lands between the row's tap
+            // and this view appearing, which `onChange` would never see.
+            .onAppear { reflectUnavailabilityIfIdle() }
+    }
+
+    @ViewBuilder
+    private var platformBody: some View {
         #if os(tvOS)
         tvOSPanel
         #else
@@ -146,10 +169,49 @@ struct SubtitleSearchMenu: View {
 
     // MARK: - Actions
 
+    /// Terminal copy for a search the server can't service. Reuses the entry
+    /// row's own string so the two surfaces can't drift. The fallback covers
+    /// only the case where the *visibility* half of the gate dropped too (the
+    /// playback session went away under an open sheet), which nils the reason
+    /// while leaving search just as unrunnable.
+    private var unavailableMessage: String {
+        viewModel.subtitleSearchUnavailableReason ?? "Subtitle search isn't available right now."
+    }
+
+    /// Show the unavailable state if the server has since told us it has no
+    /// providers. Only rewrites an *idle* language list: an in-flight search
+    /// or a result list the user is reading is left alone, since yanking
+    /// either away mid-read is more disruptive than the stale state — and
+    /// `search(language:)` guards the action, so nothing new can be launched
+    /// from them either.
+    private func reflectUnavailabilityIfIdle() {
+        guard phase == .picking,
+              let reason = viewModel.subtitleSearchUnavailableReason else { return }
+        searchedLanguage = nil
+        phase = .failed(reason)
+    }
+
     /// Selecting a language IS the search trigger (one-tap, like the AI
     /// menu routes on language pick) — no separate Search button.
     private func search(language: String) {
         guard downloadingId == nil, phase != .searching else { return }
+        // The entry row's `.disabled(...)` gates opening this menu, not acting
+        // inside it: `SubtitleProvidersStore` fails open, so the sheet can be
+        // presented before the probe returns `{"enabled": false}`. Without
+        // this the pick would still start the provider fan-out and deliver the
+        // 20–30s empty search this feature exists to avoid. Route it to the
+        // menu's existing terminal failure state instead of silently ignoring
+        // the press, which on both platforms would read as a dead row.
+        //
+        // `searchedLanguage` stays nil deliberately: it is what makes the
+        // failure panel offer "Try Again", and retrying is pointless here —
+        // only "Back" applies.
+        guard viewModel.subtitleSearchEnabled else {
+            selectedLanguage = language
+            searchedLanguage = nil
+            phase = .failed(unavailableMessage)
+            return
+        }
         selectedLanguage = language
         searchedLanguage = language
         phase = .searching

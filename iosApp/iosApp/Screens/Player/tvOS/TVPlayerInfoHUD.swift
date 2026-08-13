@@ -81,15 +81,33 @@ struct TVPlayerInfoHUD: View {
             Spacer(minLength: 0)
         }
         .onAppear {
-            if !availableTabs.contains(activeTab), let first = availableTabs.first {
-                activeTab = first
-            }
+            repairActiveTabIfUnavailable()
             // If the parent didn't seed focus (edge case on re-present), at
             // least make sure focus lands on the active tab so Menu has a
             // handler to bubble to.
             if focusedTab == nil {
                 focusedTab = activeTab
             }
+        }
+        // The tab set is not static for the lifetime of the HUD: the subtitle
+        // provider probe is async and fails open, so on a track-less,
+        // non-AI session the Subtitles tab starts present (optimistic
+        // `isAvailable`) and can drop out mid-session when the server answers
+        // "no providers". If that happens while Subtitles is the active tab,
+        // repairing only in `onAppear` would leave the panel rendering a pane
+        // whose pill — and whose focus owner — no longer exists, which on
+        // tvOS means focus can land nowhere at all (docs/tvos-focus.md).
+        //
+        // Repair-on-change rather than pinning `activeTab` into
+        // `availableTabs`: keeping the active tab mounted unconditionally
+        // would make the tab set depend on state this handler writes (a
+        // derived-state feedback loop, the hazard this codebase has been
+        // bitten by), it would defeat the `onAppear` repair entirely, and
+        // because `TVPlayerControls` remembers `activeHUDTab` across HUD
+        // presentations it would strand a Subtitles pill holding nothing but
+        // a greyed-out row for the rest of the session.
+        .onChange(of: availableTabs) { _, _ in
+            repairActiveTabIfUnavailable()
         }
         .onChange(of: activeTab) { _, _ in
             readOnlyPaneIsAtTop = true
@@ -169,6 +187,26 @@ struct TVPlayerInfoHUD: View {
 
     private var isReadOnlyPaneScrolled: Bool {
         (activeTab == .info || activeTab == .stats) && !readOnlyPaneIsAtTop
+    }
+
+    /// Move off a tab that is no longer in `availableTabs`, taking focus with
+    /// it. Run on appear (a remembered `activeHUDTab` may not apply to this
+    /// stream) and whenever the tab set changes underneath us.
+    ///
+    /// Focus is reseeded, not just the selection: whatever owned focus — the
+    /// vanished pill, or a row inside the pane it selected — is leaving the
+    /// hierarchy in this same update, and a tvOS view with no reachable focus
+    /// target also has nothing for Menu to bubble `onExitCommand` from, which
+    /// strands the user in the HUD. `.defaultFocus` only seeds on first
+    /// appearance of the focus scope, so it cannot cover this.
+    ///
+    /// `availableTabs` always contains `.info`, so `first` is effectively
+    /// non-nil; it stays optional to keep this honest if that ever changes.
+    private func repairActiveTabIfUnavailable() {
+        guard !availableTabs.contains(activeTab),
+              let first = availableTabs.first else { return }
+        activeTab = first
+        focusedTab = first
     }
 
     /// Used by the composite Info/Stats panes when Up is pressed at the top
@@ -1655,13 +1693,19 @@ private struct SubtitlesPane: View {
         focusedOption = .translate
     }
 
-    /// Restoring focus to `.search` stays correct now that the row has a
-    /// disabled variant with no `.focused(...)` binding: the only way to open
-    /// this menu is the *enabled* row's action, so whenever this runs the
-    /// focusable row is the one on screen.
+    /// Restore focus to the "Search Subtitles…" row — unless the provider
+    /// probe answered "unavailable" while the menu was open, which swaps that
+    /// row for the disabled variant that carries no `.focused(...)` binding.
+    /// Returning focus to an unreachable target would leave the pane with
+    /// nothing focused, so fall back to the Tracks column's "Off" row, which
+    /// is always present (docs/tvos-focus.md).
     private func closeSubtitleSearchMenu() {
         showSubtitleSearchMenu = false
-        focusedOption = .search
+        if viewModel.subtitleSearchEnabled {
+            focusedOption = .search
+        } else {
+            entryTrackFocused = true
+        }
     }
 
     /// Whether the server's AI capabilities + the current track list offer any
