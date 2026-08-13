@@ -184,13 +184,23 @@ enum SubtitleScriptFont {
         }
     }
 
+    /// The Arabic-script blocks whose letters or decimal digits can occur in
+    /// subtitle prose. Deliberately not every block Scripts.txt assigns to
+    /// Arabic: the remaining ones (Mathematical Alphabetic Symbols, the Siyaq
+    /// and Rumi number sets, Coptic Epact) are notation whose glyphs the
+    /// fallback faces don't cover, so classifying on them would switch the
+    /// style without improving rendering. Extended-B/-C letters only ever
+    /// appear alongside core U+06xx text, so their inclusion is completeness,
+    /// not a behavior change.
     private static func isInArabicBlock(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
-        case 0x0600...0x06FF,
-             0x0750...0x077F,
-             0x08A0...0x08FF,
-             0xFB50...0xFDFF,
-             0xFE70...0xFEFF:
+        case 0x0600...0x06FF,      // Arabic
+             0x0750...0x077F,      // Arabic Supplement
+             0x0870...0x089F,      // Arabic Extended-B
+             0x08A0...0x08FF,      // Arabic Extended-A
+             0xFB50...0xFDFF,      // Arabic Presentation Forms-A
+             0xFE70...0xFEFF,      // Arabic Presentation Forms-B
+             0x10EC0...0x10EFF:    // Arabic Extended-C
             return true
         default:
             return false

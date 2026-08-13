@@ -723,6 +723,22 @@ final class SubtitleSession {
         // instead. Terminates because each retry requires the user to have
         // changed styling again, and those changes are human-paced.
         while true {
+            // Cheap pre-gate: a reinstall whose target entry is already gone
+            // has nothing to install, so skip the O(cues) conversion below.
+            // This does not replace the identical check inside the install
+            // block — that one is the authoritative one, because the slot can
+            // still be closed or reinstalled while the conversion runs outside
+            // `lock`. This only avoids paying for work that is already known
+            // to be wasted, which is the common case when styling changes
+            // arrive faster than conversions finish.
+            if let requiredGeneration {
+                let stillCurrent = withLock {
+                    installedSidecarGeneration[slot] == requiredGeneration
+                        && installedConvertedSidecars[slot] != nil
+                }
+                if !stillCurrent { return }
+            }
+
             let assDocument: String
             let preservesScriptSpecificFonts: Bool
             let containsArabicCues: Bool
