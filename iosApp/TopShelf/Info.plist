@@ -36,6 +36,8 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).ContentProvider</string>
 	</dict>
+	<key>SiloBuildChannel</key>
+	<string>$(SILO_BUILD_CHANNEL)</string>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>arm64</string>

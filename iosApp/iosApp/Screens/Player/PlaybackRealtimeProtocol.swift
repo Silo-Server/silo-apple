@@ -448,8 +448,16 @@ private struct PlaybackRealtimeBaseEnvelope: Decodable {
     let type: PlaybackRealtimeMessageType
 }
 
+// Stable protocol-level client ids, deliberately NOT the human-facing
+// `X-Silo-Client` product names: the server has stored these since Continuum
+// and only checks that they are non-empty. macOS previously fell through to
+// the iOS id, so a Mac session announced itself as iOS on the realtime socket
+// while its HTTP headers said `Silo Mac` — the same session named two
+// contradictory ways.
 #if os(tvOS)
 private let applePlaybackRealtimeClientName = "continuum-tvos"
+#elseif os(macOS)
+private let applePlaybackRealtimeClientName = "continuum-macos"
 #else
 private let applePlaybackRealtimeClientName = "continuum-ios"
 #endif

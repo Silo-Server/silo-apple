@@ -1831,11 +1831,11 @@ actor DiagnosticsCoordinator {
     }
 
     private static func appVersion() -> String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        AppleDeviceIdentity.bundleAppVersion
     }
 
     private static func appBuild() -> String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        AppleDeviceIdentity.bundleAppBuild
     }
 
     private static func platform() -> Platform {

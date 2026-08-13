@@ -23,7 +23,9 @@ struct AppleDeviceIdentity: Sendable {
     /// `CFBundleVersion` (build number), or `unknown`. Reported separately so
     /// operators can tell two builds of the same marketing version apart.
     let appBuild: String
-    /// How this binary was produced: `dev`, `sideload`, or `release`.
+    /// How this binary was produced: `dev`, `sideload`, or `release` for a
+    /// real build, or `unknown` for a synthetic identity that does not
+    /// describe a running binary (see the memberwise init below).
     let channel: String
 
     /// The new client-identity fields default to visibly-unresolved
@@ -56,9 +58,9 @@ struct AppleDeviceIdentity: Sendable {
         platform: AppleDeviceIdentity.currentPlatform(),
         clientFamily: AppleDeviceIdentity.currentClientFamily(),
         clientName: AppleDeviceIdentity.currentClientName(),
-        appVersion: AppleDeviceIdentity.bundleString("CFBundleShortVersionString"),
-        appBuild: AppleDeviceIdentity.bundleString("CFBundleVersion"),
-        channel: AppleDeviceIdentity.currentChannel()
+        appVersion: AppleDeviceIdentity.bundleAppVersion,
+        appBuild: AppleDeviceIdentity.bundleAppBuild,
+        channel: AppleDeviceIdentity.buildChannel
     )
 
     private static let keychainAccount = "com.continuum.device.identity"
@@ -121,18 +123,28 @@ struct AppleDeviceIdentity: Sendable {
         #endif
     }
 
-    /// A missing version/build reports as `unknown` rather than a plausible
-    /// number: an unreadable Info.plist should look broken, not like 1.0.
-    private static func bundleString(_ key: String) -> String {
-        let raw = Bundle.main.object(forInfoDictionaryKey: key) as? String
-        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? "unknown" : trimmed
-    }
+    /// `CFBundleShortVersionString` (marketing version), or `unknown`.
+    ///
+    /// Exposed apart from ``current`` because it reads nothing but the bundle.
+    /// Callers that want the app version but have no use for the rest of the
+    /// identity — diagnostics report headers, playback capability snapshots —
+    /// should use this rather than `current`, whose initializer additionally
+    /// resolves the keychain-backed device id. Both routes funnel through the
+    /// same reader, so a version reported in a request body can never disagree
+    /// with the one reported in the headers of the same running binary.
+    static var bundleAppVersion: String { bundleString("CFBundleShortVersionString") }
 
+    /// `CFBundleVersion` (build number), or `unknown`. See ``bundleAppVersion``.
+    static var bundleAppBuild: String { bundleString("CFBundleVersion") }
+
+    /// How this binary was produced: `dev`, `sideload`, or `release`.
+    ///
     /// `SiloBuildChannel` is fed by the `SILO_BUILD_CHANNEL` build setting
     /// (see project.yml), which the unsigned sideload lanes override. An
-    /// absent or unexpanded value means an ordinary release build.
-    private static func currentChannel() -> String {
+    /// absent or unexpanded value means an ordinary release build — so every
+    /// target carrying that build setting must also declare the Info.plist
+    /// key, or it silently reports `release`.
+    static var buildChannel: String {
         #if DEBUG
         return "dev"
         #else
@@ -140,6 +152,14 @@ struct AppleDeviceIdentity: Sendable {
         let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? "release" : trimmed
         #endif
+    }
+
+    /// A missing version/build reports as `unknown` rather than a plausible
+    /// number: an unreadable Info.plist should look broken, not like 1.0.
+    private static func bundleString(_ key: String) -> String {
+        let raw = Bundle.main.object(forInfoDictionaryKey: key) as? String
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "unknown" : trimmed
     }
 }
 

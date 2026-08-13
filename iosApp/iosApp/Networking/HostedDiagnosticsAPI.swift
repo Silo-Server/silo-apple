@@ -362,8 +362,8 @@ actor HostedDiagnosticsAPI {
         let body = HostedInstallationRequest(
             platform: platform,
             appID: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
-            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
-            appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+            appVersion: AppleDeviceIdentity.bundleAppVersion,
+            appBuild: AppleDeviceIdentity.bundleAppBuild
         )
         var request = try request(path: "v1/installations", method: "POST")
         request.timeoutInterval = 10

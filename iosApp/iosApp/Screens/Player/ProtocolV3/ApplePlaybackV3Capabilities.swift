@@ -477,20 +477,22 @@ enum ApplePlaybackV3Capabilities {
         #endif
     }
 
-    // Version/build/channel come from the one identity snapshot the HTTP
-    // headers also use, so the two carriers cannot disagree about the same
-    // running binary. A missing Info.plist key reports `unknown` rather than a
-    // plausible-looking "0".
+    // Version/build/channel come from the same readers the HTTP headers use,
+    // so the two carriers cannot disagree about the same running binary. They
+    // deliberately do NOT go through `AppleDeviceIdentity.current`: that
+    // initializer also resolves the keychain-backed device id, and a capability
+    // snapshot has no need to block on the keychain. A missing Info.plist key
+    // reports `unknown` rather than a plausible-looking "0".
     private static var appVersion: String {
-        AppleDeviceIdentity.current.appVersion
+        AppleDeviceIdentity.bundleAppVersion
     }
 
     private static var appBuild: String {
-        AppleDeviceIdentity.current.appBuild
+        AppleDeviceIdentity.bundleAppBuild
     }
 
     private static var appChannel: String {
-        AppleDeviceIdentity.current.channel
+        AppleDeviceIdentity.buildChannel
     }
 
     private static var deviceContext: PlaybackV3DeviceContext {

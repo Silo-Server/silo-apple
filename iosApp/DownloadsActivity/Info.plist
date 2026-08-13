@@ -25,5 +25,7 @@
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.widgetkit-extension</string>
 	</dict>
+	<key>SiloBuildChannel</key>
+	<string>$(SILO_BUILD_CHANNEL)</string>
 </dict>
 </plist>

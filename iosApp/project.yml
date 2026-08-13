@@ -17,16 +17,6 @@ settings:
   base:
     SWIFT_VERSION: "5"
     ENABLE_USER_SCRIPT_SANDBOXING: false
-    # One committed baseline for every target (app + extensions must ship the
-    # same CFBundleVersion). CI overrides both through xcodebuild xcargs, which
-    # outrank project-level settings; none of the Signing/*.xcconfig files set
-    # them, so nothing shadows these locally either.
-    MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: 1
-    # Surfaced to the app as the `SiloBuildChannel` Info.plist key and reported
-    # to the server as X-Silo-Client-Channel. The unsigned sideload lanes
-    # override this to `sideload`; DEBUG builds report `dev` regardless.
-    SILO_BUILD_CHANNEL: release
     # DEVELOPMENT_TEAM is intentionally omitted — set via the DEVELOPMENT_TEAM env var locally
     # or injected by the CI pipeline.
     CODE_SIGN_STYLE: Automatic
@@ -35,6 +25,33 @@ settings:
     # the missing slice.
     EXCLUDED_ARCHS[sdk=appletvsimulator*]: x86_64
     EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+
+# One committed version/channel baseline for every shippable target: the app
+# and its embedded extensions must ship the same CFBundleVersion, and six
+# copies of the same three lines drift.
+#
+# This is a target template, NOT the project-level `settings.base`, and that
+# distinction is load-bearing. Xcode resolves build settings target settings >
+# target xcconfig > project settings > project xcconfig. Every target below
+# carries a Signing/<Target>.xcconfig that ends with
+# `#include? "Local.xcconfig"` — a gitignored file contributors are told to
+# create. At project level a stray MARKETING_VERSION in someone's
+# Local.xcconfig would silently outrank the committed value; template settings
+# are merged into the target, where they win, which is the same guarantee the
+# per-target blocks used to provide. CI still outranks everything via
+# xcodebuild xcargs (command-line settings beat xcconfigs too).
+targetTemplates:
+  ShippableProduct:
+    settings:
+      base:
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: 1
+        # Surfaced to the app as the `SiloBuildChannel` Info.plist key and
+        # reported to the server as X-Silo-Client-Channel. The unsigned
+        # sideload lanes override this to `sideload`; DEBUG builds report
+        # `dev` regardless. Every target using this template must declare the
+        # key in its Info.plist or it reports `release` no matter what.
+        SILO_BUILD_CHANNEL: release
 
 packages:
   # FFmpeg xcframeworks (LGPL). Provides the Libavcodec / Libavformat /
@@ -54,6 +71,7 @@ packages:
 
 targets:
   Silo:
+    templates: [ShippableProduct]
     type: application
     platform: iOS
     sources:
@@ -105,6 +123,7 @@ targets:
   # by #if os(tvOS) so they compile out on the iOS target even though the
   # directory is included in both targets' source tree.
   SiloTV:
+    templates: [ShippableProduct]
     type: application
     platform: tvOS
     sources:
@@ -147,6 +166,7 @@ targets:
         embed: true
 
   SiloMac:
+    templates: [ShippableProduct]
     type: application
     platform: macOS
     sources:
@@ -198,6 +218,7 @@ targets:
   # shared Keychain access group. Compiles `iosApp/Shared/` for the
   # SharedStorage helpers used on both sides.
   SiloTVTopShelf:
+    templates: [ShippableProduct]
     type: app-extension
     platform: tvOS
     sources:
@@ -227,6 +248,7 @@ targets:
   # Shares active server/profile/token state via the App Group + shared
   # Keychain access group, but does not link the main app's AuthService.
   SiloNotificationService:
+    templates: [ShippableProduct]
     type: app-extension
     platform: iOS
     sources:
@@ -253,6 +275,7 @@ targets:
   # them, so it compiles just the shared attributes schema and needs no
   # entitlements or shared storage.
   SiloDownloadsActivity:
+    templates: [ShippableProduct]
     type: app-extension
     platform: iOS
     sources:

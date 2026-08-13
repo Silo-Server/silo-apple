@@ -34,5 +34,7 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).NotificationService</string>
 	</dict>
+	<key>SiloBuildChannel</key>
+	<string>$(SILO_BUILD_CHANNEL)</string>
 </dict>
 </plist>
