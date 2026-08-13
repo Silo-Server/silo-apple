@@ -64,6 +64,8 @@
 		<string>_silopair._tcp</string>
 		<string>_silocast._tcp</string>
 	</array>
+	<key>SiloBuildChannel</key>
+	<string>$(SILO_BUILD_CHANNEL)</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

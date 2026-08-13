@@ -173,6 +173,10 @@ struct PlaybackV3ClientContext: Codable, Equatable {
     let protocolVersion: Int
     let formFactor: String
     let appVersion: String
+    /// `CFBundleVersion`. Optional so older/foreign contexts still decode.
+    let appBuild: String?
+    /// `dev` / `sideload` / `release`.
+    let appChannel: String?
     let device: PlaybackV3DeviceContext
     let output: PlaybackV3OutputContext
     /// Keyed by delivery class, never by an engine name.

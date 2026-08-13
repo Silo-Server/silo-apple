@@ -57,6 +57,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Silo uses your local network to find, set up, and control Silo on your Apple TV.</string>
+	<key>SiloBuildChannel</key>
+	<string>$(SILO_BUILD_CHANNEL)</string>
 	<key>TVTopShelfImage</key>
 	<dict>
 		<key>TVTopShelfPrimaryImage</key>

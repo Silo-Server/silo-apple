@@ -165,11 +165,7 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         if let bearer { request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization") }
         if let profileId { request.setValue(profileId, forHTTPHeaderField: "X-Profile-Id") }
         if let profileToken { request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token") }
-        let device = AppleDeviceIdentity.current
-        request.setValue(device.id, forHTTPHeaderField: "X-Silo-Device-Id")
-        request.setValue(device.name, forHTTPHeaderField: "X-Silo-Device-Name")
-        request.setValue(device.platform, forHTTPHeaderField: "X-Silo-Device-Platform")
-        request.setValue(device.clientFamily, forHTTPHeaderField: "X-Silo-Client-Family")
+        AppleDeviceIdentity.current.applyHeaders(to: &request)
     }
 
     private func send<R: Decodable>(_ request: URLRequest) async throws -> R {

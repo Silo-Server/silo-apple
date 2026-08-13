@@ -17,6 +17,16 @@ settings:
   base:
     SWIFT_VERSION: "5"
     ENABLE_USER_SCRIPT_SANDBOXING: false
+    # One committed baseline for every target (app + extensions must ship the
+    # same CFBundleVersion). CI overrides both through xcodebuild xcargs, which
+    # outrank project-level settings; none of the Signing/*.xcconfig files set
+    # them, so nothing shadows these locally either.
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: 1
+    # Surfaced to the app as the `SiloBuildChannel` Info.plist key and reported
+    # to the server as X-Silo-Client-Channel. The unsigned sideload lanes
+    # override this to `sideload`; DEBUG builds report `dev` regardless.
+    SILO_BUILD_CHANNEL: release
     # DEVELOPMENT_TEAM is intentionally omitted — set via the DEVELOPMENT_TEAM env var locally
     # or injected by the CI pipeline.
     CODE_SIGN_STYLE: Automatic
@@ -66,8 +76,6 @@ targets:
       base:
         PRODUCT_NAME: Silo
         INFOPLIST_FILE: iosApp/Info.plist
-        MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -120,8 +128,6 @@ targets:
       base:
         PRODUCT_NAME: SiloTV
         INFOPLIST_FILE: iosApp/tvOS-Info.plist
-        MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
         ASSETCATALOG_COMPILER_APPICON_NAME: TVAppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
@@ -173,8 +179,6 @@ targets:
       base:
         PRODUCT_NAME: Silo
         INFOPLIST_FILE: macOS-Info.plist
-        MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SDKROOT: macosx
@@ -213,8 +217,6 @@ targets:
       base:
         PRODUCT_NAME: SiloTVTopShelf
         INFOPLIST_FILE: TopShelf/Info.plist
-        MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
         SDKROOT: appletvos
         SUPPORTED_PLATFORMS: "appletvos appletvsimulator"
     dependencies:
@@ -239,8 +241,6 @@ targets:
       base:
         PRODUCT_NAME: SiloNotificationService
         INFOPLIST_FILE: NotificationService/Info.plist
-        MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
         SDKROOT: iphoneos
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
     dependencies:
@@ -265,8 +265,6 @@ targets:
       base:
         PRODUCT_NAME: SiloDownloadsActivity
         INFOPLIST_FILE: DownloadsActivity/Info.plist
-        MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
         TARGETED_DEVICE_FAMILY: "1,2"
         SDKROOT: iphoneos
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"

@@ -59,8 +59,12 @@ jobs:
   # Create the GitHub Release ONCE before the platform builds fan out, so the
   # matrix jobs only upload assets (no create race). Tag pushes release under
   # the pushed tag; dispatch runs mirror the TestFlight flow by minting the
-  # next v<version>-build.N tag from existing releases and stamping that build
-  # number into the IPAs via BUILD_NUMBER.
+  # next v<version>-build.N tag from existing releases.
+  #
+  # BOTH paths get a build number stamped into the IPAs via BUILD_NUMBER.
+  # Tag pushes used to leave it empty, so every tag-built sideload IPA shipped
+  # CFBundleVersion=1 (the project.yml literal) and two builds of the same
+  # marketing version were indistinguishable in the server's Activity page.
   release:
     runs-on: ubuntu-latest
     permissions:
@@ -80,23 +84,39 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          # Validates the resolved version is a plain dotted version before it
+          # is embedded in a tag name / shell strings. Runs for both events:
+          # a tag push resolves v1.4.0-beta.2 -> 1.4.0.
+          V="$(scripts/ci/resolve-marketing-version.sh \
+                "$GH_EVENT_NAME" "$GH_REF_NAME" "$INPUT_VERSION")"
+          # Build number for this marketing version = highest already-used
+          # build + 1, over BOTH event types so a dispatch run and a tag push
+          # can never mint the same CFBundleVersion for the same marketing
+          # version. A v<V>-build.N release contributes N; a plain v<V> (or
+          # v<V>-beta.2 / v<V>+ios) release contributes 1, since a tag-push
+          # build occupies the first slot for its version.
+          #
+          # Deliberately max-based, not a count: deleting an old release must
+          # not walk the sequence backwards and let two different IPAs ship as
+          # the same version+build, which is exactly what the server's Activity
+          # page relies on being unambiguous.
+          TAGS="$(gh release list --limit 1000 --json tagName -q '.[].tagName')"
+          LAST="$(printf '%s\n' "$TAGS" \
+                    | { grep -E "^v${V//./\\.}-build\.[0-9]+$" || true; } \
+                    | sed -E 's/.*build\.([0-9]+)$/\1/' | sort -n | tail -n 1)"
+          LAST="${LAST:-0}"
+          if (( LAST < 1 )) \
+             && printf '%s\n' "$TAGS" | grep -qE "^v${V//./\\.}([-+].*)?$"; then
+            LAST=1
+          fi
+          BUILD=$(( LAST + 1 ))
+          echo "build_number=$BUILD" >> "$GITHUB_OUTPUT"
           if [[ "$GH_EVENT_NAME" == "workflow_dispatch" ]]; then
-            # Validates the dispatch input is a plain dotted version before it
-            # is embedded in a tag name / shell strings.
-            V="$(scripts/ci/resolve-marketing-version.sh \
-                  "$GH_EVENT_NAME" "$GH_REF_NAME" "$INPUT_VERSION")"
-            # Next build number for this version = highest existing
-            # v<V>-build.N release + 1 (starts at 1).
-            LAST="$(gh release list --limit 1000 --json tagName -q '.[].tagName' \
-                      | { grep -E "^v${V//./\\.}-build\.[0-9]+$" || true; } \
-                      | sed -E 's/.*build\.([0-9]+)$/\1/' | sort -n | tail -n 1)"
-            BUILD=$(( ${LAST:-0} + 1 ))
             TAG="v${V}-build.${BUILD}"
             TITLE="v${V} (Build ${BUILD})"
-            echo "build_number=$BUILD" >> "$GITHUB_OUTPUT"
           else
             TAG="$GH_REF_NAME"
-            TITLE="$GH_REF_NAME"
+            TITLE="$GH_REF_NAME (Build ${BUILD})"
           fi
           # Tag pushes can already have a release (created manually or by a
           # previous run); only create when missing.
@@ -161,7 +181,8 @@ jobs:
         run: bundle exec fastlane ios ${{ matrix.lane }}
         env:
           MARKETING_VERSION: ${{ steps.ver.outputs.value }}
-          # Set for dispatch runs only; tag builds keep the project.yml value.
+          # Always set (dispatch and tag push alike) so no sideload IPA ever
+          # ships the project.yml CURRENT_PROJECT_VERSION placeholder.
           BUILD_NUMBER: ${{ needs.release.outputs.build_number }}
 
       - name: Upload ${{ matrix.platform }} IPA artifact

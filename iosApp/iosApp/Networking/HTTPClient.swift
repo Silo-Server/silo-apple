@@ -1080,11 +1080,9 @@ actor HTTPClient {
             attached.append("profileToken")
         }
         let device = AppleDeviceIdentity.current
-        request.setValue(device.id, forHTTPHeaderField: "X-Silo-Device-Id")
-        request.setValue(device.name, forHTTPHeaderField: "X-Silo-Device-Name")
-        request.setValue(device.platform, forHTTPHeaderField: "X-Silo-Device-Platform")
-        request.setValue(device.clientFamily, forHTTPHeaderField: "X-Silo-Client-Family")
+        device.applyHeaders(to: &request)
         attached.append("device=\(device.platform)/\(device.clientFamily)")
+        attached.append("client=\(device.clientName) \(device.appVersion) (\(device.appBuild))")
         let method = request.httpMethod ?? ""
         let attachedDesc = attached.joined(separator: ", ")
         Self.logger.debug("→ \(method, privacy: .public) \(path, privacy: .public) headers=[\(attachedDesc, privacy: .public)]")
@@ -1116,11 +1114,9 @@ actor HTTPClient {
             attached.append("profileToken")
         }
         let device = AppleDeviceIdentity.current
-        request.setValue(device.id, forHTTPHeaderField: "X-Silo-Device-Id")
-        request.setValue(device.name, forHTTPHeaderField: "X-Silo-Device-Name")
-        request.setValue(device.platform, forHTTPHeaderField: "X-Silo-Device-Platform")
-        request.setValue(device.clientFamily, forHTTPHeaderField: "X-Silo-Client-Family")
+        device.applyHeaders(to: &request)
         attached.append("device=\(device.platform)/\(device.clientFamily)")
+        attached.append("client=\(device.clientName) \(device.appVersion) (\(device.appBuild))")
         let method = request.httpMethod ?? ""
         let attachedDesc = attached.joined(separator: ", ")
         Self.logger.debug("→ \(method, privacy: .public) \(path, privacy: .public) headers=[\(attachedDesc, privacy: .public)]")
@@ -1140,11 +1136,7 @@ actor HTTPClient {
         if let profileToken = auth.profileToken {
             request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token")
         }
-        let device = AppleDeviceIdentity.current
-        request.setValue(device.id, forHTTPHeaderField: "X-Silo-Device-Id")
-        request.setValue(device.name, forHTTPHeaderField: "X-Silo-Device-Name")
-        request.setValue(device.platform, forHTTPHeaderField: "X-Silo-Device-Platform")
-        request.setValue(device.clientFamily, forHTTPHeaderField: "X-Silo-Client-Family")
+        AppleDeviceIdentity.current.applyHeaders(to: &request)
     }
 
     // MARK: - Response handling

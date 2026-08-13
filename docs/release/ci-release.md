@@ -11,8 +11,7 @@
 - Manual: Actions tab → "TestFlight Release" → Run workflow → enter `version`
   and pick `platform` (`both` / `ios` / `tvos`).
 
-On a both-platform run, tvOS is skipped if the iOS job fails (build-number
-ordering); a tvOS-only run builds tvOS on its own.
+A single-platform selection builds only that platform; the other job is skipped.
 
 The git tag is the marketing version. A preflight `build-numbers` job reserves
 the next per-platform build number from App Store Connect once, then the iOS and

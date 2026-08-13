@@ -201,11 +201,7 @@ enum DownloadAuthHeaders {
         if let profileToken = await TokenStore.shared.getProfileToken() {
             request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token")
         }
-        let device = AppleDeviceIdentity.current
-        request.setValue(device.id, forHTTPHeaderField: "X-Silo-Device-Id")
-        request.setValue(device.name, forHTTPHeaderField: "X-Silo-Device-Name")
-        request.setValue(device.platform, forHTTPHeaderField: "X-Silo-Device-Platform")
-        request.setValue(device.clientFamily, forHTTPHeaderField: "X-Silo-Client-Family")
+        AppleDeviceIdentity.current.applyHeaders(to: &request)
         return request
     }
 }

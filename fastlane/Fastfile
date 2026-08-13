@@ -93,6 +93,14 @@ def build_number_xcarg
   "CURRENT_PROJECT_VERSION=#{value} "
 end
 
+# Overrides the SILO_BUILD_CHANNEL build setting (project.yml default: release)
+# for the unsigned sideload lanes. It reaches the app as the SiloBuildChannel
+# Info.plist key and is reported to the server as X-Silo-Client-Channel, so an
+# operator can tell a re-signed sideload build from the TestFlight build of the
+# same marketing version + build number. Constant, not env-derived: there is no
+# untrusted input to validate.
+SIDELOAD_CHANNEL_XCARG = "SILO_BUILD_CHANNEL=sideload ".freeze
+
 # Returns the build number to stamp on a TestFlight build.
 #
 # In CI the reserve_build_numbers job computes the next number per platform once
@@ -598,6 +606,7 @@ platform :ios do
       destination:  "generic/platform=iOS",
       archive_path: archive_path,
       xcargs:       "#{marketing_version_xcarg}#{build_number_xcarg}" \
+                    "#{SIDELOAD_CHANNEL_XCARG}" \
                     "CODE_SIGNING_ALLOWED=NO " \
                     "CODE_SIGNING_REQUIRED=NO " \
                     "CODE_SIGN_IDENTITY='' " \
@@ -628,6 +637,7 @@ platform :ios do
       destination:  "generic/platform=tvOS",
       archive_path: archive_path,
       xcargs:       "#{marketing_version_xcarg}#{build_number_xcarg}" \
+                    "#{SIDELOAD_CHANNEL_XCARG}" \
                     "CODE_SIGNING_ALLOWED=NO " \
                     "CODE_SIGNING_REQUIRED=NO " \
                     "CODE_SIGN_IDENTITY='' " \
