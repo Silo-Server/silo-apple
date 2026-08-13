@@ -2306,7 +2306,7 @@ final class AVPlayerBackend {
             toleranceBefore: .zero,
             toleranceAfter: .zero
         )
-        cmpLog("[CMP-AVP] vod resume pre-seek player=\(target) media=\(pendingStartTime) context=\(context)")
+        cmpLog("[CMP-AVP] vod resume pre-seek player=\(target) mediaSeconds=\(pendingStartTime) context=\(context)")
     }
 
     private func prepareAssetPlayback(

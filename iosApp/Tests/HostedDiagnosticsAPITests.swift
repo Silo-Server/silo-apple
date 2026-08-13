@@ -549,11 +549,13 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let privateBreadcrumbSessionID = "private-server-playback-session-breadcrumb"
         let canonicalRunID = "0198a8f8-6c2d-7e31-8f44-62d198a10111"
         let privateBareUUID = "1198a8f8-6c2d-7e31-8f44-62d198a10112"
+        let privateCompactUUID = "5e884898da28047151d0e56f8dc62927"
+        let privateUppercaseCompactUUID = "5E884898DA28047151D0E56F8DC62927"
         let logLine = try XCTUnwrap(DiagLog.renderedLine(
             level: .info,
             category: .playback,
             tag: "CMP playback_session_id=\(privateLogSessionID) file_abcdefgh",
-            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log wss://[host:0123456789ab]/items/42 http://127.0.0.1:49152/master.m3u8 host=127.0.0.1 http://127.42.7.9:49153/playlist.m3u8 \"host\":\"127.42.7.9\" \"playback_session_id\":\"private-json-session\" request \(privateBareUUID) item_42 plan_abcdefgh item_count request_cancelled peer 127.42.7.8 file /Users/alice/private-title.mkv route selected",
+            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log media=5.700124438 wss://[host:0123456789ab]/items/42 http://127.0.0.1:49152/master.m3u8 host=127.0.0.1 http://127.42.7.9:49153/playlist.m3u8 \"host\":\"127.42.7.9\" \"playback_session_id\":\"private-json-session\" request \(privateBareUUID) compact (\(privateCompactUUID)), uppercase \(privateUppercaseCompactUUID); item_42 plan_abcdefgh item_count request_cancelled peer 127.42.7.8 file /Users/alice/private-title.mkv route selected",
             attrs: [
                 "sink": .string("HDMI"),
                 "fmt": .string("content_abcdefgh"),
@@ -714,6 +716,8 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             "127.42.7.9",
             "127.42.7.8",
             privateBareUUID,
+            privateCompactUUID,
+            privateUppercaseCompactUUID,
             "file_abcdefgh",
             "item_42",
             "plan_abcdefgh",
@@ -725,6 +729,8 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         }
         XCTAssertTrue(renderedEvidence.contains("[redacted_path]"))
         XCTAssertTrue(hostedLog.msg.contains("[redacted_private_id]"))
+        XCTAssertTrue(hostedLog.msg.contains("mediaSeconds=5p700124438s"))
+        XCTAssertFalse(hostedLog.msg.contains("media=5.700124438"))
         XCTAssertTrue(hostedLog.msg.contains("item_count"))
         XCTAssertTrue(hostedLog.msg.contains("request_cancelled"))
         XCTAssertEqual(hostedLog.run, canonicalRunID)
@@ -767,6 +773,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let privateBarePlanID = "plan_abcdefgh"
         let privateManifestID = "content_abcdefgh"
         let privateDeviceSummaryID = "device_abcdefgh"
+        let privateCompactUUIDKey = "5e884898da28047151d0e56f8dc62927"
         let metricKitBinaryUUID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
         let privatePath = "/private/var/mobile/Containers/Data/Application/\(privateContainerID)/Silo.app/Silo"
         let rawStack = Data(
@@ -776,6 +783,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             "diagnosticMetaData": [
                 "virtualMemoryRegionInfo": "mapped image \(privatePath)",
                 "exceptionReason": "container[\(privatePath)] loopback request http://127.0.0.1:49152/items/42 failed for \(privateBareUUID) \(privateBareItemID) \(privateBarePlanID)",
+                privateCompactUUIDKey: "private-keyed-value",
             ],
             "callStacks": [
                 "callStackRootFrames": [[
@@ -883,6 +891,8 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             privateBarePlanID,
             privateManifestID,
             privateDeviceSummaryID,
+            privateCompactUUIDKey,
+            "private-keyed-value",
         ] {
             XCTAssertFalse(hostedEvidence.contains(forbidden), forbidden)
         }
@@ -930,12 +940,14 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
     func testHostedDeviceSnapshotRedactsBarePrivateIdentifiersInNestedValues() throws {
         let privateUUID = "1198a8f8-6c2d-7e31-8f44-62d198a10112"
+        let privateCompactUUIDKey = "5e884898da28047151d0e56f8dc62927"
         let snapshot = DeviceSnapshotPayload(
             capturedAt: DiagnosticsTimestamp.string(from: Date(timeIntervalSince1970: 1_700_200_000)),
             provenance: .preFailure,
             identity: .object([
                 "manufacturer": .string("Apple"),
                 "model": .string("iPhone item_42"),
+                privateCompactUUIDKey: .string("private-keyed-value"),
             ]),
             display: .object([
                 "mode": .string("request_cancelled"),
@@ -952,12 +964,20 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let sanitized = try DiagnosticsBundleBuilder.sanitizeHostedDeviceJSON(raw)
         let rendered = String(decoding: sanitized, as: UTF8.self)
 
-        for forbidden in [privateUUID, "item_42", "plan_abcdefgh", "file_abcdefgh"] {
+        for forbidden in [
+            privateUUID,
+            privateCompactUUIDKey,
+            "private-keyed-value",
+            "item_42",
+            "plan_abcdefgh",
+            "file_abcdefgh",
+        ] {
             XCTAssertFalse(rendered.contains(forbidden), forbidden)
         }
         XCTAssertTrue(rendered.contains("[redacted_private_id]"))
         XCTAssertTrue(rendered.contains("request_cancelled"))
         XCTAssertTrue(String(decoding: raw, as: UTF8.self).contains(privateUUID))
+        XCTAssertTrue(String(decoding: raw, as: UTF8.self).contains(privateCompactUUIDKey))
     }
 
     func testManualHostedBundleIsDeterministicAcrossLiveRingAndDebugChanges() async throws {

@@ -351,7 +351,8 @@ struct DiagnosticsBundleBuilder {
                 // hosted reports omit it and the collector can reject this
                 // otherwise ambiguous network-identity key globally.
                 guard normalizedKey != "virtualmemoryregioninfo",
-                      normalizedKey != "address" else { return }
+                      normalizedKey != "address",
+                      !hasHostedBareUUID(in: entry.key) else { return }
                 if normalizedKey == "binaryuuid",
                    let binaryUUID = entry.value as? String,
                    isHostedMetricKitBinaryUUID(binaryUUID) {
@@ -449,7 +450,8 @@ struct DiagnosticsBundleBuilder {
         case .object(let object):
             return .object(object.reduce(into: [:]) { result, entry in
                 let normalizedKey = entry.key.lowercased().filter { $0.isLetter || $0.isNumber }
-                guard !hostedDevicePrivateFieldKeys.contains(normalizedKey) else { return }
+                guard !hostedDevicePrivateFieldKeys.contains(normalizedKey),
+                      !hasHostedBareUUID(in: entry.key) else { return }
                 result[entry.key] = removeHostedDevicePrivateFields(from: entry.value)
             })
         default:
@@ -513,9 +515,17 @@ struct DiagnosticsBundleBuilder {
         let networkAssignmentsRemoved = sanitizeHostedNetworkIdentityAssignments(
             in: identifiersRemoved
         )
+        let numericMediaNormalized = replaceMatches(
+            of: hostedNumericMediaAssignmentRegex,
+            in: networkAssignmentsRemoved,
+            with: "mediaSeconds"
+        )
+        let numericTelemetryNormalized = normalizeHostedNumericTelemetryAssignments(
+            in: numericMediaNormalized
+        )
         let loopbackNormalized = replaceMatches(
             of: hostedLoopbackHostRegex,
-            in: networkAssignmentsRemoved,
+            in: numericTelemetryNormalized,
             with: "redacted.invalid"
         )
         return templateHostedURLPaths(in: loopbackNormalized)
@@ -525,6 +535,11 @@ struct DiagnosticsBundleBuilder {
         var rendered = replaceMatches(
             of: hostedBareUUIDRegex,
             in: value,
+            with: "[redacted_private_id]"
+        )
+        rendered = replaceMatches(
+            of: hostedBareCompactUUIDRegex,
+            in: rendered,
             with: "[redacted_private_id]"
         )
         let source = rendered as NSString
@@ -539,6 +554,32 @@ struct DiagnosticsBundleBuilder {
                 in: match.range(at: 1),
                 with: "[redacted_private_id]"
             )
+        }
+        return rendered
+    }
+
+    private static func hasHostedBareUUID(in value: String) -> Bool {
+        let range = NSRange(location: 0, length: (value as NSString).length)
+        return hostedBareUUIDRegex.firstMatch(in: value, range: range) != nil
+            || hostedBareCompactUUIDRegex.firstMatch(in: value, range: range) != nil
+    }
+
+    private static func normalizeHostedNumericTelemetryAssignments(in value: String) -> String {
+        var rendered = value
+        for (regex, suffix) in hostedNumericTelemetryAssignmentRegexes {
+            let source = rendered as NSString
+            let range = NSRange(location: 0, length: source.length)
+            for match in regex.matches(in: rendered, range: range).reversed() {
+                guard match.numberOfRanges == 4 else { continue }
+                let key = source.substring(with: match.range(at: 1))
+                let delimiter = source.substring(with: match.range(at: 2))
+                let numeric = source.substring(with: match.range(at: 3))
+                    .replacingOccurrences(of: ".", with: "p")
+                rendered = (rendered as NSString).replacingCharacters(
+                    in: match.range,
+                    with: key + delimiter + numeric + suffix
+                )
+            }
         }
         return rendered
     }
@@ -690,6 +731,26 @@ struct DiagnosticsBundleBuilder {
     private static let hostedBareUUIDRegex = try! NSRegularExpression(
         pattern: #"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#
     )
+    private static let hostedBareCompactUUIDRegex = try! NSRegularExpression(
+        pattern: #"(?i)(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])"#
+    )
+    private static let hostedNumericMediaAssignmentRegex = try! NSRegularExpression(
+        pattern: #"(?i)\bmedia(?=\s*[:=]\s*-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:$|[\s,;)\]}]))"#
+    )
+    private static let hostedNumericTelemetryAssignmentRegexes: [(NSRegularExpression, String)] = [
+        (try! NSRegularExpression(
+            pattern: #"(?i)\b(budgetBytes|bytes)(\s*[:=]\s*)(-?[0-9]+)(?![0-9A-Za-z.])"#
+        ), "B"),
+        (try! NSRegularExpression(
+            pattern: #"(?i)\b(elapsedMs)(\s*[:=]\s*)(-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+))(?![0-9A-Za-z.])"#
+        ), "ms"),
+        (try! NSRegularExpression(
+            pattern: #"(?i)\b(current|mediaSeconds|start|startTime)(\s*[:=]\s*)(-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+))(?![0-9A-Za-z.])"#
+        ), "s"),
+        (try! NSRegularExpression(
+            pattern: #"(?i)\b(rate)(\s*[:=]\s*)(-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+))(?![0-9A-Za-z.])"#
+        ), "x"),
+    ]
     private static let hostedBarePrivateIdentifierRegex = try! NSRegularExpression(
         pattern: #"(?i)(?<![A-Za-z0-9])((?:ps|playback|session|file|item|media|plan|attempt|profile|account|user|device|content|library|request|req|correlation|server|subtitle|track|run)[_-](?:[0-9]+|[A-Za-z0-9][A-Za-z0-9_-]{7,}))(?![A-Za-z0-9_-])"#
     )
