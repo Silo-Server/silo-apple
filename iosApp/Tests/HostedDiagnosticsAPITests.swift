@@ -555,7 +555,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             level: .info,
             category: .playback,
             tag: "CMP playback_session_id=\(privateLogSessionID) file_abcdefgh",
-            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log media=5.700124438 range=bytes=0-1023 bytes=67108864 wss://[host:0123456789ab]/items/42 http://127.0.0.1:49152/master.m3u8 host=127.0.0.1 http://127.42.7.9:49153/playlist.m3u8 \"host\":\"127.42.7.9\" \"playback_session_id\":\"private-json-session\" request \(privateBareUUID) compact (\(privateCompactUUID)), uppercase \(privateUppercaseCompactUUID); item_42 plan_abcdefgh item_count request_cancelled peer 127.42.7.8 file /Users/alice/private-title.mkv route selected",
+            message: "[CMP-ROUTE] playbackSessionId=\(privateLogSessionID) fileId=private-file-log planId=private-plan-log media=5.700124438 range=bytes=0-1023 bytes=67108864 anchorPlayer=0.0 bufAhead=0.0 generatedAhead=0.0 stationaryFor=0.0 cachedAheadBytes=67108864 maxLegacy=4294967295 mixedRadix=127.0x000001 hexDotted=0x7f.1 hexCode=0x7f000001 octalCode=017700000001 \"quotedMetric\":\"0.0\" quotedOctal='017700000001' publicVersion=8.8.8 ac.cur=0.0 ac.pts=0.0 ac.cur=017700000001 ac.pts=0x7f000001 ac.cur=127.0x000001 \"ac.cur\":\"0.0\" ac.pts : 0.0 ac.cur=-0.0 ac.pts=+127.1 shortCount=123456 tooLargeLegacy=4294967296 overflowHex=0x100000000 badOctal=018 wss://[host:0123456789ab]/items/42 http://127.0.0.1:49152/master.m3u8 host=127.0.0.1 http://127.42.7.9:49153/playlist.m3u8 \"host\":\"127.42.7.9\" \"playback_session_id\":\"private-json-session\" request \(privateBareUUID) compact (\(privateCompactUUID)), uppercase \(privateUppercaseCompactUUID); item_42 plan_abcdefgh item_count request_cancelled peer 127.42.7.8 file /Users/alice/private-title.mkv route selected",
             attrs: [
                 "sink": .string("HDMI"),
                 "fmt": .string("content_abcdefgh"),
@@ -660,6 +660,10 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let localDeviceData = try Data(
             contentsOf: report.directoryURL.appendingPathComponent("device.json")
         )
+        let localLogData = try Data(
+            contentsOf: report.directoryURL.appendingPathComponent("logs.jsonl")
+        )
+        XCTAssertTrue(String(decoding: localLogData, as: UTF8.self).contains("anchorPlayer=0.0"))
         XCTAssertTrue(String(decoding: localDeviceData, as: UTF8.self).contains("uid_hash"))
         XCTAssertTrue(String(decoding: localDeviceData, as: UTF8.self).contains("route_hashes"))
         XCTAssertTrue(String(decoding: localDeviceData, as: UTF8.self).contains("server_url"))
@@ -733,6 +737,44 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertFalse(hostedLog.msg.contains("media=5.700124438"))
         XCTAssertTrue(hostedLog.msg.contains("range=bytes=0-1023"))
         XCTAssertTrue(hostedLog.msg.contains("bytes=67108864B"))
+        for key in [
+            "anchorPlayer", "bufAhead", "generatedAhead", "stationaryFor",
+            "cachedAheadBytes", "maxLegacy", "hexCode", "octalCode", "mixedRadix",
+            "hexDotted",
+        ] {
+            XCTAssertTrue(
+                hostedLog.msg.contains("\(key)=[redacted_network_identity]"),
+                hostedLog.msg
+            )
+        }
+        XCTAssertTrue(
+            hostedLog.msg.contains(#""quotedMetric":"[redacted_network_identity]""#),
+            hostedLog.msg
+        )
+        XCTAssertTrue(
+            hostedLog.msg.contains("quotedOctal='[redacted_network_identity]'"),
+            hostedLog.msg
+        )
+        for preserved in [
+            "publicVersion=8.8.8", "ac.cur=0.0", "ac.pts=0.0", "shortCount=123456",
+            "tooLargeLegacy=4294967296", "overflowHex=0x100000000", "badOctal=018",
+        ] {
+            XCTAssertTrue(hostedLog.msg.contains(preserved), hostedLog.msg)
+        }
+        for removed in [
+            "ac.cur=017700000001", "ac.pts=0x7f000001", "ac.cur=127.0x000001",
+            #""ac.cur":"0.0""#, "ac.pts : 0.0", "ac.cur=-0.0", "ac.pts=+127.1",
+        ] {
+            XCTAssertFalse(hostedLog.msg.contains(removed), hostedLog.msg)
+        }
+        XCTAssertTrue(
+            hostedLog.msg.contains(#""ac.cur":"[redacted_network_identity]""#),
+            hostedLog.msg
+        )
+        XCTAssertTrue(
+            hostedLog.msg.contains("ac.pts : [redacted_network_identity]"),
+            hostedLog.msg
+        )
         XCTAssertTrue(hostedLog.msg.contains("item_count"))
         XCTAssertTrue(hostedLog.msg.contains("request_cancelled"))
         XCTAssertEqual(hostedLog.run, canonicalRunID)

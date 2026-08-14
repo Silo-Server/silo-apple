@@ -528,7 +528,100 @@ struct DiagnosticsBundleBuilder {
             in: numericTelemetryNormalized,
             with: "redacted.invalid"
         )
-        return templateHostedURLPaths(in: loopbackNormalized)
+        let ambiguousLegacyNumbersRemoved = sanitizeHostedAmbiguousLegacyNumericAssignments(
+            in: loopbackNormalized
+        )
+        return templateHostedURLPaths(in: ambiguousLegacyNumbersRemoved)
+    }
+
+    private static func sanitizeHostedAmbiguousLegacyNumericAssignments(
+        in value: String
+    ) -> String {
+        let source = value as NSString
+        let range = NSRange(location: 0, length: source.length)
+        let matches = hostedAmbiguousLegacyNumericAssignmentRegex.matches(
+            in: value,
+            options: [],
+            range: range
+        )
+        var rendered = value
+        for match in matches.reversed() {
+            let prefix = source.substring(with: match.range(at: 1))
+            let sign = source.substring(with: match.range(at: 2))
+            let token = source.substring(with: match.range(at: 3))
+            let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+            let isExactSafeClockAssignment =
+                sign.isEmpty &&
+                (prefix.lowercased() == "ac.cur=" || prefix.lowercased() == "ac.pts=") &&
+                (2...4).contains(parts.count) &&
+                parts.allSatisfy { !$0.isEmpty && $0.allSatisfy(\.isNumber) }
+            guard !isExactSafeClockAssignment,
+                  isHostedRejectedLegacyNumericToken(token) else { continue }
+            rendered = (rendered as NSString).replacingCharacters(
+                in: match.range,
+                with: "\(prefix)[redacted_network_identity]"
+            )
+        }
+        return rendered
+    }
+
+    /// Mirrors the collector's legacy IPv4 parsing and rejection boundary for
+    /// free-text numeric assignments. Public decimal multipart values remain
+    /// useful telemetry; explicit radix syntax, integer IPv4, and non-public
+    /// multipart values are ambiguous network identities and fail closed.
+    private static func isHostedRejectedLegacyNumericToken(_ token: String) -> Bool {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard (1...4).contains(parts.count) else { return false }
+        var numbers: [UInt64] = []
+        for component in parts {
+            guard !component.isEmpty, component.count <= 16 else { return false }
+            let lowercased = component.lowercased()
+            let radix: Int
+            let digits: String
+            if lowercased.hasPrefix("0x") {
+                radix = 16
+                digits = String(lowercased.dropFirst(2))
+                guard !digits.isEmpty,
+                      digits.allSatisfy({ $0.isHexDigit }) else { return false }
+            } else if component.count > 1, component.hasPrefix("0") {
+                radix = 8
+                digits = String(component.dropFirst())
+                guard digits.allSatisfy({ ("0"..."7").contains(String($0)) }) else {
+                    return false
+                }
+            } else {
+                radix = 10
+                digits = component
+                guard digits.allSatisfy(\.isNumber) else { return false }
+            }
+            guard let number = UInt64(digits.isEmpty ? "0" : digits, radix: radix),
+                  number <= UInt64(UInt32.max) else { return false }
+            numbers.append(number)
+        }
+        guard numbers.dropLast().allSatisfy({ $0 <= 255 }) else { return false }
+        let lastLimits: [UInt64] = [UInt64(UInt32.max), 0x00ff_ffff, 0x0000_ffff, 0xff]
+        guard let last = numbers.last, last <= lastLimits[parts.count - 1] else { return false }
+
+        let address = numbers.dropLast().enumerated().reduce(last) { result, entry in
+            result + (entry.element << UInt64(24 - (entry.offset * 8)))
+        }
+        let first = address >> 24
+        let second = (address >> 16) & 0xff
+        let isNonPublic = first == 0 || first == 10 ||
+            (first == 100 && (64...127).contains(second)) ||
+            first == 127 ||
+            (first == 169 && second == 254) ||
+            (first == 172 && (16...31).contains(second)) ||
+            (first == 192 && (second == 0 || second == 168)) ||
+            (first == 198 && (second == 18 || second == 19)) ||
+            first >= 224
+        let explicitLegacySyntax = parts.contains { component in
+            component.lowercased().hasPrefix("0x") ||
+                (component.count > 1 && component.hasPrefix("0"))
+        }
+        let longIntegerSyntax = parts.count == 1 &&
+            (7...10).contains(token.count) && token.allSatisfy(\.isNumber)
+        return explicitLegacySyntax || longIntegerSyntax || (parts.count > 1 && isNonPublic)
     }
 
     private static func sanitizeHostedBarePrivateIdentifiers(in value: String) -> String {
@@ -763,6 +856,16 @@ struct DiagnosticsBundleBuilder {
     ]
     private static let hostedByteRangeAssignmentPrefixRegex = try! NSRegularExpression(
         pattern: #"(?i)\brange\s*[:=]\s*$"#
+    )
+    private static let hostedAmbiguousLegacyNumericAssignmentRegex = try! NSRegularExpression(
+        // Playback telemetry such as `bufAhead=0.0` and
+        // `cachedAheadBytes=67108864` is indistinguishable from shortened,
+        // integer, octal, hexadecimal, or mixed-radix IPv4 syntax at the
+        // public collector. Preserve the explicitly unit-normalized keys
+        // above, but fail closed for every remaining numeric assignment,
+        // including quoted JSON-style fields, instead of maintaining an
+        // incomplete free-text key allowlist.
+        pattern: #"(?i)(?<![A-Za-z0-9_.-])((?:\"[A-Za-z][A-Za-z0-9_.-]{0,95}\"|'[A-Za-z][A-Za-z0-9_.-]{0,95}'|[A-Za-z][A-Za-z0-9_.-]{0,95})\s*[:=]\s*(?:[\"'])?)([-+]?)((?:(?:0x[0-9a-f]{1,16}|0[0-7]{1,15}|[0-9]{1,16})\.){1,3}(?:0x[0-9a-f]{1,16}|0[0-7]{1,15}|[0-9]{1,16})|0x[0-9a-f]{1,16}|0[0-7]+|[0-9]{7,10})(?![0-9A-Za-z.])"#
     )
     private static let hostedBarePrivateIdentifierRegex = try! NSRegularExpression(
         pattern: #"(?i)(?<![A-Za-z0-9])((?:ps|playback|session|file|item|media|plan|attempt|profile|account|user|device|content|library|request|req|correlation|server|subtitle|track|run)[_-](?:[0-9]+|[A-Za-z0-9][A-Za-z0-9_-]{7,}))(?![A-Za-z0-9_-])"#
