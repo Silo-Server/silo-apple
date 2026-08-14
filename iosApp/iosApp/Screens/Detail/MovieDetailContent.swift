@@ -308,9 +308,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     /// the rail so the surrounding VStack doesn't reserve a 36pt gap for a
     /// section that renders nothing.
     ///
-    /// `allowRemote` is unconditionally true: iOS plays remote trailers in a
-    /// web sheet and macOS opens them in the browser, so unlike tvOS there is
-    /// never a reason to drop them.
+    /// `allowRemote` is unconditionally true: iOS, iPadOS, and macOS hand
+    /// remote trailers to the YouTube app through an external deep link.
     @ViewBuilder
     private var trailersSection: some View {
         let entries = TrailerRail.entries(

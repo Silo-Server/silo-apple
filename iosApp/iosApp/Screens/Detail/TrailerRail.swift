@@ -93,7 +93,7 @@ enum TrailerRail {
         URL(string: "https://i.ytimg.com/vi/\(siteKey)/hqdefault.jpg")
     }
 
-    /// Deep link into the installed YouTube app (tvOS playback path).
+    /// Deep link into the installed YouTube app on every Apple platform.
     ///
     /// The full web URL with only the scheme swapped — NOT the iOS-style
     /// short form `youtube://watch?v=`. The tvOS YouTube app ignores the
@@ -101,18 +101,7 @@ enum TrailerRail {
     /// form starts the video. Verified on Apple TV 4K hardware (2nd gen,
     /// tvOS 26, Aug 2026); same format Home Assistant documents for its
     /// Apple TV deep links.
-    static func youtubeAppURL(siteKey: String) -> URL? {
+    static func youtubeDeepLinkURL(siteKey: String) -> URL? {
         URL(string: "youtube://www.youtube.com/watch?v=\(siteKey)")
-    }
-
-    /// The public watch page, used as the macOS `openURL` fallback.
-    static func youtubeWatchURL(siteKey: String) -> URL? {
-        URL(string: "https://www.youtube.com/watch?v=\(siteKey)")
-    }
-
-    /// Privacy-preserving embed for the iOS in-app web sheet. `autoplay`
-    /// plus `playsinline` reproduces the web client's trailer modal.
-    static func embedURL(siteKey: String) -> URL? {
-        URL(string: "https://www.youtube-nocookie.com/embed/\(siteKey)?autoplay=1&playsinline=1")
     }
 }

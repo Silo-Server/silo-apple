@@ -344,7 +344,7 @@ enum TVTrailerLaunch {
     /// Hand a video off to the YouTube app. Only ever called for cards that
     /// exist, i.e. after ``isYouTubeAppInstalled()`` returned true.
     static func open(siteKey: String) {
-        guard let url = TrailerRail.youtubeAppURL(siteKey: siteKey) else { return }
+        guard let url = TrailerRail.youtubeDeepLinkURL(siteKey: siteKey) else { return }
         UIApplication.shared.open(url, options: [:], completionHandler: nil)
     }
 }

@@ -54,30 +54,19 @@ struct PhoneTrailersRail: View {
 /// The rail plus the platform-specific handling of a remote card tap.
 ///
 /// Both phone detail screens embed this instead of `PhoneTrailersRail`
-/// directly: a remote trailer opens an in-app web sheet on iOS and the
-/// system browser on macOS, and that branch would otherwise be copied into
-/// `MovieDetailContent` and `SeriesDetailContent` verbatim. Local extras
-/// are ordinary playback targets, so those taps continue up to the detail
-/// view that owns the player presentation.
+/// directly: a remote trailer is handed to the YouTube app with the same
+/// deep link used on tvOS, and that branch would otherwise be copied into
+/// `MovieDetailContent` and `SeriesDetailContent` verbatim. Local extras are
+/// ordinary playback targets, so those taps continue up to the detail view
+/// that owns the player presentation.
 struct PhoneTrailersSection: View {
     let entries: [TrailerRailEntry]
     let onPlayExtra: (_ contentId: String) -> Void
 
-    #if os(iOS)
-    @State private var activeRemoteTrailer: RemoteTrailerPresentation?
-    #else
     @Environment(\.openURL) private var openURL
-    #endif
 
     var body: some View {
-        #if os(iOS)
         PhoneTrailersRail(entries: entries, onSelect: handleSelection)
-            .sheet(item: $activeRemoteTrailer) { presentation in
-                TrailerWebSheet(title: presentation.title, siteKey: presentation.siteKey)
-            }
-        #else
-        PhoneTrailersRail(entries: entries, onSelect: handleSelection)
-        #endif
     }
 
     private func handleSelection(_ entry: TrailerRailEntry) {
@@ -85,31 +74,12 @@ struct PhoneTrailersSection: View {
         case .local(let extra):
             onPlayExtra(extra.contentId)
         case .remote(let video):
-            #if os(iOS)
-            activeRemoteTrailer = RemoteTrailerPresentation(
-                title: entry.title,
-                siteKey: video.siteKey
-            )
-            #else
-            // macOS has no WKWebView sheet of its own here; hand the public
-            // watch page to the default browser instead.
-            if let url = TrailerRail.youtubeWatchURL(siteKey: video.siteKey) {
+            if let url = TrailerRail.youtubeDeepLinkURL(siteKey: video.siteKey) {
                 openURL(url)
             }
-            #endif
         }
     }
 }
-
-#if os(iOS)
-/// Identifiable box so a tapped remote entry can drive `.sheet(item:)`.
-/// Keyed on the site key so re-tapping the same trailer is idempotent.
-private struct RemoteTrailerPresentation: Identifiable {
-    let title: String
-    let siteKey: String
-    var id: String { siteKey }
-}
-#endif
 
 // MARK: - Card
 

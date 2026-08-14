@@ -164,18 +164,10 @@ final class TrailerRailModelTests: XCTestCase {
         )
         // Full-URL form: the tvOS YouTube app ignores the iOS-style short
         // form `youtube://watch?v=` (opens on Home, id dropped) but plays
-        // this one. Hardware-verified; see TrailerRail.youtubeAppURL.
+        // this one. Hardware-verified; see TrailerRail.youtubeDeepLinkURL.
         XCTAssertEqual(
-            TrailerRail.youtubeAppURL(siteKey: key)?.absoluteString,
+            TrailerRail.youtubeDeepLinkURL(siteKey: key)?.absoluteString,
             "youtube://www.youtube.com/watch?v=tFMo3UJ4B4g"
-        )
-        XCTAssertEqual(
-            TrailerRail.youtubeWatchURL(siteKey: key)?.absoluteString,
-            "https://www.youtube.com/watch?v=tFMo3UJ4B4g"
-        )
-        XCTAssertEqual(
-            TrailerRail.embedURL(siteKey: key)?.absoluteString,
-            "https://www.youtube-nocookie.com/embed/tFMo3UJ4B4g?autoplay=1&playsinline=1"
         )
     }
 
@@ -183,8 +175,8 @@ final class TrailerRailModelTests: XCTestCase {
         // Real YouTube ids use the URL-safe base64 alphabet.
         let key = "a-B_c1D2e3F"
         XCTAssertEqual(
-            TrailerRail.embedURL(siteKey: key)?.absoluteString,
-            "https://www.youtube-nocookie.com/embed/a-B_c1D2e3F?autoplay=1&playsinline=1"
+            TrailerRail.youtubeDeepLinkURL(siteKey: key)?.absoluteString,
+            "youtube://www.youtube.com/watch?v=a-B_c1D2e3F"
         )
         XCTAssertEqual(
             TrailerRail.thumbnailURL(siteKey: key)?.absoluteString,
