@@ -76,12 +76,14 @@ final class AuthService: @unchecked Sendable {
         // defaults or credential slot. This prevents candidate discovery from
         // exposing a global A/B routing mixture to unrelated requests.
         let fetchedName = await serverIdentityResolver.fetchServerName(serverURL: normalized)
+        try Task.checkCancellation()
 
         // Commit only after the candidate proves it can serve setup status.
         let status: SetupStatus = try await HTTPClient.shared.getUnauthenticated(
             serverURL: normalized,
             path: "/api/v1/auth/setup"
         )
+        try Task.checkCancellation()
 
         // Success: upsert the registry entry and make it active.
         let entry = ServerEntry(

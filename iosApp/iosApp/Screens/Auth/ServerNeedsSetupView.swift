@@ -9,6 +9,7 @@ struct ServerNeedsSetupView: View {
     var router: AppRouter
     @State private var isChecking = false
     @State private var error: String?
+    @State private var retryTask: Task<Void, Never>?
 
     var body: some View {
         AuroraScreen(variant: .server, scrim: .soft) {
@@ -60,7 +61,7 @@ struct ServerNeedsSetupView: View {
                 .buttonStyle(AuroraPrimaryButtonStyle(isLoading: isChecking))
                 .disabled(isChecking)
 
-                Button("Change server") { router.resetToServerSetup() }
+                Button("Change server", action: changeServer)
                     .buttonStyle(AuroraGhostButtonStyle())
                     .frame(maxWidth: .infinity)
             }
@@ -69,6 +70,7 @@ struct ServerNeedsSetupView: View {
             .animation(.easeInOut(duration: 0.2), value: error)
         }
         .navigationBarBackButtonHidden()
+        .onDisappear(perform: cancelRetry)
     }
 
     /// Re-probe the current server. If it's now set up, pop back to the login
@@ -78,11 +80,14 @@ struct ServerNeedsSetupView: View {
         guard !isChecking else { return }
         isChecking = true
         error = nil
-        Task {
+        let expectedServerURL = AuthService.shared.serverUrl
+        retryTask = Task {
             do {
-                let status = try await AuthService.shared.checkServer(url: AuthService.shared.serverUrl)
+                let status = try await AuthService.shared.checkServer(url: expectedServerURL)
                 await MainActor.run {
                     isChecking = false
+                    guard !Task.isCancelled,
+                          AuthService.shared.serverUrl == expectedServerURL else { return }
                     if status.needsSetup {
                         error = "This server still needs administrator setup."
                     } else {
@@ -92,10 +97,22 @@ struct ServerNeedsSetupView: View {
             } catch {
                 await MainActor.run {
                     isChecking = false
+                    guard !Task.isCancelled else { return }
                     self.error = "Couldn't reach the server. Check it's running and try again."
                 }
             }
         }
+    }
+
+    private func changeServer() {
+        cancelRetry()
+        router.resetToServerSetup()
+    }
+
+    private func cancelRetry() {
+        retryTask?.cancel()
+        retryTask = nil
+        isChecking = false
     }
 }
 #endif
