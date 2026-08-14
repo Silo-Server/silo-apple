@@ -54,6 +54,46 @@ struct OnboardingProgressRequest: Codable {
     let skipped: Bool
 }
 
+/// Read-only compatibility for a tour preference stored by older builds after
+/// an invitation was claimed. New builds never create this marker, but consume
+/// an existing account-bound record so an upgrade does not reverse the user's
+/// previously accepted `show_tour=false` choice.
+enum LegacyInviteTourSuppression {
+    private struct Record: Codable, Equatable {
+        let serverId: String
+        let userId: String
+    }
+
+    private static let key = "onboardingTourSuppressedAccount.v2"
+    private static let unsafeLegacyKey = "onboardingTourSuppressedServerId.v1"
+
+    static func pendingUserId(
+        for serverId: String?,
+        defaults: SharedDefaults = .shared
+    ) -> String? {
+        // The v1 value was not account-bound and is unsafe to consume.
+        if defaults.containsObject(forKey: unsafeLegacyKey) {
+            defaults.removeObject(forKey: unsafeLegacyKey)
+        }
+        guard let serverId,
+              let data = defaults.data(forKey: key),
+              let record = try? JSONDecoder().decode(Record.self, from: data),
+              record.serverId == serverId else {
+            return nil
+        }
+        return record.userId
+    }
+
+    static func clear(
+        serverId: String,
+        userId: String,
+        defaults: SharedDefaults = .shared
+    ) {
+        guard pendingUserId(for: serverId, defaults: defaults) == userId else { return }
+        defaults.removeObject(forKey: key)
+    }
+}
+
 /// Prevents an unknown future manifest from reopening an empty tour forever
 /// when the completion post is temporarily unavailable. The gate retries the
 /// same completion silently on later authenticated launches.

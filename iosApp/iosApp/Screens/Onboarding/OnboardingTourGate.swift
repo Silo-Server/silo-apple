@@ -48,6 +48,10 @@ final class OnboardingTourGateModel {
             return
         }
 
+        if await consumeLegacyInviteTourSuppressionIfNeeded() {
+            return
+        }
+
         let state = try? await ContinuumAPI.shared.onboardingState()
         guard !Task.isCancelled,
               AuthService.shared.profileId == profileId else { return }
@@ -60,5 +64,40 @@ final class OnboardingTourGateModel {
         showTour = false
     }
 
+    /// Finishes consuming an account-bound preference written by older builds.
+    /// No current flow creates this marker; it remains only for upgrade safety.
+    private func consumeLegacyInviteTourSuppressionIfNeeded() async -> Bool {
+        guard let serverId = ServerRegistry.shared.activeServerId,
+              let expectedUserId = LegacyInviteTourSuppression.pendingUserId(for: serverId) else {
+            return false
+        }
+
+        do {
+            let user = try await ContinuumAPI.shared.currentUser()
+            guard user.id == expectedUserId else {
+                LegacyInviteTourSuppression.clear(
+                    serverId: serverId,
+                    userId: expectedUserId
+                )
+                return false
+            }
+
+            let flow = try await ContinuumAPI.shared.onboardingFlow(surface: "phone")
+            try await ContinuumAPI.shared.postOnboardingProgress(OnboardingProgressRequest(
+                tourId: flow.tourId,
+                lastStep: nil,
+                completed: false,
+                skipped: true
+            ))
+            LegacyInviteTourSuppression.clear(
+                serverId: serverId,
+                userId: expectedUserId
+            )
+            return true
+        } catch {
+            // Preserve the marker and retry on the next authenticated launch.
+            return true
+        }
+    }
 }
 #endif

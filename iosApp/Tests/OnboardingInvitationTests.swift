@@ -20,6 +20,32 @@ final class OnboardingInvitationTests: XCTestCase {
             .queryItems, [URLQueryItem(name: "surface", value: "phone")])
     }
 
+    func testLegacyInviteTourSuppressionRemainsAccountBoundDuringMigration() throws {
+        let suiteName = "legacy-tour-suppression-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        defer { suite.removePersistentDomain(forName: suiteName) }
+
+        let record = try JSONSerialization.data(withJSONObject: [
+            "serverId": "server-a",
+            "userId": "user-a",
+        ])
+        defaults.set(record, forKey: "onboardingTourSuppressedAccount.v2")
+
+        XCTAssertEqual(
+            LegacyInviteTourSuppression.pendingUserId(for: "server-a", defaults: defaults),
+            "user-a"
+        )
+        XCTAssertNil(LegacyInviteTourSuppression.pendingUserId(for: "server-b", defaults: defaults))
+
+        LegacyInviteTourSuppression.clear(
+            serverId: "server-a",
+            userId: "user-a",
+            defaults: defaults
+        )
+        XCTAssertNil(LegacyInviteTourSuppression.pendingUserId(for: "server-a", defaults: defaults))
+    }
+
     @MainActor
     func testSettingTargetsAreAwaitedAndDispatchedToTheirOwnEndpoints() async throws {
         let api = OnboardingTourAPIStub()

@@ -29,7 +29,6 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>continuum</string>
-				<string>silo</string>
 			</array>
 		</dict>
 	</array>
