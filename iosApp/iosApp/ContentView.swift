@@ -785,12 +785,7 @@ struct ContentView: View {
         switch route {
         case .serverNeedsSetup:
             #if os(tvOS)
-            EmptyStateView(
-                icon: "gearshape.2",
-                title: "Server setup required",
-                subtitle: "Ask the server administrator to finish setup, then try again."
-            )
-                .continuumBackground()
+            TVServerNeedsSetupView(router: router)
             #else
             ServerNeedsSetupView(router: router)
             #endif
@@ -845,12 +840,7 @@ struct ContentView: View {
             #endif
         case .serverNeedsSetup:
             #if os(tvOS)
-            EmptyStateView(
-                icon: "gearshape.2",
-                title: "Server setup required",
-                subtitle: "Ask the server administrator to finish setup, then try again."
-            )
-                .continuumBackground()
+            TVServerNeedsSetupView(router: router)
             #else
             ServerNeedsSetupView(router: router)
             #endif
