@@ -264,23 +264,6 @@ class AppRouter {
         authState = .needsServerSetup
     }
 
-    /// Leave an uncommitted invite and return to the state represented by the
-    /// still-active server/session. Invite lookup never mutates that state.
-    func restoreAfterCancelledInvite() {
-        path = NavigationPath()
-        profileJourneyLabels = nil
-        let auth = AuthService.shared
-        if !auth.hasServer {
-            authState = .needsServerSetup
-        } else if !auth.isLoggedIn {
-            authState = .needsLogin
-        } else if !auth.hasProfile {
-            authState = .needsProfile
-        } else {
-            authState = .authenticated
-        }
-    }
-
     /// Sign out of the active server and land at the next sensible step:
     /// the login screen if a server entry still remembers its URL,
     /// otherwise the server-setup screen. Fire-and-forget wrapper so
@@ -400,10 +383,6 @@ private extension Route {
             return "login"
         case .serverNeedsSetup:
             return "serverNeedsSetup"
-        case .signup:
-            return "signup"
-        case .inviteClaim:
-            return "inviteClaim"
         case .onboardingTour:
             return "onboardingTour"
         case .profileSelection:
@@ -440,8 +419,6 @@ private extension Route {
             return "settings"
         case .recommendations:
             return "recommendations"
-        case .admin:
-            return "admin"
         case .serverList:
             return "serverList"
         case .downloads:

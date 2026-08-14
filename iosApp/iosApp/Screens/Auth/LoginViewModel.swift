@@ -6,20 +6,8 @@ class LoginViewModel {
     var password: String = ""
     var isLoading: Bool = false
     var error: String?
-    var signupEnabled: Bool = false
 
     private let auth = AuthService.shared
-
-    /// Check whether signup is available on this server.
-    func checkSignupStatus() async {
-        do {
-            let status: SignupStatus = try await ContinuumAPI.shared.get("/api/v1/auth/signup")
-            signupEnabled = status.enabled
-        } catch {
-            // Non-critical; just hide the signup link.
-            signupEnabled = false
-        }
-    }
 
     /// Authenticate with username and password.
     func login(router: AppRouter) async {

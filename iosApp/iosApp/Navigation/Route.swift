@@ -6,9 +6,6 @@ enum Route: Hashable {
     case serverSetup
     case login
     case serverNeedsSetup
-    case signup
-    /// Emailed-invitation claim; server + token arrive via deep link.
-    case inviteClaim(endpoint: ServerEndpoint, token: String)
 
     /// Server-driven first-run feature tour, shown after profile selection.
     case onboardingTour
@@ -40,7 +37,6 @@ enum Route: Hashable {
     case collectionDetail(collectionId: String)
     case settings
     case recommendations
-    case admin
     case serverList
     case downloads
 

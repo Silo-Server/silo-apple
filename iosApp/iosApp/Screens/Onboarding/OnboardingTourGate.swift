@@ -48,10 +48,6 @@ final class OnboardingTourGateModel {
             return
         }
 
-        if await handleInviteSuppressionIfNeeded() {
-            return
-        }
-
         let state = try? await ContinuumAPI.shared.onboardingState()
         guard !Task.isCancelled,
               AuthService.shared.profileId == profileId else { return }
@@ -64,41 +60,5 @@ final class OnboardingTourGateModel {
         showTour = false
     }
 
-    /// Returns true when a matching suppression was consumed or must remain
-    /// pending. A marker for a different signed-in account is cleared and
-    /// normal onboarding evaluation continues.
-    private func handleInviteSuppressionIfNeeded() async -> Bool {
-        guard let serverId = ServerRegistry.shared.activeServerId,
-              let expectedUserId = OnboardingTourSuppression.pendingUserId(for: serverId) else {
-            return false
-        }
-
-        do {
-            let user = try await ContinuumAPI.shared.currentUser()
-            guard user.id == expectedUserId else {
-                OnboardingTourSuppression.clear(
-                    serverId: serverId,
-                    userId: expectedUserId
-                )
-                return false
-            }
-
-            let flow = try await ContinuumAPI.shared.onboardingFlow(surface: "phone")
-            try await ContinuumAPI.shared.postOnboardingProgress(OnboardingProgressRequest(
-                tourId: flow.tourId,
-                lastStep: nil,
-                completed: false,
-                skipped: true
-            ))
-            OnboardingTourSuppression.clear(
-                serverId: serverId,
-                userId: expectedUserId
-            )
-            return true
-        } catch {
-            // Keep the account-bound hint for a future authenticated launch.
-            return true
-        }
-    }
 }
 #endif

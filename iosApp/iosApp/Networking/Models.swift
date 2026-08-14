@@ -1250,18 +1250,6 @@ struct CollectionItemsResponse: Codable {
     }
 }
 
-// MARK: - Admin
-
-struct AdminStats: Codable {
-    let totalItems: Int?
-    let totalFiles: Int?
-    let totalUsers: Int?
-    let totalMovies: Int?
-    let totalShows: Int?
-    let activeStreams: Int?
-    let totalStorageBytes: Int64?
-}
-
 // MARK: - Search (uses CatalogResponse)
 
 // MARK: - Libraries

@@ -122,11 +122,6 @@ actor ContinuumAPI {
             ))
         }
 
-        // Admin
-        if components == ["api", "v1", "admin", "stats"] {
-            return try cast(try await adminStats())
-        }
-
         // Libraries
         if components == ["api", "v1", "libraries"] || components == ["api", "v1", "user", "libraries"] {
             return try cast(try await libraries())
@@ -179,10 +174,6 @@ actor ContinuumAPI {
             return try cast(try await watchDetail(contentId: components[3]))
         }
 
-        // Auth status
-        if components == ["api", "v1", "auth", "signup"] {
-            return try cast(try await signupStatus())
-        }
         if components == ["api", "v1", "user", "me"] || components == ["api", "v1", "auth", "me"] {
             return try cast(try await currentUser())
         }
@@ -342,10 +333,6 @@ actor ContinuumAPI {
     // MARK: - Typed endpoint methods
 
     // --- Auth ---
-
-    func signupStatus() async throws -> SignupStatus {
-        try await http.get("/api/v1/auth/signup")
-    }
 
     // --- Onboarding tour (profile-scoped) ---
 
@@ -865,12 +852,6 @@ actor ContinuumAPI {
             "/api/v1/collections/order",
             body: ReorderCollectionsRequest(orderedIds: orderedIds, groupId: groupId)
         )
-    }
-
-    // --- Admin ---
-
-    func adminStats() async throws -> AdminStats {
-        try await http.get("/api/v1/admin/stats")
     }
 
     // --- Profiles ---

@@ -1225,8 +1225,6 @@ struct TVMainTabView: View {
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         case .myRequests:
             MyRequestsView()
-        case .admin:
-            AdminDashboardView()
         case .search:
             SearchView(usesTVTopMenuInset: false)
         case .settings:

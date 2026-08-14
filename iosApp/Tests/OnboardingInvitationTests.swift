@@ -7,65 +7,6 @@ final class OnboardingInvitationTests: XCTestCase {
         OnboardingRequestStubProtocol.reset()
     }
 
-    func testServerEndpointCanonicalizesTrustedOrigins() throws {
-        let endpoint = try XCTUnwrap(ServerEndpoint(rawValue: " HTTPS://Example.COM:8443/silo/ "))
-        XCTAssertEqual(endpoint.baseURL, "https://example.com:8443/silo")
-        XCTAssertEqual(endpoint.displayHost, "example.com:8443")
-
-        let defaultPort = try XCTUnwrap(ServerEndpoint(rawValue: "https://Example.com:443/"))
-        XCTAssertEqual(defaultPort.baseURL, "https://example.com")
-        XCTAssertEqual(defaultPort.displayHost, "example.com")
-    }
-
-    func testServerEndpointRejectsNonHTTPAndAmbiguousURLs() {
-        XCTAssertNil(ServerEndpoint(rawValue: "file:///etc/passwd"))
-        XCTAssertNil(ServerEndpoint(rawValue: "https://user:pass@example.com"))
-        XCTAssertNil(ServerEndpoint(rawValue: "https://example.com?silo=other"))
-        XCTAssertNil(ServerEndpoint(rawValue: "https://example.com/#fragment"))
-    }
-
-    func testInvitationLinkAcceptsOnlyTheInviteRouteAndSafeToken() throws {
-        var components = try XCTUnwrap(URLComponents(string: "silo://invite"))
-        components.queryItems = [
-            URLQueryItem(name: "server", value: "https://Example.com/silo/"),
-            URLQueryItem(name: "token", value: "claim-token_123"),
-        ]
-        let claim = try XCTUnwrap(InvitationClaimLink(url: try XCTUnwrap(components.url)))
-        XCTAssertEqual(claim.endpoint.baseURL, "https://example.com/silo")
-        XCTAssertEqual(claim.token, "claim-token_123")
-
-        XCTAssertNil(InvitationClaimLink(url: URL(string: "continuum://invite?server=https://example.com&token=abc")!))
-        XCTAssertNil(InvitationClaimLink(url: URL(string: "silo://item?server=https://example.com&token=abc")!))
-        XCTAssertNil(InvitationClaimLink(url: URL(string: "silo://invite?server=https://example.com&token=abc/def")!))
-    }
-
-    func testFailedInviteLookupDoesNotRetargetActiveLogin() async throws {
-        let (http, _) = await makeHTTPClient(activeURL: "https://active.example/silo")
-        let invite = try XCTUnwrap(ServerEndpoint(rawValue: "https://invite.example/base"))
-
-        do {
-            let _: InvitationLookupResponse = try await http.getAnonymous(
-                from: invite,
-                "/api/v1/invitations/expired-token"
-            )
-            XCTFail("The invite lookup should fail")
-        } catch let HTTPError.http(statusCode, _) {
-            XCTAssertEqual(statusCode, 404)
-        }
-
-        let response: LoginResponse = try await http.post(
-            "/api/v1/auth/login",
-            body: LoginRequest(username: "user", password: "password")
-        )
-        XCTAssertEqual(response.accessToken, "active-access")
-
-        let requests = OnboardingRequestStubProtocol.requests()
-        XCTAssertEqual(requests.map { $0.url?.host }, ["invite.example", "active.example"])
-        XCTAssertEqual(requests[0].url?.path, "/base/api/v1/invitations/expired-token")
-        XCTAssertNil(requests[0].value(forHTTPHeaderField: "Authorization"))
-        XCTAssertEqual(requests[1].url?.path, "/silo/api/v1/auth/login")
-    }
-
     func testOnboardingSurfaceUsesAQueryItemInsteadOfEmbeddingQueryInPath() async throws {
         let (http, tokenStore) = await makeHTTPClient(activeURL: "https://active.example/silo")
         let api = ContinuumAPI(http: http, tokenStore: tokenStore)
@@ -212,64 +153,6 @@ final class OnboardingInvitationTests: XCTestCase {
         XCTAssertEqual(runtime.refreshes, ["auto_skip_intro=true"])
     }
 
-    func testInviteTourSuppressionIsBoundToServerAndClaimedUser() throws {
-        let suiteName = "invite-tour-suppression-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let defaults = SharedDefaults(suite: suite, standard: suite)
-        defer { suite.removePersistentDomain(forName: suiteName) }
-
-        OnboardingTourSuppression.set(
-            for: "server-a",
-            userId: "user-a",
-            defaults: defaults
-        )
-
-        XCTAssertEqual(
-            OnboardingTourSuppression.pendingUserId(for: "server-a", defaults: defaults),
-            "user-a"
-        )
-        XCTAssertNil(OnboardingTourSuppression.pendingUserId(for: "server-b", defaults: defaults))
-
-        OnboardingTourSuppression.clear(
-            serverId: "server-a",
-            userId: "user-b",
-            defaults: defaults
-        )
-        XCTAssertEqual(
-            OnboardingTourSuppression.pendingUserId(for: "server-a", defaults: defaults),
-            "user-a"
-        )
-
-        OnboardingTourSuppression.clear(
-            serverId: "server-a",
-            userId: "user-a",
-            defaults: defaults
-        )
-        XCTAssertNil(OnboardingTourSuppression.pendingUserId(for: "server-a", defaults: defaults))
-    }
-
-    @MainActor
-    func testTransientInviteLookupCanRetryButNotFoundIsPermanent() async throws {
-        let endpoint = try XCTUnwrap(ServerEndpoint(rawValue: "https://invite.example"))
-        let transientService = InvitationClaimServiceStub(firstFailure: .transient)
-        let transientModel = InviteClaimViewModel(auth: transientService)
-
-        await transientModel.load(endpoint: endpoint, token: "transient-token")
-        XCTAssertNotNil(transientModel.invitationLoadError)
-        XCTAssertFalse(transientModel.invitationInvalid)
-
-        await transientModel.load(endpoint: endpoint, token: "transient-token")
-        XCTAssertNotNil(transientModel.invitation)
-        XCTAssertNil(transientModel.invitationLoadError)
-
-        let permanentModel = InviteClaimViewModel(
-            auth: InvitationClaimServiceStub(firstFailure: .notFound)
-        )
-        await permanentModel.load(endpoint: endpoint, token: "expired-token")
-        XCTAssertTrue(permanentModel.invitationInvalid)
-        XCTAssertNil(permanentModel.invitationLoadError)
-    }
-
     private static func flow(steps: [OnboardingStep]) -> OnboardingFlow {
         OnboardingFlow(version: 1, tourId: "tour", steps: steps)
     }
@@ -313,7 +196,7 @@ final class OnboardingInvitationTests: XCTestCase {
     }
 
     private func makeHTTPClient(activeURL: String) async -> (HTTPClient, TokenStore) {
-        let suiteName = "onboarding-invite-tests-\(UUID().uuidString)"
+        let suiteName = "onboarding-tests-\(UUID().uuidString)"
         let suite = UserDefaults(suiteName: suiteName)!
         addTeardownBlock {
             UserDefaults().removePersistentDomain(forName: suiteName)
@@ -397,49 +280,6 @@ private final class OnboardingRuntimeSettingsRefresherStub: OnboardingRuntimeSet
     }
 }
 
-private actor InvitationClaimServiceStub: InvitationClaimServing {
-    enum Failure {
-        case transient
-        case notFound
-    }
-
-    private var firstFailure: Failure?
-
-    init(firstFailure: Failure? = nil) {
-        self.firstFailure = firstFailure
-    }
-
-    func lookupInvitation(
-        endpoint: ServerEndpoint,
-        token: String
-    ) async throws -> InvitationLookupResponse {
-        if let firstFailure {
-            self.firstFailure = nil
-            switch firstFailure {
-            case .transient:
-                throw URLError(.timedOut)
-            case .notFound:
-                throw HTTPError.http(statusCode: 404, body: nil)
-            }
-        }
-        return InvitationLookupResponse(
-            email: "invitee@example.com",
-            inviterName: "Inviter",
-            serverName: "Silo",
-            expiresAt: "2099-01-01T00:00:00Z",
-            showTour: true
-        )
-    }
-
-    func acceptInvitation(
-        endpoint: ServerEndpoint,
-        token: String,
-        password: String
-    ) async throws -> String {
-        "user-1"
-    }
-}
-
 private final class OnboardingRequestStubProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var recordedRequests: [URLRequest] = []
@@ -458,17 +298,9 @@ private final class OnboardingRequestStubProtocol: URLProtocol {
     override func startLoading() {
         Self.lock.withLock { Self.recordedRequests.append(request) }
         let path = request.url?.path ?? ""
-        let host = request.url?.host ?? ""
-
         let status: Int
         let body: Data
-        if host == "invite.example" {
-            status = 404
-            body = Data(#"{"error":"not_found"}"#.utf8)
-        } else if path.hasSuffix("/api/v1/auth/login") {
-            status = 200
-            body = Data(#"{"access_token":"active-access","refresh_token":"active-refresh","expires_in":3600,"user":{"id":1,"username":"user","email":"user@example.com","role":"user"}}"#.utf8)
-        } else if path.hasSuffix("/api/v1/onboarding/flow") {
+        if path.hasSuffix("/api/v1/onboarding/flow") {
             status = 200
             body = Data(#"{"version":1,"tour_id":"tour-test","steps":[]}"#.utf8)
         } else {

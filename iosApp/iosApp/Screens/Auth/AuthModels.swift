@@ -5,11 +5,6 @@ struct SetupStatus: Codable {
     let needsSetup: Bool
 }
 
-/// Signup status from /api/v1/auth/signup.
-struct SignupStatus: Codable {
-    let enabled: Bool
-}
-
 /// Liveness + identity probe from GET /api/v1/health.
 ///
 /// The server returns `{"status": "ok"}` always; `serverName` and

@@ -329,8 +329,8 @@ private struct SecondaryButtonBody: View {
 }
 
 /// Text-only button style for tertiary actions. Focused state fills a
-/// soft pill behind the label so the user can tell whether focus is on
-/// "Create Account" / "Change Server" vs. the primary button above.
+/// soft pill behind the label so the user can distinguish the tertiary action
+/// from the primary button above.
 struct ContinuumTextButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         TextButtonBody(configuration: configuration)

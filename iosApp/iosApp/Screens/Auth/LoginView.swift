@@ -82,12 +82,6 @@ struct LoginView: View {
                 .disabled(viewModel.isLoading)
                 .padding(.top, 4)
 
-                if viewModel.signupEnabled {
-                    Button("Create an account") { router.navigate(to: .signup) }
-                        .buttonStyle(AuroraGhostButtonStyle())
-                        .frame(maxWidth: .infinity)
-                }
-
                 Button("Use a different server") { router.resetToServerSetup() }
                     .buttonStyle(AuroraGhostButtonStyle())
                     .frame(maxWidth: .infinity)
@@ -98,7 +92,6 @@ struct LoginView: View {
             .animation(.easeInOut(duration: 0.2), value: viewModel.error)
         }
         .navigationBarBackButtonHidden()
-        .task { await viewModel.checkSignupStatus() }
     }
 
     private func signIn() {

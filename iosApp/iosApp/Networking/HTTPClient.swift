@@ -235,21 +235,6 @@ actor HTTPClient {
         try await send(method: "GET", path: path, query: query, body: Optional<String>.none)
     }
 
-    /// Request an endpoint on an explicitly supplied server without reading
-    /// or mutating the active server and without attaching any persisted
-    /// credentials. Used for invitation links received before authentication.
-    func getAnonymous<T: Decodable>(
-        from endpoint: ServerEndpoint,
-        _ path: String,
-        diagnosticPath: String? = nil
-    ) async throws -> T {
-        try await getUnauthenticated(
-            serverURL: endpoint.baseURL,
-            path: path,
-            diagnosticPath: diagnosticPath
-        )
-    }
-
     /// Probe a candidate server without mutating global routing state or
     /// attaching credentials from the currently active server.
     func getUnauthenticated<T: Decodable>(
@@ -292,23 +277,6 @@ actor HTTPClient {
         timeout: HTTPTimeout = .standard
     ) async throws -> T {
         try await send(method: "POST", path: path, query: query, body: body, timeout: timeout)
-    }
-
-    func postAnonymous<T: Decodable>(
-        to endpoint: ServerEndpoint,
-        _ path: String,
-        body: (any Encodable)? = nil,
-        query: [String: String] = [:],
-        diagnosticPath: String? = nil
-    ) async throws -> T {
-        try await sendAnonymous(
-            serverURL: endpoint.baseURL,
-            method: "POST",
-            path: path,
-            query: query,
-            body: body,
-            diagnosticPath: diagnosticPath
-        )
     }
 
     func postVoid(
@@ -764,44 +732,6 @@ actor HTTPClient {
             return try decoder.decode(T.self, from: data)
         } catch {
             Self.logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
-            throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
-        }
-    }
-
-    private func sendAnonymous<T: Decodable>(
-        serverURL: String,
-        method: String,
-        path: String,
-        query: [String: String],
-        body: (any Encodable)?,
-        diagnosticPath: String?
-    ) async throws -> T {
-        let dispatchRevision = try captureRequestDispatchRevision()
-        let request = try buildRequest(
-            serverUrl: serverURL,
-            method: method,
-            path: path,
-            query: query,
-            body: body
-        )
-        let (data, response) = try await perform(
-            request: request,
-            dispatchRevision: dispatchRevision,
-            reportReachability: false
-        )
-        try ensureSuccess(data, response, method: method, quietStatuses: [])
-        if data.isEmpty, let empty = EmptyResponse.empty as? T {
-            return empty
-        }
-        do {
-            return try decoder.decode(T.self, from: data)
-        } catch {
-            Self.logDecodingFailure(
-                type: String(describing: T.self),
-                path: diagnosticPath ?? path,
-                error: error,
-                data: data
-            )
             throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
         }
     }
