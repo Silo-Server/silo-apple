@@ -5740,6 +5740,13 @@ class PlayerViewModel {
         persistAudioSelection(track)
         reapplySystemSubtitlePolicy()
         if activePreparedProtocolV3 != nil {
+            // Record only — the server owns the switch on this path, so the
+            // track must not be applied locally before its plan arrives.
+            recordAudioTrackSelectionBreadcrumb(
+                track.trackId,
+                reason: "user_selection",
+                viaServerReplan: true
+            )
             attemptProtocolV3Replan(
                 position: currentTime,
                 classification: "audio_track_changed",
@@ -5767,6 +5774,12 @@ class PlayerViewModel {
         persistSubtitleSelection(track)
         if activePreparedProtocolV3 != nil,
            !SubtitleTrackIdSpace.isAILive(track.trackId) {
+            // Record only; the replan below is what actually switches the track.
+            recordSubtitleTrackSelectionBreadcrumb(
+                track.trackId,
+                reason: "user_selection",
+                viaServerReplan: true
+            )
             attemptProtocolV3Replan(
                 position: currentTime,
                 classification: "subtitle_track_changed",
@@ -5791,6 +5804,12 @@ class PlayerViewModel {
         Self.logger.info("[CMP-SUB] disable primary subtitles")
         persistSubtitleSelection(nil)
         if activePreparedProtocolV3 != nil {
+            // Record only; the replan below is what actually clears the track.
+            recordSubtitleTrackSelectionBreadcrumb(
+                nil,
+                reason: "user_selection",
+                viaServerReplan: true
+            )
             attemptProtocolV3Replan(
                 position: currentTime,
                 classification: "subtitle_track_changed",
@@ -7630,27 +7649,7 @@ class PlayerViewModel {
     /// that cannot tell "the user chose this" from "we restored this" cannot
     /// answer the question these breadcrumbs exist for.
     private func applyAudioTrackSelection(_ trackId: Int64, reason: String) {
-        #if os(iOS) || os(tvOS)
-        // The track's title and language are user-visible content metadata,
-        // not diagnostics; the registry offers no key for them and they are
-        // deliberately not smuggled into `msg`. The ordinal is enough to
-        // correlate against the plan's selected_tracks.
-        DiagTrace.breadcrumb(
-            .essential,
-            category: .playback,
-            tag: "Player",
-            message: "audio track selected",
-            attrs: [
-                "reason": .string(reason),
-                "sink": .string(
-                    audioTracks.first(where: { $0.trackId == trackId })
-                        .flatMap(audioSelectionIndex(for:))
-                        .map { "audio_ordinal_\($0)" } ?? "audio_ordinal_unknown"
-                ),
-                "play_method": .string(activeRouteKind.label),
-            ]
-        )
-        #endif
+        recordAudioTrackSelectionBreadcrumb(trackId, reason: reason, viaServerReplan: false)
         switch activePlayer {
         case .none:
             return
@@ -7668,23 +7667,7 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-SUB] apply primary selection trackId=\(trackId.map(String.init) ?? "nil", privacy: .public) route=\(self.activeRouteKind.label, privacy: .public)"
         )
-        #if os(iOS) || os(tvOS)
-        // `sink` carries the track's *kind*, not its identity: whether the
-        // cues come from an embedded stream, a server sidecar, or a live AI
-        // track is the thing that explains a rendering complaint, and unlike
-        // the title it is not user content.
-        DiagTrace.breadcrumb(
-            .essential,
-            category: .playback,
-            tag: "Player",
-            message: trackId == nil ? "subtitles disabled" : "subtitle track selected",
-            attrs: [
-                "reason": .string(reason),
-                "sink": .string(trackId.map(Self.subtitleTrackKind) ?? "none"),
-                "play_method": .string(activeRouteKind.label),
-            ]
-        )
-        #endif
+        recordSubtitleTrackSelectionBreadcrumb(trackId, reason: reason, viaServerReplan: false)
         switch activePlayer {
         case .none:
             return
@@ -7693,6 +7676,85 @@ class PlayerViewModel {
         case .avPlayer(let backend):
             backend.selectSubtitleTrack(trackId)
         }
+    }
+
+    // MARK: - Track-selection breadcrumbs
+    //
+    // Split out of the two apply funnels because the funnels are not the only
+    // way a track change happens: when a Protocol V3 plan is active the change
+    // is executed by the *server* — the pick is sent up as a replan and comes
+    // back as a new plan — so `selectAudio`/`selectSubtitle`/`disableSubtitles`
+    // return before ever reaching an apply call. Without these helpers the only
+    // trace of a server-side track change is the bridge's replan breadcrumb,
+    // whose `reason` is the coarse classification (`audio_track_changed`) and
+    // which knows nothing about the ordinal or the subtitle source.
+    //
+    // Both are strictly side-effect free — they read state and emit, nothing
+    // else. That is the invariant that lets them be called on the replan path:
+    // recording an intent must not apply it, because applying a track locally
+    // before the server's replacement plan lands is exactly the desync these
+    // breadcrumbs exist to diagnose.
+
+    /// Records an audio pick. `viaServerReplan` distinguishes "the engine was
+    /// told to switch" from "the pick was sent to the server and playback
+    /// reloads" — a real difference in what the user sees (an instant switch
+    /// versus a rebuffer), and one no registered key expresses, so it goes in
+    /// the free-text message.
+    private func recordAudioTrackSelectionBreadcrumb(
+        _ trackId: Int64,
+        reason: String,
+        viaServerReplan: Bool
+    ) {
+        #if os(iOS) || os(tvOS)
+        // The track's title and language are user-visible content metadata,
+        // not diagnostics; the registry offers no key for them and they are
+        // deliberately not smuggled into `msg`. The ordinal is enough to
+        // correlate against the plan's selected_tracks.
+        DiagTrace.breadcrumb(
+            .essential,
+            category: .playback,
+            tag: "Player",
+            message: viaServerReplan
+                ? "audio track selected, requesting server replan"
+                : "audio track selected",
+            attrs: [
+                "reason": .string(reason),
+                "sink": .string(
+                    audioTracks.first(where: { $0.trackId == trackId })
+                        .flatMap(audioSelectionIndex(for:))
+                        .map { "audio_ordinal_\($0)" } ?? "audio_ordinal_unknown"
+                ),
+                "play_method": .string(activeRouteKind.label),
+            ]
+        )
+        #endif
+    }
+
+    /// Records a primary-subtitle pick, or an explicit "off" when `trackId` is
+    /// nil. Same `viaServerReplan` contract as the audio helper.
+    private func recordSubtitleTrackSelectionBreadcrumb(
+        _ trackId: Int64?,
+        reason: String,
+        viaServerReplan: Bool
+    ) {
+        #if os(iOS) || os(tvOS)
+        // `sink` carries the track's *kind*, not its identity: whether the
+        // cues come from an embedded stream, a server sidecar, or a live AI
+        // track is the thing that explains a rendering complaint, and unlike
+        // the title it is not user content.
+        let action = trackId == nil ? "subtitles disabled" : "subtitle track selected"
+        DiagTrace.breadcrumb(
+            .essential,
+            category: .playback,
+            tag: "Player",
+            message: viaServerReplan ? "\(action), requesting server replan" : action,
+            attrs: [
+                "reason": .string(reason),
+                "sink": .string(trackId.map(Self.subtitleTrackKind) ?? "none"),
+                "play_method": .string(activeRouteKind.label),
+            ]
+        )
+        #endif
     }
 
     /// Which subtitle source a track id names. The id space is the only

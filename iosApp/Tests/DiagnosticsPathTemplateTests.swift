@@ -221,19 +221,27 @@ final class DiagnosticsPathTemplateTests: XCTestCase {
 
         for rawPart in path.split(separator: "/", omittingEmptySubsequences: true) {
             let segment = String(rawPart)
-            guard let decoded = Self.normalizePathSegment(segment) else {
+            guard let decoded = Self.fullyPercentDecoded(segment) else {
                 XCTFail("segment \(segment) is undecodable in \(path)", file: file, line: line)
                 continue
             }
             XCTAssertFalse(decoded.contains("/"), "segment decodes to a separator: \(path)", file: file, line: line)
+            // Checked on the decoded segment *before* punctuation trimming.
+            // Trimming strips `.` from both ends, so "." and ".." collapse to
+            // "" — asserting against the trimmed form can never fail and would
+            // claim coverage of the `.`/`..` rule that does not exist.
             XCTAssertNotEqual(decoded, ".", "relative segment survived: \(path)", file: file, line: line)
             XCTAssertNotEqual(decoded, "..", "relative segment survived: \(path)", file: file, line: line)
-            if decoded.isEmpty
-                || Self.matches(Self.templateSegment, decoded)
-                || Self.matches(Self.safeVersionSegment, decoded) {
+
+            // The collector trims surrounding punctuation before applying its
+            // segment rules, so everything below works from the trimmed form.
+            let normalized = Self.trimmingPunctuation(decoded)
+            if normalized.isEmpty
+                || Self.matches(Self.templateSegment, normalized)
+                || Self.matches(Self.safeVersionSegment, normalized) {
                 continue
             }
-            let candidates = [decoded] + decoded.components(
+            let candidates = [normalized] + normalized.components(
                 separatedBy: CharacterSet(charactersIn: ".,;:()[]")
             )
             for candidate in candidates where !candidate.isEmpty {
@@ -249,17 +257,22 @@ final class DiagnosticsPathTemplateTests: XCTestCase {
         }
     }
 
-    private static func normalizePathSegment(_ raw: String) -> String? {
+    /// Percent-decodes to a fixed point, mirroring the collector's decode step.
+    /// Deliberately does *not* trim punctuation: `.`/`..` are rejected on the
+    /// decoded segment, and trimming first would erase them.
+    private static func fullyPercentDecoded(_ raw: String) -> String? {
         var segment = raw
         for _ in 0..<3 {
             guard let decoded = segment.removingPercentEncoding else { return nil }
-            if decoded == segment {
-                return segment.trimmingCharacters(in: CharacterSet(charactersIn: #"([]"'.,;!:)"#))
-            }
+            if decoded == segment { return segment }
             segment = decoded
         }
         guard let decoded = segment.removingPercentEncoding, decoded == segment else { return nil }
-        return segment.trimmingCharacters(in: CharacterSet(charactersIn: #"([]"'.,;!:)"#))
+        return segment
+    }
+
+    private static func trimmingPunctuation(_ value: String) -> String {
+        value.trimmingCharacters(in: CharacterSet(charactersIn: #"([]"'.,;!:)"#))
     }
 
     private static func matches(_ regex: NSRegularExpression, _ value: String) -> Bool {

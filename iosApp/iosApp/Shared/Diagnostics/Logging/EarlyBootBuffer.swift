@@ -1,6 +1,6 @@
 #if os(iOS) || os(tvOS)
 import Foundation
-import os.lock
+import os
 
 /// In-memory staging area for breadcrumbs emitted before the diagnostics
 /// consent context resolves.
@@ -72,7 +72,12 @@ final class EarlyBootBuffer {
     private var stagingGeneration: UInt64 = 0
     // Matches `LogRing`: an uncontended in-memory append on a hot path. The
     // journal uses NSLock because it also performs file I/O under the lock.
-    private var lock = os_unfair_lock_s()
+    // `OSAllocatedUnfairLock` and not a stored `os_unfair_lock_s`: locking the
+    // latter through `&lock` is an inout access the compiler may satisfy with a
+    // temporary copy, so callers on the URLSession threads, the HTTPClient
+    // actor, and the main actor could each lock a different word and lose
+    // mutual exclusion over the staged lines and the seal.
+    private let lock = OSAllocatedUnfairLock()
 
     init(
         capacity: Int = EarlyBootBuffer.defaultCapacity,
@@ -128,81 +133,92 @@ final class EarlyBootBuffer {
     /// Returns the staged lines oldest-first and clears them, sealing the
     /// buffer. The caller owns writing them through the journal's gate.
     func drain() -> [String] {
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         let drained = lines
         lines.removeAll()
         droppedCount = 0
         sealed = true
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
         return drained
     }
 
     /// Drops every staged line without flushing, and seals the buffer. Used on
     /// every consent/account boundary: a refused consent check, a binding
-    /// change, a destination change, a profile change, and the erase path.
+    /// change, a destination change, a profile switch, and the erase path.
+    ///
+    /// The seal is permanent, so this is not a "close the gate for now" call —
+    /// it ends staging for the launch. `DiagnosticsCoordinator` therefore only
+    /// reaches it for a boundary that is genuinely crossing accounts, and not
+    /// for the profile *restoration* pass every authenticated launch performs
+    /// before its consent context resolves (see
+    /// `launchProfileRestorationPassSpent`). Sealing there would have discarded
+    /// the launch breadcrumbs this buffer exists to hold, on exactly the
+    /// launches it exists for. Keeping them staged is safe because it does not
+    /// attribute them: they still reach disk only through the first-establish
+    /// consent check and the live gate re-checked at flush time.
     func discard() {
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         lines.removeAll()
         droppedCount = 0
         sealed = true
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
     }
 
     var isSealed: Bool {
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         let sealed = self.sealed
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
         return sealed
     }
 
     var isEmpty: Bool {
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         let empty = lines.isEmpty
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
         return empty
     }
 
     func snapshot() -> Snapshot {
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         let snapshot = Snapshot(lines: lines, droppedCount: droppedCount, isSealed: sealed)
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
         return snapshot
     }
 
     /// Test hook: `shared` is process-wide, so a test that stages lines must
     /// return it to its launch state or it leaks into later tests.
     func resetForTests() {
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         lines.removeAll()
         droppedCount = 0
         sealed = false
         expirationScheduled = false
         stagingGeneration &+= 1
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
     }
 
     /// Drop the staged lines only if no reset has intervened since the
     /// expiration was scheduled.
     private func expireStaging(generation: UInt64) {
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         guard generation == stagingGeneration else {
-            os_unfair_lock_unlock(&lock)
+            lock.unlock()
             return
         }
         lines.removeAll()
         droppedCount = 0
         sealed = true
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
     }
 
     private func append(_ rendered: String) -> Bool {
         var scheduledGeneration: UInt64?
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         // Re-check under the lock: the unlocked fast path above can race a
         // concurrent drain/discard, and a line staged after the launch's
         // consent decision must not survive it.
         guard !sealed else {
-            os_unfair_lock_unlock(&lock)
+            lock.unlock()
             return false
         }
         if lines.count >= capacity {
@@ -217,7 +233,7 @@ final class EarlyBootBuffer {
             expirationScheduled = true
             scheduledGeneration = stagingGeneration
         }
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
 
         if let scheduledGeneration {
             // Outside the lock: the scheduler is caller-supplied and may run

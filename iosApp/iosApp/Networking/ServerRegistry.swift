@@ -312,6 +312,14 @@ final class ServerRegistry {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
         }
+        // Last line of this switch the outgoing account can record: the
+        // boundary below shuts its capture gate for good. See the commit
+        // funnel for why no outcome follows it on this side.
+        recordRegistryEvent(
+            phase: "switchServer",
+            outcome: "attempted",
+            reason: "switchTo"
+        )
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
@@ -354,6 +362,14 @@ final class ServerRegistry {
             )
             return false
         }
+        // Same reason as `switchTo`: record the attempt while the outgoing
+        // account can still capture, because the boundary below closes its
+        // gate before the commit funnel runs.
+        recordRegistryEvent(
+            phase: "switchServer",
+            outcome: "attempted",
+            reason: "pairing"
+        )
         // Pairing has already written the new credential slot under this
         // lease. Finish the registry/default commit even if cancellation
         // arrives now; aborting would publish a split A/B routing state.
@@ -371,29 +387,43 @@ final class ServerRegistry {
         await refreshFeaturesAfterServerSwitch()
     }
 
+    /// Single commit funnel for both the plain and the lease-holding switch.
+    ///
+    /// Deliberately records nothing. Both callers open with
+    /// `DiagnosticsCoordinator.activeProfileWillChange()`, which synchronously
+    /// makes the active profile ineligible and closes the capture gate; the
+    /// matching `activeProfileDidChange()` does not run until after this
+    /// returns. Every line emitted here would therefore be offered to a
+    /// disabled journal and dropped — instrumentation that reads as present
+    /// but produces nothing in any report.
+    ///
+    /// Nor can the outcome simply be re-emitted after the boundary. This
+    /// function *is* the identity change: it retargets the URL, active id,
+    /// profile key, and token slot. A line written after
+    /// `activeProfileDidChange()` lands in the destination account's journal,
+    /// where an outgoing-account failure reason ("the switch away from your
+    /// other server did not persist") is exactly the cross-account evidence
+    /// the boundary exists to prevent — and the incoming account's gate is
+    /// itself closed until an async child-profile check and a status refresh
+    /// reopen it, so such a line is usually dropped anyway.
+    ///
+    /// What survives is attributed to the side that owns it: each caller
+    /// records `switchServer/attempted` *before* the boundary, in the outgoing
+    /// account's own trail. A report from the source server that ends at
+    /// `attempted` with no later activity is the readable signal that the
+    /// switch was entered; the destination's trail opens fresh, and its first
+    /// lines are what describe the account the user actually landed on.
     @discardableResult
     private func commitSwitchTo(
         serverId: String,
         abortIfCancelled: Bool
     ) async -> Bool {
-        // Single commit funnel for both the plain and the lease-holding
-        // switch, so one line per outcome covers every server activation.
         guard let entry = entries.first(where: { $0.id == serverId }) else {
             Self.logger.error("switchTo target was removed while waiting for transition")
-            recordRegistryEvent(
-                phase: "switchServer",
-                outcome: "failed",
-                reason: "targetRemoved"
-            )
             return false
         }
         await AuthService.shared.clearCachesForServerChange()
         guard !abortIfCancelled || !Task.isCancelled else {
-            recordRegistryEvent(
-                phase: "switchServer",
-                outcome: "cancelled",
-                reason: "taskCancelled"
-            )
             return false
         }
 
@@ -417,19 +447,15 @@ final class ServerRegistry {
             defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
             defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
             defaults.set(previousProfileID, forKey: SharedStorage.profileIdKey)
-            recordRegistryEvent(
-                phase: "switchServer",
-                outcome: "failed",
-                reason: "persistFailed"
-            )
+            // A rolled-back persist leaves the *outgoing* server active, so
+            // this is the one failure whose account is unambiguous. It still
+            // cannot be recorded here — the gate closed above — and the
+            // caller's `attempted` line with no successful switch afterward is
+            // what makes it visible.
+            Self.logger.error("switchTo failed to persist the destination server")
             return false
         }
         await TokenStore.shared.switchActiveServer(serverId: serverId)
-        recordRegistryEvent(
-            phase: "switchServer",
-            outcome: "succeeded",
-            reason: "committed"
-        )
         return true
     }
 

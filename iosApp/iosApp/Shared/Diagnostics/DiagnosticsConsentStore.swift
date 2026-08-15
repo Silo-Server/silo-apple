@@ -1,6 +1,6 @@
 #if os(iOS) || os(tvOS)
 import Foundation
-import os.lock
+import os
 
 struct DiagnosticsBinding: Codable, Equatable, Hashable, Sendable {
     let serverInstanceID: String
@@ -58,19 +58,19 @@ struct DiagnosticsSentReport: Codable, Equatable, Identifiable, Sendable {
 /// separate from the store's `NSLock`: it is bumped *after* a write is durable
 /// and is never held across a `UserDefaults` access.
 final class DiagnosticsConsentMutationCounter: @unchecked Sendable {
-    private var lock = os_unfair_lock_s()
-    private var generation: UInt64 = 0
+    /// `OSAllocatedUnfairLock` rather than a stored `os_unfair_lock_s`: locking
+    /// the latter through `&lock` passes an inout access, which the compiler may
+    /// satisfy with a temporary copy, so concurrent callers can end up locking
+    /// different memory and the mutual exclusion silently disappears. This type
+    /// owns stable allocated storage, so every caller locks the same word.
+    private let generation = OSAllocatedUnfairLock(initialState: UInt64(0))
 
     var value: UInt64 {
-        os_unfair_lock_lock(&lock)
-        defer { os_unfair_lock_unlock(&lock) }
-        return generation
+        generation.withLock { $0 }
     }
 
     func bump() {
-        os_unfair_lock_lock(&lock)
-        generation &+= 1
-        os_unfair_lock_unlock(&lock)
+        generation.withLock { $0 &+= 1 }
     }
 }
 

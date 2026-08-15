@@ -350,12 +350,18 @@ final class EarlyBootBufferTests: XCTestCase {
         XCTAssertTrue(buffer.isSealed)
     }
 
+    /// A *real* profile switch still drops the staged lines. The launch's
+    /// one-shot restoration allowance is spent up front, which is what
+    /// `ContentView.checkInitialState` does before the user can reach a profile
+    /// picker, so this boundary is the switch it looks like.
     func testProfileChangeDiscardsTheStagedLines() {
         let buffer = EarlyBootBuffer.shared
         buffer.resetForTests()
+        DiagnosticsCoordinator.installLaunchProfileRestorationPassSpentForTests(true)
         addTeardownBlock {
             buffer.resetForTests()
             DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(nil)
+            DiagnosticsCoordinator.installLaunchProfileRestorationPassSpentForTests(false)
         }
 
         XCTAssertTrue(buffer.record(category: .lifecycle, tag: "Boot", message: "started"))
@@ -368,16 +374,18 @@ final class EarlyBootBufferTests: XCTestCase {
     func testRecordBreadcrumbStagesWhenTheProcessJournalIsGatedOff() {
         let buffer = EarlyBootBuffer.shared
         // Close the process-wide gate first (it also seals the buffer), then
-        // reset the buffer and the launch's decision latch so this reproduces a
-        // cold boot rather than whatever state an earlier test left behind.
+        // reset the buffer and the launch's latches so this reproduces a cold
+        // boot rather than whatever state an earlier test left behind.
         DiagnosticsCoordinator.activeProfileWillChange()
         DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(nil)
         DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
+        DiagnosticsCoordinator.installLaunchProfileRestorationPassSpentForTests(false)
         buffer.resetForTests()
         addTeardownBlock {
             buffer.resetForTests()
             DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(nil)
             DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
+            DiagnosticsCoordinator.installLaunchProfileRestorationPassSpentForTests(false)
         }
 
         // No resolvable context, so the process journal refuses the write; the
@@ -457,10 +465,173 @@ final class EarlyBootBufferTests: XCTestCase {
         DiagnosticsCoordinator.activeProfileWillChange()
 
         XCTAssertTrue(journalTags().contains("PreviousRun"))
-        // The launch's own staged lines are still dropped: they cannot follow
-        // the user into the profile arriving now.
+        // The launch's own staged lines survive too. No profile is arriving
+        // here — both sides of `resolveActiveProfileForSession` are the identity
+        // this launch is still resolving — so discarding would seal the buffer
+        // before any consent context exists to decide their fate, on every
+        // authenticated cold launch.
+        XCTAssertEqual(tags(EarlyBootBuffer.shared.snapshot().lines), ["App"])
+        XCTAssertFalse(EarlyBootBuffer.shared.isSealed)
+    }
+
+    /// End to end for the retention fix: the restored-session boundary runs,
+    /// then authentication resolves and the first consent establish of the
+    /// launch permits capture. The lines staged before any account existed must
+    /// reach the journal, which is the entire point of the buffer.
+    func testStagedLinesSurviveARestoredSessionLaunchAndReachTheJournal() {
+        let binding = installTestBinding()
+        simulateColdLaunch()
+
+        // `SiloApp.init` onward: staged, because no account is established yet.
+        for tag in ["ProcessStart", "RootView", "InitialState"] {
+            XCTAssertFalse(DiagnosticsCoordinator.recordBreadcrumb(
+                category: .lifecycle,
+                tag: tag,
+                message: "phase changed",
+                attrs: ["state": .string("launch")]
+            ))
+        }
+
+        // `ContentView.checkInitialState` → `resolveActiveProfileForSession`.
+        DiagnosticsCoordinator.activeProfileWillChange()
+        XCTAssertEqual(
+            tags(EarlyBootBuffer.shared.snapshot().lines),
+            ["ProcessStart", "RootView", "InitialState"]
+        )
+
+        // Authentication lands: consent permits, and the async child-profile
+        // check resolves the active profile as an adult.
+        openProcessCaptureGate(for: binding)
+        DiagnosticsCoordinator.applyEarlyBootStagingForTests(
+            previousBinding: nil,
+            binding: binding,
+            noticeVersion: 1,
+            statusAvailable: true
+        )
+
+        XCTAssertEqual(
+            journalTags(),
+            ["ProcessStart", "RootView", "InitialState"],
+            "the launch breadcrumbs the buffer exists to preserve must reach disk"
+        )
         XCTAssertTrue(EarlyBootBuffer.shared.snapshot().lines.isEmpty)
         XCTAssertTrue(EarlyBootBuffer.shared.isSealed)
+    }
+
+    /// The isolation invariant, in the ordering that actually happens: the
+    /// launch spends its restoration allowance, and only then does the user
+    /// switch profiles. That second boundary is a real one and must still drop
+    /// the launch's staged lines.
+    func testProfileSwitchAfterTheRestorationPassStillDiscardsTheStagedLines() {
+        _ = installTestBinding()
+        simulateColdLaunch()
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .lifecycle,
+            tag: "App",
+            message: "app launched"
+        )
+
+        // Restoration: kept, and the allowance is now spent.
+        DiagnosticsCoordinator.activeProfileWillChange()
+        XCTAssertEqual(tags(EarlyBootBuffer.shared.snapshot().lines), ["App"])
+        XCTAssertTrue(DiagnosticsCoordinator.launchProfileRestorationPassSpentForTests)
+
+        // The user picks a different profile. One allowance per launch, so this
+        // is unambiguously a switch.
+        DiagnosticsCoordinator.activeProfileWillChange()
+
+        XCTAssertTrue(EarlyBootBuffer.shared.snapshot().lines.isEmpty)
+        XCTAssertTrue(EarlyBootBuffer.shared.isSealed)
+    }
+
+    /// The account-isolation guarantee the retention fix must not trade away: a
+    /// switch *into* a child profile captures nothing, including nothing staged
+    /// by the launch that preceded it.
+    func testSwitchIntoAChildProfileCapturesNothingStagedByTheLaunch() {
+        let binding = installTestBinding()
+        simulateColdLaunch()
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .lifecycle,
+            tag: "App",
+            message: "app launched"
+        )
+        DiagnosticsCoordinator.activeProfileWillChange()
+        XCTAssertFalse(tags(EarlyBootBuffer.shared.snapshot().lines).isEmpty)
+
+        // The user switches to a child profile. `activeProfileWillChange` fails
+        // closed synchronously and `activeProfileDidChange`'s async lookup
+        // confirms the child, which never publishes eligibility.
+        DiagnosticsCoordinator.activeProfileWillChange()
+
+        // Consent for the account still permits capture — the child gate is a
+        // separate input — so this asserts the discard, not a refused consent.
+        DiagnosticsConsentStore.shared.setMode(.ask, for: binding, noticeVersion: 1)
+        DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(
+            DiagnosticsCoordinator.BreadcrumbConsentContext(
+                binding: binding,
+                noticeVersion: 1,
+                isAvailable: true
+            )
+        )
+        DiagnosticsCoordinator.installActiveProfileBreadcrumbEligibilityForTests(false)
+        DiagnosticsCoordinator.applyEarlyBootStagingForTests(
+            previousBinding: nil,
+            binding: binding,
+            noticeVersion: 1,
+            statusAvailable: true
+        )
+        // Even if the child check later published eligible for some other
+        // profile, there is nothing left to flush.
+        DiagnosticsCoordinator.installActiveProfileBreadcrumbEligibilityForTests(true)
+        DiagnosticsCoordinator.flushEarlyBootBufferIfArmed()
+
+        XCTAssertTrue(
+            journalTags().isEmpty,
+            "a child profile must not inherit the launch's staged breadcrumbs"
+        )
+        XCTAssertTrue(EarlyBootBuffer.shared.snapshot().lines.isEmpty)
+        XCTAssertTrue(EarlyBootBuffer.shared.isSealed)
+    }
+
+    /// A restored child profile is the case the allowance deliberately does not
+    /// cover with a discard: the lines stay staged across the restoration pass,
+    /// but the live gate never opens for a child, so they never reach disk.
+    func testRestoredChildProfileKeepsStagedLinesOffDisk() {
+        let binding = installTestBinding()
+        simulateColdLaunch()
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .lifecycle,
+            tag: "App",
+            message: "app launched"
+        )
+
+        DiagnosticsCoordinator.activeProfileWillChange()
+        XCTAssertEqual(tags(EarlyBootBuffer.shared.snapshot().lines), ["App"])
+
+        // Consent permits, so `applyEarlyBootStaging` arms the flush — but the
+        // child check resolves ineligible, so the live gate stays closed and
+        // the armed flush never writes.
+        DiagnosticsConsentStore.shared.setMode(.ask, for: binding, noticeVersion: 1)
+        DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(
+            DiagnosticsCoordinator.BreadcrumbConsentContext(
+                binding: binding,
+                noticeVersion: 1,
+                isAvailable: true
+            )
+        )
+        DiagnosticsCoordinator.installActiveProfileBreadcrumbEligibilityForTests(false)
+        DiagnosticsCoordinator.applyEarlyBootStagingForTests(
+            previousBinding: nil,
+            binding: binding,
+            noticeVersion: 1,
+            statusAvailable: true
+        )
+
+        XCTAssertTrue(
+            journalTags().isEmpty,
+            "a restored child profile must not have the launch's lines written for it"
+        )
+        XCTAssertEqual(tags(EarlyBootBuffer.shared.snapshot().lines), ["App"])
     }
 
     // MARK: - A decided refusal still purges
@@ -554,9 +725,10 @@ final class EarlyBootBufferTests: XCTestCase {
             serverInstanceID: "early-boot-journal-tests",
             accountUserID: "acct"
         )
-        // The latch and the journal are process-wide and outlive a test, so
+        // The latches and the journal are process-wide and outlive a test, so
         // start from the launch state rather than from whatever ran before.
         DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
+        DiagnosticsCoordinator.installLaunchProfileRestorationPassSpentForTests(false)
         DiagnosticsCoordinator.purgeBreadcrumbJournal()
         EarlyBootBuffer.shared.resetForTests()
         addTeardownBlock {
@@ -564,6 +736,7 @@ final class EarlyBootBufferTests: XCTestCase {
             DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(nil)
             DiagnosticsCoordinator.installActiveProfileBreadcrumbEligibilityForTests(false)
             DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
+            DiagnosticsCoordinator.installLaunchProfileRestorationPassSpentForTests(false)
             DiagnosticsCoordinator.resetCaptureGateCacheForTests()
             DiagnosticsCoordinator.purgeBreadcrumbJournal()
             EarlyBootBuffer.shared.resetForTests()
@@ -603,6 +776,11 @@ final class EarlyBootBufferTests: XCTestCase {
         DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(nil)
         DiagnosticsCoordinator.installActiveProfileBreadcrumbEligibilityForTests(false)
         DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
+        // A fresh launch has not spent its profile-restoration allowance, so
+        // the first `activeProfileWillChange` reads as restoration rather than
+        // as a switch. Without this a test's cold launch would inherit a spent
+        // allowance from whatever ran before.
+        DiagnosticsCoordinator.installLaunchProfileRestorationPassSpentForTests(false)
         DiagnosticsCoordinator.resetCaptureGateCacheForTests()
         EarlyBootBuffer.shared.resetForTests()
         XCTAssertFalse(
@@ -616,7 +794,15 @@ final class EarlyBootBufferTests: XCTestCase {
     private func journalTags() -> [String] {
         let data = DiagnosticsCoordinator.shared.breadcrumbsData()
         let decoder = DiagnosticsJSONCoding.makeDecoder()
-        return String(decoding: data, as: UTF8.self)
+        // Failable on purpose: `String(decoding:as:)` substitutes U+FFFD for
+        // invalid bytes, so a corrupt journal would surface as a per-line JSON
+        // decode failure that `compactMap` swallows — reported as a missing
+        // breadcrumb rather than as the encoding bug it actually is.
+        guard let text = String(bytes: data, encoding: .utf8) else {
+            XCTFail("breadcrumb journal is not valid UTF-8")
+            return []
+        }
+        return text
             .split(separator: "\n")
             .compactMap { line in
                 try? decoder.decode(DiagnosticsLogLine.self, from: Data(line.utf8)).tag

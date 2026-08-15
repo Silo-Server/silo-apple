@@ -1,6 +1,6 @@
 #if os(iOS) || os(tvOS)
 import Foundation
-import os.lock
+import os
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -47,7 +47,14 @@ final class DiagnosticsCaptureGateCache: @unchecked Sendable {
     }
 
     private let now: () -> TimeInterval
-    private var lock = os_unfair_lock_s()
+    /// `OSAllocatedUnfairLock` owns stable allocated storage, which a stored
+    /// `os_unfair_lock_s` does not: locking that through `&lock` is an inout
+    /// access the compiler may satisfy with a temporary copy, so the threads
+    /// that reach the gate — URLSession callbacks, the `HTTPClient` actor, the
+    /// main actor — could each lock a different word and lose mutual exclusion
+    /// over the memo. That would break the fail-closed epoch check below, which
+    /// is the only thing keeping a consent revocation from latching capture on.
+    private let lock = OSAllocatedUnfairLock()
     private var epoch: UInt64 = 0
     private var cachedKey: Key?
     private var cachedValue = false
@@ -61,8 +68,8 @@ final class DiagnosticsCaptureGateCache: @unchecked Sendable {
     }
 
     var currentEpoch: UInt64 {
-        os_unfair_lock_lock(&lock)
-        defer { os_unfair_lock_unlock(&lock) }
+        lock.lock()
+        defer { lock.unlock() }
         return epoch
     }
 
@@ -70,20 +77,20 @@ final class DiagnosticsCaptureGateCache: @unchecked Sendable {
     /// before this boundary can no longer publish. Called from every mutation
     /// of the coordinator state the gate reads.
     func invalidate() {
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         epoch &+= 1
         cachedKey = nil
         cachedValue = false
         cachedExpiry = 0
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
     }
 
     /// `nil` means "not resolved for this exact state" — the caller must
     /// recompute. There is no default-on branch here by construction.
     func value(for key: Key) -> Bool? {
         let timestamp = now()
-        os_unfair_lock_lock(&lock)
-        defer { os_unfair_lock_unlock(&lock) }
+        lock.lock()
+        defer { lock.unlock() }
         guard let cachedKey, cachedKey == key else { return nil }
         // Only a positive decision carries an expiry; a cached `false` is
         // reusable forever because the failure direction is the safe one.
@@ -97,8 +104,8 @@ final class DiagnosticsCaptureGateCache: @unchecked Sendable {
     /// result is discarded and the answer is `false`.
     func store(_ value: Bool, for key: Key, still current: Key) -> Bool {
         let timestamp = now()
-        os_unfair_lock_lock(&lock)
-        defer { os_unfair_lock_unlock(&lock) }
+        lock.lock()
+        defer { lock.unlock() }
         #if DEBUG
         authoritativeEvaluations += 1
         #endif
@@ -115,19 +122,19 @@ final class DiagnosticsCaptureGateCache: @unchecked Sendable {
     /// Number of authoritative (cache-missing) evaluations since the last
     /// reset. Tests use it to prove the hot path is memoized.
     var authoritativeEvaluationCountForTests: Int {
-        os_unfair_lock_lock(&lock)
-        defer { os_unfair_lock_unlock(&lock) }
+        lock.lock()
+        defer { lock.unlock() }
         return authoritativeEvaluations
     }
 
     func resetForTests() {
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         epoch &+= 1
         cachedKey = nil
         cachedValue = false
         cachedExpiry = 0
         authoritativeEvaluations = 0
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
     }
     #endif
 }
@@ -309,6 +316,30 @@ actor DiagnosticsCoordinator {
     /// later boundary closes the gate, it does not return the launch to its
     /// undecided state.
     nonisolated(unsafe) private static var breadcrumbDecisionInEffect = false
+    /// Whether this launch has already spent its one profile-*restoration* pass.
+    ///
+    /// `activeProfileWillChange` is an account boundary for the staging buffer:
+    /// the profile arriving may be a child that must capture nothing at all, so
+    /// the launch's pre-consent lines cannot be left available to it. But every
+    /// launch with a restored session reaches that same function *before*
+    /// authentication resolves — `ContentView.checkInitialState` calls
+    /// `AuthService.resolveActiveProfileForSession`, which opens with the
+    /// boundary — and no profile is arriving there. Both sides of that call are
+    /// the identity this launch is still resolving, so discarding emptied and
+    /// sealed the buffer on every authenticated cold launch, which is precisely
+    /// the case it exists for.
+    ///
+    /// Latched by the first `activeProfileWillChange` of the process, so exactly
+    /// one call per launch reads as restoration and every later one is a real
+    /// switch that still discards. A launch that restores nothing spends the
+    /// latch on the user's first sign-in profile selection instead, which is the
+    /// same situation by a different route: those staged lines also predate any
+    /// account, and `applyEarlyBootStaging`'s first-establish consent check —
+    /// not this latch — is what decides whether they may be attributed at all.
+    ///
+    /// Guarded by `breadcrumbContextLock`. Never cleared within a launch: the
+    /// allowance is per launch, not per boundary.
+    nonisolated(unsafe) private static var launchProfileRestorationPassSpent = false
     /// Blocks last-known consent fallback between a destination selection and
     /// the first successful status refresh for that destination.
     nonisolated(unsafe) private static var destinationTransitionInProgress = false
@@ -1956,6 +1987,21 @@ actor DiagnosticsCoordinator {
         breadcrumbContextLock.unlock()
     }
 
+    /// Claim this launch's single profile-restoration allowance, returning
+    /// whether this caller got it. Read-and-latch in one locked section: two
+    /// profile boundaries racing must not both come away believing they are the
+    /// restoration pass, because the second one is a real switch.
+    ///
+    /// See `launchProfileRestorationPassSpent`. Never call while holding
+    /// `breadcrumbContextLock` — it is a plain `NSLock`.
+    nonisolated private static func claimLaunchProfileRestorationPass() -> Bool {
+        breadcrumbContextLock.lock()
+        let claimed = !launchProfileRestorationPassSpent
+        launchProfileRestorationPassSpent = true
+        breadcrumbContextLock.unlock()
+        return claimed
+    }
+
     /// What the pre-consent staging buffer's lines are worth once the
     /// diagnostics consent context moves.
     enum EarlyBootStagingDecision: Equatable {
@@ -2526,6 +2572,15 @@ actor DiagnosticsCoordinator {
         // Also drops the pre-consent staging buffer, for the same reason the
         // journal and ring are purged: those lines must not follow the user
         // into the new destination's account.
+        //
+        // Both stay unconditional here, unlike `activeProfileWillChange`, which
+        // has to tell a real boundary from a launch's profile restoration. This
+        // function has no such ambiguity: its only caller is
+        // `DiagnosticsViewModel.setDestination`, which returns early unless the
+        // choice actually differs and is reachable only from the diagnostics
+        // settings screen of an authenticated session. There is no path that
+        // runs it during pre-consent startup, so every call is a genuine
+        // destination change.
         purgeBreadcrumbJournal()
         DiagLog.ring.clear()
         #if os(tvOS)
@@ -2564,6 +2619,22 @@ actor DiagnosticsCoordinator {
 
     nonisolated static var breadcrumbDecisionInEffectForTests: Bool {
         breadcrumbDecisionIsInEffect
+    }
+
+    /// The restoration allowance is process-wide and one-way within a launch,
+    /// so a test reproducing a cold boot must hand it back, and a test
+    /// reproducing a post-launch switch must be able to spend it without
+    /// driving `ContentView.checkInitialState`.
+    nonisolated static func installLaunchProfileRestorationPassSpentForTests(_ spent: Bool) {
+        breadcrumbContextLock.lock()
+        launchProfileRestorationPassSpent = spent
+        breadcrumbContextLock.unlock()
+    }
+
+    nonisolated static var launchProfileRestorationPassSpentForTests: Bool {
+        breadcrumbContextLock.lock()
+        defer { breadcrumbContextLock.unlock() }
+        return launchProfileRestorationPassSpent
     }
 
     /// Drive the real staging decision against the process-wide state, so a
@@ -2641,22 +2712,51 @@ actor DiagnosticsCoordinator {
         // first makes every remaining append fail that check under the
         // journal's lock, so the purge is the last write of the boundary.
         _ = beginActiveProfileEligibilityResolution(invalidateCurrent: true)
-        // A profile switch is an account boundary for the staging buffer too:
-        // its pre-consent lines cannot be flushed into the profile arriving
-        // now, which may be a child that must capture nothing at all.
-        discardEarlyBootBuffer()
-        // The on-disk trail is a different question, and the answer turns on
-        // whether this launch's capture decision is in effect yet.
-        //
         // Every launch with a restored session reaches this function *before*
         // authentication resolves: `ContentView.checkInitialState` calls
         // `AuthService.resolveActiveProfileForSession`, which opens with this
-        // boundary. Nothing this launch wrote can be in the journal at that
-        // point — the gate has never been open — so its entire contents are the
-        // previous run's, which on tvOS is exactly the evidence
-        // `captureAbnormalExit` reads once authentication lands. Purging there
-        // isolates nothing; it empties the crash report before anyone opens it.
-        // Two neighbours already take that position for the same reason:
+        // boundary. No profile is arriving there — both sides of that call are
+        // the identity this launch is still resolving — so it is a restoration
+        // pass, not a switch. The two things this function isolates each answer
+        // that separately below.
+        let isLaunchProfileRestoration = claimLaunchProfileRestorationPass()
+        // A real profile switch is an account boundary for the staging buffer:
+        // its pre-consent lines cannot be flushed into the profile arriving
+        // now, which may be a child that must capture nothing at all. Discarding
+        // seals the buffer permanently, so doing it on the restoration pass
+        // emptied it on every authenticated cold launch — deleting `process_start`,
+        // `root_view`, and `initial_state` before any consent context existed to
+        // decide their fate, which is the exact case the buffer was added for.
+        //
+        // The signal is the launch's one-shot restoration allowance rather than
+        // `breadcrumbDecisionIsInEffect` (which the journal purge below uses).
+        // The decision latch is too weak here: it is set by a refusal or by the
+        // first breadcrumb the journal accepts, and on a first-ever launch —
+        // no `LastKnownStatusStore` snapshot to resolve a context from — neither
+        // has happened by the time a user restores one profile and then switches
+        // to another. Both boundaries would read as pre-decision and the second
+        // one would keep the first profile's staged lines. Spending a single
+        // per-launch allowance instead means every boundary after the first is
+        // unconditionally a switch.
+        //
+        // Keeping the lines is not attributing them. The restoration pass just
+        // closed the eligibility gate above, and the staged lines still reach
+        // disk only through `applyEarlyBootStaging` (first establish, consent
+        // permits) and then `flushEarlyBootBufferIfArmed`, which re-checks the
+        // live gate — so a restored *child* profile never resolves eligible,
+        // never flushes, and the staging window expires the lines instead.
+        if !isLaunchProfileRestoration {
+            discardEarlyBootBuffer()
+        }
+        // The on-disk trail is a different question, and the answer turns on
+        // whether this launch's capture decision is in effect yet.
+        //
+        // Nothing this launch wrote can be in the journal before that decision —
+        // the gate has never been open — so its entire contents are the previous
+        // run's, which on tvOS is exactly the evidence `captureAbnormalExit`
+        // reads once authentication lands. Purging there isolates nothing; it
+        // empties the crash report before anyone opens it. Two neighbours
+        // already take that position for the same reason:
         // `authenticationStateBecameUnavailable` refuses to treat the cold
         // launch's `.loading` state as a boundary, and
         // `updateBreadcrumbConsentContext` keeps the prior run's lines on a
@@ -2665,7 +2765,10 @@ actor DiagnosticsCoordinator {
         // Once the decision is in effect, the trail can hold this launch's own
         // lines for the outgoing profile, so the purge is the isolation it was
         // written to be. A refused launch latches the decision at the refusal,
-        // so a "Never" account still clears here.
+        // so a "Never" account still clears here. The restoration allowance is
+        // deliberately not consulted: a decision already in effect means this
+        // launch reached an established account, and a purge is right for it
+        // whether or not it is the launch's first profile boundary.
         if breadcrumbDecisionIsInEffect {
             purgeBreadcrumbJournal()
         }

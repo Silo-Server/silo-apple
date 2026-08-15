@@ -435,16 +435,26 @@ class AppRouter {
     /// why. Only the two state tokens and the router action that caused the
     /// move are recorded — no account, profile, server, or credential detail
     /// is available at this layer, and none is looked up.
+    ///
+    /// `state` carries the state the app is in *now*, and nothing else. The
+    /// origin state goes in the free-text message rather than `phase`: the
+    /// registry defines `phase` as a startup/lifecycle phase identifier
+    /// (`launch`, `prefetch`, …), so filing a previous auth state under it
+    /// would make `phase` mean two different things depending on which
+    /// subsystem emitted the line, and a query grouping lifecycle lines by
+    /// phase would silently mix them. There is no registered key for "previous
+    /// state" and inventing one rejects the whole bundle, so the transition is
+    /// spelled out in `msg`, where both tokens stay legible and neither is
+    /// account, profile, or server identity.
     private func recordAuthStateBreadcrumb(from: AuthState, to: AuthState, reason: String) {
         #if os(iOS) || os(tvOS)
         DiagTrace.breadcrumb(
             .essential,
             category: .lifecycle,
             tag: "Auth",
-            message: "auth state changed",
+            message: "auth state changed \(from.diagnosticsState) -> \(to.diagnosticsState)",
             attrs: [
                 "state": .string(to.diagnosticsState),
-                "phase": .string(from.diagnosticsState),
                 "reason": .string(reason),
             ]
         )

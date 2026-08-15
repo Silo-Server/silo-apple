@@ -250,7 +250,12 @@ struct ContentView: View {
             Task { await AuthService.shared.refreshActiveServerName() }
             if router.authState == .authenticated {
                 await uiCustomization.refresh()
-                await overlayPrefs.hydrateIfNeeded()
+                // The one hydration whose outcome is never optional: `clear()`
+                // above guarantees a real fetch, so the wrapper's
+                // short-circuit case cannot apply here and a failure leaves
+                // every card — including the admin kill switch — on registry
+                // defaults for a server the user just switched to.
+                await hydrateOverlayPrefs(phase: "server_switch_hydrate")
                 #if os(iOS) || os(tvOS)
                 await diagnosticsModel.handleForeground()
                 #endif
