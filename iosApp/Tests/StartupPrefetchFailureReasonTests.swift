@@ -46,12 +46,49 @@ final class StartupPrefetchFailureReasonTests: XCTestCase {
             reason(NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)),
             "cancelled"
         )
+        XCTAssertEqual(reason(URLError(.cancelled)), "cancelled")
         // A real transport failure from the same domain must not be swallowed
         // as a cancellation.
         XCTAssertEqual(
             reason(NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)),
             "network"
         )
+    }
+
+    /// The shape that actually reaches a prefetch in production, and the one
+    /// that regressed: `HTTPClient.perform` rethrows *every* transport error as
+    /// `HTTPError.network(underlying:)`, so a cancellation arrives wrapped and
+    /// the outer case alone cannot distinguish "we cancelled this" from "the
+    /// network failed". Classifying the wrapper without unwrapping turns every
+    /// routine server or profile switch into a warning-level connectivity
+    /// failure in the report — phantom evidence in the exact instrumentation
+    /// meant to diagnose real connectivity problems.
+    ///
+    /// This mirrors `HTTPClient.noteServerUnreachable`, which excludes
+    /// `URLError.cancelled` from reachability for the same reason.
+    func testWrappedCancellationClassifiesAsCancelledNotNetwork() {
+        let cancellations: [(label: String, error: Error)] = [
+            ("URLError.cancelled", URLError(.cancelled)),
+            ("NSURLErrorCancelled", NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)),
+            ("CancellationError", CancellationError()),
+        ]
+        for (label, underlying) in cancellations {
+            XCTAssertEqual(
+                reason(HTTPError.network(underlying: underlying)),
+                "cancelled",
+                "wrapped \(label) must not read as a network failure"
+            )
+        }
+
+        // The wrapper must still classify a genuine transport failure as
+        // `network`: the unwrapping is a cancellation carve-out, not a change
+        // to what `.network` means.
+        for underlying: URLError.Code in [.timedOut, .cannotConnectToHost, .networkConnectionLost] {
+            XCTAssertEqual(
+                reason(HTTPError.network(underlying: URLError(underlying))),
+                "network"
+            )
+        }
     }
 
     func testHTTPStatusesBucketByClass() {
@@ -116,6 +153,7 @@ final class StartupPrefetchFailureReasonTests: XCTestCase {
             HTTPError.invalidURL("x"),
             HTTPError.invalidResponse,
             HTTPError.network(underlying: NSError(domain: "x", code: 1)),
+            HTTPError.network(underlying: URLError(.cancelled)),
             HTTPError.encodingFailed(underlying: NSError(domain: "x", code: 1)),
             HTTPError.decodingFailed(type: "T", underlying: NSError(domain: "x", code: 1)),
             HTTPError.http(statusCode: 400, body: nil),

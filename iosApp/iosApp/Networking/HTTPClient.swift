@@ -776,15 +776,20 @@ actor HTTPClient {
         let bodyPreview = String(data: data.prefix(1024), encoding: .utf8) ?? "<non-utf8 body>"
         var detail = "decode(\(type)) failed at \(path): "
         if let decodingError = error as? DecodingError {
+            // `failureCodingPath` rather than `context.codingPath`, so this line
+            // and the diagnostics line below can never disagree about where the
+            // decode failed — see that function for why the two differ on
+            // `keyNotFound`.
+            let failurePath = codingPathString(failureCodingPath(decodingError))
             switch decodingError {
             case .keyNotFound(let key, let context):
-                detail += "keyNotFound key=\(key.stringValue) path=\(codingPathString(context.codingPath)) — \(context.debugDescription)"
+                detail += "keyNotFound key=\(key.stringValue) path=\(failurePath) — \(context.debugDescription)"
             case .typeMismatch(_, let context):
-                detail += "typeMismatch path=\(codingPathString(context.codingPath)) — \(context.debugDescription)"
+                detail += "typeMismatch path=\(failurePath) — \(context.debugDescription)"
             case .valueNotFound(_, let context):
-                detail += "valueNotFound path=\(codingPathString(context.codingPath)) — \(context.debugDescription)"
+                detail += "valueNotFound path=\(failurePath) — \(context.debugDescription)"
             case .dataCorrupted(let context):
-                detail += "dataCorrupted path=\(codingPathString(context.codingPath)) — \(context.debugDescription)"
+                detail += "dataCorrupted path=\(failurePath) — \(context.debugDescription)"
             @unknown default:
                 detail += String(describing: decodingError)
             }
@@ -817,17 +822,7 @@ actor HTTPClient {
     /// outright, and the same conditions that make it worth capturing make it
     /// impossible to ask the user to reproduce with Debug Logging on.
     private static func recordDecodingFailureDiagnostic(type: String, path: String, error: Error) {
-        let codingPath = (error as? DecodingError).map { decodingError -> [CodingKey] in
-            switch decodingError {
-            case .keyNotFound(_, let context),
-                 .typeMismatch(_, let context),
-                 .valueNotFound(_, let context),
-                 .dataCorrupted(let context):
-                return context.codingPath
-            @unknown default:
-                return []
-            }
-        } ?? []
+        let codingPath = (error as? DecodingError).map(failureCodingPath(_:)) ?? []
         // The DecodingError's `debugDescription` and its failing value are both
         // deliberately absent: the first quotes payload text and the second is
         // payload. The case name lives in `error_code`; the location lives in
@@ -850,6 +845,38 @@ actor HTTPClient {
         )
     }
     #endif
+
+    /// Where in the payload a `DecodingError` actually failed.
+    ///
+    /// For every case but one this is just `context.codingPath`. `keyNotFound`
+    /// is the exception, and the difference is the whole point of this helper:
+    /// Foundation supplies the absent key *separately* from the context, whose
+    /// `codingPath` describes only the container that was missing it. Reading
+    /// the context alone therefore reports a missing top-level field as
+    /// `<root>` and a nested one as its enclosing object — dropping the exact
+    /// field name, which is the only part of a client/server model mismatch
+    /// that identifies what to fix.
+    ///
+    /// Appending the key is safe for the same reason the rest of the path is: a
+    /// `CodingKey` is a compile-time model key for a struct-shaped model, and
+    /// for a dictionary-shaped one the renderers template it like any other
+    /// server-supplied value. The response body is not involved either way.
+    ///
+    /// Not `private` so the `keyNotFound` arm can be asserted directly: losing
+    /// the key again would be invisible — the log line still renders, just
+    /// pointing at the parent container.
+    static func failureCodingPath(_ error: DecodingError) -> [CodingKey] {
+        switch error {
+        case .keyNotFound(let key, let context):
+            return context.codingPath + [key]
+        case .typeMismatch(_, let context),
+             .valueNotFound(_, let context),
+             .dataCorrupted(let context):
+            return context.codingPath
+        @unknown default:
+            return []
+        }
+    }
 
     private static func codingPathString(_ path: [CodingKey]) -> String {
         path.map { $0.intValue.map(String.init) ?? $0.stringValue }.joined(separator: ".")
@@ -1192,14 +1219,22 @@ actor HTTPClient {
 
     // MARK: - Response handling
 
-    /// The one place every request in the app actually hits the network.
+    /// The one place every *ordinary* request in the app actually hits the
+    /// network.
     ///
-    /// Network diagnostics are instrumented here and nowhere else. There are
-    /// dozens of call sites above this (`get`, `post`, `requestData`, the raw
-    /// and multipart variants, the 401 retries), and instrumenting them
+    /// Network diagnostics are instrumented here rather than at any caller.
+    /// There are dozens of call sites above this (`get`, `post`, `requestData`,
+    /// the raw and multipart variants, the 401 retries), and instrumenting them
     /// individually would produce a ring full of near-duplicate lines with
     /// inconsistent outcome vocabulary. Every exit below is classified exactly
     /// once, so "one request, one line" holds by construction.
+    ///
+    /// Token refresh is the sole request shape that does not pass through here —
+    /// it is a detached single-flight `Task` with its own identity rules — so it
+    /// has a parallel chokepoint in
+    /// ``performRefreshTransport(request:session:)``. Those two functions are
+    /// the only places in this file that may call `session.data(for:)`; adding a
+    /// third would reintroduce an unclassified path.
     private func perform(
         request: URLRequest,
         timeout: HTTPTimeout = .standard,
@@ -1389,6 +1424,126 @@ actor HTTPClient {
         )
         #endif
         return (data, http)
+    }
+
+    /// One token-refresh round trip, classified exactly as ``perform`` classifies
+    /// an ordinary request.
+    ///
+    /// Refresh is the one thing in this file that legitimately does not funnel
+    /// through `perform`: it runs as a detached single-flight `Task` off the
+    /// actor, carries no dispatch revision, and deliberately builds its own
+    /// request so it can never pick up the ambient auth headers. That made it
+    /// invisible to network diagnostics, and invisible in the worst place — a
+    /// refresh that times out, fails TLS, or is rejected outright is the *cause*
+    /// of the 401 the user notices, yet it surfaced only as the generic "401 not
+    /// retried" line, which records that the retry did not happen and nothing
+    /// about why.
+    ///
+    /// Both refresh implementations (scoped and ordinary) call this so the
+    /// classifier exists once. It only observes: the original error is rethrown
+    /// untouched, and a non-2xx or non-HTTP response is returned rather than
+    /// turned into a throw, so each caller's own cancellation checks,
+    /// reachability reporting, and session-invalidation rules are unchanged.
+    ///
+    /// **No credential can reach a log line from here.** The request body holds a
+    /// refresh token and a 2xx response body holds two more, but neither
+    /// `httpBody`, `allHTTPHeaderFields`, nor `data` is ever read: the only
+    /// values emitted are the method, the templated path, the status, a
+    /// duration, and the two closed-vocabulary classifications. The response
+    /// body is in scope in this function, so unlike
+    /// ``recordDecodingFailureDiagnostic(type:path:error:)`` that is a rule
+    /// rather than a structural guarantee — keep the attribute list literal.
+    private static func performRefreshTransport(
+        request: URLRequest,
+        session: URLSession
+    ) async throws -> (Data, URLResponse) {
+        #if os(iOS) || os(tvOS)
+        // Templated once, at capture, exactly as in `perform`: `request.url` is
+        // the absolute refresh URL and carries the server's host, which may
+        // never reach a log line. The emission sites below can only see the
+        // already-templated string.
+        let diagnosticsPath = HTTPDiagnosticsPath.attribute(for: request.url)
+        let diagnosticsMethod = request.httpMethod ?? "POST"
+        let startedAt = ContinuousClock.now
+        #endif
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            #if os(iOS) || os(tvOS)
+            // Split on the same axis as `perform`, and for the same reason: a
+            // cancelled refresh is ordinary (a server switch tore down the
+            // flight) and says nothing about the server, while a real transport
+            // failure is the evidence a stuck-auth report needs.
+            let isCancellation = (error as? URLError)?.code == .cancelled
+            DiagTrace.log(
+                isCancellation ? .verbose : .essential,
+                level: isCancellation ? .debug : .error,
+                category: .network,
+                tag: "Auth",
+                message: isCancellation ? "refresh cancelled" : "refresh transport failure",
+                attrs: [
+                    "method": .string(diagnosticsMethod),
+                    "path": .string(diagnosticsPath),
+                    "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
+                    "outcome": .string(
+                        isCancellation
+                            ? HTTPDiagnosticsOutcome.cancelled
+                            : HTTPDiagnosticsOutcome.transportError
+                    ),
+                    "error_code": .string(HTTPDiagnosticsErrorCode.classify(transport: error)),
+                ]
+            )
+            #endif
+            throw error
+        }
+        #if os(iOS) || os(tvOS)
+        // One deliberate divergence from `perform`: there, a non-2xx carries no
+        // `outcome` because only `ensureSuccess` knows whether the caller
+        // expected it. Nothing downstream of a refresh calls `ensureSuccess` —
+        // the status is consumed here and by
+        // ``shouldInvalidateSessionAfterRefreshFailure(_:)`` — so this line has
+        // to carry the verdict itself or a rejected refresh stays unclassified.
+        // Tiering follows: a rejected refresh is rare and terminal for the
+        // session, so it is essential, while the successful case is bounded but
+        // uninteresting and stays verbose alongside `perform`'s response line.
+        let status = (response as? HTTPURLResponse)?.statusCode
+        let isSuccess = status.map { (200..<300).contains($0) } ?? false
+        let message: String = if status == nil {
+            "refresh non-http response"
+        } else if isSuccess {
+            "refresh succeeded"
+        } else {
+            "refresh rejected"
+        }
+        var attrs: [String: DiagLogAttributeValue] = [
+            "method": .string(diagnosticsMethod),
+            "path": .string(diagnosticsPath),
+            "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
+        ]
+        if let status {
+            attrs["status"] = .int(status)
+            attrs["outcome"] = .string(
+                isSuccess ? HTTPDiagnosticsOutcome.success : HTTPDiagnosticsOutcome.httpError
+            )
+            if !isSuccess {
+                attrs["error_code"] = .string(HTTPDiagnosticsErrorCode.http(status: status))
+            }
+        } else {
+            attrs["outcome"] = .string(HTTPDiagnosticsOutcome.invalidResponse)
+            attrs["error_code"] = .string(HTTPDiagnosticsOutcome.invalidResponse)
+        }
+        DiagTrace.log(
+            isSuccess ? .verbose : .essential,
+            level: isSuccess ? .debug : .error,
+            category: .network,
+            tag: "Auth",
+            message: message,
+            attrs: attrs
+        )
+        #endif
+        return (data, response)
     }
 
     #if os(iOS) || os(tvOS)
@@ -1637,7 +1792,10 @@ actor HTTPClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         do {
             request.httpBody = try encoder.encode(RefreshRequest(refreshValue))
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await performRefreshTransport(
+                request: request,
+                session: session
+            )
             guard !Task.isCancelled else { return false }
             guard let http = response as? HTTPURLResponse else {
                 Self.logger.error("Scoped refresh: non-HTTP response")
@@ -1793,7 +1951,10 @@ actor HTTPClient {
         }
 
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await performRefreshTransport(
+                request: request,
+                session: session
+            )
             // If the surrounding registry switch cancelled us while the
             // network call was in flight, drop the response on the floor
             // rather than writing tokens into what may now be a different

@@ -89,9 +89,18 @@ final class OverlayPrefsStore: ObservableObject {
     /// Idempotent first-load. Safe to call from `.task {}` on every
     /// view that wants overlays — subsequent invocations are no-ops
     /// until `clear()` runs.
-    func hydrateIfNeeded() async {
-        guard !hasHydrated, !isLoading else { return }
+    ///
+    /// Returns `true` only when this call actually ran the fetch, so a
+    /// caller that instruments the outcome can tell "I hydrated and it
+    /// resolved" apart from "somebody else's hydration was already
+    /// hydrated or still in flight". Without that distinction a
+    /// short-circuited call reads the *next* refresh's freshly-cleared
+    /// `lastError` and reports a success it never observed.
+    @discardableResult
+    func hydrateIfNeeded() async -> Bool {
+        guard !hasHydrated, !isLoading else { return false }
         await refresh()
+        return true
     }
 
     /// Re-fetch both the admin config and the user setting from the

@@ -198,16 +198,19 @@ enum StartupContentPrefetcher {
     /// context the failing fetch unwound on. The classification is a pure
     /// function of the error value and touches no actor state, so there is
     /// nothing to hop for.
+    ///
+    /// Cancellation arrives in three shapes and all three mean the same thing,
+    /// so the check is factored out rather than repeated per branch — see
+    /// `indicatesCancellation`.
     nonisolated static func prefetchFailureReason(_ error: Error) -> String {
-        if error is CancellationError { return "cancelled" }
+        if indicatesCancellation(error) { return "cancelled" }
         guard let httpError = error as? HTTPError else {
             // URLSession surfaces transport failures as NSError before
-            // HTTPClient wraps them; `-999` is a cancelled request, which is
-            // the generation-bump path, not a real failure.
+            // HTTPClient wraps them; the cancelled case was already claimed
+            // above, so anything left in this domain is a real transport
+            // failure.
             let nsError = error as NSError
-            if nsError.domain == NSURLErrorDomain {
-                return nsError.code == NSURLErrorCancelled ? "cancelled" : "network"
-            }
+            if nsError.domain == NSURLErrorDomain { return "network" }
             return "other"
         }
         if indicatesInvalidProfile(httpError) { return "invalid_profile" }
@@ -216,8 +219,19 @@ enum StartupContentPrefetcher {
             return "no_server"
         case .requestIdentityChanged:
             return "identity_changed"
-        case .network:
-            return "network"
+        case .network(let underlying):
+            // A cancellation reaches here wrapped: `HTTPClient.perform` catches
+            // the transport error and rethrows it as `.network(underlying:)`
+            // regardless of cause, so the outer case says only "the transport
+            // threw", not what it threw. Unwrapping it is the same distinction
+            // `HTTPClient.noteServerUnreachable` already makes when it refuses
+            // to feed a cancelled request into reachability — "cancellation
+            // says nothing about reachability" — and for the same reason: a
+            // server or profile switch cancelling its own in-flight prefetches
+            // is the routine path, and classifying it as `network` would put a
+            // warning-level phantom connectivity failure in every report that
+            // contains an identity transition.
+            return indicatesCancellation(underlying) ? "cancelled" : "network"
         case .decodingFailed:
             return "decode_failed"
         case .http(let statusCode, _):
@@ -230,6 +244,30 @@ enum StartupContentPrefetcher {
         case .invalidURL, .invalidResponse, .encodingFailed:
             return "other"
         }
+    }
+
+    /// True for every shape a cancelled prefetch can take.
+    ///
+    /// There are three, because a prefetch can be torn down at three different
+    /// depths and each layer reports in its own vocabulary:
+    ///
+    /// 1. `CancellationError` — the prefetcher's own generation guards, thrown
+    ///    when a `resetProfileScopedPrefetches` bumped the generation while the
+    ///    fetch was awaiting.
+    /// 2. A bare `URLError.cancelled` — URLSession tearing the request down,
+    ///    reaching a caller that did not route through `HTTPClient.perform`.
+    /// 3. That same `URLError.cancelled` wrapped in `HTTPError.network` —
+    ///    the common case, because `perform` rethrows *every* transport error
+    ///    as `.network(underlying:)` and the cause survives only in the payload.
+    ///
+    /// Matching on `NSURLErrorDomain`/`NSURLErrorCancelled` rather than
+    /// `URLError` alone so a bridged `NSError` — which is what a cancellation
+    /// looks like once it has crossed an `Error` existential more than once —
+    /// is caught by the same test.
+    nonisolated static func indicatesCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
     }
 
     /// One line per prefetch, essential tier.

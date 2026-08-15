@@ -25,11 +25,14 @@ enum DiagnosticsVerbosity {
 ///   itself performs **no** consent check — the capture gate has always lived
 ///   at the call site (this is exactly what `cmpLog` did before this helper
 ///   existed), so it lives here.
-/// * `DiagTrace.breadcrumb` writes to the on-disk `BreadcrumbJournal`, which
-///   **does** consent-gate itself inside `appendRenderedLine` and purges the
-///   journal directory when capture is off. Pre-checking the capture gate here
-///   would skip that purge, so this path applies the verbosity tier only and
-///   lets the journal own the consent decision.
+/// * `DiagTrace.breadcrumb` writes to the on-disk `BreadcrumbJournal`, whose
+///   consent gate lives inside `appendRenderedLine` and purges the journal
+///   directory when capture is off. Pre-checking the capture gate here would
+///   skip that purge, so this path applies the verbosity tier only and lets
+///   `DiagnosticsCoordinator.recordBreadcrumb` route the line — to the journal
+///   once the launch's consent decision is in effect, and to `EarlyBootBuffer`
+///   before then, when a journal refusal would purge the previous run's
+///   evidence rather than enforce a denial.
 ///
 /// Do not "unify" those two by adding a capture check to the breadcrumb path or
 /// removing it from the ring path; that changes what is gated, not how it is

@@ -375,14 +375,24 @@ struct ContentView: View {
     /// The store swallows the error and exposes it as `lastError`, so the
     /// reason is read back rather than caught. That text is server-authored, so
     /// only its presence is logged, as a fixed token. A still-broken store
-    /// re-reports on each foreground with a near-zero `duration_ms` (the
-    /// hydration short-circuits) — that repetition is the intended signal:
-    /// overlays are persistently stale, not transiently slow.
+    /// leaves `hasHydrated == false` and therefore re-fetches — and re-reports
+    /// a failure — on every foreground; that repetition is the intended signal
+    /// that overlays are persistently stale rather than transiently slow.
+    ///
+    /// Only the call that actually performed the fetch reports an outcome.
+    /// `hydrateIfNeeded()` short-circuits when the store is already hydrated or
+    /// a hydration is in flight — the cold-start case, where
+    /// `StartupContentPrefetcher.prefetchAuthenticatedContent()` starts an
+    /// unawaited hydration before this runs. In that window `lastError` has
+    /// already been cleared by the running `refresh()` and reads as success, so
+    /// reporting here would stamp a near-zero-duration success on a request
+    /// that may still fail. A missing line costs a reader nothing; a false
+    /// success actively misdirects the person debugging that cold start.
     @MainActor
     private func hydrateOverlayPrefs(phase: String) async {
         #if os(iOS) || os(tvOS)
         let mark = LaunchTimeline.mark()
-        await overlayPrefs.hydrateIfNeeded()
+        guard await overlayPrefs.hydrateIfNeeded() else { return }
         LaunchTimeline.recordRefreshOutcome(
             phase: phase,
             since: mark,

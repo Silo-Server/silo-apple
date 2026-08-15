@@ -129,6 +129,33 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
         }
     }
 
+    func testRefreshURLsReduceToTheRouteAndNothingElse() {
+        // Refresh is instrumented from `performRefreshTransport`, which sees an
+        // absolute URL built from the user's own server address — a LAN host, a
+        // bare IP, a nonstandard port, a reverse-proxy subpath. None of that may
+        // reach a report, and the route is static, so every one of these must
+        // collapse to the same attribute the ordinary path helper produces.
+        for origin in [
+            "https://silo.example.com",
+            "http://192.168.1.50:8096",
+            "https://media.internal:8443",
+            "http://localhost:8080",
+            "https://host.example.com/silo",
+        ] {
+            let actual = HTTPDiagnosticsPath.attribute(
+                for: URL(string: origin + "/api/v1/auth/refresh")
+            )
+            XCTAssertTrue(
+                actual.hasSuffix("/api/v1/auth/refresh"),
+                "refresh route lost its shape: \(actual)"
+            )
+            XCTAssertFalse(actual.contains("example"), "host survived in \(actual)")
+            XCTAssertFalse(actual.contains("192"), "host survived in \(actual)")
+            XCTAssertFalse(actual.contains("localhost"), "host survived in \(actual)")
+            assertPathAccepted(actual, source: origin)
+        }
+    }
+
     // MARK: - Decode failure rendering
 
     func testTypeNamesAreRenderedWithoutDots() {
@@ -173,6 +200,63 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
         // A 7+ digit index reads as a numeric identifier to the collector.
         XCTAssertEqual(HTTPDecodingDiagnostics.codingPath([Key(9_999_999)]), "{id}")
         XCTAssertEqual(HTTPDecodingDiagnostics.codingPath([Key(-1)]), "{id}")
+    }
+
+    func testKeyNotFoundContributesTheMissingKeyItself() {
+        // The defect this guards is silent: `keyNotFound` supplies the absent
+        // key *separately* from its context, whose `codingPath` describes only
+        // the container that was missing it. Reading the context alone still
+        // renders a perfectly plausible line — it just names the parent object,
+        // or `<root>` for a top-level field, and omits the one thing that
+        // identifies which model field drifted from the server's JSON.
+        let root = DecodingError.Context(codingPath: [], debugDescription: "")
+        XCTAssertEqual(
+            HTTPDecodingDiagnostics.codingPath(
+                HTTPClient.failureCodingPath(.keyNotFound(Key("mediaSources"), root))
+            ),
+            "mediaSources"
+        )
+        let nested = DecodingError.Context(
+            codingPath: [Key("items"), Key(0)],
+            debugDescription: ""
+        )
+        XCTAssertEqual(
+            HTTPDecodingDiagnostics.codingPath(
+                HTTPClient.failureCodingPath(.keyNotFound(Key("runTimeTicks"), nested))
+            ),
+            "items > 0 > runTimeTicks"
+        )
+        // A missing key in a dictionary-shaped model is server data, so it is
+        // templated like any other server-supplied key rather than logged.
+        XCTAssertEqual(
+            HTTPDecodingDiagnostics.codingPath(
+                HTTPClient.failureCodingPath(
+                    .keyNotFound(Key("catalog.metadata_language"), root)
+                )
+            ),
+            "{id}"
+        )
+    }
+
+    func testOtherDecodingCasesKeepTheirContextPathUnchanged() {
+        // Only `keyNotFound` carries a key outside its context; appending
+        // anything for the rest would invent a payload location that does not
+        // exist.
+        let context = DecodingError.Context(
+            codingPath: [Key("items"), Key(0), Key("title")],
+            debugDescription: ""
+        )
+        let errors: [DecodingError] = [
+            .typeMismatch(Int.self, context),
+            .valueNotFound(String.self, context),
+            .dataCorrupted(context),
+        ]
+        for error in errors {
+            XCTAssertEqual(
+                HTTPDecodingDiagnostics.codingPath(HTTPClient.failureCodingPath(error)),
+                "items > 0 > title"
+            )
+        }
     }
 
     func testRenderedDecodeMessagesAreAcceptedByTheTextRules() {

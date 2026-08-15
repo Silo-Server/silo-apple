@@ -12,6 +12,13 @@ import os.lock
 /// session failures, an unreachable server at boot) was previously discarded,
 /// including the `app launched` breadcrumb emitted from `SiloApp.init`.
 ///
+/// Staging is not only about keeping those lines. A refused journal write
+/// *purges the journal directory*, so routing a pre-consent line through it
+/// would delete the previous run's breadcrumbs — the tvOS abnormal-exit
+/// report's entire content — before the relaunch gets far enough to read them.
+/// `DiagnosticsCoordinator.recordBreadcrumb` therefore stages here directly
+/// rather than treating a refusal as the signal to stage.
+///
 /// This buffer holds those lines in memory only. The gate is not weakened: the
 /// staged lines reach disk only if, at the first consent establish of the
 /// launch, the same consent check the journal enforces says the account may

@@ -282,6 +282,33 @@ actor DiagnosticsCoordinator {
     /// until it opens; any boundary event clears this and drops them. Guarded by
     /// `breadcrumbContextLock`.
     nonisolated(unsafe) private static var earlyBootFlushArmedBinding: DiagnosticsBinding?
+    /// Whether this launch's breadcrumb capture decision is *in effect* yet.
+    ///
+    /// A closed capture gate means two very different things, and the journal
+    /// cannot tell them apart on its own: it purges its entire directory on
+    /// every refused write (`BreadcrumbJournal.appendRenderedLine`). That purge
+    /// is required for a decided refusal — a user who chose "Never" must be
+    /// left with no on-disk trail — and destructive before any decision exists,
+    /// because the only thing on disk then is the *previous* run's trail, which
+    /// is the evidence the tvOS abnormal-exit report is built from.
+    ///
+    /// Latched the first time this launch observes its decision actually take
+    /// effect, which is exactly one of:
+    ///
+    /// * the first establish refused capture (`applyEarlyBootStaging` produced
+    ///   `.discard`) — a real denial, so every refusal from here on must purge;
+    /// * a breadcrumb reached the journal, which proves the live gate opened.
+    ///
+    /// A `.flush` decision deliberately does *not* latch it. Consent said yes,
+    /// but child-profile eligibility resolves asynchronously and still holds
+    /// the live gate closed, and on the tvOS relaunch path that window contains
+    /// `captureAbnormalExit`'s read of the previous run's breadcrumbs — the
+    /// exact lines a purge there would destroy.
+    ///
+    /// Guarded by `breadcrumbContextLock`. Never cleared within a launch: a
+    /// later boundary closes the gate, it does not return the launch to its
+    /// undecided state.
+    nonisolated(unsafe) private static var breadcrumbDecisionInEffect = false
     /// Blocks last-known consent fallback between a destination selection and
     /// the first successful status refresh for that destination.
     nonisolated(unsafe) private static var destinationTransitionInProgress = false
@@ -1847,6 +1874,20 @@ actor DiagnosticsCoordinator {
     /// before the launch's consent context resolves means the line was staged
     /// in memory instead (see `EarlyBootBuffer`); it reaches disk only if the
     /// first consent establish of this launch permits it.
+    ///
+    /// The journal is deliberately not consulted before that decision is in
+    /// effect. Its refusal path is destructive — `appendRenderedLine` purges
+    /// the whole breadcrumb directory when `isEnabled()` is false — and on a
+    /// cold launch the only thing in that directory is the *previous* run's
+    /// trail, which is what the tvOS abnormal-exit report is made of. Asking it
+    /// "may I write?" during the pre-consent window therefore destroys the
+    /// evidence before anyone reads it, and the launch breadcrumbs this
+    /// subsystem emits from `SiloApp.init` onward hit that window on every
+    /// cold launch. So the routing decision is made here instead:
+    ///
+    /// * decision not in effect -> stage in memory, leave the journal alone
+    /// * decision in effect, allow -> journal writes
+    /// * decision in effect, deny -> journal refuses *and purges*, as intended
     @discardableResult
     nonisolated static func recordBreadcrumb(
         level: DiagnosticsLogLevel = .info,
@@ -1856,7 +1897,40 @@ actor DiagnosticsCoordinator {
         attrs: [String: DiagLogAttributeValue] = [:],
         timestamp: Date = Date()
     ) -> Bool {
-        let persisted = breadcrumbJournal.append(
+        // Hoisted ahead of the routing below. The journal asserts on a
+        // non-breadcrumb category, and that contract check must not become
+        // conditional on the launch's consent state: a miscategorized call site
+        // would otherwise trip the assertion only on launches that happened to
+        // get far enough to address the journal.
+        guard category == .lifecycle || category == .playback || category == .focus else {
+            #if DEBUG
+            assertionFailure("Breadcrumb category must be lifecycle, playback, or focus")
+            #endif
+            return false
+        }
+        if !breadcrumbDecisionIsInEffect {
+            guard breadcrumbCaptureEnabled() else {
+                // Pre-decision and the gate is closed: the expected pre-auth
+                // state, not a denial. `EarlyBootBuffer` seals itself the
+                // moment the launch's decision is made, so a line arriving
+                // after that is dropped here rather than re-staged.
+                earlyBootBuffer.record(
+                    level: level,
+                    category: category,
+                    tag: tag,
+                    message: message,
+                    attrs: attrs,
+                    timestamp: timestamp
+                )
+                return false
+            }
+            // The live gate is open, so this launch's decision is allow and is
+            // now observable. Latch it: the append below writes rather than
+            // purges, and any later refusal is a real revocation whose purge
+            // is the point.
+            markBreadcrumbDecisionInEffect()
+        }
+        return breadcrumbJournal.append(
             level: level,
             category: category,
             tag: tag,
@@ -1864,20 +1938,22 @@ actor DiagnosticsCoordinator {
             attrs: attrs,
             timestamp: timestamp
         )
-        guard !persisted else { return true }
-        // The journal refused the write. Before the launch's consent decision
-        // that is the expected pre-auth state, not a denial, so stage the line
-        // in memory. `EarlyBootBuffer` seals itself the moment the decision is
-        // made, so a genuine denial (or any post-decision refusal) is a no-op.
-        earlyBootBuffer.record(
-            level: level,
-            category: category,
-            tag: tag,
-            message: message,
-            attrs: attrs,
-            timestamp: timestamp
-        )
-        return false
+    }
+
+    /// See `breadcrumbDecisionInEffect`. Read on every breadcrumb, so it is a
+    /// bare flag read under the existing lock rather than anything derived.
+    nonisolated private static var breadcrumbDecisionIsInEffect: Bool {
+        breadcrumbContextLock.lock()
+        defer { breadcrumbContextLock.unlock() }
+        return breadcrumbDecisionInEffect
+    }
+
+    /// Latch the launch's capture decision as observable. Never call while
+    /// holding `breadcrumbContextLock` — it is a plain `NSLock`.
+    nonisolated private static func markBreadcrumbDecisionInEffect() {
+        breadcrumbContextLock.lock()
+        breadcrumbDecisionInEffect = true
+        breadcrumbContextLock.unlock()
     }
 
     /// What the pre-consent staging buffer's lines are worth once the
@@ -1948,7 +2024,24 @@ actor DiagnosticsCoordinator {
         case .ignore:
             return
         case .discard:
-            discardEarlyBootBuffer()
+            // The launch's decision is "no capture" — a Never account, an
+            // unavailable server, or an account boundary — so the on-disk trail
+            // goes with the staged lines.
+            //
+            // This purge is not new behavior, it is the same clearing relocated
+            // to the decision. It used to happen incidentally: the next
+            // breadcrumb of the launch would be offered to the journal, refused,
+            // and `appendRenderedLine` would purge as a side effect.
+            // `recordBreadcrumb` no longer routes pre-decision lines through
+            // that path (it would destroy the previous run's evidence on every
+            // cold launch), so the clearing is stated here instead of depending
+            // on a later breadcrumb arriving at all.
+            //
+            // Latch before purging: a breadcrumb racing this must address the
+            // journal — be refused, and purge — rather than quietly re-stage in
+            // memory behind the decision that just refused it.
+            markBreadcrumbDecisionInEffect()
+            purgeBreadcrumbJournal()
         case .flush:
             breadcrumbContextLock.lock()
             earlyBootFlushArmedBinding = binding
@@ -1974,6 +2067,11 @@ actor DiagnosticsCoordinator {
         breadcrumbContextLock.lock()
         earlyBootFlushArmedBinding = nil
         breadcrumbContextLock.unlock()
+        // The gate was observed open for the armed binding, so this launch's
+        // decision is allow and is now in effect: later breadcrumbs address the
+        // journal directly, and a refusal from here on is a genuine revocation
+        // whose purge is intended.
+        markBreadcrumbDecisionInEffect()
         flushEarlyBootBuffer(earlyBootBuffer, into: breadcrumbJournal)
     }
 
@@ -2454,6 +2552,37 @@ actor DiagnosticsCoordinator {
         invalidateCaptureGateCache()
     }
 
+    /// The latch is process-wide and one-way within a launch, so a test that
+    /// reproduces a cold boot must put it back to its launch value — and a test
+    /// that reproduces a post-decision state must be able to set it without
+    /// driving a whole status refresh.
+    nonisolated static func installBreadcrumbDecisionInEffectForTests(_ inEffect: Bool) {
+        breadcrumbContextLock.lock()
+        breadcrumbDecisionInEffect = inEffect
+        breadcrumbContextLock.unlock()
+    }
+
+    nonisolated static var breadcrumbDecisionInEffectForTests: Bool {
+        breadcrumbDecisionIsInEffect
+    }
+
+    /// Drive the real staging decision against the process-wide state, so a
+    /// test can assert what a first establish does to the journal without
+    /// reaching into `applyEarlyBootStaging`'s private call chain.
+    nonisolated static func applyEarlyBootStagingForTests(
+        previousBinding: DiagnosticsBinding?,
+        binding: DiagnosticsBinding,
+        noticeVersion: Int,
+        statusAvailable: Bool
+    ) {
+        applyEarlyBootStaging(
+            previousBinding: previousBinding,
+            binding: binding,
+            noticeVersion: noticeVersion,
+            statusAvailable: statusAvailable
+        )
+    }
+
     /// Number of times the authoritative gate actually ran. Tests assert the
     /// hot path is memoized without reaching into the cache's internals.
     nonisolated static var captureGateAuthoritativeEvaluationCountForTests: Int {
@@ -2512,11 +2641,34 @@ actor DiagnosticsCoordinator {
         // first makes every remaining append fail that check under the
         // journal's lock, so the purge is the last write of the boundary.
         _ = beginActiveProfileEligibilityResolution(invalidateCurrent: true)
-        // A profile switch is an account boundary for the staging buffer too
-        // (dropped by the purge below): its pre-consent lines cannot be
-        // flushed into the profile arriving now, which may be a child that
-        // must capture nothing at all.
-        purgeBreadcrumbJournal()
+        // A profile switch is an account boundary for the staging buffer too:
+        // its pre-consent lines cannot be flushed into the profile arriving
+        // now, which may be a child that must capture nothing at all.
+        discardEarlyBootBuffer()
+        // The on-disk trail is a different question, and the answer turns on
+        // whether this launch's capture decision is in effect yet.
+        //
+        // Every launch with a restored session reaches this function *before*
+        // authentication resolves: `ContentView.checkInitialState` calls
+        // `AuthService.resolveActiveProfileForSession`, which opens with this
+        // boundary. Nothing this launch wrote can be in the journal at that
+        // point — the gate has never been open — so its entire contents are the
+        // previous run's, which on tvOS is exactly the evidence
+        // `captureAbnormalExit` reads once authentication lands. Purging there
+        // isolates nothing; it empties the crash report before anyone opens it.
+        // Two neighbours already take that position for the same reason:
+        // `authenticationStateBecameUnavailable` refuses to treat the cold
+        // launch's `.loading` state as a boundary, and
+        // `updateBreadcrumbConsentContext` keeps the prior run's lines on a
+        // first establish.
+        //
+        // Once the decision is in effect, the trail can hold this launch's own
+        // lines for the outgoing profile, so the purge is the isolation it was
+        // written to be. A refused launch latches the decision at the refusal,
+        // so a "Never" account still clears here.
+        if breadcrumbDecisionIsInEffect {
+            purgeBreadcrumbJournal()
+        }
         DiagLog.ring.clear()
     }
 

@@ -368,13 +368,16 @@ final class EarlyBootBufferTests: XCTestCase {
     func testRecordBreadcrumbStagesWhenTheProcessJournalIsGatedOff() {
         let buffer = EarlyBootBuffer.shared
         // Close the process-wide gate first (it also seals the buffer), then
-        // reset the buffer to its launch state so this reproduces a cold boot.
+        // reset the buffer and the launch's decision latch so this reproduces a
+        // cold boot rather than whatever state an earlier test left behind.
         DiagnosticsCoordinator.activeProfileWillChange()
         DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(nil)
+        DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
         buffer.resetForTests()
         addTeardownBlock {
             buffer.resetForTests()
             DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(nil)
+            DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
         }
 
         // No resolvable context, so the process journal refuses the write; the
@@ -388,7 +391,237 @@ final class EarlyBootBufferTests: XCTestCase {
         XCTAssertEqual(tags(buffer.snapshot().lines), ["App"])
     }
 
+    // MARK: - The previous run's journal survives a pre-consent launch
+
+    /// The load-bearing case for the tvOS abnormal-exit report.
+    ///
+    /// `BreadcrumbJournal.appendRenderedLine` purges the whole journal
+    /// directory whenever its gate is closed. A cold launch starts with the
+    /// gate closed (no consent context, profile eligibility unresolved), so if
+    /// a launch breadcrumb is offered to the journal before the launch's
+    /// consent decision exists, the purge takes the *previous* run's trail with
+    /// it — and that trail is the entire content of the abnormal-exit report
+    /// `captureAbnormalExit` builds minutes later, after authentication.
+    func testPreConsentLaunchBreadcrumbsDoNotPurgeThePreviousRunJournal() throws {
+        let binding = installTestBinding()
+        openProcessCaptureGate(for: binding)
+
+        // The previous run, capturing normally, then dying without a clean
+        // termination line.
+        XCTAssertTrue(DiagnosticsCoordinator.recordBreadcrumb(
+            category: .lifecycle,
+            tag: "PreviousRun",
+            message: "app launched",
+            attrs: ["state": .string("launch")]
+        ))
+        XCTAssertTrue(journalTags().contains("PreviousRun"))
+
+        simulateColdLaunch()
+
+        // `SiloApp.init` → `LaunchTimeline.recordProcessStart()`. Refused,
+        // because no account is established yet — which is staging, not denial.
+        XCTAssertFalse(DiagnosticsCoordinator.recordBreadcrumb(
+            category: .lifecycle,
+            tag: "App",
+            message: "app launched",
+            attrs: ["state": .string("launch"), "launch_type": .string("cold")]
+        ))
+
+        XCTAssertEqual(tags(EarlyBootBuffer.shared.snapshot().lines), ["App"])
+        XCTAssertTrue(
+            journalTags().contains("PreviousRun"),
+            "the crashed run's breadcrumbs must still be readable when captureAbnormalExit runs"
+        )
+    }
+
+    func testProfileResolutionDuringLaunchKeepsThePreviousRunJournal() {
+        // `ContentView.checkInitialState` resolves the restored session through
+        // `AuthService.resolveActiveProfileForSession`, which opens with this
+        // boundary — before authentication resolves, and therefore before
+        // `ExitSentinel.captureLeftoverIfNeeded()` gets to read the journal.
+        let binding = installTestBinding()
+        openProcessCaptureGate(for: binding)
+        XCTAssertTrue(DiagnosticsCoordinator.recordBreadcrumb(
+            category: .lifecycle,
+            tag: "PreviousRun",
+            message: "app launched"
+        ))
+
+        simulateColdLaunch()
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .lifecycle,
+            tag: "App",
+            message: "app launched"
+        )
+
+        DiagnosticsCoordinator.activeProfileWillChange()
+
+        XCTAssertTrue(journalTags().contains("PreviousRun"))
+        // The launch's own staged lines are still dropped: they cannot follow
+        // the user into the profile arriving now.
+        XCTAssertTrue(EarlyBootBuffer.shared.snapshot().lines.isEmpty)
+        XCTAssertTrue(EarlyBootBuffer.shared.isSealed)
+    }
+
+    // MARK: - A decided refusal still purges
+
+    func testDeniedFirstEstablishPurgesTheJournalAndRefusesLaterLines() {
+        let binding = installTestBinding()
+        openProcessCaptureGate(for: binding)
+        XCTAssertTrue(DiagnosticsCoordinator.recordBreadcrumb(
+            category: .lifecycle,
+            tag: "PreviousRun",
+            message: "app launched"
+        ))
+
+        simulateColdLaunch()
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .lifecycle,
+            tag: "App",
+            message: "app launched"
+        )
+        XCTAssertFalse(EarlyBootBuffer.shared.snapshot().lines.isEmpty)
+
+        // Authentication resolves and the account's stored choice turns out to
+        // be "Never". Reopen every *other* gate input first, so consent is the
+        // only thing refusing and the purge cannot be attributed to unresolved
+        // profile eligibility. `purgeImmediately: false` suppresses the consent
+        // store's own purge callback, so what this asserts is that the staging
+        // decision clears the trail rather than inheriting a clearing someone
+        // else already did.
+        DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(
+            DiagnosticsCoordinator.BreadcrumbConsentContext(
+                binding: binding,
+                noticeVersion: 1,
+                isAvailable: true
+            )
+        )
+        DiagnosticsCoordinator.installActiveProfileBreadcrumbEligibilityForTests(true)
+        DiagnosticsConsentStore.shared.setMode(
+            .never,
+            for: binding,
+            noticeVersion: 1,
+            purgeImmediately: false
+        )
+        DiagnosticsCoordinator.applyEarlyBootStagingForTests(
+            previousBinding: nil,
+            binding: binding,
+            noticeVersion: 1,
+            statusAvailable: true
+        )
+
+        XCTAssertTrue(journalTags().isEmpty, "a Never account must be left with no on-disk trail")
+        XCTAssertTrue(EarlyBootBuffer.shared.snapshot().lines.isEmpty)
+        XCTAssertTrue(DiagnosticsCoordinator.breadcrumbDecisionInEffectForTests)
+
+        // Post-decision, a refusal is a denial: the line is neither written nor
+        // re-staged in memory.
+        XCTAssertFalse(DiagnosticsCoordinator.recordBreadcrumb(
+            category: .lifecycle,
+            tag: "AfterDenial",
+            message: "state changed"
+        ))
+        XCTAssertTrue(EarlyBootBuffer.shared.snapshot().lines.isEmpty)
+        XCTAssertTrue(journalTags().isEmpty)
+    }
+
+    func testProfileSwitchAfterTheDecisionStillPurgesTheJournal() {
+        // The isolation purge is unchanged once the launch's decision is in
+        // effect: from that point the trail can hold this launch's own lines
+        // for the outgoing profile.
+        let binding = installTestBinding()
+        openProcessCaptureGate(for: binding)
+        XCTAssertTrue(DiagnosticsCoordinator.recordBreadcrumb(
+            category: .lifecycle,
+            tag: "ThisRun",
+            message: "app launched"
+        ))
+        XCTAssertTrue(DiagnosticsCoordinator.breadcrumbDecisionInEffectForTests)
+
+        DiagnosticsCoordinator.activeProfileWillChange()
+
+        XCTAssertTrue(journalTags().isEmpty)
+    }
+
     // MARK: - Helpers
+
+    /// A binding scoped to this test run, with its consent record and the
+    /// process-wide breadcrumb state restored afterwards. These tests drive the
+    /// real process journal (that is the object under test), so teardown also
+    /// empties it.
+    private func installTestBinding() -> DiagnosticsBinding {
+        let binding = DiagnosticsBinding(
+            serverInstanceID: "early-boot-journal-tests",
+            accountUserID: "acct"
+        )
+        // The latch and the journal are process-wide and outlive a test, so
+        // start from the launch state rather than from whatever ran before.
+        DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
+        DiagnosticsCoordinator.purgeBreadcrumbJournal()
+        EarlyBootBuffer.shared.resetForTests()
+        addTeardownBlock {
+            DiagnosticsConsentStore.shared.remove(binding: binding)
+            DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(nil)
+            DiagnosticsCoordinator.installActiveProfileBreadcrumbEligibilityForTests(false)
+            DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
+            DiagnosticsCoordinator.resetCaptureGateCacheForTests()
+            DiagnosticsCoordinator.purgeBreadcrumbJournal()
+            EarlyBootBuffer.shared.resetForTests()
+        }
+        return binding
+    }
+
+    /// The one state where capture is legitimately on: an available context for
+    /// a non-`never` binding with the active profile resolved as a non-child.
+    private func openProcessCaptureGate(for binding: DiagnosticsBinding) {
+        DiagnosticsConsentStore.shared.setMode(.ask, for: binding, noticeVersion: 1)
+        DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(
+            DiagnosticsCoordinator.BreadcrumbConsentContext(
+                binding: binding,
+                noticeVersion: 1,
+                isAvailable: true
+            )
+        )
+        DiagnosticsCoordinator.installActiveProfileBreadcrumbEligibilityForTests(true)
+        DiagnosticsCoordinator.resetCaptureGateCacheForTests()
+    }
+
+    /// Return the process-wide breadcrumb state to what it looks like at
+    /// `SiloApp.init`: no live consent context, profile eligibility unresolved,
+    /// no decision yet, nothing staged — while leaving the journal on disk,
+    /// which is the previous run's evidence.
+    ///
+    /// Emptying the last-known-status store matters: it is App-Group-persistent
+    /// and is what `resolvedBreadcrumbContext()` falls back to, so without this
+    /// a machine that has run the app before resolves a real snapshot and the
+    /// gate never reaches the unresolved state under test.
+    private func simulateColdLaunch() {
+        let previousIndex = DiagnosticsCoordinator.takeLastKnownStatusIndexForTests()
+        addTeardownBlock {
+            DiagnosticsCoordinator.restoreLastKnownStatusIndexForTests(previousIndex)
+        }
+        DiagnosticsCoordinator.installBreadcrumbConsentContextForTests(nil)
+        DiagnosticsCoordinator.installActiveProfileBreadcrumbEligibilityForTests(false)
+        DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
+        DiagnosticsCoordinator.resetCaptureGateCacheForTests()
+        EarlyBootBuffer.shared.resetForTests()
+        XCTAssertFalse(
+            DiagnosticsCoordinator.isDiagnosticsCaptureEnabled,
+            "precondition: a cold launch begins with the capture gate closed"
+        )
+    }
+
+    /// Tags currently readable from the *process* breadcrumb journal — the same
+    /// read `captureAbnormalExit` performs when it builds the report.
+    private func journalTags() -> [String] {
+        let data = DiagnosticsCoordinator.shared.breadcrumbsData()
+        let decoder = DiagnosticsJSONCoding.makeDecoder()
+        return String(decoding: data, as: UTF8.self)
+            .split(separator: "\n")
+            .compactMap { line in
+                try? decoder.decode(DiagnosticsLogLine.self, from: Data(line.utf8)).tag
+            }
+    }
 
     private func makeBuffer(capacity: Int = 32) -> EarlyBootBuffer {
         // No expiration scheduling: these tests drive drain/discard explicitly.
