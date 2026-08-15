@@ -415,6 +415,11 @@ final class PlayerCore: NSObject {
     private var _seekLatencyArmedWall: CFTimeInterval?
     private var _lastSeekToFirstFrameSeconds: Double?
     private var _rebufferCount = 0
+    /// Rebuffers whose binding constraint was the audio track. Reported as the
+    /// `playback.audio_underruns` diagnostics attribute: from the user's side
+    /// an audio-starved stall *is* an underrun, and the renderer exposes no
+    /// underrun counter of its own.
+    private var _audioUnderrunCount = 0
     private var _bufferingWallSeconds: Double = 0
     private var _bufferingSinceWall: CFTimeInterval?
     private var _lastRebufferRecoverySeconds: Double?
@@ -488,11 +493,18 @@ final class PlayerCore: NSObject {
         return CACurrentMediaTime() - _lastSeekWall
     }
 
-    private func noteBufferingTransition(_ buffering: Bool) {
+    /// Records a buffering edge. `audioStarved` marks an entry whose binding
+    /// constraint was the audio track so the audio-underrun tally stays
+    /// separable from generic rebuffers.
+    private func noteBufferingTransition(
+        _ buffering: Bool,
+        audioStarved: Bool = false
+    ) {
         let now = CACurrentMediaTime()
         telemetryLock.lock()
         if buffering {
             _rebufferCount += 1
+            if audioStarved { _audioUnderrunCount += 1 }
             _bufferingSinceWall = now
         } else if let since = _bufferingSinceWall {
             let elapsed = now - since
@@ -501,6 +513,50 @@ final class PlayerCore: NSObject {
             _bufferingSinceWall = nil
         }
         telemetryLock.unlock()
+    }
+
+    /// Running audio-underrun tally for the `playback.audio_underruns`
+    /// attribute. Only `noteBufferingTransition` writes it, and only from the
+    /// buffering timer on main, so a read taken right after that call on the
+    /// same thread reports exactly the edge just recorded.
+    private func audioUnderrunCount() -> Int {
+        telemetryLock.lock()
+        defer { telemetryLock.unlock() }
+        return _audioUnderrunCount
+    }
+
+    /// Classifies which track ran dry at a buffering edge, for the
+    /// `playback.reason` attribute. Stable tokens, not prose: they are the
+    /// grouping key when reading rebuffers across reports.
+    static func stallCause(
+        videoBufferedSeconds: Double?,
+        audioBufferedSeconds: Double?
+    ) -> String {
+        switch (videoBufferedSeconds, audioBufferedSeconds) {
+        case let (video?, audio?):
+            // Both tracks present: name whichever is shallower. A tie (both
+            // dry) reads as the network having stopped feeding either.
+            if video < audio { return "video_starved" }
+            if audio < video { return "audio_starved" }
+            return "source_starved"
+        case (_?, nil):
+            return "video_starved"
+        case (nil, _?):
+            return "audio_starved"
+        case (nil, nil):
+            return "source_starved"
+        }
+    }
+
+    /// Clamps a playback position in seconds to a non-negative whole-
+    /// millisecond count for the `playback.position_ms` attribute; the
+    /// registry has no float type. Non-finite and negative inputs collapse to
+    /// zero, matching how an unusable clock is treated everywhere else here.
+    static func positionMilliseconds(_ seconds: Double) -> Int {
+        let clamped = seconds.isFinite ? max(0, seconds) : 0
+        let milliseconds = (clamped * 1000).rounded()
+        guard milliseconds < Double(Int.max) else { return Int.max }
+        return Int(milliseconds)
     }
 
     private func noteAvsyncAction(_ action: AVSyncLadder.Action, droppedPacketSeconds: Double = 0) {
@@ -1912,11 +1968,33 @@ final class PlayerCore: NSObject {
     }
 
     func setHDREnabled(_ enabled: Bool) {
+        let wasEnabled = hdrEnabled
         hdrEnabled = enabled
         Self.logger.info("setHDREnabled \(enabled)")
         // If a file is already loaded, push the new mode immediately. If not,
         // the next `load()` will pick up the stashed preference.
         guard formatCtx != nil else { return }
+        #if os(iOS) || os(tvOS)
+        // Re-signaling HDMI mode (tvOS) or EDR (iOS) mid-playback renegotiates
+        // the display and is a common source of "the picture went black for a
+        // second" reports, so the transition is worth an essential line. Only
+        // an actual change though: `applySettingsToPlayer` re-pushes every
+        // preference on each load, and the load-time breadcrumb already
+        // reported the mode we started in.
+        if enabled != wasEnabled {
+            DiagTrace.breadcrumb(
+                .essential,
+                category: .playback,
+                tag: "Player",
+                message: "hdr output mode changed",
+                attrs: [
+                    "hdr_mode": .string(diagnosticsHDRMode()),
+                    "sink": .string(diagnosticsVideoSink()),
+                    "reason": .string(enabled ? "hdr_preference_enabled" : "hdr_preference_disabled"),
+                ]
+            )
+        }
+        #endif
         #if os(tvOS)
         let rate = refreshRate
         let contentFormat: TVDisplayCriteria.ContentFormat = enabled
@@ -2599,6 +2677,27 @@ final class PlayerCore: NSObject {
                 audioStreamIndex = -1
             }
         }
+        #if os(iOS) || os(tvOS)
+        // Only the degraded outcomes are recorded. A switch that lands on the
+        // requested stream is already covered by the "audio output negotiated"
+        // breadcrumb the rebuilt decoder emits on its first frame; recording
+        // the happy path here as well would double every track change.
+        if newId != nil, audioStreamIndex < 0 {
+            DiagTrace.breadcrumb(
+                .essential,
+                level: .warning,
+                category: .playback,
+                tag: "Player",
+                message: "audio track switch degraded to silent",
+                attrs: [
+                    "reason": .string(
+                        newStreamIndex < 0 ? "track_not_an_audio_stream" : "audio_decoder_setup_failed"
+                    ),
+                    "position_ms": .int(Self.positionMilliseconds(currentPlaybackTimeSeconds())),
+                ]
+            )
+        }
+        #endif
         // The audio timebase (and frame duration) may have changed.
         configurePacketQueueTiming()
 
@@ -3030,6 +3129,65 @@ final class PlayerCore: NSObject {
         }
     }
 
+    #if os(iOS) || os(tvOS)
+    // MARK: - Diagnostics attributes
+
+    /// The resolved video pipeline as registered `playback` attributes.
+    /// Shared by the load-time breadcrumb and the decoder-fallback one so a
+    /// report can compare "what we chose" against "what we fell back to"
+    /// field by field instead of diffing two differently-shaped log lines.
+    /// Reads FFmpeg stream state, so callers must already be on a queue where
+    /// touching `formatCtx` is safe (demux/control).
+    private func videoPipelineAttributes() -> [String: DiagLogAttributeValue] {
+        var attrs: [String: DiagLogAttributeValue] = [
+            "decoder": .string(videoDecodeMode == .software ? "software" : "videotoolbox"),
+            "hdr_mode": .string(diagnosticsHDRMode()),
+            "sink": .string(diagnosticsVideoSink()),
+        ]
+        guard let formatCtx,
+              videoStreamIndex >= 0,
+              let stream = formatCtx.pointee.streams?[Int(videoStreamIndex)],
+              let codecparPtr = stream.pointee.codecpar else {
+            return attrs
+        }
+        let codecpar = codecparPtr.pointee
+        attrs["fmt"] = .string(Self.codecName(for: codecpar.codec_id) ?? "unknown")
+        if codecpar.width > 0, codecpar.height > 0 {
+            attrs["width"] = .int(Int(codecpar.width))
+            attrs["height"] = .int(Int(codecpar.height))
+        }
+        if codecpar.bit_rate > 0 {
+            attrs["bitrate_kbps"] = .int(Int(codecpar.bit_rate / 1000))
+        }
+        return attrs
+    }
+
+    /// What the pipeline resolved to render, not what the source is tagged
+    /// as: a Dolby Vision stream the user's policy stripped to its base layer
+    /// reports the base layer, and the HDR preference being off reports
+    /// `sdr_forced` rather than hiding the fact that HDR was available.
+    private func diagnosticsHDRMode() -> String {
+        guard hdrEnabled else { return dynamicRange == .sdr ? "sdr" : "sdr_forced" }
+        switch dynamicRange {
+        case .sdr: return "sdr"
+        case .hdr10: return "hdr10"
+        case .hlg: return "hlg"
+        case .dolbyVision: return "dolby_vision"
+        }
+    }
+
+    /// Where decoded video is being presented. Fixed per platform today, but
+    /// named as an attribute so a report distinguishes a tvOS HDMI session
+    /// from an iOS EDR one without inferring it from the device snapshot.
+    private func diagnosticsVideoSink() -> String {
+        #if os(tvOS)
+        return "avsamplebufferdisplaylayer_hdmi"
+        #else
+        return "avsamplebufferdisplaylayer_edr"
+        #endif
+    }
+    #endif
+
     private func selectedAudioTrackHasAtmosHint() -> Bool {
         guard audioStreamIndex >= 0,
               let track = currentTracks.first(where: { $0.kind == .audio && $0.ffIndex == Int(audioStreamIndex) }) else {
@@ -3168,7 +3326,37 @@ final class PlayerCore: NSObject {
                 os_signpost(.event, log: Self.signpostLog, name: "Buffering",
                             "state=%{public}@", newState ? "underrun" : "ok")
             }
-            noteBufferingTransition(newState)
+            // Which track ran dry decides whether this reads as a network
+            // stall or an audio underrun. Computed before the tally update so
+            // the two agree about what this edge was.
+            let cause = Self.stallCause(
+                videoBufferedSeconds: videoSeconds,
+                audioBufferedSeconds: audioSeconds
+            )
+            noteBufferingTransition(
+                newState,
+                audioStarved: newState && cause == "audio_starved"
+            )
+            #if os(iOS) || os(tvOS)
+            // Rebuffer edges are the single highest-value playback signal a
+            // crash bundle can carry and they are rare (a healthy playback
+            // emits none), so they are essential-tier. The 1 Hz [CMP-DIAG]
+            // line already carries the running counters for anyone with Debug
+            // Logging on; this records only the transition and its cause.
+            DiagTrace.breadcrumb(
+                .essential,
+                level: newState ? .warning : .info,
+                category: .playback,
+                tag: "Player",
+                message: newState ? "rebuffer started" : "rebuffer recovered",
+                attrs: [
+                    "reason": .string(newState ? cause : "buffer_refilled"),
+                    "dropped_frames": .int(Int(clamping: vSyncDrops &+ totalVtFrameDrops)),
+                    "audio_underruns": .int(audioUnderrunCount()),
+                    "position_ms": .int(Self.positionMilliseconds(currentPlaybackTimeSeconds())),
+                ]
+            )
+            #endif
             onBufferingChange?(newState)
             if !newState {
                 lastReportedBufferingProgress = -1
@@ -3432,6 +3620,23 @@ final class PlayerCore: NSObject {
         }
         #else
         publishSigPeakIfNeeded()
+        #endif
+
+        #if os(iOS) || os(tvOS)
+        // Single funnel for "what did the pipeline actually decide to be".
+        // Everything upstream of here — codec classification, DV routing,
+        // software fallback, pixel format, HDMI/EDR signaling — has resolved,
+        // and each of those branches already prints its own `[CMP-…]` line to
+        // stdout. This does not repeat them: it records the *outcome* as
+        // registered attributes so a report can be filtered on decoder,
+        // resolution, or HDR mode without parsing the free-text trace.
+        DiagTrace.breadcrumb(
+            .essential,
+            category: .playback,
+            tag: "Player",
+            message: "video pipeline resolved",
+            attrs: videoPipelineAttributes()
+        )
         #endif
 
         // Seek to startTime if requested. `pendingSkipBelowPTS` gates the
@@ -4235,6 +4440,31 @@ final class PlayerCore: NSObject {
             "[CMP] audio codecId=%d sampleRate=%d channels=%d srcFormat=%d srcChannels=%d layoutTag=0x%x",
             Int(codecContext.pointee.codec_id.rawValue), Int(outSampleRate), Int(outChannels),
             Int(inputFormatRaw), Int(inChannels), Int(layoutTag)))
+        #if os(iOS) || os(tvOS)
+        // Audio negotiation is once per load (and once per track switch), and
+        // the source→output channel fold is the usual explanation for "the
+        // centre channel sounds wrong" reports, so it is essential-tier. The
+        // existing "audio route changed" breadcrumb covers the route moving
+        // afterwards; this covers what we negotiated against it.
+        //
+        // `sink` carries the fold because the registry has no channel-count
+        // key, and the fold only means anything paired with the route it was
+        // chosen for. Codec goes in `fmt`.
+        DiagTrace.breadcrumb(
+            .essential,
+            category: .playback,
+            tag: "Player",
+            message: "audio output negotiated",
+            attrs: [
+                "fmt": .string(Self.codecName(for: codecContext.pointee.codec_id) ?? "unknown"),
+                "sink": .string(
+                    "ch_\(inChannels)->\(outChannels) route_max_\(routeMaxChannels)"
+                    + " spatial_\(spatialAudioEnabled ? 1 : 0)"
+                ),
+                "reason": .string(outChannels == inChannels ? "native_layout" : "downmix"),
+            ]
+        )
+        #endif
         return AudioDecodePipeline.ResamplingOutput(
             swrContext: swr,
             config: config
@@ -4921,7 +5151,26 @@ final class PlayerCore: NSObject {
         }
         videoDecodeMode = .software
         useUntimedCompressedVideoSamples = false
-        return setupSoftwareVideoDecoder(codecpar: codecpar, codecparPtr: codecparPtr)
+        let ok = setupSoftwareVideoDecoder(codecpar: codecpar, codecparPtr: codecparPtr)
+        #if os(iOS) || os(tvOS)
+        // Losing hardware decode is the difference between a smooth 4K
+        // session and a thermally throttled one, so the switch is recorded
+        // even when it succeeds. `reason` carries the VT status that forced
+        // it; the attributes re-state the pipeline because `decoder` (and
+        // possibly the pixel format behind `fmt`) just changed underneath the
+        // load-time breadcrumb.
+        var attrs = videoPipelineAttributes()
+        attrs["reason"] = .string(reason)
+        DiagTrace.breadcrumb(
+            .essential,
+            level: ok ? .warning : .error,
+            category: .playback,
+            tag: "Player",
+            message: ok ? "decoder fell back to software" : "software decoder fallback failed",
+            attrs: attrs
+        )
+        #endif
+        return ok
     }
 
     private func reportTerminalDecodeFailure(_ message: String) {
@@ -4934,6 +5183,25 @@ final class PlayerCore: NSObject {
         let failures = consecutiveDecodeFailures
         decodeRecoveryLock.unlock()
         print("[CMP] ERROR: \(message) (consecutiveFailures=\(failures))")
+        #if os(iOS) || os(tvOS)
+        // This path deliberately bypasses `reportError` (it owns its own
+        // once-only latch and failure tally), so it needs its own terminal
+        // breadcrumb or the bundle would show the decode burst's recovery
+        // attempts with no record of the outcome that ended playback.
+        DiagTrace.breadcrumb(
+            .essential,
+            level: .error,
+            category: .playback,
+            tag: "Player",
+            message: "decode failed terminally",
+            attrs: [
+                "reason": .string("decode_failures_exhausted"),
+                "decoder": .string(videoDecodeMode == .software ? "software" : "videotoolbox"),
+                "dropped_frames": .int(Int(clamping: vSyncDrops &+ totalVtFrameDrops)),
+                "position_ms": .int(Self.positionMilliseconds(lastReportedSeconds)),
+            ]
+        )
+        #endif
         DispatchQueue.main.async { [weak self] in
             self?.onError?(message)
         }
@@ -5868,9 +6136,53 @@ final class PlayerCore: NSObject {
         endLoadGate(applyDeferredSwitch: false)
         Self.logger.error("\(message, privacy: .public)")
         print("[CMP] ERROR: \(message)")
+        #if os(iOS) || os(tvOS)
+        // Every engine-fatal path funnels through here, so this is the one
+        // place a classified failure can be recorded. `reason` is the stable
+        // token — the raw message stays in the `[CMP] ERROR:` stdout line and
+        // in the VM's terminal breadcrumb, which is where prose belongs.
+        DiagTrace.breadcrumb(
+            .essential,
+            level: .error,
+            category: .playback,
+            tag: "Player",
+            message: "engine error",
+            attrs: [
+                "reason": .string(Self.engineErrorReason(message)),
+                "position_ms": .int(Self.positionMilliseconds(currentPlaybackTimeSeconds())),
+            ]
+        )
+        #endif
         DispatchQueue.main.async { [weak self] in
             self?.onError?(message)
         }
+    }
+
+    /// Collapses an engine error message into a stable classification token
+    /// for the `playback.reason` attribute. Messages are English prose that
+    /// gets reworded between builds; these tokens are what a report can be
+    /// grouped and compared on, so they must stay put even when the wording
+    /// moves.
+    ///
+    /// Order is load-bearing. The source-open and stream-info arms come before
+    /// the generic `decoder`/`codec` substrings because both interpolate an
+    /// `av_strerror` string that can itself mention a codec ("Failed to open
+    /// file: Invalid data found when processing input" is the benign case; the
+    /// codec-mentioning ones are not) — the message's own prefix is a stronger
+    /// signal than a substring anywhere in FFmpeg's appended text.
+    static func engineErrorReason(_ message: String) -> String {
+        let value = message.lowercased()
+        if value.contains("seek stalled") { return "seek_stalled" }
+        if value.contains("dolby vision") { return "dolby_vision_display_unavailable" }
+        if value.contains("media services were reset") { return "audio_services_reset" }
+        if value.contains("audio output failed") { return "audio_output_failed" }
+        if value.contains("no supported video stream") { return "no_video_stream" }
+        if value.contains("failed to open") || value.contains("stream info") {
+            return "source_open_failed"
+        }
+        if value.contains("decoder") { return "decoder_unavailable" }
+        if value.contains("codec") { return "unsupported_codec" }
+        return "engine_error"
     }
 
     // MARK: - AVDisplayManager (tvOS-only)

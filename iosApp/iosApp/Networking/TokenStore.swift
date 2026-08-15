@@ -198,6 +198,36 @@ actor TokenStore {
         self.defaults = defaults
     }
 
+    // MARK: - Diagnostics
+    //
+    // Session lines are deliberately outcome-only. Everything this actor holds
+    // — access/refresh/profile tokens, profile ids, server ids (base64 of the
+    // server URL, so an id *is* the hostname), server URLs — is credential or
+    // identifying material and must never reach a log line, not truncated and
+    // not hashed. What a report needs to explain "I got logged out" is the
+    // sequence of outcomes and a stable classification of each refusal, so
+    // that is all these emit: a fixed `phase`, a fixed `outcome`, and a fixed
+    // `reason`, every one of them a compile-time literal.
+
+    /// Durable session-event line. Breadcrumbs are the right destination
+    /// because a rejected refresh is frequently followed by the user killing
+    /// the app, and the in-memory ring would not survive that.
+    private func recordSessionEvent(phase: String, outcome: String, reason: String) {
+        #if os(iOS) || os(tvOS)
+        DiagTrace.breadcrumb(
+            .essential,
+            category: .lifecycle,
+            tag: "Auth",
+            message: "session credential event",
+            attrs: [
+                "phase": .string(phase),
+                "outcome": .string(outcome),
+                "reason": .string(reason),
+            ]
+        )
+        #endif
+    }
+
     // MARK: - Active server
 
     /// Point the Keychain reads at a different server. Flushes the
@@ -382,6 +412,15 @@ actor TokenStore {
     func captureRequestAuth(expected: HTTPRequestIdentity) throws -> CapturedHTTPRequestAuth {
         let expectedURL = ServerRegistry.normalize(url: expected.serverURL)
         guard let account = refreshAccountIdentity() else {
+            // No resolvable account at all: the registry has no active server,
+            // or its URL mirror is missing. Distinct from a mismatch below,
+            // because it means requests are being issued with nothing to
+            // authenticate against rather than against the wrong thing.
+            recordSessionEvent(
+                phase: "captureRequestAuth",
+                outcome: "failed",
+                reason: "noAccountIdentity"
+            )
             throw HTTPError.requestIdentityChanged
         }
         let currentServerId = temporaryScope?.serverId ?? activeServerId
@@ -401,6 +440,25 @@ actor TokenStore {
               account.serverId == expected.serverId,
               account.serverURL == expectedURL,
               currentProfileId == expected.profileId else {
+            // Which identity field moved is the whole diagnostic value here:
+            // "server switched mid-flight" and "profile switched mid-flight"
+            // produce identical user-visible failures but have different
+            // causes. The classifier takes only the already-evaluated
+            // booleans, so no identifier can reach the log line.
+            recordSessionEvent(
+                phase: "captureRequestAuth",
+                outcome: "failed",
+                reason: Self.requestIdentityMismatchReason(
+                    hasExpectedServerId: !expected.serverId.isEmpty,
+                    hasExpectedServerURL: !expectedURL.isEmpty,
+                    hasExpectedProfileId: !expected.profileId.isEmpty,
+                    serverIdMatches: currentServerId == expected.serverId,
+                    serverURLMatches: currentURL == expectedURL,
+                    accountServerIdMatches: account.serverId == expected.serverId,
+                    accountServerURLMatches: account.serverURL == expectedURL,
+                    profileMatches: currentProfileId == expected.profileId
+                )
+            )
             throw HTTPError.requestIdentityChanged
         }
 
@@ -470,27 +528,73 @@ actor TokenStore {
         _ value: String,
         replacing captured: CapturedRefreshCredential
     ) -> Bool {
-        guard refreshAccountIdentity() == captured.account else { return false }
+        // Both `saveRefreshedTokens` overloads land here, so this is the one
+        // place a successful rotation is committed — and the only place the
+        // success/discard split needs to be recorded. A discarded rotation is
+        // benign on its own (a server switch raced the response) but shows up
+        // in reports as an unexplained re-login, so it is worth a line.
+        guard refreshAccountIdentity() == captured.account else {
+            recordSessionEvent(
+                phase: "tokenRefresh",
+                outcome: "discarded",
+                reason: "accountChanged"
+            )
+            return false
+        }
 
         switch captured.owner {
         case .temporary:
             let generationID = captured.account.credentialGenerationID
             guard temporaryScope?.credentialGenerationID == generationID,
                   !rejectedTemporaryCredentialGenerations.contains(generationID),
-                  temporaryScope?.refreshToken == captured.refreshToken else { return false }
+                  temporaryScope?.refreshToken == captured.refreshToken else {
+                recordSessionEvent(
+                    phase: "tokenRefresh",
+                    outcome: "discarded",
+                    reason: "temporaryScopeChanged"
+                )
+                return false
+            }
             temporaryScope?.accessToken = accessValue
             temporaryScope?.refreshToken = value
+            recordSessionEvent(
+                phase: "tokenRefresh",
+                outcome: "succeeded",
+                reason: "temporaryScope"
+            )
             return true
 
         case .persistentServer(let serverId):
             guard temporaryScope == nil,
                   serverId == captured.account.serverId,
-                  activeServerId == serverId else { return false }
+                  activeServerId == serverId else {
+                recordSessionEvent(
+                    phase: "tokenRefresh",
+                    outcome: "discarded",
+                    reason: "credentialOwnerChanged"
+                )
+                return false
+            }
             ensureLoaded()
-            guard cachedRefreshToken == captured.refreshToken else { return false }
+            guard cachedRefreshToken == captured.refreshToken else {
+                // A concurrent refresh already rotated this slot. Expected
+                // under collapsed 401s; recorded because a burst of these
+                // means the collapse in HTTPClient is not collapsing.
+                recordSessionEvent(
+                    phase: "tokenRefresh",
+                    outcome: "discarded",
+                    reason: "refreshTokenRotated"
+                )
+                return false
+            }
 
             cachedAccessToken = accessValue
             cachedRefreshToken = value
+            recordSessionEvent(
+                phase: "tokenRefresh",
+                outcome: "succeeded",
+                reason: "persistentSession"
+            )
             accountKeychain.set(accessValue, for: Self.accessTokenKey(for: serverId))
             accountKeychain.set(value, for: Self.refreshTokenKey(for: serverId))
             // Account refresh must not re-mirror a stale profile credential
@@ -514,10 +618,27 @@ actor TokenStore {
               !expected.serverId.isEmpty,
               !expectedURL.isEmpty,
               let previousValue,
-              !previousValue.isEmpty else { return false }
+              !previousValue.isEmpty else {
+            // Refused before reaching the shared invalidation funnel, so the
+            // funnel's own line will not fire. Grouped under one token: these
+            // are malformed-caller shapes, not races.
+            recordSessionEvent(
+                phase: "sessionInvalidation",
+                outcome: "skipped",
+                reason: "unsupportedCredentialShape"
+            )
+            return false
+        }
         guard let account = refreshAccountIdentity(),
               account.serverId == expected.serverId,
-              account.serverURL == expectedURL else { return false }
+              account.serverURL == expectedURL else {
+            recordSessionEvent(
+                phase: "sessionInvalidation",
+                outcome: "skipped",
+                reason: "accountChanged"
+            )
+            return false
+        }
         let disposition = invalidateRejectedRefresh(
             CapturedRefreshCredential(
                 account: RefreshAccountIdentity(
@@ -538,7 +659,19 @@ actor TokenStore {
     func invalidateRejectedRefresh(
         _ captured: CapturedRefreshCredential
     ) -> RejectedRefreshDisposition? {
-        guard refreshAccountIdentity() == captured.account else { return nil }
+        // This is *the* "I got logged out" event: the only path that drops a
+        // persistent session because the server rejected its refresh token.
+        // Both the clear and every refusal to clear are recorded, because a
+        // refusal means the app keeps credentials the server has already
+        // repudiated and will 401 until something else resolves it.
+        guard refreshAccountIdentity() == captured.account else {
+            recordSessionEvent(
+                phase: "sessionInvalidation",
+                outcome: "skipped",
+                reason: "accountChanged"
+            )
+            return nil
+        }
 
         switch captured.owner {
         case .temporary:
@@ -546,17 +679,46 @@ actor TokenStore {
             guard temporaryScope?.credentialGenerationID == generationID,
                   temporaryScope?.refreshToken == captured.refreshToken,
                   rejectedTemporaryCredentialGenerations.insert(generationID).inserted else {
+                recordSessionEvent(
+                    phase: "sessionInvalidation",
+                    outcome: "skipped",
+                    reason: "temporaryScopeChanged"
+                )
                 return nil
             }
+            recordSessionEvent(
+                phase: "sessionInvalidation",
+                outcome: "expired",
+                reason: "temporaryScope"
+            )
             return .temporarySessionExpired
 
         case .persistentServer(let serverId):
             guard temporaryScope == nil,
                   serverId == captured.account.serverId,
-                  activeServerId == serverId else { return nil }
+                  activeServerId == serverId else {
+                recordSessionEvent(
+                    phase: "sessionInvalidation",
+                    outcome: "skipped",
+                    reason: "credentialOwnerChanged"
+                )
+                return nil
+            }
             ensureLoaded()
-            guard cachedRefreshToken == captured.refreshToken else { return nil }
+            guard cachedRefreshToken == captured.refreshToken else {
+                recordSessionEvent(
+                    phase: "sessionInvalidation",
+                    outcome: "skipped",
+                    reason: "refreshTokenRotated"
+                )
+                return nil
+            }
 
+            recordSessionEvent(
+                phase: "sessionInvalidation",
+                outcome: "cleared",
+                reason: "refreshRejected"
+            )
             cachedAccessToken = nil
             cachedRefreshToken = nil
             cachedProfileToken = nil
@@ -656,9 +818,19 @@ actor TokenStore {
     /// stored tokens intact and leaves the active-server registry entry
     /// in place (sign-out keeps the URL / name).
     func clearTokens() {
+        // The deliberate counterpart to `invalidateRejectedRefresh`: reaching
+        // login through this path means the app dropped the session on
+        // purpose (sign-out), not because the server rejected it. Reports that
+        // conflate the two are the reason "I got logged out" is unanswerable,
+        // so the two paths carry distinct phases.
         if let temporaryScope {
             rejectedTemporaryCredentialGenerations.remove(temporaryScope.credentialGenerationID)
             self.temporaryScope = nil
+            recordSessionEvent(
+                phase: "clearTokens",
+                outcome: "cleared",
+                reason: "temporaryScope"
+            )
             return
         }
         ensureLoaded()
@@ -666,7 +838,21 @@ actor TokenStore {
         cachedAccessToken = nil
         cachedRefreshToken = nil
         cachedProfileToken = nil
-        guard !activeServerId.isEmpty else { return }
+        guard !activeServerId.isEmpty else {
+            // Cache dropped, but there is no server slot to delete from. A
+            // sign-out here leaves nothing persisted to clear.
+            recordSessionEvent(
+                phase: "clearTokens",
+                outcome: "cleared",
+                reason: "noActiveServer"
+            )
+            return
+        }
+        recordSessionEvent(
+            phase: "clearTokens",
+            outcome: "cleared",
+            reason: "persistentSession"
+        )
         accountKeychain.delete(accessTokenKey)
         accountKeychain.delete(refreshTokenKey)
         accountKeychain.delete(accountEpochKey)
@@ -827,6 +1013,42 @@ actor TokenStore {
     }
 
     // MARK: - Private
+
+    /// Classify a `captureRequestAuth` refusal into one stable token.
+    ///
+    /// Every parameter is a boolean the caller already computed, so this
+    /// function is structurally incapable of emitting an identifier: there is
+    /// nothing but `Bool` in scope. Order matches the guard's evaluation
+    /// order, and the "missing" cases come first because an empty expected
+    /// field is a caller bug rather than a mid-flight identity change.
+    ///
+    /// Internal rather than private so `TokenStoreDiagnosticsTests` can pin
+    /// the mapping; the tokens are read by hand from field reports and must
+    /// not silently change meaning.
+    static func requestIdentityMismatchReason(
+        hasExpectedServerId: Bool,
+        hasExpectedServerURL: Bool,
+        hasExpectedProfileId: Bool,
+        serverIdMatches: Bool,
+        serverURLMatches: Bool,
+        accountServerIdMatches: Bool,
+        accountServerURLMatches: Bool,
+        profileMatches: Bool
+    ) -> String {
+        if !hasExpectedServerId { return "missingServerId" }
+        if !hasExpectedServerURL { return "missingServerURL" }
+        if !hasExpectedProfileId { return "missingProfileId" }
+        if !serverIdMatches { return "serverIdChanged" }
+        if !serverURLMatches { return "serverURLChanged" }
+        if !accountServerIdMatches || !accountServerURLMatches {
+            // The active-server mirror and the refresh account disagree: the
+            // registry and TokenStore are mid-retarget or one of them failed
+            // to commit. Rare, and worth its own token when it happens.
+            return "accountIdentityChanged"
+        }
+        if !profileMatches { return "profileChanged" }
+        return "unknown"
+    }
 
     private var accessTokenKey: String { Self.accessTokenKey(for: activeServerId) }
     private var refreshTokenKey: String { Self.refreshTokenKey(for: activeServerId) }

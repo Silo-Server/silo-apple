@@ -66,6 +66,11 @@ enum StartupContentPrefetcher {
 
     static func fetchProfiles() async throws -> [UserProfile] {
         let generation = profilesGeneration
+        // Read the single-flight slot before it is filled below: after the
+        // assignment there is no way to tell an originator from a waiter.
+        #if os(iOS) || os(tvOS)
+        let probe = PrefetchProbe.begin("profiles", isOriginator: profilesTask == nil)
+        #endif
         let task: Task<[UserProfile], Error>
         if let profilesTask {
             task = profilesTask
@@ -82,6 +87,9 @@ enum StartupContentPrefetcher {
             if profilesGeneration == generation {
                 profilesTask = nil
             }
+            #if os(iOS) || os(tvOS)
+            probe.finish(error: nil)
+            #endif
             ResponseCache.shared.set(profiles, for: CacheKey.profiles)
             await AuthService.shared.reconcileAvailableProfiles(profiles)
             prefetchProfileArtwork(for: profiles)
@@ -90,6 +98,9 @@ enum StartupContentPrefetcher {
             if profilesGeneration == generation {
                 profilesTask = nil
             }
+            #if os(iOS) || os(tvOS)
+            probe.finish(error: error)
+            #endif
             throw error
         }
     }
@@ -113,6 +124,9 @@ enum StartupContentPrefetcher {
         let profileGeneration = profileScopedGeneration
         let homeGeneration = homeSectionsGeneration
         let requestProfileID = AuthService.shared.profileId
+        #if os(iOS) || os(tvOS)
+        let probe = PrefetchProbe.begin("home_sections", isOriginator: homeSectionsTask == nil)
+        #endif
         let task: Task<SectionsResponse, Error>
         if let homeSectionsTask {
             task = homeSectionsTask
@@ -131,6 +145,9 @@ enum StartupContentPrefetcher {
                homeSectionsGeneration == homeGeneration {
                 homeSectionsTask = nil
             }
+            #if os(iOS) || os(tvOS)
+            probe.finish(error: nil)
+            #endif
             ResponseCache.shared.set(response, for: CacheKey.homeSections)
             prefetchHomeArtwork(for: response)
             return response
@@ -139,6 +156,12 @@ enum StartupContentPrefetcher {
                homeSectionsGeneration == homeGeneration {
                 homeSectionsTask = nil
             }
+            // Emitted before the recovery call: `recoverFromInvalidProfile`
+            // tears the session down to profile selection, and the breadcrumb
+            // explaining why must precede the transition it causes.
+            #if os(iOS) || os(tvOS)
+            probe.finish(error: error)
+            #endif
             if let requestProfileID,
                Self.indicatesInvalidProfile(error) {
                 await AuthService.shared.recoverFromInvalidProfile(
@@ -149,10 +172,126 @@ enum StartupContentPrefetcher {
         }
     }
 
-    static func indicatesInvalidProfile(_ error: Error) -> Bool {
+    nonisolated static func indicatesInvalidProfile(_ error: Error) -> Bool {
         guard let error = error as? HTTPError else { return false }
         return ["profile_unverified", "profile_not_found"].contains(error.serverErrorCode)
     }
+
+    #if os(iOS) || os(tvOS)
+    // MARK: - Diagnostics
+
+    /// Classifies a prefetch failure into a small, stable set of tokens for the
+    /// `reason` attribute.
+    ///
+    /// The vocabulary is deliberately coarse. `reason` is what a reader groups
+    /// on across reports, so it has to mean the same thing in every build; a
+    /// pass-through of the error's own text would be neither stable nor
+    /// necessarily free of server-authored detail. Anything not recognised here
+    /// becomes `other` rather than leaking a description.
+    ///
+    /// `invalid_profile` is called out because it is the one classification
+    /// that already drives recovery (`recoverFromInvalidProfile`): a user who
+    /// reports "it bounced me to Who's Watching on launch" is looking at that
+    /// token, and it is otherwise indistinguishable from a plain HTTP failure.
+    /// `nonisolated` because `PrefetchProbe` is a nested type and so does not
+    /// inherit this enum's `@MainActor`; its `finish` calls this from whatever
+    /// context the failing fetch unwound on. The classification is a pure
+    /// function of the error value and touches no actor state, so there is
+    /// nothing to hop for.
+    nonisolated static func prefetchFailureReason(_ error: Error) -> String {
+        if error is CancellationError { return "cancelled" }
+        guard let httpError = error as? HTTPError else {
+            // URLSession surfaces transport failures as NSError before
+            // HTTPClient wraps them; `-999` is a cancelled request, which is
+            // the generation-bump path, not a real failure.
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain {
+                return nsError.code == NSURLErrorCancelled ? "cancelled" : "network"
+            }
+            return "other"
+        }
+        if indicatesInvalidProfile(httpError) { return "invalid_profile" }
+        switch httpError {
+        case .serverUrlNotConfigured:
+            return "no_server"
+        case .requestIdentityChanged:
+            return "identity_changed"
+        case .network:
+            return "network"
+        case .decodingFailed:
+            return "decode_failed"
+        case .http(let statusCode, _):
+            // Bucketed, not verbatim: the status class is what distinguishes
+            // "the server rejected us" from "the server is broken", and the
+            // exact code adds cardinality without adding meaning here.
+            if statusCode == 401 || statusCode == 403 { return "unauthorized" }
+            if (500..<600).contains(statusCode) { return "server_error" }
+            return "http_\(statusCode / 100)xx"
+        case .invalidURL, .invalidResponse, .encodingFailed:
+            return "other"
+        }
+    }
+
+    /// One line per prefetch, essential tier.
+    ///
+    /// These fetches are the launch path's only network work, and a cold launch
+    /// that lands on an empty Home or bounces to profile selection is explained
+    /// entirely by their outcomes. `phase` is the fetch name, so they form a
+    /// readable startup block; nothing about the response contents (item
+    /// counts, titles, library names) is recorded — the outcome and its
+    /// classification are the whole diagnostic value.
+    ///
+    /// Every fetch here is single-flight, so only the caller that *started* the
+    /// request reports. Waiters that join an in-flight task would otherwise
+    /// emit a duplicate line per screen that asked, padding the launch block
+    /// with joins rather than work. `begin` captures that decision at the one
+    /// point where it is knowable — before the task is stored — and carries it
+    /// to the `finish` in both exit paths.
+    struct PrefetchProbe {
+        let phase: String
+        let verbosity: DiagnosticsVerbosity
+        let isOriginator: Bool
+        let mark: DispatchTime
+
+        static func begin(
+            _ phase: String,
+            verbosity: DiagnosticsVerbosity = .essential,
+            isOriginator: Bool
+        ) -> PrefetchProbe {
+            PrefetchProbe(
+                phase: phase,
+                verbosity: verbosity,
+                isOriginator: isOriginator,
+                mark: LaunchTimeline.mark()
+            )
+        }
+
+        /// A cancellation is a generation bump (profile switch, sign-out,
+        /// server change), not a failure, so it stays at info level: seeing it
+        /// is useful, but it must not read as an error in a report.
+        func finish(error: Error?) {
+            guard isOriginator else { return }
+            let reason = error.map(StartupContentPrefetcher.prefetchFailureReason(_:))
+            let cancelled = reason == "cancelled"
+            var attrs: [String: DiagLogAttributeValue] = [
+                "phase": .string(phase),
+                "duration_ms": .int(LaunchTimeline.milliseconds(since: mark)),
+                "outcome": .string(reason == nil ? "success" : (cancelled ? "cancelled" : "failure")),
+            ]
+            if let reason {
+                attrs["reason"] = .string(reason)
+            }
+            DiagTrace.breadcrumb(
+                verbosity,
+                level: (reason == nil || cancelled) ? .info : .warning,
+                category: .lifecycle,
+                tag: "Startup",
+                message: "prefetch finished",
+                attrs: attrs
+            )
+        }
+    }
+    #endif
 
     static func prefetchRecommendations() {
         Task {
@@ -162,6 +301,9 @@ enum StartupContentPrefetcher {
 
     static func fetchRecommendations() async throws -> SectionsResponse {
         let generation = profileScopedGeneration
+        #if os(iOS) || os(tvOS)
+        let probe = PrefetchProbe.begin("recommendations", isOriginator: recommendationsTask == nil)
+        #endif
         let task: Task<SectionsResponse, Error>
         if let recommendationsTask {
             task = recommendationsTask
@@ -178,6 +320,9 @@ enum StartupContentPrefetcher {
             if profileScopedGeneration == generation {
                 recommendationsTask = nil
             }
+            #if os(iOS) || os(tvOS)
+            probe.finish(error: nil)
+            #endif
             ResponseCache.shared.set(response, for: CacheKey.recommendations)
             prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
             return response
@@ -185,6 +330,9 @@ enum StartupContentPrefetcher {
             if profileScopedGeneration == generation {
                 recommendationsTask = nil
             }
+            #if os(iOS) || os(tvOS)
+            probe.finish(error: error)
+            #endif
             throw error
         }
     }
@@ -197,6 +345,9 @@ enum StartupContentPrefetcher {
 
     static func fetchUserLibraries() async throws -> LibrariesResponse {
         let generation = profileScopedGeneration
+        #if os(iOS) || os(tvOS)
+        let probe = PrefetchProbe.begin("user_libraries", isOriginator: userLibrariesTask == nil)
+        #endif
         let task: Task<LibrariesResponse, Error>
         if let userLibrariesTask {
             task = userLibrariesTask
@@ -213,6 +364,9 @@ enum StartupContentPrefetcher {
             if profileScopedGeneration == generation {
                 userLibrariesTask = nil
             }
+            #if os(iOS) || os(tvOS)
+            probe.finish(error: nil)
+            #endif
             ResponseCache.shared.set(response, for: CacheKey.userLibraries)
             NotificationCenter.default.post(
                 name: .userLibrariesDidRefresh,
@@ -223,6 +377,9 @@ enum StartupContentPrefetcher {
             if profileScopedGeneration == generation {
                 userLibrariesTask = nil
             }
+            #if os(iOS) || os(tvOS)
+            probe.finish(error: error)
+            #endif
             throw error
         }
     }
@@ -240,6 +397,18 @@ enum StartupContentPrefetcher {
 
     static func fetchLibrarySections(libraryId: Int) async throws -> SectionsResponse {
         let generation = profileScopedGeneration
+        // Verbose: these two run once per library on the landing prefetch and
+        // again on every browse navigation, so at essential tier a session's
+        // worth of them would crowd out the launch chain. The library id is
+        // deliberately not recorded — there is no registered key for it, and
+        // it identifies the user's own content.
+        #if os(iOS) || os(tvOS)
+        let probe = PrefetchProbe.begin(
+            "library_sections",
+            verbosity: .verbose,
+            isOriginator: librarySectionsTasks[libraryId] == nil
+        )
+        #endif
         let task: Task<SectionsResponse, Error>
         if let existing = librarySectionsTasks[libraryId] {
             task = existing
@@ -256,6 +425,9 @@ enum StartupContentPrefetcher {
             if profileScopedGeneration == generation {
                 librarySectionsTasks[libraryId] = nil
             }
+            #if os(iOS) || os(tvOS)
+            probe.finish(error: nil)
+            #endif
             ResponseCache.shared.set(response, for: CacheKey.librarySections(libraryId))
             prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
             return response
@@ -263,6 +435,9 @@ enum StartupContentPrefetcher {
             if profileScopedGeneration == generation {
                 librarySectionsTasks[libraryId] = nil
             }
+            #if os(iOS) || os(tvOS)
+            probe.finish(error: error)
+            #endif
             throw error
         }
     }
@@ -279,6 +454,15 @@ enum StartupContentPrefetcher {
     ) async throws -> CatalogResponse {
         let generation = profileScopedGeneration
         let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment)
+        // Verbose for the same reason as `library_sections`, and the cache key
+        // (library id plus the user's filter selections) is never logged.
+        #if os(iOS) || os(tvOS)
+        let probe = PrefetchProbe.begin(
+            "browse_first_page",
+            verbosity: .verbose,
+            isOriginator: browseFirstPageTasks[key] == nil
+        )
+        #endif
         let task: Task<CatalogResponse, Error>
         if let existing = browseFirstPageTasks[key] {
             task = existing
@@ -306,6 +490,9 @@ enum StartupContentPrefetcher {
             if profileScopedGeneration == generation {
                 browseFirstPageTasks[key] = nil
             }
+            #if os(iOS) || os(tvOS)
+            probe.finish(error: nil)
+            #endif
             ResponseCache.shared.set(response, for: key)
             prefetchBrowseArtwork(for: response)
             return response
@@ -313,6 +500,9 @@ enum StartupContentPrefetcher {
             if profileScopedGeneration == generation {
                 browseFirstPageTasks[key] = nil
             }
+            #if os(iOS) || os(tvOS)
+            probe.finish(error: error)
+            #endif
             throw error
         }
     }
@@ -326,7 +516,23 @@ enum StartupContentPrefetcher {
         }
     }
 
+    /// Opens the startup prefetch block. The individual fetches below report
+    /// their own outcomes but complete out of order and off the launch chain,
+    /// so without this line a reader cannot tell whether a missing outcome
+    /// means the fetch failed silently or was never started for this route.
     static func prefetchForInitialRoute(_ state: AppRouter.AuthState) {
+        #if os(iOS) || os(tvOS)
+        DiagTrace.breadcrumb(
+            .essential,
+            category: .lifecycle,
+            tag: "Startup",
+            message: "route prefetch started",
+            attrs: [
+                "phase": .string("prefetch"),
+                "state": .string(state.diagnosticsState),
+            ]
+        )
+        #endif
         switch state {
         case .authenticated:
             prefetchAuthenticatedContent()

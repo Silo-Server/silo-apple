@@ -748,21 +748,11 @@ struct DiagnosticsBundleBuilder {
         return rendered
     }
 
+    // The segment rules moved to DiagnosticsPathTemplate so networking can
+    // template `network.path` at emission time using the same regexes; these
+    // stay as the hosted-path spelling of that shared logic.
     private static func templateHostedPrivatePathSegments(_ value: String) -> String {
-        value.split(separator: "/", omittingEmptySubsequences: false)
-            .map { segment in
-                let candidate = String(segment)
-                return isHostedPrivatePathSegment(candidate) ? "{id}" : candidate
-            }
-            .joined(separator: "/")
-    }
-
-    private static func isHostedPrivatePathSegment(_ value: String) -> Bool {
-        let range = NSRange(location: 0, length: (value as NSString).length)
-        return hostedUUIDPathSegmentRegex.firstMatch(in: value, range: range) != nil
-            || hostedNumericPathSegmentRegex.firstMatch(in: value, range: range) != nil
-            || hostedHexPathSegmentRegex.firstMatch(in: value, range: range) != nil
-            || hostedOpaquePathSegmentRegex.firstMatch(in: value, range: range) != nil
+        DiagnosticsPathTemplate.template(value)
     }
 
     private static func replaceMatches(
@@ -819,18 +809,8 @@ struct DiagnosticsBundleBuilder {
     private static let hostedAuthorityURLRegex = try! NSRegularExpression(
         pattern: #"(?i)\b(?:https?|wss?)://[^\s<>\"']+"#
     )
-    private static let hostedUUIDPathSegmentRegex = try! NSRegularExpression(
-        pattern: #"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"#
-    )
-    private static let hostedNumericPathSegmentRegex = try! NSRegularExpression(
-        pattern: #"^[0-9]+$"#
-    )
-    private static let hostedHexPathSegmentRegex = try! NSRegularExpression(
-        pattern: #"(?i)^[0-9a-f]{16,}$"#
-    )
-    private static let hostedOpaquePathSegmentRegex = try! NSRegularExpression(
-        pattern: #"^[A-Za-z0-9_-]{20,}$"#
-    )
+    // The path-segment regexes (UUID / numeric / hex / opaque) live in
+    // DiagnosticsPathTemplate, shared with emission-time network templating.
     private static let hostedBareUUIDRegex = try! NSRegularExpression(
         pattern: #"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#
     )
@@ -913,7 +893,11 @@ struct DiagnosticsBundleBuilder {
         "bssid",
     ]
 
-    private enum HostedAttributeType {
+    // Internal rather than private so DiagnosticsAttributeRegistryParityTests can
+    // prove this allowlist is a subset of the canonical attribute registry. An
+    // entry here that the collectors do not register is a hard upload rejection,
+    // so the relationship has to be checked mechanically rather than by review.
+    enum HostedAttributeType: Equatable {
         case string
         case integer
 
@@ -927,10 +911,47 @@ struct DiagnosticsBundleBuilder {
         }
     }
 
-    // Vendored from silo-diagnostics/contract/v1/attr-registry.json. Keep this
-    // destination-specific: Apple's self-hosted registry has additional local
-    // playback attributes for compatibility with existing Silo servers.
-    private static let hostedAttributeRegistry: [
+    // A privacy allowlist for the hosted destination, not a second copy of the
+    // emission registry. Every key here must also appear in the canonical
+    // attribute registry (vendored at
+    // Tests/Fixtures/DiagnosticsContract/attr-registry.json) with the same type
+    // — the hosted collector rejects the whole bundle on an unregistered key.
+    // The reverse does not hold: canonical registers keys this table withholds.
+    // Self-hosted uploads carry the full canonical set; only hosted bundles are
+    // narrowed here.
+    //
+    // Two distinct reasons put a canonical key on the withheld list, and the
+    // distinction matters because they fail differently:
+    //
+    // 1. Content we do not want a third party to hold, regardless of whether it
+    //    would accept it. `playback.session_id`, `play_method`, `reason` and
+    //    `position_ms` describe one user's specific viewing session — a
+    //    server-issued identifier, operator free text, and a viewing position.
+    //    The collector would take them; we choose not to send them.
+    //
+    // 2. Keys that collide with the hosted collector's own `FORBIDDEN_KEYS`
+    //    privacy scanner (silo-diagnostics `src/privacy.ts`). A collision does
+    //    *not* reject the bundle — the report still processes to `ready`, but
+    //    the `privacy_fields` check fails and the report is permanently marked
+    //    `privacy_flagged` in the admin UI. `network.attempt` is exactly this:
+    //    canonical and harmless (a retry ordinal), but `attempt` is a scanner
+    //    forbidden key, so forwarding it would flag every hosted report from a
+    //    session containing a routine 401-token-refresh retry. Those flags are
+    //    all false positives, and false positives train operators to ignore the
+    //    one check that catches real leaks. The retry line's `msg` ("401 retry"
+    //    / "401 not retried") carries the distinction on its own, so hosted
+    //    evidence loses nothing by dropping the attribute.
+    //
+    // Before adding a key here, normalize it and check it against
+    // `FORBIDDEN_KEYS`, `FORBIDDEN_COMPACT_KEYS` and the credential/identifier
+    // segment rules in silo-diagnostics `src/privacy.ts` — a key is forbidden
+    // if it equals a forbidden key, contains one as an `_`-delimited segment,
+    // matches one with `_` stripped, or contains any `*_id`/`*_token`-style
+    // segment. See testHostedFrozenLogsAndBreadcrumbsDropPrivatePlaybackAttributes,
+    // testHostedAttributeAllowlistIsACanonicalSubset, and
+    // testHostedAllowlistWithholdsSessionIdentifyingAndCollectorForbiddenAttributes
+    // for the pinned sets.
+    static let hostedAttributeRegistry: [
         DiagnosticsLogCategory: [String: HostedAttributeType]
     ] = [
         .playback: [
@@ -953,9 +974,17 @@ struct DiagnosticsBundleBuilder {
             "path": .string,
             "status": .integer,
             "duration_ms": .integer,
+            "outcome": .string,
+            "error_code": .string,
+            // "attempt" is canonical, but withheld: see reason 2 above.
         ],
         .lifecycle: [
             "state": .string,
+            "phase": .string,
+            "duration_ms": .integer,
+            "outcome": .string,
+            "reason": .string,
+            "launch_type": .string,
         ],
         .crash: [
             "fingerprint": .string,

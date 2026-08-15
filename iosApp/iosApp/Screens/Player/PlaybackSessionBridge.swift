@@ -1080,6 +1080,27 @@ actor PlaybackSessionBridge {
         let eventName = isSeekReanchor
             ? "seek_reanchor_requested"
             : (invalidatesIntent ? "plan_invalidated" : "plan_failed")
+        #if os(iOS) || os(tvOS)
+        // The server-side route event below is the authoritative record, but
+        // it only exists if the report POST succeeds and it lands in the
+        // server's telemetry, not the user's bundle. This is the client-side
+        // counterpart: a replan is a route change the user experiences as a
+        // reload, so the bundle needs to show that one happened, why, and
+        // where in the timeline — without the free-text `message`, which is
+        // user-facing prose the classification already summarises.
+        DiagTrace.breadcrumb(
+            .essential,
+            category: .playback,
+            tag: "PlaybackSession",
+            message: "protocol v3 replan requested",
+            attrs: [
+                "session_id": .string(currentSessionId),
+                "reason": .string(classification),
+                "play_method": .string(active.plan.delivery),
+                "position_ms": .int(Self.diagnosticsPositionMilliseconds(normalizedPosition)),
+            ]
+        )
+        #endif
         // Telemetry is best-effort and must not hold the route transition on
         // a separate HTTP round-trip. The immutable prior-attempt identity is
         // captured here so a later replan cannot change what the event names.
@@ -1359,6 +1380,25 @@ actor PlaybackSessionBridge {
         reason: String,
         message: String
     ) async {
+        #if os(iOS) || os(tvOS)
+        // Every route-ladder dead end funnels through here, so one breadcrumb
+        // covers them all: attempt limit, replan loop, invalid plan, missing
+        // effective file. `reason` is already a server-defined stable token,
+        // which is exactly what the attribute wants — the prose `message` is
+        // deliberately left out.
+        DiagTrace.breadcrumb(
+            .essential,
+            level: .error,
+            category: .playback,
+            tag: "PlaybackSession",
+            message: "protocol v3 route exhausted",
+            attrs: [
+                "session_id": .string(sessionId),
+                "reason": .string(reason),
+                "play_method": .string(active.plan.delivery),
+            ]
+        )
+        #endif
         await emitProtocolV3Event(
             active: active,
             sessionId: sessionId,
@@ -1494,6 +1534,17 @@ actor PlaybackSessionBridge {
 
     // MARK: - Stop Session
 
+    /// Clamps a playback position in seconds to a non-negative whole-millisecond
+    /// count suitable for the `playback.position_ms` diagnostics attribute.
+    /// Non-finite and negative inputs collapse to zero, matching how the rest of
+    /// this type treats an unusable position.
+    static func diagnosticsPositionMilliseconds(_ position: Double) -> Int {
+        let seconds = position.isFinite ? max(0, position) : 0
+        let milliseconds = (seconds * 1000).rounded()
+        guard milliseconds < Double(Int.max) else { return Int.max }
+        return Int(milliseconds)
+    }
+
     func stopSession(position: Double, isPaused: Bool) async {
         guard let sid = sessionId else { return }
         #if os(iOS) || os(tvOS)
@@ -1503,7 +1554,9 @@ actor PlaybackSessionBridge {
             message: "playback session stopped",
             attrs: [
                 "session_id": .string(sid),
-                "position_seconds": .double(position.isFinite ? max(0, position) : 0),
+                // The attribute registry has no float type, so playback
+                // position is reported in whole milliseconds.
+                "position_ms": .int(Self.diagnosticsPositionMilliseconds(position)),
             ]
         )
         #endif

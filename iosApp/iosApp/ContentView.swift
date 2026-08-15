@@ -82,6 +82,13 @@ struct ContentView: View {
             handleDeepLink(url)
         }
         .onAppear {
+            #if os(iOS) || os(tvOS)
+            // The first frame SwiftUI actually produced. A launch whose
+            // breadcrumbs stop at `process_start` never got here, which
+            // separates a failure in static/scene setup from one in the
+            // startup work `authContent` drives below.
+            LaunchTimeline.recordRootViewAppeared()
+            #endif
             #if os(tvOS)
             ExitSentinel.shared.appDidEnterForeground()
             #endif
@@ -119,6 +126,27 @@ struct ContentView: View {
             guard router.authState == .authenticated else { return }
             Task { await diagnosticsModel.handleForeground() }
         }
+        // Memory pressure is the one launch/runtime failure the user perceives
+        // as "it just closed" and that leaves no other trace: the jetsam kill
+        // that usually follows produces no termination notification and no
+        // crash report the app can see. One warning-level breadcrumb followed
+        // by silence is the readable signature of that outcome.
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.didReceiveMemoryWarningNotification
+        )) { _ in
+            LaunchTimeline.recordMemoryWarning(state: Self.diagnosticsScenePhase(scenePhase))
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.willTerminateNotification
+        )) { _ in
+            // Recorded before ExitSentinel disarms so a clean shutdown is
+            // distinguishable from an abnormal exit at the same point in the
+            // timeline: the abnormal one simply lacks this line.
+            LaunchTimeline.recordTermination(state: Self.diagnosticsScenePhase(scenePhase))
+            #if os(tvOS)
+            ExitSentinel.shared.appWillTerminate()
+            #endif
+        }
         #endif
         #if os(tvOS)
         .onReceive(NotificationCenter.default.publisher(for: .temporaryRemoteAuthExpired)) { notification in
@@ -128,9 +156,6 @@ struct ContentView: View {
                 guard await TokenStore.shared.shouldConsumeSessionExpiryEvent(event) else { return }
                 TVControlReceiver.shared.temporaryAuthExpired(expected: event)
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
-            ExitSentinel.shared.appWillTerminate()
         }
         #endif
         #if os(macOS)
@@ -177,7 +202,7 @@ struct ContentView: View {
                 #if os(iOS) || os(tvOS)
                 await diagnosticsModel.handleForeground()
                 #endif
-                await overlayPrefs.hydrateIfNeeded()
+                await hydrateOverlayPrefs(phase: "session_hydrate")
                 // Hydrate AI capabilities on a cold relaunch into a restored
                 // session — `selectProfile` only refreshes on a fresh sign-in,
                 // so without this the metadata-language / on-view-translate
@@ -244,12 +269,10 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, newPhase in
             #if os(iOS) || os(tvOS)
-            DiagnosticsCoordinator.recordBreadcrumb(
-                category: .lifecycle,
-                tag: "Scene",
-                message: "scene phase changed",
-                attrs: ["state": .string(Self.diagnosticsScenePhase(newPhase))]
-            )
+            // Single funnel for every scene edge. `LaunchTimeline` decides the
+            // tier (`.inactive` is verbose noise; active/background are the
+            // timeline) and stamps the inter-phase `duration_ms`.
+            LaunchTimeline.recordScenePhase(Self.diagnosticsScenePhase(newPhase))
             #endif
             #if os(iOS)
             switch newPhase {
@@ -310,7 +333,7 @@ struct ContentView: View {
             #elseif os(iOS)
             Task { await diagnosticsModel.handleForeground() }
             #endif
-            Task { await overlayPrefs.hydrateIfNeeded() }
+            Task { await hydrateOverlayPrefs(phase: "foreground_refresh") }
             // Same rationale as overlay hydration above: a transiently-failed
             // capability probe (or one skipped on a cold restore) gets a
             // natural retry on foreground. `refresh()` is idempotent, so the
@@ -339,6 +362,34 @@ struct ContentView: View {
         .onChange(of: pictureInPicture.isEngaged) { _, _ in
             updateProfileAwayStartForBackgroundPlayback()
         }
+        #endif
+    }
+
+    /// Overlay hydration is the one post-authentication refresh whose failure
+    /// is silently sticky: `hydrateIfNeeded()` leaves `hasHydrated == false`
+    /// and every card renders from registry defaults — including the admin
+    /// kill switch — until a later foreground happens to succeed. Wrapping the
+    /// single funnel both call sites already share turns "my badges are wrong"
+    /// into a dated line with an outcome.
+    ///
+    /// The store swallows the error and exposes it as `lastError`, so the
+    /// reason is read back rather than caught. That text is server-authored, so
+    /// only its presence is logged, as a fixed token. A still-broken store
+    /// re-reports on each foreground with a near-zero `duration_ms` (the
+    /// hydration short-circuits) — that repetition is the intended signal:
+    /// overlays are persistently stale, not transiently slow.
+    @MainActor
+    private func hydrateOverlayPrefs(phase: String) async {
+        #if os(iOS) || os(tvOS)
+        let mark = LaunchTimeline.mark()
+        await overlayPrefs.hydrateIfNeeded()
+        LaunchTimeline.recordRefreshOutcome(
+            phase: phase,
+            since: mark,
+            failureReason: overlayPrefs.lastError == nil ? nil : "overlay_prefs_unavailable"
+        )
+        #else
+        await overlayPrefs.hydrateIfNeeded()
         #endif
     }
 
@@ -454,12 +505,18 @@ struct ContentView: View {
         switch router.authState {
         case .loading:
             StartupSplashView {
+                #if os(iOS) || os(tvOS)
+                LaunchTimeline.recordSplashFinished()
+                #endif
                 didFinishStartupSplash = true
                 finishInitialStartupIfReady()
             }
             .task {
                 guard !didStartInitialStateCheck else { return }
                 didStartInitialStateCheck = true
+                #if os(iOS) || os(tvOS)
+                LaunchTimeline.recordInitialStateCheckStarted()
+                #endif
                 await checkInitialState()
             }
 
@@ -624,6 +681,14 @@ struct ContentView: View {
                 : .needsProfile
         }
 
+        #if os(iOS) || os(tvOS)
+        // The single most useful launch line: everything above it is Keychain
+        // and profile resolution, everything below is the routed app. A cold
+        // launch that stalls here (no server reachable, a wedged Keychain read)
+        // shows as a long gap before this phase and nothing after it.
+        LaunchTimeline.recordInitialStateResolved(state: targetState.diagnosticsState)
+        #endif
+
         StartupContentPrefetcher.prefetchForInitialRoute(targetState)
         pendingInitialAuthState = targetState
         finishInitialStartupIfReady()
@@ -636,6 +701,13 @@ struct ContentView: View {
     private func finishInitialStartupIfReady() {
         guard didFinishStartupSplash, let targetState = pendingInitialAuthState else { return }
         pendingInitialAuthState = nil
+        #if os(iOS) || os(tvOS)
+        // Closes the cold-launch chain. Both gates (splash animation and state
+        // resolution) have cleared, so this is the moment the user first sees
+        // real content. `AppRouter` logs the auth transition itself; this line
+        // records that launch reached a terminal, usable state at all.
+        LaunchTimeline.recordFirstContent(state: targetState.diagnosticsState)
+        #endif
         router.authState = targetState
     }
 

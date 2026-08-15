@@ -221,6 +221,7 @@ final class ServerRegistry {
                 merged.fetchedName = existing.fetchedName
             }
         }
+        let isExistingEntry = self.entries.contains(where: { $0.id == entry.id })
         if let idx = self.entries.firstIndex(where: { $0.id == entry.id }) {
             self.entries[idx] = merged
         } else {
@@ -229,9 +230,25 @@ final class ServerRegistry {
         guard persist() else {
             entries = previousEntries
             _ = persist()
+            // "Add server" silently doing nothing is a top unreproducible
+            // report; on tvOS this means the shared Keychain write failed.
+            recordRegistryEvent(
+                phase: "addServer",
+                outcome: "failed",
+                reason: "persistFailed"
+            )
             return nil
         }
         registerDiagnosticsSensitiveHosts([entry])
+        // Emitted after host registration, not before: this line carries no
+        // hostname, but on the very first add there is a window where the
+        // redactor does not yet know this host, and no diagnostics line should
+        // be written inside it.
+        recordRegistryEvent(
+            phase: "addServer",
+            outcome: "succeeded",
+            reason: isExistingEntry ? "updatedExisting" : "addedNew"
+        )
         if !preservingProfile {
             launchPreferences.clearRememberedProfile(for: entry.id)
         }
@@ -269,9 +286,21 @@ final class ServerRegistry {
     ) async -> Bool {
         guard entries.contains(where: { $0.id == serverId }) else {
             Self.logger.error("switchTo called with unknown server id")
+            recordRegistryEvent(
+                phase: "switchServer",
+                outcome: "failed",
+                reason: "unknownServer"
+            )
             return false
         }
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            // No lease means another identity transition owns the client. The
+            // tap appears to do nothing, with no error surfaced anywhere else.
+            recordRegistryEvent(
+                phase: "switchServer",
+                outcome: "failed",
+                reason: "transitionUnavailable"
+            )
             return false
         }
         guard !Task.isCancelled else {
@@ -318,6 +347,11 @@ final class ServerRegistry {
         guard entries.contains(where: { $0.id == serverId }),
               await HTTPClient.shared.isIdentityTransitionActive(transitionLease) else {
             Self.logger.error("gated switchTo called without its identity transition")
+            recordRegistryEvent(
+                phase: "switchServer",
+                outcome: "failed",
+                reason: "staleTransitionLease"
+            )
             return false
         }
         // Pairing has already written the new credential slot under this
@@ -342,12 +376,26 @@ final class ServerRegistry {
         serverId: String,
         abortIfCancelled: Bool
     ) async -> Bool {
+        // Single commit funnel for both the plain and the lease-holding
+        // switch, so one line per outcome covers every server activation.
         guard let entry = entries.first(where: { $0.id == serverId }) else {
             Self.logger.error("switchTo target was removed while waiting for transition")
+            recordRegistryEvent(
+                phase: "switchServer",
+                outcome: "failed",
+                reason: "targetRemoved"
+            )
             return false
         }
         await AuthService.shared.clearCachesForServerChange()
-        guard !abortIfCancelled || !Task.isCancelled else { return false }
+        guard !abortIfCancelled || !Task.isCancelled else {
+            recordRegistryEvent(
+                phase: "switchServer",
+                outcome: "cancelled",
+                reason: "taskCancelled"
+            )
+            return false
+        }
 
         let previousEntries = entries
         let previousActiveServerID = activeServerId
@@ -369,9 +417,19 @@ final class ServerRegistry {
             defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
             defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
             defaults.set(previousProfileID, forKey: SharedStorage.profileIdKey)
+            recordRegistryEvent(
+                phase: "switchServer",
+                outcome: "failed",
+                reason: "persistFailed"
+            )
             return false
         }
         await TokenStore.shared.switchActiveServer(serverId: serverId)
+        recordRegistryEvent(
+            phase: "switchServer",
+            outcome: "succeeded",
+            reason: "committed"
+        )
         return true
     }
 
@@ -425,9 +483,29 @@ final class ServerRegistry {
         #endif
         await TokenStore.shared.deleteTokens(for: serverId)
         launchPreferences.clearRememberedProfile(for: serverId)
-        if serverId == activeServerId {
+        // Read *after* the awaits above, not snapshotted at entry: the legacy
+        // `profileId` key always describes whichever server is active right
+        // now. If a switch lands during those suspensions, this server is no
+        // longer the one the key belongs to and clearing it would erase the
+        // destination server's profile selection. The breadcrumb below reuses
+        // the same value so the recorded reason always names the branch that
+        // actually ran.
+        let signsOutActiveServer = serverId == activeServerId
+        if signsOutActiveServer {
             defaults.removeObject(forKey: SharedStorage.profileIdKey)
         }
+        // Deliberately after the purge above, matching `remove`: the purge
+        // wipes the whole journal, so a line written before it is lost, while
+        // one written after explains why the journal starts empty. It is still
+        // consent-gated — the journal re-checks capture on every append.
+        // Signing out a *non-active* server leaves the UI unchanged, so the
+        // two cases are distinguished to keep a later "why am I still signed
+        // in" report answerable.
+        recordRegistryEvent(
+            phase: "signOutServer",
+            outcome: "succeeded",
+            reason: signsOutActiveServer ? "activeServer" : "otherServer"
+        )
     }
 
     /// Remove a server entirely (entry + tokens). If it was active, the
@@ -439,14 +517,29 @@ final class ServerRegistry {
         resolveFallbackProfile: Bool = false
     ) async -> Bool {
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            recordRegistryEvent(
+                phase: "removeServer",
+                outcome: "failed",
+                reason: "transitionUnavailable"
+            )
             return false
         }
         guard !Task.isCancelled else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
+            recordRegistryEvent(
+                phase: "removeServer",
+                outcome: "cancelled",
+                reason: "taskCancelled"
+            )
             return false
         }
         guard entries.contains(where: { $0.id == serverId }) else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
+            recordRegistryEvent(
+                phase: "removeServer",
+                outcome: "failed",
+                reason: "unknownServer"
+            )
             return false
         }
         let removesActiveServer = activeServerId == serverId
@@ -466,6 +559,14 @@ final class ServerRegistry {
             }
             #endif
             await HTTPClient.shared.endIdentityTransition(transitionLease)
+            // Diagnostics for this server were already purged above but the
+            // entry survives: the reasons name the abandonment point so the
+            // resulting half-cleaned state is recognizable in a report.
+            recordRegistryEvent(
+                phase: "removeServer",
+                outcome: "cancelled",
+                reason: "taskCancelledAfterPurge"
+            )
             return false
         }
         if removesActiveServer {
@@ -478,6 +579,11 @@ final class ServerRegistry {
                 DiagnosticsCoordinator.activeProfileDidChange()
                 #endif
                 await HTTPClient.shared.endIdentityTransition(transitionLease)
+                recordRegistryEvent(
+                    phase: "removeServer",
+                    outcome: "cancelled",
+                    reason: "taskCancelledAfterCacheClear"
+                )
                 return false
             }
         }
@@ -515,9 +621,24 @@ final class ServerRegistry {
             }
             #endif
             await HTTPClient.shared.endIdentityTransition(transitionLease)
+            recordRegistryEvent(
+                phase: "removeServer",
+                outcome: "failed",
+                reason: "persistFailed"
+            )
             return false
         }
 
+        // Whether the removal displaced the active server decides whether the
+        // user gets bounced to another server, to login, or to setup — the
+        // difference a "my servers disappeared" report needs.
+        recordRegistryEvent(
+            phase: "removeServer",
+            outcome: "succeeded",
+            reason: removesActiveServer
+                ? (activeServerId == nil ? "activeServerNoFallback" : "activeServerFellBack")
+                : "otherServer"
+        )
         if removesActiveServer {
             await TokenStore.shared.switchActiveServer(serverId: activeServerId ?? "")
         }
@@ -617,6 +738,29 @@ final class ServerRegistry {
                 defaults.set(active.url, forKey: SharedStorage.serverUrlKey)
             }
         }
+        #endif
+    }
+
+    /// Registry transition line.
+    ///
+    /// Nothing this type owns is loggable: an entry is a URL, a display name,
+    /// and an id that is just base64 of the URL, so `serverId` is a hostname
+    /// in disguise. `registerDiagnosticsSensitiveHosts` makes the redactor
+    /// hash hostnames that slip through elsewhere, but that is a backstop, not
+    /// a licence — these lines carry only the transition and its outcome.
+    private func recordRegistryEvent(phase: String, outcome: String, reason: String) {
+        #if os(iOS) || os(tvOS)
+        DiagTrace.breadcrumb(
+            .essential,
+            category: .lifecycle,
+            tag: "Servers",
+            message: "server registry changed",
+            attrs: [
+                "phase": .string(phase),
+                "outcome": .string(outcome),
+                "reason": .string(reason),
+            ]
+        )
         #endif
     }
 

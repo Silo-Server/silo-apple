@@ -3073,6 +3073,31 @@ class PlayerViewModel {
             finalizeTerminalPlaybackError(message)
         case .fallback(let fallbackPlan, let diagnosticLine):
             Self.logger.info("\(diagnosticLine, privacy: .public)")
+            #if os(iOS) || os(tvOS)
+            // A decoder-driven engine swap: PlayerCore refused the stream
+            // (Dolby Vision Profile 5, VT unimpErr on HEVC HDR, VT bad-data)
+            // and playback continues on a different backend. The `[CMP-ROUTE]`
+            // trace records the whole replacement plan; this records only the
+            // engine transition, which is what explains a mid-load stall or a
+            // change in what the HUD reports afterwards.
+            DiagTrace.breadcrumb(
+                .essential,
+                level: .warning,
+                category: .playback,
+                tag: "Player",
+                message: "engine switched after decoder rejection",
+                attrs: [
+                    // Only PlayerCore emits a `StreamRejection`, so the engine
+                    // being left is implied; what needs recording is why it
+                    // refused and what took over.
+                    "reason": .string(String(describing: reason)),
+                    "play_method": .string(fallbackPlan.engine.label),
+                    "position_ms": .int(
+                        PlaybackSessionBridge.diagnosticsPositionMilliseconds(startTime)
+                    ),
+                ]
+            )
+            #endif
             // Tear down PlayerCore's half-built state before loading through
             // the new backend — it exited early without error but still holds
             // an AVAudioSession + allocated contexts.
@@ -3347,6 +3372,27 @@ class PlayerViewModel {
                 )
             }
         }
+
+        #if os(iOS) || os(tvOS)
+        // Terminal outcome #2 of 2. A premature EOF is a failure the user
+        // sees as "it just stopped", so it must not be filed as a clean
+        // finish — the `reason` token is the only thing separating the two in
+        // a report, since both arrive on this same path.
+        DiagTrace.breadcrumb(
+            .essential,
+            level: isPremature ? .warning : .info,
+            category: .playback,
+            tag: "Player",
+            message: "playback reached end of stream",
+            attrs: [
+                "reason": .string(isPremature ? "premature_source_end" : "natural_end"),
+                "play_method": .string(activeRouteKind.label),
+                "position_ms": .int(
+                    PlaybackSessionBridge.diagnosticsPositionMilliseconds(observedPosition)
+                ),
+            ]
+        )
+        #endif
 
         hasReachedEndOfFile = true
         clearServerOutageRecoveryState()
@@ -4051,6 +4097,28 @@ class PlayerViewModel {
     }
 
     private func finalizeTerminalPlaybackError(_ message: String) {
+        #if os(iOS) || os(tvOS)
+        // Terminal outcome #1 of 2 (the other is `handleEndOfFile`). Every
+        // recovery ladder — V3 replan, native-direct fallback, Silo
+        // compatibility fallback, session renewal, outage ride-through — ends
+        // either here or there, so between them a report always shows how a
+        // playback finished. Emitted before the state teardown below so the
+        // position and plan describe the failed session, not the cleared one.
+        DiagTrace.breadcrumb(
+            .essential,
+            level: .error,
+            category: .playback,
+            tag: "Player",
+            message: "playback ended in failure",
+            attrs: [
+                "reason": .string(stablePlaybackFailureToken(for: message)),
+                "play_method": .string(activeRouteKind.label),
+                // Shared with the bridge's session breadcrumbs so a report's
+                // positions are all on the same scale and rounding.
+                "position_ms": .int(PlaybackSessionBridge.diagnosticsPositionMilliseconds(currentTime)),
+            ]
+        )
+        #endif
         progressTask?.cancel()
         progressTask = nil
         staleSessionRecoveryTask?.cancel()
@@ -5680,7 +5748,7 @@ class PlayerViewModel {
             scheduleHideControls()
             return
         }
-        applyAudioTrackSelection(track.trackId)
+        applyAudioTrackSelection(track.trackId, reason: "user_selection")
         scheduleHideControls()
     }
 
@@ -5707,7 +5775,7 @@ class PlayerViewModel {
             scheduleHideControls()
             return
         }
-        applySubtitleTrackSelection(track.trackId)
+        applySubtitleTrackSelection(track.trackId, reason: "user_selection")
         scheduleHideControls()
     }
 
@@ -5731,7 +5799,7 @@ class PlayerViewModel {
             scheduleHideControls()
             return
         }
-        applySubtitleTrackSelection(nil)
+        applySubtitleTrackSelection(nil, reason: "user_selection")
         scheduleHideControls()
     }
 
@@ -7556,7 +7624,33 @@ class PlayerViewModel {
         }
     }
 
-    private func applyAudioTrackSelection(_ trackId: Int64) {
+    /// Every audio-track change — user pick, resume of a persisted or
+    /// detail-screen choice, post-route-switch restore — reaches the backend
+    /// through here, so `reason` is required rather than defaulted: a report
+    /// that cannot tell "the user chose this" from "we restored this" cannot
+    /// answer the question these breadcrumbs exist for.
+    private func applyAudioTrackSelection(_ trackId: Int64, reason: String) {
+        #if os(iOS) || os(tvOS)
+        // The track's title and language are user-visible content metadata,
+        // not diagnostics; the registry offers no key for them and they are
+        // deliberately not smuggled into `msg`. The ordinal is enough to
+        // correlate against the plan's selected_tracks.
+        DiagTrace.breadcrumb(
+            .essential,
+            category: .playback,
+            tag: "Player",
+            message: "audio track selected",
+            attrs: [
+                "reason": .string(reason),
+                "sink": .string(
+                    audioTracks.first(where: { $0.trackId == trackId })
+                        .flatMap(audioSelectionIndex(for:))
+                        .map { "audio_ordinal_\($0)" } ?? "audio_ordinal_unknown"
+                ),
+                "play_method": .string(activeRouteKind.label),
+            ]
+        )
+        #endif
         switch activePlayer {
         case .none:
             return
@@ -7567,10 +7661,30 @@ class PlayerViewModel {
         }
     }
 
-    private func applySubtitleTrackSelection(_ trackId: Int64?) {
+    /// Same contract as `applyAudioTrackSelection`: the one funnel every
+    /// primary-subtitle change passes through, with an explicit `reason`.
+    /// `nil` means subtitles off.
+    private func applySubtitleTrackSelection(_ trackId: Int64?, reason: String) {
         Self.logger.info(
             "[CMP-SUB] apply primary selection trackId=\(trackId.map(String.init) ?? "nil", privacy: .public) route=\(self.activeRouteKind.label, privacy: .public)"
         )
+        #if os(iOS) || os(tvOS)
+        // `sink` carries the track's *kind*, not its identity: whether the
+        // cues come from an embedded stream, a server sidecar, or a live AI
+        // track is the thing that explains a rendering complaint, and unlike
+        // the title it is not user content.
+        DiagTrace.breadcrumb(
+            .essential,
+            category: .playback,
+            tag: "Player",
+            message: trackId == nil ? "subtitles disabled" : "subtitle track selected",
+            attrs: [
+                "reason": .string(reason),
+                "sink": .string(trackId.map(Self.subtitleTrackKind) ?? "none"),
+                "play_method": .string(activeRouteKind.label),
+            ]
+        )
+        #endif
         switch activePlayer {
         case .none:
             return
@@ -7579,6 +7693,15 @@ class PlayerViewModel {
         case .avPlayer(let backend):
             backend.selectSubtitleTrack(trackId)
         }
+    }
+
+    /// Which subtitle source a track id names. The id space is the only
+    /// classifier available at the funnel, and it is exactly the distinction
+    /// worth recording.
+    private static func subtitleTrackKind(_ trackId: Int64) -> String {
+        if SubtitleTrackIdSpace.isAILive(trackId) { return "ai_live" }
+        if SubtitleTrackIdSpace.isSidecar(trackId) { return "sidecar" }
+        return "embedded"
     }
 
     private func applySecondarySubtitleTrackSelection(_ trackId: Int64?) {
@@ -7797,7 +7920,7 @@ class PlayerViewModel {
                 restoredPrimarySidecar = true
                 if selectedSubtitleId != pendingTrackId {
                     selectedSubtitleId = pendingTrackId
-                    applySubtitleTrackSelection(pendingTrackId)
+                    applySubtitleTrackSelection(pendingTrackId, reason: "restored_sidecar_selection")
                 }
                 // M5 seamless swap: the persisted AI track is now selected; it's
                 // safe to drop the synthetic live row + libass track with no
@@ -7840,7 +7963,7 @@ class PlayerViewModel {
             pendingRecoveredSubtitleSelection = nil
             if selectedSubtitleId != match.trackId {
                 selectedSubtitleId = match.trackId
-                applySubtitleTrackSelection(match.trackId)
+                applySubtitleTrackSelection(match.trackId, reason: "restored_selection_as_sidecar")
             }
             if !settings.subtitleMatchesSystemAppearance || hasExplicitSubtitleChoice {
                 return
@@ -7859,7 +7982,7 @@ class PlayerViewModel {
            let forced = descriptors.first(where: { $0.forced == true }) {
             let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: forced.index)
             selectedSubtitleId = trackId
-            applySubtitleTrackSelection(trackId)
+            applySubtitleTrackSelection(trackId, reason: "forced_sidecar_auto")
             return
         }
 
@@ -7922,7 +8045,7 @@ class PlayerViewModel {
             pendingAudioFfIndex = nil
             if selectedAudioId != match.trackId {
                 selectedAudioId = match.trackId
-                applyAudioTrackSelection(match.trackId)
+                applyAudioTrackSelection(match.trackId, reason: "pending_audio_index")
             }
         }
 
@@ -7933,13 +8056,13 @@ class PlayerViewModel {
                 pendingSubtitleFfIndex = nil
                 if selectedSubtitleId != nil {
                     selectedSubtitleId = nil
-                    applySubtitleTrackSelection(nil)
+                    applySubtitleTrackSelection(nil, reason: "pending_subtitle_off")
                 }
             } else if let match = embeddedSubs.first(where: { $0.ffIndex == wantedFf }) {
                 pendingSubtitleFfIndex = nil
                 if selectedSubtitleId != match.trackId {
                     selectedSubtitleId = match.trackId
-                    applySubtitleTrackSelection(match.trackId)
+                    applySubtitleTrackSelection(match.trackId, reason: "pending_subtitle_index")
                 }
             }
         }
@@ -7949,7 +8072,7 @@ class PlayerViewModel {
             pendingRecoveredAudioSelection = nil
             if selectedAudioId != match.trackId {
                 selectedAudioId = match.trackId
-                applyAudioTrackSelection(match.trackId)
+                applyAudioTrackSelection(match.trackId, reason: "restored_selection")
             }
         }
 
@@ -7958,7 +8081,7 @@ class PlayerViewModel {
             pendingRecoveredSubtitleSelection = nil
             if selectedSubtitleId != match.trackId {
                 selectedSubtitleId = match.trackId
-                applySubtitleTrackSelection(match.trackId)
+                applySubtitleTrackSelection(match.trackId, reason: "restored_selection")
             }
         }
 
@@ -8101,13 +8224,13 @@ class PlayerViewModel {
             if replanAutomaticProtocolV3SubtitleSelection(nil) { return }
             if selectedSubtitleId != nil {
                 selectedSubtitleId = nil
-                applySubtitleTrackSelection(nil)
+                applySubtitleTrackSelection(nil, reason: "auto_preference")
             }
         case .select(let track):
             if replanAutomaticProtocolV3SubtitleSelection(track) { return }
             if selectedSubtitleId != track.trackId {
                 selectedSubtitleId = track.trackId
-                applySubtitleTrackSelection(track.trackId)
+                applySubtitleTrackSelection(track.trackId, reason: "auto_preference")
             }
         }
     }
