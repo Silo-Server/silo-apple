@@ -312,14 +312,6 @@ final class ServerRegistry {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
         }
-        // Last line of this switch the outgoing account can record: the
-        // boundary below shuts its capture gate for good. See the commit
-        // funnel for why no outcome follows it on this side.
-        recordRegistryEvent(
-            phase: "switchServer",
-            outcome: "attempted",
-            reason: "switchTo"
-        )
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
@@ -362,14 +354,6 @@ final class ServerRegistry {
             )
             return false
         }
-        // Same reason as `switchTo`: record the attempt while the outgoing
-        // account can still capture, because the boundary below closes its
-        // gate before the commit funnel runs.
-        recordRegistryEvent(
-            phase: "switchServer",
-            outcome: "attempted",
-            reason: "pairing"
-        )
         // Pairing has already written the new credential slot under this
         // lease. Finish the registry/default commit even if cancellation
         // arrives now; aborting would publish a split A/B routing state.
@@ -389,30 +373,42 @@ final class ServerRegistry {
 
     /// Single commit funnel for both the plain and the lease-holding switch.
     ///
-    /// Deliberately records nothing. Both callers open with
+    /// Deliberately records no breadcrumb, and neither does the window just
+    /// before it. Both callers open with
     /// `DiagnosticsCoordinator.activeProfileWillChange()`, which synchronously
     /// makes the active profile ineligible and closes the capture gate; the
     /// matching `activeProfileDidChange()` does not run until after this
-    /// returns. Every line emitted here would therefore be offered to a
-    /// disabled journal and dropped — instrumentation that reads as present
-    /// but produces nothing in any report.
+    /// returns. A line emitted inside the funnel is therefore offered to a
+    /// disabled journal and dropped.
     ///
-    /// Nor can the outcome simply be re-emitted after the boundary. This
-    /// function *is* the identity change: it retargets the URL, active id,
-    /// profile key, and token slot. A line written after
-    /// `activeProfileDidChange()` lands in the destination account's journal,
-    /// where an outgoing-account failure reason ("the switch away from your
-    /// other server did not persist") is exactly the cross-account evidence
-    /// the boundary exists to prevent — and the incoming account's gate is
-    /// itself closed until an async child-profile check and a status refresh
-    /// reopen it, so such a line is usually dropped anyway.
+    /// Moving it a few statements earlier — to just before the boundary, while
+    /// the outgoing account can still capture — does not rescue it either, and
+    /// that is the non-obvious part. `activeProfileWillChange()` does not only
+    /// close the gate: once this launch's capture decision is in effect it
+    /// calls `purgeBreadcrumbJournal()`, which deletes the journal directory
+    /// outright and discards the early-boot staging buffer with it. A line
+    /// written microseconds earlier is inside exactly the trail that purge
+    /// destroys, so a pre-boundary "attempted" is not a durable
+    /// last-word-of-the-outgoing-account — it is erased on every switch that
+    /// gets far enough to matter, and survives only on the launches where the
+    /// gate never opened and it was never written in the first place.
     ///
-    /// What survives is attributed to the side that owns it: each caller
-    /// records `switchServer/attempted` *before* the boundary, in the outgoing
-    /// account's own trail. A report from the source server that ends at
-    /// `attempted` with no later activity is the readable signal that the
-    /// switch was entered; the destination's trail opens fresh, and its first
-    /// lines are what describe the account the user actually landed on.
+    /// Nor can the outcome be re-emitted after the boundary. This function
+    /// *is* the identity change: it retargets the URL, active id, profile key,
+    /// and token slot. A line written after `activeProfileDidChange()` lands
+    /// in the destination account's journal, where an outgoing-account failure
+    /// reason ("the switch away from your other server did not persist") is
+    /// exactly the cross-account evidence the boundary exists to prevent.
+    ///
+    /// So this transition is deliberately not breadcrumbed on either side.
+    /// The pre-boundary guards that reject a switch before any identity work
+    /// (`unknownServer`, `transitionUnavailable`, `staleTransitionLease`) keep
+    /// their lines: those return without ever reaching the boundary, so
+    /// nothing purges them and they are unambiguously the outgoing account's.
+    /// Failures *inside* the funnel go to OSLog only. What makes the switch
+    /// readable in a report is the destination's own trail, which opens fresh
+    /// immediately afterward: a user who switched servers and landed nowhere
+    /// shows a journal whose first lines are the new server's.
     @discardableResult
     private func commitSwitchTo(
         serverId: String,
@@ -527,6 +523,19 @@ final class ServerRegistry {
         // Signing out a *non-active* server leaves the UI unchanged, so the
         // two cases are distinguished to keep a later "why am I still signed
         // in" report answerable.
+        //
+        // Whether this appends depends on the caller, and only one of them can
+        // ever see it. `AuthService.signOut` passes both purge flags false
+        // precisely because it already purged the current binding itself —
+        // and that purge cleared the breadcrumb consent context along with the
+        // last-known status snapshot behind it, so nothing resolves a context
+        // and this line is dropped on the whole active sign-out path. What
+        // survives is the direct caller that never touched the current binding:
+        // a non-active sign-out, where `otherServer` still records. The
+        // `activeServer` reason is kept rather than deleted because the purge
+        // flags are parameters — a future caller that signs out an active
+        // server without pre-purging would land here with the gate open, and
+        // that is the case the reason names.
         recordRegistryEvent(
             phase: "signOutServer",
             outcome: "succeeded",
@@ -537,6 +546,33 @@ final class ServerRegistry {
     /// Remove a server entirely (entry + tokens). If it was active, the
     /// next-most-recent server becomes active; if none remain, the active
     /// slot is cleared.
+    ///
+    /// Breadcrumbs here are deliberately asymmetric, and the asymmetry is the
+    /// whole point. Removing a *non-active* server never opens an identity
+    /// boundary: no `activeProfileWillChange()` runs, the capture gate stays
+    /// open, and every outcome below is recorded normally. The registry-wide
+    /// purge that does run empties the journal but leaves the consent context
+    /// intact, so a line written after it still appends — the same position
+    /// `signOut` takes, and for the same reason.
+    ///
+    /// Removing the *active* server cannot record any outcome. The boundary at
+    /// the top of that branch closes the capture gate synchronously, and its
+    /// matching `activeProfileDidChange()` only starts an async re-resolution
+    /// that cannot land before this function returns — so every later line is
+    /// offered to a disabled journal. Nor does moving one earlier help: the
+    /// boundary also calls `purgeBreadcrumbJournal()` once this launch's
+    /// capture decision is in effect, deleting the journal directory and the
+    /// early-boot staging buffer, so a pre-boundary line sits in exactly the
+    /// trail that purge destroys. See `commitSwitchTo` for the long form.
+    ///
+    /// The cost is real and worth naming: the `activeServerNoFallback` /
+    /// `activeServerFellBack` distinction — which server the user gets bounced
+    /// to, or whether they land at setup — is what a "my servers disappeared"
+    /// report wants most, and it is unrecordable anywhere in this function.
+    /// Claiming otherwise with a line that never appends would be worse, so
+    /// the active branch keeps only its OSLog failure line, and what makes the
+    /// removal readable in a report is the fallback identity's own trail,
+    /// which opens fresh once eligibility re-resolves.
     @discardableResult
     func remove(
         serverId: String,
@@ -586,13 +622,19 @@ final class ServerRegistry {
             #endif
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             // Diagnostics for this server were already purged above but the
-            // entry survives: the reasons name the abandonment point so the
-            // resulting half-cleaned state is recognizable in a report.
-            recordRegistryEvent(
-                phase: "removeServer",
-                outcome: "cancelled",
-                reason: "taskCancelledAfterPurge"
-            )
+            // entry survives, so the reason names the abandonment point and the
+            // resulting half-cleaned state stays recognizable in a report. Only
+            // reachable when the gate was never closed; the active-server
+            // cancellation is an OSLog line because nothing would append.
+            if removesActiveServer {
+                Self.logger.error("removeServer cancelled after the diagnostics purge")
+            } else {
+                recordRegistryEvent(
+                    phase: "removeServer",
+                    outcome: "cancelled",
+                    reason: "taskCancelledAfterPurge"
+                )
+            }
             return false
         }
         if removesActiveServer {
@@ -605,11 +647,9 @@ final class ServerRegistry {
                 DiagnosticsCoordinator.activeProfileDidChange()
                 #endif
                 await HTTPClient.shared.endIdentityTransition(transitionLease)
-                recordRegistryEvent(
-                    phase: "removeServer",
-                    outcome: "cancelled",
-                    reason: "taskCancelledAfterCacheClear"
-                )
+                // Inside the active-server branch, so the gate is always
+                // closed here. OSLog only.
+                Self.logger.error("removeServer cancelled after clearing caches")
                 return false
             }
         }
@@ -647,24 +687,37 @@ final class ServerRegistry {
             }
             #endif
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            recordRegistryEvent(
-                phase: "removeServer",
-                outcome: "failed",
-                reason: "persistFailed"
-            )
+            // A rolled-back persist restores the outgoing server, so on the
+            // active branch this is the same unrecordable position `switchTo`
+            // is in: the gate closed above and the rollback does not reopen it.
+            if removesActiveServer {
+                Self.logger.error("removeServer failed to persist the removal")
+            } else {
+                recordRegistryEvent(
+                    phase: "removeServer",
+                    outcome: "failed",
+                    reason: "persistFailed"
+                )
+            }
             return false
         }
 
-        // Whether the removal displaced the active server decides whether the
-        // user gets bounced to another server, to login, or to setup — the
-        // difference a "my servers disappeared" report needs.
-        recordRegistryEvent(
-            phase: "removeServer",
-            outcome: "succeeded",
-            reason: removesActiveServer
-                ? (activeServerId == nil ? "activeServerNoFallback" : "activeServerFellBack")
-                : "otherServer"
-        )
+        // Only the non-active removal can say anything here. Its gate was never
+        // closed, and this position — after the registry-wide purge — is the
+        // one `signOut` uses: the purge empties the journal without clearing
+        // the consent context, so this line appends and explains why the trail
+        // above it is gone. The active-server outcomes that would be more
+        // valuable (`activeServerNoFallback` / `activeServerFellBack`) are the
+        // ones the boundary makes unrecordable; see this function's doc
+        // comment. Emitting them anyway would put a line in the source that no
+        // report can ever contain.
+        if !removesActiveServer {
+            recordRegistryEvent(
+                phase: "removeServer",
+                outcome: "succeeded",
+                reason: "otherServer"
+            )
+        }
         if removesActiveServer {
             await TokenStore.shared.switchActiveServer(serverId: activeServerId ?? "")
         }
