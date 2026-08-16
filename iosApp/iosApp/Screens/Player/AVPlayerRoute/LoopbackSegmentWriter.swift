@@ -6163,6 +6163,18 @@ final class LoopbackSegmentWriter {
         pendingSegmentHasVideo = pendingSegmentHasVideo || hasVideo
     }
 
+    /// Whether the pending buffer holds an actual media fragment — a top-level
+    /// `moof` or `mdat`. The `av_write_trailer` `mfra`/`mfro` tail (and any
+    /// stray `styp`/`sidx`-only leftover) carries neither and must not be
+    /// published under a plan-indexed segment name.
+    private func pendingSegmentContainsMediaBox() -> Bool {
+        for box in childBoxes(in: pendingSegmentBytes, from: 0, to: pendingSegmentBytes.count)
+        where box.type == "moof" || box.type == "mdat" {
+            return true
+        }
+        return false
+    }
+
     private func finalizeCurrentSegment() {
         guard !pendingSegmentBytes.isEmpty else { return }
         // Whatever happens below consumes the pending buffer — close out the
@@ -6179,14 +6191,20 @@ final class LoopbackSegmentWriter {
             pendingSegmentHasMoof = false
             return
         }
-        guard pendingSegmentHasMoof else {
-            // `av_write_trailer` emits `mfra`/`mfro` after the last fragment,
-            // and the box splitter's catch-all arm parks them in a fresh
-            // pending buffer. Publishing that as a media segment reuses the
-            // last segment's plan-indexed name and overwrites the real one
-            // with an index box AVPlayer cannot decode.
+        // A real media segment is defined by its box structure, not by a
+        // status flag. `av_write_trailer` emits `mfra`/`mfro` after the last
+        // fragment, and the box splitter's catch-all arm parks them in a fresh
+        // pending buffer; publishing that as a media segment would reuse the
+        // last segment's plan-indexed name and overwrite a decodable fragment
+        // with an index box AVPlayer rejects (CoreMedia -17223). Keying on the
+        // presence of a `moof`/`mdat` — rather than `pendingSegmentHasMoof`,
+        // which a legitimately mid-stream-finalized fragment can fail to carry
+        // — keeps that trailer fix while never discarding a fragment that holds
+        // real media.
+        guard pendingSegmentContainsMediaBox() else {
             pendingSegmentBytes = Data()
             pendingSegmentHasVideo = false
+            pendingSegmentHasMoof = false
             return
         }
         let segmentHasVideo = pendingSegmentHasVideo

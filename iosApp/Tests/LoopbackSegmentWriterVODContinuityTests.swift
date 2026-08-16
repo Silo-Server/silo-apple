@@ -338,6 +338,103 @@ final class LoopbackSegmentWriterVODContinuityTests: XCTestCase {
         )
     }
 
+    // MARK: - Well-formed-fragment regression
+
+    /// Regression guard for the finalize-time segment discard. The discard used
+    /// to key on the `pendingSegmentHasMoof` status flag; the fix keys on the
+    /// buffer's box STRUCTURE (`pendingSegmentContainsMediaBox`) so that only a
+    /// media-less tail (`av_write_trailer`'s `mfra`/`mfro`, or a stray
+    /// `styp`/`sidx`) is dropped, and a fragment carrying real media is never
+    /// silently discarded into a plan-indexed hole. A dropped mid-title segment
+    /// is exactly what makes AVPlayer reject playback with CoreMedia -17223.
+    ///
+    /// Every finalized media segment must therefore be a well-formed fragment:
+    /// a `moof` paired with an `mdat`, and never the trailer index tail. The
+    /// per-segment duration is also bounded so a coalesced/merged segment can't
+    /// silently balloon past the target without the playlist noticing.
+    ///
+    /// Coverage gap: the committed fixtures are small H.264/EAC3 clips that
+    /// cut cleanly and never hit the 4K-HEVC producer-backpressure/restart
+    /// window where the on-device -17223 was captured. This pins the structural
+    /// invariant the fix restores across every path the fixtures can drive
+    /// (continuous, and a mid-stream producer restart); reproducing the exact
+    /// device timeline would need a committed 4K-HEVC fixture.
+    func testEveryFinalizedSegmentIsWellFormedFragment() throws {
+        let source = try fixtureURL()
+        let continuous = runWriter(spec: makeSpec(sourceURL: source, startSeconds: 0))
+        XCTAssertNil(continuous.error)
+        let plan = try XCTUnwrap(continuous.plan)
+        let durationCeiling = LoopbackSegmentPlan.defaultTargetSegmentDurationSeconds * 1.5
+
+        try assertSegmentsWellFormed(continuous, count: plan.segmentCount, from: 0)
+        for (index, duration) in try segmentDurations(continuous).enumerated() {
+            XCTAssertLessThanOrEqual(
+                duration, durationCeiling,
+                "continuous seg \(index) duration \(duration)s exceeds 1.5x target"
+            )
+        }
+
+        // The restart path is the one closest to the on-device failure: a
+        // producer re-anchored mid-title must still finalize well-formed
+        // fragments (and never leave the anchor as a media-less tail).
+        let restartIndex = 2
+        let restarted = runWriter(
+            spec: makeSpec(
+                sourceURL: source,
+                startSeconds: plan.sourceStartSeconds(ofSegment: restartIndex)
+            ),
+            vodPlan: plan,
+            vodBaseIndex: restartIndex
+        )
+        XCTAssertNil(restarted.error)
+        try assertSegmentsWellFormed(
+            restarted, count: plan.segmentCount, from: restartIndex
+        )
+    }
+
+    private func assertSegmentsWellFormed(
+        _ run: WriterRun, count: Int, from firstIndex: Int
+    ) throws {
+        for index in firstIndex..<count {
+            let name = String(format: "seg_%06d.m4s", index)
+            let path = run.outputDirectory.appendingPathComponent(name).path
+            guard FileManager.default.fileExists(atPath: path) else {
+                XCTFail("seg \(index) was not produced (dropped into a plan-indexed hole)")
+                continue
+            }
+            let types = topLevelBoxTypes(try segmentData(run, index))
+            XCTAssertTrue(types.contains("moof"), "seg \(index) has no moof: \(types)")
+            XCTAssertTrue(types.contains("mdat"), "seg \(index) has no mdat: \(types)")
+            XCTAssertFalse(
+                types.contains("mfra") || types.contains("mfro"),
+                "seg \(index) leaked the av_write_trailer index tail: \(types)"
+            )
+        }
+    }
+
+    private func topLevelBoxTypes(_ data: Data) -> [String] {
+        var types: [String] = []
+        var cursor = 0
+        while cursor + 8 <= data.count {
+            let size = Int(readU32(data, at: cursor))
+            guard size >= 8, cursor + size <= data.count else { break }
+            types.append(fourCC(data, at: cursor + 4))
+            cursor += size
+        }
+        return types
+    }
+
+    private func segmentDurations(_ run: WriterRun) throws -> [Double] {
+        let playlist = try String(
+            contentsOf: run.outputDirectory.appendingPathComponent("playlist.m3u8"),
+            encoding: .utf8
+        )
+        return playlist.split(whereSeparator: \.isNewline).compactMap { line in
+            guard line.hasPrefix("#EXTINF:") else { return nil }
+            return Double(line.dropFirst("#EXTINF:".count).prefix { $0 != "," })
+        }
+    }
+
     private func totalMdatPayloadBytes(_ data: Data) -> Int {
         var total = 0
         var cursor = 0
