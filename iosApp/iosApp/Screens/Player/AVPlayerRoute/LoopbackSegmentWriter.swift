@@ -391,6 +391,10 @@ final class LoopbackSegmentWriter {
     let debugOutputDirectory: URL?
     let selectedAudioTrackIndex: Int
     let videoMode: LoopbackSessionSpec.VideoMode
+    /// Whether the video track is copied or re-encoded. Captured once, like
+    /// `selectedAudioOutputMode`; every downstream branch is
+    /// `videoOutputMode == .copy` vs not.
+    let videoOutputMode: LoopbackSessionSpec.VideoOutputMode
     let selectedAudioOutputMode: LoopbackSessionSpec.AudioOutputMode
     let manifestMetadata: LoopbackSessionSpec.ManifestMetadata
     /// Target fragment duration in seconds. Used to emit EXT-X-TARGETDURATION
@@ -779,6 +783,18 @@ final class LoopbackSegmentWriter {
     /// `eac3_extension_type_a`). Drives the dec3 JOC surgery in
     /// `writeInitSegment`.
     private var selectedAudioIsAtmosJOC = false
+    /// Software decode → VideoToolbox encode pipeline. Non-nil only when
+    /// `videoOutputMode.isBridged`.
+    private var videoBridge: LoopbackVideoBridge?
+    /// The `hvcC` / `avcC` written into `moov` for a bridged session. Either
+    /// the encoder's own record or the one the first producer of this player
+    /// item published (`LoopbackSessionSpec.bridgedVideoParameterSets`).
+    private var bridgedVideoExtradata: Data?
+    /// Fires once, on the session that first resolves bridged parameter sets,
+    /// so the backend can pin them onto the spec for restarted producers.
+    /// AVPlayer fetches `EXT-X-MAP` once per item, so a restart that emitted
+    /// different SPS/PPS/VPS bytes would publish undecodable segments.
+    var onBridgedVideoParameterSetsResolved: ((Data) -> Void)?
     private var audioDecoderCtx: UnsafeMutablePointer<AVCodecContext>?
     private var audioEncoderCtx: UnsafeMutablePointer<AVCodecContext>?
     /// Reused across every decoded bridge frame (receive_frame unrefs it);
@@ -925,6 +941,7 @@ final class LoopbackSegmentWriter {
         self.debugOutputDirectory = debugOutputDirectory
         self.selectedAudioTrackIndex = sessionSpec.selectedAudio.trackIndex
         self.videoMode = sessionSpec.videoMode
+        self.videoOutputMode = sessionSpec.videoOutputMode
         self.selectedAudioOutputMode = sessionSpec.selectedAudio.outputMode
         self.manifestMetadata = sessionSpec.manifestMetadata
         self.targetSegmentDuration = targetSegmentDuration
@@ -934,7 +951,10 @@ final class LoopbackSegmentWriter {
         self.minimumStartupMediaDuration = max(
             0,
             minimumStartupMediaDuration
-                ?? Self.defaultMinimumStartupMediaDuration(for: sessionSpec.videoMode)
+                ?? Self.defaultMinimumStartupMediaDuration(
+                    for: sessionSpec.videoMode,
+                    videoOutputMode: sessionSpec.videoOutputMode
+                )
         )
     }
 
@@ -1151,6 +1171,15 @@ final class LoopbackSegmentWriter {
     ) -> Bool {
         guard vodActive, let plan = vodPlan else { return false }
         if inputIdx == videoInputStreamIndex {
+            if videoOutputMode.isBridged {
+                // A bridged restart cannot gate on the SOURCE keyframe: the
+                // decoder needs the source keyframe preceding the boundary to
+                // produce anything at all. Everything reaches the decoder; the
+                // bridge's own emit threshold discards encoder input below the
+                // boundary and `openBridgedRestartGateIfNeeded` opens the audio
+                // gate on the first encoded packet.
+                return false
+            }
             if vodAwaitingRestartKeyframe {
                 let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
                 let boundary = plan.boundaries[min(vodEffectiveBaseIndex, plan.segmentCount - 1)]
@@ -1374,7 +1403,11 @@ final class LoopbackSegmentWriter {
             timeBaseNum: tb.num,
             timeBaseDen: tb.den,
             sourceDurationSeconds: durationSeconds,
-            targetSegmentDurationSeconds: targetSegmentDuration
+            targetSegmentDurationSeconds: targetSegmentDuration,
+            // A bridged session's output keyframes are the encoder's, forced
+            // onto uniform fences; the source cue index describes a keyframe
+            // cadence that no longer exists downstream.
+            forceUniformStride: videoOutputMode.isBridged
         )
         print("[CMP-AVP] vod plan resolved segments=\(plan.segmentCount) keyframes=\(keyframePts.count) trusted=\(plan.usedKeyframeIndex) duration=\(String(format: "%.1f", plan.totalDurationSeconds))s")
         return plan
@@ -1512,7 +1545,12 @@ final class LoopbackSegmentWriter {
     private func resumeAnchorValidatedPlan(
         _ plan: LoopbackSegmentPlan
     ) -> LoopbackSegmentPlan {
-        guard sourceStartTimeSeconds > plan.anchorSourceSeconds + 0.05,
+        // Bridged sessions are exempt: the plan's openers are OUR encoder's
+        // forced keyframes, which are random-access by construction, so
+        // probing the source bitstream would judge frames that never reach
+        // AVPlayer.
+        guard !videoOutputMode.isBridged,
+              sourceStartTimeSeconds > plan.anchorSourceSeconds + 0.05,
               plan.segmentCount > 0 else { return plan }
         let requested = plan.segmentIndex(
             forPlaylistSeconds: sourceStartTimeSeconds - plan.anchorSourceSeconds
@@ -1772,8 +1810,15 @@ final class LoopbackSegmentWriter {
     }
 
     private static func defaultMinimumStartupMediaDuration(
-        for videoMode: LoopbackSessionSpec.VideoMode
+        for videoMode: LoopbackSessionSpec.VideoMode,
+        videoOutputMode: LoopbackSessionSpec.VideoOutputMode
     ) -> Double {
+        if videoOutputMode.isBridged {
+            // Bridged output has a tight, predictable GOP — the encoder is
+            // forced to a keyframe on every plan boundary — so the long-GOP
+            // allowance below buys nothing but startup latency.
+            return 4.0
+        }
         switch videoMode {
         case .passthroughH264:
             // H264 startup is historically flakier — keep a longer runway.
@@ -1839,11 +1884,19 @@ final class LoopbackSegmentWriter {
             try openInput()
             try resolveVODPlanIfNeeded()
             try openOutput()
+            installBridgedVideoPlanIfNeeded()
             try prefeedVODLateStartAudioIfNeeded()
             // Prefetch + filter until we have a complete hvcC in extradata.
             // Filtered packets are stashed in pendingVideoPackets and replayed
             // below.
-            if vodActive, vodPlanProvidedAtInit {
+            if videoOutputMode.isBridged {
+                // There is no source `hvcC` to bootstrap from — the parameter
+                // sets come from our own encoder. Normally they are already
+                // installed by `openVideoTranscodePipeline` (the VideoToolbox
+                // wrapper publishes them during `avcodec_open2` under the
+                // global-header flag); the priming read is the fallback.
+                try primeBridgedVideoExtradataIfNeeded()
+            } else if vodActive, vodPlanProvidedAtInit {
                 // Restarted VOD session: output extradata comes from codecpar
                 // (the same source the first session already validated). The
                 // bootstrap scan otherwise swallows up to a GOP of packets it
@@ -1959,6 +2012,25 @@ final class LoopbackSegmentWriter {
                     continue
                 }
 
+                if inputIdx == videoInputStreamIndex, videoOutputMode.isBridged {
+                    if isCancelled {
+                        continue
+                    }
+                    // Mirrors the bridged-audio branch above: the bridge
+                    // routes its own encoder output and the packet never
+                    // reaches the copy path's transform/route tail.
+                    if Self.traceThroughput {
+                        let started = CFAbsoluteTimeGetCurrent()
+                        try transcodeVideoPacket(pkt, outStreamIndex: Int32(outIdx))
+                        throughputTiming.videoMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
+                        throughputTiming.videoPackets += 1
+                    } else {
+                        try transcodeVideoPacket(pkt, outStreamIndex: Int32(outIdx))
+                    }
+                    try replayVODPreGateAudioPacketsIfNeeded()
+                    continue
+                }
+
                 if inputIdx == videoInputStreamIndex {
                     if isCancelled {
                         continue
@@ -1994,6 +2066,9 @@ final class LoopbackSegmentWriter {
             }
 
             if !isCancelled {
+                // Video first: the encoder's tail GOP has to be routed while
+                // the one-packet look-behind can still telescope its duration.
+                try finishTranscodedVideo()
                 try finishTranscodedAudio()
                 try flushPendingMuxVideoPacket(nextDTS: nil)
                 if vodActive {
@@ -2244,7 +2319,8 @@ final class LoopbackSegmentWriter {
             do {
                 videoInputStreamIndex = try Self.resolveSelectedVideoStreamIndex(
                     in: recycled.context,
-                    videoMode: videoMode
+                    videoMode: videoMode,
+                    videoOutputMode: videoOutputMode
                 )
                 Self.discardUnusedStreamsForMux(
                     in: recycled.context,
@@ -2329,7 +2405,8 @@ final class LoopbackSegmentWriter {
         // straight to the floor.
         videoInputStreamIndex = try Self.resolveSelectedVideoStreamIndex(
             in: openedContext,
-            videoMode: videoMode
+            videoMode: videoMode,
+            videoOutputMode: videoOutputMode
         )
 
         Self.discardUnusedStreamsForMux(
@@ -2895,14 +2972,28 @@ final class LoopbackSegmentWriter {
 
     private static func resolveSelectedVideoStreamIndex(
         in ctx: UnsafeMutablePointer<AVFormatContext>,
-        videoMode: LoopbackSessionSpec.VideoMode
+        videoMode: LoopbackSessionSpec.VideoMode,
+        videoOutputMode: LoopbackSessionSpec.VideoOutputMode
     ) throws -> Int {
-        let preferredCodec: AVCodecID = switch videoMode {
-        case .passthroughH264:
-            AV_CODEC_ID_H264
-        case .convertProfile7To81, .passthroughProfile8, .passthroughProfile5, .passthroughHEVC:
-            AV_CODEC_ID_HEVC
+        // The copy path keeps its historical two-codec allowlist: only HEVC
+        // and H.264 bitstreams are known to remux cleanly into the fMP4
+        // AVPlayer consumes. Bridged and AV1-passthrough sessions instead
+        // accept whatever video stream the container carries — the decoder
+        // (or, for AV1, the device) is what decides whether it is playable,
+        // and that was already settled by the planner.
+        let preferredCodec: AVCodecID? = switch videoOutputMode {
+        case .passthroughAV1:
+            AV_CODEC_ID_AV1
+        case .transcodeHEVC, .transcodeH264:
+            nil
+        case .copy:
+            switch videoMode {
+            case .passthroughH264: AV_CODEC_ID_H264
+            case .convertProfile7To81, .passthroughProfile8, .passthroughProfile5, .passthroughHEVC:
+                AV_CODEC_ID_HEVC
+            }
         }
+        let restrictToCopyCodecs = videoOutputMode == .copy
 
         let nb = Int(ctx.pointee.nb_streams)
         var fallbackIndex: Int?
@@ -2911,12 +3002,18 @@ final class LoopbackSegmentWriter {
             for i in 0..<nb {
                 guard let stream = streams[i], let codecpar = stream.pointee.codecpar else { continue }
                 guard codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO else { continue }
+                // Cover art in MKV/AVI is a video stream with a single
+                // attached picture; muxing it as the presentation track would
+                // produce a one-frame movie.
+                guard (stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC) == 0 else { continue }
                 let codecID = codecpar.pointee.codec_id
-                guard codecID == AV_CODEC_ID_HEVC || codecID == AV_CODEC_ID_H264 else { continue }
+                if restrictToCopyCodecs {
+                    guard codecID == AV_CODEC_ID_HEVC || codecID == AV_CODEC_ID_H264 else { continue }
+                }
                 if fallbackIndex == nil {
                     fallbackIndex = i
                 }
-                if codecID == preferredCodec {
+                if let preferredCodec, codecID == preferredCodec {
                     selectedLog = Self.videoStreamLog(index: i, stream: stream)
                     cmpLog("[CMP-AVP] selected video stream \(selectedLog) preferred=1")
                     return i
@@ -3057,7 +3154,17 @@ final class LoopbackSegmentWriter {
                 throw LoopbackWriterError.allocOutput
             }
 
-            if mediaType == AVMEDIA_TYPE_VIDEO {
+            if mediaType == AVMEDIA_TYPE_VIDEO, videoOutputMode.isBridged {
+                // Bridged: the output codecpar comes from the ENCODER, never
+                // from the source, exactly like the audio bridge's arm below.
+                // Dimensions and time base still come from the source — the
+                // bridge never rescales and keeps the source clock, so every
+                // downstream timestamp path stays the copy path's.
+                masterVideoWidth = codecpar.pointee.width
+                masterVideoHeight = codecpar.pointee.height
+                videoInputStreamIndex = i
+                try openVideoTranscodePipeline(inputStream: inStream, outputStream: outStream)
+            } else if mediaType == AVMEDIA_TYPE_VIDEO {
                 if avcodec_parameters_copy(outStream.pointee.codecpar, codecpar) < 0 {
                     throw LoopbackWriterError.allocOutput
                 }
@@ -3067,7 +3174,12 @@ final class LoopbackSegmentWriter {
                 outStream.pointee.codecpar.pointee.codec_tag = 0
                 let dovi = outputDoviConfig(from: readDoviConfig(codecpar: codecpar))
                 let removedDoviSideData = removeDoviSideData(codecpar: outStream.pointee.codecpar)
-                outStream.pointee.codecpar.pointee.codec_tag = sampleEntryTag(for: videoMode.sampleEntryCodec)
+                // `.passthroughAV1` overrides the `VideoMode`-derived fourcc
+                // with `av01`; every other copy mode defers to `VideoMode`,
+                // which owns the Dolby Vision `dvh1` distinction.
+                outStream.pointee.codecpar.pointee.codec_tag = sampleEntryTag(
+                    for: videoOutputMode.sampleEntryCodec ?? videoMode.sampleEntryCodec
+                )
                 videoInputStreamIndex = i
                 let edSize = Int(codecpar.pointee.extradata_size)
                 if codecpar.pointee.codec_id == AV_CODEC_ID_HEVC,
@@ -3229,6 +3341,7 @@ final class LoopbackSegmentWriter {
         outStreamIndex: Int32,
         inputStreamIndex: Int
     ) throws {
+        openBridgedRestartGateIfNeeded(pkt)
         let sourcePTS = pkt.pointee.pts
         let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
         rewritePacketForOutput(
@@ -3684,6 +3797,19 @@ final class LoopbackSegmentWriter {
 
     private func masterVideoCodecString() -> String {
         let sampleEntry = masterManifestSampleEntryCodec()
+        if videoOutputMode.isBridged {
+            // CODECS must describe the ENCODER's output, not the source's:
+            // the bridged bitstream is what AVPlayer's variant filter has to
+            // claim. Both builders already take the header as a parameter, so
+            // this is a straight substitution of the bridged record.
+            let header = videoBridge?.codecStringHeader ?? bridgedVideoExtradata
+            return videoOutputMode == .transcodeH264
+                ? (h264RFC6381CodecString(avccHeader: header) ?? sampleEntry)
+                : (hevcRFC6381CodecString(sampleEntry: sampleEntry, hvccHeader: header) ?? sampleEntry)
+        }
+        if videoOutputMode == .passthroughAV1 {
+            return av1RFC6381CodecString() ?? sampleEntry
+        }
         if videoMode == .passthroughH264 {
             return h264RFC6381CodecString(avccHeader: inputAvccHeader) ?? sampleEntry
         }
@@ -3747,7 +3873,32 @@ final class LoopbackSegmentWriter {
         }
     }
 
+    /// `av01.<profile>.<level><tier>.<depth>` from the source's `av1C` record
+    /// (ISO/IEC 23091, AV1-ISOBMFF §5). Byte 1 packs seq_profile in the top 3
+    /// bits and seq_level_idx in the low 5; byte 2's top bit is the tier and
+    /// the next two encode bit depth.
+    private func av1RFC6381CodecString() -> String? {
+        guard let inCtx = inputCtx,
+              videoInputStreamIndex >= 0,
+              let stream = inCtx.pointee.streams?[videoInputStreamIndex],
+              let codecpar = stream.pointee.codecpar,
+              codecpar.pointee.extradata_size >= 4,
+              let extradata = codecpar.pointee.extradata else {
+            return nil
+        }
+        let profile = Int((extradata[1] & 0xE0) >> 5)
+        let level = Int(extradata[1] & 0x1F)
+        let tier = (extradata[2] & 0x80) != 0 ? "H" : "M"
+        let highBitDepth = (extradata[2] & 0x40) != 0
+        let twelveBit = (extradata[2] & 0x20) != 0
+        let depth = twelveBit ? 12 : (highBitDepth ? 10 : 8)
+        return String(format: "av01.%d.%02d%@.%02d", profile, level, tier, depth)
+    }
+
     private func masterManifestSampleEntryCodec() -> String {
+        if let bridged = videoOutputMode.sampleEntryCodec {
+            return bridged
+        }
         switch videoMode {
         case .convertProfile7To81, .passthroughProfile8:
             // Dolby Vision Profile 8.x is base-layer-compatible (HDR10 for 8.1,
@@ -3930,6 +4081,215 @@ final class LoopbackSegmentWriter {
         let nalType = Int((byte0 >> 1) & 0x3F)
         let layerID = Int(((byte0 & 0x01) << 5) | ((byte1 & 0xF8) >> 3))
         return layerID == 0 && nalType != 63
+    }
+
+    // MARK: - Video bridge
+
+    /// Builds the decode → encode pair for a bridged video track and fills the
+    /// already-allocated output stream from the encoder. Mirrors
+    /// `openAudioTranscodePipeline`: the output stream exists (the generic
+    /// `avformat_new_stream` above created it), this only populates it.
+    private func openVideoTranscodePipeline(
+        inputStream: UnsafeMutablePointer<AVStream>,
+        outputStream: UnsafeMutablePointer<AVStream>
+    ) throws {
+        let bridge = LoopbackVideoBridge(
+            outputMode: videoOutputMode,
+            targetSegmentDuration: targetSegmentDuration,
+            sourceBitrateBps: sessionSpec.sourceBitrateBps,
+            declaredFrameRate: sessionSpec.sourceVideoFrameRate
+        )
+        try bridge.open(
+            inputStream: inputStream,
+            outputStream: outputStream,
+            outputFormat: outputCtx?.pointee.oformat
+        )
+        videoBridge = bridge
+        outputStream.pointee.codecpar.pointee.codec_tag = sampleEntryTag(for: bridge.sampleEntryCodec)
+        // VideoToolbox emits AVCC-style NALs with 4-byte length prefixes,
+        // which is what every length-prefixed walker in this file assumes.
+        nalLengthSize = 4
+        try installBridgedVideoParameterSets(on: outputStream)
+    }
+
+    /// Installs the bridged parameter sets on the output codecpar. A restart
+    /// installs the FIRST session's record (carried on the spec) and asserts
+    /// its own encoder produced the same bytes; a mismatch fails the session
+    /// rather than publishing segments the item's `init.mp4` cannot decode.
+    @discardableResult
+    private func installBridgedVideoParameterSets(
+        on outStream: UnsafeMutablePointer<AVStream>
+    ) throws -> Bool {
+        guard let bridge = videoBridge else { return false }
+        if let carried = sessionSpec.bridgedVideoParameterSets, !carried.isEmpty {
+            if let fresh = bridge.parameterSets, fresh != carried {
+                throw LoopbackWriterError.videoTranscodeSetup(
+                    "bridged video parameter sets drifted across producer restart"
+                    + " (carried=\(carried.count)B fresh=\(fresh.count)B)"
+                )
+            }
+            bridgedVideoExtradata = carried
+            setExtradata(codecpar: outStream.pointee.codecpar, data: carried)
+            return true
+        }
+        guard let fresh = bridge.parameterSets, !fresh.isEmpty else { return false }
+        bridgedVideoExtradata = fresh
+        setExtradata(codecpar: outStream.pointee.codecpar, data: fresh)
+        onBridgedVideoParameterSetsResolved?(fresh)
+        return true
+    }
+
+    /// Hands the plan's segment fences to the bridge so encoder keyframes land
+    /// exactly on them, plus the restart threshold below which frames are
+    /// decoded for reference but never encoded.
+    private func installBridgedVideoPlanIfNeeded() {
+        guard let bridge = videoBridge else { return }
+        guard vodActive, let plan = vodPlan, plan.segmentCount > 0 else {
+            // EVENT sessions have no plan; the bridge synthesizes a uniform
+            // keyframe stride so `+frag_keyframe` still cuts on cadence.
+            bridge.installPlan(boundaries: [], emitThresholdPTS: nil)
+            return
+        }
+        let base = min(max(0, vodEffectiveBaseIndex), plan.segmentCount - 1)
+        bridge.installPlan(
+            boundaries: Array(plan.boundaries[base...]),
+            emitThresholdPTS: base > 0 ? plan.boundaries[base] : nil
+        )
+    }
+
+    /// Pre-mux priming for a bridged session whose encoder did not publish
+    /// parameter sets at open. Reads source packets, encodes them into
+    /// `pendingVideoPackets` (replayed by the existing `flushPendingPackets`
+    /// after `writeHeader`) and stops as soon as the record appears. This is
+    /// the bridged twin of `bootstrapVideoExtradata`'s contract.
+    private func primeBridgedVideoExtradataIfNeeded() throws {
+        guard videoOutputMode.isBridged, bridgedVideoExtradata == nil else { return }
+        guard let inCtx = inputCtx,
+              let outCtx = outputCtx,
+              let bridge = videoBridge,
+              let videoOutIdx = streamMap[videoInputStreamIndex],
+              let outStream = outCtx.pointee.streams?[videoOutIdx] else {
+            throw LoopbackWriterError.videoTranscodeSetup("bridged video priming has no output stream")
+        }
+
+        let maxPackets = 8_000
+        let maxVideoPackets = 128
+        var totalPacketsRead = 0
+        var videoPacketsRead = 0
+        let keepSelectedAudioPreroll = shouldIncludeAudio && selectedAudioOutputMode != .copy
+        var retainedPreVideoAudioBytes = 0
+        var droppedPreVideoAudioPackets = 0
+
+        while !isCancelled,
+              bridge.parameterSets == nil,
+              totalPacketsRead < maxPackets,
+              videoPacketsRead < maxVideoPackets {
+            let readPkt = av_packet_alloc()
+            let rc = deadlineBoundedReadFrame(inCtx, readPkt)
+            if rc < 0 {
+                var free = readPkt
+                av_packet_free(&free)
+                break
+            }
+            emitSourceDownloadStatsIfNeeded()
+            guard let pkt = readPkt else { break }
+            totalPacketsRead += 1
+            let inIdx = Int(pkt.pointee.stream_index)
+
+            if subtitleTapDecoders[inIdx] != nil {
+                tapDecodeSubtitlePacket(pkt: pkt, inputIdx: inIdx)
+                var free = readPkt
+                av_packet_free(&free)
+                continue
+            }
+            if bitmapTapTimeBases[inIdx] != nil {
+                tapHandleBitmapSubtitlePacket(pkt: pkt, inputIdx: inIdx)
+                var free = readPkt
+                av_packet_free(&free)
+                continue
+            }
+            if inIdx != videoInputStreamIndex {
+                if keepSelectedAudioPreroll, inIdx == selectedAudioStreamIndex {
+                    retainPreVideoAudioPacket(
+                        pkt,
+                        maxPackets: DVPreVideoAudioTailPolicy.maxPackets,
+                        maxBytes: DVPreVideoAudioTailPolicy.maxBytes,
+                        retainedBytes: &retainedPreVideoAudioBytes,
+                        droppedPackets: &droppedPreVideoAudioPackets
+                    )
+                } else {
+                    var free = readPkt
+                    av_packet_free(&free)
+                }
+                continue
+            }
+
+            videoPacketsRead += 1
+            try bridge.transcodePacket(pkt, inputStreamIndex: videoInputStreamIndex) { encoded in
+                guard let held = av_packet_clone(encoded) else {
+                    throw LoopbackWriterError.allocPacket
+                }
+                pendingVideoPackets.append(held)
+            }
+            var free = readPkt
+            av_packet_free(&free)
+        }
+
+        guard try installBridgedVideoParameterSets(on: outStream) else {
+            throw LoopbackWriterError.videoTranscodeSetup(
+                "video encoder produced no parameter sets after \(videoPacketsRead) source packets"
+            )
+        }
+        print("[CMP-AVP] bridged video priming videoPackets=\(videoPacketsRead) totalPackets=\(totalPacketsRead) encoded=\(pendingVideoPackets.count) extradata=\(bridgedVideoExtradata?.count ?? 0)")
+    }
+
+    /// Mux-loop entry for a bridged video packet: decode, encode, and route
+    /// every resulting packet through the ordinary copy-path plumbing.
+    private func transcodeVideoPacket(
+        _ pkt: UnsafeMutablePointer<AVPacket>?,
+        outStreamIndex: Int32
+    ) throws {
+        guard let bridge = videoBridge else { return }
+        try bridge.transcodePacket(pkt, inputStreamIndex: videoInputStreamIndex) { [self] encoded in
+            try routeVideoPacketToMux(
+                encoded,
+                outStreamIndex: outStreamIndex,
+                inputStreamIndex: videoInputStreamIndex
+            )
+        }
+    }
+
+    /// Clean-EOF drain for the bridge. Runs before `finishTranscodedAudio` and
+    /// before `flushPendingMuxVideoPacket(nextDTS: nil)` so the encoder's last
+    /// GOP is routed while the look-behind can still telescope its duration.
+    private func finishTranscodedVideo() throws {
+        guard videoOutputMode.isBridged,
+              let bridge = videoBridge,
+              let outIdx = streamMap[videoInputStreamIndex] else { return }
+        try bridge.finish(inputStreamIndex: videoInputStreamIndex) { [self] encoded in
+            try routeVideoPacketToMux(
+                encoded,
+                outStreamIndex: Int32(outIdx),
+                inputStreamIndex: videoInputStreamIndex
+            )
+        }
+    }
+
+    /// A bridged restart's video gate opens on the encoder's first emitted
+    /// packet, not on a source keyframe: the input-side gate deliberately lets
+    /// everything through so the decoder can warm up from the source keyframe
+    /// preceding the anchor boundary.
+    private func openBridgedRestartGateIfNeeded(_ pkt: UnsafeMutablePointer<AVPacket>) {
+        guard vodActive, videoOutputMode.isBridged else { return }
+        if vodAwaitingRestartKeyframe {
+            vodAwaitingRestartKeyframe = false
+            vodFirstRoutedVideoDts = pkt.pointee.dts
+            print("[CMP-AVP] vod bridged restart gate opened at pts=\(pkt.pointee.pts) droppedAudio=\(vodPrerollDroppedAudio) segment=\(vodEffectiveBaseIndex)")
+            return
+        }
+        if vodFirstRoutedVideoDts == nil {
+            vodFirstRoutedVideoDts = pkt.pointee.dts
+        }
     }
 
     private func openAudioTranscodePipeline(
@@ -4898,7 +5258,10 @@ final class LoopbackSegmentWriter {
     private func shouldDropCorruptHEVCVideoPacket(
         _ pkt: UnsafeMutablePointer<AVPacket>
     ) -> Bool {
-        guard videoMode != .passthroughH264,
+        // Bridged sources are not HEVC — walking their packets as
+        // length-prefixed HEVC would reject every one of them.
+        guard videoOutputMode == .copy,
+              videoMode != .passthroughH264,
               let data = pkt.pointee.data,
               pkt.pointee.size > 0 else { return false }
         let packetBytes = UnsafeBufferPointer(
@@ -5134,6 +5497,7 @@ final class LoopbackSegmentWriter {
         // payloads: the original whole-packet sweep on every video packet of
         // a plain-HDR10 film was the ~12 Mbps producer ceiling.
         if inputStreamIndex == videoInputStreamIndex,
+           videoOutputMode == .copy,
            onHDR10PlusMetadataDetected != nil,
            hdr10PlusSEIDetector.isActive,
            let packetData = pkt.pointee.data,
@@ -5834,6 +6198,16 @@ final class LoopbackSegmentWriter {
             pendingSegmentBytes = Data()
             pendingSegmentHasVideo = false
             pendingSegmentHasMoof = false
+            return
+        }
+        guard pendingSegmentHasMoof else {
+            // `av_write_trailer` emits `mfra`/`mfro` after the last fragment,
+            // and the box splitter's catch-all arm parks them in a fresh
+            // pending buffer. Publishing that as a media segment reuses the
+            // last segment's plan-indexed name and overwrites the real one
+            // with an index box AVPlayer cannot decode.
+            pendingSegmentBytes = Data()
+            pendingSegmentHasVideo = false
             return
         }
         let segmentHasVideo = pendingSegmentHasVideo
@@ -6620,6 +6994,11 @@ final class LoopbackSegmentWriter {
         if audioDecodedFrame != nil {
             av_frame_free(&audioDecodedFrame)
         }
+        // After the input context is handed off / closed: the bridge holds no
+        // reference to it, but freeing the codecs last keeps the ordering
+        // identical to the audio bridge's.
+        videoBridge?.teardown()
+        videoBridge = nil
         lastMuxedDTSByStream.removeAll()
         lastMuxedPTSByStream.removeAll()
         lastResolvedVideoDurationByStream.removeAll()
@@ -6673,6 +7052,14 @@ enum LoopbackWriterError: Error {
     case writeHeader(Int32)
     case unsupportedSelectedAudioCodec(String)
     case audioTranscodeSetup(String)
+    /// The video bridge could not be built or kept running: no decoder for the
+    /// source codec, no VideoToolbox encoder, no parameter sets, or a
+    /// mid-session encode failure. Parallels `audioTranscodeSetup`.
+    case videoTranscodeSetup(String)
+    /// Sustained software-decode + encode throughput fell below realtime, so
+    /// the producer can never stay ahead of the playhead. Failing routes the
+    /// session to server HLS transcode instead of stuttering indefinitely.
+    case videoBridgeTooSlow(fps: Double, required: Double)
     /// The pre-mux bootstrap could not produce a decodable stream head — no
     /// IRAP keyframe within the scan caps, or no parameter sets anywhere.
     /// Muxing anyway yields a presentation AVPlayer freezes on; failing the

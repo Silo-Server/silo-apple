@@ -1423,6 +1423,10 @@ final class AVPlayerBackend {
                 sourceStartTimeSeconds: startTime,
                 sourceBitrateBps: spec.sourceBitrateBps,
                 videoMode: spec.videoMode,
+                videoOutputMode: spec.videoOutputMode,
+                sourceVideoWidth: spec.sourceVideoWidth,
+                sourceVideoHeight: spec.sourceVideoHeight,
+                bridgedVideoParameterSets: spec.bridgedVideoParameterSets,
                 sourceVideoFrameRate: spec.sourceVideoFrameRate,
                 selectedAudio: LoopbackSessionSpec.SelectedAudio(
                     trackIndex: selectedTrackIndex,
@@ -2117,6 +2121,22 @@ final class AVPlayerBackend {
                         segmentIndex
                     )
                 }
+            }
+        }
+        writer.onBridgedVideoParameterSetsResolved = { [weak self] parameterSets in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isDisposed else { return }
+                guard self.activeLoopbackSessionID == sessionID else { return }
+                // AVPlayer fetches EXT-X-MAP once per item, so every restarted
+                // producer must install THIS session's parameter sets rather
+                // than whatever its own fresh encoder synthesizes. Pinning them
+                // on the strategy's spec is enough: `reanchored(at:)` carries
+                // the field into the restart.
+                guard case .some(.siloLoopback(let current)) = self.currentSourceStrategy,
+                      current.bridgedVideoParameterSets == nil else { return }
+                self.currentSourceStrategy = .siloLoopback(
+                    spec: current.carryingBridgedVideoParameterSets(parameterSets)
+                )
             }
         }
         writer.onSegmentPlanResolved = { [weak self] plan in

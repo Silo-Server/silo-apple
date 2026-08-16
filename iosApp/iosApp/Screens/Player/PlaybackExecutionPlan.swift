@@ -105,6 +105,56 @@ struct LoopbackSessionSpec {
         }
     }
 
+    /// How the loopback writer produces the VIDEO track. Deliberately a
+    /// sibling of `VideoMode` rather than more cases on it: `VideoMode` is the
+    /// Dolby-Vision / sample-entry decision and is switched exhaustively in a
+    /// dozen places, while this answers the orthogonal "copy the source
+    /// bitstream or re-encode it" question. Mirrors `AudioOutputMode`.
+    enum VideoOutputMode: Equatable {
+        /// Today's remux. The only value for Dolby Vision, HEVC, and H.264.
+        case copy
+        /// FFmpeg software decode → `hevc_videotoolbox` encode.
+        case transcodeHEVC
+        /// Same pipeline through `h264_videotoolbox`; the fallback when the
+        /// HEVC encoder cannot be opened on this device.
+        case transcodeH264
+        /// AV1 remuxed as-is because the device has hardware AV1 decode.
+        case passthroughAV1
+
+        var isBridged: Bool {
+            self == .transcodeHEVC || self == .transcodeH264
+        }
+
+        /// Sample entry fourcc the muxer must write when this mode decides it.
+        /// `.copy` returns nil and defers to `VideoMode.sampleEntryCodec`,
+        /// which owns the Dolby Vision `dvh1` distinction.
+        var sampleEntryCodec: String? {
+            switch self {
+            case .copy:
+                return nil
+            case .transcodeHEVC:
+                return "hvc1"
+            case .transcodeH264:
+                return "avc1"
+            case .passthroughAV1:
+                return "av01"
+            }
+        }
+
+        var logToken: String {
+            switch self {
+            case .copy:
+                return "copy"
+            case .transcodeHEVC:
+                return "bridge_hevc"
+            case .transcodeH264:
+                return "bridge_h264"
+            case .passthroughAV1:
+                return "av1_passthrough"
+            }
+        }
+    }
+
     struct SelectedAudio: Equatable {
         let trackIndex: Int
         let ffIndex: Int?
@@ -144,6 +194,21 @@ struct LoopbackSessionSpec {
     let sourceStartTimeSeconds: Double
     let sourceBitrateBps: Double?
     let videoMode: VideoMode
+    /// Whether the writer copies the source video bitstream or bridges it
+    /// through decode + VideoToolbox encode. Defaults to `.copy` so every
+    /// pre-existing construction site keeps today's behavior.
+    let videoOutputMode: VideoOutputMode
+    /// Source video dimensions when the planner knows them. Consumed by the
+    /// bridge's bitrate ladder; nil leaves the ladder on the decoded frame's
+    /// own dimensions.
+    let sourceVideoWidth: Int?
+    let sourceVideoHeight: Int?
+    /// The `hvcC` / `avcC` record the FIRST bridged producer of this player
+    /// item published. AVPlayer fetches `EXT-X-MAP` once per item, so a
+    /// restarted producer must install the original parameter sets rather
+    /// than whatever its own fresh encoder session synthesizes; the writer
+    /// also asserts the two match and fails the session if they do not.
+    let bridgedVideoParameterSets: Data?
     let sourceVideoFrameRate: Float?
     let selectedAudio: SelectedAudio
     let availableAudioTracks: [PlayerTrack]
@@ -156,6 +221,10 @@ struct LoopbackSessionSpec {
         sourceStartTimeSeconds: Double = 0,
         sourceBitrateBps: Double? = nil,
         videoMode: VideoMode,
+        videoOutputMode: VideoOutputMode = .copy,
+        sourceVideoWidth: Int? = nil,
+        sourceVideoHeight: Int? = nil,
+        bridgedVideoParameterSets: Data? = nil,
         sourceVideoFrameRate: Float?,
         selectedAudio: SelectedAudio,
         availableAudioTracks: [PlayerTrack],
@@ -169,6 +238,10 @@ struct LoopbackSessionSpec {
             : 0
         self.sourceBitrateBps = sourceBitrateBps
         self.videoMode = videoMode
+        self.videoOutputMode = videoOutputMode
+        self.sourceVideoWidth = sourceVideoWidth
+        self.sourceVideoHeight = sourceVideoHeight
+        self.bridgedVideoParameterSets = bridgedVideoParameterSets
         self.sourceVideoFrameRate = sourceVideoFrameRate
         self.selectedAudio = selectedAudio
         self.availableAudioTracks = Self.markSelectedAudioTrack(
@@ -177,6 +250,13 @@ struct LoopbackSessionSpec {
         )
         self.manifestMetadata = manifestMetadata
         self.servingMode = servingMode
+    }
+
+    /// Diagnostics token for the video normalization actually performed. A
+    /// bridged or AV1-passthrough session's `videoMode` only describes the
+    /// sample entry, so reporting it alone would read as a plain remux.
+    var videoNormalizationLogToken: String {
+        videoOutputMode == .copy ? videoMode.logToken : videoOutputMode.logToken
     }
 
     /// The selected mux input is authoritative. The planner can resolve it
@@ -226,6 +306,32 @@ struct LoopbackSessionSpec {
             sourceStartTimeSeconds: mediaSeconds,
             sourceBitrateBps: sourceBitrateBps,
             videoMode: videoMode,
+            videoOutputMode: videoOutputMode,
+            sourceVideoWidth: sourceVideoWidth,
+            sourceVideoHeight: sourceVideoHeight,
+            bridgedVideoParameterSets: bridgedVideoParameterSets,
+            sourceVideoFrameRate: sourceVideoFrameRate,
+            selectedAudio: selectedAudio,
+            availableAudioTracks: availableAudioTracks,
+            manifestMetadata: manifestMetadata,
+            servingMode: servingMode
+        )
+    }
+
+    /// Pins the parameter sets a restarted bridged producer must reproduce.
+    /// Called once per player item, from the backend's
+    /// `onBridgedVideoParameterSetsResolved` handler.
+    func carryingBridgedVideoParameterSets(_ data: Data) -> LoopbackSessionSpec {
+        LoopbackSessionSpec(
+            sourceURL: sourceURL,
+            headers: headers,
+            sourceStartTimeSeconds: sourceStartTimeSeconds,
+            sourceBitrateBps: sourceBitrateBps,
+            videoMode: videoMode,
+            videoOutputMode: videoOutputMode,
+            sourceVideoWidth: sourceVideoWidth,
+            sourceVideoHeight: sourceVideoHeight,
+            bridgedVideoParameterSets: data,
             sourceVideoFrameRate: sourceVideoFrameRate,
             selectedAudio: selectedAudio,
             availableAudioTracks: availableAudioTracks,
