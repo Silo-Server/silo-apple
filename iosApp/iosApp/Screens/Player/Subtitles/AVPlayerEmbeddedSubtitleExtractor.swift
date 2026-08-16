@@ -81,8 +81,6 @@ private final class ExtractorInterruptToken {
 }
 
 final class AVPlayerEmbeddedSubtitleExtractor {
-    // Temporary [CMP-LIFE]: session-pool leak attribution.
-    deinit { print("[CMP-LIFE] deinit AVPlayerEmbeddedSubtitleExtractor") }
     private static let maxReadAheadSeconds: Double = 45
 
     private struct SlotSelection {
@@ -312,13 +310,14 @@ final class AVPlayerEmbeddedSubtitleExtractor {
                 }
             }
             let seekedAt = CACurrentMediaTime()
-            print(String(
+            let logLine = String(
                 format: "[CMP-SUBX] extractor pipeline openMs=%.0f streamInfoMs=%.0f seekMs=%.0f start=%.1f stream=%d",
                 (openedAt - decodeStartedAt) * 1000,
                 (streamInfoAt - openedAt) * 1000,
                 (seekedAt - streamInfoAt) * 1000,
                 selection.startSeconds, selection.streamIndex
-            ))
+            )
+            cmpLog(logLine)
 
             guard let decoder = openSubtitleDecoder(
                 formatCtx: ctx,

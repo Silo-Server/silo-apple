@@ -167,7 +167,7 @@ struct TVPlayerScrubber: View {
                 }
             }
             .accessibilityLabel("Scrubber")
-            .accessibilityValue(Text(formatTime(displayTime)))
+            .accessibilityValue(Text(PlayerTimeFormatter.formatHMS(displayTime)))
     }
 
     // MARK: - Bar
@@ -472,10 +472,6 @@ struct TVPlayerScrubber: View {
     private func stepTimelineHold(direction: Int) {
         let step = direction < 0 ? -Self.timelineHoldBackwardStep : Self.timelineHoldForwardStep
         stepTimeline(by: step)
-    }
-
-    private func formatTime(_ seconds: Double) -> String {
-        PlayerTimeFormatter.formatHMS(seconds)
     }
 }
 #endif

@@ -58,9 +58,6 @@ struct SidecarSubtitleDescriptor: Hashable {
 }
 
 final class SubtitleSession {
-    // Temporary [CMP-LIFE]: session-pool leak attribution.
-    deinit { print("[CMP-LIFE] deinit SubtitleSession") }
-
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "SubtitleSession"

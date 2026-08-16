@@ -183,7 +183,7 @@ final class LoopbackSegmentStore {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 resolvedSpillDirectory = dir
             } catch {
-                print("[CMP-HLS-STORE] spill directory create failed")
+                cmpLog("[CMP-HLS-STORE] spill directory create failed")
                 Self.logger.error(
                     "[CMP-HLS-STORE] spill directory create failed error=\(String(describing: error), privacy: .private)"
                 )
@@ -197,7 +197,6 @@ final class LoopbackSegmentStore {
     }
 
     deinit {
-        print("[CMP-LIFE] deinit LoopbackSegmentStore")
         if let spillDirectory {
             try? FileManager.default.removeItem(at: spillDirectory)
         }
@@ -293,7 +292,7 @@ final class LoopbackSegmentStore {
         }
         guard stored else {
             let description = String(describing: writeError)
-            print("[CMP-HLS-STORE] VOD disk write failed after retry; retaining active segment in memory")
+            cmpLog("[CMP-HLS-STORE] VOD disk write failed after retry; retaining active segment in memory")
             Self.logger.error(
                 "[CMP-HLS-STORE] VOD disk write failed after retry error=\(description, privacy: .private); retaining active segment in memory"
             )
@@ -548,7 +547,7 @@ final class LoopbackSegmentStore {
         var superseded = false
         var outOfBandChecks = 0
         lock.lock()
-        print("[CMP-HLS-STORE] waitForSegment enter name=\(normalized) evicted=\(evictedResources.contains(normalized) ? 1 : 0) present=\(segments[normalized] != nil ? 1 : 0)")
+        cmpLog("[CMP-HLS-STORE] waitForSegment enter name=\(normalized) evicted=\(evictedResources.contains(normalized) ? 1 : 0) present=\(segments[normalized] != nil ? 1 : 0)", verbose: true)
         while segments[normalized] == nil,
               progressiveSegments[normalized] == nil,
               spillingSegments[normalized] == nil,
@@ -574,7 +573,7 @@ final class LoopbackSegmentStore {
         let result = resource(path: normalized, waitForNearFuture: false)
         let found: Bool
         if case .found = result { found = true } else { found = false }
-        print("[CMP-HLS-STORE] waitForSegment exit name=\(normalized) found=\(found ? 1 : 0) superseded=\(superseded ? 1 : 0) waitedMs=\(Int((CFAbsoluteTimeGetCurrent() - started) * 1000))")
+        cmpLog("[CMP-HLS-STORE] waitForSegment exit name=\(normalized) found=\(found ? 1 : 0) superseded=\(superseded ? 1 : 0) waitedMs=\(Int((CFAbsoluteTimeGetCurrent() - started) * 1000))", verbose: true)
         return result
     }
 
