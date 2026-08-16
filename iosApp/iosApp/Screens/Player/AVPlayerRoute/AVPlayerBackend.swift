@@ -4626,38 +4626,14 @@ final class AVPlayerBackend {
         }
     }
 
+    /// The loopback audio decision lives in `ApplePlaybackRoutePlanner` so an
+    /// in-place audio-track switch resolves exactly the same output mode (and
+    /// Atmos claim) as the initial route plan.
     private static func loopbackAudioOutputMode(for track: PlayerTrack) -> LoopbackSessionSpec.AudioOutputMode {
-        switch normalizedCodecToken(track.codec) {
-        case "aac", "ac3", "eac3":
-            return .copy
-        case "truehd":
-            return .requireFLAC
-        default:
-            if let channelCount = track.audioChannelCount, channelCount > 2 {
-                return .transcodeFLAC
-            }
-            return .transcodeAAC
-        }
+        ApplePlaybackRoutePlanner.loopbackAudioOutputMode(for: track)
     }
 
     private static func loopbackPreservesAtmos(for track: PlayerTrack) -> Bool {
-        guard normalizedCodecToken(track.codec) == "eac3" else { return false }
-        let title = track.title?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        return title?.contains("atmos") == true || title?.contains("joc") == true
-    }
-
-    private static func normalizedCodecToken(_ raw: String?) -> String? {
-        let token = raw?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "-", with: "")
-        switch token {
-        case "dolbytruehd", "mlp", "mlpa":
-            return "truehd"
-        default:
-            return token
-        }
+        ApplePlaybackRoutePlanner.loopbackAudioPreservesAtmos(for: track)
     }
 }
