@@ -7,8 +7,8 @@
 //  provided sidecar URLs) to the libass-backed `SubtitleRenderer`. Also
 //  owns the sidecar fetch tasks and the in-session content cache.
 //
-//  Lives for the lifetime of one playback session. Held by `PlayerCore`
-//  via a strong reference; torn down in `PlayerCore.dispose`.
+//  Lives for the lifetime of one playback session. Held by
+//  `AVPlayerBackend` via a strong reference; torn down on dispose.
 //
 
 import Foundation
@@ -91,11 +91,10 @@ final class SubtitleSession {
     /// `liveSlots`, `stylingParams`). Mirrors the `handleLock` idiom in
     /// `SubtitleRenderer`.
     ///
-    /// The two playback backends call into this session from different
-    /// queues — the CoreMedia route from `PlayerCore.controlQueue`, the
-    /// AVPlayer route's live methods from main while
-    /// `AVPlayerEmbeddedSubtitleExtractor` mutates the same fields from a
-    /// global queue — so caller serialization is not sufficient.
+    /// Callers reach this session from different queues — the backend's
+    /// live methods from main while `AVPlayerEmbeddedSubtitleExtractor`
+    /// mutates the same fields from a global queue — so caller
+    /// serialization is not sufficient.
     ///
     /// CRITICAL: hold this lock ONLY around field access. Snapshot the
     /// needed values under the lock, release, THEN call into `renderer.*`
@@ -165,7 +164,7 @@ final class SubtitleSession {
     /// Guarded by `lock`.
     private var liveSlots: Set<SubtitleSlot> = []
 
-    /// Current user styling parameters. Snapshot updated by PlayerCore
+    /// Current user styling parameters. Snapshot updated by the backend
     /// when `applySubtitleStyling` is called. Guarded by `lock`.
     private var stylingParams: SubtitleStylingOverride.Parameters = .default
 
@@ -210,7 +209,7 @@ final class SubtitleSession {
         self.fetcher = fetcher
     }
 
-    /// Handle on the underlying renderer — exposed so PlayerCore can
+    /// Handle on the underlying renderer — exposed so the backend can
     /// drive display-link ticks and overlay views can read the current
     /// frame size bookkeeping.
     var underlyingRenderer: SubtitleRenderer { renderer }
@@ -293,7 +292,7 @@ final class SubtitleSession {
     /// (either authored, for native ASS, or FFmpeg-synthesized for
     /// SRT/WebVTT/MOVTEXT codecs).
     ///
-    /// Called from `PlayerCore` on its control queue.
+    /// Called from the embedded-subtitle extractor on its own queue.
     func openEmbedded(
         slot: SubtitleSlot,
         isNativeASS: Bool,
@@ -545,7 +544,7 @@ final class SubtitleSession {
 
     // MARK: - Embedded event feed
 
-    /// Called by `PlayerCore.decodeSubtitlePacket` for each decoded
+    /// Called by the embedded-subtitle extractor for each decoded
     /// packet. `eventText` is the raw `rect.ass` string from FFmpeg
     /// (the Dialogue event content, not the whole `Dialogue:` line).
     func feedEmbedded(
@@ -652,7 +651,7 @@ final class SubtitleSession {
 
     // MARK: - Lifecycle
 
-    /// Stop all fetches, drop all tracks. Called by `PlayerCore.dispose`.
+    /// Stop all fetches, drop all tracks. Called on backend dispose.
     func teardown() {
         // Snapshot + clear all guarded state under the lock, then cancel
         // the captured tasks and drop renderer tracks outside it.

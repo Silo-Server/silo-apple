@@ -282,35 +282,6 @@ final class PlaybackSourceProxyOutageTests: XCTestCase {
 /// 10 s base allowance measured from span start), racing the redriven bytes
 /// and forcing a visible reload.
 final class LoopbackInterruptTokenDeadlineTests: XCTestCase {
-    func testCoreMediaDemuxWatchdogIgnoresIntentionalPause() {
-        XCTAssertFalse(
-            CoreMediaDemuxInterruptPolicy.shouldAbort(
-                cancelled: false,
-                userPaused: true,
-                secondsSinceProgress: 120,
-                timeoutSeconds: 10
-            )
-        )
-        // Startup and seek restarts run with the playback clock at rate 0
-        // without a user pause — the watchdog must stay armed there.
-        XCTAssertTrue(
-            CoreMediaDemuxInterruptPolicy.shouldAbort(
-                cancelled: false,
-                userPaused: false,
-                secondsSinceProgress: 10.1,
-                timeoutSeconds: 10
-            )
-        )
-        XCTAssertTrue(
-            CoreMediaDemuxInterruptPolicy.shouldAbort(
-                cancelled: true,
-                userPaused: true,
-                secondsSinceProgress: 0,
-                timeoutSeconds: 10
-            )
-        )
-    }
-
     private func makeToken(outage: @escaping () -> Bool) -> LoopbackInterruptToken {
         let token = LoopbackInterruptToken()
         token.setSourceOutageProvider(outage)

@@ -441,19 +441,11 @@ struct PlayerView: View {
     /// `MobilePlayerGestureLayer`, mounted above this surface.
     ///
     /// Render the active backend surface directly from the VM's route state.
-    /// AVPlayer now covers HLS, the narrow native-direct allowlist, and the
-    /// Dolby Vision loopback fallback; PlayerCore remains the compatibility
-    /// direct path.
+    /// Every route is AVPlayer-backed: server HLS, the narrow native-direct
+    /// allowlist, and the SiloPlayer loopback.
     @ViewBuilder
     private func playerSurface(ignoresSafeArea: Bool = true) -> some View {
-        switch viewModel.activePlayer {
-        case .none:
-            if ignoresSafeArea {
-                Color.black.ignoresSafeArea()
-            } else {
-                Color.black
-            }
-        case .avPlayer(let backend):
+        if let backend = viewModel.avPlayerBackend {
             let surface = AVPlayerSurface(
                 backend: backend,
                 videoGravity: viewModel.settings.videoGravity.avGravity
@@ -463,16 +455,10 @@ struct PlayerView: View {
             } else {
                 surface
             }
-        case .coreMedia(let core):
-            let surface = PlayerSurface(
-                player: core,
-                videoGravity: viewModel.settings.videoGravity.avGravity
-            )
-            if ignoresSafeArea {
-                surface.ignoresSafeArea()
-            } else {
-                surface
-            }
+        } else if ignoresSafeArea {
+            Color.black.ignoresSafeArea()
+        } else {
+            Color.black
         }
     }
 

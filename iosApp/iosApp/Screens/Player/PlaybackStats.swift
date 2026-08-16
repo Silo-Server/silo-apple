@@ -39,10 +39,6 @@ struct PlaybackStats: Equatable {
     var bufferStatus: String?
     var bufferedAheadSeconds: Double?
     var bufferLoadCount: Int?
-    var seekCount: UInt64?
-    var coalescedSeekCount: UInt64?
-    var lastSeekLatencySeconds: Double?
-    var avsyncRecoveryCount: UInt64?
     var averageFileBitrateBps: Double?
     var currentDownloadBitrateBps: Double?
     var observedBitrateBps: Double?
@@ -86,11 +82,6 @@ struct PlaybackStats: Equatable {
     var segmentServerBytesServed: Int64?
     var segmentServerLastLatencyMs: Double?
     var segmentServerWaitCount: Int64?
-    var displayedVideoFrames: UInt64?
-    var droppedVideoFrames: UInt64?
-    var videoQueueDepth: Int?
-    var decodedVideoQueueDepth: Int?
-    var audioQueueDepth: Int?
     var deviceInfo: String?
     var freeDiskSpaceBytes: Int64?
     var volumeAvailableCapacityBytes: Int64?
@@ -117,7 +108,7 @@ extension PlaybackStats {
         let wanted = [
             "Route", "Source", "Container", "Created by",
             "Video", "Audio", "Dynamic range", "Subtitles",
-            "Buffer status", "Buffered ahead", "Dropped frames",
+            "Buffer status", "Buffered ahead",
             // Indicated/Observed are the fallbacks `networkRows` emits when
             // the average/download pair is unavailable on the active route,
             // so both spellings have to be listed or the bitrate line just
@@ -184,34 +175,6 @@ extension PlaybackStats {
         }
         if let bufferLoadCount {
             rows.append(("Buffer load count", "\(bufferLoadCount)"))
-        }
-        if let seekCount, seekCount > 0 {
-            var value = "\(seekCount)"
-            if let coalescedSeekCount, coalescedSeekCount > 0 {
-                value += " (+\(coalescedSeekCount) coalesced)"
-            }
-            rows.append(("Seeks", value))
-        }
-        if let lastSeekLatencySeconds {
-            rows.append(("Last seek latency", String(format: "%.2f s", lastSeekLatencySeconds)))
-        }
-        if let avsyncRecoveryCount, avsyncRecoveryCount > 0 {
-            rows.append(("A/V sync recoveries", "\(avsyncRecoveryCount)"))
-        }
-        if let displayedVideoFrames {
-            rows.append(("Displayed frames", "\(displayedVideoFrames)"))
-        }
-        if let droppedVideoFrames {
-            rows.append(("Dropped frames", "\(droppedVideoFrames)"))
-        }
-        if let decodedVideoQueueDepth {
-            rows.append(("Decoded queue", "\(decodedVideoQueueDepth)"))
-        }
-        if let videoQueueDepth {
-            rows.append(("Video packets", "\(videoQueueDepth)"))
-        }
-        if let audioQueueDepth {
-            rows.append(("Audio packets", "\(audioQueueDepth)"))
         }
         return rows
     }

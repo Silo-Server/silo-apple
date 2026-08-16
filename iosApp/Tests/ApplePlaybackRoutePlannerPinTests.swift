@@ -194,7 +194,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             "audio_aac",
             "silo_assessment",
             "silo_not_needed",
-            "fallback_order_native_silo_compatibility"
+            "fallback_order_native_silo_hls"
         ])
     }
 
@@ -237,13 +237,13 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertNil(result.loopbackSession?.manifestMetadata.compatibilityBrand)
         XCTAssertTrue(result.decisionTrace.contains("silo_vod_gate_open"))
         XCTAssertTrue(result.decisionTrace.contains("h264_container_loopback_selected"))
-        XCTAssertTrue(result.decisionTrace.contains("fallback_order_silo_compatibility"))
+        XCTAssertTrue(result.decisionTrace.contains("fallback_order_silo_hls"))
         XCTAssertEqual(result.normalizationSummary.containerMode, "local_fmp4_hls")
         XCTAssertEqual(result.normalizationSummary.videoMode, "h264_passthrough")
         XCTAssertEqual(result.normalizationSummary.audioMode, "copy")
     }
 
-    func testMKVH264FallsBackToPlayerCoreWhenGateClosed() {
+    func testMKVH264FallsBackToServerHLSWhenGateClosed() {
         let version = makeVersion(
             container: "mkv",
             codecVideo: "h264",
@@ -252,8 +252,8 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         )
         let result = plan(version: version, siloPlayerPrimaryEnabled: false)
 
-        XCTAssertEqual(result.engine, .playerCoreDirect)
-        XCTAssertEqual(result.reason, "native_direct_blocked")
+        XCTAssertEqual(result.engine, .avPlayerHLS)
+        XCTAssertEqual(result.reason, "native_direct_blocked_hls_fallback")
         XCTAssertNil(result.loopbackSession)
         XCTAssertEqual(result.parityBlockers, [
             "container_not_allowlisted",
@@ -273,11 +273,11 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             "silo_reason_h264_container_loopback",
             "silo_h264_loopback_disabled",
             "silo_blocker_h264_loopback_startup_unreliable",
-            "fallback_order_compatibility_only",
+            "fallback_order_hls_controlled_retry",
             "blocker_container_not_allowlisted",
             "blocker_silo_h264_loopback_startup_unreliable"
         ])
-        XCTAssertEqual(result.normalizationSummary.videoMode, "compatibility_decode")
+        XCTAssertEqual(result.normalizationSummary.videoMode, "server_output")
     }
 
     // MARK: - 4: MKV / HEVC SDR, both gate states
@@ -300,7 +300,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertEqual(result.parityBlockers, [])
     }
 
-    func testMKVHEVCSDRFallsBackToPlayerCoreWhenGateClosed() {
+    func testMKVHEVCSDRFallsBackToServerHLSWhenGateClosed() {
         let version = makeVersion(
             container: "mkv",
             codecVideo: "hevc",
@@ -310,7 +310,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         )
         let result = plan(version: version, siloPlayerPrimaryEnabled: false)
 
-        XCTAssertEqual(result.engine, .playerCoreDirect)
+        XCTAssertEqual(result.engine, .avPlayerHLS)
         XCTAssertNil(result.loopbackSession)
         XCTAssertEqual(result.parityBlockers, [
             "container_not_allowlisted",
@@ -333,7 +333,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         )
         let result = plan(version: version, siloPlayerPrimaryEnabled: false)
 
-        XCTAssertEqual(result.engine, .playerCoreDirect)
+        XCTAssertEqual(result.engine, .avPlayerHLS)
         XCTAssertTrue(result.parityBlockers.contains("silo_hevc_sdr_loopback_startup_unreliable"))
     }
 
@@ -605,9 +605,9 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertEqual(plan(version: eac3).reason, "hevc_container_loopback")
     }
 
-    // MARK: - 8: codecs and containers that fall through to PlayerCore
+    // MARK: - 8: codecs and containers that fall through to server HLS
 
-    func testUncopyableVideoAndContainersFallThroughToPlayerCore() {
+    func testUncopyableVideoAndContainersFallThroughToServerHLS() {
         struct Case {
             let container: String
             let videoCodec: String
@@ -652,11 +652,11 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             )
             let result = plan(version: version)
 
-            XCTAssertEqual(result.engine, .playerCoreDirect, label)
-            XCTAssertEqual(result.reason, "native_direct_blocked", label)
+            XCTAssertEqual(result.engine, .avPlayerHLS, label)
+            XCTAssertEqual(result.reason, "native_direct_blocked_hls_fallback", label)
             XCTAssertNil(result.loopbackSession, label)
             XCTAssertEqual(result.parityBlockers, testCase.expectedBlockers, label)
-            XCTAssertEqual(result.routeFamily, .compatibilityPlayer, label)
+            XCTAssertEqual(result.routeFamily, .nativePlayer, label)
         }
     }
 
@@ -682,7 +682,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertEqual(result.normalizationSummary.subtitleMode, "extract_or_sidecar")
     }
 
-    func testMandatoryDVBSubtitlesBlockLoopbackAndFallBackToPlayerCore() {
+    func testMandatoryDVBSubtitlesBlockLoopbackAndFallBackToServerHLS() {
         let version = makeVersion(
             container: "mkv",
             codecVideo: "h264",
@@ -692,11 +692,11 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         )
         let result = plan(version: version, siloPlayerPrimaryEnabled: true)
 
-        XCTAssertEqual(result.engine, .playerCoreDirect)
+        XCTAssertEqual(result.engine, .avPlayerHLS)
         XCTAssertEqual(result.parityBlockers, [
             "container_not_allowlisted",
-            "embedded_subtitles_require_compatibility",
-            "silo_bitmap_subtitles_require_compatibility"
+            "embedded_subtitles_require_hls",
+            "silo_bitmap_subtitles_require_hls"
         ])
         XCTAssertTrue(result.decisionTrace.contains("silo_bitmap_subtitles_dvb_subtitle"))
     }
@@ -749,16 +749,18 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         ])
         XCTAssertEqual(enabled.normalizationSummary.containerMode, "transcode")
 
-        let disabled = plan(
+        // The legacy HLS parity flag no longer gates anything: server HLS is
+        // the only way to present a transcode session.
+        let flagOff = plan(
             version: version,
             session: makeSession(playMethod: "transcode", position: 42),
             hlsRouteFeatureEnabled: false
         )
-        XCTAssertEqual(disabled.engine, .playerCoreDirect)
-        XCTAssertEqual(disabled.reason, "parity_gate_blocked")
-        XCTAssertFalse(disabled.featureFlagEnabled)
-        XCTAssertEqual(disabled.parityBlockers, ["feature_flag_off"])
-        XCTAssertTrue(disabled.decisionTrace.contains("avplayer_hls_disabled"))
+        XCTAssertEqual(flagOff.engine, .avPlayerHLS)
+        XCTAssertEqual(flagOff.reason, "apple_hls_route_enabled")
+        XCTAssertTrue(flagOff.featureFlagEnabled)
+        XCTAssertEqual(flagOff.parityBlockers, [])
+        XCTAssertTrue(flagOff.decisionTrace.contains("avplayer_hls_enabled"))
     }
 
     func testRemuxDeliveryStartsAtTopOfManifest() {
@@ -1073,7 +1075,6 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
 
     func testPlaybackEngineKindLabels() {
         let expected: [(PlaybackEngineKind, String, PlaybackRouteFamily, String)] = [
-            (.playerCoreDirect, "playerCoreDirect", .compatibilityPlayer, "Compatibility Playback"),
             (.avPlayerHLS, "avPlayerHLS", .nativePlayer, "Server Stream"),
             (.avPlayerNativeDirect, "avPlayerNativeDirect", .nativePlayer, "Direct"),
             (.siloPlayerLoopback, "siloPlayerLoopback", .siloPlayer, "Direct Stream")

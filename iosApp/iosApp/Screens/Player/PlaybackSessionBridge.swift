@@ -229,9 +229,9 @@ actor PlaybackV3CapabilityGate {
 /// Manages the lifecycle of a playback session with the Continuum API.
 /// Handles session creation, periodic progress reporting, and cleanup.
 ///
-/// Apple playback now runs through the shared PlayerCore / AVPlayerBackend
-/// stack, so capability reporting needs to stay aligned with what those
-/// backends can actually direct-play.
+/// Apple playback runs entirely through the shared `AVPlayerBackend`, so
+/// capability reporting needs to stay aligned with what that backend can
+/// actually direct-play.
 actor PlaybackSessionBridge {
     private static let nearEndResumeSuppressionSeconds: Double = 5
     private static let pastEndResumeClampSeconds: Double = 0.25

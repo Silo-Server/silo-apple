@@ -5,12 +5,24 @@ import Libavcodec
 import Libavutil
 import VideoToolbox
 
+/// Dynamic-range int values. On tvOS these are the raw values the private
+/// `AVDisplayCriteria` initializer accepts; on iOS the enum is still useful
+/// as a classifier for the stream's transfer function driving EDR decisions.
+/// Named "Spike" historically (Phase 0 origin); kept as-is to avoid a rename
+/// churn.
+internal enum SpikeDynamicRange: Int32 {
+    case sdr = 0
+    case hdr10 = 2
+    case hlg = 3
+    case dolbyVision = 5
+}
+
 /// Pure-function helpers that translate FFmpeg color metadata
 /// (`AVColorPrimaries`, `AVColorTransferCharacteristic`, `AVColorSpace`,
 /// codec tag) into the matching CoreVideo / VideoToolbox attachment values.
-/// Lifted out of `PlayerCore` so the SDR/HDR pixel-format pick and the
+/// Lifted out of the old decode core so the SDR/HDR pixel-format pick and the
 /// colorimetry-string mapping can be reused by the CMSampleBuffer builders
-/// without going through PlayerCore static dispatch.
+/// without going through a player instance.
 enum VideoColorMetadata {
     static func normalizedColorRangeName(_ value: String?) -> String? {
         let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

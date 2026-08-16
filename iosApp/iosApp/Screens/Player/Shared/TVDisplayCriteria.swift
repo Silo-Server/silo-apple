@@ -9,11 +9,10 @@ import UIKit
 
 /// tvOS HDMI mode negotiation helpers. The compositor on Apple TV
 /// chooses HDMI refresh rate and HDR mode based on
-/// `AVDisplayManager.preferredDisplayCriteria`. PlayerCore drives this at
-/// load time (when stream FPS / dynamic range are known) and on dispose
-/// (to release the criteria so the system UI returns to its preferred
-/// mode). The Profile-5 gate stays on PlayerCore because it owns the
-/// observation lifetime.
+/// `AVDisplayManager.preferredDisplayCriteria`. `AVPlayerBackend` drives
+/// this before item creation (when stream FPS / dynamic range are known)
+/// and on dispose (to release the criteria so the system UI returns to its
+/// preferred mode).
 enum TVDisplayCriteria {
     /// The color signaling the TV compositor needs to choose an HDMI mode.
     /// Dolby Vision keeps its base-layer transfer because Profile 8.1 is PQ,
@@ -116,7 +115,7 @@ enum TVDisplayCriteria {
             // Profile 8 variant (8.1 PQ, 8.2 Rec.709 SDR, 8.4 HLG) — asking
             // for PQ on an SDR base negotiates a mode the base-layer pixels
             // are not graded for. Shared with the format description
-            // `PlayerCore` hands the decoder, so the mode the panel is asked
+            // the backend hands the decoder, so the mode the panel is asked
             // for and the frames it is handed cannot describe different
             // transfers.
             codecType = kCMVideoCodecType_DolbyVisionHEVC
@@ -213,38 +212,5 @@ enum TVDisplayCriteria {
         return screen.currentEDRHeadroom > HDRDisplayCriteriaPolicy.hdrHeadroomFloor
     }
 
-    @MainActor
-    static func apply(refreshRate: Float, contentFormat: ContentFormat) {
-        let outcome = setCriteria(contentFormat, refreshRate: refreshRate)
-        switch outcome {
-        case .noDisplayManager:
-            logger.warning("apply: no avDisplayManager")
-            print("[CMP] applyDisplayCriteria: no avDisplayManager (skipping HDMI negotiation)")
-        case .matchingDisabled:
-            logger.info("apply: matching disabled")
-            print("[CMP] applyDisplayCriteria: isDisplayCriteriaMatchingEnabled=false (user has 'Match Content' off)")
-        case .applied:
-            logger.info("apply: fps=\(refreshRate) format=\(String(describing: contentFormat))")
-            print(String(format:
-                "[CMP] applyDisplayCriteria APPLIED fps=%.3f format=%@ matching=true",
-                Double(refreshRate), String(describing: contentFormat)))
-        case .formatUnavailable:
-            logger.warning("apply: no criteria written format=\(String(describing: contentFormat))")
-            print("[CMP] applyDisplayCriteria: no criteria written format=\(contentFormat)")
-        }
-    }
-
-    static func clear(context: String) {
-        DispatchQueue.main.async {
-            guard let dm = activeTVWindow()?.avDisplayManager else {
-                logger.warning("clear: no avDisplayManager")
-                print("[CMP] clearDisplayCriteria context=\(context) manager=nil")
-                return
-            }
-            dm.preferredDisplayCriteria = nil
-            logger.info("clear context=\(context)")
-            print("[CMP] clearDisplayCriteria context=\(context) switchInProgress=\(dm.isDisplayModeSwitchInProgress ? 1 : 0)")
-        }
-    }
 }
 #endif

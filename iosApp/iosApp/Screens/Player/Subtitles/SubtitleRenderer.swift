@@ -431,7 +431,7 @@ final class SubtitleRenderer {
 
     // MARK: - Font attachment
 
-    /// Register an embedded font with libass. Called from `PlayerCore`
+    /// Register an embedded font with libass. Called from the demux side
     /// when it walks `AVMEDIA_TYPE_ATTACHMENT` streams on file open.
     /// Thread: any queue.
     func addEmbeddedFont(name: String, data: Data) {

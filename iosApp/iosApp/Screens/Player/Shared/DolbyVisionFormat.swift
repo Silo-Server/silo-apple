@@ -7,9 +7,9 @@ import VideoToolbox
 
 /// Dolby Vision configuration parsing, serialization, and routing strategy.
 /// All entry points are pure functions over the FFmpeg side data — there is
-/// no PlayerCore state captured here, so the same decisions can be made by
+/// no decode-core state captured here, so the same decisions can be made by
 /// alternate demux pipelines (e.g. AVPlayerBackend's loopback session
-/// resolver) without going through PlayerCore.
+/// resolver) without going through a player instance.
 enum DolbyVisionFormat {
     /// Parsed `AVDOVIDecoderConfigurationRecord` fields we care about. Kept as
     /// a plain struct so future FFmpeg layout changes can only break our
@@ -159,7 +159,7 @@ enum DolbyVisionFormat {
             // it goes into `kCMFormatDescriptionExtension_SampleDescription`
             // `ExtensionAtoms`, where VideoToolbox is the only authority on
             // what it accepts, and this is the combination Profile 8 decode
-            // was brought up on (see PlayerCore's `hvc1`-session note). Do not
+            // was brought up on (`hvc1` sessions reject `dvh1` samples). Do not
             // align it with the writer without validating P8 playback on an
             // Apple TV first; the two are not the same contract.
             return .native(boxKey: "dvcC", dr: .dolbyVision, requiresDvDisplay: false)

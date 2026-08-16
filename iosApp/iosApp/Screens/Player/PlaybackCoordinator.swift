@@ -5,7 +5,6 @@ import OSLog
 /// intentionally small at first: it wraps today's backends without changing VM
 /// behavior, then grows as fallback and recovery policy move out of the VM.
 final class PlaybackCoordinator {
-    typealias CoreFactory = () -> PlayerCore
     typealias AVPlayerFactory = (_ kind: PlaybackEngineKind) -> AVPlayerBackend
 
     private static let logger = Logger(
@@ -13,15 +12,10 @@ final class PlaybackCoordinator {
         category: "PlaybackCoordinator"
     )
 
-    private let makeCore: CoreFactory
     private let makeAVPlayer: AVPlayerFactory
     private(set) var activeEngine: PlaybackEngine?
 
-    init(
-        makeCore: @escaping CoreFactory,
-        makeAVPlayer: @escaping AVPlayerFactory
-    ) {
-        self.makeCore = makeCore
+    init(makeAVPlayer: @escaping AVPlayerFactory) {
         self.makeAVPlayer = makeAVPlayer
     }
 
@@ -36,13 +30,7 @@ final class PlaybackCoordinator {
     @discardableResult
     func installEngine(for kind: PlaybackEngineKind) -> PlaybackEngine {
         activeEngine?.dispose()
-        let engine: PlaybackEngine
-        switch kind {
-        case .playerCoreDirect:
-            engine = CompatibilityPlayerEngine(core: makeCore())
-        case .avPlayerHLS, .avPlayerNativeDirect, .siloPlayerLoopback:
-            engine = AVFoundationPlayerEngine(kind: kind, backend: makeAVPlayer(kind))
-        }
+        let engine = AVFoundationPlayerEngine(kind: kind, backend: makeAVPlayer(kind))
         activeEngine = engine
         Self.logger.info(
             "[CMP-ENGINE] installed kind=\(kind.label, privacy: .public) family=\(kind.routeFamily.diagnosticsLabel, privacy: .public)"

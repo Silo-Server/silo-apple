@@ -55,7 +55,7 @@ targetTemplates:
 
 packages:
   # FFmpeg xcframeworks (LGPL). Provides the Libavcodec / Libavformat /
-  # Libavutil / Libswresample modules consumed by CoreMediaPlayerCore.
+  # Libavutil / Libswresample modules consumed by the AVPlayer routes.
   # Smaller and cleaner than the old player dependency: ships only the
   # FFmpeg libraries with no libmpv GPL surface. Vendored copy of
   # mpvkit/ffmpeg-build at b38afaffe8a38c82c3922d36e044a915bf668f27 (tip of
@@ -101,7 +101,7 @@ targets:
         SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: "NO"
         SDKROOT: iphoneos
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
-        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
+        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/Shared/SiloPlayerBridging.h
       configs:
         Debug:
           APS_ENVIRONMENT: development
@@ -152,9 +152,9 @@ targets:
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
         SDKROOT: appletvos
         SUPPORTED_PLATFORMS: "appletvos appletvsimulator"
-        # Bridging header exposes the Obj-C audio graph exception catcher
-        # and the FFmpeg log filter on Apple targets.
-        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
+        # Bridging header exposes the Obj-C FFmpeg log filter on Apple
+        # targets.
+        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/Shared/SiloPlayerBridging.h
     dependencies:
       - package: FFmpeg
         product: FFmpeg
@@ -179,7 +179,6 @@ targets:
           - "TopShelf/**"
           - "tvOS/**"
           - "Screens/Player/AVPlayerRoute/AVPlayerSurface.swift"
-          - "Screens/Player/CoreMedia/PlayerSurface.swift"
           - "Screens/Player/iOS/**"
           - "Screens/Player/tvOS/**"
           - "Screens/Player/PlayerView.swift"
@@ -203,7 +202,7 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SDKROOT: macosx
         SUPPORTED_PLATFORMS: "macosx"
-        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
+        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/Shared/SiloPlayerBridging.h
     dependencies:
       - package: FFmpeg
         product: FFmpeg
@@ -349,8 +348,9 @@ targets:
         buildPhase: none
     dependencies:
       - target: Silo
-      # PacketQueueTests allocates real AVPackets, so the test bundle needs
-      # the Libav* module maps the app target gets from this package.
+      # ISOBoxSurgery / TrueHD / HDR10Plus tests build real AVPackets and
+      # bitstream buffers, so the test bundle needs the Libav* module maps
+      # the app target gets from this package.
       # link: false — the symbols come from the test host (BUNDLE_LOADER);
       # linking the static FFmpeg libs a second time fails the link.
       - package: FFmpeg
@@ -367,7 +367,7 @@ targets:
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         BUNDLE_LOADER: "$(TEST_HOST)"
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Silo.app/Silo"
-        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
+        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/Shared/SiloPlayerBridging.h
 
 schemes:
   Silo:

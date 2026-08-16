@@ -257,16 +257,10 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
     func testPlaybackCoordinatorReusesEngineForSameImplementationRoute() {
         var avPlayerBackendCreations = 0
-        let coordinator = PlaybackCoordinator(
-            makeCore: {
-                XCTFail("The AVFoundation route must not construct PlayerCore")
-                return PlayerCore()
-            },
-            makeAVPlayer: { _ in
-                avPlayerBackendCreations += 1
-                return AVPlayerBackend()
-            }
-        )
+        let coordinator = PlaybackCoordinator(makeAVPlayer: { _ in
+            avPlayerBackendCreations += 1
+            return AVPlayerBackend()
+        })
         defer { coordinator.dispose() }
 
         let initial = coordinator.prepareEngine(for: .siloPlayerLoopback)
@@ -313,7 +307,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         let streamRequest = makeStreamRequest()
         let base = makeBaseExecutionPlan(streamRequest: streamRequest)
         let cases: [(String, String, PlaybackEngineKind, PlaybackDeliveryStrategy)] = [
-            ("original_http", "http_progressive", .playerCoreDirect, .direct),
+            ("original_http", "http_progressive", .avPlayerNativeDirect, .direct),
             ("server_remux_progressive", "http_progressive", .avPlayerNativeDirect, .remux),
             ("server_remux_hls", "hls", .avPlayerHLS, .remux),
             ("server_transcode_hls", "hls", .avPlayerHLS, .transcode)
@@ -781,7 +775,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         ] {
             let delivery = try XCTUnwrap(snapshot.context.deliveries[deliveryClass])
             XCTAssertEqual(delivery.videoCodecs, AppleDecodeCapabilities.videoCodecs)
-            XCTAssertFalse(delivery.videoCodecs.contains(AppleDecodeCapabilities.mpeg2VideoCodec))
+            XCTAssertFalse(delivery.videoCodecs.contains("mpeg2video"))
         }
     }
 
@@ -1542,7 +1536,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
     private func makeBaseExecutionPlan(
         streamRequest: StreamRequest,
-        engine: PlaybackEngineKind = .playerCoreDirect,
+        engine: PlaybackEngineKind = .avPlayerNativeDirect,
         loopbackSession: LoopbackSessionSpec? = nil
     ) -> PlaybackExecutionPlan {
         let routeCapabilities = engine.routeCapabilities

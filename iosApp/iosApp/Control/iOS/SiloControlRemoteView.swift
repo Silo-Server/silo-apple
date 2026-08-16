@@ -349,7 +349,7 @@ private struct RemoteNowPlayingContent: View {
                 if hasSubtitleControls { subtitleMenu.frame(minWidth: 76) }
                 if !state.qualityOptions.isEmpty { qualityMenu.frame(minWidth: 76) }
                 speedMenu.frame(minWidth: 76)
-                if state.supportsVideoGravity || state.supportsHDRToggle { displayMenu.frame(minWidth: 76) }
+                if state.supportsVideoGravity { displayMenu.frame(minWidth: 76) }
             }
             .padding(.horizontal, 2)
         }
@@ -473,12 +473,7 @@ private struct RemoteNowPlayingContent: View {
                     }
                 }
             }
-            if state.supportsHDRToggle {
-                Button { onCommand(.setHDREnabled(!state.hdrEnabled)) } label: {
-                    Label(state.hdrEnabled ? "HDR On" : "HDR Off", systemImage: state.hdrEnabled ? "checkmark" : "sun.max")
-                }
-            }
-        } label: { RemoteChipLabel(systemImage: "rectangle.inset.filled", caption: state.supportsVideoGravity ? "Aspect" : "HDR") }
+        } label: { RemoteChipLabel(systemImage: "rectangle.inset.filled", caption: "Aspect") }
         .accessibilityValue(VideoGravity(rawValue: state.videoGravity)?.label ?? state.videoGravity)
     }
 

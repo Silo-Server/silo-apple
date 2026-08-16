@@ -123,7 +123,6 @@ enum DiagnosticsCapabilityProbe {
         switch codec {
         case "h264": return "video/avc"
         case "hevc": return "video/hevc"
-        case AppleDecodeCapabilities.mpeg2VideoCodec: return "video/mpeg2"
         default: return "video/\(codec)"
         }
     }

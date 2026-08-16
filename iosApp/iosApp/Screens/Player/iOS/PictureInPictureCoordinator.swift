@@ -13,10 +13,6 @@ import OSLog
 /// `MobilePlayerControls` only reads `isPossible` / `isActive` to draw the
 /// toggle, and `PlayerViewModel.handleScenePhase` reads `isEngaged` so
 /// backgrounding into PiP doesn't pause playback.
-///
-/// The compatibility (`PlayerCore`) route renders into an
-/// `AVSampleBufferDisplayLayer` and is not covered here — it needs the sample
-/// buffer PiP content source plus a playback delegate.
 @Observable
 final class PictureInPictureCoordinator {
     static let shared = PictureInPictureCoordinator()

@@ -128,35 +128,6 @@ final class PlayerErrorClassifierPinTests: XCTestCase {
         XCTAssertFalse(PlayerViewModel.isPrematureSourceEndMessage(""))
     }
 
-    // MARK: - isLikelyExpiredSessionHTTP404
-
-    func testIsLikelyExpiredSessionHTTP404OnlyAppliesToPlayerCoreDirect() {
-        XCTAssertTrue(PlayerViewModel.isLikelyExpiredSessionHTTP404(
-            "Server returned 404 Not Found",
-            activeRouteKind: .playerCoreDirect
-        ))
-        for route: PlaybackEngineKind in [.avPlayerHLS, .avPlayerNativeDirect, .siloPlayerLoopback] {
-            XCTAssertFalse(
-                PlayerViewModel.isLikelyExpiredSessionHTTP404(
-                    "Server returned 404 Not Found",
-                    activeRouteKind: route
-                ),
-                "route=\(route.label)"
-            )
-        }
-        // PIN: current behavior; likely bug, see cleanup notes.
-        // The match is case-sensitive and requires FFmpeg's exact phrasing —
-        // a bare "HTTP 404" from another layer is not recognized.
-        XCTAssertFalse(PlayerViewModel.isLikelyExpiredSessionHTTP404(
-            "HTTP 404",
-            activeRouteKind: .playerCoreDirect
-        ))
-        XCTAssertFalse(PlayerViewModel.isLikelyExpiredSessionHTTP404(
-            "server returned 404",
-            activeRouteKind: .playerCoreDirect
-        ))
-    }
-
     // MARK: - stablePlaybackFailureToken
 
     func testStablePlaybackFailureTokenTable() {

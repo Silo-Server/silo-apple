@@ -38,7 +38,7 @@ struct OfflinePreparedPlayback {
 /// from a stored offline manifest + local media file, so the player loads
 /// with no server session. Routing is left to the standard planner — the
 /// synthesized version carries the manifest's real track metadata so a
-/// `file://` source can reach the loopback route, not just `PlayerCore` —
+/// `file://` source can reach the loopback route —
 /// and the manifest drives chapters, intro/credits markers, and subtitles
 /// unchanged.
 enum OfflinePlaybackBuilder {

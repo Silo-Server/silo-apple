@@ -3,8 +3,7 @@
 //  Continuum (Apple platforms)
 //
 //  Composites libass output onto the player surface. Sits above the
-//  `AVSampleBufferDisplayLayer` inside `PlayerSurfaceHostView`. Pinned
-//  to all four edges — libass handles the subtitle positioning via its
+//  AVPlayer video layer. Pinned to all four edges — libass handles the subtitle positioning via its
 //  frame-size + margins model, so this view is always full-frame.
 //
 //  The view holds a single `CALayer.contents` CGImage that the

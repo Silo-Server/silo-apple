@@ -11,9 +11,8 @@ import UIKit
 /// (Play / Pause) and the phone gets the same dictionary on the lock screen.
 ///
 /// Decoupled from any specific player type: the owner supplies command
-/// handlers as closures via `attach(handlers:)`. This lets the controller
-/// drive either `PlayerCore` (FFmpeg+VT pipeline) or `AVPlayerBackend` (DV
-/// Profile 5 HLS route) transparently.
+/// handlers as closures via `attach(handlers:)`, so the controller works the
+/// same across every route `AVPlayerBackend` executes.
 ///
 /// Single ownership: one instance per `PlayerViewModel`. The VM owns the
 /// lifecycle (init in `loadAndPlay`, tear down in `cleanup`).
@@ -78,8 +77,7 @@ final class NowPlayingController {
     // MARK: - Lifecycle
 
     /// Attach command handlers. Idempotent — safe to call more than once to
-    /// replace handlers when the VM swaps backends (e.g. PlayerCore →
-    /// AVPlayer-backed route).
+    /// replace handlers when the VM swaps backends across a route change.
     func attach(handlers: Handlers) {
         self.handlers = handlers
         if !isActive {

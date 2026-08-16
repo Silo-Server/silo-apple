@@ -192,6 +192,9 @@ final class PlayerSettings {
         didSet { defaults.set(autoSkipCredits, forKey: Self.cacheKey(Keys.autoSkipCredits)) }
     }
 
+    /// Deprecated: no longer surfaced. No AVPlayer-backed route exposes an
+    /// HDR passthrough toggle; the field stays because `player.hdrEnabled` is
+    /// part of the server-synced settings contract.
     var hdrEnabled: Bool {
         didSet { defaults.set(hdrEnabled, forKey: Self.cacheKey(Keys.hdrEnabled)) }
     }
@@ -208,7 +211,7 @@ final class PlayerSettings {
     }
 
     /// Plan-time snapshot of the Dolby Vision decision inputs, consumed by
-    /// the route planner and pushed into PlayerCore before each load.
+    /// the route planner before each load.
     var dolbyVisionPolicySnapshot: DolbyVisionPolicy.Snapshot {
         DolbyVisionPolicy.Snapshot(
             dolbyVisionEnabled: dolbyVisionEnabled,
@@ -307,6 +310,9 @@ final class PlayerSettings {
         didSet { defaults.set(subtitlePosition, forKey: Keys.subtitlePosition) }
     }
 
+    /// Deprecated: no longer surfaced. No AVPlayer-backed route exposes an
+    /// audio-delay control; the field stays because `player.audioSyncMs` is
+    /// part of the server-synced settings contract.
     var audioSyncMs: Int {
         didSet { defaults.set(audioSyncMs, forKey: Self.cacheKey(Keys.audioSyncMs)) }
     }

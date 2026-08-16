@@ -12,10 +12,9 @@ import Foundation
 /// caught it. So the vocabulary lives here.
 ///
 /// What legitimately differs between the surfaces is *policy*, and that stays
-/// at the call site where its reason can be written down: whether MPEG-2 is
-/// claimed at all, whether this route claims HDR, and which codecs the
-/// current output can take untouched. Only the underlying "the stack can open
-/// this" lists are shared.
+/// at the call site where its reason can be written down: whether this route
+/// claims HDR, and which codecs the current output can take untouched. Only
+/// the underlying "the stack can open this" lists are shared.
 enum AppleDecodeCapabilities {
     #if targetEnvironment(simulator)
     static let isSimulator = true
@@ -23,16 +22,12 @@ enum AppleDecodeCapabilities {
     static let isSimulator = false
     #endif
 
-    static let mpeg2VideoCodec = "mpeg2video"
-
-    /// Video codecs the client decodes, without the opt-in MPEG-2 claim. The
-    /// simulator has no video decoder beyond H.264, so it claims nothing
-    /// else — a claim it cannot honor just moves the failure from the
-    /// server's planner to a black screen here.
+    /// Video codecs the client decodes. The simulator has no video decoder
+    /// beyond H.264, so it claims nothing else — a claim it cannot honor just
+    /// moves the failure from the server's planner to a black screen here.
     static let videoCodecs: [String] = isSimulator ? ["h264"] : ["h264", "hevc"]
 
-    /// The subset of `videoCodecs` VideoToolbox decodes in hardware. MPEG-2
-    /// is never in it — its route is the software decoder.
+    /// The subset of `videoCodecs` VideoToolbox decodes in hardware.
     static let hardwareVideoCodecs: [String] = isSimulator ? ["h264"] : ["h264", "hevc"]
 
     /// Audio codecs the client decodes. The simulator keeps the conservative
@@ -79,13 +74,4 @@ enum AppleDecodeCapabilities {
 
     static let maxDecodeWidth: Int = isSimulator ? 1_920 : 3_840
     static let maxDecodeHeight: Int = isSimulator ? 1_080 : 2_160
-
-    /// MPEG-2 is opt-in: PlayerCore decodes it in software, but the direct
-    /// startup path does not, so a caller has to say it means the software
-    /// route before the claim goes out. Never added on the simulator, which
-    /// has no route that decodes it at all.
-    static func videoCodecs(includingMPEG2: Bool) -> [String] {
-        guard includingMPEG2, !isSimulator else { return videoCodecs }
-        return videoCodecs + [mpeg2VideoCodec]
-    }
 }

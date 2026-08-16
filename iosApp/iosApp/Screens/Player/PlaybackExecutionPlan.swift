@@ -273,7 +273,6 @@ struct StreamRequest {
 enum PlaybackRouteFamily: String, Equatable {
     case nativePlayer = "NativePlayer"
     case siloPlayer = "SiloPlayer"
-    case compatibilityPlayer = "CompatibilityPlayer"
 
     var diagnosticsLabel: String { rawValue }
 
@@ -283,7 +282,6 @@ enum PlaybackRouteFamily: String, Equatable {
         switch self {
         case .nativePlayer: return "Native Player"
         case .siloPlayer: return "SiloPlayer"
-        case .compatibilityPlayer: return "Compatibility Player"
         }
     }
 }
@@ -296,10 +294,6 @@ enum PlaybackRouteFamily: String, Equatable {
 /// the delivery strategies described in the Apple Playback Engine Evolution
 /// plan (`docs/plans/apple-playback-engine-evolution.md`).
 enum PlaybackEngineKind: Equatable {
-    /// Custom FFmpeg demux + VideoToolbox decode + AVSampleBufferDisplayLayer.
-    /// Used for direct playback of exotic containers and codecs that
-    /// AVFoundation cannot open natively (MKV, TS, M2TS, WebM, AVI).
-    case playerCoreDirect
     /// AVPlayer consuming a server-produced HLS manifest. Near-term policy
     /// reserves this for explicit quality/bitrate-reduction playback rather
     /// than generic original-quality Apple normalization.
@@ -314,7 +308,6 @@ enum PlaybackEngineKind: Equatable {
 
     var label: String {
         switch self {
-        case .playerCoreDirect: return "playerCoreDirect"
         case .avPlayerHLS: return "avPlayerHLS"
         case .avPlayerNativeDirect: return "avPlayerNativeDirect"
         case .siloPlayerLoopback: return "siloPlayerLoopback"
@@ -323,8 +316,6 @@ enum PlaybackEngineKind: Equatable {
 
     var routeFamily: PlaybackRouteFamily {
         switch self {
-        case .playerCoreDirect:
-            return .compatibilityPlayer
         case .avPlayerHLS, .avPlayerNativeDirect:
             return .nativePlayer
         case .siloPlayerLoopback:
@@ -334,8 +325,6 @@ enum PlaybackEngineKind: Equatable {
 
     var appPlaybackLabel: String {
         switch self {
-        case .playerCoreDirect:
-            return "Compatibility Playback"
         case .avPlayerHLS:
             return "Server Stream"
         case .avPlayerNativeDirect:
@@ -347,8 +336,6 @@ enum PlaybackEngineKind: Equatable {
 
     var routeCapabilities: ApplePlaybackRouteCapabilities {
         switch self {
-        case .playerCoreDirect:
-            return .playerCoreDirect
         case .avPlayerHLS:
             return .avPlayerHLS
         case .avPlayerNativeDirect:
@@ -565,119 +552,5 @@ struct PlaybackExecutionPlan {
         self.degradationWarnings = degradationWarnings
         self.reason = reason
         self.playbackSessionId = playbackSessionId
-    }
-
-    /// Build the fallback plan used when PlayerCore rejects a stream it
-    /// cannot decode (currently Dolby Vision Profile 5). Keeps the
-    /// "always-direct, always AVPlayer DV loopback, never gated" invariants
-    /// in one place so `handleUnsupportedStream` doesn't reconstruct a plan
-    /// by hand at the load path.
-    static func dolbyVisionLoopback(
-        streamRequest: StreamRequest,
-        startTime: Double,
-        rejectionReason: String,
-        loopbackSession: LoopbackSessionSpec? = nil,
-        routeRequirements: PlaybackRouteRequirements = .baseline,
-        decisionTrace: [String] = [],
-        playbackSessionId: String? = nil,
-        sourceMetadata: PlaybackSourceMetadata = .unknown
-    ) -> PlaybackExecutionPlan {
-        let routeCapabilities = PlaybackEngineKind.siloPlayerLoopback.routeCapabilities
-        let reason = rejectionReason == "dolbyVisionProfile5"
-            ? "dolby_vision_profile5_loopback"
-            : "playercore_rejected_\(rejectionReason)"
-        return PlaybackExecutionPlan(
-            delivery: .direct,
-            engine: .siloPlayerLoopback,
-            startMode: .absolutePosition(startTime),
-            streamRequest: streamRequest,
-            loopbackSession: loopbackSession,
-            capabilities: PlaybackEngineKind.siloPlayerLoopback.capabilities,
-            routeCapabilities: routeCapabilities,
-            requirements: routeRequirements,
-            featureFlagEnabled: true,
-            parityBlockers: [],
-            decisionTrace: decisionTrace + [reason],
-            degradationWarnings: routeCapabilities.degradationNotes(for: routeRequirements),
-            reason: reason,
-            playbackSessionId: playbackSessionId,
-            sourceMetadata: sourceMetadata,
-            normalizationSummary: loopbackNormalizationSummary(
-                loopbackSession: loopbackSession,
-                sourceMetadata: sourceMetadata
-            )
-        )
-    }
-
-    /// Build the fallback plan used when PlayerCore's VideoToolbox path rejects
-    /// HEVC HDR that is not known Dolby Vision P5. This still remuxes locally
-    /// for AVPlayer, but keeps the manifest and display criteria as plain HEVC
-    /// HDR rather than advertising Dolby Vision.
-    static func hevcHDRLoopback(
-        streamRequest: StreamRequest,
-        startTime: Double,
-        rejectionReason: String,
-        loopbackSession: LoopbackSessionSpec?,
-        routeRequirements: PlaybackRouteRequirements = .baseline,
-        decisionTrace: [String] = [],
-        playbackSessionId: String? = nil,
-        sourceMetadata: PlaybackSourceMetadata = .unknown
-    ) -> PlaybackExecutionPlan {
-        let routeCapabilities = PlaybackEngineKind.siloPlayerLoopback.routeCapabilities
-        let reason = "playercore_rejected_\(rejectionReason)_hevc_loopback"
-        return PlaybackExecutionPlan(
-            delivery: .direct,
-            engine: .siloPlayerLoopback,
-            startMode: .absolutePosition(startTime),
-            streamRequest: streamRequest,
-            loopbackSession: loopbackSession,
-            capabilities: PlaybackEngineKind.siloPlayerLoopback.capabilities,
-            routeCapabilities: routeCapabilities,
-            requirements: routeRequirements,
-            featureFlagEnabled: true,
-            parityBlockers: [],
-            decisionTrace: decisionTrace + [reason],
-            degradationWarnings: routeCapabilities.degradationNotes(for: routeRequirements),
-            reason: reason,
-            playbackSessionId: playbackSessionId,
-            sourceMetadata: sourceMetadata,
-            normalizationSummary: loopbackNormalizationSummary(
-                loopbackSession: loopbackSession,
-                sourceMetadata: sourceMetadata
-            )
-        )
-    }
-
-    private static func loopbackNormalizationSummary(
-        loopbackSession: LoopbackSessionSpec?,
-        sourceMetadata: PlaybackSourceMetadata
-    ) -> PlaybackNormalizationSummary {
-        PlaybackNormalizationSummary(
-            containerMode: "local_fmp4_hls",
-            videoMode: loopbackSession?.videoMode.logToken ?? "loopback_unresolved",
-            audioMode: loopbackSession.map {
-                $0.selectedAudio.isPresent
-                    ? audioModeLogToken($0.selectedAudio.outputMode)
-                    : "none"
-            } ?? "loopback_unresolved",
-            subtitleMode: sourceMetadata.subtitleCodecs.isEmpty ? "none" : "extract_or_sidecar"
-        )
-    }
-
-    private static func audioModeLogToken(_ mode: LoopbackSessionSpec.AudioOutputMode) -> String {
-        switch mode {
-        case .copy:
-            return "copy"
-        case .transcodeFLAC:
-            return "transcode_flac"
-        case .requireFLAC:
-            return "require_flac"
-        case .transcodeEC3:
-            return "transcode_ec3"
-        case .transcodeAC3:
-            return "transcode_ac3"
-        case .transcodeAAC:
-            return "transcode_aac"
-        }
     }
 }

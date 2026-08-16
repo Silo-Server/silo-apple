@@ -132,15 +132,11 @@ struct PlayerView: View {
 
     @ViewBuilder
     private var playerSurface: some View {
-        switch viewModel.activePlayer {
-        case .none:
-            Color.black.ignoresSafeArea()
-        case .avPlayer(let backend):
+        if let backend = viewModel.avPlayerBackend {
             AVPlayerSurface(backend: backend)
                 .ignoresSafeArea()
-        case .coreMedia(let core):
-            PlayerSurface(player: core)
-                .ignoresSafeArea()
+        } else {
+            Color.black.ignoresSafeArea()
         }
     }
 

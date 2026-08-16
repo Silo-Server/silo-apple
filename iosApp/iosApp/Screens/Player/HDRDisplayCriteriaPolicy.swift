@@ -10,7 +10,7 @@ import Foundation
 /// account (tvOS 26.5 validates the master variant's VIDEO-RANGE against the
 /// panel's current mode before fetching the init segment) was confirmed on
 /// hardware 2026-07-05 — an HDR10 MKV with the write skipped failed item
-/// creation with -11868/-17223 and dropped to the PlayerCore fallback.
+/// creation with -11868/-17223 and fell out of the loopback route.
 enum HDRDisplayCriteriaPolicy {
     /// Kill switch for the non-DV HDR criteria write. Absent = enabled;
     /// explicit false disables. DV behavior is unaffected by this key in
@@ -79,8 +79,8 @@ enum HDRDisplayCriteriaPolicy {
     static let hdrHeadroomFloor: Double = 1.001
 
     /// Whether the host view should hand its display layer an EDR surface.
-    /// The stream has to be HDR (`PlayerCore.publishSigPeakIfNeeded` emits
-    /// 1.1 when it is and the user has HDR on, 0 otherwise) *and* the screen
+    /// The stream has to be HDR (the backend publishes a sig-peak of 1.1
+    /// when it is, 0 otherwise) *and* the screen
     /// currently showing the window has to have headroom to spend — dragging
     /// a window onto an SDR display takes it away. Shared by the iOS and
     /// macOS hosts so the threshold has one spelling; tvOS drives HDR through

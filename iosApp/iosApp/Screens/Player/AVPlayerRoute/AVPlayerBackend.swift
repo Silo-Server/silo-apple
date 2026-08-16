@@ -803,7 +803,7 @@ final class AVPlayerBackend {
                 // Routing preference, not a claim: tells the system this app
                 // plays multichannel content so route negotiation (HDMI/AirPlay)
                 // prefers a multichannel-capable path. AetherEngine sets the
-                // same before its Atmos passthrough; PlayerCore already does.
+                // same before its Atmos passthrough.
                 try? session.setSupportsMultichannelContent(true)
                 try session.setActive(true, options: [])
             },
@@ -2954,7 +2954,7 @@ final class AVPlayerBackend {
         // mark for tens of seconds of healthy playback, `stationaryFor`
         // climbs the whole time, and the watchdog "recovers" a route that
         // was never wedged (nudge → item reloads that reset a full buffer →
-        // reanchor budget exhausted → spurious PlayerCore fallback).
+        // reanchor budget exhausted → spurious route fallback).
         if watchdogLastPlayheadSeconds < 0 || abs(position - watchdogLastPlayheadSeconds) > 0.05 {
             watchdogLastPlayheadSeconds = position
             watchdogLastAdvanceWall = now
@@ -4499,7 +4499,7 @@ final class AVPlayerBackend {
     /// validates a master variant's VIDEO-RANGE against the panel's CURRENT
     /// mode, synchronously, before fetching the init segment — creating the
     /// item mid-switch fails with -11868 (underlying -17223) and drops the
-    /// session to the PlayerCore fallback. AetherEngine orders the same way
+    /// session to the next fallback rung. AetherEngine orders the same way
     /// (criteria apply → settle wait → build player).
     @discardableResult
     private func applyTVDisplayCriteriaForLoopbackIfNeeded(context: String) -> Bool {

@@ -54,10 +54,10 @@ enum ApplePlaybackV3Capabilities {
         $0 != PlaybackProtocolV3.seekReanchorFeature
     }
 
-    /// The AVPlayer-backed audiobook engine does not execute PlayerCore or
-    /// local-loopback plans. Keep its flat codec/container cross-product to
-    /// combinations AVPlayer opens directly rather than inheriting the video
-    /// player's FFmpeg-only DTS, TrueHD, Vorbis, and Matroska claims.
+    /// The audiobook engine does not execute local-loopback plans. Keep its
+    /// flat codec/container cross-product to combinations AVPlayer opens
+    /// directly rather than inheriting the video player's FFmpeg-only DTS,
+    /// TrueHD, Vorbis, and Matroska claims.
     private static let audiobookAudioCodecs = [
         "aac", "ac3", "eac3", "alac", "mp3", "flac",
         "pcm", "pcm_s16le", "pcm_s24le"
@@ -69,7 +69,7 @@ enum ApplePlaybackV3Capabilities {
     /// mirrors `ApplePlaybackRoutePlanner`'s native-direct and loopback
     /// allowlists rather than the wider set FFmpeg can demux: a codec claimed
     /// here is one the server may hand us untranscoded.
-    private static let directVideoCodecs = ["h264", "hevc", AppleDecodeCapabilities.mpeg2VideoCodec]
+    private static let directVideoCodecs = ["h264", "hevc"]
 
     static func snapshot() -> ApplePlaybackV3CapabilitySnapshot {
         let hdrAvailability = ApplePlaybackHDRAvailability.probe()
@@ -189,9 +189,6 @@ enum ApplePlaybackV3Capabilities {
                 supportedOnDevice: true,
                 failureReason: nil,
                 containers: ["hls", "mpegts", "fmp4", "mp4"],
-                // HLS always executes through AVPlayer. The locally attested
-                // `videoCodecs` list also contains PlayerCore-only MPEG-2;
-                // the shared AVPlayer list deliberately does not.
                 videoCodecs: AppleDecodeCapabilities.videoCodecs,
                 audioDecodeCodecs: ["aac", "ac3", "eac3"],
                 audioPassthroughCodecs: [],
@@ -223,8 +220,8 @@ enum ApplePlaybackV3Capabilities {
     }
 
     /// Capability evidence for the standalone audiobook engine. The engine
-    /// is AVPlayer-only, so every advertised delivery must remain executable
-    /// without the video player's PlayerCore or local-loopback adapters.
+    /// must remain executable without the video player's local-loopback
+    /// adapters.
     static func audiobookSnapshot() -> ApplePlaybackV3CapabilitySnapshot {
         let base = snapshot()
         let noSubtitles = PlaybackV3DeliverySubtitleCapabilities(
@@ -333,7 +330,7 @@ enum ApplePlaybackV3Capabilities {
             ("h264", kCMVideoCodecType_H264),
             ("hevc", kCMVideoCodecType_HEVC)
         ]
-        var capabilities: [PlaybackV3VideoDecodeCapability] = codecTypes.compactMap { codec, codecType in
+        let capabilities: [PlaybackV3VideoDecodeCapability] = codecTypes.compactMap { codec, codecType in
             guard directVideoCodecs.contains(codec), hardwareDecodeSupported(codecType) else {
                 return nil
             }
@@ -356,23 +353,6 @@ enum ApplePlaybackV3Capabilities {
                 hardware: true
             )
         }
-        #if !targetEnvironment(simulator)
-        // PlayerCore carries a bounded FFmpeg software path for MPEG-2. Keep
-        // it out of the hardware list while still advertising the route the
-        // production executor can actually decode.
-        capabilities.append(PlaybackV3VideoDecodeCapability(
-            codec: AppleDecodeCapabilities.mpeg2VideoCodec,
-            decoderName: "FFmpeg",
-            profiles: [],
-            levels: [],
-            bitDepths: [8],
-            maxWidth: 1_920,
-            maxHeight: 1_080,
-            maxFrameRate: 60,
-            maxBitrateKbps: 50_000,
-            hardware: false
-        ))
-        #endif
         return capabilities
     }
 

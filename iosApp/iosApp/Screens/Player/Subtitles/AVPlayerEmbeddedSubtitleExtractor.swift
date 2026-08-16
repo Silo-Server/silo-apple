@@ -124,7 +124,7 @@ final class AVPlayerEmbeddedSubtitleExtractor {
     }
 
     /// - Parameter probe: when false, skips the async track-enumeration
-    ///   pass. The CoreMedia route already knows the container's tracks
+    ///   pass. A container-level demux already knows the container's tracks
     ///   from its own format context and only needs `select`/`seek`.
     func configure(source newSource: AVPlayerSubtitleExtractionSource?, probe: Bool = true) {
         stateLock.lock()

@@ -182,7 +182,7 @@ struct ApplePlaybackRoutePlanner {
     ]
     /// Bitmap codecs the SiloPlayer route renders client-side: the AVPlayer
     /// subtitle extractor decodes them into RGBA cue images for the overlay,
-    /// so they no longer force the compatibility (burn-in transcode) route.
+    /// so they no longer force the server burn-in transcode route.
     /// DVB stays out — its broadcast region/CLUT model is unvalidated here.
     static let siloClientRenderedBitmapSubtitleCodecs: Set<String> = [
         "pgs", "hdmv_pgs_subtitle", "dvd_subtitle", "vobsub"
@@ -282,27 +282,27 @@ struct ApplePlaybackRoutePlanner {
                 routeCapabilities = .siloPlayerLoopback
                 reason = siloAssessment.reason
             } else {
-                #if os(macOS)
-                engine = .playerCoreDirect
-                parityBlockers = directAssessment.blockers + siloAssessment.blockers.map { "silo_\($0)" }
-                routeCapabilities = .playerCoreDirect
-                reason = "macos_direct_blocked"
-                #else
-                engine = .playerCoreDirect
+                // Terminal rung. Everything is AVPlayer-backed now, so a
+                // blocked native-direct source either still has a resolvable
+                // local loopback session (take it) or has to come back from
+                // the server as HLS.
                 var blockers = directAssessment.blockers + siloAssessment.blockers.map { "silo_\($0)" }
-                if (directDolbyVisionProfile == 5
-                    || directDolbyVisionProfile == 7
-                    || directDolbyVisionProfile == 8
-                    || siloAssessment.isEligible),
-                   directLoopbackSession == nil {
-                    blockers.append("silo_loopback_session_unresolved")
+                if directLoopbackSession != nil {
+                    engine = .siloPlayerLoopback
+                    routeCapabilities = .siloPlayerLoopback
+                    reason = "native_direct_blocked_silo_fallback"
+                } else {
+                    if directDolbyVisionProfile == 5
+                        || directDolbyVisionProfile == 7
+                        || directDolbyVisionProfile == 8
+                        || siloAssessment.isEligible {
+                        blockers.append("silo_loopback_session_unresolved")
+                    }
+                    engine = .avPlayerHLS
+                    routeCapabilities = .avPlayerHLS
+                    reason = "native_direct_blocked_hls_fallback"
                 }
                 parityBlockers = blockers
-                routeCapabilities = .playerCoreDirect
-                reason = directAssessment.blockers.isEmpty
-                    ? "direct_play_uses_coremedia"
-                    : "native_direct_blocked"
-                #endif
             }
             var trace = input.routeRequirements.summaryTokens
             if let directDolbyVisionProfile {
@@ -321,11 +321,9 @@ struct ApplePlaybackRoutePlanner {
             }
             let fallbackOrderToken: String = switch engine {
             case .avPlayerNativeDirect:
-                "fallback_order_native_silo_compatibility"
+                "fallback_order_native_silo_hls"
             case .siloPlayerLoopback:
-                "fallback_order_silo_compatibility"
-            case .playerCoreDirect:
-                "fallback_order_compatibility_only"
+                "fallback_order_silo_hls"
             case .avPlayerHLS:
                 "fallback_order_hls_controlled_retry"
             }
@@ -333,18 +331,20 @@ struct ApplePlaybackRoutePlanner {
             degradationWarnings = routeCapabilities.degradationNotes(for: input.routeRequirements)
                 + siloAssessment.degradations
         case .remux, .transcode:
-            let flagOn = input.hlsRouteFeatureEnabled
-            featureFlagEnabled = flagOn
-            parityBlockers = flagOn ? [] : ["feature_flag_off"]
-            engine = flagOn ? .avPlayerHLS : .playerCoreDirect
-            routeCapabilities = flagOn ? .avPlayerHLS : .playerCoreDirect
+            // Server-produced HLS is the only way to present a remux or
+            // transcode session; there is no longer a second engine to gate
+            // this behind a feature flag.
+            featureFlagEnabled = true
+            parityBlockers = []
+            engine = .avPlayerHLS
+            routeCapabilities = .avPlayerHLS
             decisionTrace = input.routeRequirements.summaryTokens + [
                 "delivery_\(delivery.name)",
-                flagOn ? "avplayer_hls_enabled" : "avplayer_hls_disabled",
-                flagOn ? "fallback_order_hls_controlled_retry" : "fallback_order_compatibility_only"
+                "avplayer_hls_enabled",
+                "fallback_order_hls_controlled_retry"
             ]
             degradationWarnings = routeCapabilities.degradationNotes(for: input.routeRequirements)
-            reason = flagOn ? "apple_hls_route_enabled" : "parity_gate_blocked"
+            reason = "apple_hls_route_enabled"
         }
 
         let startMode: PlaybackStartMode
@@ -599,7 +599,7 @@ extension ApplePlaybackRoutePlanner {
 
         let unsupportedSubtitleCodecs = unsupportedEmbeddedSubtitleCodecs(for: selectedVersion)
         if !unsupportedSubtitleCodecs.isEmpty {
-            blockers.append("embedded_subtitles_require_compatibility")
+            blockers.append("embedded_subtitles_require_hls")
             trace.append("embedded_subtitles_\(unsupportedSubtitleCodecs.joined(separator: "_"))")
         }
 
@@ -644,7 +644,7 @@ extension ApplePlaybackRoutePlanner {
 
         guard nativeAssessment.blockers.contains("container_not_allowlisted")
                 || nativeAssessment.blockers.contains("audio_codec_not_allowlisted")
-                || nativeAssessment.blockers.contains("embedded_subtitles_require_compatibility") else {
+                || nativeAssessment.blockers.contains("embedded_subtitles_require_hls") else {
             return SiloRouteAssessment(
                 isEligible: false,
                 videoMode: nil,
@@ -684,7 +684,7 @@ extension ApplePlaybackRoutePlanner {
             !siloClientRenderedBitmapSubtitleCodecs.contains($0)
         }
         if !blockedBitmapSubtitleCodecs.isEmpty {
-            blockers.append("bitmap_subtitles_require_compatibility")
+            blockers.append("bitmap_subtitles_require_hls")
             trace.append("silo_bitmap_subtitles_\(blockedBitmapSubtitleCodecs.joined(separator: "_"))")
         }
         let clientRenderedBitmapSubtitleCodecs = bitmapSubtitleCodecs.filter {
@@ -732,7 +732,7 @@ extension ApplePlaybackRoutePlanner {
         let reason: String
         if nativeAssessment.blockers.contains("audio_codec_not_allowlisted") {
             reason = "\(videoCodec)_audio_normalization_loopback"
-        } else if nativeAssessment.blockers.contains("embedded_subtitles_require_compatibility") {
+        } else if nativeAssessment.blockers.contains("embedded_subtitles_require_hls") {
             reason = "\(videoCodec)_subtitle_normalization_loopback"
         } else {
             reason = "\(videoCodec)_container_loopback"
@@ -830,13 +830,6 @@ extension ApplePlaybackRoutePlanner {
             )
         case .avPlayerNativeDirect:
             return .none
-        case .playerCoreDirect:
-            return PlaybackNormalizationSummary(
-                containerMode: "none",
-                videoMode: "compatibility_decode",
-                audioMode: "compatibility_decode",
-                subtitleMode: "compatibility_render"
-            )
         }
     }
 

@@ -771,7 +771,6 @@ private struct VideoPane: View {
         case quality
         case speed
         case aspect
-        case audioDelay
         case subtitleDelay
     }
 
@@ -829,44 +828,12 @@ private struct VideoPane: View {
                             .focused($focusedField, equals: .aspect)
                         }
 
-                        if viewModel.backendCapabilities.supportsHDRToggle {
-                            HUDToggleRow(label: "HDR passthrough", isOn: viewModel.settings.hdrEnabled) {
-                                viewModel.setHDREnabled($0)
-                            }
-                        }
                     }
                 }
                 .focusSection()
 
                 PaneColumn("Sync") {
                     VStack(spacing: 2) {
-                        if viewModel.backendCapabilities.supportsAudioDelay {
-                            HUDSettingRow(
-                                label: "Audio delay",
-                                value: HUDPickerOptions.delayLabel(viewModel.settings.audioSyncMs)
-                            ) {
-                                presentPicker(
-                                    for: .audioDelay,
-                                    HUDPickerPresentation(
-                                        title: "Audio Delay",
-                                        options: HUDPickerOptions.delayOptions(
-                                            from: -1_000,
-                                            through: 1_000,
-                                            by: 50,
-                                            including: viewModel.settings.audioSyncMs
-                                        ),
-                                        selection: String(viewModel.settings.audioSyncMs),
-                                        onSelect: { value in
-                                            if let ms = Int(value) {
-                                                viewModel.setAudioSyncMilliseconds(ms)
-                                            }
-                                        }
-                                    )
-                                )
-                            }
-                            .focused($focusedField, equals: .audioDelay)
-                        }
-
                         if viewModel.backendCapabilities.supportsSubtitleDelay {
                             HUDSettingRow(
                                 label: "Subtitle delay",
@@ -1557,9 +1524,6 @@ private struct AudioPane: View {
             PaneColumn("Options") {
                 LabelValueRow(label: "Layout", value: selectedLayout ?? "—")
                 LabelValueRow(label: "Codec",  value: selectedCodec ?? "—")
-                if viewModel.backendCapabilities.supportsAudioDelay {
-                    LabelValueRow(label: "Delay",  value: delayText)
-                }
             }
         }
     }
@@ -1574,10 +1538,6 @@ private struct AudioPane: View {
 
     private var selectedCodec: String? {
         selectedTrack?.codec?.uppercased()
-    }
-
-    private var delayText: String {
-        HUDPickerOptions.delayLabel(viewModel.settings.audioSyncMs)
     }
 }
 

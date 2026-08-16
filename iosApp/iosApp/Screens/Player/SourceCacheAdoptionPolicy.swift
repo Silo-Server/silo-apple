@@ -17,7 +17,7 @@ enum SourceCacheAdoptionPolicy {
     ///   - planFileId: media file id of the incoming playback plan.
     ///   - handoffBudgetBytes / planBudgetBytes: cache memory budgets; the
     ///     budget drives eviction watermarks and is immutable per cache, so
-    ///     a mismatch (e.g. loopback ↔ compatibility route) rejects.
+    ///     a mismatch (e.g. loopback ↔ native-direct route) rejects.
     ///   - handoffDiskSpill / planDiskSpill: effective disk-spill states.
     ///   - cachedTotalLength: total file length the stashed cache learned
     ///     from its origin, if any.

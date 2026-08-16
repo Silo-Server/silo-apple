@@ -14,12 +14,9 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         let capabilities = ApplePlaybackV3Capabilities.snapshot().capabilities
         XCTAssertEqual(capabilities.codecsAudio, AppleDecodeCapabilities.audioCodecs)
         XCTAssertEqual(capabilities.containers, AppleDecodeCapabilities.containers)
-        // The snapshot covers every route the plan can land on, so it is the
-        // one surface that claims the software-decoded MPEG-2 unconditionally.
-        XCTAssertEqual(
-            capabilities.codecsVideo,
-            AppleDecodeCapabilities.videoCodecs(includingMPEG2: true)
-        )
+        // Every remaining route is AVPlayer-backed, so the snapshot claims
+        // exactly the shared list — no software-only MPEG-2 extra.
+        XCTAssertEqual(capabilities.codecsVideo, AppleDecodeCapabilities.videoCodecs)
     }
 
     func testDownloadCapsReportTheSharedVocabulary() {
@@ -73,20 +70,19 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
     }
 
     func testHardwareCodecsAreASubsetOfClaimedCodecs() {
-        let claimed = Set(AppleDecodeCapabilities.videoCodecs(includingMPEG2: true))
+        let claimed = Set(AppleDecodeCapabilities.videoCodecs)
         XCTAssertTrue(Set(AppleDecodeCapabilities.hardwareVideoCodecs).isSubset(of: claimed))
-        // MPEG-2 runs on PlayerCore's software decoder, never VideoToolbox.
-        XCTAssertFalse(
-            AppleDecodeCapabilities.hardwareVideoCodecs
-                .contains(AppleDecodeCapabilities.mpeg2VideoCodec)
-        )
     }
 
-    func testMPEG2IsOptInAndNeverClaimedBare() {
-        XCTAssertFalse(
-            AppleDecodeCapabilities.videoCodecs
-                .contains(AppleDecodeCapabilities.mpeg2VideoCodec)
-        )
+    /// The client no longer carries a software MPEG-2 decoder, so no surface
+    /// may advertise it — the server must transcode those sources.
+    func testMPEG2IsNeverClaimed() {
+        XCTAssertFalse(AppleDecodeCapabilities.videoCodecs.contains("mpeg2video"))
+        XCTAssertFalse(AppleDecodeCapabilities.hardwareVideoCodecs.contains("mpeg2video"))
+        XCTAssertFalse(DownloadCaps.current().codecsVideo.contains("mpeg2video"))
+        let snapshot = ApplePlaybackV3Capabilities.snapshot()
+        XCTAssertFalse(snapshot.capabilities.codecsVideo.contains("mpeg2video"))
+        XCTAssertFalse(snapshot.capabilities.videoDecode.map(\.codec).contains("mpeg2video"))
     }
 
     func testDecodeEntriesNameTheDecoderTheyActuallyUse() {
@@ -103,7 +99,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
 
     func testSimulatorClaimStaysConservative() throws {
         try XCTSkipUnless(AppleDecodeCapabilities.isSimulator)
-        XCTAssertEqual(AppleDecodeCapabilities.videoCodecs(includingMPEG2: true), ["h264"])
+        XCTAssertEqual(AppleDecodeCapabilities.videoCodecs, ["h264"])
         XCTAssertEqual(AppleDecodeCapabilities.maxResolution, "1080p")
         XCTAssertFalse(DownloadCaps.current().hdr)
         XCTAssertEqual(DownloadCaps.current().audioPassthroughCodecs, [])
