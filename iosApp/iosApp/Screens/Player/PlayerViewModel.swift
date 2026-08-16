@@ -1714,7 +1714,7 @@ class PlayerViewModel {
             attemptProtocolV3Recovery(after: message)
             return
         }
-        if isPlaybackSessionMissingMessage(message) || isLikelyExpiredSessionHTTP404(message) {
+        if Self.isPlaybackSessionMissingMessage(message) || isLikelyExpiredSessionHTTP404(message) {
             if attemptBackgroundSessionRenewal(reason: "player_error", observedPosition: currentTime) {
                 return
             }
@@ -1722,7 +1722,7 @@ class PlayerViewModel {
                 return
             }
         }
-        if isPrematureSourceEndMessage(message) {
+        if Self.isPrematureSourceEndMessage(message) {
             Self.logger.warning(
                 "Routing premature source end into server outage recovery: \(message, privacy: .public)"
             )
@@ -1752,7 +1752,7 @@ class PlayerViewModel {
     private func attemptProtocolV3Recovery(after message: String) {
         attemptProtocolV3Replan(
             position: currentTime,
-            classification: protocolV3FailureClassification(message),
+            classification: Self.protocolV3FailureClassification(message),
             message: message
         )
     }
@@ -1867,7 +1867,7 @@ class PlayerViewModel {
         }
     }
 
-    private func protocolV3FailureClassification(_ message: String) -> String {
+    static func protocolV3FailureClassification(_ message: String) -> String {
         let value = message.lowercased()
         if value.contains("decoder") || value.contains("videotoolbox") || value.contains("-129") {
             return "decoder_error"
@@ -1885,6 +1885,10 @@ class PlayerViewModel {
     }
 
     private func shouldTreatPlaybackErrorAsNaturalEnd() -> Bool {
+        Self.shouldTreatPlaybackErrorAsNaturalEnd(duration: duration, currentTime: currentTime)
+    }
+
+    static func shouldTreatPlaybackErrorAsNaturalEnd(duration: Double, currentTime: Double) -> Bool {
         guard duration.isFinite, duration > 0, currentTime.isFinite, currentTime > 0 else {
             return false
         }
@@ -2443,7 +2447,7 @@ class PlayerViewModel {
             reason: "silo_fallback_failed_playercore_fallback"
         )
         Self.logger.warning(
-            "[CMP-ROUTE] SiloPlayer fallback failed; retrying route=\(fallbackPlan.implementationRoute, privacy: .public) failureToken=\(self.stablePlaybackFailureToken(for: message), privacy: .public)"
+            "[CMP-ROUTE] SiloPlayer fallback failed; retrying route=\(fallbackPlan.implementationRoute, privacy: .public) failureToken=\(Self.stablePlaybackFailureToken(for: message), privacy: .public)"
         )
         logExecutionPlan(fallbackPlan)
         Task { @MainActor [weak self] in
@@ -4527,7 +4531,7 @@ class PlayerViewModel {
         return false
     }
 
-    private func isPlaybackSessionMissingMessage(_ message: String) -> Bool {
+    static func isPlaybackSessionMissingMessage(_ message: String) -> Bool {
         let lowered = message.lowercased()
         return lowered.contains("playback_session_not_found")
             || lowered.contains("playback session not found")
@@ -4538,7 +4542,7 @@ class PlayerViewModel {
     /// engine defect. It must route into server-outage recovery, not the
     /// engine-fallback ladder: degrading to PlayerCore against a dead origin
     /// trades a recoverable stream for a second failure.
-    private func isPrematureSourceEndMessage(_ message: String) -> Bool {
+    static func isPrematureSourceEndMessage(_ message: String) -> Bool {
         message.contains("prematureSourceEnd")
     }
 
@@ -4550,6 +4554,13 @@ class PlayerViewModel {
     /// session. `attemptStaleSessionRenewal` fires at most once per session,
     /// so a genuinely missing file still fails after a single renewal pass.
     private func isLikelyExpiredSessionHTTP404(_ message: String) -> Bool {
+        Self.isLikelyExpiredSessionHTTP404(message, activeRouteKind: activeRouteKind)
+    }
+
+    static func isLikelyExpiredSessionHTTP404(
+        _ message: String,
+        activeRouteKind: PlaybackEngineKind
+    ) -> Bool {
         guard activeRouteKind == .playerCoreDirect else { return false }
         return message.contains("Server returned 404")
     }
@@ -7149,7 +7160,7 @@ class PlayerViewModel {
         stats.sourceResumeServerAdvertised = sourceStats.serverAdvertisesDirectStreamResume
     }
 
-    private func stablePlaybackFailureToken(for message: String) -> String {
+    static func stablePlaybackFailureToken(for message: String) -> String {
         let lowered = message.lowercased()
         if lowered.contains("timed out") || lowered.contains("timeout") { return "timeout" }
         if lowered.contains("404") || lowered.contains("not found") { return "not_found" }

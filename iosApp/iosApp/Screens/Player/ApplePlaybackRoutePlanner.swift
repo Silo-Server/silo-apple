@@ -509,13 +509,13 @@ struct ApplePlaybackRoutePlanner {
     }
 }
 
-private struct NativeDirectAssessment {
+struct NativeDirectAssessment {
     let isEligible: Bool
     let blockers: [String]
     let trace: [String]
 }
 
-private struct SiloRouteAssessment {
+struct SiloRouteAssessment {
     let isEligible: Bool
     let videoMode: LoopbackSessionSpec.VideoMode?
     let blockers: [String]
@@ -554,7 +554,11 @@ extension ApplePlaybackRoutePlanner {
     }
 }
 
-private extension ApplePlaybackRoutePlanner {
+// Visibility note: this extension is deliberately `internal` rather than
+// `private` so `ApplePlaybackRoutePlannerPinTests` can characterize the route
+// helpers (codec normalization, loopback audio mode) directly ahead of the
+// one-player refactor. Nothing outside the planner and its tests calls them.
+extension ApplePlaybackRoutePlanner {
     static func assessNativeDirectRoute(
         selectedVersion: FileVersion,
         session: PlaybackSessionResponse,
