@@ -1,5 +1,11 @@
 # AetherEngine → silo-apple: Defect Parity Audit
 
+> **Historical.** Predates the one-player consolidation of 2026-08-16, which
+> deleted `PlayerCore` / CompatibilityPlayer. Findings that name that stack
+> are moot; the loopback findings are still worth reading, but check the
+> current code before acting on any of them. See
+> [02-retired-compatibility-player.md](02-retired-compatibility-player.md).
+
 **Date:** 2026-07-07  ·  **silo-apple:** `359d20c`  ·  **AetherEngine:** 4.11.0 + unreleased
 
 A cluster-by-cluster comparison of every hard-won defect fix in the AetherEngine reference

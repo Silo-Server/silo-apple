@@ -1,209 +1,199 @@
-Repo snapshot date: 2026-04-29
+Repo snapshot date: 2026-08-16 (branch `player/one-player-cleanup`, HEAD `6818819`)
 
-# Dolby Vision And SiloPlayer Route
+# Dolby Vision And The SiloPlayer Loopback
 
 ## 1. Routing matrix
 
-CompatibilityPlayer (`PlayerCore`) still owns some Dolby Vision detection
-logic, but AVPlayer-backed playback is no longer a DV-only backend. The current
-route families are:
+Every route is AVPlayer now (see
+[README](README.md#one-avplayer-family-three-routes)), so Dolby Vision routing
+is purely a question of *what AVPlayer is fed*. The engine kinds are
+`avPlayerNativeDirect`, `siloPlayerLoopback`, and `avPlayerHLS`.
 
-- CompatibilityPlayer
-- NativePlayer Direct
-- NativePlayer HLS
-- SiloPlayer
+Dolby Vision is decided **first** in
+[`ApplePlaybackRoutePlanner.makeExecutionPlan(input:)`](../../iosApp/iosApp/Screens/Player/ApplePlaybackRoutePlanner.swift):
+if `sourceMetadata.dolbyVisionProfile` is 5, 7, or 8 and a
+`LoopbackSessionSpec` resolves, the engine is `siloPlayerLoopback` before the
+native-direct assessment is even consulted. The Silo assessment short-circuits
+with `silo_dv_profile_owned_by_dv_policy` for the same reason.
 
-Within that family, Dolby Vision-specific routing currently works as follows:
+| Profile | `LoopbackSessionSpec.VideoMode` | Notes |
+| --- | --- | --- |
+| 4 | n/a | Not in the `[5, 7, 8]` set. Falls through to the ordinary native-direct / loopback / HLS assessment as plain HEVC. |
+| 5 | `.passthroughProfile5` | `dvh1` sample entry, `dvcC` config box. A P5 session with no usable DV record fails the writer (`LoopbackWriterError.profile5ConfigUnusable`) rather than muxing an unviewable IPT-PQ-c2 base layer. |
+| 7 | `.convertProfile7To81` | Base-layer conversion to Profile 8.1 (`db1p` brand, `PQ` video range). **Unchanged by the one-player work.** Not raw P7 HLS support and not FEL reconstruction. |
+| 7, with `preferProfile7HDR10Fallback` on | `.passthroughHEVC` | The Settings → Player toggle. When `DolbyVisionPolicy.resolution(forProfile:snapshot:)` returns `.profile7HDR10Fallback`, the loopback carries the HDR10-compatible base layer with DV signaling omitted. |
+| 8 | `.passthroughProfile8(baseLayer)` | Base layer from `transferKind(for:)`: PQ → 8.1 (`db1p`), SDR → 8.2 (`db2g`), HLG → 8.4 (`db4h`). |
+| 8, with Dolby Vision disabled | `.passthroughHEVC` | `dolby_vision_disabled_base_layer_loopback`. |
+| 10 (AV1 DV) | none | Not a live claim. `DolbyVisionFormat` recognizes AV1 DV metadata, but AV1 never reaches a DV `VideoMode`: the planner's DV arm only builds specs for profiles 5/7/8, and `loopbackVideoOutputMode` blocks any DV source on a non-copyable codec with `dv_not_bridgeable`. |
 
-- **Profile 4**  
-  stays on CompatibilityPlayer and follows the HDR10-compatible path with DV
-  signaling omitted
-- **Profile 5**  
-  routes to SiloPlayer through the local Dolby Vision loopback
-- **Profile 7**  
-  routes to the SiloPlayer loopback as `profile7_to81_base_layer`; this must not
-  be treated as raw P7 HLS support or full FEL reconstruction. The user-facing
-  `preferProfile7HDR10Fallback` setting (Settings → Player) flips this branch:
-  when on, P7 streams stay on the HDR10-compatible CompatibilityPlayer HEVC
-  passthrough path with DV signaling omitted; when off (default), the route
-  takes the SiloPlayer 8.1 conversion loopback. This is the single setting
-  name that gates the runtime choice; the planner exposes it as
-  `ApplePlaybackRoutePlanner.Input.preferProfile7HDR10Fallback`.
-- **Profiles 8 / 9**  
-  use the NativePlayer Direct allowlist when the container and codecs are
-  already Apple-native, otherwise stay on CompatibilityPlayer's HEVC path with
-  native `dvcC`
-- **Profile 10**  
-  is not a live direct-play claim today. `PlayerCore` has metadata routing for
-  AV1 Dolby Vision, but the active format-description and native-direct allowlist
-  paths still exclude AV1 video.
+## 2. Dolby Vision is never bridged
 
-There is also a second fallback trigger:
+This is a hard rule with its own gate, first in the decision order of
+`ApplePlaybackRoutePlanner.loopbackVideoOutputMode(for:version:capabilities:)`:
 
-- if `VTDecompressionSessionCreate` returns `unimpErr` for HEVC+PQ and the code
-  suspects unsignalled Dolby Vision, CompatibilityPlayer rejects to SiloPlayer
-  even if DOVI side data was not surfaced cleanly
+```swift
+if dolbyVisionProfile(for: version) != nil {
+    return isCopyCodec ? (.copy, nil) : (.copy, "dv_not_bridgeable")
+}
+```
 
-## 2. What "fallback" means in practice
+- DV on `h264` / `hevc` → `.copy`. The bitstream, RPU, and enhancement layer
+  are remuxed byte-for-byte.
+- DV on anything else → blocked with `dv_not_bridgeable`, which routes the
+  session to `avPlayerHLS`.
 
-When CompatibilityPlayer (`PlayerCore`) rejects a stream:
+The reason is stated in the source: an RPU and enhancement layer cannot survive
+decode → re-encode, and Profile 5's IPT-PQ-c2 base has no viewable fallback if
+the DV metadata is stripped. Silently dropping to a bridged HEVC re-encode
+would either paint wrong colours or quietly demote a premium claim, so the
+planner refuses instead. `LoopbackVideoBridgePlannerTests.testDolbyVisionNeverBridges`
+pins this across profiles 5/7/8 and codecs vp9/av1/mpeg2video/vc1 — including
+on an AV1-hardware-decode device, where `.passthroughAV1` is *also* refused.
 
-1. it does **not** pick the fallback backend itself
-2. it fires `onUnsupportedStream(reason, url, headers, startTime)`
-3. `PlayerViewModel.handleUnsupportedStream(...)` disposes `PlayerCore`
-4. the view model instantiates `AVPlayerBackend`
-5. the same callback surface is attached to the new backend
-6. `PlayerView` switches from `PlayerSurface` to `AVPlayerSurface`
+The planner reinforces it at the call site: `directVideoOutputMode` is forced
+to `.copy` whenever `directDolbyVisionProfile != nil`, so even if the Silo
+assessment had produced a bridged mode it cannot claim a DV session.
 
-So the Dolby Vision fallback decision is centralized in the view model, not
-buried inside the decode core or mixed up with NativePlayer HLS/Direct.
+## 3. tvOS display matching
 
-## 3. tvOS display matching and the dormant DV gate
+`AVPlayerBackend` drives
+[`TVDisplayCriteria`](../../iosApp/iosApp/Screens/Player/Shared/TVDisplayCriteria.swift)
+before item creation (when stream FPS and dynamic range are known) and releases
+the criteria on dispose so the system UI returns to its preferred HDMI mode.
+`TVDisplayCriteria.ContentFormat` carries `dolbyVision(baseLayer:)` because the
+compositor picks its mode from the base-layer transfer: PQ for 8.1, Rec.709 SDR
+for 8.2, HLG for 8.4. The same mapping
+(`VideoColorMetadata.dolbyVisionBaseLayerColorimetry`) supplies the colour
+attachments, so the HDMI mode and the served bitstream describe one base layer.
 
-The tvOS display behavior lives in `PlayerCore`, and the codebase currently has
-two different helpers:
+Two behaviors worth knowing:
 
-- `applyDisplayCriteria(...)` for the normal HDR / refresh-rate path
-- `applyDvGatedDisplayCriteria(...)` for a stricter Profile 5 gate
+- After applying criteria, the backend can `await
+  TVDisplayCriteria.waitForModeSwitchSettle()` before attaching, with poll
+  budgets from
+  [`HDRDisplayCriteriaPolicy`](../../iosApp/iosApp/Screens/Player/HDRDisplayCriteriaPolicy.swift).
+- `shouldPreserveTVDisplayCriteriaDuringReload(...)` keeps the negotiated mode
+  across an in-place item reload, which is why
+  `PlaybackCoordinator.prepareEngine(for:)` reuses the engine when the route
+  kind is unchanged. Renegotiating HDMI mid-session is visible and slow.
 
-Important current truth: only the normal HDR helper is reached in the active
-load flow. The stricter Profile 5 gate exists in code, but the current
-`.p5Passthrough` route returns out of `buildVideoFormatDescription(...)` before
-the later `needsDvGate` branch in `openAndDemux(...)` can run. So the P5 gate
-is present in the source tree but dormant in today's executable flow.
+The old `applyDvGatedDisplayCriteria(...)` Profile 5 gate documented here
+previously lived in `PlayerCore` and went away with it.
 
-If it were wired back in, the gate would:
+## 4. What the loopback actually does
 
-- refuse immediately if `Match Content: Dynamic Range` is off
-- wait up to 3 seconds for display-mode switching to settle
+The SiloPlayer route is not "AVPlayer on the original URL". `AVPlayerBackend`:
 
-## 4. What AVPlayerBackend actually does for SiloPlayer
+1. requires [`PlaybackSourceProxy`](../../iosApp/iosApp/Screens/Player/PlaybackSourceProxy.swift)
+   for remote HTTP(S) direct Silo sources
+2. rewrites `LoopbackSessionSpec.sourceURL` to the local proxy URL
+3. creates a loopback generation and a
+   [`LoopbackSegmentStore`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/LoopbackSegmentStore.swift)
+4. configures the generated-HLS temp spill policy
+5. starts [`LoopbackSegmentServer`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/LoopbackSegmentServer.swift)
+   on `127.0.0.1:<random-port>`
+6. starts [`LoopbackSegmentWriter`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/LoopbackSegmentWriter.swift)
+7. waits for the first playlist/segment runway to be ready
+8. creates an `AVURLAsset` pointed at the local playlist
+9. builds an `AVPlayerItem`, attaches observers, and plays
 
-The Dolby Vision fallback path is not "just use AVPlayer on the original URL."
+`AVPlayerSurface` is only the render layer: a `UIViewRepresentable` hosting an
+`AVPlayerLayer` with a black background and `.resizeAspect`.
 
-`AVPlayerBackend` builds a local remux pipeline:
+Serving mode comes from `LoopbackServingMode.gated`
+(`player.apple.siloplayer_primary_enabled`): the static `vodPlan` by default, or
+the growing `event` playlist when the key is explicitly `false`.
 
-1. require `PlaybackSourceProxy` for remote HTTP(S) direct Silo sources
-2. rewrite `LoopbackSessionSpec.sourceURL` to the local proxy URL
-3. create a loopback generation and `DVSegmentStore`
-4. enable generated-HLS temp spill for sources above 40 Mbps
-5. start `DVSegmentServer` on `127.0.0.1:<random-port>`
-6. start `DVSegmentWriter`
-7. wait for the first playlist/segment runway to be ready
-8. create an `AVURLAsset` pointed at the local playlist
-9. build an `AVPlayerItem`
-10. attach observers
-11. play through `AVPlayer`
-
-`AVPlayerSurface` is only the render layer:
-
-- `UIViewRepresentable`
-- `AVPlayerLayer`
-- black background
-- `.resizeAspect`
-
-All of the interesting fallback logic is in `PlayerViewModel`,
-`PlaybackSourceProxy`, `AVPlayerBackend`, `DVSegmentWriter`, `DVSegmentStore`,
-and `DVSegmentServer`.
-
-## 5. Why the fallback exists
+## 5. Why the loopback exists
 
 The writer file is explicit about the design:
 
 - the FFmpeg build has the `mp4` muxer, not the `hls` muxer
 - so the app produces fragmented MP4 output itself
 - Swift code splits the emitted BMFF boxes into `init.mp4` plus `.m4s` segments
-- the video track is forced to `dvh1`
-- a Dolby Vision configuration box is injected into the visual sample entry
-  when the source carries a DV configuration record. Which box type is written
+- Dolby Vision video is forced to a `dvh1` sample entry
+- a Dolby Vision configuration box is injected into the visual sample entry when
+  the source carries a DV configuration record. Which box type is written
   follows the record's *output* profile: `dvcC` up to Profile 7 (so Profile 5
   gets the `dvh1` + `dvcC` pairing Apple requires) and `dvvC` for the
   cross-compatible Profile 8 and above. The injection is
-  **nil-on-box-tree-failure**: an unexpected MP4 box layout (no `hvcC` in the
-  visual sample entry, etc.) returns `nil` and the original init segment is
-  written as-is. It is not nil-on-every-failure — common cases like P7→8.1
-  conversion synthesize a derived 8.1 DV record from the P7 input, and pure
-  HEVC modes intentionally skip injection.
-- a Profile 5 session with no usable DV record never reaches the mux: its base
-  layer is IPT-PQ-c2, so a sample entry without a configuration box has no
-  viewable fallback, and the writer fails the session
-  (`LoopbackWriterError.profile5ConfigUnusable`) so the route ladder moves on.
+  **nil-on-box-tree-failure**: an unexpected MP4 box layout returns `nil` and the
+  original init segment is written as-is. It is not nil-on-every-failure —
+  P7→8.1 conversion synthesizes a derived 8.1 DV record from the P7 input, and
+  pure HEVC modes intentionally skip injection.
+- a Profile 5 session with no usable DV record never reaches the mux
+  (`LoopbackWriterError.profile5ConfigUnusable`), so the route ladder moves on
 - AVPlayer then consumes the resulting local HLS presentation
 
-The goal is to get DV Profile 5 through AVPlayer's own Dolby Vision-capable
-pipeline, because the VideoToolbox path used by `PlayerCore` does not create a
-working P5 decoder session.
+The goal has always been to get Dolby Vision through AVPlayer's own
+DV-capable pipeline. What changed with the one-player consolidation is that this
+is no longer a *special* path for DV: it is the primary direct-play path for
+almost everything, with DV as one `VideoMode` among several and the
+[video bridge](09-video-bridge.md) as an orthogonal `VideoOutputMode`.
 
 ## 6. Loopback server and ATS
 
-`DVSegmentServer` is intentionally tiny:
+`LoopbackSegmentServer` is intentionally tiny:
 
 - bound to `127.0.0.1`
 - supports `GET` and `HEAD`
-- serves `.m3u8`, `.m4s`, and `.mp4` from `DVSegmentStore`
+- serves `.m3u8`, `.m4s`, and `.mp4` from `LoopbackSegmentStore`
 - supports byte ranges and brief near-future waits
 - no real auth layer
 
-This is why both `Info.plist` files enable:
-
-- `NSAppTransportSecurity`
-  - `NSAllowsLocalNetworking = true`
-
-Without that ATS exception, AVPlayer cannot load the loopback playlist.
+This is why the `Info.plist` files (iOS, tvOS, macOS, and the extensions) set
+`NSAppTransportSecurity` → `NSAllowsLocalNetworking = true`. Without that
+exception AVPlayer cannot load the loopback playlist.
 
 ## 7. What AVPlayerBackend reports back
 
-Across the NativePlayer and SiloPlayer route families, the backend publishes:
+Across all three routes the backend publishes time updates, duration, pause
+state, buffering state, buffered-ahead seconds, end-of-file, and terminal
+errors. On the loopback path, AVFoundation media selection plus server-supplied
+chapters keep Audio / Subtitles / Chapters populated.
 
-- time updates
-- duration
-- pause state
-- buffering state
-- buffered-ahead seconds
-- end-of-file
-- terminal errors
+Loopback-specific callbacks worth knowing:
 
-On the local Dolby Vision loopback path, AVFoundation media selection plus
-server-supplied chapters now keep Audio / Subtitles / Chapters populated. That
-is different from the older empty-array behavior this doc used to describe.
+- `onSegmentPlanResolved` publishes the `LoopbackSegmentPlan` (the VOD
+  timeline).
+- `onSegmentAppended` advances the writer head index for the consumer window.
+- `onBridgedVideoParameterSetsResolved` pins the first bridged producer's
+  `hvcC`/`avcC` onto the session spec so a restart reproduces it — see
+  [09](09-video-bridge.md#4-writer-integration).
 
-## 8. Current limitations on NativePlayer and SiloPlayer routes
+## 8. Current limitations
 
-These are explicit in the current code:
-
-- no audio-delay path
-- native AVFoundation caption fallback does not support Silo subtitle
-  delay/styling; controlled tracks render through the shared libass overlay
-- no video-gravity path
-- no tvOS-side HDR toggle logic inside the backend itself
-
-One especially important nuance:
-
-- `AVPlayerBackend` does expose `setSpeed(_:)`
-- `PlayerViewModel.setPlaybackSpeed(...)` now routes through `activePlayer`
-  for both backends
-
-So speed changes continue to work after NativePlayer/SiloPlayer route switches.
+- No audio-delay path on any route.
+- No per-route HDR passthrough toggle; the control was removed with
+  `PlayerCore`.
+- Native AVFoundation caption fallback does not honor Silo subtitle
+  delay/styling; controlled tracks render through the shared libass overlay.
+- Video gravity is a shared player setting rather than a backend capability
+  row.
+- Speed works through `activePlayer.setSpeed(_:)` on every route, so it
+  survives a route swap.
 
 ## 9. Source-auth detail
 
-The fallback route has two separate HTTP layers:
+The loopback has two separate HTTP layers:
 
 - `PlaybackSourceProxy` owns the authenticated original Silo stream URL,
   performs origin range fetching, and exposes a session-tokenized localhost URL
-- `DVSegmentWriter` opens the localhost source-proxy URL without remote auth
-  headers
+- `LoopbackSegmentWriter` opens the localhost source-proxy URL without remote
+  auth headers
 - `AVPlayer` reads from the local loopback server
 
-The local HLS asset does not need remote auth headers. Origin auth is hidden from
-FFmpeg and AVPlayer-facing clients.
+The local HLS asset does not need remote auth headers. Origin auth is hidden
+from FFmpeg and AVPlayer-facing clients.
 
 ## 10. Generated HLS storage policy
 
-`DVSegmentStore` is memory-first with a 128 MB generated segment budget. For
-Silo sources above 40 Mbps, the backend enables bounded session-scoped temp spill
-so append-only `EVENT` playlists do not reference segments that have disappeared
-from memory. Lower-bitrate sessions remain memory-first when practical.
+`LoopbackSegmentStore` is memory-first with a 128 MB generated-segment budget
+(96 MB on constrained-memory devices — `AVPlayerBackend.loopbackSegmentStoreMemoryBudgetBytes`).
+Bounded session-scoped temp spill is now enabled for **every** loopback session
+with a 4 GB budget (`generatedHLSSpillBudgetBytes`), reported as
+`local_hls_event_playlist` or `source_bitrate_unknown`;
+`SILO_ENABLE_HLS_DISK_SPILL=1` forces it with reason `env`.
 
 Temp spill is not debug mirroring:
 
@@ -211,42 +201,44 @@ Temp spill is not debug mirroring:
   teardown
 - debug artifacts: `tmp/continuum-dv-hls-debug/<session>/`, only when
   `SILO_KEEP_DV_HLS=1`
-- source cache disk spill: separate optional path, controlled by
+- source cache disk spill: a separate optional path, controlled by
   `SILO_ENABLE_SOURCE_DISK_SPILL=1`
 
-The HUD/log stats keep source cache bytes, generated store bytes, generated temp
-spill bytes, debug mirror bytes, and AVPlayer playable ahead separate.
+The HUD/log stats keep source cache bytes, generated store bytes, generated
+temp spill bytes, debug mirror bytes, and AVPlayer playable ahead separate.
 
 ## 11. Audio policy
 
-For the high-quality Silo route:
+For the loopback route (`ApplePlaybackRoutePlanner.loopbackAudioOutputMode`):
 
-- AAC / AC-3 / E-AC-3 copy when compatible.
-- TrueHD / MLP / MLPA / Dolby TrueHD use `require_flac` and emit `fLaC` in the
-  local fMP4/HLS output.
-- Required FLAC does not silently fall back to E-AC-3, AC-3, or AAC.
-- TrueHD-to-FLAC preserves the lossless channel bed but does not preserve Atmos
-  object metadata; `preservesAtmos=0` is the expected log value.
+- AAC / AC-3 / E-AC-3 copy.
+- TrueHD / MLP / MLPA use `.requireFLAC` and emit `fLaC` in the local fMP4/HLS
+  output. Required FLAC does not silently fall back to E-AC-3, AC-3, or AAC.
+- Everything else transcodes: `.transcodeFLAC` above 2 channels, `.transcodeAAC`
+  at 2 or fewer. This default arm matters more than it used to — the containers
+  the video bridge unlocks routinely carry mp3, mp2, vorbis, opus, and wma, none
+  of which the mp4 muxer accepts as a copy.
+- TrueHD-to-FLAC preserves the lossless channel bed but not Atmos object
+  metadata; `preservesAtmos=0` is the expected log value. Only copied E-AC-3/JOC
+  sets `preservesAtmos=1`.
 
 ## Validation log
 
-- corrected: AVPlayer-backed playback is no longer a DV-specific fallback
-  backend; NativePlayer covers the native-direct allowlist and gated HLS, while
-  SiloPlayer covers local normalized Dolby Vision paths.
-- verified: DV Profile 5 and the current Profile 7-to-8.1 experiment are the
-  explicit DOVI routes to SiloPlayer's local AVPlayer loopback; Profile 7 is now
-  logged as `profile7_to81_base_layer`.
-- corrected: the `strippedHdr10` routing name is stronger than the current live
-  behavior; the code no longer strips EL/RPU NALs and instead omits DV
-  signaling while keeping playback on the HDR10-compatible path.
-- corrected: `applyDvGatedDisplayCriteria(...)` exists but is currently dormant
-  in the active Profile 5 flow.
-- corrected: NativePlayer and SiloPlayer routes now keep track/chapter
-  publication and live speed controls aligned with the shared route-aware
-  player shell.
-- corrected: Silo loopback now requires the localhost source proxy and hides
-  remote auth from FFmpeg and AVPlayer-facing clients.
-- corrected: high-bitrate generated HLS uses bounded temp spill above 40 Mbps;
-  debug artifacts remain opt-in through `SILO_KEEP_DV_HLS=1`.
-- corrected: TrueHD-family audio on the high-quality Silo path now requires FLAC
-  and does not silently degrade to lossy audio.
+- verified: Dolby Vision profiles 5/7/8 claim `siloPlayerLoopback` ahead of the
+  native-direct assessment in `makeExecutionPlan`, and `assessSiloRoute` returns
+  early with `silo_dv_profile_owned_by_dv_policy` for any DV source.
+- verified: `loopbackVideoOutputMode` returns `dv_not_bridgeable` for DV on any
+  non-copy codec, and the planner independently forces `.copy` for DV sessions.
+  `LoopbackVideoBridgePlannerTests.testDolbyVisionNeverBridges` pins both.
+- verified: the Profile 7 → 8.1 base-layer conversion, its `db1p` brand, and the
+  `preferProfile7HDR10Fallback` escape hatch are unchanged by the one-player
+  consolidation.
+- corrected: the classes are `LoopbackSegmentWriter` / `LoopbackSegmentStore` /
+  `LoopbackSegmentServer`. The `DVSegment*` names this file used are historical.
+- corrected: generated-HLS temp spill is no longer conditional on a 40 Mbps
+  source bitrate; `generatedHLSSpillPolicy(for:)` returns `.enabled` for every
+  session.
+- corrected: `applyDvGatedDisplayCriteria(...)`, the dormant Profile 5 display
+  gate, was `PlayerCore` code and no longer exists.
+- corrected: AVPlayer-backed playback is not a DV-specific fallback. It is the
+  only playback stack; DV is one `VideoMode` on the loopback route.

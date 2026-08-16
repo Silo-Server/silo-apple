@@ -32,7 +32,7 @@ date: 2026-04-22
 platform: tvOS 18.5
 device: Apple TV 4K (3rd gen)
 route_family: SiloPlayer
-implementation_route: avPlayerLocalDVLoopback
+implementation_route: siloPlayerLoopback
 delivery: direct
 asset:
   container: mp4

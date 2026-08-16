@@ -11,7 +11,7 @@ Use filenames like:
 
 Examples:
 
-- `2026-04-27-tvos-avPlayerLocalDVLoopback-dolby-vision.yaml`
+- `2026-04-27-tvos-siloPlayerLoopback-dolby-vision.yaml`
 - `2026-04-27-tvos-avPlayerNativeDirect-atmos.yaml`
 
 Follow the template in

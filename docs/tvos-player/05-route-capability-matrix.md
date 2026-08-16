@@ -1,88 +1,148 @@
 # Apple Route Capability Matrix
 
-Snapshot date: 2026-07-24 (SiloPlayer AirPlay hardware validation;
-SiloPlayer loopback-primary Stages 0–4 validated 2026-07-03;
-previous snapshot 2026-04-29 at `6c2b4af`)
+Snapshot date: 2026-08-16 (one-player consolidation, branch
+`player/one-player-cleanup`, HEAD `6818819`).
+Prior snapshots: 2026-07-24 (SiloPlayer AirPlay hardware validation),
+2026-07-03 (SiloPlayer loopback-primary Stages 0–4).
 
 This matrix is the implementation-facing truth source for the current Apple
-player routes in `silo-apple`. It separates:
+player routes in `silo-apple`. It mirrors
+[`ApplePlaybackRouteCapabilities.swift`](../../iosApp/iosApp/Screens/Player/ApplePlaybackRouteCapabilities.swift),
+which is the executable version of the same table. It separates:
 
 - `Repo-verified`: behavior grounded in the current code path
 - `Validation required`: behavior that may exist on some device/output paths
   but cannot be claimed yet
-- `Unsupported` / `Unclaimed`: behavior Silo does not currently promise on
-  that route
+- `Unsupported` / `Unclaimed`: behavior Silo does not currently promise on that
+  route
 
 ## Routes
 
+The `playerCoreDirect` / CompatibilityPlayer column is **gone** — the backend
+was deleted on 2026-08-16 (see
+[02](02-retired-compatibility-player.md)). Three routes remain, all AVPlayer.
+
 | Implementation route | Route family | Display label | Current role |
 | --- | --- | --- | --- |
-| `playerCoreDirect` | CompatibilityPlayer | CompatibilityPlayer Direct | Codec-tail fallback (AV1/VP9/legacy via the opened codec gate) + runtime fallback when the loopback degrades |
-| `avPlayerHLS` | NativePlayer | NativePlayer HLS | Native adaptive path for explicit quality/bitrate-reduction HLS behind the local rollout gate |
-| `avPlayerNativeDirect` | NativePlayer | NativePlayer Direct | Narrow native-direct path for allowlisted `mp4` / `mov` / `m4v` assets |
-| `siloPlayerLoopback` | SiloPlayer | SiloPlayer Loopback | **Primary** direct playback for H.264/HEVC (incl. SDR) via the static-VOD serving mode; gate `player.apple.siloplayer_primary_enabled` default ON (explicit `false` = kill switch to the EVENT path). Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
+| `avPlayerNativeDirect` | NativePlayer | Native Player Direct | Narrow native-direct path for allowlisted `mp4` / `mov` / `m4v` assets whose video, audio, and embedded subtitle codecs all match the Apple allowlist |
+| `siloPlayerLoopback` | SiloPlayer | Direct Stream | **Primary** direct playback. Remuxes H.264/HEVC/Dolby Vision, and now also bridges the non-copyable codec tail (see the Video bridge sub-rows). Static-VOD serving mode; gate `player.apple.siloplayer_primary_enabled` default ON (explicit `false` = kill switch to the EVENT path). Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
+| `avPlayerHLS` | NativePlayer | Native Player HLS | Server-produced HLS for `remux` / `transcode` deliveries, and the **terminal fallback rung** for anything the loopback cannot normalize. No longer feature-flag gated |
 
 ## Matrix
 
-| Capability | `playerCoreDirect` | `avPlayerHLS` | `avPlayerNativeDirect` | `siloPlayerLoopback` |
-| --- | --- | --- | --- | --- |
-| Primary audio selection | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
-| Primary subtitle selection | Repo-verified | Repo-verified | Repo-verified on allowlisted assets | Repo-verified |
-| Sidecar primary subtitles | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
-| Secondary subtitles | Repo-verified | Repo-verified, sidecar-only | Repo-verified, sidecar-only | Repo-verified, sidecar-only |
-| Chapters | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
-| Buffered-ahead reporting | Unsupported | Repo-verified | Repo-verified | Repo-verified |
-| Video gravity control | Repo-verified | Unsupported | Unsupported | Unsupported |
-| HDR toggle | Repo-verified | Unsupported | Unsupported | Unsupported |
-| Audio delay | Unsupported | Unsupported | Unsupported | Unsupported |
-| Subtitle delay | Repo-verified | Silo-rendered tracks only | Silo-rendered tracks only | Silo-rendered tracks only |
-| Subtitle styling | Repo-verified | Silo-rendered tracks only | Silo-rendered tracks only | Silo-rendered tracks only |
-| tvOS custom shell / Siri Remote ownership | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
-| Now Playing / remote commands | Repo-verified | Repo-verified | Repo-verified | Repo-verified |
-| PiP | Unsupported | Validation required | Validation required | Validation required |
-| AirPlay / external playback | Unsupported | Unsupported | Validation required, downloads only | Repo-verified |
-| Premium HDR / DV / Atmos claims | Validation required | Validation required | Validation required | Validation required |
+| Capability | `avPlayerNativeDirect` | `siloPlayerLoopback` | `avPlayerHLS` |
+| --- | --- | --- | --- |
+| Primary audio selection | Repo-verified | Repo-verified | Repo-verified |
+| Primary subtitle selection | Repo-verified on allowlisted assets | Repo-verified | Repo-verified |
+| Sidecar primary subtitles | Repo-verified | Repo-verified | Repo-verified |
+| Secondary subtitles | Repo-verified, sidecar-only | Repo-verified, sidecar-only | Repo-verified, sidecar-only |
+| Embedded text subtitles (ASS/SSA/SRT/mov_text/WebVTT) | Repo-verified, Silo-rendered via the extractor | Repo-verified, extracted or registered by the writer's subtitle tap | Repo-verified, server or sidecar |
+| Embedded bitmap subtitles — PGS / DVD-sub / VobSub | Unsupported (blocker `embedded_subtitles_require_hls`, route falls to loopback or HLS) | Repo-verified, client-rendered as RGBA cues | Server burn-in / server-selected |
+| Embedded bitmap subtitles — DVB | Unsupported | Unsupported (blocker `bitmap_subtitles_require_hls`) | Server burn-in / server-selected |
+| Subtitle delay | Silo-rendered tracks only | Silo-rendered tracks only | Silo-rendered tracks only |
+| Subtitle styling | Silo-rendered tracks only | Silo-rendered tracks only | Silo-rendered tracks only |
+| Chapters | Repo-verified | Repo-verified | Repo-verified |
+| Buffered-ahead reporting | Repo-verified | Repo-verified | Repo-verified |
+| Video gravity control | Repo-verified | Repo-verified | Repo-verified |
+| HDR passthrough toggle | Removed | Removed | Removed |
+| Audio delay | Unsupported | Unsupported | Unsupported |
+| tvOS custom shell / Siri Remote ownership | Repo-verified | Repo-verified | Repo-verified |
+| Now Playing / remote commands | Repo-verified | Repo-verified | Repo-verified |
+| PiP | Validation required | Validation required | Validation required |
+| AirPlay / external playback | Unsupported | Repo-verified | Validation required, downloads only |
+| Premium HDR / DV / Atmos claims | Validation required | Validation required | Validation required |
+
+### Video bridge (SiloPlayer only)
+
+`LoopbackSessionSpec.VideoOutputMode` is orthogonal to `VideoMode`: it answers
+"copy the source bitstream or re-encode it". Only the loopback route has one.
+Decided once, in
+`ApplePlaybackRoutePlanner.loopbackVideoOutputMode(for:version:capabilities:)`.
+Full detail in [09 - On-device video bridge](09-video-bridge.md).
+
+| Sub-capability | `siloPlayerLoopback` |
+| --- | --- |
+| Copy (`.copy`) | Repo-verified — `h264`, `hevc`, and every Dolby Vision `VideoMode` |
+| Bridged encode (`.transcodeHEVC`) | Repo-verified — `av1` (no HW decode), `vp9`, `vp8`, `mpeg2video`, `mpeg4`, `msmpeg4v3`, `vc1`, `wmv3` |
+| Bridged encode fallback (`.transcodeH264`) | Repo-verified — same codec set when `hevc_videotoolbox` cannot be opened |
+| AV1 passthrough (`.passthroughAV1`) | Repo-verified — AV1 remuxed with an `av01` sample entry, only where `VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)`. Forced `false` on simulator |
+| Dolby Vision through the bridge | **Unsupported by design** — blocker `dv_not_bridgeable` |
+| HDR (PQ / HLG) through the bridge | Unsupported in phase 1 — blocker `video_hdr_bridge_unsupported` |
+| Bridged resolution above 1080p | Unsupported in phase 1 — blocker `video_bridge_resolution_unsupported` (cap is 1920 × 1080; unknown dimensions pass and rely on the runtime watchdog) |
+| Bridge-tier containers (`avi`, `wmv`, `asf`, `webm`, `flv`, `mpg`, `mpeg`, `m2v`, `vob`, `ogm`, `ogv`, `3gp`, `3g2`, `divx`) | Repo-verified for bridged/AV1-passthrough modes only; the copy tier still refuses them with `container_not_normalizable` |
+| Bridged session serving mode | VOD plan only. With the primary gate off, the planner blocks with `video_bridge_requires_vod_plan` |
+| Throughput floor | Repo-verified runtime watchdog: sustained output below 1.1× realtime throws `LoopbackWriterError.videoBridgeTooSlow` and the route falls to `avPlayerHLS` |
+| Hardware validation | Apple TV 4K (3rd gen, tvOS 26.6) exposes hardware `hvc1` and `avc1` VideoToolbox encoders at 1080p **and** 4K, and accepts HEVC Main10. No thermal soak validation yet |
 
 ## Notes
 
-- `PlayerCore.setAudioDelay(...)` is still a TODO, so audio delay must not be
-  surfaced as supported even on the compatibility route.
-- `avPlayerNativeDirect` is intentionally narrow. It only applies to direct
-  assets whose container, codecs, and embedded subtitle shape match the
-  client-side allowlist.
-- NativePlayer and SiloPlayer secondary subtitles remain sidecar-only today.
-  The UI should not imply arbitrary embedded-secondary subtitle parity on those
-  routes.
-- "Silo-rendered tracks" means subtitle tracks whose presentation goes
-  through the shared libass session: text sidecars, FFmpeg-extracted text
-  tracks, and ASS/SSA streams. Silo delay and styling controls apply
-  only to those tracks.
-- Native AVFoundation caption fallback (used when the libass extraction path
-  is unavailable on a given asset/route) does not honor Silo
-  delay/styling. The capability rows above describe what Silo can
-  promise on each route; they are not a claim about every embedded subtitle
-  on a NativePlayer or SiloPlayer asset.
-- PiP stays intentionally conservative until Silo has route-specific lifecycle
-  handling and device/output validation. PiP itself is enabled on the iOS
-  AVPlayer-backed routes.
+- Audio delay is not implemented on any AVPlayer route, so it must not be
+  surfaced as supported anywhere. The only surviving surface is a read-only
+  status row in the macOS options panel.
+- The HDR passthrough toggle was removed with `PlayerCore`. HDMI mode selection
+  is negotiated from the stream's own colour signalling by
+  [`TVDisplayCriteria`](../../iosApp/iosApp/Screens/Player/Shared/TVDisplayCriteria.swift).
+  `PlayerSettings.setHDREnabled(_:)` survives for settings-wire compatibility
+  only, and the cast command is an explicit no-op.
+- `avPlayerNativeDirect` is intentionally narrow. It applies only to direct
+  assets whose container, codecs, and embedded subtitle shape all match the
+  client-side allowlist, and whose route capabilities satisfy the requirements.
+- Secondary subtitles remain sidecar-only on every route. The UI must not imply
+  arbitrary embedded-secondary parity.
+- "Silo-rendered tracks" means subtitle tracks whose presentation goes through
+  the shared libass session: text sidecars, FFmpeg-extracted text tracks, and
+  ASS/SSA streams. Silo delay and styling apply only to those tracks.
+- Bitmap subtitles changed shape. `siloClientRenderedBitmapSubtitleCodecs`
+  (`pgs`, `hdmv_pgs_subtitle`, `dvd_subtitle`, `vobsub`) are decoded into RGBA
+  cue images by the AVPlayer subtitle extractor and rendered in the overlay, so
+  they no longer force a server burn-in route. DVB is deliberately excluded —
+  its broadcast region/CLUT model is unvalidated here — and still raises
+  `bitmap_subtitles_require_hls`.
+- Native AVFoundation caption fallback (used when the libass extraction path is
+  unavailable for a given asset/route) does not honor Silo delay/styling. The
+  rows above describe what Silo can promise per route; they are not a claim
+  about every embedded subtitle on an asset.
+- PiP stays conservative until Silo has route-specific lifecycle handling and
+  device/output validation. PiP itself is enabled on the iOS AVPlayer routes;
+  tvOS PiP is unsupported. Silo-rendered subtitles do not appear in the PiP
+  window.
 - AirPlay video hands the receiver a URL and nothing else: the receiver opens
-  its own HTTP connection, without the asset's `AVURLAssetHTTPHeaderFieldsKey`
-  headers. Two things make a NativePlayer URL unfetchable from a receiver, and
-  a direct-play session can hit either: the URL is authenticated by an
-  `Authorization` header (`/api/v1/...` sits behind `RequireAuth` on the
-  server, so the fetch answers 401), or `prepareSourceProxy` has rewritten it
-  to the on-device caching proxy at 127.0.0.1, which drops the headers but is
-  unreachable off-device. External playback and the route picker are enabled
-  only for assets that survive both checks — offline `file://` downloads, and
-  unauthenticated origin URLs.
+  its own HTTP connection without the asset's `AVURLAssetHTTPHeaderFieldsKey`
+  headers. Two things make a NativePlayer URL unfetchable from a receiver, and a
+  direct-play session can hit either: the URL is authenticated by an
+  `Authorization` header (`/api/v1/...` sits behind `RequireAuth`, so the fetch
+  answers 401), or `prepareSourceProxy` rewrote it to the on-device caching
+  proxy at 127.0.0.1, which drops the headers but is unreachable off-device.
+  External playback and the route picker are enabled only for assets that
+  survive both checks — offline `file://` downloads and unauthenticated origin
+  URLs.
 - On iOS, SiloPlayer publishes its generated HLS through a LAN URL carrying a
   per-session access token, so the selected receiver can fetch the playlist and
-  segments. The server binds to the LAN but refuses off-device connections
-  until a handoff is actually live, and advertises only a Wi-Fi/Ethernet
-  RFC1918 address. If no such address exists, playback stays on the device with
-  a notice instead of stranding the receiver. SiloPlayer AirPlay was
-  hardware-validated 2026-07-24 from an iPhone 16 Pro to Apple TV with a Dolby
-  Vision source. This validates external playback for that route, not a
-  generalized Dolby Vision output-mode or premium-format claim.
-- Premium-media claims stay validation-gated even when playback itself uses a
-  NativePlayer or SiloPlayer route.
+  segments. The server binds to the LAN but refuses off-device connections until
+  a handoff is live, and advertises only a Wi-Fi/Ethernet RFC1918 address. If no
+  such address exists, playback stays on the device with a notice instead of
+  stranding the receiver. Hardware-validated 2026-07-24 from an iPhone 16 Pro to
+  Apple TV with a Dolby Vision source. This validates external playback for that
+  route, not a generalized Dolby Vision output-mode or premium-format claim.
+- Premium-media claims stay validation-gated on every route. A bridged session
+  additionally publishes the degradation warning "Video is re-encoded on this
+  device; quality is reduced."
+
+## Validation log
+
+- verified: `ApplePlaybackRouteCapabilities` declares exactly four profiles —
+  `avPlayerHLS`, `avPlayerNativeDirect`, `siloPlayerLoopback`, and
+  `macAVFoundation`. There is no `playerCoreDirect` profile.
+- verified: every route's `backendCapabilities` is
+  `PlayerBackendCapabilities.avFoundation` (macOS uses `macAVFoundation`), so
+  buffered-ahead, chapters, external primary subtitles, secondary subtitles, and
+  video gravity are uniformly available; subtitle delay/styling are raised
+  per-track by `withSubtitleControls(_:)`.
+- verified: the video-bridge truth table is pinned by
+  [`LoopbackVideoBridgePlannerTests`](../../iosApp/Tests/LoopbackVideoBridgePlannerTests.swift)
+  with injected `AppleVideoBridgeCapabilities`, so the rows above hold on a Mac,
+  a CI runner, and an Apple TV alike.
+- corrected: the `HDR toggle` row previously read `Repo-verified` for
+  `playerCoreDirect`. Both the route and the toggle are gone.
+- corrected: bitmap subtitles are no longer a blanket gap. PGS/DVD-sub/VobSub
+  render client-side on the loopback route; only DVB still forces the server.

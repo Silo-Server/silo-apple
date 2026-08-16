@@ -1,4 +1,7 @@
-Snapshot date: 2026-04-29
+Snapshot date: 2026-04-29. Route names refreshed 2026-08-16 for the one-player
+consolidation (`avPlayerLocalDVLoopback` → `siloPlayerLoopback`, `DVSegment*` →
+`LoopbackSegment*`); the product contract itself is unchanged, and the Profile 7
+→ 8.1 base-layer conversion behaves exactly as specified here.
 
 # Profile 7 Dolby Vision And TrueHD Loopback Spec
 
@@ -38,9 +41,11 @@ The three blockers are independent:
 - Dolby TrueHD is not an Apple-native HLS/AVPlayer audio delivery format, and
   TrueHD Atmos cannot be passed through as TrueHD Atmos on Apple TV.
 
-`PlayerCore` can demux and decode many compatibility assets, but it cannot
-truthfully present this case as Dolby Vision on Apple TV. AVPlayer can negotiate
-Apple's Dolby Vision output path, but only if we feed it Apple-compatible media.
+The retired `PlayerCore` decode core could demux and decode many compatibility
+assets, but it could not truthfully present this case as Dolby Vision on Apple
+TV — which is one of the reasons it was removed (see
+[02](02-retired-compatibility-player.md)). AVPlayer can negotiate Apple's Dolby
+Vision output path, but only if we feed it Apple-compatible media.
 
 That is why this feature exists: bridge the user's existing remux file into an
 Apple-native presentation without requiring the server to pre-convert the
@@ -122,7 +127,7 @@ The first supported class is:
 
 The route may claim Dolby Vision only when:
 
-- route is SiloPlayer (current code: `avPlayerLocalDVLoopback`)
+- route is SiloPlayer (current code: `siloPlayerLoopback`)
 - video mode is `profile7_to81_base_layer` or a validated native Apple DV mode
 - the emitted init segment and playlist advertise the final output shape, not
   just the input-side DOVI metadata
@@ -148,8 +153,10 @@ label is "lossless multichannel PCM" or "multichannel LPCM".
 PGS, VobSub, and DVB subtitles are bitmap subtitle formats, not libass text
 inputs. The current Apple subtitle stack renders text and ASS-like cues through
 the shared subtitle session and skips FFmpeg `SUBTITLE_BITMAP` rects, so these
-formats must not be treated as preserved by SiloPlayer or CompatibilityPlayer
-today.
+formats must not be treated as preserved by any Apple route today. (Since this
+spec was written, PGS / DVD-sub / VobSub gained a client-side RGBA overlay
+renderer on the SiloPlayer route — the direction this section recommends. DVB
+still routes to the server.)
 
 Do not solve bitmap subtitles with client-side burn-in. True burn-in requires
 rewriting decoded video frames, which breaks the AVPlayer-owned HDR/Dolby
@@ -183,20 +190,22 @@ Downgrades must be explicit.
 
 The video path remains the SiloPlayer local AVPlayer loopback route:
 
-1. `PlayerViewModel` selects SiloPlayer (current code:
-   `avPlayerLocalDVLoopback`) for direct-play P7.
+1. `ApplePlaybackRoutePlanner` selects SiloPlayer (current code:
+   `siloPlayerLoopback`, route family `SiloPlayer`) for direct-play P7.
+   Dolby Vision claims the session ahead of the native-direct assessment.
 2. `PlayerViewModel` requires `PlaybackSourceProxy` for the remote HTTP(S)
    direct stream and rewrites `LoopbackSessionSpec.sourceURL` to localhost.
 3. `LoopbackSessionSpec.videoMode` is `.convertProfile7To81`, logged as
    `profile7_to81_base_layer`.
-4. `DVSegmentWriter` opens the source proxy URL without remote auth headers.
+4. `LoopbackSegmentWriter` opens the source proxy URL without remote auth
+   headers.
 5. libavformat demuxes the MKV.
 6. The HEVC elementary stream is filtered:
    - keep base-layer video NALs
    - strip enhancement-layer NALs
    - convert RPU metadata through Libdovi mode 2
-7. Output is fragmented MP4 stored in `DVSegmentStore` and served by
-   `DVSegmentServer` from localhost.
+7. Output is fragmented MP4 stored in `LoopbackSegmentStore` and served by
+   `LoopbackSegmentServer` from localhost.
 8. AVPlayer consumes the local media playlist.
 
 The HLS master playlist can exist for inspection and future validation, but the
@@ -227,7 +236,7 @@ TrueHD.
 Decode unsupported lossless audio, then re-encode the decoded PCM bed into an
 AVPlayer-compatible lossless audio codec inside the same local HLS/fMP4 session:
 
-- `DVSegmentWriter` decodes TrueHD/DTS-HD-style input to PCM.
+- `LoopbackSegmentWriter` decodes TrueHD/DTS-HD-style input to PCM.
 - The decoded 5.1/7.1 bed is encoded as FLAC in fMP4/HLS using the `fLaC`
   sample entry.
 - AVPlayer owns demux, decode, buffering, A/V sync, seeking, and media timing.
@@ -259,7 +268,8 @@ Use AVPlayer for the local Dolby Vision video presentation, but decode the
 selected unsupported audio stream ourselves and render PCM through a native
 audio output path:
 
-- `DVSegmentWriter` or a sibling audio worker decodes TrueHD to PCM frames.
+- `LoopbackSegmentWriter` or a sibling audio worker decodes TrueHD to PCM
+  frames.
 - A Core Audio/AVAudioEngine-style renderer outputs 5.1/7.1 PCM.
 - Audio is clocked to AVPlayer current time and rebuilt on seek.
 - The local HLS video playlist can be video-only, or carry a low-priority audio
@@ -281,7 +291,7 @@ The product target is Option B for TrueHD/DTS-HD-style sources:
   chain supports it.
 - TrueHD Atmos is not claimed as Atmos because object metadata is not preserved.
 - E-AC-3/JOC remains the only Atmos-preserving path in this spec, and only when
-  copied through a NativePlayer or SiloPlayer route and confirmed by receiver
+  copied through a Native Player or SiloPlayer route and confirmed by receiver
   validation.
 
 Option A remains useful as a possible explicit lossy fallback, but it must never
@@ -504,7 +514,7 @@ To confirm the local loopback is actually producing Dolby Vision:
    panel should report the same Dolby Vision mode.
 5. Capture Silo's route logs for the same playback session. A candidate DV
    session should show SiloPlayer, or today's implementation identifier
-   `backend=avPlayerLocalDVLoopback`,
+   `backend=siloPlayerLoopback`,
    `videoMode=profile7_to81_base_layer`, final `CODECS`/sample-entry values containing
    `dvh1`, a final DOVI record such as profile 8, compatibility 1, and
    `tv display apply ... dr=5`.

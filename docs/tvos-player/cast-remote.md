@@ -2,7 +2,7 @@
 
 Peer-to-peer LAN remote control: an iPhone discovers a Silo Apple TV on the
 local network, connects directly to it, and drives playback (launch, transport,
-tracks, quality, speed, aspect/HDR, **volume/mute**, **next episode**) from a
+tracks, quality, speed, aspect, **volume/mute**, **next episode**) from a
 native now-playing screen. Control stays LAN-local; launching new content uses
 the phone's Silo server to authorize a playback-scoped TV session. Apple and
 Android use the same wire protocol.
@@ -31,7 +31,7 @@ and state is published via `PlayerViewModel.makeSiloControlPlaybackState(content
 - `handoff_ready` — TV confirms that its temporary phone profile is active
 - `handoff_cancel` — either peer cancels a stale, denied, or failed handoff
 - `launch` — phone asks the TV to start playing a `SiloCastPlaybackRequest`
-- `control` — `SiloCastControlCommand` (play/pause/seek/stop, select audio/subtitle, speed, quality, video gravity, HDR, **set_volume**, **set_muted**, **play_next**)
+- `control` — `SiloCastControlCommand` (play/pause/seek/stop, select audio/subtitle, speed, quality, video gravity, subtitle sync/position, **set_volume**, **set_muted**, **play_next**)
 - `state` — `SiloCastPlaybackState` snapshot (TV → phone, ~2 Hz while playing)
 - `error` — coded error (`server_mismatch`, `unauthorized`, `player_not_ready`, …)
 - `ping` / `pong` — heartbeat
@@ -97,14 +97,14 @@ tvOS exposes **no system/TV-volume API**: `MPVolumeView` is not in the tvOS SDK
 and `AVAudioSession.outputVolume` is read-only. The remote therefore controls
 **per-player playback gain**, not system volume:
 
-- **`PlayerCore` route** (custom decoder → `AVAudioEngine`): gain is applied to
-  the engine's `mainMixerNode.outputVolume`. This always works because PlayerCore
-  decodes to PCM. The gain is re-applied after every engine reset/route change so
-  it survives format changes.
-- **`AVPlayer` route:** gain is applied via `avPlayer.volume`. This attenuates
-  **decoded PCM only** — it is a **no-op when audio is bitstreamed/passthrough**
-  (Dolby Digital/Atmos to a receiver) or routed via AirPlay. User-mute is modeled
-  as `volume = 0`, **never** `avPlayer.isMuted` (that property is reserved for the
+Every route is AVPlayer now (the `PlayerCore` decode path that applied gain to
+an `AVAudioEngine` `mainMixerNode` was deleted on 2026-08-16), so there is one
+behavior:
+
+- Gain is applied via `avPlayer.volume`. This attenuates **decoded PCM only** —
+  it is a **no-op when audio is bitstreamed/passthrough** (Dolby
+  Digital/Atmos to a receiver) or routed via AirPlay. User-mute is modeled as
+  `volume = 0`, **never** `avPlayer.isMuted` (that property is reserved for the
   player's initial-video-display gate and would clobber a user mute).
 
 Consequences, surfaced honestly in the UI:
@@ -112,6 +112,27 @@ Consequences, surfaced honestly in the UI:
   above it** (there is no amplification).
 - The cast state echoes the *applied* gain value, which on a passthrough AVPlayer
   route may not correspond to an audible change.
+
+## HDR toggle — removed (wire compatibility retained)
+
+The remote used to expose an HDR passthrough toggle. It only ever did anything
+on the `PlayerCore` route, which was deleted on 2026-08-16 (see
+[02](02-retired-compatibility-player.md)); on AVPlayer the HDMI mode is
+negotiated from the stream's own colour signalling by
+[`TVDisplayCriteria`](../../iosApp/iosApp/Screens/Player/Shared/TVDisplayCriteria.swift),
+so the toggle had nothing to act on.
+
+The wire shape is unchanged so older peers keep decoding:
+
+- `SiloCastControlCommand.Name.setHDREnabled` (`set_hdr_enabled`) is still a
+  valid command name, marked *"Deprecated: accepted from older remote peers and
+  ignored."* `PlayerViewModel.applySiloControlCommand(_:)` handles it with an
+  explicit `break` — a **no-op**, not an error — so an older phone does not see
+  a command failure.
+- `SiloCastPlaybackState.hdrEnabled` and `.supportsHDRToggle` remain on the
+  payload and are **always `false`** from current senders
+  (`TVControlReceiver` and `PlayerViewModel` both publish `false`), so an
+  updated phone hides the control.
 
 ## Security — known limitation (deferred)
 
