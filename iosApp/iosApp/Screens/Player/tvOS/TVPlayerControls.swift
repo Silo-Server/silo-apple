@@ -334,7 +334,7 @@ struct TVPlayerControls: View {
             }
 
             if viewModel.sleepTimer.isActive {
-                Label(formatCountdown(viewModel.sleepTimer.remainingSeconds),
+                Label(PlayerTimeFormatter.formatCountdown(viewModel.sleepTimer.remainingSeconds),
                       systemImage: "moon.zzz.fill")
                     .font(.continuumSmall.weight(.medium))
                     .foregroundStyle(.white.opacity(0.85))
@@ -534,19 +534,19 @@ struct TVPlayerControls: View {
         if timeDisplayMode == .currentAndFinish {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 HStack {
-                    clockText(formatClockTime(context.date))
+                    clockText(PlayerTimeFormatter.formatClockTime(context.date))
                     Spacer()
                     if viewModel.duration > 0 {
-                        clockText(formatClockTime(estimatedFinishDate(from: context.date)))
+                        clockText(PlayerTimeFormatter.formatClockTime(estimatedFinishDate(from: context.date)))
                     }
                 }
             }
         } else {
             HStack {
-                clockText(formatTime(scrubberDisplayTime))
+                clockText(PlayerTimeFormatter.formatHMS(scrubberDisplayTime))
                 Spacer()
                 if viewModel.duration > 0 {
-                    clockText("−\(formatTime(remainingTime))")
+                    clockText("−\(PlayerTimeFormatter.formatHMS(remainingTime))")
                 }
             }
         }
@@ -570,10 +570,6 @@ struct TVPlayerControls: View {
     private func estimatedFinishDate(from now: Date) -> Date {
         let speed = max(viewModel.settings.playbackSpeed, 0.1)
         return now.addingTimeInterval(remainingTime / speed)
-    }
-
-    private func formatClockTime(_ date: Date) -> String {
-        date.formatted(date: .omitted, time: .shortened)
     }
 
     // MARK: - HUD open/close
@@ -647,16 +643,6 @@ struct TVPlayerControls: View {
 
     private func closeHUD() {
         viewModel.closeHUD()
-    }
-
-    // MARK: - Helpers
-
-    private func formatTime(_ seconds: Double) -> String {
-        PlayerTimeFormatter.formatHMS(seconds)
-    }
-
-    private func formatCountdown(_ seconds: Int) -> String {
-        PlayerTimeFormatter.formatCountdown(seconds)
     }
 }
 #endif

@@ -35,6 +35,14 @@ struct PlayerView: View {
     #endif
     #if os(tvOS)
     @State private var remoteIdentityNotice: RemotePlaybackIdentityManager.ActiveIdentity?
+    // Follow-up: scrub/preview state is split three ways — the quick-preview
+    // visibility and time-display mode live here, the timeline scrub session
+    // lives in `TVPlayerControls` (`isTimelineScrubbing`, `isScrubberFocused`,
+    // `cancelPendingScrub`), and the committed scrub position lives on
+    // `PlayerViewModel` (`isScrubbing`, `scrubPreviewTime`). Consolidating them
+    // behind one owner is worth doing, but it rewires the tvOS focus handoff
+    // between the press-capture sink, the scrubber, and the HUD, so it needs
+    // its own change (see docs/tvos-focus.md) rather than riding along here.
     @State private var isTimelinePreviewVisible = false
     @State private var timelineTimeDisplayMode: TVPlayerTimeDisplayMode = .elapsedRemaining
     @State private var timelineSelectionRequest: UUID?

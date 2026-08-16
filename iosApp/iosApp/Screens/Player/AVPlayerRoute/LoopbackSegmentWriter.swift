@@ -358,8 +358,6 @@ struct LoopbackBridgedDriftGovernor {
 }
 
 final class LoopbackSegmentWriter {
-    // Temporary [CMP-LIFE]: session-pool leak attribution.
-    deinit { print("[CMP-LIFE] deinit LoopbackSegmentWriter") }
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "LoopbackSegmentWriter"
@@ -634,9 +632,6 @@ final class LoopbackSegmentWriter {
     /// Which input stream index supplies the video track. -1 until openOutput
     /// sets it.
     private var videoInputStreamIndex: Int = -1
-    // Temporary [CMP-SEAM] diagnostics (see rewritePacketForOutput).
-    private var vodSeamDidLogFirstAudio = false
-    private var vodSeamLastAudioEnd: Int64 = -1
 
     // MARK: - Subtitle tap
     // Text-subtitle streams stay in the demuxer keep-set; their packets are
@@ -1034,7 +1029,7 @@ final class LoopbackSegmentWriter {
             prewarmVODCueIndexAndReseek()
         }
         guard let plan = vodPlan, plan.segmentCount > 0 else {
-            print("[CMP-AVP] vod plan unavailable; degrading to EVENT serving")
+            cmpLog("[CMP-AVP] vod plan unavailable; degrading to EVENT serving")
             // A failed harvest may have bailed before its rewind/start seek
             // (openInput no longer seeks for vodPlan sessions).
             if let inCtx = inputCtx {
@@ -1061,7 +1056,7 @@ final class LoopbackSegmentWriter {
         )
         vodOpenSegmentIndex = effectiveBase
         onVODProducerAnchored?(effectiveBase)
-        print("[CMP-AVP] vod producer anchored segment=\(effectiveBase) start=\(sourceStartTimeSeconds)")
+        cmpLog("[CMP-AVP] vod producer anchored segment=\(effectiveBase) start=\(sourceStartTimeSeconds)")
         let anchorBoundarySeconds = plan.sourceStartSeconds(ofSegment: effectiveBase)
         // The re-seek also runs whenever the resume-anchor probe consumed
         // packets — even an on-boundary resume needs the cursor put back.
@@ -1094,7 +1089,7 @@ final class LoopbackSegmentWriter {
             // counter is seeded from the first emitted frame's session-axis
             // timestamp (see seedVODBridgedAudioPTSIfNeeded). Copy-mode
             // sources are exact.
-            print("[CMP-AVP] vod: bridged audio (\(selectedAudioOutputMode)) — session-anchored at first emitted frame")
+            cmpLog("[CMP-AVP] vod: bridged audio (\(selectedAudioOutputMode)) — session-anchored at first emitted frame")
         }
     }
 
@@ -1186,7 +1181,7 @@ final class LoopbackSegmentWriter {
                 if isKeyframe, pkt.pointee.pts != Int64.min, pkt.pointee.pts >= boundary {
                     vodAwaitingRestartKeyframe = false
                     vodFirstRoutedVideoDts = pkt.pointee.dts
-                    print("[CMP-AVP] vod restart preroll dropped video=\(vodPrerollDroppedVideo) audio=\(vodPrerollDroppedAudio) segment=\(vodEffectiveBaseIndex)")
+                    cmpLog("[CMP-AVP] vod restart preroll dropped video=\(vodPrerollDroppedVideo) audio=\(vodPrerollDroppedAudio) segment=\(vodEffectiveBaseIndex)")
                     return false
                 }
                 vodPrerollDroppedVideo += 1
@@ -1261,11 +1256,10 @@ final class LoopbackSegmentWriter {
             if isRestart, isSelectedAudio, waiting,
                !vodPreGateAudioOverflowLogged {
                 vodPreGateAudioOverflowLogged = true
-                print(
-                    "[CMP-AVP] vod pre-gate audio buffer full "
+                let logLine = "[CMP-AVP] vod pre-gate audio buffer full "
                     + "packets=\(vodPreGateAudioPackets.count) "
                     + "bytes=\(vodPreGateAudioBytes); dropping further preroll"
-                )
+                cmpLog(logLine)
             }
             return false
         }
@@ -1324,10 +1318,9 @@ final class LoopbackSegmentWriter {
             }
             replayed += 1
         }
-        print(
-            "[CMP-AVP] vod pre-gate audio replay buffered=\(packets.count) "
+        let logLine = "[CMP-AVP] vod pre-gate audio replay buffered=\(packets.count) "
             + "bytes=\(bufferedBytes) replayed=\(replayed) dropped=\(dropped)"
-        )
+        cmpLog(logLine)
     }
 
     private static func packetOrderingTimestamp(
@@ -1409,7 +1402,7 @@ final class LoopbackSegmentWriter {
             // cadence that no longer exists downstream.
             forceUniformStride: videoOutputMode.isBridged
         )
-        print("[CMP-AVP] vod plan resolved segments=\(plan.segmentCount) keyframes=\(keyframePts.count) trusted=\(plan.usedKeyframeIndex) duration=\(String(format: "%.1f", plan.totalDurationSeconds))s")
+        cmpLog("[CMP-AVP] vod plan resolved segments=\(plan.segmentCount) keyframes=\(keyframePts.count) trusted=\(plan.usedKeyframeIndex) duration=\(String(format: "%.1f", plan.totalDurationSeconds))s")
         return plan
     }
 
@@ -1500,9 +1493,9 @@ final class LoopbackSegmentWriter {
             vodPrefedAudioMaxDts = dts
             pendingAudioPackets.append(stashed)
             let gap = (firstAudioSeconds ?? anchorSeconds) - anchorSeconds
-            print("[CMP-AVP] vod late-audio prefeed: first audio +\(String(format: "%.2f", gap))s after anchor — prefed one packet for moov (scanned \(scannedPackets) packets)")
+            cmpLog("[CMP-AVP] vod late-audio prefeed: first audio +\(String(format: "%.2f", gap))s after anchor — prefed one packet for moov (scanned \(scannedPackets) packets)")
         } else if firstAudioSeconds == nil {
-            print("[CMP-AVP] vod late-audio prefeed: no \(outputAudioCodecToken ?? "audio") packet within \(Int(Self.vodLateAudioScanCapSeconds))s of anchor (scanned \(scannedPackets) packets); first cut escalates if moov stays blocked")
+            cmpLog("[CMP-AVP] vod late-audio prefeed: no \(outputAudioCodecToken ?? "audio") packet within \(Int(Self.vodLateAudioScanCapSeconds))s of anchor (scanned \(scannedPackets) packets); first cut escalates if moov stays blocked")
         }
     }
 
@@ -1566,26 +1559,26 @@ final class LoopbackSegmentWriter {
             switch probeSegmentOpener(plan: plan, segment: candidate, probe: probe) {
             case .trueRAP:
                 if candidate == requested {
-                    print("[CMP-AVP] vod resume anchor validated segment=\(requested)")
+                    cmpLog("[CMP-AVP] vod resume anchor validated segment=\(requested)")
                     return plan
                 }
-                print("[CMP-AVP] vod resume anchor walked back requested=\(requested) anchored=\(candidate)")
+                cmpLog("[CMP-AVP] vod resume anchor walked back requested=\(requested) anchored=\(candidate)")
                 return plan.coalescingSegments(after: candidate, through: requested)
             case .notRAP(let vclType):
-                print("[CMP-AVP] vod resume anchor segment=\(candidate) opener is not a RAP vcl=\(vclType); walking back")
+                cmpLog("[CMP-AVP] vod resume anchor segment=\(candidate) opener is not a RAP vcl=\(vclType); walking back")
                 candidate -= 1
             case .inconclusive:
                 // Can't judge the bitstream (read failure, no VCL found).
                 // Keep the plan as harvested rather than churn seeks.
-                print("[CMP-AVP] vod resume anchor probe inconclusive segment=\(candidate); keeping plan")
+                cmpLog("[CMP-AVP] vod resume anchor probe inconclusive segment=\(candidate); keeping plan")
                 return plan
             }
         }
         if candidate == 0 {
-            print("[CMP-AVP] vod resume anchor walked back requested=\(requested) anchored=0")
+            cmpLog("[CMP-AVP] vod resume anchor walked back requested=\(requested) anchored=0")
             return plan.coalescingSegments(after: 0, through: requested)
         }
-        print("[CMP-AVP] vod resume anchor validation exhausted walk-back requested=\(requested); keeping plan")
+        cmpLog("[CMP-AVP] vod resume anchor validation exhausted walk-back requested=\(requested); keeping plan")
         return plan
     }
 
@@ -1750,10 +1743,10 @@ final class LoopbackSegmentWriter {
             let consumerFetched = store.vodConsumerHasFetchedSegment()
             if parked >= nextLogAtSeconds {
                 nextLogAtSeconds = parked + 10
-                print("[CMP-AVP] vod window backpressure parked segment=\(nextSegmentIndex) parked=\(Int(parked))s consumerFetched=\(consumerFetched ? 1 : 0)")
+                cmpLog("[CMP-AVP] vod window backpressure parked segment=\(nextSegmentIndex) parked=\(Int(parked))s consumerFetched=\(consumerFetched ? 1 : 0)")
             }
             if !consumerFetched, parked >= Self.vodStartupParkWedgeSeconds {
-                print("[CMP-AVP] vod window backpressure WEDGE: parked \(Int(parked))s at segment=\(nextSegmentIndex) with no consumer fetch ever — failing session for route fallback")
+                cmpLog("[CMP-AVP] vod window backpressure WEDGE: parked \(Int(parked))s at segment=\(nextSegmentIndex) with no consumer fetch ever — failing session for route fallback")
                 throw LoopbackWriterError.vodStartupConsumerWedge(
                     parkedSeconds: Int(parked),
                     segment: nextSegmentIndex
@@ -1801,7 +1794,7 @@ final class LoopbackSegmentWriter {
         // the session instead so the route ladder falls back to an engine
         // that can play the file.
         if vodAudioNeedsParsedPacketForMoov, !initSegmentWritten {
-            print("[CMP-AVP] vod cut segment=\(closingSegment) could not emit moov (audioRouted=\(vodAudioPacketRouted ? 1 : 0), primeAttempts=\(vodMoovPrimeAttempts)) — failing session for route fallback")
+            cmpLog("[CMP-AVP] vod cut segment=\(closingSegment) could not emit moov (audioRouted=\(vodAudioPacketRouted ? 1 : 0), primeAttempts=\(vodMoovPrimeAttempts)) — failing session for route fallback")
             throw LoopbackWriterError.vodMoovBlocked(
                 closingSegment: closingSegment,
                 audioRouted: vodAudioPacketRouted
@@ -1902,7 +1895,7 @@ final class LoopbackSegmentWriter {
                 // bootstrap scan otherwise swallows up to a GOP of packets it
                 // never replays, misanchoring production past the restart
                 // target (living-room bug 2).
-                print("[CMP-AVP] vod restart: extradata bootstrap skipped")
+                cmpLog("[CMP-AVP] vod restart: extradata bootstrap skipped")
             } else {
                 try bootstrapVideoExtradata()
             }
@@ -2182,7 +2175,7 @@ final class LoopbackSegmentWriter {
             )
             // OSLog does not reach the devicectl console capture; mirror to
             // stdout so on-device runs surface dropped packets.
-            print("[CMP-AVP] mux write failed rc=\(rc) (\(detail)) consecutive=\(consecutiveMuxWriteFailures)")
+            cmpLog("[CMP-AVP] mux write failed rc=\(rc) (\(detail)) consecutive=\(consecutiveMuxWriteFailures)")
             if rc == avErrorInvalidData
                 || consecutiveMuxWriteFailures >= Self.maxConsecutiveMuxWriteFailures {
                 throw LoopbackWriterError.muxWriteFailures(
@@ -2332,12 +2325,12 @@ final class LoopbackSegmentWriter {
                 configureSubtitleTap(in: recycled.context)
                 inputCtx = recycled.context
                 recycledInputActive = true
-                print("[CMP-AVP] vod restart: recycled source demuxer")
+                cmpLog("[CMP-AVP] vod restart: recycled source demuxer")
                 return
             } catch {
                 var doomed: UnsafeMutablePointer<AVFormatContext>? = recycled.context
                 avformat_close_input(&doomed)
-                print("[CMP-AVP] vod restart: recycled demuxer rejected (\(error)); reopening source")
+                cmpLog("[CMP-AVP] vod restart: recycled demuxer rejected (\(error)); reopening source")
             }
         }
 
@@ -3203,7 +3196,7 @@ final class LoopbackSegmentWriter {
                 try requireUsableProfile5Record()
                 let codecTag = videoMode.sampleEntryCodec
                 let doviLog = dovi.flatMap(parseDoviRecord(from:))?.logLine ?? "none"
-                print("[CMP-AVP] out video codecpar tag=\(codecTag) initial extradataSize=\(edSize) nalLen=\(nalLengthSize) videoMode=\(videoMode.logToken) dovi=\(doviLog) removedDoviSideData=\(removedDoviSideData)")
+                cmpLog("[CMP-AVP] out video codecpar tag=\(codecTag) initial extradataSize=\(edSize) nalLen=\(nalLengthSize) videoMode=\(videoMode.logToken) dovi=\(doviLog) removedDoviSideData=\(removedDoviSideData)")
             } else if selectedAudioOutputMode == .copy {
                 if !audioCodecSupportsMp4Mux(codecpar.pointee.codec_id) {
                     let codecName = String(cString: avcodec_get_name(codecpar.pointee.codec_id))
@@ -3232,7 +3225,7 @@ final class LoopbackSegmentWriter {
                 selectedAudioIsAtmosJOC = codecpar.pointee.codec_id == AV_CODEC_ID_EAC3
                     && codecpar.pointee.profile == 30
                 let codecName = outputAudioCodecToken ?? String(cString: avcodec_get_name(codecpar.pointee.codec_id))
-                print("[CMP-AVP] selected audio copy sourceStream=\(i) codec=\(codecName) channels=\(codecpar.pointee.ch_layout.nb_channels) atmosJOC=\(selectedAudioIsAtmosJOC ? 1 : 0)")
+                cmpLog("[CMP-AVP] selected audio copy sourceStream=\(i) codec=\(codecName) channels=\(codecpar.pointee.ch_layout.nb_channels) atmosJOC=\(selectedAudioIsAtmosJOC ? 1 : 0)")
             } else {
                 try openAudioTranscodePipeline(
                     inputStream: inStream,
@@ -3260,7 +3253,7 @@ final class LoopbackSegmentWriter {
                 "[CMP-AVP] selected audio trackIndex=\(self.selectedAudioTrackIndex, privacy: .public) resolvedStreamIndex=\(self.selectedAudioStreamIndex, privacy: .public) codec=\(self.sessionSpec.selectedAudio.sourceCodec ?? "unknown", privacy: .public)"
             )
         } else {
-            print("[CMP-AVP] no selected audio stream; emitting video-only loopback")
+            cmpLog("[CMP-AVP] no selected audio stream; emitting video-only loopback")
         }
     }
 
@@ -3589,7 +3582,7 @@ final class LoopbackSegmentWriter {
                     isKeyframe = true
                     repairedKeyframeFlags += 1
                     if repairedKeyframeFlags <= 3 {
-                        print("[CMP-AVP] bootstrap keyframe flag repaired via NAL scan type=\(irapType) pts=\(pkt.pointee.pts)")
+                        cmpLog("[CMP-AVP] bootstrap keyframe flag repaired via NAL scan type=\(irapType) pts=\(pkt.pointee.pts)")
                     }
                 }
             }
@@ -3635,7 +3628,7 @@ final class LoopbackSegmentWriter {
             let syncFound = isSelectedAudioTrueHD()
                 ? firstMLPMajorSyncIndex(in: pendingAudioPackets) != nil
                 : false
-            print("[CMP-AVP] bootstrap gave up: vps=\(vps.count) sps=\(sps.count) pps=\(pps.count) videoPackets=\(videoPacketsRead) totalPackets=\(totalPacketsRead) droppedPreVideo=\(droppedPreVideoPackets) retainedAudio=\(pendingAudioPackets.count) retainedAudioBytes=\(retainedPreVideoAudioBytes) droppedPreVideoAudio=\(droppedPreVideoAudioPackets) trueHDSyncFound=\(syncFound ? 1 : 0) firstVideoNALs=\(firstVideoPacketNALSummary)")
+            cmpLog("[CMP-AVP] bootstrap gave up: vps=\(vps.count) sps=\(sps.count) pps=\(pps.count) videoPackets=\(videoPacketsRead) totalPackets=\(totalPacketsRead) droppedPreVideo=\(droppedPreVideoPackets) retainedAudio=\(pendingAudioPackets.count) retainedAudioBytes=\(retainedPreVideoAudioBytes) droppedPreVideoAudio=\(droppedPreVideoAudioPackets) trueHDSyncFound=\(syncFound ? 1 : 0) firstVideoNALs=\(firstVideoPacketNALSummary)")
             // Muxing from here would start mid-GOP with a tfdt the playlist
             // doesn't expect: AVPlayer freezes its fetches and the startup
             // watchdog spends ~15s before falling back. Fail the session now
@@ -3652,7 +3645,7 @@ final class LoopbackSegmentWriter {
         } else if !headerHasParameterSets {
             // Without parameter sets in hvcC or in-band, the sample entry is
             // undecodable — same fetch-freeze endgame as the mid-GOP start.
-            print("[CMP-AVP] bootstrap keyframe found but no VPS/SPS/PPS available in packet or hvcC")
+            cmpLog("[CMP-AVP] bootstrap keyframe found but no VPS/SPS/PPS available in packet or hvcC")
             throw LoopbackWriterError.bootstrapFailed(
                 "keyframe found but no VPS/SPS/PPS in packet or hvcC"
             )
@@ -3665,7 +3658,7 @@ final class LoopbackSegmentWriter {
         let syncFound = isSelectedAudioTrueHD()
             ? firstMLPMajorSyncIndex(in: pendingAudioPackets) != nil
             : false
-        print("[CMP-AVP] bootstrap OK: hvcCParams=\(headerHasParameterSets ? 1 : 0) vps=\(vps.count) sps=\(sps.count) pps=\(pps.count) videoPackets=\(videoPacketsRead) totalPackets=\(totalPacketsRead) droppedPreVideo=\(droppedPreVideoPackets) pendingVideo=\(pendingVideoPackets.count) retainedAudio=\(pendingAudioPackets.count) retainedAudioBytes=\(retainedPreVideoAudioBytes) droppedPreVideoAudio=\(droppedPreVideoAudioPackets) trueHDSyncFound=\(syncFound ? 1 : 0) repairedKeyFlags=\(repairedKeyframeFlags) firstVideoNALs=\(firstKeyframeNALSummary) dovi=\(doviLog)")
+        cmpLog("[CMP-AVP] bootstrap OK: hvcCParams=\(headerHasParameterSets ? 1 : 0) vps=\(vps.count) sps=\(sps.count) pps=\(pps.count) videoPackets=\(videoPacketsRead) totalPackets=\(totalPacketsRead) droppedPreVideo=\(droppedPreVideoPackets) pendingVideo=\(pendingVideoPackets.count) retainedAudio=\(pendingAudioPackets.count) retainedAudioBytes=\(retainedPreVideoAudioBytes) droppedPreVideoAudio=\(droppedPreVideoAudioPackets) trueHDSyncFound=\(syncFound ? 1 : 0) repairedKeyFlags=\(repairedKeyframeFlags) firstVideoNALs=\(firstKeyframeNALSummary) dovi=\(doviLog)")
     }
 
     private func retainPreVideoAudioPacket(
@@ -4067,9 +4060,7 @@ final class LoopbackSegmentWriter {
         output.append(arrayPayload)
 
         if removedNALCount > 0 || keptArrayCount != declaredArrayCount {
-            print(
-                "[CMP-AVP] profile7_to81_base_layer hvcC filtered for profile8.1 arrays \(declaredArrayCount)->\(keptArrayCount) removedNALs=\(removedNALCount)"
-            )
+            cmpLog("[CMP-AVP] profile7_to81_base_layer hvcC filtered for profile8.1 arrays \(declaredArrayCount)->\(keptArrayCount) removedNALs=\(removedNALCount)")
         }
         return output
     }
@@ -4240,7 +4231,7 @@ final class LoopbackSegmentWriter {
                 "video encoder produced no parameter sets after \(videoPacketsRead) source packets"
             )
         }
-        print("[CMP-AVP] bridged video priming videoPackets=\(videoPacketsRead) totalPackets=\(totalPacketsRead) encoded=\(pendingVideoPackets.count) extradata=\(bridgedVideoExtradata?.count ?? 0)")
+        cmpLog("[CMP-AVP] bridged video priming videoPackets=\(videoPacketsRead) totalPackets=\(totalPacketsRead) encoded=\(pendingVideoPackets.count) extradata=\(bridgedVideoExtradata?.count ?? 0)")
     }
 
     /// Mux-loop entry for a bridged video packet: decode, encode, and route
@@ -4284,7 +4275,7 @@ final class LoopbackSegmentWriter {
         if vodAwaitingRestartKeyframe {
             vodAwaitingRestartKeyframe = false
             vodFirstRoutedVideoDts = pkt.pointee.dts
-            print("[CMP-AVP] vod bridged restart gate opened at pts=\(pkt.pointee.pts) droppedAudio=\(vodPrerollDroppedAudio) segment=\(vodEffectiveBaseIndex)")
+            cmpLog("[CMP-AVP] vod bridged restart gate opened at pts=\(pkt.pointee.pts) droppedAudio=\(vodPrerollDroppedAudio) segment=\(vodEffectiveBaseIndex)")
             return
         }
         if vodFirstRoutedVideoDts == nil {
@@ -4404,9 +4395,7 @@ final class LoopbackSegmentWriter {
             bridgedDriftRunAnchorPTS = -1
             bridgedDriftGovernor = LoopbackBridgedDriftGovernor()
             let sourceCodecName = String(cString: avcodec_get_name(codecpar.pointee.codec_id))
-            print(
-                "[CMP-AVP] selected audio transcode sourceStream=\(inputStreamIndex) sourceCodec=\(sourceCodecName) outputCodec=\(candidate.codecToken) sourceChannels=\(sourceChannels) outputChannels=\(targetChannels) preservesAtmos=\(sessionSpec.selectedAudio.preservesAtmos ? 1 : 0) mode=\(sessionSpec.selectedAudio.outputMode.preferredCodecToken)"
-            )
+            cmpLog("[CMP-AVP] selected audio transcode sourceStream=\(inputStreamIndex) sourceCodec=\(sourceCodecName) outputCodec=\(candidate.codecToken) sourceChannels=\(sourceChannels) outputChannels=\(targetChannels) preservesAtmos=\(sessionSpec.selectedAudio.preservesAtmos ? 1 : 0) mode=\(sessionSpec.selectedAudio.outputMode.preferredCodecToken)")
             opened = true
             break
         }
@@ -4571,9 +4560,9 @@ final class LoopbackSegmentWriter {
             let dropped = primingStart
             let syncFound = trueHDSyncIndex != nil
             if dropped > 0 {
-                print("[CMP-AVP] primed audio decoder with \(primedCount) pre-video packets (skipped \(dropped) pre-major_sync, trueHDSyncFound=\(syncFound ? 1 : 0)) without muxing preroll")
+                cmpLog("[CMP-AVP] primed audio decoder with \(primedCount) pre-video packets (skipped \(dropped) pre-major_sync, trueHDSyncFound=\(syncFound ? 1 : 0)) without muxing preroll")
             } else {
-                print("[CMP-AVP] primed audio decoder with \(primedCount) pre-video packets (trueHDSyncFound=\(syncFound ? 1 : 0)) without muxing preroll")
+                cmpLog("[CMP-AVP] primed audio decoder with \(primedCount) pre-video packets (trueHDSyncFound=\(syncFound ? 1 : 0)) without muxing preroll")
             }
         }
         pendingAudioPackets.removeAll()
@@ -4708,21 +4697,22 @@ final class LoopbackSegmentWriter {
             if delta > 0, delta <= Self.vodSeamFillMaxSamples {
                 anchored = boundary
                 vodPendingSeamSilenceFillSamples = delta
-                print("[CMP-AVP] vod bridged audio seam stitch boundary=\(boundary) seed=\(seed) fillSilence=\(delta)")
+                cmpLog("[CMP-AVP] vod bridged audio seam stitch boundary=\(boundary) seed=\(seed) fillSilence=\(delta)")
             } else if delta < 0, -delta <= Self.vodSeamTrimMaxSamples {
                 anchored = boundary
                 vodPendingSeamTrimSamples = -delta
-                print("[CMP-AVP] vod bridged audio seam stitch boundary=\(boundary) seed=\(seed) trimOverlap=\(-delta)")
+                cmpLog("[CMP-AVP] vod bridged audio seam stitch boundary=\(boundary) seed=\(seed) trimOverlap=\(-delta)")
             } else if delta != 0 {
-                print("[CMP-AVP] vod bridged audio seam stitch skipped delta=\(delta) (beyond stitch caps)")
+                cmpLog("[CMP-AVP] vod bridged audio seam stitch skipped delta=\(delta) (beyond stitch caps)")
             }
         }
         nextEncodedAudioPTS = anchored
         let seconds = Double(anchored) * Double(encoderTB.num) / Double(max(1, encoderTB.den))
-        print(String(
+        let logLine = String(
             format: "[CMP-AVP] vod bridged audio timeline anchored seed=%lld (%.3fs on session axis)",
             anchored, seconds
-        ))
+        )
+        cmpLog(logLine)
     }
 
     /// Temporary [CMP-ADRIFT] diagnostic: after seeding, the bridged-audio
@@ -4794,17 +4784,19 @@ final class LoopbackSegmentWriter {
             if correction > 0 {
                 let fill = min(correction, Self.vodSeamFillMaxSamples)
                 vodPendingSeamSilenceFillSamples += fill
-                print(String(
+                let logLine = String(
                     format: "[CMP-ADRIFT] correction fill=%lld samples (drift=%+.1fms) decErrTotal=%d",
                     fill, Double(drift) * ticksToMs, audioDecodeErrorTotal
-                ) + phase)
+                ) + phase
+                cmpLog(logLine)
             } else if correction < 0 {
                 let trim = min(-correction, Self.vodSeamTrimMaxSamples)
                 vodPendingSeamTrimSamples += trim
-                print(String(
+                let logLine = String(
                     format: "[CMP-ADRIFT] correction trim=%lld samples (drift=%+.1fms) decErrTotal=%d",
                     trim, Double(drift) * ticksToMs, audioDecodeErrorTotal
-                ) + phase)
+                ) + phase
+                cmpLog(logLine)
             }
         }
 
@@ -4813,12 +4805,13 @@ final class LoopbackSegmentWriter {
         guard step != bridgedDriftLastLoggedStep || heartbeatDue else { return }
         bridgedDriftLastLoggedStep = step
         bridgedDriftNextHeartbeatPTS = projected + 30 * sampleRate
-        print(String(
+        let logLine = String(
             format: "[CMP-ADRIFT] drift=%+.1fms expected=%.3fs projected=%lld decErrTotal=%d frames=%d",
             Double(drift) * ticksToMs,
             Double(expected) * ticksToMs / 1000.0,
             projected, audioDecodeErrorTotal, audioDecodedFrameCount
-        ))
+        )
+        cmpLog(logLine, verbose: true)
     }
 
     private func noteAudioDecodeError(stage: String, rc: Int32) {
@@ -4956,9 +4949,7 @@ final class LoopbackSegmentWriter {
         }
 
         audioSwrCtx = swr
-        print(
-            "[CMP-AVP] audio resampler configured sourceFormat=\(inputFormatRaw) sourceRate=\(inputSampleRate) sourceChannels=\(inputLayout.nb_channels) outputCodec=\(outputAudioCodecToken ?? "audio") outputRate=\(encoderCtx.pointee.sample_rate) outputChannels=\(encoderCtx.pointee.ch_layout.nb_channels)"
-        )
+        cmpLog("[CMP-AVP] audio resampler configured sourceFormat=\(inputFormatRaw) sourceRate=\(inputSampleRate) sourceChannels=\(inputLayout.nb_channels) outputCodec=\(outputAudioCodecToken ?? "audio") outputRate=\(encoderCtx.pointee.sample_rate) outputChannels=\(encoderCtx.pointee.ch_layout.nb_channels)")
         return swr
     }
 
@@ -5534,20 +5525,8 @@ final class LoopbackSegmentWriter {
             normalizeSeekedTimelineIfNeeded(pkt: pkt, outStream: outStream)
         }
         normalizeMuxerTimestampsIfNeeded(pkt: pkt, outStream: outStream)
-        // Temporary [CMP-SEAM]: audio timeline continuity across producer
-        // restarts. Stored anchor tfdts showed run-to-run audio offsets of
-        // 18-19 ms (sub-EAC3-frame) — a passthrough discontinuity at every
-        // seam and the prime suspect for multi-second eARC dropouts while
-        // the receiver re-locks the bitstream. Log each run's first routed
-        // audio timestamp and keep the running end so consecutive runs can
-        // be diffed from the capture.
         if vodActive, inputStreamIndex != videoInputStreamIndex, pkt.pointee.pts != Int64.min {
             vodAudioPacketRouted = true
-            if !vodSeamDidLogFirstAudio {
-                vodSeamDidLogFirstAudio = true
-                print("[CMP-SEAM] run first audio outPts=\(pkt.pointee.pts) dur=\(pkt.pointee.duration) tb=\(outTB.num)/\(outTB.den)")
-            }
-            vodSeamLastAudioEnd = pkt.pointee.pts + max(0, pkt.pointee.duration)
         }
         pkt.pointee.pos = -1
     }
@@ -5653,7 +5632,7 @@ final class LoopbackSegmentWriter {
         lastRepairedVideoInputDTS = pkt.pointee.dts
         repairedMissingVideoDTSCount += 1
         if repairedMissingVideoDTSCount <= 6 {
-            print("[CMP-AVP] repaired missing video DTS pts=\(pkt.pointee.pts) dts=\(pkt.pointee.dts) keyframe=\(isKeyframe) videoMode=\(videoMode.logToken)")
+            cmpLog("[CMP-AVP] repaired missing video DTS pts=\(pkt.pointee.pts) dts=\(pkt.pointee.dts) keyframe=\(isKeyframe) videoMode=\(videoMode.logToken)", verbose: true)
         }
         return true
     }
@@ -5786,7 +5765,7 @@ final class LoopbackSegmentWriter {
     private func handleTopLevelBox(type: String, range: Range<Int>) {
         let slice = boxBuffer[range]
         if Self.traceTopLevelBoxes {
-            print("[CMP-AVP] box \(type) size=\(range.count) initDone=\(initSegmentWritten)")
+            cmpLog("[CMP-AVP] box \(type) size=\(range.count) initDone=\(initSegmentWritten)", verbose: true)
         }
 
         if !initSegmentWritten {
@@ -5991,9 +5970,9 @@ final class LoopbackSegmentWriter {
                 // chose is the one this profile names.
                 let boxType = ISOBoxSurgery.dolbyVisionConfigBoxType(profile: doviRecord?.profile ?? 0)
                 let doviLog = doviRecord?.logLine ?? "unknown"
-                print("[CMP-AVP] \(boxType) injected (init.mp4 grew by 32 bytes) \(doviLog)")
+                cmpLog("[CMP-AVP] \(boxType) injected (init.mp4 grew by 32 bytes) \(doviLog)")
             } else {
-                print("[CMP-AVP] DV config injection failed — hvcC not found in init tree, or record malformed")
+                cmpLog("[CMP-AVP] DV config injection failed — hvcC not found in init tree, or record malformed")
             }
         }
         if selectedAudioIsAtmosJOC {
@@ -6006,10 +5985,10 @@ final class LoopbackSegmentWriter {
             // guard).
             if let patched = ISOBoxSurgery.appendDec3JOCExtension(into: bytes, complexityIndex: 16) {
                 bytes = patched
-                print("[CMP-AVP] dec3 JOC extension appended (Atmos signalling, complexity=16)")
+                cmpLog("[CMP-AVP] dec3 JOC extension appended (Atmos signalling, complexity=16)")
             } else {
                 // print too: OSLog is invisible to devicectl console capture.
-                print("[CMP-AVP] dec3 JOC extension append FAILED — Atmos will present as plain E-AC-3 5.1")
+                cmpLog("[CMP-AVP] dec3 JOC extension append FAILED — Atmos will present as plain E-AC-3 5.1")
                 Self.logger.error("dec3 JOC extension append failed — Atmos will present as plain E-AC-3 5.1")
             }
         }
@@ -6023,7 +6002,7 @@ final class LoopbackSegmentWriter {
                 try writeArtifact(bytes, name: "init.mp4")
             }
             initSegmentWritten = true
-            print("[CMP-AVP] init.mp4 written (\(bytes.count) bytes)")
+            cmpLog("[CMP-AVP] init.mp4 written (\(bytes.count) bytes)")
         } catch {
             Self.logger.error("writeInitSegment failed: \(String(describing: error), privacy: .public)")
             fatalIOError = .fileWriteFailed("init.mp4", error)
@@ -6131,7 +6110,7 @@ final class LoopbackSegmentWriter {
         }
         try throwIfFatalIOError()
         if initSegmentWritten {
-            print("[CMP-AVP] vod moov primed by first audio packet (attempt \(vodMoovPrimeAttempts))")
+            cmpLog("[CMP-AVP] vod moov primed by first audio packet (attempt \(vodMoovPrimeAttempts))")
         }
     }
 
@@ -6214,7 +6193,7 @@ final class LoopbackSegmentWriter {
         let segSize = pendingSegmentBytes.count
         lastFinalizedSegmentBytes = segSize
         if !hasWrittenVideoSegment, !segmentHasVideo {
-            print("[CMP-AVP] discarded pre-video segment \(currentSegmentIndex) size=\(segSize)")
+            cmpLog("[CMP-AVP] discarded pre-video segment \(currentSegmentIndex) size=\(segSize)")
             pendingSegmentBytes = Data()
             pendingSegmentHasVideo = false
             pendingSegmentHasMoof = false
@@ -6315,13 +6294,13 @@ final class LoopbackSegmentWriter {
         retireSegmentsBehindPlaybackIfNeeded()
         emitPlaylists(isFinal: false)
         if shouldLogSegmentProgress(index: idx) {
-            print("[CMP-AVP] seg \(idx) written (\(segSize) bytes, video=\(segmentHasVideo ? 1 : 0), dur=\(String(format: "%.3f", duration))s), total dur=\(String(format: "%.1f", totalMediaDuration))s)")
+            cmpLog("[CMP-AVP] seg \(idx) written (\(segSize) bytes, video=\(segmentHasVideo ? 1 : 0), dur=\(String(format: "%.3f", duration))s), total dur=\(String(format: "%.1f", totalMediaDuration))s)")
         }
         onSegmentAppended?(idx, totalMediaDuration)
         if let vodTfdtSummary {
-            print("[CMP-AVP] vod segment stored name=\(name) bytes=\(segSize) dur=\(String(format: "%.3f", duration)) tfdt=[\(vodTfdtSummary)]")
+            cmpLog("[CMP-AVP] vod segment stored name=\(name) bytes=\(segSize) dur=\(String(format: "%.3f", duration)) tfdt=[\(vodTfdtSummary)]")
         } else if segmentEntries.count == 1 {
-            print("[CMP-AVP] first segment stored name=\(name) bytes=\(segSize)")
+            cmpLog("[CMP-AVP] first segment stored name=\(name) bytes=\(segSize)")
         }
         if segmentHasVideo {
             hasWrittenVideoSegment = true
@@ -6667,7 +6646,7 @@ final class LoopbackSegmentWriter {
             // heuristics (segment count + live-start window) don't apply.
             // The first produced video segment is enough to attach.
             firstSegmentReadyFired = true
-            print("[CMP-AVP] startup ready (vod plan) startPlaylist=\(startupPlaylistName) producedSegments=\(segmentEntries.count)")
+            cmpLog("[CMP-AVP] startup ready (vod plan) startPlaylist=\(startupPlaylistName) producedSegments=\(segmentEntries.count)")
             onFirstSegmentReady?(startupPlaylistName)
             return
         }
@@ -6692,9 +6671,7 @@ final class LoopbackSegmentWriter {
         // master-variant level only. The historical iOS rejection of this
         // surface was the missing RESOLUTION/FRAME-RATE attributes and the
         // High-tier CODECS declaration, both since fixed.
-        print(
-            "[CMP-AVP] startup runway ready startPlaylist=\(startupPlaylistName) generated=\(String(format: "%.1f", totalMediaDuration))s threshold=\(String(format: "%.1f", minimumPlayableWindow))s segments=\(segmentEntries.count) targetDuration=\(String(format: "%.1f", playlistTargetDuration))s elapsed=\(String(format: "%.2f", elapsed))s mediaRate=\(mediaRate) reason=\(startupReason) masterStart=\(masterStartEnabled ? 1 : 0)"
-        )
+        cmpLog("[CMP-AVP] startup runway ready startPlaylist=\(startupPlaylistName) generated=\(String(format: "%.1f", totalMediaDuration))s threshold=\(String(format: "%.1f", minimumPlayableWindow))s segments=\(segmentEntries.count) targetDuration=\(String(format: "%.1f", playlistTargetDuration))s elapsed=\(String(format: "%.2f", elapsed))s mediaRate=\(mediaRate) reason=\(startupReason) masterStart=\(masterStartEnabled ? 1 : 0)")
         onFirstSegmentReady?(startupPlaylistName)
     }
 
@@ -6875,7 +6852,7 @@ final class LoopbackSegmentWriter {
         inf += ",VIDEO-RANGE=\(manifestMetadata.videoRange)"
         if !loggedMasterManifest {
             loggedMasterManifest = true
-            print("[CMP-AVP] master playlist stream-inf \(inf)")
+            cmpLog("[CMP-AVP] master playlist stream-inf \(inf)")
         }
 
         let body = [
@@ -6943,9 +6920,6 @@ final class LoopbackSegmentWriter {
         }
         pendingAudioPackets.removeAll()
         freeSubtitleTapDecoders()
-        if vodSeamLastAudioEnd >= 0 {
-            print("[CMP-SEAM] run last audio end=\(vodSeamLastAudioEnd)")
-        }
         if let ctx = outputCtx {
             // pb is our custom AVIOContext — we free it separately below so
             // avformat_free_context doesn't try to close it.

@@ -701,14 +701,6 @@ final class AVPlayerBackend {
     /// transition instead of dispatching a no-op clear to main every vsync
     /// for the whole duration of bitmap-only (PGS/DVD) playback.
     private var textOverlayMayHaveFrame = false
-    // Temporary [CMP-SUBDIAG] instrumentation: rolling 1 Hz window of
-    // session-queue latency and render cost for the subtitle pump.
-    private var subDiagLastEmit: CFTimeInterval = 0
-    private var subDiagMaxQueueLatencyMs: Double = 0
-    private var subDiagMaxRenderMs: Double = 0
-    private var subDiagTicks = 0
-    private var subDiagDirtyCount = 0
-    private var subDiagSkippedTicks = 0
     /// Text renders currently queued or executing on the renderer's session
     /// queue. The display link enqueues at vsync rate but a render can take
     /// >100 ms (full 4K re-rasterization), so without a cap the queue grows
@@ -880,7 +872,6 @@ final class AVPlayerBackend {
     }
 
     deinit {
-        print("[CMP-LIFE] deinit AVPlayerBackend")
         dispose()
     }
 
@@ -1365,14 +1356,14 @@ final class AVPlayerBackend {
     }
 
     func setSubtitleDelay(_ seconds: Double) {
-        print("[CMP-SUB] setSubtitleDelay seconds=\(seconds) session=\(subtitleSession == nil ? "nil" : "live")")
+        cmpLog("[CMP-SUB] setSubtitleDelay seconds=\(seconds) session=\(subtitleSession == nil ? "nil" : "live")")
         var params = subtitleSession?.currentParams ?? .default
         params.syncOffsetMs = Int((seconds * 1000.0).rounded())
         subtitleSession?.applyStyling(params)
     }
 
     func applySubtitleAppearance(_ appearance: SubtitleAppearance) {
-        print("[CMP-SUB] applySubtitleAppearance size=\(appearance.fontSize.rawValue) session=\(subtitleSession == nil ? "nil" : "live")")
+        cmpLog("[CMP-SUB] applySubtitleAppearance size=\(appearance.fontSize.rawValue) session=\(subtitleSession == nil ? "nil" : "live")")
         let syncOffset = subtitleSession?.currentParams.syncOffsetMs ?? 0
         let params = SubtitleStylingOverride.Parameters.from(
             appearance: appearance,
@@ -1467,7 +1458,7 @@ final class AVPlayerBackend {
     }
 
     func selectSubtitleTrack(_ trackId: Int64?) {
-        print("[CMP-SUB] selectSubtitleTrack id=\(trackId.map(String.init) ?? "nil") item=\(currentItem == nil ? "nil" : "live")")
+        cmpLog("[CMP-SUB] selectSubtitleTrack id=\(trackId.map(String.init) ?? "nil") item=\(currentItem == nil ? "nil" : "live")")
         guard let item = currentItem else {
             return
         }
@@ -1965,7 +1956,7 @@ final class AVPlayerBackend {
         }
         segmentStore = store
         if preserveSessionDirectory {
-            print("[CMP-AVP] preserving local DV artifacts due to SILO_KEEP_DV_HLS=1 dir=\(sessionDir.path)")
+            cmpLog("[CMP-AVP] preserving local DV artifacts due to SILO_KEEP_DV_HLS=1 dir=\(sessionDir.path)")
         }
 
         #if os(iOS)
@@ -2465,14 +2456,14 @@ final class AVPlayerBackend {
         // (~25 MB) while covering dense dialogue across the whole window.
         session.openBitmapTrack(slot: .primary, retentionSeconds: 300, maxCueCount: 512)
         segmentWriter?.setBitmapSubtitleTapStream(streamIndex)
-        print("[CMP-TAP] bitmap activated stream=\(streamIndex)")
+        cmpLog("[CMP-TAP] bitmap activated stream=\(streamIndex)")
     }
 
     private func clearBitmapTapSelection() {
         guard selectedBitmapTapStreamIndex != nil else { return }
         selectedBitmapTapStreamIndex = nil
         segmentWriter?.setBitmapSubtitleTapStream(nil)
-        print("[CMP-TAP] bitmap deactivated")
+        cmpLog("[CMP-TAP] bitmap deactivated")
     }
 
     /// (Re)install the libass track for a tap-served stream and feed it:
@@ -2517,7 +2508,7 @@ final class AVPlayerBackend {
                 durationMs: cue.durationMs
             )
         }
-        print("[CMP-TAP] activated stream=\(streamIndex) backfill=\(backfill.count)")
+        cmpLog("[CMP-TAP] activated stream=\(streamIndex) backfill=\(backfill.count)")
     }
 
     /// After a completed in-item seek: extractor-owned slots re-seek their
@@ -3031,19 +3022,6 @@ final class AVPlayerBackend {
             Self.logger.info(
                 "[CMP-AVP] loopback playhead state pos=\(position, privacy: .public) tc=\(statusLabel, privacy: .public) rate=\(self.avPlayer.rate, privacy: .public) paused=\(self.isUserPaused ? 1 : 0, privacy: .public) bufAhead=\(bufferedAhead, privacy: .public) generatedAhead=\(generatedAhead, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public)\(memSuffix, privacy: .public)"
             )
-            if case .some(.siloLoopback(let stateSpec)) = currentSourceStrategy,
-               stateSpec.servingMode == .vodPlan {
-                // OSLog is invisible to the devicectl console; mirror the
-                // transport state so on-device render stalls (frozen picture,
-                // advancing audio clock) are diagnosable from the capture.
-                print("[CMP-AVP] vod state pos=\(String(format: "%.2f", position)) tc=\(statusLabel) rate=\(avPlayer.rate) userPaused=\(isUserPaused ? 1 : 0) bufAhead=\(String(format: "%.1f", bufferedAhead)) generatedAhead=\(String(format: "%.1f", generatedAhead)) stationaryFor=\(String(format: "%.1f", stationaryFor))\(memSuffix)")
-                // Temporary [CMP-CPU]: per-thread attribution + device core
-                // load at the same cadence, so a pegged-CPU capture names the
-                // hot queue instead of just showing the total.
-                if let cpuLine = PlayerCPUDiagnostics.sampleLine() {
-                    print("[CMP-CPU] " + cpuLine)
-                }
-            }
         }
 
         let itemDeathAction = loopbackItemDeathConfirmationState.evaluate(
@@ -4224,33 +4202,18 @@ final class AVPlayerBackend {
             #else
             let scale = overlay.window?.screen.scale ?? overlay.traitCollection.displayScale
             #endif
-            guard subPumpRendersInFlight < 2 else {
-                subDiagSkippedTicks += 1
-                return
-            }
+            guard subPumpRendersInFlight < 2 else { return }
             subPumpRendersInFlight += 1
-            let enqueuedAt = CACurrentMediaTime()
             renderer.sessionQueue.async { [weak overlay, weak self] in
-                let startedAt = CACurrentMediaTime()
                 let out = renderer.renderOnSessionQueue(
                     atMilliseconds: adjustedNowMs,
                     frameSize: bounds.size,
                     scale: scale,
                     videoInsets: videoInsets
                 )
-                let endedAt = CACurrentMediaTime()
                 DispatchQueue.main.async {
                     if let self {
                         self.subPumpRendersInFlight = max(0, self.subPumpRendersInFlight - 1)
-                        self.recordSubtitlePumpDiag(
-                            queueLatencyMs: (startedAt - enqueuedAt) * 1000,
-                            renderMs: (endedAt - startedAt) * 1000,
-                            out: out,
-                            referenceTime: referenceTime,
-                            syncOffsetMs: syncOffsetMs,
-                            bounds: bounds,
-                            insets: videoInsets
-                        )
                     }
                     guard out.isDirty else { return }
                     overlay?.updateContents(out.image, frame: out.imageFrame)
@@ -4283,43 +4246,6 @@ final class AVPlayerBackend {
                 overlay.clearBitmapCues()
             }
         }
-    }
-
-    /// Temporary [CMP-SUBDIAG] emit — 1 Hz summary of the pump's
-    /// session-queue latency, render cost, and the clocks feeding it.
-    /// Main thread only.
-    private func recordSubtitlePumpDiag(
-        queueLatencyMs: Double,
-        renderMs: Double,
-        out: SubtitleRenderOutput,
-        referenceTime: Double,
-        syncOffsetMs: Int64,
-        bounds: CGRect,
-        insets: SubtitleVideoInsets
-    ) {
-        subDiagTicks += 1
-        if out.isDirty { subDiagDirtyCount += 1 }
-        subDiagMaxQueueLatencyMs = max(subDiagMaxQueueLatencyMs, queueLatencyMs)
-        subDiagMaxRenderMs = max(subDiagMaxRenderMs, renderMs)
-        let now = CACurrentMediaTime()
-        guard now - subDiagLastEmit >= 1.0 else { return }
-        let playerSeconds = avPlayer.currentTime().seconds
-        print(String(
-            format: "[CMP-SUBDIAG] qLatMaxMs=%.1f renderMaxMs=%.1f ticks=%d dirty=%d skip=%d chg=%d/%d fsd=%d geom=%d evts=%d imgs=%d imgKB=%d ref=%.2f player=%.2f syncMs=%d bounds=%.0fx%.0f insets=%.0f/%.0f/%.0f/%.0f",
-            subDiagMaxQueueLatencyMs, subDiagMaxRenderMs, subDiagTicks, subDiagDirtyCount, subDiagSkippedTicks,
-            out.diagChangePrimary, out.diagChangeSecondary,
-            out.diagWasFrameSizeDirty ? 1 : 0, out.diagGeometryApplies,
-            out.diagTrackEvents, out.diagImageCount, out.diagImageBytes / 1024,
-            referenceTime, playerSeconds, syncOffsetMs,
-            bounds.width, bounds.height,
-            insets.top, insets.bottom, insets.left, insets.right
-        ))
-        subDiagLastEmit = now
-        subDiagMaxQueueLatencyMs = 0
-        subDiagMaxRenderMs = 0
-        subDiagTicks = 0
-        subDiagDirtyCount = 0
-        subDiagSkippedTicks = 0
     }
 
     private func pumpBitmapCues(
@@ -4460,14 +4386,14 @@ final class AVPlayerBackend {
         preserveSessionDirectory = false
         writer?.stop {
             if let dir, preserveDir {
-                print("[CMP-AVP] retained local DV artifacts dir=\(dir.path)")
+                cmpLog("[CMP-AVP] retained local DV artifacts dir=\(dir.path)")
             } else if let dir {
                 try? FileManager.default.removeItem(at: dir)
             }
         }
         if writer == nil, let dir {
             if preserveDir {
-                print("[CMP-AVP] retained local DV artifacts dir=\(dir.path)")
+                cmpLog("[CMP-AVP] retained local DV artifacts dir=\(dir.path)")
             } else {
                 try? FileManager.default.removeItem(at: dir)
             }
@@ -4494,21 +4420,17 @@ final class AVPlayerBackend {
         Task { [item] in
             let videoFormat = await AVFoundationPlaybackIntrospection.videoFormat(for: item)
             let audioFormat = await AVFoundationPlaybackIntrospection.audioStream(for: item)
-            print(
-                "[CMP-AVP] item ready format videoCodec=\(videoFormat.stream.codec ?? "nil") videoDetail=\(videoFormat.stream.detail ?? "nil") dynamicRange=\(videoFormat.dynamicRange ?? "nil") audioCodec=\(audioFormat.codec ?? "nil") audioDetail=\(audioFormat.detail ?? "nil")"
-            )
+            cmpLog("[CMP-AVP] item ready format videoCodec=\(videoFormat.stream.codec ?? "nil") videoDetail=\(videoFormat.stream.detail ?? "nil") dynamicRange=\(videoFormat.dynamicRange ?? "nil") audioCodec=\(audioFormat.codec ?? "nil") audioDetail=\(audioFormat.detail ?? "nil")")
         }
     }
 
     private func logTVDisplayManagerState(context: String) {
         #if os(tvOS)
         guard let displayManager = TVDisplayCriteria.activeTVWindow()?.avDisplayManager else {
-            print("[CMP-AVP] tv display context=\(context) manager=nil")
+            cmpLog("[CMP-AVP] tv display context=\(context) manager=nil")
             return
         }
-        print(
-            "[CMP-AVP] tv display context=\(context) matching=\(displayManager.isDisplayCriteriaMatchingEnabled ? 1 : 0) switchInProgress=\(displayManager.isDisplayModeSwitchInProgress ? 1 : 0)"
-        )
+        cmpLog("[CMP-AVP] tv display context=\(context) matching=\(displayManager.isDisplayCriteriaMatchingEnabled ? 1 : 0) switchInProgress=\(displayManager.isDisplayModeSwitchInProgress ? 1 : 0)")
         #endif
     }
 
@@ -4546,11 +4468,11 @@ final class AVPlayerBackend {
             }
             switch outcome {
             case .noDisplayManager:
-                print("[CMP-AVP] tv display apply context=\(context) manager=nil")
+                cmpLog("[CMP-AVP] tv display apply context=\(context) manager=nil")
             case .matchingDisabled:
-                print("[CMP-AVP] tv display apply context=\(context) matching=0 skipped=matching_disabled")
+                cmpLog("[CMP-AVP] tv display apply context=\(context) matching=0 skipped=matching_disabled")
             case .applied:
-                print(String(format: "[CMP-AVP] tv display apply context=%@ fps=%.3f format=dolbyVision(%@) matching=1 preservedReload=%d", context, Double(refreshRate), baseLayer == .hlg ? "hlg" : "hdr10", preservedForReload ? 1 : 0))
+                cmpLog(String(format: "[CMP-AVP] tv display apply context=%@ fps=%.3f format=dolbyVision(%@) matching=1 preservedReload=%d", context, Double(refreshRate), baseLayer == .hlg ? "hlg" : "hdr10", preservedForReload ? 1 : 0))
                 // A reload that preserved criteria left the panel in the
                 // right mode already; only a fresh apply can start an HDMI
                 // negotiation the item creation must not race. The settle
@@ -4570,7 +4492,7 @@ final class AVPlayerBackend {
                     refreshRate: refreshRate
                 )
             }
-            print(String(format: "[CMP-AVP] tv display apply hdr context=%@ range=%@ fps=%.3f outcome=%@ preservedReload=%d", context, range, Double(refreshRate), String(describing: outcome), preservedForReload ? 1 : 0))
+            cmpLog(String(format: "[CMP-AVP] tv display apply hdr context=%@ range=%@ fps=%.3f outcome=%@ preservedReload=%d", context, range, Double(refreshRate), String(describing: outcome), preservedForReload ? 1 : 0))
             // A reload that preserved criteria left the panel in the right
             // mode already; rewriting identical criteria triggers no new
             // negotiation, so only a fresh apply needs the settle wait.
@@ -4587,11 +4509,11 @@ final class AVPlayerBackend {
         #if os(tvOS)
         DispatchQueue.main.async {
             guard let displayManager = TVDisplayCriteria.activeTVWindow()?.avDisplayManager else {
-                print("[CMP-AVP] tv display clear context=\(context) manager=nil")
+                cmpLog("[CMP-AVP] tv display clear context=\(context) manager=nil")
                 return
             }
             displayManager.preferredDisplayCriteria = nil
-            print("[CMP-AVP] tv display clear context=\(context) switchInProgress=\(displayManager.isDisplayModeSwitchInProgress ? 1 : 0)")
+            cmpLog("[CMP-AVP] tv display clear context=\(context) switchInProgress=\(displayManager.isDisplayModeSwitchInProgress ? 1 : 0)")
         }
         #endif
     }
@@ -4630,7 +4552,7 @@ final class AVPlayerBackend {
         guard Self.keepLoopbackArtifacts else { return }
         guard let dir = sessionDirectory else { return }
         if !preserveSessionDirectory {
-            print("[CMP-AVP] preserving local DV artifacts after \(reason) dir=\(dir.path)")
+            cmpLog("[CMP-AVP] preserving local DV artifacts after \(reason) dir=\(dir.path)")
         }
         preserveSessionDirectory = true
     }
