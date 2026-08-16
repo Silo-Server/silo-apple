@@ -173,7 +173,7 @@ final class LoopbackVideoBridge {
             + " bitrate=\(encoderCtx?.pointee.bit_rate ?? 0)"
             + " gop=\(encoderCtx?.pointee.gop_size ?? 0)"
             + " parameterSets=\(parameterSets?.count ?? 0)"
-        Self.logger.info("\(summary, privacy: .public)")
+        cmpLog(summary)
     }
 
     private func openDecoder(codecpar: UnsafeMutablePointer<AVCodecParameters>) throws {

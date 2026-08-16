@@ -164,6 +164,12 @@ targets:
         product: NukeUI
       - target: SiloTVTopShelf
         embed: true
+      # AVKit supplies the `UIWindow.avDisplayManager` category that
+      # TVDisplayCriteria uses for HDMI mode matching. Nothing on tvOS
+      # references an AVKit class symbol any more (the compatibility player's
+      # AVPictureInPictureController used to), so link it explicitly or the
+      # category is never loaded and the selector traps at runtime.
+      - sdk: AVKit.framework
 
   SiloMac:
     templates: [ShippableProduct]

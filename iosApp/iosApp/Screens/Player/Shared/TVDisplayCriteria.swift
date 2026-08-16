@@ -30,6 +30,11 @@ enum TVDisplayCriteria {
         category: "TVDisplayCriteria"
     )
 
+    /// Belt and braces for the explicit AVKit link in project.yml: touching
+    /// the class symbol keeps the framework (and its `UIWindow` category)
+    /// linked even if the target's dependency list is edited.
+    private static let avKitAnchor: AnyClass = AVDisplayManager.self
+
     static func activeTVWindow() -> UIWindow? {
         for scene in UIApplication.shared.connectedScenes {
             guard let ws = scene as? UIWindowScene else { continue }
