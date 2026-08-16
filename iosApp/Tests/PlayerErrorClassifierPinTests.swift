@@ -116,14 +116,15 @@ final class PlayerErrorClassifierPinTests: XCTestCase {
 
     // MARK: - isPrematureSourceEndMessage
 
-    func testIsPrematureSourceEndMessageIsCaseSensitive() {
+    func testIsPrematureSourceEndMessageIsCaseInsensitive() {
         XCTAssertTrue(PlayerViewModel.isPrematureSourceEndMessage(
             "LoopbackWriterError.prematureSourceEnd(expected: 120)"
         ))
-        // PIN: current behavior; likely bug, see cleanup notes.
-        // Unlike its siblings, this one does not lowercase the message, so a
-        // differently-cased spelling silently misses server-outage recovery.
-        XCTAssertFalse(PlayerViewModel.isPrematureSourceEndMessage("PrematureSourceEnd"))
+        // Matches its siblings now: casing cannot make a premature-source-end
+        // report miss server-outage recovery.
+        XCTAssertTrue(PlayerViewModel.isPrematureSourceEndMessage("PrematureSourceEnd"))
+        XCTAssertTrue(PlayerViewModel.isPrematureSourceEndMessage("PREMATURESOURCEEND"))
+        // Still a single token — the spaced-out spelling is not this error.
         XCTAssertFalse(PlayerViewModel.isPrematureSourceEndMessage("premature source end"))
         XCTAssertFalse(PlayerViewModel.isPrematureSourceEndMessage(""))
     }

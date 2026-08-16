@@ -399,6 +399,19 @@ enum PlaybackRouteFamily: String, Equatable {
 /// Replaces the older private `ApplePlayerRouteKind` with names that match
 /// the delivery strategies described in the Apple Playback Engine Evolution
 /// plan (`docs/plans/apple-playback-engine-evolution.md`).
+/// Why a resolved plan could not be handed to the backend. Thrown by the
+/// view model's load path; surfaced through the normal terminal-error flow.
+enum PlaybackEngineLoadError: LocalizedError {
+    case missingLoopbackSession
+
+    var errorDescription: String? {
+        switch self {
+        case .missingLoopbackSession:
+            return "SiloPlayer loopback requires a loopback session."
+        }
+    }
+}
+
 enum PlaybackEngineKind: Equatable {
     /// AVPlayer consuming a server-produced HLS manifest. Near-term policy
     /// reserves this for explicit quality/bitrate-reduction playback rather

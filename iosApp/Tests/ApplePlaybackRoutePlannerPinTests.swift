@@ -761,6 +761,59 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertEqual(result.normalizationSummary.videoMode, "server_output")
     }
 
+    // MARK: - Direct delivery with no locally playable route
+
+    /// The one shape that survived the compatibility-backend removal: a direct
+    /// session whose source is neither native-direct eligible nor locally
+    /// normalizable falls to `.avPlayerHLS` while `delivery` stays `.direct`.
+    /// The stream URL is then the original file rather than a manifest, which
+    /// is exactly what `PlayerViewModel.needsServerReplanBeforeLoad(plan:)`
+    /// intercepts before the backend ever sees it.
+    func testTheoraOGVFallsToServerHLSWhileDeliveryStaysDirect() {
+        let version = makeVersion(
+            container: "ogv",
+            codecVideo: "theora",
+            codecAudio: "vorbis",
+            videoTracks: [makeVideoTrack(codec: "theora")],
+            audioTracks: [makeAudioTrack(codec: "vorbis")]
+        )
+        let result = plan(version: version)
+
+        XCTAssertEqual(result.engine, .avPlayerHLS)
+        XCTAssertEqual(result.delivery, .direct)
+        XCTAssertEqual(result.reason, "native_direct_blocked_hls_fallback")
+        XCTAssertNil(result.loopbackSession)
+        XCTAssertTrue(
+            PlayerViewModel.needsServerReplanBeforeLoad(plan: result),
+            "the view model must replan this rather than hand a non-manifest URL to AVPlayer"
+        )
+    }
+
+    func testNeedsServerReplanBeforeLoadOnlyFiresForDirectDeliveryOnTheHLSRoute() {
+        let directNative = plan(version: makeVersion(
+            container: "mp4",
+            codecVideo: "h264",
+            codecAudio: "aac",
+            audioTracks: [makeAudioTrack(codec: "aac")]
+        ))
+        XCTAssertEqual(directNative.engine, .avPlayerNativeDirect)
+        XCTAssertFalse(PlayerViewModel.needsServerReplanBeforeLoad(plan: directNative))
+
+        let serverTranscode = plan(
+            version: makeVersion(
+                container: "ogv",
+                codecVideo: "theora",
+                codecAudio: "vorbis",
+                videoTracks: [makeVideoTrack(codec: "theora")],
+                audioTracks: [makeAudioTrack(codec: "vorbis")]
+            ),
+            session: makeSession(playMethod: "transcode")
+        )
+        XCTAssertEqual(serverTranscode.engine, .avPlayerHLS)
+        XCTAssertEqual(serverTranscode.delivery, .transcode)
+        XCTAssertFalse(PlayerViewModel.needsServerReplanBeforeLoad(plan: serverTranscode))
+    }
+
     // MARK: - 11: codec normalization tables
 
     func testNormalizedVideoCodecTable() {
@@ -795,11 +848,9 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         }
     }
 
-    /// PIN: current behavior; likely bug, see cleanup notes.
-    /// `PlayerViewModel` carries a private copy of this same table that is
-    /// missing the `"e-ac-3"` case, so the two disagree for that spelling.
-    /// Only the planner's copy is pinned here — the duplicate is expected to
-    /// disappear in the one-player refactor rather than be tested into place.
+    /// The single audio-codec normalization table. `PlayerViewModel` used to
+    /// carry a drifted private copy (missing `"e-ac-3"`); it now routes through
+    /// this one.
     func testNormalizedAudioCodecTable() {
         let expected: [(String?, String?)] = [
             ("aac", "aac"),
@@ -837,9 +888,8 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         }
     }
 
-    /// `loopbackAudioOutputMode` runs its own normalization (lowercase, strip
-    /// dashes) rather than reusing `normalizedAudioCodec`, so the two tables
-    /// disagree on a few spellings.
+    /// `loopbackAudioOutputMode` shares `normalizedAudioCodec`, so every
+    /// E-AC-3 spelling copies rather than re-encoding.
     func testLoopbackAudioOutputModeTable() {
         func track(_ codec: String?, channels: Int? = 2, title: String? = nil) -> PlayerTrack {
             PlayerTrack(
@@ -867,12 +917,10 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertEqual(ApplePlaybackRoutePlanner.loopbackAudioOutputMode(for: track("eac3")), .copy)
         XCTAssertEqual(ApplePlaybackRoutePlanner.loopbackAudioOutputMode(for: track("e-ac-3")), .copy)
         XCTAssertEqual(ApplePlaybackRoutePlanner.loopbackAudioOutputMode(for: track("EAC3")), .copy)
-        // PIN: current behavior; likely bug, see cleanup notes.
-        // "ec3" / "ec-3" normalize to "eac3" in `normalizedAudioCodec` but not
-        // here (dash stripping turns "ec-3" into "ec3", which is unmapped), so
-        // an already-Apple-compatible EC-3 track gets re-encoded to AAC.
-        XCTAssertEqual(ApplePlaybackRoutePlanner.loopbackAudioOutputMode(for: track("ec3")), .transcodeAAC)
-        XCTAssertEqual(ApplePlaybackRoutePlanner.loopbackAudioOutputMode(for: track("ec-3")), .transcodeAAC)
+        // "ec3" / "ec-3" are E-AC-3 spellings and copy like any other.
+        XCTAssertEqual(ApplePlaybackRoutePlanner.loopbackAudioOutputMode(for: track("ec3")), .copy)
+        XCTAssertEqual(ApplePlaybackRoutePlanner.loopbackAudioOutputMode(for: track("ec-3")), .copy)
+        XCTAssertEqual(ApplePlaybackRoutePlanner.loopbackAudioOutputMode(for: track("mp4a")), .copy)
 
         XCTAssertEqual(
             ApplePlaybackRoutePlanner.loopbackAudioOutputMode(for: track("truehd", channels: 8)),
@@ -898,12 +946,11 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             ApplePlaybackRoutePlanner.loopbackAudioOutputMode(for: track("dts", channels: 2)),
             .transcodeAAC
         )
-        // PIN: current behavior; likely bug, see cleanup notes.
-        // A missing channel count is treated as "stereo", so a 5.1 track with
-        // no numeric channel count silently downmixes through AAC.
+        // An unknown channel count takes the lossless-container path rather
+        // than silently downmixing an unreported 5.1/7.1 track through AAC.
         XCTAssertEqual(
             ApplePlaybackRoutePlanner.loopbackAudioOutputMode(for: track("dts", channels: nil)),
-            .transcodeAAC
+            .transcodeFLAC
         )
         // PIN: current behavior. Lossless FLAC/PCM sources are "transcoded"
         // to FLAC rather than copied.
@@ -929,9 +976,8 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertFalse(ApplePlaybackRoutePlanner.loopbackAudioPreservesAtmos(
             for: track("truehd", channels: 8, title: "TrueHD Atmos")
         ))
-        // PIN: current behavior; likely bug, see cleanup notes.
-        // "ec3" misses the Atmos check for the same normalization gap above.
-        XCTAssertFalse(ApplePlaybackRoutePlanner.loopbackAudioPreservesAtmos(
+        // "ec3" normalizes to E-AC-3 here too, so its Atmos claim survives.
+        XCTAssertTrue(ApplePlaybackRoutePlanner.loopbackAudioPreservesAtmos(
             for: track("ec3", channels: 6, title: "Atmos")
         ))
     }
