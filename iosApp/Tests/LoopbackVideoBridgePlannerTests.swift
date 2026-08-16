@@ -255,9 +255,12 @@ final class LoopbackVideoBridgePlannerTests: XCTestCase {
         XCTAssertEqual(plan.loopbackSession?.selectedAudio.outputMode, .transcodeAAC)
     }
 
-    func testUnbridgeableCodecFallsToCompatibility() throws {
+    func testUnbridgeableCodecFallsToServerHLS() throws {
+        // With the compatibility player gone, a codec neither AVPlayer nor the
+        // bridge can handle is the server's problem: the planner lands on the
+        // HLS route so the session can be replanned as a server transcode.
         let plan = try plan(codec: "theora", container: "ogv", audioCodec: "vorbis")
-        XCTAssertEqual(plan.engine, .playerCoreDirect)
+        XCTAssertEqual(plan.engine, .avPlayerHLS)
         XCTAssertTrue(
             plan.parityBlockers.contains("silo_video_not_bridgeable"),
             "\(plan.parityBlockers)"

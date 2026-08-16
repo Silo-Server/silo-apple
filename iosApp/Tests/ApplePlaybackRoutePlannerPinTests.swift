@@ -607,39 +607,18 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
 
     // MARK: - 8: codecs and containers that fall through to server HLS
 
-    func testUncopyableVideoAndContainersFallThroughToServerHLS() {
-        struct Case {
-            let container: String
-            let videoCodec: String
-            let audioCodec: String
-            let expectedBlockers: [String]
-        }
-        let cases: [Case] = [
-            Case(container: "mkv", videoCodec: "av1", audioCodec: "aac",
-                 expectedBlockers: [
-                    "container_not_allowlisted",
-                    "video_codec_not_allowlisted",
-                    "silo_video_not_copyable"
-                 ]),
-            Case(container: "mkv", videoCodec: "vp9", audioCodec: "aac",
-                 expectedBlockers: [
-                    "container_not_allowlisted",
-                    "video_codec_not_allowlisted",
-                    "silo_video_not_copyable"
-                 ]),
-            Case(container: "avi", videoCodec: "mpeg4", audioCodec: "mp3",
-                 expectedBlockers: [
-                    "container_not_allowlisted",
-                    "video_codec_not_allowlisted",
-                    "silo_container_not_normalizable",
-                    "silo_video_not_copyable"
-                 ]),
-            Case(container: "mkv", videoCodec: "mpeg2video", audioCodec: "aac",
-                 expectedBlockers: [
-                    "container_not_allowlisted",
-                    "video_codec_not_allowlisted",
-                    "silo_video_not_copyable"
-                 ])
+    func testUncopyableVideoAndContainersRouteThroughTheVideoBridge() {
+        // With the compatibility player gone and the on-device video bridge in
+        // place, codecs AVPlayer cannot decode are still direct-played from the
+        // server: SiloPlayer decodes them in software and re-encodes them with
+        // VideoToolbox inside the loopback remux. Only sources the bridge also
+        // cannot handle fall through to the server HLS route (see
+        // LoopbackVideoBridgePlannerTests.testUnbridgeableCodecFallsToServerHLS).
+        let cases: [(container: String, videoCodec: String, audioCodec: String)] = [
+            ("mkv", "av1", "aac"),
+            ("mkv", "vp9", "aac"),
+            ("avi", "mpeg4", "mp3"),
+            ("mkv", "mpeg2video", "aac"),
         ]
 
         for testCase in cases {
@@ -650,13 +629,13 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
                 codecAudio: testCase.audioCodec,
                 audioTracks: [makeAudioTrack(codec: testCase.audioCodec)]
             )
-            let result = plan(version: version)
+            let result = plan(version: version, siloPlayerPrimaryEnabled: true)
 
-            XCTAssertEqual(result.engine, .avPlayerHLS, label)
-            XCTAssertEqual(result.reason, "native_direct_blocked_hls_fallback", label)
-            XCTAssertNil(result.loopbackSession, label)
-            XCTAssertEqual(result.parityBlockers, testCase.expectedBlockers, label)
-            XCTAssertEqual(result.routeFamily, .nativePlayer, label)
+            XCTAssertEqual(result.engine, .siloPlayerLoopback, label)
+            XCTAssertEqual(result.reason, "\(testCase.videoCodec)_video_bridge_loopback", label)
+            XCTAssertEqual(result.loopbackSession?.videoOutputMode.isBridged, true, label)
+            XCTAssertEqual(result.parityBlockers, [], label)
+            XCTAssertEqual(result.routeFamily, .siloPlayer, label)
         }
     }
 
