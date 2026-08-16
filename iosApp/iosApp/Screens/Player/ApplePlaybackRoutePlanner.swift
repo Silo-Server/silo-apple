@@ -685,19 +685,31 @@ extension ApplePlaybackRoutePlanner {
     /// outside the mp4-muxable Dolby/AAC family transcodes: the containers the
     /// video bridge unlocks routinely carry mp3/mp2/vorbis/opus/wma, none of
     /// which the mp4 muxer accepts as a copy.
+    ///
+    /// Codec spellings go through `normalizedAudioCodec` so this agrees with
+    /// the native-direct allowlist. It used to run its own lowercase +
+    /// dash-strip pass, which mapped "e-ac-3" but missed "ec3" / "ec-3" — an
+    /// already-Apple-compatible EC-3 track was then re-encoded to AAC and lost
+    /// its Atmos substream.
+    ///
+    /// Follow-up: `AVPlayerBackend` still carries a private copy of this table
+    /// (`loopbackAudioOutputMode` / `loopbackPreservesAtmos` /
+    /// `normalizedCodecToken`) that it uses when rebuilding a loopback spec for
+    /// an in-place audio-track change. It has both bugs this fix removes, so an
+    /// "ec3"-spelled track copies on the initial route and re-encodes after an
+    /// audio switch. That copy should route here too.
     static func loopbackAudioOutputMode(for track: PlayerTrack) -> LoopbackSessionSpec.AudioOutputMode {
-        switch normalizedToken(track.codec)?.replacingOccurrences(of: "-", with: "") {
+        switch normalizedAudioCodec(track.codec) {
         case "aac", "ac3", "eac3":
             return .copy
-        case "truehd", "dolbytruehd":
-            return .requireFLAC
-        case "mlp", "mlpa":
+        case "truehd":
             return .requireFLAC
         default:
-            if let channelCount = track.audioChannelCount, channelCount > 2 {
-                return .transcodeFLAC
-            }
-            return .transcodeAAC
+            // An unknown channel count routes to FLAC rather than AAC: FLAC
+            // carries whatever the source has, while AAC would silently
+            // downmix a 5.1/7.1 track that simply failed to report `channels`.
+            guard let channelCount = track.audioChannelCount else { return .transcodeFLAC }
+            return channelCount > 2 ? .transcodeFLAC : .transcodeAAC
         }
     }
 
@@ -1384,8 +1396,11 @@ extension ApplePlaybackRoutePlanner {
         track.srcId ?? track.ffIndex
     }
 
+    /// Atmos survives a copy only on E-AC-3 (JOC). Shares `normalizedAudioCodec`
+    /// with `loopbackAudioOutputMode` so the two cannot disagree about which
+    /// spellings are E-AC-3.
     static func loopbackAudioPreservesAtmos(for track: PlayerTrack) -> Bool {
-        guard normalizedToken(track.codec)?.replacingOccurrences(of: "-", with: "") == "eac3" else {
+        guard normalizedAudioCodec(track.codec) == "eac3" else {
             return false
         }
         let titleToken = normalizedToken(track.title)

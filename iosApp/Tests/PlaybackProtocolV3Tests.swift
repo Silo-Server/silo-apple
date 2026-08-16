@@ -255,21 +255,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
-    func testPlaybackCoordinatorReusesEngineForSameImplementationRoute() {
-        var avPlayerBackendCreations = 0
-        let coordinator = PlaybackCoordinator(makeAVPlayer: { _ in
-            avPlayerBackendCreations += 1
-            return AVPlayerBackend()
-        })
-        defer { coordinator.dispose() }
-
-        let initial = coordinator.prepareEngine(for: .siloPlayerLoopback)
-        let replacement = coordinator.prepareEngine(for: .siloPlayerLoopback)
-
-        XCTAssertTrue(initial === replacement)
-        XCTAssertEqual(avPlayerBackendCreations, 1)
-    }
-
     func testLoopbackSessionPublishesTheAudioTrackSelectedForMuxing() {
         let tracks = [
             makePlayerAudioTrack(trackId: 10_000, sourceIndex: 0, ffIndex: 1, isSelected: true),

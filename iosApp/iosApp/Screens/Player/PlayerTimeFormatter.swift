@@ -35,4 +35,10 @@ enum PlayerTimeFormatter {
         let m = seconds / 60, s = seconds % 60
         return String(format: "%d:%02d", m, s)
     }
+
+    /// Locale-shortened wall-clock time ("9:41 PM" / "21:41"), used by the
+    /// tvOS transport bar's now/finish-at row.
+    static func formatClockTime(_ date: Date) -> String {
+        date.formatted(date: .omitted, time: .shortened)
+    }
 }

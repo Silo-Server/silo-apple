@@ -79,15 +79,6 @@ struct SubtitleRenderOutput {
     /// diagnostic to tell "cue painted" from "cue fed but rendered nothing"
     /// (e.g. a font/shaping miss).
     var hasContent: Bool = false
-    // Temporary [CMP-SUBDIAG] fields: which input made this render dirty.
-    var diagChangePrimary: Int32 = 0
-    var diagChangeSecondary: Int32 = 0
-    var diagWasFrameSizeDirty: Bool = false
-    var diagGeometryApplies: Int = 0
-    // Temporary [CMP-SUBDIAG] fields: what libass produced this render.
-    var diagImageCount: Int = 0
-    var diagImageBytes: Int = 0
-    var diagTrackEvents: Int32 = 0
     /// Placement of `image` in overlay points (top-left origin). The
     /// composite covers only the union of the rects libass painted, not
     /// the full frame; the overlay positions its contents layer here.
@@ -136,12 +127,6 @@ final class SubtitleRenderer {
     private var lastMarginLeft: Int32 = 0
     private var lastMarginRight: Int32 = 0
     private var frameSizeDirty = false
-    // Temporary [CMP-SUBDIAG]: geometry (frame size / margin) applies.
-    private var geometryApplyCount = 0
-    // Temporary [CMP-SUBFEED]: fed dialogue chunks logged.
-    private var diagFeedLogCount = 0
-    // Temporary [CMP-SUBIMG]: per-image dumps on fingerprint change.
-    private var diagImageDumpCount = 0
     /// FNV-1a fingerprint of the last composited image list. 0 = nothing
     /// composited yet (distinct from the FNV offset basis an empty list
     /// hashes to, so the first render always composites).
@@ -175,14 +160,10 @@ final class SubtitleRenderer {
             }
             library = lib
 
-            // Temporary [CMP-SUBDIAG]: surface libass warnings (level <= 5)
-            // to stdout to catch per-render font-selection failures. The
-            // shipping callback swallows everything.
-            ass_set_message_cb(lib, { level, fmt, args, _ in
-                guard level <= 5, let fmt, let args else { return }
-                let message = NSString(format: String(cString: fmt), arguments: args) as String
-                print("[CMP-SUBASS] L\(level) \(message)")
-            }, nil)
+            // libass's default message callback writes to stderr on every
+            // render. Swallow it — this is the shipping behavior the
+            // temporary [CMP-SUBDIAG] stdout tap replaced.
+            ass_set_message_cb(lib, { _, _, _, _ in }, nil)
 
             guard let primary = ass_renderer_init(lib) else {
                 Self.logger.error("ass_renderer_init failed for primary")
@@ -418,10 +399,6 @@ final class SubtitleRenderer {
             }()
             self.handleLock.unlock()
             guard let h = handle else { return }
-            self.diagFeedLogCount += 1
-            if self.diagFeedLogCount <= 6 {
-                print("[CMP-SUBFEED] #\(self.diagFeedLogCount) slot=\(slot) start=\(startMs) dur=\(durationMs) text=\(String(text.prefix(160)))")
-            }
             text.withCString { cstr in
                 let len = Int32(strlen(cstr))
                 ass_process_chunk(h.ptr, cstr, len, startMs, durationMs)
@@ -653,7 +630,6 @@ final class SubtitleRenderer {
             return ass_render_frame(renderer, $0.ptr, now, &changePrimary)
         }
         let hasContent = imgPrimary != nil || imgSecondary != nil
-        let wasFrameSizeDirty = frameSizeDirty
 
         // libass's detect_change flag is unreliable here: it reports
         // content change (2) on every render of a static cue. The culprit
@@ -694,36 +670,9 @@ final class SubtitleRenderer {
         }
         let imagesChanged = imageFingerprint != lastCompositedImageFingerprint
         let anyChange = imagesChanged || frameSizeDirty
-        if imagesChanged, imgPrimary != nil, diagImageDumpCount < 12 {
-            diagImageDumpCount += 1
-            var node = imgPrimary
-            var idx = 0
-            while let cur = node, idx < 6 {
-                let img = cur.pointee
-                let ptrTag = (img.bitmap.map { UInt(bitPattern: UnsafeRawPointer($0)) } ?? 0) & 0xFFFFF
-                print("[CMP-SUBIMG] dump#\(diagImageDumpCount) img\(idx) ptr=\(String(ptrTag, radix: 16)) x=\(img.dst_x) y=\(img.dst_y) w=\(img.w) h=\(img.h) color=\(String(img.color, radix: 16)) now=\(now)")
-                idx += 1
-                node = img.next
-            }
-        }
-        var diagImageCount = 0
-        var diagImageBytes = 0
-        for head in [imgPrimary, imgSecondary] {
-            var node = head
-            while let cur = node {
-                diagImageCount += 1
-                diagImageBytes += Int(cur.pointee.h) * Int(cur.pointee.stride)
-                node = cur.pointee.next
-            }
-        }
-        let diagTrackEvents = primaryHandle.map { $0.ptr.pointee.n_events } ?? 0
         if !anyChange {
             return SubtitleRenderOutput(
-                image: nil, isDirty: false, hasContent: hasContent,
-                diagChangePrimary: changePrimary, diagChangeSecondary: changeSecondary,
-                diagWasFrameSizeDirty: wasFrameSizeDirty, diagGeometryApplies: geometryApplyCount,
-                diagImageCount: diagImageCount, diagImageBytes: diagImageBytes,
-                diagTrackEvents: diagTrackEvents
+                image: nil, isDirty: false, hasContent: hasContent
             )
         }
 
@@ -964,11 +913,7 @@ final class SubtitleRenderer {
             // Cue ended (or everything rasterized off-frame): dirty with a
             // nil image so the overlay clears without a full-frame pass.
             return SubtitleRenderOutput(
-                image: nil, isDirty: true, hasContent: hasContent,
-                diagChangePrimary: changePrimary, diagChangeSecondary: changeSecondary,
-                diagWasFrameSizeDirty: wasFrameSizeDirty, diagGeometryApplies: geometryApplyCount,
-                diagImageCount: diagImageCount, diagImageBytes: diagImageBytes,
-                diagTrackEvents: diagTrackEvents
+                image: nil, isDirty: true, hasContent: hasContent
             )
         }
 
@@ -1139,10 +1084,6 @@ final class SubtitleRenderer {
         let renderScale = Self.renderScale(for: frameSize, requested: scale)
         return SubtitleRenderOutput(
             image: cgImage, isDirty: true, hasContent: hasContent,
-            diagChangePrimary: changePrimary, diagChangeSecondary: changeSecondary,
-            diagWasFrameSizeDirty: wasFrameSizeDirty, diagGeometryApplies: geometryApplyCount,
-            diagImageCount: diagImageCount, diagImageBytes: diagImageBytes,
-            diagTrackEvents: diagTrackEvents,
             imageFrame: CGRect(
                 x: CGFloat(minX) / renderScale,
                 y: CGFloat(minY) / renderScale,
@@ -1186,10 +1127,6 @@ final class SubtitleRenderer {
             || margins.left != lastMarginLeft
             || margins.right != lastMarginRight
         guard sizeChanged || marginsChanged else { return }
-        geometryApplyCount += 1
-        if geometryApplyCount <= 20 || geometryApplyCount % 60 == 0 {
-            print("[CMP-SUBGEOM] #\(geometryApplyCount) \(w)x\(h) margins=\(margins.top)/\(margins.bottom)/\(margins.left)/\(margins.right) was=\(lastWidth)x\(lastHeight) \(lastMarginTop)/\(lastMarginBottom)/\(lastMarginLeft)/\(lastMarginRight)")
-        }
         forEachRenderer {
             ass_set_frame_size($0, w, h)
             ass_set_storage_size($0, w, h)

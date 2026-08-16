@@ -46,8 +46,6 @@ struct LoopbackSubtitleTapTrackInfo {
 }
 
 final class LoopbackSubtitleTap {
-    // Temporary [CMP-LIFE]: session-pool leak attribution.
-    deinit { print("[CMP-LIFE] deinit LoopbackSubtitleTap") }
     /// Safety ceiling per stream. A feature film carries 1-3k dialogue
     /// events; the cap only exists so a pathological source cannot grow
     /// without bound. Ingest beyond the cap is dropped (text cues are
@@ -76,7 +74,7 @@ final class LoopbackSubtitleTap {
         }
         lock.unlock()
         if isFirst {
-            print("[CMP-TAP] registered text subtitle streams=\(infos.map(\.streamIndex).sorted())")
+            cmpLog("[CMP-TAP] registered text subtitle streams=\(infos.map(\.streamIndex).sorted())")
         }
     }
 
@@ -121,7 +119,7 @@ final class LoopbackSubtitleTap {
         let totals = (ingestedCount, duplicateCount)
         lock.unlock()
         if shouldLog {
-            print("[CMP-TAP] cues ingested=\(totals.0) duplicates=\(totals.1)")
+            cmpLog("[CMP-TAP] cues ingested=\(totals.0) duplicates=\(totals.1)")
         }
         forward?(cue)
     }
