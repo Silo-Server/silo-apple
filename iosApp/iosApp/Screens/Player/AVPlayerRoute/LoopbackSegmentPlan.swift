@@ -119,15 +119,21 @@ struct LoopbackSegmentPlan: Equatable {
         return true
     }
 
+    /// - Parameter forceUniformStride: bypasses the keyframe index entirely.
+    ///   A bridged (re-encoded) session's output keyframes are the ENCODER's,
+    ///   not the source's, so planning against source cue points would fence
+    ///   segments where no output keyframe exists. The writer instead forces
+    ///   the encoder to a keyframe on every uniform boundary.
     static func build(
         keyframePts: [Int64],
         timeBaseNum: Int32,
         timeBaseDen: Int32,
         sourceDurationSeconds: Double,
-        targetSegmentDurationSeconds: Double = defaultTargetSegmentDurationSeconds
+        targetSegmentDurationSeconds: Double = defaultTargetSegmentDurationSeconds,
+        forceUniformStride: Bool = false
     ) -> LoopbackSegmentPlan {
         let target = max(0.5, targetSegmentDurationSeconds)
-        if keyframeIndexIsTrustworthy(
+        if !forceUniformStride, keyframeIndexIsTrustworthy(
             keyframePts: keyframePts,
             timeBaseNum: timeBaseNum,
             timeBaseDen: timeBaseDen,
