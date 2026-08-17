@@ -1028,23 +1028,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
-    func testLoopbackVODReplanKeepsStablePlaylistTimeline() {
-        XCTAssertEqual(
-            PlayerViewModel.initialLoopbackTimelineOffset(
-                servingMode: .vodPlan,
-                startTime: 21.5
-            ),
-            0
-        )
-        XCTAssertEqual(
-            PlayerViewModel.initialLoopbackTimelineOffset(
-                servingMode: .event,
-                startTime: 21.5
-            ),
-            21.5
-        )
-    }
-
     func testGrowingTranscodePlaylistCannotReplaceKnownVODDuration() {
         XCTAssertFalse(
             PlayerViewModel.shouldAdoptBackendDuration(

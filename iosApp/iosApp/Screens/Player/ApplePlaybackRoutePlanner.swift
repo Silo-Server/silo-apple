@@ -151,9 +151,6 @@ struct ApplePlaybackPlannerInput {
     let preferredAudioTrackIndex: Int?
     let selectedPrimarySubtitleTrackId: Int64?
     let selectedSecondarySubtitleTrackId: Int64?
-    /// Stage 2 rollout gate: lifts the loopback startup-unreliable blockers
-    /// and serves eligible sources through the VOD plan mode.
-    let siloPlayerPrimaryEnabled: Bool
     /// Snapshot of the user's Dolby Vision settings, captured at plan time.
     let dolbyVisionPolicy: DolbyVisionPolicy.Snapshot
     /// Device facts the video-bridge decision needs. Injectable so planner
@@ -175,7 +172,6 @@ struct ApplePlaybackPlannerInput {
         preferredAudioTrackIndex: Int?,
         selectedPrimarySubtitleTrackId: Int64?,
         selectedSecondarySubtitleTrackId: Int64?,
-        siloPlayerPrimaryEnabled: Bool = false,
         dolbyVisionPolicy: DolbyVisionPolicy.Snapshot,
         displayCapabilities: ApplePlaybackDisplayCapabilities = .unknown,
         videoBridgeCapabilities: AppleVideoBridgeCapabilities = .probe()
@@ -189,7 +185,6 @@ struct ApplePlaybackPlannerInput {
         self.preferredAudioTrackIndex = preferredAudioTrackIndex
         self.selectedPrimarySubtitleTrackId = selectedPrimarySubtitleTrackId
         self.selectedSecondarySubtitleTrackId = selectedSecondarySubtitleTrackId
-        self.siloPlayerPrimaryEnabled = siloPlayerPrimaryEnabled
         self.dolbyVisionPolicy = dolbyVisionPolicy
         self.displayCapabilities = displayCapabilities
         self.videoBridgeCapabilities = videoBridgeCapabilities
@@ -298,7 +293,6 @@ struct ApplePlaybackRoutePlanner {
                 preferredAudioTrackIndex: input.preferredAudioTrackIndex,
                 selectedPrimarySubtitleTrackId: input.selectedPrimarySubtitleTrackId,
                 selectedSecondarySubtitleTrackId: input.selectedSecondarySubtitleTrackId,
-                siloPlayerPrimaryEnabled: input.siloPlayerPrimaryEnabled,
                 videoBridgeCapabilities: input.videoBridgeCapabilities
             )
             if directLoopbackVideoMode == nil, let mode = siloAssessment.videoMode {
@@ -320,8 +314,7 @@ struct ApplePlaybackRoutePlanner {
                     videoMode: videoMode,
                     videoOutputMode: directVideoOutputMode,
                     videoRange: Self.videoRange(for: videoMode, source: selectedVersion),
-                    sourceStartTimeSeconds: session.position,
-                    servingMode: input.siloPlayerPrimaryEnabled ? .vodPlan : .event
+                    sourceStartTimeSeconds: session.position
                 )
             }
             if let directDolbyVisionProfile, let directDolbyVisionResolution,
@@ -475,8 +468,7 @@ struct ApplePlaybackRoutePlanner {
         videoMode: LoopbackSessionSpec.VideoMode,
         videoOutputMode: LoopbackSessionSpec.VideoOutputMode = .copy,
         videoRange: String = "PQ",
-        sourceStartTimeSeconds: Double = 0,
-        servingMode: LoopbackServingMode = .event
+        sourceStartTimeSeconds: Double = 0
     ) -> LoopbackSessionSpec? {
         let tracks = normalizedLoopbackAudioTracks(
             for: version,
@@ -555,8 +547,7 @@ struct ApplePlaybackRoutePlanner {
                 compatibilityBrand: compatibilityBrand,
                 videoRange: videoRange,
                 mayClaimAtmos: selectedAudio.preservesAtmos
-            ),
-            servingMode: servingMode
+            )
         )
     }
 }
@@ -782,7 +773,6 @@ extension ApplePlaybackRoutePlanner {
         preferredAudioTrackIndex: Int?,
         selectedPrimarySubtitleTrackId: Int64?,
         selectedSecondarySubtitleTrackId: Int64?,
-        siloPlayerPrimaryEnabled: Bool = false,
         videoBridgeCapabilities: AppleVideoBridgeCapabilities
     ) -> SiloRouteAssessment {
         var blockers: [String] = []
@@ -920,46 +910,7 @@ extension ApplePlaybackRoutePlanner {
         } else {
             reason = "\(videoCodec)_container_loopback"
         }
-        if videoOutputMode == .copy, mode == .passthroughH264, !siloPlayerPrimaryEnabled {
-            // The EVENT loopback writer fragments H.264 at source keyframes.
-            // Long-GOP MKVs can show one frame, then stall while AVPlayer waits
-            // on sparse fMP4/HLS fragments. The VOD serving mode (Stage 2 gate)
-            // removes the growing-playlist startup dependency — the full title
-            // is advertised at load and AVPlayer buffers against it.
-            return blockedSilo(
-                blockers: ["h264_loopback_startup_unreliable"],
-                trace: trace + ["silo_reason_\(reason)", "silo_h264_loopback_disabled"],
-                degradations: degradations
-            )
-        }
-        if videoOutputMode != .copy, !siloPlayerPrimaryEnabled {
-            // Bridged and AV1-passthrough sessions are VOD-plan-only. The
-            // bridge cuts segments by forcing encoder keyframes at plan
-            // boundaries, which needs a resolved plan; and the growing EVENT
-            // playlist's startup risk applies here exactly as it does to
-            // long-GOP H.264.
-            return blockedSilo(
-                blockers: ["video_bridge_requires_vod_plan"],
-                trace: trace + ["silo_reason_\(reason)", "silo_video_bridge_disabled"],
-                degradations: degradations
-            )
-        }
-        if videoOutputMode == .copy,
-           mode == .passthroughHEVC,
-           (Self.transferKind(for: selectedVersion) ?? "SDR") == "SDR",
-           !siloPlayerPrimaryEnabled {
-            // Plain SDR HEVC has the same long-fragment startup risk without a
-            // Dolby Vision/HDR video presentation claim that requires AVPlayer
-            // ownership; lifted by the same VOD gate as H.264 above.
-            return blockedSilo(
-                blockers: ["hevc_sdr_loopback_startup_unreliable"],
-                trace: trace + ["silo_reason_\(reason)", "silo_hevc_sdr_loopback_disabled"],
-                degradations: degradations
-            )
-        }
-        if siloPlayerPrimaryEnabled {
-            trace.append("silo_vod_gate_open")
-        }
+        trace.append("silo_vod_gate_open")
         if videoOutputMode.isBridged {
             degradations.append("Video is re-encoded on this device; quality is reduced.")
         }

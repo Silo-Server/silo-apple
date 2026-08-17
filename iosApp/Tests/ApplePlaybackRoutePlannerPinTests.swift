@@ -139,7 +139,6 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         version: FileVersion,
         session: PlaybackSessionResponse? = nil,
         requirements: PlaybackRouteRequirements = .baseline,
-        siloPlayerPrimaryEnabled: Bool = true,
         dolbyVisionPolicy: DolbyVisionPolicy.Snapshot = .default,
         selectedPrimarySubtitleTrackId: Int64? = nil
     ) -> PlaybackExecutionPlan {
@@ -158,7 +157,6 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
                 preferredAudioTrackIndex: nil,
                 selectedPrimarySubtitleTrackId: selectedPrimarySubtitleTrackId,
                 selectedSecondarySubtitleTrackId: nil,
-                siloPlayerPrimaryEnabled: siloPlayerPrimaryEnabled,
                 dolbyVisionPolicy: dolbyVisionPolicy
             )
         )
@@ -210,22 +208,21 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertTrue(result.decisionTrace.contains("audio_eac3"))
     }
 
-    // MARK: - 3: MKV / H.264 / AAC and the VOD gate
+    // MARK: - 3: MKV / H.264 / AAC
 
-    func testMKVH264LoopbackWhenSiloPlayerPrimaryEnabled() {
+    func testMKVH264RoutesToLoopback() {
         let version = makeVersion(
             container: "mkv",
             codecVideo: "h264",
             codecAudio: "aac",
             audioTracks: [makeAudioTrack(codec: "aac")]
         )
-        let result = plan(version: version, siloPlayerPrimaryEnabled: true)
+        let result = plan(version: version)
 
         XCTAssertEqual(result.engine, .siloPlayerLoopback)
         XCTAssertEqual(result.reason, "h264_container_loopback")
         XCTAssertEqual(result.parityBlockers, [])
         XCTAssertEqual(result.loopbackSession?.videoMode, .passthroughH264)
-        XCTAssertEqual(result.loopbackSession?.servingMode, .vodPlan)
         XCTAssertEqual(result.loopbackSession?.selectedAudio.outputMode, .copy)
         XCTAssertEqual(result.loopbackSession?.manifestMetadata.videoRange, "SDR")
         XCTAssertNil(result.loopbackSession?.manifestMetadata.advertisedDolbyVisionProfile)
@@ -238,44 +235,9 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertEqual(result.normalizationSummary.audioMode, "copy")
     }
 
-    func testMKVH264FallsBackToServerHLSWhenGateClosed() {
-        let version = makeVersion(
-            container: "mkv",
-            codecVideo: "h264",
-            codecAudio: "aac",
-            audioTracks: [makeAudioTrack(codec: "aac")]
-        )
-        let result = plan(version: version, siloPlayerPrimaryEnabled: false)
+    // MARK: - 4: MKV / HEVC SDR
 
-        XCTAssertEqual(result.engine, .avPlayerHLS)
-        XCTAssertEqual(result.reason, "native_direct_blocked_hls_fallback")
-        XCTAssertNil(result.loopbackSession)
-        XCTAssertEqual(result.parityBlockers, [
-            "container_not_allowlisted",
-            "silo_h264_loopback_startup_unreliable"
-        ])
-        // Full trace pinned: this is the fallback path most likely to shift.
-        XCTAssertEqual(result.decisionTrace, [
-            "delivery_direct",
-            "container_mkv",
-            "video_h264",
-            "audio_aac",
-            "silo_assessment",
-            "silo_container_mkv",
-            "silo_video_h264",
-            "silo_reason_h264_container_loopback",
-            "silo_h264_loopback_disabled",
-            "silo_blocker_h264_loopback_startup_unreliable",
-            "fallback_order_hls_controlled_retry",
-            "blocker_container_not_allowlisted",
-            "blocker_silo_h264_loopback_startup_unreliable"
-        ])
-        XCTAssertEqual(result.normalizationSummary.videoMode, "server_output")
-    }
-
-    // MARK: - 4: MKV / HEVC SDR, both gate states
-
-    func testMKVHEVCSDRLoopbackWhenGateOpen() {
+    func testMKVHEVCSDRRoutesToLoopback() {
         let version = makeVersion(
             container: "mkv",
             codecVideo: "hevc",
@@ -283,78 +245,32 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             videoTracks: [makeVideoTrack(colorTransfer: "bt709")],
             audioTracks: [makeAudioTrack(codec: "aac")]
         )
-        let result = plan(version: version, siloPlayerPrimaryEnabled: true)
+        let result = plan(version: version)
 
         XCTAssertEqual(result.engine, .siloPlayerLoopback)
         XCTAssertEqual(result.reason, "hevc_container_loopback")
         XCTAssertEqual(result.loopbackSession?.videoMode, .passthroughHEVC)
-        XCTAssertEqual(result.loopbackSession?.servingMode, .vodPlan)
         XCTAssertEqual(result.loopbackSession?.manifestMetadata.videoRange, "SDR")
         XCTAssertEqual(result.parityBlockers, [])
     }
 
-    func testMKVHEVCSDRFallsBackToServerHLSWhenGateClosed() {
+    // MARK: - 5: MKV / HEVC HDR10 (PQ)
+
+    func testMKVHEVCHDR10LoopsBack() {
         let version = makeVersion(
             container: "mkv",
             codecVideo: "hevc",
             codecAudio: "aac",
-            videoTracks: [makeVideoTrack(colorTransfer: "bt709")],
+            videoTracks: [makeVideoTrack(colorTransfer: "smpte2084", videoRange: "HDR10")],
             audioTracks: [makeAudioTrack(codec: "aac")]
         )
-        let result = plan(version: version, siloPlayerPrimaryEnabled: false)
+        let result = plan(version: version)
 
-        XCTAssertEqual(result.engine, .avPlayerHLS)
-        XCTAssertNil(result.loopbackSession)
-        XCTAssertEqual(result.parityBlockers, [
-            "container_not_allowlisted",
-            "silo_hevc_sdr_loopback_startup_unreliable"
-        ])
-        XCTAssertTrue(result.decisionTrace.contains("silo_hevc_sdr_loopback_disabled"))
-    }
-
-    /// PIN: current behavior; likely bug, see cleanup notes.
-    /// A source with no video-track color metadata at all resolves to "SDR"
-    /// and therefore hits the SDR startup gate, even though the transfer is
-    /// genuinely unknown rather than known-SDR.
-    func testMKVHEVCWithUnknownTransferIsTreatedAsSDRForTheGate() {
-        let version = makeVersion(
-            container: "mkv",
-            codecVideo: "hevc",
-            codecAudio: "aac",
-            videoTracks: nil,
-            audioTracks: [makeAudioTrack(codec: "aac")]
-        )
-        let result = plan(version: version, siloPlayerPrimaryEnabled: false)
-
-        XCTAssertEqual(result.engine, .avPlayerHLS)
-        XCTAssertTrue(result.parityBlockers.contains("silo_hevc_sdr_loopback_startup_unreliable"))
-    }
-
-    // MARK: - 5: MKV / HEVC HDR10 (PQ) — loopback regardless of the gate
-
-    func testMKVHEVCHDR10LoopsBackRegardlessOfGate() {
-        for gateOpen in [true, false] {
-            let version = makeVersion(
-                container: "mkv",
-                codecVideo: "hevc",
-                codecAudio: "aac",
-                videoTracks: [makeVideoTrack(colorTransfer: "smpte2084", videoRange: "HDR10")],
-                audioTracks: [makeAudioTrack(codec: "aac")]
-            )
-            let result = plan(version: version, siloPlayerPrimaryEnabled: gateOpen)
-
-            XCTAssertEqual(result.engine, .siloPlayerLoopback, "gateOpen=\(gateOpen)")
-            XCTAssertEqual(result.reason, "hevc_container_loopback", "gateOpen=\(gateOpen)")
-            XCTAssertEqual(result.loopbackSession?.videoMode, .passthroughHEVC, "gateOpen=\(gateOpen)")
-            XCTAssertEqual(result.loopbackSession?.manifestMetadata.videoRange, "PQ", "gateOpen=\(gateOpen)")
-            // The gate only picks the serving mode once HDR keeps the route.
-            XCTAssertEqual(
-                result.loopbackSession?.servingMode,
-                gateOpen ? .vodPlan : .event,
-                "gateOpen=\(gateOpen)"
-            )
-            XCTAssertEqual(result.parityBlockers, [], "gateOpen=\(gateOpen)")
-        }
+        XCTAssertEqual(result.engine, .siloPlayerLoopback)
+        XCTAssertEqual(result.reason, "hevc_container_loopback")
+        XCTAssertEqual(result.loopbackSession?.videoMode, .passthroughHEVC)
+        XCTAssertEqual(result.loopbackSession?.manifestMetadata.videoRange, "PQ")
+        XCTAssertEqual(result.parityBlockers, [])
     }
 
     // MARK: - 6: Dolby Vision profiles 5 / 7 / 8
@@ -419,51 +335,49 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         ]
 
         for expected in expectations {
-            for gateOpen in [true, false] {
-                let label = "\(expected.profile)/\(expected.colorTransfer ?? "nil")/gate=\(gateOpen)"
-                let version = makeVersion(
-                    container: "mkv",
-                    codecVideo: "hevc",
-                    codecAudio: "aac",
-                    videoTracks: [makeVideoTrack(
-                        colorTransfer: expected.colorTransfer,
-                        videoRange: "DolbyVision",
-                        dolbyVision: expected.profile
-                    )],
-                    audioTracks: [makeAudioTrack(codec: "aac")]
-                )
-                let result = plan(version: version, siloPlayerPrimaryEnabled: gateOpen)
+            let label = "\(expected.profile)/\(expected.colorTransfer ?? "nil")"
+            let version = makeVersion(
+                container: "mkv",
+                codecVideo: "hevc",
+                codecAudio: "aac",
+                videoTracks: [makeVideoTrack(
+                    colorTransfer: expected.colorTransfer,
+                    videoRange: "DolbyVision",
+                    dolbyVision: expected.profile
+                )],
+                audioTracks: [makeAudioTrack(codec: "aac")]
+            )
+            let result = plan(version: version)
 
-                XCTAssertEqual(result.engine, .siloPlayerLoopback, label)
-                XCTAssertEqual(result.reason, expected.reason, label)
-                XCTAssertEqual(result.loopbackSession?.videoMode, expected.videoMode, label)
-                XCTAssertEqual(
-                    result.loopbackSession?.manifestMetadata.advertisedDolbyVisionProfile,
-                    expected.advertisedProfile,
-                    label
-                )
-                XCTAssertEqual(
-                    result.loopbackSession?.manifestMetadata.compatibilityBrand,
-                    expected.compatibilityBrand,
-                    label
-                )
-                XCTAssertEqual(
-                    result.loopbackSession?.manifestMetadata.videoRange,
-                    expected.videoRange,
-                    label
-                )
-                XCTAssertEqual(result.parityBlockers, [], label)
-                XCTAssertTrue(result.decisionTrace.contains(expected.traceToken), label)
-                XCTAssertTrue(
-                    result.decisionTrace.contains("silo_dv_profile_owned_by_dv_policy"),
-                    label
-                )
-                XCTAssertEqual(result.sourceMetadata.dolbyVisionProfile, expected.profileNumber, label)
-                XCTAssertTrue(
-                    result.decisionTrace.contains("dolby_vision_profile_\(expected.profileNumber)"),
-                    label
-                )
-            }
+            XCTAssertEqual(result.engine, .siloPlayerLoopback, label)
+            XCTAssertEqual(result.reason, expected.reason, label)
+            XCTAssertEqual(result.loopbackSession?.videoMode, expected.videoMode, label)
+            XCTAssertEqual(
+                result.loopbackSession?.manifestMetadata.advertisedDolbyVisionProfile,
+                expected.advertisedProfile,
+                label
+            )
+            XCTAssertEqual(
+                result.loopbackSession?.manifestMetadata.compatibilityBrand,
+                expected.compatibilityBrand,
+                label
+            )
+            XCTAssertEqual(
+                result.loopbackSession?.manifestMetadata.videoRange,
+                expected.videoRange,
+                label
+            )
+            XCTAssertEqual(result.parityBlockers, [], label)
+            XCTAssertTrue(result.decisionTrace.contains(expected.traceToken), label)
+            XCTAssertTrue(
+                result.decisionTrace.contains("silo_dv_profile_owned_by_dv_policy"),
+                label
+            )
+            XCTAssertEqual(result.sourceMetadata.dolbyVisionProfile, expected.profileNumber, label)
+            XCTAssertTrue(
+                result.decisionTrace.contains("dolby_vision_profile_\(expected.profileNumber)"),
+                label
+            )
         }
     }
 
@@ -622,7 +536,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
                 codecAudio: testCase.audioCodec,
                 audioTracks: [makeAudioTrack(codec: testCase.audioCodec)]
             )
-            let result = plan(version: version, siloPlayerPrimaryEnabled: true)
+            let result = plan(version: version)
 
             XCTAssertEqual(result.engine, .siloPlayerLoopback, label)
             XCTAssertEqual(result.reason, "\(testCase.videoCodec)_video_bridge_loopback", label)
@@ -642,7 +556,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             audioTracks: [makeAudioTrack(codec: "aac")],
             subtitleTracks: [makeSubtitleTrack(codec: "hdmv_pgs_subtitle")]
         )
-        let result = plan(version: version, siloPlayerPrimaryEnabled: true)
+        let result = plan(version: version)
 
         XCTAssertEqual(result.engine, .siloPlayerLoopback)
         XCTAssertEqual(result.reason, "h264_subtitle_normalization_loopback")
@@ -662,7 +576,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             audioTracks: [makeAudioTrack(codec: "aac")],
             subtitleTracks: [makeSubtitleTrack(codec: "dvb_subtitle")]
         )
-        let result = plan(version: version, siloPlayerPrimaryEnabled: true)
+        let result = plan(version: version)
 
         XCTAssertEqual(result.engine, .avPlayerHLS)
         XCTAssertEqual(result.parityBlockers, [
@@ -685,7 +599,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             audioTracks: [makeAudioTrack(codec: "aac")],
             subtitleTracks: [makeSubtitleTrack(codec: "dvb_subtitle", isDefault: false)]
         )
-        let result = plan(version: version, siloPlayerPrimaryEnabled: true)
+        let result = plan(version: version)
 
         XCTAssertEqual(result.engine, .siloPlayerLoopback)
         XCTAssertEqual(result.reason, "h264_subtitle_normalization_loopback")
@@ -980,8 +894,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             streamRequest: StreamRequest(url: Self.streamURL, headers: [:], serverUrl: ""),
             videoMode: .passthroughHEVC,
             videoRange: "PQ",
-            sourceStartTimeSeconds: -5,
-            servingMode: .vodPlan
+            sourceStartTimeSeconds: -5
         )
 
         XCTAssertNotNil(spec)
@@ -1023,7 +936,6 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertEqual(spec?.selectedAudio, .absent)
         XCTAssertFalse(spec?.selectedAudio.isPresent ?? true)
         XCTAssertEqual(spec?.manifestMetadata.advertisedDolbyVisionProfile, 5)
-        XCTAssertEqual(spec?.servingMode, .event, "servingMode defaults to .event")
         XCTAssertEqual(spec?.manifestMetadata.videoRange, "PQ", "videoRange defaults to PQ")
     }
 
@@ -1062,7 +974,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertTrue(dvOff.needsValidatedAtmosClaim)
     }
 
-    // MARK: - PlaybackEngineKind / LoopbackServingMode
+    // MARK: - PlaybackEngineKind
 
     func testPlaybackEngineKindLabels() {
         let expected: [(PlaybackEngineKind, String, PlaybackRouteFamily, String)] = [
@@ -1075,27 +987,5 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             XCTAssertEqual(engine.routeFamily, family)
             XCTAssertEqual(engine.appPlaybackLabel, playbackLabel)
         }
-    }
-
-    func testLoopbackServingModeGateDefaultsToVODPlan() {
-        let key = LoopbackServingMode.primaryGateKey
-        let defaults = UserDefaults.standard
-        let original = defaults.object(forKey: key)
-        defer {
-            if let original {
-                defaults.set(original, forKey: key)
-            } else {
-                defaults.removeObject(forKey: key)
-            }
-        }
-
-        defaults.removeObject(forKey: key)
-        XCTAssertEqual(LoopbackServingMode.gated, .vodPlan, "absent key serves VOD")
-
-        defaults.set(true, forKey: key)
-        XCTAssertEqual(LoopbackServingMode.gated, .vodPlan)
-
-        defaults.set(false, forKey: key)
-        XCTAssertEqual(LoopbackServingMode.gated, .event, "explicit false is the kill switch")
     }
 }

@@ -34,7 +34,7 @@ was deleted on 2026-08-16 (see
 | Implementation route | Route family | Display label | Current role |
 | --- | --- | --- | --- |
 | `avPlayerNativeDirect` | NativePlayer | Native Player Direct | Narrow native-direct path for allowlisted `mp4` / `mov` / `m4v` assets whose video, audio, and embedded subtitle codecs all match the Apple allowlist |
-| `siloPlayerLoopback` | SiloPlayer | Direct Stream | **Primary** direct playback. Remuxes H.264/HEVC/Dolby Vision, and now also bridges the non-copyable codec tail (see the Video bridge sub-rows). Static-VOD serving mode; gate `player.apple.siloplayer_primary_enabled` default ON (explicit `false` = kill switch to the EVENT path). Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
+| `siloPlayerLoopback` | SiloPlayer | Direct Stream | **Primary** direct playback. Remuxes H.264/HEVC/Dolby Vision, and now also bridges the non-copyable codec tail (see the Video bridge sub-rows). Static-VOD serving mode (the only mode; the EVENT path and its `player.apple.siloplayer_primary_enabled` kill switch were retired 2026-08-17). Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
 | `avPlayerHLS` | NativePlayer | Native Player HLS | Server-produced HLS for `remux` / `transcode` deliveries, and the **terminal fallback rung** for anything the loopback cannot normalize. No longer feature-flag gated |
 
 ## Matrix
@@ -79,7 +79,7 @@ Full detail in [09 - On-device video bridge](09-video-bridge.md).
 | HDR (PQ / HLG) through the bridge | Unsupported in phase 1 — blocker `video_hdr_bridge_unsupported` |
 | Bridged resolution above 1080p | Unsupported in phase 1 — blocker `video_bridge_resolution_unsupported` (cap is 1920 × 1080; unknown dimensions pass and rely on the runtime watchdog) |
 | Bridge-tier containers (`avi`, `wmv`, `asf`, `webm`, `flv`, `mpg`, `mpeg`, `m2v`, `vob`, `ogm`, `ogv`, `3gp`, `3g2`, `divx`) | Repo-verified for bridged/AV1-passthrough modes only; the copy tier still refuses them with `container_not_normalizable` |
-| Bridged session serving mode | VOD plan only. With the primary gate off, the planner blocks with `video_bridge_requires_vod_plan` |
+| Bridged session serving mode | VOD plan only — now the only loopback serving mode (the `video_bridge_requires_vod_plan` blocker was deleted with the EVENT path on 2026-08-17) |
 | Throughput floor | Repo-verified runtime watchdog: sustained output below 1.1× realtime throws `LoopbackWriterError.videoBridgeTooSlow` and the route falls to `avPlayerHLS` |
 | Hardware validation | Apple TV 4K (3rd gen, tvOS 26.6) exposes hardware `hvc1` and `avc1` VideoToolbox encoders at 1080p **and** 4K, and accepts HEVC Main10. No thermal soak validation yet |
 

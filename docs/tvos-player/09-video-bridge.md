@@ -108,7 +108,7 @@ mode-dependent, and the planner calls it **after** resolving the video mode.
 | --- | --- | --- |
 | Dynamic range | SDR only (`transferKind(for:) ?? "SDR"` must be `"SDR"`) | A PQ/HLG re-encode needs the full 10-bit colour chain — P010 buffers, Main10 profile, explicit primaries/transfer/matrix, mastering-display side data — and missing any one paints washed-out or over-bright |
 | Resolution | ≤ 1920 × 1080 (`bridgeResolutionIsSupported`) | Software decode of 4K VP9/AV1 is CPU-bound even threaded and would stutter ahead of the playhead on Apple TV. An **unknown** resolution passes: the server's metadata is missing, not large, and the runtime watchdog is the backstop |
-| Serving mode | VOD plan only | The bridge cuts segments by forcing encoder keyframes at plan boundaries, which needs a resolved plan; and the growing EVENT playlist's startup risk applies exactly as it does to long-GOP H.264 |
+| Serving mode | VOD plan only | The bridge cuts segments by forcing encoder keyframes at plan boundaries, which needs a resolved plan. Since the EVENT serving mode was retired on 2026-08-17 this is the only loopback mode, so it is no longer a bridge-specific requirement |
 
 ### Blockers and trace tokens
 
@@ -119,11 +119,9 @@ mode-dependent, and the planner calls it **after** resolving the video mode.
 | `video_hdr_bridge_unsupported` | blocker | Bridge codec with a PQ/HLG transfer |
 | `video_bridge_resolution_unsupported` | blocker | Bridge codec above 1080p |
 | `container_not_normalizable` | blocker | Container outside the tier the resolved mode unlocks |
-| `video_bridge_requires_vod_plan` | blocker | Bridged/AV1 mode with `player.apple.siloplayer_primary_enabled` explicitly `false` |
 | `silo_video_bridge_hevc` / `silo_video_bridge_h264` / `silo_video_av1_passthrough` | trace | The resolved output mode |
 | `silo_reason_<codec>_video_bridge_loopback` | trace | e.g. `silo_reason_vp9_video_bridge_loopback` |
 | `av1_passthrough_loopback` | reason | AV1 remux route reason |
-| `silo_video_bridge_disabled` | trace | Companion to `video_bridge_requires_vod_plan` |
 
 Blockers from the Silo assessment are prefixed `silo_` when they reach
 `PlaybackExecutionPlan.parityBlockers` (so `video_not_bridgeable` appears as

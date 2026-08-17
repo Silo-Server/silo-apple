@@ -448,9 +448,6 @@ final class LoopbackSegmentWriter {
     var onFirstSegmentReady: ((String) -> Void)?
     /// Fires whenever the media playlist on disk gains a new segment.
     var onSegmentAppended: ((_ segmentIndex: Int, _ totalMediaDuration: Double) -> Void)?
-    /// Fires once the writer has seen the first video packet after an input
-    /// seek and knows the exact source timestamp that maps to player time 0.
-    var onTimelineAnchorResolved: ((_ sourceStartSeconds: Double) -> Void)?
     /// Fires with a rolling estimate of how quickly FFmpeg is reading the
     /// remote source, not how quickly AVPlayer is reading localhost HLS.
     var onSourceDownloadStats: ((_ bitsPerSecond: Double?, _ totalBytesRead: Int64?) -> Void)?
@@ -999,7 +996,6 @@ final class LoopbackSegmentWriter {
     /// cue-prewarm seek — and before `openOutput`/`writeHeader`, which pick
     /// muxer flags off `vodActive`.
     private func resolveVODPlanIfNeeded() throws {
-        guard sessionSpec.servingMode == .vodPlan else { return }
         if vodPlan == nil {
             if var plan = harvestVODPlan() {
                 // Resume-anchor bitstream check runs BEFORE the plan is
@@ -2405,10 +2401,7 @@ final class LoopbackSegmentWriter {
         }
         configureSubtitleTap(in: openedContext)
 
-        if sessionSpec.servingMode != .vodPlan {
-            try seekInputToStartTimeIfNeeded(openedContext)
-        }
-        // VOD-plan sessions seek in resolveVODPlanIfNeeded instead: both the
+        // Seeking happens in resolveVODPlanIfNeeded instead: both the
         // harvest and restart paths warm the matroska cue index and then
         // seek — with cold cues a BACKWARD seek lands by linear estimate,
         // potentially PAST the anchor segment's keyframe, and the producer
@@ -5543,7 +5536,6 @@ final class LoopbackSegmentWriter {
             Self.logger.info(
                 "[CMP-AVP] loopback timeline anchor requested=\(self.sourceStartTimeSeconds, privacy: .public) actual=\(base, privacy: .public)"
             )
-            onTimelineAnchorResolved?(base)
         }
     }
 
