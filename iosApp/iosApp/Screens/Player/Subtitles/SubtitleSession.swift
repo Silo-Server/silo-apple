@@ -188,9 +188,6 @@ final class SubtitleSession {
     /// snapshotting the reference.
     private var bitmapCueStores: [SubtitleSlot: BitmapSubtitleCueStore] = [:]
 
-    /// Fires on main when a slot's loading status changes.
-    var onStatusChange: ((SubtitleSlot, SubtitleLoadStatus) -> Void)?
-
     /// Fires on main when sidecar tracks have been registered and the
     /// VM should extend `subtitleTracks` with the synthesised entries.
     var onSidecarTracksRegistered: (([SidecarSubtitleDescriptor]) -> Void)?
@@ -325,7 +322,6 @@ final class SubtitleSession {
                 )
             }
         }
-        publishStatus(slot: slot, .ready)
     }
 
     /// Open a sidecar subtitle track (server URL) in the given slot.
@@ -338,7 +334,6 @@ final class SubtitleSession {
     func openSidecar(urlIndex: Int, slot: SubtitleSlot) {
         guard let descriptor = withLock({ sidecarDescriptors[urlIndex] }) else {
             Self.logger.warning("openSidecar: no descriptor for index \(urlIndex)")
-            publishStatus(slot: slot, .error("Subtitle track not found"))
             return
         }
 
@@ -348,7 +343,6 @@ final class SubtitleSession {
             bitmapCueStores.removeValue(forKey: slot)
             clearInstalledSidecarLocked(slot)
         }
-        publishStatus(slot: slot, .fetching)
 
         // The server/CDN subtitle endpoint can buffer text responses long
         // enough that URLSession.AsyncBytes never yields a first cue before
@@ -405,7 +399,6 @@ final class SubtitleSession {
                 )
             } catch {
                 Self.logger.warning("sidecar fetch failed: \(String(describing: error), privacy: .public)")
-                self?.publishStatus(slot: slot, .error("Couldn't load subtitle"))
             }
         }
         withLock { fetchTasks[slot] = task }
@@ -436,7 +429,6 @@ final class SubtitleSession {
             clearInstalledSidecarLocked(slot)
         }
         renderer.dropTrack(slot: slot)
-        publishStatus(slot: slot, .idle)
     }
 
     /// Called on seek so libass clears cached events past the new
@@ -503,7 +495,6 @@ final class SubtitleSession {
         Self.logger.info(
             "[CMP-SUB] opened bitmap track slot=\(slot.rawValue, privacy: .public) retention=\(retentionSeconds, privacy: .public) maxCues=\(maxCueCount, privacy: .public)"
         )
-        publishStatus(slot: slot, .ready)
     }
 
     /// Deliver decoded cues for the slot's bitmap track. `trimActiveAt`
@@ -604,7 +595,6 @@ final class SubtitleSession {
         Self.logger.info(
             "[CMP-SUB] opened live AI track slot=\(slot.rawValue, privacy: .public) label=\(label ?? "nil", privacy: .public) lang=\(language ?? "nil", privacy: .public)"
         )
-        publishStatus(slot: slot, .ready)
     }
 
     /// Append a single live AI cue to the live track in the given slot.
@@ -635,7 +625,6 @@ final class SubtitleSession {
             clearInstalledSidecarLocked(slot)
         }
         renderer.dropTrack(slot: slot)
-        publishStatus(slot: slot, .idle)
     }
 
     // MARK: - Lifecycle
@@ -667,12 +656,6 @@ final class SubtitleSession {
             return existing
         }
         task?.cancel()
-    }
-
-    private func publishStatus(slot: SubtitleSlot, _ status: SubtitleLoadStatus) {
-        DispatchQueue.main.async { [weak self] in
-            self?.onStatusChange?(slot, status)
-        }
     }
 
     /// Convert (if needed) and install sidecar content into a slot.
@@ -813,7 +796,6 @@ final class SubtitleSession {
             Self.logger.info(
                 "[CMP-SUB] installed sidecar slot=\(slot.rawValue, privacy: .public) format=\(String(describing: format), privacy: .public) nativeASS=\(isNativeASS, privacy: .public) assChars=\(assDocument.count, privacy: .public) dialogueCount=\(stats.count, privacy: .public) first=\(stats.first ?? "nil", privacy: .public) last=\(stats.last ?? "nil", privacy: .public) now=\(nowSeconds, privacy: .public)"
             )
-            publishStatus(slot: slot, .ready)
             return
         }
     }
