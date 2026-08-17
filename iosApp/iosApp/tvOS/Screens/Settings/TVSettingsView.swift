@@ -351,11 +351,15 @@ struct TVSettingsView: View {
         preferredDetailFocus = .serverPrivacyPolicy
         railFocus = nil
         detailFocus = nil
-        showPrivacyPolicy = true
+        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            showPrivacyPolicy = true
+        }
     }
 
     private func dismissPrivacyPolicy() {
-        showPrivacyPolicy = false
+        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            showPrivacyPolicy = false
+        }
         preferredFocusOwner = .detail
         preferredDetailFocus = .serverPrivacyPolicy
         isRestoringDetailFocus = true
