@@ -26,7 +26,6 @@ enum Route: Hashable {
     case favorites
     case watchlist
     case history
-    case collectionDetail(collectionId: String)
     case settings
     case recommendations
     case serverList

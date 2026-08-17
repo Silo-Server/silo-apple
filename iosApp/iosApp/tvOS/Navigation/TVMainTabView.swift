@@ -1203,8 +1203,6 @@ struct TVMainTabView: View {
             PersonalListGridView(kind: .watchlist)
         case .history:
             HistoryView()
-        case .collectionDetail(let id):
-            CollectionDetailView(collectionId: id)
         case .browse(let libraryId):
             BrowseView(libraryId: libraryId)
         case .requestsHub:
