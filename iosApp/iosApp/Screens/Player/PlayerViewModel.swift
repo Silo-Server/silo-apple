@@ -77,9 +77,6 @@ struct PlayerCallbacks {
     var onError: ((String) -> Void)?
     var onEndOfFile: (() -> Void)?
     var onBufferingChange: ((Bool) -> Void)?
-    /// Fill progress (0–100) toward the buffering-resume threshold while
-    /// buffering. No AVPlayer route surfaces a comparable signal today.
-    var onBufferingProgress: ((Double) -> Void)?
     /// Seconds buffered ahead of `currentTime`, from `loadedTimeRanges`.
     var onBufferedAheadChange: ((Double) -> Void)?
     var onPlaybackStatsChange: ((PlaybackStats) -> Void)?
@@ -190,20 +187,16 @@ struct PlayerOnDeckItem: Identifiable, Hashable {
 }
 
 struct PlayerBackendCapabilities: Equatable {
-    let supportsBufferedAhead: Bool
     let supportsExternalPrimarySubtitles: Bool
     let supportsSecondarySubtitles: Bool
-    let supportsChapters: Bool
     let supportsVideoGravity: Bool
     let supportsSubtitleDelay: Bool
     let supportsSubtitleStyling: Bool
 
     func withSubtitleControls(_ supported: Bool) -> PlayerBackendCapabilities {
         PlayerBackendCapabilities(
-            supportsBufferedAhead: supportsBufferedAhead,
             supportsExternalPrimarySubtitles: supportsExternalPrimarySubtitles,
             supportsSecondarySubtitles: supportsSecondarySubtitles,
-            supportsChapters: supportsChapters,
             supportsVideoGravity: supportsVideoGravity,
             supportsSubtitleDelay: supported,
             supportsSubtitleStyling: supported
@@ -211,20 +204,16 @@ struct PlayerBackendCapabilities: Equatable {
     }
 
     static let avFoundation = PlayerBackendCapabilities(
-        supportsBufferedAhead: true,
         supportsExternalPrimarySubtitles: true,
         supportsSecondarySubtitles: true,
-        supportsChapters: true,
         supportsVideoGravity: true,
         supportsSubtitleDelay: false,
         supportsSubtitleStyling: false
     )
 
     static let macAVFoundation = PlayerBackendCapabilities(
-        supportsBufferedAhead: true,
         supportsExternalPrimarySubtitles: true,
         supportsSecondarySubtitles: true,
-        supportsChapters: true,
         supportsVideoGravity: false,
         supportsSubtitleDelay: false,
         supportsSubtitleStyling: false
@@ -244,9 +233,6 @@ class PlayerViewModel {
     var title: String = ""
     var isLoading = true
     var isBuffering = false
-    /// Fill progress (0–100) toward the buffering-resume threshold; nil
-    /// when not buffering or when the active backend doesn't report it.
-    var bufferingProgress: Double?
     var error: String?
     var showControls = false
     var activeNotice: PlayerNotice?
@@ -274,13 +260,6 @@ class PlayerViewModel {
     /// The temporary rate is applied straight to the backend and never
     /// persisted, so releasing always restores `settings.playbackSpeed`.
     var isHoldFastForwarding = false
-    /// Loading status of the primary + secondary subtitle slots. Set
-    /// whenever a sidecar fetch starts, completes, or
-    /// errors. UI can key a spinner / silent-failure indicator off
-    /// this per slot.
-    var subtitleLoadStatus: [SubtitleSlot: SubtitleLoadStatus] = [
-        .primary: .idle, .secondary: .idle
-    ]
 
     /// Seconds of media buffered ahead of `currentTime`. Populated by
     /// `AVPlayerBackend` (KVO on `loadedTimeRanges`); stays 0 until the
@@ -343,7 +322,6 @@ class PlayerViewModel {
     #if os(tvOS)
     enum TVHUDEntryPoint: Equatable {
         case settings
-        case playback
     }
 
     var requestedTVHUDEntryPoint: TVHUDEntryPoint?
@@ -1007,7 +985,6 @@ class PlayerViewModel {
         message: "Playback stopped when Apple TV went to sleep. Press Play to resume.",
         tone: .info
     )
-    private static let appleHLSRouteFeatureFlagKey = "player.apple.avplayer_hls_route_enabled"
     var isBackgroundSuspended: Bool { suspendedPlayback != nil }
     var suspendedNotice: PlayerNotice? {
         isBackgroundSuspended ? Self.suspendedPlaybackNotice : nil
@@ -1230,15 +1207,6 @@ class PlayerViewModel {
                   ) else { return }
             self.appendSidecarTracks(descriptors)
         }
-        backend.onSubtitleLoadStatusChange = { [weak self] slot, status in
-            guard let self,
-                  !self.isDisposed,
-                  Self.isCurrentStreamCallback(
-                      callbackGeneration,
-                      currentGeneration: self.streamLoadGeneration
-                  ) else { return }
-            self.subtitleLoadStatus[slot] = status
-        }
     }
 
     /// Build the VM-owned callbacks once so every route gets the exact
@@ -1399,19 +1367,6 @@ class PlayerViewModel {
                     self?.noteBufferingDuringSourceOutage()
                 }
             }
-            if !buffering {
-                self.bufferingProgress = nil
-            }
-        }
-        cb.onBufferingProgress = { [weak self] progress in
-            guard let self,
-                  !self.isDisposed,
-                  progress.isFinite,
-                  Self.isCurrentStreamCallback(
-                      callbackGeneration,
-                      currentGeneration: self.streamLoadGeneration
-                  ) else { return }
-            self.bufferingProgress = min(100, max(0, progress))
         }
         cb.onBufferedAheadChange = { [weak self] seconds in
             guard let self,
@@ -1627,7 +1582,6 @@ class PlayerViewModel {
         progressTask?.cancel()
         isLoading = true
         isBuffering = false
-        bufferingProgress = nil
         protocolV3ReplanTask = Task { @MainActor [weak self] in
             guard let self, !self.isDisposed else { return }
             defer {
@@ -2321,10 +2275,8 @@ class PlayerViewModel {
             streamRequest: activeExecutionPlan.sourceStreamRequest,
             sourceStreamRequest: activeExecutionPlan.sourceStreamRequest,
             loopbackSession: loopbackSession,
-            capabilities: fallbackCapabilities.backendCapabilities,
             routeCapabilities: fallbackCapabilities,
             requirements: requirements,
-            featureFlagEnabled: true,
             parityBlockers: blockers,
             decisionTrace: activeExecutionPlan.decisionTrace
                 + [traceToken]
@@ -2342,14 +2294,6 @@ class PlayerViewModel {
                 sourceMetadata: activeExecutionPlan.sourceMetadata
             )
         )
-    }
-
-    private static func appleHLSRouteFeatureFlagEnabled() -> Bool {
-        let defaults = UserDefaults.standard
-        if defaults.object(forKey: appleHLSRouteFeatureFlagKey) != nil {
-            return defaults.bool(forKey: appleHLSRouteFeatureFlagKey)
-        }
-        return true
     }
 
     /// Build a typed execution plan from the bridge's session response plus
@@ -2373,7 +2317,6 @@ class PlayerViewModel {
                 preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
                 selectedPrimarySubtitleTrackId: selectedSubtitleId,
                 selectedSecondarySubtitleTrackId: selectedSecondarySubtitleId,
-                hlsRouteFeatureEnabled: Self.appleHLSRouteFeatureFlagEnabled(),
                 siloPlayerPrimaryEnabled: LoopbackServingMode.gated == .vodPlan,
                 dolbyVisionPolicy: settings.dolbyVisionPolicySnapshot,
                 displayCapabilities: ApplePlaybackDisplayCapabilities.probe()
@@ -2411,7 +2354,7 @@ class PlayerViewModel {
             "routeFamily=\(plan.routeFamily.diagnosticsLabel) " +
             "implementationRoute=\(plan.implementationRoute) backend=\(plan.engine.label) " +
             "appLabel=\(plan.appPlaybackLabel) " +
-            "flag=\(plan.featureFlagEnabled) requirements=\(requirements) " +
+            "requirements=\(requirements) " +
             "blockers=\(blockers) reason=\(plan.reason) degradations=\(degradations) " +
             "sourceContainer=\(plan.sourceMetadata.container ?? "unknown") " +
             "sourceVideoCodec=\(plan.sourceMetadata.videoCodec ?? "unknown") " +
@@ -2592,7 +2535,6 @@ class PlayerViewModel {
             if restart.isQualitySwitch {
                 isLoading = true
                 isBuffering = false
-                bufferingProgress = nil
                 avPlayerBackend?.dispose()
             }
         }
@@ -3015,10 +2957,8 @@ class PlayerViewModel {
                 streamRequest: streamRequest,
                 sourceStreamRequest: plan.sourceStreamRequest,
                 loopbackSession: loopbackSession,
-                capabilities: plan.capabilities,
                 routeCapabilities: plan.routeCapabilities,
                 requirements: plan.requirements,
-                featureFlagEnabled: plan.featureFlagEnabled,
                 parityBlockers: plan.parityBlockers,
                 decisionTrace: plan.decisionTrace + ["source_proxy_enabled"],
                 degradationWarnings: plan.degradationWarnings,
@@ -3426,7 +3366,6 @@ class PlayerViewModel {
         }
         isLoading = false
         isBuffering = false
-        bufferingProgress = nil
         isPlaying = false
         showControls = true
         nowPlaying.update(
@@ -3529,7 +3468,6 @@ class PlayerViewModel {
         stashSourceCacheHandoff()
         sourceProxy?.stop()
         sourceProxy = nil
-        subtitleLoadStatus = [.primary: .idle, .secondary: .idle]
         if resetRouteRecoveryFlags {
             hasAttemptedNativeDirectRouteRecovery = false
             hasAttemptedSiloRouteHLSFallback = false
@@ -5103,7 +5041,6 @@ class PlayerViewModel {
             isScrubbing = false
             isLoading = true
             isBuffering = false
-            bufferingProgress = nil
             showControls = true
             hideControlsTask?.cancel()
             attemptProtocolV3Replan(
@@ -5125,7 +5062,6 @@ class PlayerViewModel {
         isScrubbing = false
         isLoading = true
         isBuffering = false
-        bufferingProgress = nil
         showControls = true
         hideControlsTask?.cancel()
         Self.logger.info(
@@ -5168,10 +5104,8 @@ class PlayerViewModel {
             streamRequest: plan.streamRequest,
             sourceStreamRequest: plan.sourceStreamRequest,
             loopbackSession: loopbackSession.reanchored(at: clampedTarget),
-            capabilities: plan.capabilities,
             routeCapabilities: plan.routeCapabilities,
             requirements: plan.requirements,
-            featureFlagEnabled: plan.featureFlagEnabled,
             parityBlockers: plan.parityBlockers,
             decisionTrace: plan.decisionTrace + ["loopback_reanchor_seek"],
             degradationWarnings: plan.degradationWarnings,
@@ -5194,7 +5128,6 @@ class PlayerViewModel {
         isScrubbing = false
         isLoading = true
         isBuffering = false
-        bufferingProgress = nil
         showControls = true
         hideControlsTask?.cancel()
         playbackTimelineOffset = clampedTarget
@@ -5318,7 +5251,6 @@ class PlayerViewModel {
                     self.qualitySwitchError = "Couldn't switch quality."
                     self.isLoading = false
                     self.isBuffering = false
-                    self.bufferingProgress = nil
                 } else {
                     self.finalizeTerminalPlaybackError(String(describing: error))
                 }
@@ -6048,15 +5980,6 @@ class PlayerViewModel {
     // one-liner over an existing primitive; the interesting logic (offset-aware
     // cue conversion, dedupe) lives in the sink adapter.
 
-    /// The amount (seconds) to subtract from a live cue's **absolute media-time**
-    /// timestamp to land it on the active backend's libass tick clock.
-    ///
-    /// `AVPlayerBackend` ticks at `mediaTime(for: playerTime)` =
-    /// `playerTime + mediaTimelineOffsetSeconds` = **absolute media time**, so a
-    /// media-time cue is fed as-is. Subtracting `playbackTimelineOffset` here
-    /// would render cues `offset` seconds early on an AVPlayer transcode.
-    var liveSubtitleCueMediaTimeShift: Double { 0 }
-
     /// Open the synthetic live track on the active backend and add its picker
     /// row. Returns the live track id.
     @discardableResult
@@ -6305,11 +6228,6 @@ class PlayerViewModel {
     #if os(tvOS)
     func openSettingsHUD() {
         requestedTVHUDEntryPoint = .settings
-        openHUD()
-    }
-
-    func openPlaybackHUD() {
-        requestedTVHUDEntryPoint = .playback
         openHUD()
     }
 
@@ -6868,7 +6786,7 @@ class PlayerViewModel {
 
     private func humanReadableRouteReason(_ reason: String) -> String {
         switch reason {
-        case "dolby_vision_profile7_to81_loopback", "dolby_vision_profile7_to81_base_layer_loopback":
+        case "dolby_vision_profile7_to81_base_layer_loopback":
             return "Dolby Vision Profile 7 base layer selected for Profile 8.1 SiloPlayer signaling"
         case "dolby_vision_profile7_hdr10_fallback_loopback":
             return "Dolby Vision Profile 7 using HDR10 fallback"
@@ -6892,10 +6810,6 @@ class PlayerViewModel {
             return "The Native Player Direct allowlist did not match and the source cannot be normalized locally, so playback uses the server stream"
         case "apple_hls_route_enabled":
             return "Native Player HLS route selected"
-        case "macOS_avfoundation_backend":
-            return "macOS stays on its Native Player route"
-        case "macos_direct_avplayer_fallback":
-            return "macOS received a direct stream outside the native allowlist and will attempt Native Player playback"
         default:
             return reason.replacingOccurrences(of: "_", with: " ")
         }
@@ -7605,7 +7519,6 @@ class PlayerViewModel {
         activeNotice = nil
         isHUDPresented = false
         isBuffering = false
-        bufferingProgress = nil
         isLoading = false
         isPlaying = false
         showControls = true
@@ -7899,12 +7812,9 @@ private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
     func feedCue(_ cue: PlaybackRealtimeSubtitleCue) {
         guard let owner, let key = installedTrackKey else { return }
         // Cue timestamps are absolute MEDIA time, which is also the clock
-        // AVPlayer's libass renderer ticks on. The VM owns the conversion
-        // (see `liveSubtitleCueMediaTimeShift`) so this stays correct under
-        // transcode.
-        let shift = owner.liveSubtitleCueMediaTimeShift
-        let movieStart = cue.start - shift
-        let movieEnd = cue.end - shift
+        // AVPlayer's libass renderer ticks on, so cues are fed as-is.
+        let movieStart = cue.start
+        let movieEnd = cue.end
         guard var converter = converters[key] else { return }
         let converted = converter.makeCue(start: movieStart, end: movieEnd, text: cue.text)
         converters[key] = converter // persist dedupe state (value type)
@@ -7916,9 +7826,9 @@ private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
             // must straddle playheadMs. If startMs is far from playheadMs, the
             // streamed cue lands off the current scene (timing); if it straddles
             // but nothing shows, the miss is downstream (render / shaping / font).
-            let playheadMs = Int64((owner.currentTime - shift) * 1000.0)
+            let playheadMs = Int64(owner.currentTime * 1000.0)
             Self.logger.info(
-                "[AI-LIVE-DIAG] feed cue start=\(cue.start, privacy: .public) shift=\(shift, privacy: .public) startMs=\(converted.startMs, privacy: .public) durMs=\(converted.durationMs, privacy: .public) playheadMs=\(playheadMs, privacy: .public) Δms=\(converted.startMs - playheadMs, privacy: .public) textLen=\(converted.eventText.count, privacy: .public)"
+                "[AI-LIVE-DIAG] feed cue start=\(cue.start, privacy: .public) startMs=\(converted.startMs, privacy: .public) durMs=\(converted.durationMs, privacy: .public) playheadMs=\(playheadMs, privacy: .public) Δms=\(converted.startMs - playheadMs, privacy: .public) textLen=\(converted.eventText.count, privacy: .public)"
             )
         }
         owner.feedLiveSubtitleCue(

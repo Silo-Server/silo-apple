@@ -233,9 +233,6 @@ final class PlaybackSourceCache {
         }
     }
 
-    var maxCacheableBytes: Int { maxBytes }
-    var downstreamHighWaterBytes: Int { highWaterBytes }
-    var downstreamLowWaterBytes: Int { lowWaterBytes }
     var shouldPrefetch: Bool {
         var didRearm = false
         lock.lock()

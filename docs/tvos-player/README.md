@@ -140,9 +140,8 @@ to point it at is the server.
   siloPlayerLoopback}` and `PlaybackRouteFamily` is `{nativePlayer,
   siloPlayer}`.
 - corrected: the AVPlayer HLS route is no longer feature-flag gated. The
-  planner's `.remux` / `.transcode` arm sets `featureFlagEnabled = true`
-  unconditionally, and `ApplePlaybackPlannerInput.hlsRouteFeatureEnabled` is
-  now a vestigial field the planner never reads.
+  planner's `.remux` / `.transcode` arm always selects `.avPlayerHLS`, and the
+  vestigial flag plumbing has been removed.
 - corrected: earlier revisions of this suite described a hybrid backend and
   quoted stale `mpv` comments. Neither the second backend nor those comments
   remain in the player tree.

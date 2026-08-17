@@ -24,11 +24,9 @@ struct PlaybackStats: Equatable {
         case dolbyVision
     }
 
-    var sampledAt: Date = Date()
     var route: String?
     var source: String?
     var container: String?
-    var createdBy: String?
     var video: MediaStream = .init()
     var audio: MediaStream = .init()
     var dynamicRange: String?
@@ -43,7 +41,6 @@ struct PlaybackStats: Equatable {
     var currentDownloadBitrateBps: Double?
     var observedBitrateBps: Double?
     var indicatedBitrateBps: Double?
-    var networkThroughputBps: Double?
     var streamSpeed: Double?
     var bytesTransferred: Int64?
     var sourceCacheBytes: Int64?
@@ -134,8 +131,7 @@ extension PlaybackStats {
         [
             ("Route", route),
             ("Source", source),
-            ("Container", container),
-            ("Created by", createdBy)
+            ("Container", container)
         ].compactMap { label, value in
             guard let value, !value.isEmpty else { return nil }
             return (label, value)
@@ -192,9 +188,6 @@ extension PlaybackStats {
         }
         if currentDownloadBitrateBps == nil, let observedBitrateBps {
             rows.append(("Observed bitrate", formatBitsPerSecond(observedBitrateBps)))
-        }
-        if let networkThroughputBps {
-            rows.append(("Network throughput", formatBitsPerSecond(networkThroughputBps)))
         }
         if let streamSpeed {
             rows.append(("Stream speed", String(format: "%.2fx", streamSpeed)))

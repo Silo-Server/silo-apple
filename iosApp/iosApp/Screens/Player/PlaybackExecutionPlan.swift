@@ -463,13 +463,6 @@ enum PlaybackEngineKind: Equatable {
             return .siloPlayerLoopback
         }
     }
-
-    /// Capability profile advertised to the UI layer for this engine. The
-    /// AVPlayer routes share the AVFoundation profile because the
-    /// backend surface is identical once a stream is loaded.
-    var capabilities: PlayerBackendCapabilities {
-        routeCapabilities.backendCapabilities
-    }
 }
 
 struct PlaybackSourceMetadata: Equatable {
@@ -601,7 +594,6 @@ struct PlaybackExecutionPlan {
     let streamRequest: StreamRequest
     let sourceStreamRequest: StreamRequest
     let loopbackSession: LoopbackSessionSpec?
-    let capabilities: PlayerBackendCapabilities
     let routeCapabilities: ApplePlaybackRouteCapabilities
     let requirements: PlaybackRouteRequirements
     let sourceMetadata: PlaybackSourceMetadata
@@ -610,7 +602,6 @@ struct PlaybackExecutionPlan {
     /// Inputs to the route decision, retained on the plan so a single emit
     /// site can log the full decision trace instead of threading them
     /// through every consumer.
-    let featureFlagEnabled: Bool
     let parityBlockers: [String]
     let decisionTrace: [String]
     let degradationWarnings: [String]
@@ -630,10 +621,8 @@ struct PlaybackExecutionPlan {
         streamRequest: StreamRequest,
         sourceStreamRequest: StreamRequest? = nil,
         loopbackSession: LoopbackSessionSpec?,
-        capabilities: PlayerBackendCapabilities,
         routeCapabilities: ApplePlaybackRouteCapabilities,
         requirements: PlaybackRouteRequirements,
-        featureFlagEnabled: Bool,
         parityBlockers: [String],
         decisionTrace: [String],
         degradationWarnings: [String],
@@ -656,7 +645,6 @@ struct PlaybackExecutionPlan {
         self.streamRequest = streamRequest
         self.sourceStreamRequest = sourceStreamRequest ?? streamRequest
         self.loopbackSession = loopbackSession
-        self.capabilities = capabilities
         self.routeCapabilities = routeCapabilities
         self.requirements = requirements
         self.sourceMetadata = sourceMetadata
@@ -665,7 +653,6 @@ struct PlaybackExecutionPlan {
             routeCapabilities: routeCapabilities,
             sourceMetadata: sourceMetadata
         )
-        self.featureFlagEnabled = featureFlagEnabled
         self.parityBlockers = parityBlockers
         self.decisionTrace = decisionTrace
         self.degradationWarnings = degradationWarnings

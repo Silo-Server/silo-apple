@@ -175,19 +175,6 @@ enum ApplePlaybackQuality {
         }
     }
 
-    static func resolvedRequestOption(
-        preferredQualityId: String?,
-        selectedVersion: FileVersion,
-        delivery: PlaybackDeliveryStrategy
-    ) -> ApplePlaybackQualityOption {
-        let id = normalizeStoredId(preferredQualityId)
-        if id == autoId {
-            return delivery == .transcode ? auto : original
-        }
-        return playbackOptions(for: selectedVersion).first(where: { $0.id == id })
-            ?? (delivery == .transcode ? auto : original)
-    }
-
     static func activeQualityId(
         requestedQualityId: String?,
         selectedVersion: FileVersion,

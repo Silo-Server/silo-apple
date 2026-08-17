@@ -80,7 +80,7 @@ Current truth, and a common source of confusion:
   `webm`, `avi`, `ts`, `m2ts`, `mpegts` on device (no `webm`/`avi` on
   simulator), with both spellings of the aliased pairs so a scanner-recorded
   token always matches.
-- Simulator clamps to `1080p` / `maxDecodeWidth = 1920`.
+- Simulator clamps to `1080p` / `maxDecodeHeight = 1080`.
 
 ## 4. Metadata and state flow back to UI
 
@@ -138,11 +138,8 @@ is:
    stream.
 
 `remux` and `transcode` deliveries go straight to `avPlayerHLS` with
-`reason = apple_hls_route_enabled`. This is no longer behind a feature flag:
-the planner sets `featureFlagEnabled = true` unconditionally, and
-`ApplePlaybackPlannerInput.hlsRouteFeatureEnabled` is a vestigial field the
-planner never reads (`PlayerViewModel` still passes
-`appleHLSRouteFeatureFlagEnabled()`, which itself defaults to `true`).
+`reason = apple_hls_route_enabled`. This is unconditional: no feature flag
+gates the HLS route, and the vestigial flag plumbing has been removed.
 
 Every decision emits a trace. Useful tokens: `delivery_direct`,
 `container_<x>`, `video_<x>`, `silo_container_<x>`, `silo_video_<x>`,

@@ -515,16 +515,6 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         retryAttempts = 0
     }
 
-    /// Keys with an op still queued: one inside the debounce window, or one
-    /// held back after a failure. In-flight keys are intentionally excluded;
-    /// use ``hasPendingWrites`` when deciding whether the process must stay
-    /// alive for all outstanding work.
-    var pendingKeys: [SettingKey] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Self.orderedKeys(in: pending)
-    }
-
     var hasPendingWrites: Bool {
         lock.lock()
         defer { lock.unlock() }

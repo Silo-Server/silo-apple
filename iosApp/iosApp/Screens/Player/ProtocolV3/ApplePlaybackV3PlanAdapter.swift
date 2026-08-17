@@ -283,10 +283,8 @@ enum ApplePlaybackV3PlanAdapter {
             streamRequest: streamRequest,
             sourceStreamRequest: streamRequest,
             loopbackSession: engine == .siloPlayerLoopback ? loopbackSession : nil,
-            capabilities: routeCapabilities.backendCapabilities,
             routeCapabilities: routeCapabilities,
             requirements: routeRequirements,
-            featureFlagEnabled: true,
             parityBlockers: routeCapabilities.blockingReasons(for: routeRequirements),
             decisionTrace: basePlan.decisionTrace + [
                 "protocol_v3", "v3_plan_\(plan.planId)", "v3_delivery_\(plan.delivery)"

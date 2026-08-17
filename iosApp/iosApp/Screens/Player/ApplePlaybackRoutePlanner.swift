@@ -93,9 +93,7 @@ struct ApplePlaybackDisplayCapabilities: Equatable {
         var supportsAtmos = false
         #if !os(macOS)
         let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
-        if #available(iOS 15.0, tvOS 15.0, *) {
-            supportsAtmos = outputs.contains { $0.isSpatialAudioEnabled }
-        }
+        supportsAtmos = outputs.contains { $0.isSpatialAudioEnabled }
         #endif
         return ApplePlaybackDisplayCapabilities(
             hdrPlaybackEligible: hdrAvailability.hdrPlaybackEligible,
@@ -153,7 +151,6 @@ struct ApplePlaybackPlannerInput {
     let preferredAudioTrackIndex: Int?
     let selectedPrimarySubtitleTrackId: Int64?
     let selectedSecondarySubtitleTrackId: Int64?
-    let hlsRouteFeatureEnabled: Bool
     /// Stage 2 rollout gate: lifts the loopback startup-unreliable blockers
     /// and serves eligible sources through the VOD plan mode.
     let siloPlayerPrimaryEnabled: Bool
@@ -178,7 +175,6 @@ struct ApplePlaybackPlannerInput {
         preferredAudioTrackIndex: Int?,
         selectedPrimarySubtitleTrackId: Int64?,
         selectedSecondarySubtitleTrackId: Int64?,
-        hlsRouteFeatureEnabled: Bool,
         siloPlayerPrimaryEnabled: Bool = false,
         dolbyVisionPolicy: DolbyVisionPolicy.Snapshot,
         displayCapabilities: ApplePlaybackDisplayCapabilities = .unknown,
@@ -193,7 +189,6 @@ struct ApplePlaybackPlannerInput {
         self.preferredAudioTrackIndex = preferredAudioTrackIndex
         self.selectedPrimarySubtitleTrackId = selectedPrimarySubtitleTrackId
         self.selectedSecondarySubtitleTrackId = selectedSecondarySubtitleTrackId
-        self.hlsRouteFeatureEnabled = hlsRouteFeatureEnabled
         self.siloPlayerPrimaryEnabled = siloPlayerPrimaryEnabled
         self.dolbyVisionPolicy = dolbyVisionPolicy
         self.displayCapabilities = displayCapabilities
@@ -281,7 +276,6 @@ struct ApplePlaybackRoutePlanner {
         var directLoopbackSession: LoopbackSessionSpec? = nil
 
         let engine: PlaybackEngineKind
-        let featureFlagEnabled: Bool
         let parityBlockers: [String]
         let routeCapabilities: ApplePlaybackRouteCapabilities
         let decisionTrace: [String]
@@ -290,7 +284,6 @@ struct ApplePlaybackRoutePlanner {
 
         switch delivery {
         case .direct:
-            featureFlagEnabled = true
             let directAssessment = Self.assessNativeDirectRoute(
                 selectedVersion: selectedVersion,
                 session: session,
@@ -407,7 +400,6 @@ struct ApplePlaybackRoutePlanner {
             // Server-produced HLS is the only way to present a remux or
             // transcode session; there is no longer a second engine to gate
             // this behind a feature flag.
-            featureFlagEnabled = true
             parityBlockers = []
             engine = .avPlayerHLS
             routeCapabilities = .avPlayerHLS
@@ -437,10 +429,8 @@ struct ApplePlaybackRoutePlanner {
             startMode: startMode,
             streamRequest: input.streamRequest,
             loopbackSession: engine == .siloPlayerLoopback ? directLoopbackSession : nil,
-            capabilities: routeCapabilities.backendCapabilities,
             routeCapabilities: routeCapabilities,
             requirements: input.routeRequirements,
-            featureFlagEnabled: featureFlagEnabled,
             parityBlockers: allBlockers,
             decisionTrace: decisionTrace + allBlockers.map { "blocker_\($0)" },
             degradationWarnings: degradationWarnings,
