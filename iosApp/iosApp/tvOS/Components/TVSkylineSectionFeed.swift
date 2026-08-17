@@ -14,9 +14,6 @@ struct TVSkylineSectionFeed: View {
     /// Section rows to page through, in order (already filtered to
     /// non-empty, non-featured by the caller).
     let sections: [ResolvedSection]
-    /// Marquee scale. Both call sites pass `.home` so the pages render
-    /// identically; kept as a parameter only for call-site clarity.
-    var marqueeScale: TVFocusMarquee.Scale = .home
     /// Focus hand-down token from the shell — claims the first card on entry.
     var focusRequest: Int = 0
     /// Whether the top menu currently holds focus. A late content load must
@@ -68,8 +65,7 @@ struct TVSkylineSectionFeed: View {
             // Floats over the band above the row; never focusable or hit-testable.
             TVFocusMarquee(
                 content: marqueeModel.content,
-                enrichment: marqueeModel.enrichment,
-                scale: marqueeScale
+                enrichment: marqueeModel.enrichment
             )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -546,15 +546,6 @@ private struct FlowingFactsRow: View {
             Text(value)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(.continuumOnSurface.opacity(0.78))
-        case .rating(let value):
-            HStack(spacing: 4) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.continuumSuccess.opacity(0.9))
-                Text(value)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.continuumOnSurface.opacity(0.78))
-            }
         case .chip(let value):
             Text(value)
                 .font(.system(size: 10, weight: .heavy))

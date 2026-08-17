@@ -58,26 +58,8 @@ struct TVTrailersRail: View {
         .focusSection()
         // Land d-pad entry on the first card, like the cast / similar /
         // episode rails, instead of the geometrically-nearest one.
-        .applyTrailerRailDefaultFocus(entries.first?.id, binding: $focusedEntryId)
+        .applyDefaultFocusIfPresent($focusedEntryId, id: entries.first?.id)
         .scrollClipDisabled()
-    }
-}
-
-private extension View {
-    /// `.userInitiated` priority is what makes `defaultFocus` win over
-    /// geometric proximity on d-pad entry — the same helper shape as
-    /// `TVSimilarRail.applySimilarRailDefaultFocus`. No-op on an empty rail
-    /// (first id is nil).
-    @ViewBuilder
-    func applyTrailerRailDefaultFocus(
-        _ firstEntryId: String?,
-        binding: FocusState<String?>.Binding
-    ) -> some View {
-        if let firstEntryId {
-            self.defaultFocus(binding, firstEntryId, priority: .userInitiated)
-        } else {
-            self
-        }
     }
 }
 

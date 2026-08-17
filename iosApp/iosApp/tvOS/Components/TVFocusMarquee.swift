@@ -374,48 +374,8 @@ final class TVFocusMarqueeModel {
 /// Reduce Motion) and is exposed to VoiceOver as a polite, non-interrupting
 /// description of the focused item.
 struct TVFocusMarquee: View {
-    enum Scale {
-        /// Home — full-bleed scale (title 84), anchored bottom-left above
-        /// the row band.
-        case home
-        /// Library landing — compact spotlight scale (title 66) so the block
-        /// clears the pill row while sitting just above row 1.
-        case library
-
-        var bottomInset: CGFloat {
-            switch self {
-            case .home: ContinuumTheme.Skyline.marqueeBottomInsetHome
-            case .library: ContinuumTheme.Skyline.marqueeBottomInsetLibrary
-            }
-        }
-
-        var titleSize: CGFloat {
-            switch self {
-            case .home: ContinuumTheme.Skyline.marqueeTitleSizeHome
-            case .library: ContinuumTheme.Skyline.marqueeTitleSizeLibrary
-            }
-        }
-
-        var metaSize: CGFloat {
-            switch self {
-            case .home: ContinuumTheme.Skyline.marqueeMetaSizeHome
-            case .library: ContinuumTheme.Skyline.marqueeMetaSizeLibrary
-            }
-        }
-
-        /// Logo art height cap — the 2-line text-title equivalent for the
-        /// scale, so a logo never pushes the block past the row slot.
-        var logoMaxHeight: CGFloat {
-            switch self {
-            case .home: ContinuumTheme.Skyline.marqueeLogoMaxHeightHome
-            case .library: ContinuumTheme.Skyline.marqueeLogoMaxHeightLibrary
-            }
-        }
-    }
-
     let content: TVMarqueeContent?
     var enrichment: TVMarqueeEnrichment? = nil
-    let scale: Scale
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -426,7 +386,7 @@ struct TVFocusMarquee: View {
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             if let content {
-                TVMarqueeBlock(content: content, enrichment: enrichment, scale: scale)
+                TVMarqueeBlock(content: content, enrichment: enrichment)
                     .id(content.id)
                     .transition(.opacity)
             }
@@ -437,7 +397,7 @@ struct TVFocusMarquee: View {
             alignment: .bottomLeading
         )
         .padding(.leading, ContinuumTheme.Skyline.safeAreaX)
-        .padding(.bottom, scale.bottomInset)
+        .padding(.bottom, ContinuumTheme.Skyline.marqueeBottomInsetHome)
         .ignoresSafeArea(edges: [.top, .horizontal])
         .allowsHitTesting(false)
         .focusEffectDisabled()
@@ -500,7 +460,6 @@ struct TVFocusMarquee: View {
 private struct TVMarqueeBlock: View {
     let content: TVMarqueeContent
     var enrichment: TVMarqueeEnrichment? = nil
-    let scale: TVFocusMarquee.Scale
 
     /// Server logo art, swapped in only once decoded — the text title
     /// renders immediately and the crossfade never waits on this fetch.
@@ -514,12 +473,10 @@ private struct TVMarqueeBlock: View {
 
     init(
         content: TVMarqueeContent,
-        enrichment: TVMarqueeEnrichment? = nil,
-        scale: TVFocusMarquee.Scale
+        enrichment: TVMarqueeEnrichment? = nil
     ) {
         self.content = content
         self.enrichment = enrichment
-        self.scale = scale
         // A prefetched logo should be on the block's very first frame —
         // waiting for onAppear paints one frame of text title first, which
         // reads as a flash on cold entry. Synchronous memory-cache lookup.
@@ -555,17 +512,10 @@ private struct TVMarqueeBlock: View {
         }
     }
 
-    /// Synopsis line budget. The library scale anchors a taller block lower,
-    /// so it caps at two lines to clear the Browse pill row; Home affords
-    /// three. A shown logo (or a wrapped title) fills part of the budget and
-    /// drops one line either way.
+    /// Synopsis line budget: three lines. A shown logo (or a wrapped title)
+    /// fills part of the budget and drops one line.
     private var synopsisLineLimit: Int {
-        let cap: Int
-        switch scale {
-        case .home: cap = 3
-        case .library: cap = 2
-        }
-        return (titleWrapsTwoLines || logoImage != nil) ? min(cap, 2) : cap
+        (titleWrapsTwoLines || logoImage != nil) ? 2 : 3
     }
 
     /// Air date + top-billed cast (§9 backfill). For any item that can
@@ -578,14 +528,14 @@ private struct TVMarqueeBlock: View {
     private var detailLine: some View {
         if content.contentId != nil {
             Text(verbatim: "Ag")
-                .font(.system(size: scale.metaSize, weight: .medium))
+                .font(.system(size: ContinuumTheme.Skyline.marqueeMetaSizeHome, weight: .medium))
                 .lineLimit(1)
                 .opacity(0)
                 .frame(maxWidth: ContinuumTheme.Skyline.marqueeSynopsisMaxWidth, alignment: .leading)
                 .overlay(alignment: .leading) {
                     if let line = enrichment?.detailLine, !line.isEmpty {
                         Text(line)
-                            .font(.system(size: scale.metaSize, weight: .medium))
+                            .font(.system(size: ContinuumTheme.Skyline.marqueeMetaSizeHome, weight: .medium))
                             .foregroundStyle(Color.continuumOnSurface.opacity(0.5))
                             .lineLimit(1)
                             .frame(maxWidth: ContinuumTheme.Skyline.marqueeSynopsisMaxWidth, alignment: .leading)
@@ -603,21 +553,21 @@ private struct TVMarqueeBlock: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(
                     maxWidth: ContinuumTheme.Skyline.marqueeLogoMaxWidth,
-                    maxHeight: scale.logoMaxHeight,
+                    maxHeight: ContinuumTheme.Skyline.marqueeLogoMaxHeightHome,
                     alignment: .leading
                 )
                 .transition(reduceMotion ? .identity : .opacity.animation(.easeInOut(duration: 0.2)))
                 .accessibilityHidden(true)
         } else {
             Text(content.title)
-                .font(.system(size: scale.titleSize, weight: .heavy).leading(.tight))
+                .font(.system(size: ContinuumTheme.Skyline.marqueeTitleSizeHome, weight: .heavy).leading(.tight))
                 .foregroundStyle(.white)
                 .lineLimit(2)
                 .shadow(color: .black.opacity(0.5), radius: 10, y: 4)
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.size.height
                 } action: { height in
-                    titleWrapsTwoLines = height > scale.titleSize * 1.4
+                    titleWrapsTwoLines = height > ContinuumTheme.Skyline.marqueeTitleSizeHome * 1.4
                 }
         }
     }
@@ -632,7 +582,7 @@ private struct TVMarqueeBlock: View {
 
                 if !content.metaParts.isEmpty {
                     Text(content.metaParts.joined(separator: " · "))
-                        .font(.system(size: scale.metaSize, weight: .medium))
+                        .font(.system(size: ContinuumTheme.Skyline.marqueeMetaSizeHome, weight: .medium))
                         .foregroundStyle(Color.continuumSecondaryText)
                         .lineLimit(1)
                 }

@@ -68,7 +68,7 @@ struct TVSimilarRail: View {
         .focusSection()
         // Land d-pad entry on the first card (like the cast/episode rails)
         // instead of letting tvOS pick the geometrically-nearest middle card.
-        .applySimilarRailDefaultFocus(items.first?.contentId, binding: $focusedItemId)
+        .applyDefaultFocusIfPresent($focusedItemId, id: items.first?.contentId)
         .scrollClipDisabled()
     }
 
@@ -127,25 +127,6 @@ struct TVSimilarRail: View {
             items = []
         }
         isLoading = false
-    }
-}
-
-private extension View {
-    /// When focus enters the Recommended rail, land on the first card rather
-    /// than the geometrically-nearest one. `.userInitiated` priority is what
-    /// makes `defaultFocus` win over geometric proximity on d-pad entry — the
-    /// same helper shape as `TVDetailCastRail.applyCastRailDefaultFocus`.
-    /// No-op while loading / empty (first id is nil).
-    @ViewBuilder
-    func applySimilarRailDefaultFocus(
-        _ firstContentId: String?,
-        binding: FocusState<String?>.Binding
-    ) -> some View {
-        if let firstContentId {
-            self.defaultFocus(binding, firstContentId, priority: .userInitiated)
-        } else {
-            self
-        }
     }
 }
 

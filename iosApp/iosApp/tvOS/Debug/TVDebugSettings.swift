@@ -11,7 +11,7 @@ final class TVDebugSettings {
 
     /// Whether the d-pad focus-destination overlay is drawn on screen
     /// (see `TVFocusDebugOverlay`).
-    private(set) var showFocusTargets: Bool
+    let showFocusTargets: Bool
 
     @ObservationIgnored private let defaults: SharedDefaults
 
@@ -23,11 +23,6 @@ final class TVDebugSettings {
         // overlay can be exercised on screens that precede sign-in.
         self.showFocusTargets = defaults.bool(forKey: Self.showFocusTargetsKey)
             || CommandLine.arguments.contains("-debugFocusTargets")
-    }
-
-    func setShowFocusTargets(_ value: Bool) {
-        showFocusTargets = value
-        defaults.set(value, forKey: Self.showFocusTargetsKey)
     }
 }
 #endif

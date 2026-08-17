@@ -458,29 +458,6 @@ struct TVLoginView: View {
     }
 }
 
-// MARK: - Field chrome
-//
-// Explicit focus-aware chrome for tvOS text fields. We can't rely on
-// `@Environment(\.isFocused)` inside a `TextFieldStyle._body` because it
-// doesn't reliably fire for SwiftUI TextFields on tvOS — the focus platter
-// paints but the style's color flip never runs, so the typed value ends up
-// white-on-white. Taking focus as an explicit parameter from the owning
-// view's `@FocusState` sidesteps the issue. Shared with `TVServerSetupView`.
-
-struct TVAuthFieldChrome: ViewModifier {
-    let isFocused: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .font(.continuumBody)
-            .foregroundStyle(isFocused ? Color.continuumBackground : Color.continuumOnSurface)
-            .tint(isFocused ? Color.continuumBackground : Color.continuumOnSurface)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 16)
-            .continuumInputChrome(isFocused: isFocused)
-    }
-}
-
 // MARK: - Local button styles
 
 /// Square icon-only focus affordance for the password show/hide toggle.

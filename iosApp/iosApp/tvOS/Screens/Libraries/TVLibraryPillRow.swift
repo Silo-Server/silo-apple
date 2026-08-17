@@ -32,26 +32,6 @@ enum TVLibraryPill: String, Hashable, CaseIterable {
         }
     }
 
-    /// Sections offered for every library type (§3): Recommended (the
-    /// landing default, always first) · Collections · Browse.
-    #if os(tvOS)
-    static func set(for type: TVLibraryTabType) -> [TVLibraryPill] {
-        allCases
-    }
-    #endif
-}
-
-enum TVLibraryMenuRootKind {
-    case category
-    case directShortcut
-    case staticRoot
-
-    var hasSectionCascade: Bool {
-        switch self {
-        case .category, .directShortcut: return true
-        case .staticRoot: return false
-        }
-    }
 }
 
 func tvCustomizationMutationIsEnabled(

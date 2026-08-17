@@ -55,7 +55,7 @@ final class ResponseCache {
     ///
     /// The language is profile-global and changes rarely, so rather than
     /// adding a language dimension to every cache key we flush the whole
-    /// `item:` family (detail / seasons / episodes / watch detail) plus
+    /// `item:` family (detail / seasons / episodes) plus
     /// the home-sections and recommendations rows that embed item
     /// summaries. Call this ONLY when the metadata language actually
     /// changed. tvOS additionally holds an `ItemDetailCache` — clear that
@@ -91,7 +91,6 @@ enum CacheKey {
         "item:\(seriesId):season:\(seasonNumber):episodes"
     }
     static func itemUserState(_ contentId: String) -> String { "item:\(contentId):userState" }
-    static func itemWatchDetail(_ contentId: String) -> String { "item:\(contentId):watchDetail" }
     /// Browse grid page-1 cache, keyed by the full filter/sort state so
     /// distinct filter combinations never collide (the old genre+sort-only
     /// key did). `filterKey` is `CatalogFilterState.cacheKeyFragment`.

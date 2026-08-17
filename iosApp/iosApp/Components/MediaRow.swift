@@ -223,10 +223,10 @@ struct MediaRow: View {
         // tvOS focus lift expands cards on focus — give them breathing room
         // so they don't clip against the row above/below.
         .scrollClipDisabled()
-        .applyDefaultFirstItemFocus(
+        .applyDefaultFocusIfPresent(
+            $focusedItemId,
+            id: items.first?.contentId,
             enabled: prefersDefaultFocusOnFirstItem,
-            binding: $focusedItemId,
-            firstItemId: items.first?.contentId,
             priority: defaultFocusPriority
         )
         // The programmatic focus kick needs the scroll proxy (it scrolls the
@@ -364,27 +364,6 @@ private struct TVRowMoveHandler: ViewModifier {
             }
         } else {
             content
-        }
-    }
-}
-
-private extension View {
-    /// Routes both initial and user-initiated (d-pad) focus into the
-    /// row's first card. The `.userInitiated` priority is the bit that
-    /// `prefersDefaultFocus(_:in:)` lacks — it makes default focus win
-    /// over geometric proximity on d-pad entry. See CLAUDE.md's "tvOS
-    /// default focus on d-pad entry" pattern.
-    @ViewBuilder
-    func applyDefaultFirstItemFocus(
-        enabled: Bool,
-        binding: FocusState<String?>.Binding,
-        firstItemId: String?,
-        priority: DefaultFocusEvaluationPriority
-    ) -> some View {
-        if enabled, let firstItemId {
-            self.defaultFocus(binding, firstItemId, priority: priority)
-        } else {
-            self
         }
     }
 }

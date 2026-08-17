@@ -455,11 +455,7 @@ struct TVTopMenuBar: View {
 
     private func rootPanel(_ root: TVRootDestination) -> TVTopMenuPanel? {
         switch root {
-        case .libraryType:
-            return TVLibraryMenuRootKind.category.hasSectionCascade ? .root(root) : nil
-        case .libraryShortcut:
-            return TVLibraryMenuRootKind.directShortcut.hasSectionCascade ? .root(root) : nil
-        case .recommendations:
+        case .libraryType, .libraryShortcut, .recommendations:
             return .root(root)
         case .home, .calendar:
             return nil
