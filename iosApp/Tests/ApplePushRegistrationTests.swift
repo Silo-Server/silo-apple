@@ -133,17 +133,24 @@ final class ApplePushRegistrationTests: XCTestCase {
         let itemURL = try XCTUnwrap(ApplePushDeepLinkCoordinator.deepLinkURL(from: [
             "silo_url": "/item/episode-1"
         ]))
-        XCTAssertEqual(itemURL.absoluteString, "continuum://item/episode-1")
+        XCTAssertEqual(itemURL.absoluteString, "silo://item/episode-1")
 
         let absoluteURL = try XCTUnwrap(
             ApplePushDeepLinkCoordinator.deepLinkURL(fromDisplayURL: "https://silo.example.test/item/movie-123?from=push")
         )
-        XCTAssertEqual(absoluteURL.absoluteString, "continuum://item/movie-123")
+        XCTAssertEqual(absoluteURL.absoluteString, "silo://item/movie-123")
 
         let existingURL = try XCTUnwrap(
+            ApplePushDeepLinkCoordinator.deepLinkURL(fromDisplayURL: "silo://play/episode-1")
+        )
+        XCTAssertEqual(existingURL.absoluteString, "silo://play/episode-1")
+
+        // The legacy scheme is still forwarded untouched: notifications
+        // already delivered to a device carry `continuum://`.
+        let legacyURL = try XCTUnwrap(
             ApplePushDeepLinkCoordinator.deepLinkURL(fromDisplayURL: "continuum://play/episode-1")
         )
-        XCTAssertEqual(existingURL.absoluteString, "continuum://play/episode-1")
+        XCTAssertEqual(legacyURL.absoluteString, "continuum://play/episode-1")
 
         // Routes are forwarded without an allowlist — ContentView's
         // handleDeepLink owns validity and ignores unknown hosts — so new
@@ -151,7 +158,7 @@ final class ApplePushRegistrationTests: XCTestCase {
         let forwardedURL = try XCTUnwrap(
             ApplePushDeepLinkCoordinator.deepLinkURL(fromDisplayURL: "/settings/notifications")
         )
-        XCTAssertEqual(forwardedURL.absoluteString, "continuum://settings/notifications")
+        XCTAssertEqual(forwardedURL.absoluteString, "silo://settings/notifications")
 
         XCTAssertNil(ApplePushDeepLinkCoordinator.deepLinkURL(fromDisplayURL: "/item"))
         XCTAssertNil(ApplePushDeepLinkCoordinator.deepLinkURL(fromDisplayURL: "   "))

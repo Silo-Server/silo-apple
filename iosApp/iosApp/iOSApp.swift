@@ -60,7 +60,8 @@ struct SiloApp: App {
 }
 
 extension Notification.Name {
-    /// Posted whenever the app receives a `continuum://` deep-link URL
+    /// Posted whenever the app receives a `silo://` (or legacy
+    /// `continuum://`) deep-link URL
     /// (debug launches, Top Shelf taps). `ContentView` consumes it and
     /// queues until the auth state machine reaches `.authenticated`.
     static let siloDeepLink = Notification.Name("siloDeepLink")
