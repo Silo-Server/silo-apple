@@ -237,7 +237,6 @@ final class OfflinePlaybackMappingTests: XCTestCase {
                 preferredAudioTrackIndex: 0,
                 selectedPrimarySubtitleTrackId: nil,
                 selectedSecondarySubtitleTrackId: nil,
-                hlsRouteFeatureEnabled: true,
                 siloPlayerPrimaryEnabled: true,
                 dolbyVisionPolicy: .default
             )

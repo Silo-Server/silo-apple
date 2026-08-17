@@ -231,7 +231,6 @@ final class PlayerSettings {
         didSet {
             let sanitized = subtitleAppearance.sanitized()
             defaults.set(sanitized.jsonString, forKey: Self.cacheKey(Keys.subtitleAppearance))
-            syncLegacySubtitleFields(from: sanitized)
         }
     }
 
@@ -280,34 +279,6 @@ final class PlayerSettings {
         return subtitleUsesDeviceAppearanceOverride
             ? subtitleAppearance
             : inheritedSubtitleAppearance
-    }
-
-    var subtitleFontSize: Double {
-        didSet { defaults.set(subtitleFontSize, forKey: Keys.subtitleFontSize) }
-    }
-
-    var subtitleTextColor: String {
-        didSet { defaults.set(subtitleTextColor, forKey: Keys.subtitleTextColor) }
-    }
-
-    var subtitleBorderSize: Double {
-        didSet { defaults.set(subtitleBorderSize, forKey: Keys.subtitleBorderSize) }
-    }
-
-    var subtitleBorderColor: String {
-        didSet { defaults.set(subtitleBorderColor, forKey: Keys.subtitleBorderColor) }
-    }
-
-    var subtitleBackgroundColor: String {
-        didSet { defaults.set(subtitleBackgroundColor, forKey: Keys.subtitleBackgroundColor) }
-    }
-
-    var subtitleBackgroundOpacityPercent: Int {
-        didSet { defaults.set(subtitleBackgroundOpacityPercent, forKey: Keys.subtitleBackgroundOpacityPercent) }
-    }
-
-    var subtitlePosition: Int {
-        didSet { defaults.set(subtitlePosition, forKey: Keys.subtitlePosition) }
     }
 
     /// Deprecated: no longer surfaced. No AVPlayer-backed route exposes an
@@ -373,13 +344,6 @@ final class PlayerSettings {
             Keys.inheritedSubtitleAppearance: SubtitleAppearance.default.jsonString,
             Keys.subtitleUsesDeviceAppearanceOverride: false,
             Keys.subtitleMatchesSystemAppearance: false,
-            Keys.subtitleFontSize: 44.0,
-            Keys.subtitleTextColor: "#FFFFFF",
-            Keys.subtitleBorderSize: 0.0,
-            Keys.subtitleBorderColor: "#000000",
-            Keys.subtitleBackgroundColor: "#000000",
-            Keys.subtitleBackgroundOpacityPercent: 0,
-            Keys.subtitlePosition: 100,
             Keys.audioSyncMs: 0,
             Keys.subtitleSyncMs: 0,
             Keys.playbackSpeed: 1.0,
@@ -420,13 +384,6 @@ final class PlayerSettings {
             key: Keys.subtitleMatchesSystemAppearance,
             defaultValue: false
         )
-        subtitleFontSize = defaults.double(forKey: Keys.subtitleFontSize)
-        subtitleTextColor = defaults.string(forKey: Keys.subtitleTextColor) ?? "#FFFFFF"
-        subtitleBorderSize = defaults.double(forKey: Keys.subtitleBorderSize)
-        subtitleBorderColor = defaults.string(forKey: Keys.subtitleBorderColor) ?? "#000000"
-        subtitleBackgroundColor = defaults.string(forKey: Keys.subtitleBackgroundColor) ?? "#000000"
-        subtitleBackgroundOpacityPercent = defaults.integer(forKey: Keys.subtitleBackgroundOpacityPercent)
-        subtitlePosition = defaults.integer(forKey: Keys.subtitlePosition)
         audioSyncMs = defaults.integer(forKey: Self.cacheKey(Keys.audioSyncMs))
         subtitleSyncMs = defaults.integer(forKey: Self.cacheKey(Keys.subtitleSyncMs))
         playbackSpeed = Self.cachedDouble(defaults, key: Keys.playbackSpeed, defaultValue: 1.0)
@@ -443,7 +400,6 @@ final class PlayerSettings {
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
         )
-        syncLegacySubtitleFields(from: subtitleAppearance)
 
         NotificationCenter.default.addObserver(
             forName: SystemCaptionAppearance.settingsChangedNotification,
@@ -460,14 +416,6 @@ final class PlayerSettings {
     func refreshSubtitleSystemAppearance() {
         subtitleSystemAppearance = SystemCaptionAppearance.current()
         subtitleSystemSelectionPreferences = SystemCaptionSelectionPreferences.current()
-    }
-
-    var subtitleBackgroundColorHex: String {
-        let alphaByte = max(0, min(255, (subtitleBackgroundOpacityPercent * 255) / 100))
-        let rgb = subtitleBackgroundColor.hasPrefix("#")
-            ? String(subtitleBackgroundColor.dropFirst())
-            : subtitleBackgroundColor
-        return "#" + String(format: "%02X", alphaByte) + rgb
     }
 
     /// Pull every synced setting from the server and adopt it.
@@ -1021,16 +969,6 @@ final class PlayerSettings {
         return !flusher.hasPendingWrites
     }
 
-    private func syncLegacySubtitleFields(from appearance: SubtitleAppearance) {
-        subtitleFontSize = appearance.fontSize.pointSize
-        subtitleTextColor = appearance.fontColor.uppercased()
-        subtitleBorderSize = appearance.backgroundStyle == .outline || appearance.textOutline ? 2 : 0
-        subtitleBorderColor = appearance.textOutlineColor.uppercased()
-        subtitleBackgroundColor = appearance.backgroundColor.uppercased()
-        subtitleBackgroundOpacityPercent = appearance.backgroundStyle == .box ? appearance.backgroundOpacity : 0
-        subtitlePosition = appearance.position.legacyPosition
-    }
-
     /// The (server, profile, device) triple this device's settings belong to.
     ///
     /// Non-private because the flusher's write journal partitions the persisted
@@ -1123,18 +1061,6 @@ final class PlayerSettings {
         return defaultValue
     }
 
-    private func legacyBool(key: String, legacyKey: String? = nil, defaultValue: Bool) -> Bool {
-        if defaults.object(forKey: key) != nil {
-            return defaults.bool(forKey: key)
-        }
-        if let legacyKey, defaults.object(forKey: legacyKey) != nil {
-            let legacyValue = defaults.bool(forKey: legacyKey)
-            defaults.set(legacyValue, forKey: key)
-            return legacyValue
-        }
-        return defaultValue
-    }
-
     /// The cached resolution axis, tolerating a compound value written by a
     /// build that stored the tier id.
     ///
@@ -1211,13 +1137,6 @@ final class PlayerSettings {
         static let inheritedSubtitleAppearance = "player.inheritedSubtitleAppearance"
         static let subtitleUsesDeviceAppearanceOverride = "player.subtitleUsesDeviceAppearanceOverride"
         static let subtitleMatchesSystemAppearance = "player.subtitleMatchesSystemAppearance"
-        static let subtitleFontSize = "player.subtitleFontSize"
-        static let subtitleTextColor = "player.subtitleTextColor"
-        static let subtitleBorderSize = "player.subtitleBorderSize"
-        static let subtitleBorderColor = "player.subtitleBorderColor"
-        static let subtitleBackgroundColor = "player.subtitleBackgroundColor"
-        static let subtitleBackgroundOpacityPercent = "player.subtitleBackgroundOpacityPercent"
-        static let subtitlePosition = "player.subtitlePosition"
         static let audioSyncMs = "player.audioSyncMs"
         static let subtitleSyncMs = "player.subtitleSyncMs"
         static let playbackSpeed = "player.playbackSpeed"

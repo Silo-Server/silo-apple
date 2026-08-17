@@ -139,7 +139,6 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         version: FileVersion,
         session: PlaybackSessionResponse? = nil,
         requirements: PlaybackRouteRequirements = .baseline,
-        hlsRouteFeatureEnabled: Bool = true,
         siloPlayerPrimaryEnabled: Bool = true,
         dolbyVisionPolicy: DolbyVisionPolicy.Snapshot = .default,
         selectedPrimarySubtitleTrackId: Int64? = nil
@@ -159,7 +158,6 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
                 preferredAudioTrackIndex: nil,
                 selectedPrimarySubtitleTrackId: selectedPrimarySubtitleTrackId,
                 selectedSecondarySubtitleTrackId: nil,
-                hlsRouteFeatureEnabled: hlsRouteFeatureEnabled,
                 siloPlayerPrimaryEnabled: siloPlayerPrimaryEnabled,
                 dolbyVisionPolicy: dolbyVisionPolicy
             )
@@ -181,7 +179,6 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertEqual(result.reason, "native_direct_asset")
         XCTAssertNil(result.loopbackSession)
         XCTAssertEqual(result.parityBlockers, [])
-        XCTAssertTrue(result.featureFlagEnabled)
         XCTAssertEqual(result.normalizationSummary, PlaybackNormalizationSummary.none)
         XCTAssertEqual(result.routeFamily, .nativePlayer)
         // Full trace pinned once, to lock ordering as well as membership.
@@ -698,9 +695,9 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertEqual(result.reason, "h264_subtitle_normalization_loopback")
     }
 
-    // MARK: - 10: remux / transcode delivery and the HLS feature flag
+    // MARK: - 10: remux / transcode delivery
 
-    func testTranscodeDeliveryHonoursHLSFeatureFlag() {
+    func testTranscodeDeliveryRoutesToServerHLS() {
         let version = makeVersion(
             container: "mkv",
             codecVideo: "hevc",
@@ -710,12 +707,10 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
 
         let enabled = plan(
             version: version,
-            session: makeSession(playMethod: "transcode", position: 42),
-            hlsRouteFeatureEnabled: true
+            session: makeSession(playMethod: "transcode", position: 42)
         )
         XCTAssertEqual(enabled.engine, .avPlayerHLS)
         XCTAssertEqual(enabled.reason, "apple_hls_route_enabled")
-        XCTAssertTrue(enabled.featureFlagEnabled)
         XCTAssertEqual(enabled.parityBlockers, [])
         XCTAssertEqual(enabled.startMode, .absolutePosition(42))
         XCTAssertNil(enabled.loopbackSession)
@@ -727,19 +722,6 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             "fallback_order_hls_controlled_retry"
         ])
         XCTAssertEqual(enabled.normalizationSummary.containerMode, "transcode")
-
-        // The legacy HLS parity flag no longer gates anything: server HLS is
-        // the only way to present a transcode session.
-        let flagOff = plan(
-            version: version,
-            session: makeSession(playMethod: "transcode", position: 42),
-            hlsRouteFeatureEnabled: false
-        )
-        XCTAssertEqual(flagOff.engine, .avPlayerHLS)
-        XCTAssertEqual(flagOff.reason, "apple_hls_route_enabled")
-        XCTAssertTrue(flagOff.featureFlagEnabled)
-        XCTAssertEqual(flagOff.parityBlockers, [])
-        XCTAssertTrue(flagOff.decisionTrace.contains("avplayer_hls_enabled"))
     }
 
     func testRemuxDeliveryStartsAtTopOfManifest() {
@@ -751,8 +733,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         )
         let result = plan(
             version: version,
-            session: makeSession(playMethod: "remux", position: 42),
-            hlsRouteFeatureEnabled: true
+            session: makeSession(playMethod: "remux", position: 42)
         )
 
         XCTAssertEqual(result.engine, .avPlayerHLS)

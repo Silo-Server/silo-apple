@@ -218,7 +218,6 @@ final class LoopbackVideoBridgePlannerTests: XCTestCase {
                 preferredAudioTrackIndex: 0,
                 selectedPrimarySubtitleTrackId: nil,
                 selectedSecondarySubtitleTrackId: nil,
-                hlsRouteFeatureEnabled: true,
                 siloPlayerPrimaryEnabled: true,
                 dolbyVisionPolicy: .default,
                 videoBridgeCapabilities: capabilities ?? bridgeCapable

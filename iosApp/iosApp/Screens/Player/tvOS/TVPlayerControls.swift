@@ -612,33 +612,12 @@ struct TVPlayerControls: View {
         viewModel.openHUD()
     }
 
-    private func openSettingsHUD() {
-        applyHUDEntryPoint(.settings)
-        viewModel.openSettingsHUD()
-    }
-
-    private func openPlaybackHUD() {
-        applyHUDEntryPoint(.playback)
-        viewModel.openPlaybackHUD()
-    }
-
     private func applyHUDEntryPoint(_ entryPoint: PlayerViewModel.TVHUDEntryPoint) {
         cancelPendingScrub = true
         isScrubberFocused = false
         focusedTransportButton = nil
-        switch entryPoint {
-        case .settings:
-            activeHUDTab = .video
-        case .playback:
-            activeHUDTab = preferredPlaybackHUDTab
-        }
+        activeHUDTab = .video
         focusedHUDTab = activeHUDTab
-    }
-
-    private var preferredPlaybackHUDTab: TVPlayerInfoHUD.Tab {
-        if !viewModel.audioTracks.isEmpty { return .audio }
-        if !viewModel.subtitleTracks.isEmpty { return .subtitles }
-        return .video
     }
 
     private func closeHUD() {
