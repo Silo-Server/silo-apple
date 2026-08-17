@@ -123,6 +123,9 @@ class SettingsViewModel {
 
     // MARK: - Derived
 
+    // Only TVSettingsView's account card reads these; the iOS and macOS
+    // settings screens derive their own name and subtitle locally.
+    #if os(tvOS)
     var isAdmin: Bool { userInfo?.isAdmin == true }
 
     var displayName: String {
@@ -143,6 +146,7 @@ class SettingsViewModel {
     var profileAvatar: String? {
         activeProfile?.avatarEmoji
     }
+    #endif
 
     // MARK: - Load / save
 
@@ -279,6 +283,8 @@ class SettingsViewModel {
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
     }
 
+    // Only TVSubtitleSettingsView offers a reset action.
+    #if os(tvOS)
     @MainActor
     func resetSubtitleAppearance() async {
         await PlayerSettings.shared.setSubtitleAppearance(.default)
@@ -286,6 +292,7 @@ class SettingsViewModel {
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
         subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
     }
+    #endif
 
     @MainActor
     func setSubtitleMatchesSystemAppearance(_ enabled: Bool) async {
