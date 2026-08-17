@@ -1,8 +1,6 @@
 import Foundation
 import CoreText
 
-let subtitleAppearanceSettingKey = "subtitle_appearance"
-
 enum SubtitleFontSizePreset: String, Codable, CaseIterable, Identifiable {
     case small
     case medium
@@ -410,34 +408,4 @@ struct SubtitleAppearance: Codable, Equatable {
         guard trimmed.count == 6 else { return false }
         return UInt32(trimmed, radix: 16) != nil
     }
-}
-
-struct EffectiveSubtitleAppearanceResponse: Codable {
-    let key: String
-    let globalValue: String
-    let deviceValue: String?
-    let effectiveValue: String
-    let hasDeviceOverride: Bool
-    let deviceId: String?
-    let deviceName: String?
-    let devicePlatform: String?
-    let updatedAt: String?
-}
-
-struct EffectiveSettingResponse: Codable {
-    let key: String
-    let profileId: String?
-    let userValue: String?
-    let deviceValue: String?
-    let effectiveValue: String
-    let source: String
-    let hasDeviceOverride: Bool
-    let deviceId: String?
-    let deviceName: String?
-    let devicePlatform: String?
-    let updatedAt: String?
-}
-
-struct EffectiveSettingsResponse: Codable {
-    let settings: [EffectiveSettingResponse]
 }

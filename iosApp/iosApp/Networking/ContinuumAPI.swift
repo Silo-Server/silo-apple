@@ -362,37 +362,8 @@ actor ContinuumAPI {
 
     // --- User settings ---
 
-    func effectiveSettings(keys: [String]) async throws -> [EffectiveSettingResponse] {
-        guard !keys.isEmpty else { return [] }
-        let response: EffectiveSettingsResponse = try await http.get(
-            "/api/v1/settings/effective",
-            query: ["keys": keys.joined(separator: ",")]
-        )
-        return response.settings
-    }
-
-    func effectiveSubtitleAppearance() async throws -> EffectiveSubtitleAppearanceResponse {
-        try await http.get("/api/v1/settings/subtitle_appearance/effective")
-    }
-
-    func getDeviceSetting(key: String) async throws -> SettingEntryResponse {
-        try await http.get("/api/v1/settings/device/\(key)")
-    }
-
     func setDeviceSetting(key: String, value: String) async throws {
         try await http.putVoid("/api/v1/settings/device/\(key)", body: SetSettingBody(value: value))
-    }
-
-    func deleteDeviceSetting(key: String) async throws {
-        try await http.delete("/api/v1/settings/device/\(key)")
-    }
-
-    func setDeviceSubtitleAppearanceOverride(_ appearance: SubtitleAppearance) async throws {
-        try await setDeviceSetting(key: "subtitle_appearance", value: appearance.jsonString)
-    }
-
-    func deleteDeviceSubtitleAppearanceOverride() async throws {
-        try await deleteDeviceSetting(key: "subtitle_appearance")
     }
 
     func setSetting(key: String, value: String) async throws {
@@ -430,10 +401,6 @@ actor ContinuumAPI {
             "/api/v1/home/dismissals/continue_watching/\(contentId)",
             body: HomeDismissalBody(progressUpdatedAt: progressUpdatedAt)
         )
-    }
-
-    func undoDismissContinueWatchingItem(contentId: String) async throws {
-        try await http.delete("/api/v1/home/dismissals/continue_watching/\(contentId)")
     }
 
     func librarySections(libraryId: Int) async throws -> SectionsResponse {
@@ -655,64 +622,12 @@ actor ContinuumAPI {
 
     // --- Playback preferences ---
 
-    /// Fetch all per-library playback preferences for the current
-    /// profile. Empty array if the user hasn't set any.
-    func libraryPlaybackPrefs() async throws -> [LibraryPlaybackPref] {
-        let resp: LibraryPlaybackPrefsResponse = try await http.get(
-            "/api/v1/library-playback-prefs"
-        )
-        return resp.preferences
-    }
-
-    /// Set or update the per-library prefs for `libraryId`. Pass nil
-    /// for any field to clear it; sending all four nil deletes the row
-    /// server-side and the next list will omit it.
-    func setLibraryPlaybackPref(
-        libraryId: Int,
-        audioLanguage: String?,
-        subtitleLanguage: String?,
-        subtitleMode: String?,
-        showForcedSubtitles: Bool?
-    ) async throws {
-        let body = LibraryPlaybackPrefRequest(
-            audioLanguage: audioLanguage,
-            subtitleLanguage: subtitleLanguage,
-            subtitleMode: subtitleMode,
-            showForcedSubtitles: showForcedSubtitles
-        )
-        try await http.putVoid("/api/v1/library-playback-prefs/\(libraryId)", body: body)
-    }
-
-    func deleteLibraryPlaybackPref(libraryId: Int) async throws {
-        try await http.delete("/api/v1/library-playback-prefs/\(libraryId)")
-    }
-
-    /// Per-series subtitle override. 404 → no override exists; we treat
-    /// that as `nil` so callers don't need to special-case it.
-    func subtitlePref(seriesId: String) async throws -> SubtitlePref? {
-        do {
-            let pref: SubtitlePref = try await http.get("/api/v1/subtitle-prefs/\(seriesId)")
-            return pref
-        } catch HTTPError.http(let code, _) where code == 404 {
-            return nil
-        }
-    }
-
     func setSubtitlePref(seriesId: String, body: SubtitlePrefRequest) async throws {
         try await http.putVoid("/api/v1/subtitle-prefs/\(seriesId)", body: body)
     }
 
     func deleteSubtitlePref(seriesId: String) async throws {
         try await http.delete("/api/v1/subtitle-prefs/\(seriesId)")
-    }
-
-    func audioPref(seriesId: String) async throws -> AudioPref? {
-        do {
-            let pref: AudioPref = try await http.get("/api/v1/audio-prefs/\(seriesId)")
-            return pref
-        } catch HTTPError.http(let code, _) where code == 404 {
-            return nil
-        }
     }
 
     func setAudioPref(seriesId: String, body: AudioPrefRequest) async throws {
@@ -838,20 +753,6 @@ actor ContinuumAPI {
 
     func deleteCollectionGroup(id: String) async throws {
         try await http.delete("/api/v1/collections/groups/\(id)")
-    }
-
-    func reorderCollectionGroups(orderedIds: [String]) async throws {
-        try await http.putVoid(
-            "/api/v1/collections/groups/order",
-            body: ReorderCollectionGroupsRequest(orderedIds: orderedIds)
-        )
-    }
-
-    func reorderCollections(orderedIds: [String], groupId: String?) async throws {
-        try await http.putVoid(
-            "/api/v1/collections/order",
-            body: ReorderCollectionsRequest(orderedIds: orderedIds, groupId: groupId)
-        )
     }
 
     // --- Profiles ---

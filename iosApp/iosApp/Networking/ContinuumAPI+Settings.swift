@@ -5,7 +5,7 @@ import Foundation
 /// The typed settings endpoints (`/api/v1/settings/contract*`,
 /// `/api/v1/settings/values/*`).
 ///
-/// The methods on ``ContinuumAPI`` itself — `effectiveSettings`,
+/// The methods on ``ContinuumAPI`` itself — `setSetting`,
 /// `setDeviceSetting`, `getUserSetting` — speak the legacy string-only
 /// registry: every value is a string, the scope is implied by which function
 /// you call, and an unknown key is accepted silently. These speak the contract
