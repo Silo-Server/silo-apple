@@ -37,6 +37,7 @@
 		<dict>
 			<key>CFBundleURLSchemes</key>
 			<array>
+				<string>silo</string>
 				<string>continuum</string>
 			</array>
 		</dict>

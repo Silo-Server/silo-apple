@@ -9,9 +9,9 @@ import TVServices
 ///
 /// Content model: two poster-shape sections — Continue Watching and
 /// Next Up — sorted most-recently-progressed first. Selecting a tile
-/// opens the main app at the detail screen via the `continuum://item/`
+/// opens the main app at the detail screen via the `silo://item/`
 /// URL scheme; pressing Play on the Siri remote jumps straight to
-/// playback via `continuum://play/`.
+/// playback via `silo://play/`.
 final class ContentProvider: TVTopShelfContentProvider {
 
     private static let timestampFormatter = ISO8601DateFormatter()
@@ -221,10 +221,10 @@ final class ContentProvider: TVTopShelfContentProvider {
             shelfItem.setImageURL(url, for: .screenScale2x)
         }
         shelfItem.displayAction = TVTopShelfAction(
-            url: URL(string: "continuum://item/\(item.contentId)")!
+            url: URL(string: "\(SiloDeepLink.preferredScheme)://item/\(item.contentId)")!
         )
         shelfItem.playAction = TVTopShelfAction(
-            url: URL(string: "continuum://play/\(item.contentId)")!
+            url: URL(string: "\(SiloDeepLink.preferredScheme)://play/\(item.contentId)")!
         )
         return shelfItem
     }

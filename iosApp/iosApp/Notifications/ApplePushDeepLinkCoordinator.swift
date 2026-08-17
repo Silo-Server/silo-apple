@@ -38,7 +38,9 @@ final class ApplePushDeepLinkCoordinator {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        if let url = URL(string: trimmed), url.scheme == "continuum" {
+        // An app-scheme link arrives ready to route: forward it untouched so a
+        // sender still on the legacy `continuum://` scheme keeps working.
+        if let url = URL(string: trimmed), SiloDeepLink.isSupported(url) {
             return url
         }
 
@@ -57,7 +59,7 @@ final class ApplePushDeepLinkCoordinator {
         guard !contentID.isEmpty else { return nil }
 
         var deepLink = URLComponents()
-        deepLink.scheme = "continuum"
+        deepLink.scheme = SiloDeepLink.preferredScheme
         deepLink.host = route
         deepLink.path = "/" + contentID
         return deepLink.url
