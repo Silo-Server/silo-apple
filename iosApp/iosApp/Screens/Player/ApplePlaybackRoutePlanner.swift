@@ -192,13 +192,17 @@ struct ApplePlaybackPlannerInput {
 }
 
 struct ApplePlaybackRoutePlanner {
-    private static let nativeDirectContainers: Set<String> = ["mp4", "mov", "m4v"]
+    // Visibility note: `nativeDirectContainers` and `siloSourceContainers` are
+    // `internal` rather than `private` so the V3 capability snapshot can
+    // advertise exactly the containers this planner can execute instead of
+    // restating the same literals a second time.
+    static let nativeDirectContainers: Set<String> = ["mp4", "mov", "m4v"]
     private static let nativeDirectVideoCodecs: Set<String> = ["h264", "hevc"]
     private static let nativeDirectAudioCodecs: Set<String> = ["aac", "ac3", "eac3", "alac", "mp3"]
     private static let nativeDirectSubtitleCodecs: Set<String> = [
         "ass", "ssa", "mov_text", "tx3g", "wvtt", "webvtt"
     ]
-    private static let siloSourceContainers: Set<String> = ["mkv", "matroska", "ts", "m2ts", "mts", "mpegts"]
+    static let siloSourceContainers: Set<String> = ["mkv", "matroska", "ts", "m2ts", "mts", "mpegts"]
     /// Containers the loopback only opens for a BRIDGED (or AV1-passthrough)
     /// video track. The long tail of the real catalog is container-shaped, not
     /// just codec-shaped — mpeg4 lives in `.avi`, wmv3/vc1 in `.wmv`/`.asf`,

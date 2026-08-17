@@ -71,6 +71,29 @@ enum ApplePlaybackV3Capabilities {
     /// here is one the server may hand us untranscoded.
     private static let directVideoCodecs = ["h264", "hevc"]
 
+    /// Containers the `original_http` delivery may be handed, which is a
+    /// narrower question than "what can this client demux".
+    ///
+    /// An original delivery is executed either natively by AVPlayer or by the
+    /// local loopback in copy mode, and the loopback refuses anything outside
+    /// its native-direct and silo source lists while the video output mode is
+    /// `.copy` (`ApplePlaybackRoutePlanner.siloContainerIsNormalizable`). The
+    /// wider `AppleDecodeCapabilities.containers` vocabulary — `webm` and
+    /// `avi` in particular — is only reachable through the bridge tier, which
+    /// no online plan can enter. Advertising those on this delivery bought
+    /// nothing but a granted `original_http` the planner then refused, which
+    /// the player could only answer with an abort-and-replan round trip.
+    ///
+    /// Derived by filtering the flat vocabulary so the delivery list stays an
+    /// ordered subset of the top-level attestation, which is how the server
+    /// reads a non-empty per-delivery list.
+    private static let originalHTTPContainers: [String] = {
+        let executable = ApplePlaybackRoutePlanner.nativeDirectContainers
+            .union(ApplePlaybackRoutePlanner.siloSourceContainers)
+            .union(AppleDecodeCapabilities.audioContainers)
+        return AppleDecodeCapabilities.containers.filter { executable.contains($0) }
+    }()
+
     static func snapshot() -> ApplePlaybackV3CapabilitySnapshot {
         let hdrAvailability = ApplePlaybackHDRAvailability.probe()
         let output = outputSnapshot(hdrAvailability: hdrAvailability)
@@ -156,7 +179,7 @@ enum ApplePlaybackV3Capabilities {
                 enabled: true,
                 supportedOnDevice: true,
                 failureReason: nil,
-                containers: containers,
+                containers: originalHTTPContainers,
                 videoCodecs: videoCodecs,
                 audioDecodeCodecs: audioCodecs,
                 audioPassthroughCodecs: [],

@@ -58,8 +58,10 @@ enum AppleDecodeCapabilities {
     /// codec claim would therefore authorize an unplayable original route.
     static let audioContainers = ["mp3", "m4a", "m4b", "aac", "flac", "wav"]
 
-    /// The full direct-play container vocabulary used by flat capability
-    /// surfaces and by the `original_http` V3 delivery.
+    /// The full container vocabulary the stack can open, used by the flat
+    /// capability surfaces. It is a decode attestation, not a route: the V3
+    /// `original_http` delivery advertises the narrower subset its executor
+    /// can actually run (`ApplePlaybackV3Capabilities.originalHTTPContainers`).
     static let containers = videoContainers + audioContainers
 
     /// The resolution ceiling to claim, or nil for "no client-imposed cap".

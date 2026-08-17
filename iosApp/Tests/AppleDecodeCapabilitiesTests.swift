@@ -49,6 +49,49 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         XCTAssertFalse(originalHTTP.containers.contains("ogg"))
     }
 
+    /// `original_http` is a route, not a decode claim: the server hands the
+    /// original file over untouched, and the client then has to open it either
+    /// natively or through the loopback in copy mode. A container the flat
+    /// vocabulary can demux but the copy tier refuses (`webm`, `avi` — bridge
+    /// tier only, and no online plan enters it) used to be advertised anyway,
+    /// so the server granted an original the planner then rejected and the
+    /// player answered with an abort-and-replan round trip.
+    ///
+    /// Asserted against the derivation rather than a literal list, because the
+    /// test host is a simulator whose flat vocabulary already omits `webm` and
+    /// `avi`; the executable-set assertions below are what pin the device case.
+    func testOriginalHTTPAdvertisesOnlyContainersThePlannerCanExecute() throws {
+        let executable = ApplePlaybackRoutePlanner.nativeDirectContainers
+            .union(ApplePlaybackRoutePlanner.siloSourceContainers)
+            .union(AppleDecodeCapabilities.audioContainers)
+        XCTAssertFalse(executable.contains("webm"))
+        XCTAssertFalse(executable.contains("avi"))
+        XCTAssertFalse(executable.contains("ogg"))
+
+        let originalHTTP = try XCTUnwrap(
+            ApplePlaybackV3Capabilities.snapshot().context.deliveries[
+                PlaybackProtocolV3.DeliveryClass.originalHTTP
+            ]
+        )
+        // A non-empty per-delivery list is read as an ordered subset of the
+        // top-level attestation, so the advertised list is that vocabulary
+        // filtered — never a set rebuilt in some other order.
+        XCTAssertEqual(
+            originalHTTP.containers,
+            AppleDecodeCapabilities.containers.filter { executable.contains($0) }
+        )
+        for container in originalHTTP.containers
+        // Bare audio containers carry no video track, so the video-side copy
+        // gate has nothing to say about them.
+        where !AppleDecodeCapabilities.audioContainers.contains(container) {
+            XCTAssertTrue(
+                ApplePlaybackRoutePlanner.siloContainerIsNormalizable(container, videoOutputMode: .copy),
+                "\(container) is advertised on original_http but the copy tier refuses it"
+            )
+        }
+        XCTAssertTrue(Set(["mp4", "mkv", "ts", "mp3"]).isSubset(of: Set(originalHTTP.containers)))
+    }
+
     // MARK: - The vocabulary itself
 
     func testDeviceListsCoverTheFormatsTheStackDecodes() {
