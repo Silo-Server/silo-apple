@@ -1594,7 +1594,18 @@ class PlayerViewModel {
         progressTask?.cancel()
         isLoading = true
         isBuffering = false
+        // Hold every backend in-route recovery ladder for the whole replan
+        // round trip: the view model owns the route decision now, and a
+        // watchdog reanchor/reload/rebuild racing the server negotiation was
+        // review §3 #3. The same backend instance is released in the defer —
+        // a same-engine replan reuses it; a route change installs a fresh
+        // backend that never held the reason.
+        let replanBackend = avPlayerBackend
+        replanBackend?.setRecoverySuspended(true, reason: AVPlayerBackend.serverReplanRecoverySuspensionReason)
         protocolV3ReplanTask = Task { @MainActor [weak self] in
+            defer {
+                replanBackend?.setRecoverySuspended(false, reason: AVPlayerBackend.serverReplanRecoverySuspensionReason)
+            }
             guard let self, !self.isDisposed else { return }
             defer {
                 self.protocolV3ReplanTask = nil
