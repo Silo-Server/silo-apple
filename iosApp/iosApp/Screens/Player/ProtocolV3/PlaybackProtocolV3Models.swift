@@ -12,6 +12,10 @@ enum PlaybackProtocolV3 {
     static let routeDiagnosticsFeature = "playback_route_diagnostics"
     static let deviceQuirksFeature = "device_quirks_v1"
     static let seekReanchorFeature = "seek_reanchor_v1"
+    /// Server-side support for the `output_change` replan operation. A server
+    /// that does not advertise it still understands the older
+    /// `failure_recovery` + `output_route_changed` classification shape.
+    static let outputChangeFeature = "output_change_v1"
     static let directStreamResumeFeature = "direct_stream_resume_v1"
     static let planSourceDurationFeature = "plan_source_duration_v1"
 
@@ -48,7 +52,7 @@ enum PlaybackProtocolV3 {
     }
 
     /// Why the client is asking for a new plan. `failureRecovery` is the
-    /// server's default when the field is absent; the two intent operations
+    /// server's default when the field is absent; the intent operations
     /// carry no `failure`.
     enum ReplanOperation {
         static let failureRecovery = "failure_recovery"
@@ -56,6 +60,10 @@ enum PlaybackProtocolV3 {
         static let seekFailureRecovery = "seek_failure_recovery"
         static let trackChange = "track_change"
         static let qualityChange = "quality_change"
+        /// Refreshes output capabilities without declaring the active route
+        /// failed, so an unchanged route stays eligible. Only sent to a server
+        /// advertising `outputChangeFeature`.
+        static let outputChange = "output_change"
     }
 }
 
@@ -242,8 +250,9 @@ struct PlaybackV3ReplanRequest: Codable, Equatable {
     let bandwidthEstimateKbps: Int?
     let bandwidthCapKbps: Int?
     let selectedTracks: PlaybackV3SelectedTracks
-    /// Absent for intent operations (`track_change`, `quality_change`) and
-    /// `seek_reanchor`, which describe desired state rather than a failure.
+    /// Absent for intent operations (`track_change`, `quality_change`,
+    /// `output_change`) and `seek_reanchor`, which describe desired state
+    /// rather than a failure.
     let failure: PlaybackV3Failure?
     /// Client-side state the server should fold into the next attempt key, so
     /// a locally-mutated route does not collide with the plan it replaced.

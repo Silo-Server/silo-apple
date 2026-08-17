@@ -68,10 +68,11 @@ final class PlaybackSessionBridgeReplanContractTests: XCTestCase {
     }
 
     /// PIN: current behavior. The mapping is a default-to-failure switch, so
-    /// two operations the protocol defines are unreachable through it: a seek
+    /// one operation the protocol defines is unreachable through it — a seek
     /// reanchor only becomes `seek_reanchor` because the call site passes the
-    /// operation explicitly, and `output_route_changed` files as failure
-    /// recovery because Apple has no `output_change` operation yet.
+    /// operation explicitly. `output_route_changed` files as failure recovery
+    /// whenever the server has not advertised `output_change_v1`, which is what
+    /// the default (empty) feature list here models.
     func testSeekAndOutputRouteFileAsFailureRecoveryThroughTheMappingAlone() {
         XCTAssertEqual(
             PlaybackSessionBridge.replanOperation(forClassification: "seek_reanchor"),
@@ -136,7 +137,7 @@ final class PlaybackSessionBridgeReplanContractTests: XCTestCase {
             ("requested file", ["requested_media_file_id"], 43),
             ("container", ["stream", "container"], "mkv"),
             ("mime type", ["stream", "mime_type"], "video/x-matroska"),
-            ("header refresh", ["stream", "header_refresh"], "none"),
+            ("header refresh", ["stream", "header_refresh"], "session"),
             ("stream origin", ["timeline", "stream_origin_seconds"], 30.0),
             ("timeline offset", ["timeline", "timeline_offset_seconds"], 30.0),
             ("seekability", ["timeline", "can_seek_anywhere"], false),
