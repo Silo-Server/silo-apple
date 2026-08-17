@@ -288,6 +288,63 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(session.availableAudioTracks.first(where: \.isSelected)?.srcId, 1)
     }
 
+    /// The source-proxy seam re-points a loopback spec at the local proxy URL.
+    /// Rebuilding it field by field there silently dropped `videoOutputMode`,
+    /// the source dimensions and the bridged parameter sets, so the copy has
+    /// to preserve every execution decision except the source itself.
+    func testLoopbackSessionRepointedAtProxyKeepsEveryExecutionDecision() {
+        let parameterSets = Data([0x01, 0x02, 0x03])
+        let tracks = [
+            makePlayerAudioTrack(trackId: 10_000, sourceIndex: 0, ffIndex: 1, isSelected: false),
+            makePlayerAudioTrack(trackId: 10_001, sourceIndex: 1, ffIndex: 2, isSelected: false),
+        ]
+        let original = LoopbackSessionSpec(
+            sourceURL: URL(string: "https://example.test/video")!,
+            headers: ["Authorization": "Bearer token"],
+            sourceStartTimeSeconds: 42.5,
+            sourceBitrateBps: 18_000_000,
+            videoMode: .convertProfile7To81,
+            videoOutputMode: .transcodeHEVC,
+            sourceVideoWidth: 3840,
+            sourceVideoHeight: 2160,
+            bridgedVideoParameterSets: parameterSets,
+            sourceVideoFrameRate: 23.976,
+            selectedAudio: LoopbackSessionSpec.SelectedAudio(
+                trackIndex: 1,
+                ffIndex: 2,
+                sourceCodec: "truehd",
+                sourceChannelCount: 8,
+                sourceChannelLayout: "7.1",
+                outputMode: .requireFLAC,
+                preservesAtmos: false
+            ),
+            availableAudioTracks: tracks,
+            manifestMetadata: LoopbackSessionSpec.ManifestMetadata(
+                advertisedDolbyVisionProfile: 8,
+                compatibilityBrand: "dby1",
+                videoRange: "PQ",
+                mayClaimAtmos: true
+            )
+        )
+
+        let proxyURL = URL(string: "http://127.0.0.1:8321/source")!
+        let repointed = original.withSource(url: proxyURL, headers: [:])
+
+        XCTAssertEqual(repointed.sourceURL, proxyURL)
+        XCTAssertTrue(repointed.headers.isEmpty)
+        XCTAssertEqual(repointed.sourceStartTimeSeconds, original.sourceStartTimeSeconds)
+        XCTAssertEqual(repointed.sourceBitrateBps, original.sourceBitrateBps)
+        XCTAssertEqual(repointed.videoMode, original.videoMode)
+        XCTAssertEqual(repointed.videoOutputMode, original.videoOutputMode)
+        XCTAssertEqual(repointed.sourceVideoWidth, original.sourceVideoWidth)
+        XCTAssertEqual(repointed.sourceVideoHeight, original.sourceVideoHeight)
+        XCTAssertEqual(repointed.bridgedVideoParameterSets, parameterSets)
+        XCTAssertEqual(repointed.sourceVideoFrameRate, original.sourceVideoFrameRate)
+        XCTAssertEqual(repointed.selectedAudio, original.selectedAudio)
+        XCTAssertEqual(repointed.availableAudioTracks, original.availableAudioTracks)
+        XCTAssertEqual(repointed.manifestMetadata, original.manifestMetadata)
+    }
+
     func testDeliveryClassesMapToAppleExecutorsWithoutEngineAliases() throws {
         let streamRequest = makeStreamRequest()
         let base = makeBaseExecutionPlan(streamRequest: streamRequest)
