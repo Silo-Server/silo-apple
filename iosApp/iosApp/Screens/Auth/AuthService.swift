@@ -517,6 +517,10 @@ final class AuthService: @unchecked Sendable {
         RequestsEventBus.shared.reset()
         #if os(tvOS)
         ItemDetailCache.shared.clearAll()
+        // The identity check in TrailerReturnPolicy already refuses a record
+        // across identities; deleting here keeps the outgoing identity's
+        // browsing out of plaintext defaults on a shared device.
+        TVTrailerReturnStore.shared.clear()
         #endif
     }
 
@@ -679,6 +683,10 @@ final class AuthService: @unchecked Sendable {
         RequestsEventBus.shared.reset()
         #if os(tvOS)
         ItemDetailCache.shared.clearAll()
+        // The identity check in TrailerReturnPolicy already refuses a record
+        // across identities; deleting here keeps the outgoing identity's
+        // browsing out of plaintext defaults on a shared device.
+        TVTrailerReturnStore.shared.clear()
         #endif
     }
 

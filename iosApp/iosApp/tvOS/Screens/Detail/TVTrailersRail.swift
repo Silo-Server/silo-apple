@@ -323,8 +323,8 @@ struct TVTrailerStatusPill: View {
 // MARK: - YouTube app bridge
 
 /// Deep-link bridge to the installed YouTube app — the only remote-trailer
-/// playback path on tvOS, which has no in-app web view to fall back on
-/// (iOS uses a `WKWebView` sheet instead).
+/// playback path on tvOS, which has no browser to fall back on (iOS falls
+/// back to the public watch page in the default browser).
 ///
 /// Plain (non-isolated) statics, matching `PlatformScreen` and
 /// `TVFocusDebugOverlay`'s `UIApplication` accessors; every call site is a

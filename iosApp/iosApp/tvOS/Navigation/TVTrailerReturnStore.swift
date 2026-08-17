@@ -42,11 +42,12 @@ struct TVTrailerReturnStore {
     }
 
     /// Record a handoff from the detail page for `contentId`. No-op when no
-    /// profile is active — an anonymous record could be honored by whoever
-    /// signs in next.
+    /// profile or server is active — an anonymous record could be honored by
+    /// whoever signs in next, and an empty serverId would match an equally
+    /// degenerate active server at consume time instead of failing closed.
     func saveHandoff(contentId: String) {
         guard let profileId = AuthService.shared.profileId, !profileId.isEmpty,
-              let serverId = ServerRegistry.shared.activeServerId else {
+              let serverId = ServerRegistry.shared.activeServerId, !serverId.isEmpty else {
             return
         }
         let record = TrailerReturnRecord(

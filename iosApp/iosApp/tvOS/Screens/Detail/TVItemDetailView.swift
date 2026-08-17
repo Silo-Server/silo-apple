@@ -76,6 +76,14 @@ struct TVItemDetailView: View {
             // otherwise keep running (and retaining the view model) after
             // this route pops.
             viewModel.stopTrailerFetch()
+            // A pop proves the user is navigating in-app, so any handoff
+            // record is dead: if the YouTube launch had actually taken over
+            // the screen, this page could not be popping. Without this, a
+            // failed `open` (app deleted after the probe) leaves a live
+            // record that would ghost-navigate a later cold launch. The
+            // jetsam case this store exists for never pops, so it is
+            // unaffected.
+            TVTrailerReturnStore.shared.clear()
         }
         .onChange(of: scenePhase) { _, newPhase in
             // A warm return from the YouTube app lands here with the page
