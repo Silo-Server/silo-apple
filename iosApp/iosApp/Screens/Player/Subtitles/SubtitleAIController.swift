@@ -275,16 +275,35 @@ final class SubtitleAIController {
 
     // MARK: - Commands
 
+    /// The server's **combined** subtitle index to translate `track` with, or
+    /// `nil` when the track carries no combined index and therefore can't be
+    /// used as a translation source.
+    ///
+    /// `PlayerTrack.srcId` is overloaded across the track partitions, so it is
+    /// only a combined index for one of them:
+    ///   - **sidecar** (`SubtitleTrackIdSpace.sidecarBase`): `srcId` *is* the
+    ///     combined index (`subtitle_urls[].index`) — pass it through.
+    ///   - **embedded** (`avPlayerEmbeddedBase`): `srcId` is the FFmpeg stream
+    ///     index, a different index space entirely. Translating it to the
+    ///     combined index needs the version's subtitle inventory (see
+    ///     ``ApplePlaybackV3PlanAdapter/serverCombinedSubtitleIndex(ffmpegStreamIndex:in:)``),
+    ///     which this controller is not given, so embedded tracks are refused
+    ///     rather than silently sending a wrong index.
+    ///   - **AI-live** and AVFoundation rows carry no `srcId` at all.
+    nonisolated static func translationSourceIndex(for track: PlayerTrack) -> Int? {
+        guard SubtitleTrackIdSpace.isSidecar(track.trackId) else { return nil }
+        return track.srcId
+    }
+
     /// Translate an existing text subtitle track into `targetLanguage`.
     ///
-    /// `sourceIndex` is the track's combined player subtitle index, which for
-    /// sidecar/downloaded tracks is `track.srcId` (equal to
-    /// `subtitle_urls[].index`). Embedded-text translation is out of scope for
-    /// v1 (the menu only offers "Translate" on tracks with a resolvable
-    /// combined index), so a track without a `srcId` is rejected here as a
-    /// guard rather than silently sending a wrong index.
+    /// The wire `source_index` is the server's combined subtitle index, which
+    /// only sidecar/downloaded tracks carry (see ``translationSourceIndex(for:)``).
+    /// Embedded-text translation is out of scope for v1, so an embedded track
+    /// is rejected here as a guard rather than sending its FFmpeg stream index
+    /// as though it were a combined index.
     func translateExisting(track: PlayerTrack, to targetLanguage: String) {
-        guard let sourceIndex = track.srcId else {
+        guard let sourceIndex = Self.translationSourceIndex(for: track) else {
             Self.logger.warning(
                 "[AI-SUB] refusing to translate track without combined index trackId=\(track.trackId, privacy: .public)"
             )
