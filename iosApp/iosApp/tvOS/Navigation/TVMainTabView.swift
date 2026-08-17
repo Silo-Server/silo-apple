@@ -166,9 +166,9 @@ struct TVMainTabView: View {
                 .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSignOutConfirm)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSignOutConfirm)
         .ignoresSafeArea(edges: [.top, .horizontal])
-        .tint(.continuumOnSurface)
+        .tint(.siloOnSurface)
         .fullScreenCover(isPresented: Binding(
             get: { audioStore.isShowingFullPlayer },
             set: { if !$0 { audioStore.dismissFullPlayer() } }
@@ -284,7 +284,7 @@ struct TVMainTabView: View {
 
     private var rootContent: some View {
         ZStack(alignment: .top) {
-            Color.continuumBackground
+            Color.siloBackground
                 .ignoresSafeArea()
 
             selectedRootContent
@@ -422,11 +422,11 @@ struct TVMainTabView: View {
     private func panelIntrinsicWidth(for panel: TVTopMenuPanel) -> CGFloat {
         switch panel {
         case .profile, .root(.recommendations), .root(.libraryShortcut):
-            return ContinuumTheme.Skyline.dropdownWidth
+            return SiloTheme.Skyline.dropdownWidth
         case .root:
-            return ContinuumTheme.Skyline.dropdownWidth
-                + ContinuumTheme.Skyline.flyoutGap
-                + ContinuumTheme.Skyline.flyoutWidth
+            return SiloTheme.Skyline.dropdownWidth
+                + SiloTheme.Skyline.flyoutGap
+                + SiloTheme.Skyline.flyoutWidth
         }
     }
 
@@ -450,16 +450,16 @@ struct TVMainTabView: View {
 
         return panelBody(for: panel, isActive: isActive)
             .padding(.leading, leading)
-            .padding(.top, ContinuumTheme.Skyline.dropdownTopInset)
+            .padding(.top, SiloTheme.Skyline.dropdownTopInset)
             .opacity(isActive ? 1 : 0)
             .scaleEffect(
-                reduceMotion || isActive ? 1 : ContinuumTheme.Skyline.cascadeOpenScale,
+                reduceMotion || isActive ? 1 : SiloTheme.Skyline.cascadeOpenScale,
                 anchor: UnitPoint(x: anchorX, y: 0)
             )
             .allowsHitTesting(isActive)
             .accessibilityHidden(!isActive)
             .animation(
-                reduceMotion ? nil : .easeOut(duration: ContinuumTheme.Skyline.cascadeOpenDuration),
+                reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeOpenDuration),
                 value: isActive
             )
             .onExitCommand { closePanel() }
@@ -474,8 +474,8 @@ struct TVMainTabView: View {
         anchors: [TVTopMenuPanel: Anchor<CGRect>],
         proxy: GeometryProxy
     ) -> CGFloat {
-        let safe = ContinuumTheme.Skyline.safeAreaX
-        let level1Width = ContinuumTheme.Skyline.dropdownWidth
+        let safe = SiloTheme.Skyline.safeAreaX
+        let level1Width = SiloTheme.Skyline.dropdownWidth
         let screenWidth = proxy.size.width
 
         switch panel {
@@ -501,8 +501,8 @@ struct TVMainTabView: View {
             // right; keep the whole thing on screen while preferring to
             // center level-1 under the tab.
             let totalWidth = level1Width
-                + ContinuumTheme.Skyline.flyoutGap
-                + ContinuumTheme.Skyline.flyoutWidth
+                + SiloTheme.Skyline.flyoutGap
+                + SiloTheme.Skyline.flyoutWidth
             let maxLeading = max(safe, screenWidth - safe - totalWidth)
             return min(max(centered, safe), maxLeading)
         }
@@ -518,7 +518,7 @@ struct TVMainTabView: View {
     ) -> CGFloat {
         guard let anchor = anchors[panel] else { return 0.5 }
         let rect = proxy[anchor]
-        let level1Width = ContinuumTheme.Skyline.dropdownWidth
+        let level1Width = SiloTheme.Skyline.dropdownWidth
         let originInPanel = rect.midX - leading
         return min(max(originInPanel / level1Width, 0), 1)
     }
@@ -650,7 +650,7 @@ struct TVMainTabView: View {
         panelFocusExitTask = nil
         panelEntersFocus = false
         panelHasFocus = false
-        withAnimation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.Skyline.cascadeScrimDuration)) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
             openPanel = panel
         }
     }
@@ -705,7 +705,7 @@ struct TVMainTabView: View {
         panelEntersFocus = true
         panelHasFocus = true
         panelFocusEntryGeneration += 1
-        withAnimation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.Skyline.cascadeScrimDuration)) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
             openPanel = panel
         }
     }
@@ -721,7 +721,7 @@ struct TVMainTabView: View {
         panelFocusExitTask?.cancel()
         panelFocusExitTask = nil
         let wasFocused = panelHasFocus
-        withAnimation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.Skyline.cascadeScrimDuration)) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
             openPanel = nil
         }
         panelEntersFocus = false
@@ -768,7 +768,7 @@ struct TVMainTabView: View {
         guard openPanel != nil else { return }
         panelFocusExitTask?.cancel()
         panelFocusExitTask = nil
-        withAnimation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.Skyline.cascadeScrimDuration)) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
             openPanel = nil
         }
         panelEntersFocus = false
@@ -802,7 +802,7 @@ struct TVMainTabView: View {
         // Tear down the panel first, then select the tab + hand focus to the
         // swapped-in content. Selecting the root bumps contentFocusRequest,
         // which the new page consumes as its entry generation.
-        withAnimation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.Skyline.cascadeScrimDuration)) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
             openPanel = nil
         }
         panelEntersFocus = false
@@ -821,7 +821,7 @@ struct TVMainTabView: View {
         panelFocusExitTask = nil
         shortcutPillSelections[libraryId] = pill ?? .recommended
 
-        withAnimation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.Skyline.cascadeScrimDuration)) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
             openPanel = nil
         }
         panelEntersFocus = false
@@ -1012,7 +1012,7 @@ struct TVMainTabView: View {
         // Tab content switches crossfade over 200 ms (§4.2); the outgoing
         // view never owns focus here because selection happens from the bar.
         // Reduce Motion snaps (the `.identity` transition + nil animation).
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.normalDuration)) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.normalDuration)) {
             selectedRoot = root
             openPanel = nil
         }
@@ -1054,7 +1054,7 @@ struct TVMainTabView: View {
         // hand-down tokens cannot briefly re-focus rows during an Up return.
         isTopMenuFocused = true
 
-        withAnimation(reduceMotion ? nil : ContinuumTheme.springAnimation) {
+        withAnimation(reduceMotion ? nil : SiloTheme.springAnimation) {
             isTopMenuFocusSuppressed = false
             topMenuFocusRequest += 1
         }
@@ -1063,7 +1063,7 @@ struct TVMainTabView: View {
     private func returnToHomeInMenu() {
         selectedRoot = .home
         panelReturnFocus = nil
-        withAnimation(reduceMotion ? nil : ContinuumTheme.springAnimation) {
+        withAnimation(reduceMotion ? nil : SiloTheme.springAnimation) {
             // Un-suppress before requesting focus: requestMenuFocus drops the
             // request while the menu is suppressed, which could leave the
             // Home button unfocused after the exit-to-home gesture.
@@ -1228,7 +1228,7 @@ struct TVMainTabView: View {
             TVServerSetupView(router: router)
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumBackground()
+                .siloBackground()
         }
     }
 }

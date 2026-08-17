@@ -109,12 +109,12 @@ class ItemDetailViewModel {
         }
 
         do {
-            let item: ItemDetail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+            let item: ItemDetail = try await SiloAPI.shared.itemDetail(contentId: contentId)
             let enriched = await adoptDetail(item, contentId: contentId, generation: generation)
 
             do {
-                async let favorite = ContinuumAPI.shared.isFavorite(contentId: contentId)
-                async let watchlist = ContinuumAPI.shared.isInWatchlist(contentId: contentId)
+                async let favorite = SiloAPI.shared.isFavorite(contentId: contentId)
+                async let watchlist = SiloAPI.shared.isInWatchlist(contentId: contentId)
                 let fav = try await favorite
                 let wl = try await watchlist
                 isFavorite = fav
@@ -239,7 +239,7 @@ class ItemDetailViewModel {
             seriesDetail = cached
         } else {
             do {
-                seriesDetail = try await ContinuumAPI.shared.itemDetail(contentId: seriesId)
+                seriesDetail = try await SiloAPI.shared.itemDetail(contentId: seriesId)
                 ResponseCache.shared.set(seriesDetail, for: CacheKey.itemDetail(seriesId))
             } catch {
                 return
@@ -331,7 +331,7 @@ class ItemDetailViewModel {
         guard item.type != "series", item.type != "season" else { return item }
 
         do {
-            let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
+            let watchDetail = try await SiloAPI.shared.watchDetail(contentId: contentId)
             return ItemDetail(
                 contentId: item.contentId,
                 type: item.type,
@@ -428,12 +428,12 @@ class ItemDetailViewModel {
             request: { [weak self] in
                 let contentId = try self?.pinnedTrailerFetchContentId()
                 guard let contentId else { throw ItemDetailViewModelError.noItemLoaded }
-                return try await ContinuumAPI.shared.requestTrailersRefresh(contentId: contentId)
+                return try await SiloAPI.shared.requestTrailersRefresh(contentId: contentId)
             },
             fetchDetail: { [weak self] in
                 let contentId = try self?.pinnedTrailerFetchContentId()
                 guard let contentId else { throw ItemDetailViewModelError.noItemLoaded }
-                return try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+                return try await SiloAPI.shared.itemDetail(contentId: contentId)
             }
         )
         trailerFetchStorage = coordinator
@@ -508,7 +508,7 @@ class ItemDetailViewModel {
 
     func loadSeasons(seriesId: String, autoSelectInitial: Bool = true) async {
         do {
-            let response: SeasonsResponse = try await ContinuumAPI.shared.seasons(seriesId: seriesId)
+            let response: SeasonsResponse = try await SiloAPI.shared.seasons(seriesId: seriesId)
             ResponseCache.shared.set(response, for: CacheKey.itemSeasons(seriesId))
             seasons = response.seasons.sortedForDisplay()
             if autoSelectInitial, let target = preferredInitialSeason(seasons: seasons) {
@@ -595,7 +595,7 @@ class ItemDetailViewModel {
         }
 
         do {
-            let response: EpisodesResponse = try await ContinuumAPI.shared.episodes(
+            let response: EpisodesResponse = try await SiloAPI.shared.episodes(
                 seriesId: seriesId,
                 seasonNumber: seasonNumber
             )
@@ -649,7 +649,7 @@ class ItemDetailViewModel {
             let batchStates = await withTaskGroup(of: (String, Bool?).self) { group in
                 for episode in batch {
                     group.addTask {
-                        let isFavorite = try? await ContinuumAPI.shared.isFavorite(
+                        let isFavorite = try? await SiloAPI.shared.isFavorite(
                             contentId: episode.contentId
                         )
                         return (episode.contentId, isFavorite)
@@ -687,7 +687,7 @@ class ItemDetailViewModel {
         isFavorite.toggle()
         writeBackUserState(contentId: contentId)
         do {
-            try await ContinuumAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
+            try await SiloAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
             invalidateRelatedCaches(contentId: contentId)
         } catch {
             isFavorite.toggle() // Revert on failure
@@ -700,7 +700,7 @@ class ItemDetailViewModel {
         inWatchlist.toggle()
         writeBackUserState(contentId: contentId)
         do {
-            try await ContinuumAPI.shared.toggleWatchlist(contentId: contentId, isInWatchlist: inWatchlist)
+            try await SiloAPI.shared.toggleWatchlist(contentId: contentId, isInWatchlist: inWatchlist)
             invalidateRelatedCaches(contentId: contentId)
         } catch {
             inWatchlist.toggle() // Revert on failure
@@ -715,7 +715,7 @@ class ItemDetailViewModel {
         guard let contentId = detail?.contentId else { return }
         isWatched.toggle()
         do {
-            try await ContinuumAPI.shared.setWatched(contentId: contentId, played: isWatched)
+            try await SiloAPI.shared.setWatched(contentId: contentId, played: isWatched)
             invalidateRelatedCaches(contentId: contentId)
         } catch {
             isWatched.toggle() // Revert on failure
@@ -724,7 +724,7 @@ class ItemDetailViewModel {
 
     func setEpisodeWatched(contentId: String, played: Bool) async -> Bool {
         do {
-            try await ContinuumAPI.shared.setWatched(contentId: contentId, played: played)
+            try await SiloAPI.shared.setWatched(contentId: contentId, played: played)
             if contentId == detail?.contentId {
                 isWatched = played
             }
@@ -748,7 +748,7 @@ class ItemDetailViewModel {
 
     func setEpisodeFavorite(contentId: String, isFavorite: Bool) async -> Bool {
         do {
-            try await ContinuumAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
+            try await SiloAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
             if contentId == detail?.contentId {
                 self.isFavorite = isFavorite
                 writeBackUserState(contentId: contentId)

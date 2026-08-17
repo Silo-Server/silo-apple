@@ -7,15 +7,15 @@ struct DiagnosticsPendingReportRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(typeTitle)
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
 
             Text(report.binding.capturedAtDate, format: .dateTime.month().day().hour().minute())
                 .font(.footnote)
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
 
             Text("Expires \(expiryDate, format: .relative(presentation: .named))")
                 .font(.footnote)
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         }
         .accessibilityElement(children: .combine)
     }

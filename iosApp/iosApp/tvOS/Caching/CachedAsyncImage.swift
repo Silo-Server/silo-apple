@@ -48,7 +48,7 @@ struct CachedAsyncImage: View {
                         .overlay {
                             if placeholderStyle.showsErrorIcon {
                                 Image(systemName: "film")
-                                    .foregroundColor(.continuumOnSurface.opacity(0.3))
+                                    .foregroundColor(.siloOnSurface.opacity(0.3))
                             }
                         }
                 } else {
@@ -57,7 +57,7 @@ struct CachedAsyncImage: View {
             }
             .priority(.normal)
             .transition(.opacity)
-            .animation(.easeOut(duration: ContinuumTheme.slowDuration), value: url)
+            .animation(.easeOut(duration: SiloTheme.slowDuration), value: url)
         }
     }
 

@@ -124,7 +124,7 @@ class SearchViewModel {
                 searchQuery["type"] = mediaType
             }
 
-            let response: CatalogResponse = try await ContinuumAPI.shared.catalog(query: searchQuery)
+            let response: CatalogResponse = try await SiloAPI.shared.catalog(query: searchQuery)
             guard !Task.isCancelled else { return }
 
             if reset {

@@ -71,32 +71,32 @@ enum SharedStorage {
 
 private enum RuntimeConfiguration {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "RuntimeConfiguration"
     )
 
     static let sharedKeychainAccessGroup: String? = {
         guard let group = Bundle.main.object(
-            forInfoDictionaryKey: "ContinuumKeychainAccessGroup"
+            forInfoDictionaryKey: "SiloKeychainAccessGroup"
         ) as? String else {
-            logger.error("Missing ContinuumKeychainAccessGroup Info.plist value; shared auth tokens may not persist.")
+            logger.error("Missing SiloKeychainAccessGroup Info.plist value; shared auth tokens may not persist.")
             return nil
         }
         if group.hasSuffix(".org.siloserver.silo.shared") {
             return group
         }
-        logger.error("Unexpected ContinuumKeychainAccessGroup value: \(group, privacy: .public)")
+        logger.error("Unexpected SiloKeychainAccessGroup value: \(group, privacy: .public)")
         return nil
     }()
 
     static let usesUserIndependentKeychain: Bool = {
         if let value = Bundle.main.object(
-            forInfoDictionaryKey: "ContinuumUsesUserIndependentKeychain"
+            forInfoDictionaryKey: "SiloUsesUserIndependentKeychain"
         ) as? Bool {
             return value
         }
         guard let value = Bundle.main.object(
-            forInfoDictionaryKey: "ContinuumUsesUserIndependentKeychain"
+            forInfoDictionaryKey: "SiloUsesUserIndependentKeychain"
         ) as? String else {
             return false
         }
@@ -108,7 +108,7 @@ private enum RuntimeConfiguration {
            let dot = group.firstIndex(of: ".") {
             return String(group[...dot])
         }
-        logger.error("Could not derive team prefix from ContinuumKeychainAccessGroup; legacy keychain migration will only try the default access group.")
+        logger.error("Could not derive team prefix from SiloKeychainAccessGroup; legacy keychain migration will only try the default access group.")
         return nil
     }()
 }
@@ -182,7 +182,7 @@ struct SharedDefaults: @unchecked Sendable {
 /// it on the Home Screen (i.e. before any user interaction with the app).
 struct SharedKeychain {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "SharedKeychain"
     )
 

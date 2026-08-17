@@ -35,14 +35,14 @@ struct SiloControlModeButton: View {
     private func buttonLabel(isActive: Bool) -> some View {
         Image(systemName: "appletvremote.gen4")
             .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(isActive ? Color.continuumBackground : Color.continuumOnSurface)
-            .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+            .foregroundStyle(isActive ? Color.siloBackground : Color.siloOnSurface)
+            .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             .background {
                 // Chrome-free at rest (Plex-style); a filled disc appears only
                 // while actively controlling a TV so the state stays obvious.
                 if isActive {
                     Circle()
-                        .fill(Color.continuumOnSurface)
+                        .fill(Color.siloOnSurface)
                         .frame(width: 36, height: 36)
                 }
             }
@@ -56,7 +56,7 @@ struct SiloControlModeButton: View {
         SiloControlModeButton(controller: SiloControlClient(), onChooseTarget: {})
     }
     .padding()
-    .background(Color.continuumBackground)
+    .background(Color.siloBackground)
 }
 #endif
 #endif

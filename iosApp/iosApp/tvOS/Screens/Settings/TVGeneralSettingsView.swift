@@ -398,7 +398,7 @@ private struct TVMenuCustomizationSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .background(Color.continuumBackground.ignoresSafeArea())
+            .background(Color.siloBackground.ignoresSafeArea())
         }
     }
 
@@ -522,11 +522,11 @@ private struct TVMenuCustomizationSheet: View {
         .padding(.vertical, 12)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.continuumChromeRestingFill)
+                .fill(Color.siloChromeRestingFill)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+                .strokeBorder(Color.siloChromeRestingBorder, lineWidth: 1)
         }
     }
 
@@ -580,7 +580,7 @@ private struct TVMenuCustomizationSheet: View {
         Text(title)
             .font(.system(size: 15, weight: .semibold, design: .monospaced))
             .tracking(2)
-            .foregroundStyle(Color.continuumSecondaryText)
+            .foregroundStyle(Color.siloSecondaryText)
     }
 }
 #endif

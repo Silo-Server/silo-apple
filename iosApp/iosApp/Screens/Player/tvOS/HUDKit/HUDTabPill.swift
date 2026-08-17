@@ -57,8 +57,8 @@ struct HUDTabPillBody: View {
             .contentShape(Capsule())
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isSelected)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isSelected)
     }
 
     private var foreground: Color {

@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Central design token repository matching Plezy's mono theme.
 /// On tvOS, spacing/radius tokens are scaled up to match 10-foot viewing distance.
-struct ContinuumTheme {
+struct SiloTheme {
 
     // MARK: - Platform scale
 

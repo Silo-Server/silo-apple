@@ -123,13 +123,13 @@ struct OnboardingTourView: View {
 
             if let title = step.title {
                 Text(title)
-                    .font(.continuumTitle)
+                    .font(.siloTitle)
                     .foregroundStyle(Color.auroraInk)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let body = step.body {
                 Text(body)
-                    .font(.continuumBody)
+                    .font(.siloBody)
                     .foregroundStyle(Color.auroraInkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 12)
@@ -174,7 +174,7 @@ struct OnboardingTourView: View {
                     }
                 )
             )
-            .font(.continuumBody)
+            .font(.siloBody)
             .foregroundStyle(Color.auroraInk)
             .disabled(viewModel.isSaving)
             .padding(14)
@@ -201,7 +201,7 @@ struct OnboardingTourView: View {
                             .background(Circle().fill(isSelected ? Color.auroraInk : .clear).padding(3))
                             .frame(width: 16, height: 16)
                         Text(option.label)
-                            .font(.continuumBody.weight(isSelected ? .semibold : .regular))
+                            .font(.siloBody.weight(isSelected ? .semibold : .regular))
                             .foregroundStyle(Color.auroraInk)
                         Spacer()
                     }

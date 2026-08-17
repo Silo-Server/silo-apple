@@ -1,6 +1,6 @@
 //
 //  FFmpegLogFilter.h
-//  Continuum
+//  Silo
 //
 //  Installs an `av_log_set_callback` that drops a small allowlist of known-
 //  cosmetic warnings before they reach stderr. The default FFmpeg callback
@@ -22,7 +22,7 @@ extern "C" {
 /// Replaces the default `av_log` callback with one that drops the noise
 /// patterns documented in the .m file. Idempotent — safe to call from any
 /// thread, but normally called once at app launch.
-void ContinuumInstallFFmpegLogFilter(void);
+void SiloInstallFFmpegLogFilter(void);
 
 #ifdef __cplusplus
 }

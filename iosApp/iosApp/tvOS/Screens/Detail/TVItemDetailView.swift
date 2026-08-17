@@ -29,7 +29,7 @@ struct TVItemDetailView: View {
     @State private var allowRemoteTrailers = false
     @Environment(AppRouter.self) private var router
     private static let focusLogger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TVFocus"
     )
 
@@ -55,9 +55,9 @@ struct TVItemDetailView: View {
                 Color.clear
             }
         }
-        .continuumBackground()
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumNavigationBarBackgroundHidden()
+        .siloBackground()
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloNavigationBarBackgroundHidden()
         .onAppear {
             Self.focusLogger.debug("itemDetail.appear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
             allowRemoteTrailers = TVTrailerLaunch.isYouTubeAppInstalled()
@@ -760,7 +760,7 @@ struct TVItemDetailView: View {
         didClearNextUpSubtitleOverride = false
 
         do {
-            let item = try await ContinuumAPI.shared.itemDetail(contentId: nextUp.contentId)
+            let item = try await SiloAPI.shared.itemDetail(contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             let enriched = await viewModel.enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }

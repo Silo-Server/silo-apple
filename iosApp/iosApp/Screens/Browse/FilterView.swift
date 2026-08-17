@@ -31,17 +31,17 @@ struct FilterView: View {
             .listStyle(.plain)
             .filterScrollContentBackgroundHidden()
             .environment(\.defaultMinListRowHeight, 50)
-            .continuumBackground()
+            .siloBackground()
             .navigationTitle("Filter")
-            .continuumNavigationTitleDisplayMode(.inline)
+            .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Reset") { draft.resetFilters() }
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                         .disabled(!draft.canResetFilters)
                 }
             }
-            .continuumNavigationBarSurfaceBackground()
+            .siloNavigationBarSurfaceBackground()
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
@@ -122,19 +122,19 @@ struct FilterView: View {
         } label: {
             HStack {
                 Text(facet.title)
-                    .font(.continuumBody)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloBody)
+                    .foregroundColor(.siloOnSurface)
                 Spacer(minLength: 12)
                 if let summary = selectionSummary(facet) {
                     Text(summary)
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                         .lineLimit(1)
                 }
             }
         }
         .listRowBackground(Color.clear)
-        .filterListRowSeparatorTint(.continuumDivider)
+        .filterListRowSeparatorTint(.siloDivider)
     }
 
     /// Trailing summary for a category row: the single value's label, or
@@ -153,15 +153,15 @@ struct FilterView: View {
         Section {
             HStack {
                 Text("Match")
-                    .font(.continuumBody)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloBody)
+                    .foregroundColor(.siloOnSurface)
                 Spacer(minLength: 12)
                 HStack(spacing: 2) {
                     matchOption("All", isOn: draft.matchAll) { draft.matchAll = true }
                     matchOption("Any", isOn: !draft.matchAll) { draft.matchAll = false }
                 }
                 .padding(2)
-                .background(Capsule().fill(Color.continuumSurfaceElevated))
+                .background(Capsule().fill(Color.siloSurfaceElevated))
             }
             .listRowBackground(Color.clear)
             .filterListRowSeparatorHidden()
@@ -169,19 +169,19 @@ struct FilterView: View {
             Text(draft.matchAll
                  ? "Results match every selected filter."
                  : "Results match any selected filter.")
-                .font(.continuumCaption)
-                .foregroundColor(.continuumSecondaryText)
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
         }
     }
 
     private func matchOption(_ label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(.continuumCaption)
-                .foregroundColor(isOn ? .continuumBackground : .continuumSecondaryText)
+                .font(.siloCaption)
+                .foregroundColor(isOn ? .siloBackground : .siloSecondaryText)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
-                .background(Capsule().fill(isOn ? Color.continuumOnSurface : Color.clear))
+                .background(Capsule().fill(isOn ? Color.siloOnSurface : Color.clear))
         }
         .buttonStyle(.plain)
     }
@@ -192,10 +192,10 @@ struct FilterView: View {
         Section {
             Toggle(isOn: $preserve) {
                 Text("Preserve sort & filters")
-                    .font(.continuumBody)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloBody)
+                    .foregroundColor(.siloOnSurface)
             }
-            .tint(Color.continuumAccent)
+            .tint(Color.siloAccent)
             .listRowBackground(Color.clear)
             .filterListRowSeparatorHidden()
             .onChange(of: preserve) { _, newValue in
@@ -203,8 +203,8 @@ struct FilterView: View {
             }
         } footer: {
             Text("Reopen this library exactly as you left it")
-                .font(.continuumCaption)
-                .foregroundColor(.continuumSecondaryText)
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
         }
     }
 
@@ -216,20 +216,20 @@ struct FilterView: View {
         Button(action: action) {
             HStack {
                 Text(label)
-                    .font(.continuumBody)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloBody)
+                    .foregroundColor(.siloOnSurface)
                 Spacer(minLength: 12)
                 if isOn {
                     Image(systemName: "checkmark")
-                        .font(.continuumBody.weight(.semibold))
-                        .foregroundColor(.continuumOnSurface)
+                        .font(.siloBody.weight(.semibold))
+                        .foregroundColor(.siloOnSurface)
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .listRowBackground(Color.clear)
-        .filterListRowSeparatorTint(.continuumDivider)
+        .filterListRowSeparatorTint(.siloDivider)
     }
 
     /// (value, label) options for a facet — fixed vocab for derived facets,
@@ -263,34 +263,34 @@ private struct FacetValuePicker: View {
                 } label: {
                     HStack {
                         Text(option.label)
-                            .font(.continuumBody)
-                            .foregroundColor(.continuumOnSurface)
+                            .font(.siloBody)
+                            .foregroundColor(.siloOnSurface)
                         Spacer(minLength: 12)
                         if draft.isSelected(facet, value: option.value) {
                             Image(systemName: "checkmark")
-                                .font(.continuumBody.weight(.semibold))
-                                .foregroundColor(.continuumOnSurface)
+                                .font(.siloBody.weight(.semibold))
+                                .foregroundColor(.siloOnSurface)
                         }
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .listRowBackground(Color.clear)
-                .filterListRowSeparatorTint(.continuumDivider)
+                .filterListRowSeparatorTint(.siloDivider)
             }
         }
         .listStyle(.plain)
         .filterScrollContentBackgroundHidden()
         .environment(\.defaultMinListRowHeight, 50)
-        .continuumBackground()
+        .siloBackground()
         .navigationTitle(facet.title)
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumNavigationBarSurfaceBackground()
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloNavigationBarSurfaceBackground()
         .toolbar {
             if !draft.selectedValues(facet).isEmpty {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Clear") { draft.clear(facet) }
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                 }
             }
         }

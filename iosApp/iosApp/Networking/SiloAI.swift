@@ -3,17 +3,17 @@ import Foundation
 /// Typed facade over the native Silo **AI** endpoints — metadata
 /// translation and subtitle translation/transcription.
 ///
-/// Sibling to ``ContinuumAPI``: a separate actor keeps the AI surface
+/// Sibling to ``SiloAPI``: a separate actor keeps the AI surface
 /// cohesive and independently testable rather than swelling the much
-/// larger `ContinuumAPI`. Methods are thin pass-throughs over
+/// larger `SiloAPI`. Methods are thin pass-throughs over
 /// ``HTTPClient/shared``; snake_case auto-converts both ways, so the wire
 /// shapes in ``AIModels`` stay camelCase.
 ///
 /// All paths are on the native API (`/api/v1/...`). The Jellyfin-compat
 /// API does not mirror the AI trigger/status/job endpoints; the Apple
 /// clients use the native API exclusively.
-actor ContinuumAI {
-    static let shared = ContinuumAI()
+actor SiloAI {
+    static let shared = SiloAI()
 
     private let http: HTTPClient
 

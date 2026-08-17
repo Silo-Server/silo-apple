@@ -38,12 +38,12 @@ final class RequestDetailViewModel {
     /// quota, …) — informational, never a blocking alert.
     private(set) var actionErrorMessage: String?
 
-    private let api: ContinuumAPI
+    private let api: SiloAPI
     /// In-flight bus-triggered reload; cancelled and replaced on the next
     /// event so a slow earlier response can't overwrite a newer one.
     private var reloadTask: Task<Void, Never>?
 
-    init(mediaType: RequestMediaType, tmdbId: Int, api: ContinuumAPI = .shared) {
+    init(mediaType: RequestMediaType, tmdbId: Int, api: SiloAPI = .shared) {
         self.mediaType = mediaType
         self.tmdbId = tmdbId
         self.api = api

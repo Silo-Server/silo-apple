@@ -32,7 +32,7 @@ final class TVPairingBrowser {
     /// True between `start()` and `stop()` — gates self-heal restarts so a
     /// deliberate stop stays stopped.
     private var wantsBrowsing = false
-    private nonisolated static let logger = Logger(subsystem: "com.continuum.app", category: "pairing.browser")
+    private nonisolated static let logger = Logger(subsystem: "org.siloserver.silo", category: "pairing.browser")
 
     func start() {
         guard browser == nil else { return }

@@ -1,6 +1,6 @@
 //
 //  VTTToASSConverter.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Translate WebVTT subtitle content into an ASS document suitable for
 //  libass's `ass_read_memory`. libass parses SSA/ASS natively and SRT
@@ -35,7 +35,7 @@ enum VTTToASSConverter {
 
     /// Convert a WebVTT document body to a full ASS document.
     ///
-    /// - Parameter vtt: the raw WebVTT content as served by the Continuum
+    /// - Parameter vtt: the raw WebVTT content as served by the Silo
     ///   server. Leading BOM and CRLF/CR line endings are tolerated.
     /// - Parameter header: a prebuilt synthetic ASS `[Script Info]` +
     ///   `[V4+ Styles]` + `[Events] Format:` header. Supplied by the

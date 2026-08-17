@@ -26,13 +26,13 @@ struct PhoneCastRail: View {
                             VStack(spacing: 2) {
                                 Text(member.name)
                                     .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.continuumOnSurface)
+                                    .foregroundColor(.siloOnSurface)
                                     .lineLimit(2, reservesSpace: true)
                                     .multilineTextAlignment(.center)
                                 if let character = member.character, !character.isEmpty {
                                     Text(character)
                                         .font(.system(size: 11, weight: .regular))
-                                        .foregroundColor(.continuumSecondaryText)
+                                        .foregroundColor(.siloSecondaryText)
                                         .lineLimit(1)
                                         .multilineTextAlignment(.center)
                                 }
@@ -44,7 +44,7 @@ struct PhoneCastRail: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
             .padding(.vertical, 4)
         }
     }
@@ -52,13 +52,13 @@ struct PhoneCastRail: View {
     @ViewBuilder
     private func photo(for member: CastMember) -> some View {
         ZStack {
-            Color.continuumSurfaceElevated
+            Color.siloSurfaceElevated
             if let url = member.photoUrl, !url.isEmpty {
                 AsyncImageView(url: url, contentMode: .fill)
             } else {
                 Image(systemName: "person.fill")
                     .font(.system(size: photoSize * 0.4))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
         }
         .frame(width: photoSize, height: photoSize)

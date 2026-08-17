@@ -23,8 +23,8 @@ final class DescriptionTranslationCoordinator {
 
     private(set) var phase: Phase = .idle
 
-    private let api: ContinuumAI
-    private let catalog: ContinuumAPI
+    private let api: SiloAI
+    private let catalog: SiloAPI
     private var task: Task<Void, Never>?
     private var activeRunID: UUID?
 
@@ -33,7 +33,7 @@ final class DescriptionTranslationCoordinator {
     /// is the hard cap (~31s) after which we give up and surface `.failed`.
     private let backoff: [TimeInterval] = [1, 2, 3, 5, 5, 5, 5, 5]
 
-    init(api: ContinuumAI = .shared, catalog: ContinuumAPI = .shared) {
+    init(api: SiloAI = .shared, catalog: SiloAPI = .shared) {
         self.api = api
         self.catalog = catalog
     }

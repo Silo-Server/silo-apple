@@ -102,7 +102,7 @@ enum HeroBackdropPalette {
     /// Clamp luminance so the resulting gradient sits comfortably on
     /// top of the OLED-black background — bright backdrops get dimmed,
     /// very dark ones get a mild lift so they still read as tinted
-    /// rather than identical to `continuumBackground`.
+    /// rather than identical to `siloBackground`.
     private static func normalize(r: Double, g: Double, b: Double) -> Color {
         let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
         let targetLuminance: Double = 0.22

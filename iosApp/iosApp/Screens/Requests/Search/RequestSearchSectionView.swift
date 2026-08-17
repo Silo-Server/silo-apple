@@ -15,15 +15,15 @@ struct RequestSearchSectionView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Image(systemName: "sparkles")
-                            .font(.continuumCaption)
+                            .font(.siloCaption)
                         Text("Available to request")
-                            .font(.continuumHeadline)
+                            .font(.siloHeadline)
                     }
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
 
                     Text("Not in the library yet · tap to request")
-                        .font(.continuumSmall)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloSmall)
+                        .foregroundColor(.siloSecondaryText)
                 }
 
                 RequestCardRail(items: viewModel.results) { result in

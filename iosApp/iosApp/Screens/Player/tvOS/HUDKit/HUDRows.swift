@@ -42,8 +42,8 @@ struct HUDRowButtonBody: View {
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 
     private var background: Color {

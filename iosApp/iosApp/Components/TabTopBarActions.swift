@@ -21,7 +21,7 @@ struct TabTopBarActions: View {
         // Plain icon glyphs (no glass chip) spaced evenly, matching the
         // clean top-right cluster used by Plex. The profile avatar is the
         // only filled shape, so it reads as the account control.
-        HStack(spacing: ContinuumTheme.topBarIconSpacing) {
+        HStack(spacing: SiloTheme.topBarIconSpacing) {
             TopBarIconButton(systemImage: "magnifyingglass", accessibilityLabel: "Search", action: onSearch)
             ProfileAvatarMenu(
                 profile: profile,
@@ -47,8 +47,8 @@ private struct TopBarIconButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 18, weight: .semibold))
-                .foregroundColor(.continuumOnSurface)
-                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+                .foregroundColor(.siloOnSurface)
+                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

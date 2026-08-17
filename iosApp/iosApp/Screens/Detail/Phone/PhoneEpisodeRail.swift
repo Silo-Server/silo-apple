@@ -36,13 +36,13 @@ struct PhoneEpisodeRail: View {
                         .id(episode.contentId)
                     }
                 }
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
                 .padding(.vertical, 4)
             }
             .onAppear {
                 guard let id = currentContentId else { return }
                 DispatchQueue.main.async {
-                    withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
+                    withAnimation(.easeOut(duration: SiloTheme.normalDuration)) {
                         proxy.scrollTo(id, anchor: .center)
                     }
                 }
@@ -74,7 +74,7 @@ private struct PhoneEpisodeCard: View {
                             Text(PhoneEpisodeFormatting.cardNumberLabel(for: episode))
                                 .font(.system(size: 10, weight: .bold))
                                 .tracking(1.0)
-                                .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
+                                .foregroundStyle(Color.siloOnSurface.opacity(0.55))
                             if isCurrent {
                                 nowViewingTag
                             }
@@ -90,7 +90,7 @@ private struct PhoneEpisodeCard: View {
                             if let metadataLine = PhoneEpisodeFormatting.metadataLine(for: episode) {
                                 Text(metadataLine)
                                     .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(Color.continuumSecondaryText)
+                                    .foregroundStyle(Color.siloSecondaryText)
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.85)
                                     .multilineTextAlignment(.leading)
@@ -99,7 +99,7 @@ private struct PhoneEpisodeCard: View {
                             if let overview = episode.overview, !overview.isEmpty {
                                 Text(overview)
                                     .font(.system(size: 12, weight: .regular))
-                                    .foregroundStyle(Color.continuumSecondaryText)
+                                    .foregroundStyle(Color.siloSecondaryText)
                                     .lineLimit(3, reservesSpace: true)
                                     .lineSpacing(2)
                                     .multilineTextAlignment(.leading)
@@ -117,7 +117,7 @@ private struct PhoneEpisodeCard: View {
     }
 
     private var titleColor: Color {
-        isCurrent ? .continuumOnSurface : Color.continuumOnSurface.opacity(0.92)
+        isCurrent ? .siloOnSurface : Color.siloOnSurface.opacity(0.92)
     }
 
     private var nowViewingTag: some View {

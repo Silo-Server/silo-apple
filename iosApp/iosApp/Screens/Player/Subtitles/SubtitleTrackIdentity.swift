@@ -1,6 +1,6 @@
 //
 //  SubtitleTrackIdentity.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Shared identity types used by the libass-backed subtitle pipeline.
 //  No libass dependency — consumed by both the renderer layer and the

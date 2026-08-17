@@ -47,8 +47,8 @@ private struct TVSeasonChipBody: View {
             .foregroundColor(foregroundColor)
             .background(background)
             .scaleEffect(scale)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 
     private var scale: CGFloat {
@@ -59,11 +59,11 @@ private struct TVSeasonChipBody: View {
     @ViewBuilder
     private var background: some View {
         if isSelected {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.white)
+            RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous).fill(Color.white)
         } else if isFocused {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.white.opacity(0.18))
+            RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous).fill(Color.white.opacity(0.18))
         } else {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(Color.white.opacity(0.25), lineWidth: 1.5)
+            RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous).stroke(Color.white.opacity(0.25), lineWidth: 1.5)
         }
     }
 
@@ -106,7 +106,7 @@ struct TVSeasonChipRow: View {
             .applyDefaultFocusIfPresent($focusedSeasonId, id: selectedSeasonId)
             .onChange(of: selectedSeasonId) { _, newId in
                 guard let newId else { return }
-                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+                withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                     proxy.scrollTo(newId, anchor: .center)
                 }
             }

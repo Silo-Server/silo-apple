@@ -52,7 +52,7 @@ struct TVSkylineSectionFeed: View {
                 artworkURL: marqueeModel.backdropURL,
                 artworkThumbhash: marqueeModel.backdropThumbhash,
                 isVisible: marqueeModel.content != nil,
-                crossfadeDuration: ContinuumTheme.Skyline.marqueeCrossfadeDuration
+                crossfadeDuration: SiloTheme.Skyline.marqueeCrossfadeDuration
             )
 
             // Native scrolling lives only in the bottom row band. The viewport
@@ -89,16 +89,16 @@ struct TVSkylineSectionFeed: View {
     @ViewBuilder
     private var scrollingRows: some View {
         GeometryReader { proxy in
-            let bandHeight = proxy.size.height * ContinuumTheme.Skyline.rowBandHeightFraction
+            let bandHeight = proxy.size.height * SiloTheme.Skyline.rowBandHeightFraction
             let visibleBandHeight = max(0, bandHeight)
             let trailingPreviewPadding = max(
                 0,
-                visibleBandHeight - ContinuumTheme.Skyline.rowBandBottomInset
+                visibleBandHeight - SiloTheme.Skyline.rowBandBottomInset
             )
 
             ScrollViewReader { scrollProxy in
                 ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: ContinuumTheme.Skyline.rowBandPreviewSpacing) {
+                    LazyVStack(alignment: .leading, spacing: SiloTheme.Skyline.rowBandPreviewSpacing) {
                         ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
                             featuredRow(section, isFirstRow: index == 0)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -116,7 +116,7 @@ struct TVSkylineSectionFeed: View {
                 // animation can't lose the claim to mid-flight focus repairs.
                 .onChange(of: entryScrollToken) { _, _ in
                     if let firstId = sections.first?.id {
-                        withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.slowDuration)) {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.slowDuration)) {
                             scrollProxy.scrollTo(firstId, anchor: .top)
                         }
                     }
@@ -148,8 +148,8 @@ struct TVSkylineSectionFeed: View {
             onItemFocus: { item in
                 previewFocusedItem(item, in: section)
             },
-            cardWidth: ContinuumTheme.Skyline.densePosterCardWidth,
-            cardVerticalPadding: ContinuumTheme.Skyline.rowBandCardVerticalPadding,
+            cardWidth: SiloTheme.Skyline.densePosterCardWidth,
+            cardVerticalPadding: SiloTheme.Skyline.rowBandCardVerticalPadding,
             onMoveDown: nil
         )
     }

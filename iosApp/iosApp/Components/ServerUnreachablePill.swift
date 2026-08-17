@@ -12,14 +12,14 @@ struct ServerUnreachablePill: View {
                 ? "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90"
                 : "wifi.slash")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
 
             Text(ConnectionMonitor.shared.isDeviceOnline
                 ? "Can't reach server — showing cached content"
                 : "You're offline — showing cached content")
-                .font(.continuumCaption)
+                .font(.siloCaption)
                 .fontWeight(.semibold)
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)

@@ -36,10 +36,10 @@ struct EpisodeThumbCard: View {
     #endif
 
     private var cardWidth: CGFloat {
-        ContinuumTheme.thumbnailCardWidth * uiCustomization.cardPresentation.posterSize.scale
+        SiloTheme.thumbnailCardWidth * uiCustomization.cardPresentation.posterSize.scale
     }
     private var cardHeight: CGFloat {
-        cardWidth * (ContinuumTheme.thumbnailCardHeight / ContinuumTheme.thumbnailCardWidth)
+        cardWidth * (SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth)
     }
 
     #if os(tvOS)
@@ -54,11 +54,11 @@ struct EpisodeThumbCard: View {
             if uiCustomization.cardPresentation.caption.showsTitle {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(displayTitle)
-                        .font(.continuumSubheadline)
+                        .font(.siloSubheadline)
                         .foregroundStyle(
                             isFocused
-                                ? Color.continuumOnSurface
-                                : Color.continuumOnSurface.opacity(0.85)
+                                ? Color.siloOnSurface
+                                : Color.siloOnSurface.opacity(0.85)
                         )
                         .lineLimit(1)
                         .animation(.easeOut(duration: 0.15), value: isFocused)
@@ -66,8 +66,8 @@ struct EpisodeThumbCard: View {
                     if uiCustomization.cardPresentation.caption.showsMetadata,
                        let subtitle = subtitleLine {
                         Text(subtitle)
-                            .font(.continuumCaption)
-                            .foregroundStyle(Color.continuumSecondaryText)
+                            .font(.siloCaption)
+                            .foregroundStyle(Color.siloSecondaryText)
                             .lineLimit(1)
                     }
                 }
@@ -106,15 +106,15 @@ struct EpisodeThumbCard: View {
                 thumbnail
                 if uiCustomization.cardPresentation.caption.showsTitle {
                     Text(displayTitle)
-                        .font(.continuumSubheadline)
-                        .foregroundStyle(Color.continuumOnSurface)
+                        .font(.siloSubheadline)
+                        .foregroundStyle(Color.siloOnSurface)
                         .lineLimit(1)
                 }
                 if uiCustomization.cardPresentation.caption.showsMetadata,
                    let subtitle = subtitleLine {
                     Text(subtitle)
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                         .lineLimit(1)
                 }
             }
@@ -138,7 +138,7 @@ struct EpisodeThumbCard: View {
             )
             .frame(width: cardWidth, height: cardHeight)
             .clipped()
-            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
 
             // Scrim gradient so the episode badge reads over bright stills
             LinearGradient(
@@ -147,7 +147,7 @@ struct EpisodeThumbCard: View {
                 endPoint: .bottom
             )
             .frame(width: cardWidth, height: cardHeight)
-            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
 
             // Server / user-customized overlay badges. `wide` variant
             // gives the bottom corners enough headroom that they don't
@@ -159,13 +159,13 @@ struct EpisodeThumbCard: View {
                     variant: .wide
                 )
                 .frame(width: cardWidth, height: cardHeight)
-                .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
             // Episode badge overlay (e.g. "S2 · E3")
             if let badge = episodeBadge {
                 Text(badge)
-                    .font(.continuumCaption)
+                    .font(.siloCaption)
                     .fontWeight(.semibold)
                     .foregroundColor(.white)
                     .padding(.horizontal, badgeHPadding)
@@ -183,7 +183,7 @@ struct EpisodeThumbCard: View {
                     ProgressBar(value: p)
                 }
                 .frame(width: cardWidth, height: cardHeight)
-                .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
             // Watched check
@@ -192,12 +192,12 @@ struct EpisodeThumbCard: View {
                     Spacer()
                     ZStack {
                         Circle()
-                            .fill(Color.continuumOnSurface)
+                            .fill(Color.siloOnSurface)
                             .frame(width: checkBadgeSize, height: checkBadgeSize)
                             .shadow(color: .black.opacity(0.3), radius: 4)
                         Image(systemName: "checkmark")
                             .font(.system(size: checkIconSize, weight: .bold))
-                            .foregroundColor(Color.continuumBackground)
+                            .foregroundColor(Color.siloBackground)
                     }
                 }
                 .padding(badgeInset)

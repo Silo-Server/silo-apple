@@ -1,6 +1,6 @@
 //
 //  SubtitleStylingOverride.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Bridges `PlayerSettings` (user's subtitle preferences) to libass. Two
 //  consumer surfaces:

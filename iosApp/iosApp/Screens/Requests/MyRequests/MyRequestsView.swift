@@ -25,11 +25,11 @@ struct MyRequestsView: View {
                 bucketList
             }
         }
-        .continuumBackground()
+        .siloBackground()
         .navigationTitle("My Requests")
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumToolbarColorSchemeDark()
-        .continuumNavigationBarSurfaceBackground()
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloToolbarColorSchemeDark()
+        .siloNavigationBarSurfaceBackground()
         .task {
             await viewModel.load()
         }
@@ -52,8 +52,8 @@ struct MyRequestsView: View {
             VStack(alignment: .leading, spacing: sectionSpacing) {
                 if let message = viewModel.actionErrorMessage {
                     Text(message)
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
 
@@ -61,9 +61,9 @@ struct MyRequestsView: View {
                     bucketSection(entry.bucket, requests: entry.requests)
                 }
             }
-            .padding(.horizontal, ContinuumTheme.padding)
-            .padding(.top, ContinuumTheme.smallPadding)
-            .padding(.bottom, ContinuumTheme.largePadding)
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.top, SiloTheme.smallPadding)
+            .padding(.bottom, SiloTheme.largePadding)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         #if os(tvOS)
@@ -76,11 +76,11 @@ struct MyRequestsView: View {
         VStack(alignment: .leading, spacing: rowSpacing) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(bucket.title)
-                    .font(.continuumHeadline)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloHeadline)
+                    .foregroundColor(.siloOnSurface)
                 Text(String(requests.count))
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
             }
 
             #if os(tvOS)
@@ -119,13 +119,13 @@ struct MyRequestsView: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(record.title)
-                        .font(.continuumSubheadline)
-                        .foregroundColor(.continuumOnSurface)
+                        .font(.siloSubheadline)
+                        .foregroundColor(.siloOnSurface)
                         .lineLimit(1)
 
                     Text(rowMeta(record))
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                         .lineLimit(2)
                 }
 
@@ -135,12 +135,12 @@ struct MyRequestsView: View {
             }
             .padding(10)
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
-                    .fill(Color.continuumSurface)
+                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                    .fill(Color.siloSurface)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
-                    .stroke(Color.continuumOutline.opacity(0.6), lineWidth: 1)
+                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                    .stroke(Color.siloOutline.opacity(0.6), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -167,10 +167,10 @@ struct MyRequestsView: View {
             )
             .frame(width: 46, height: 69)
             .clipped()
-            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius))
+            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius))
         } else {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius)
-                .fill(Color.continuumSurfaceElevated)
+            RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius)
+                .fill(Color.siloSurfaceElevated)
                 .frame(width: 46, height: 69)
         }
     }

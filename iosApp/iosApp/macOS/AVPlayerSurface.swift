@@ -5,22 +5,22 @@ import SwiftUI
 struct AVPlayerSurface: NSViewRepresentable {
     let backend: AVPlayerBackend
 
-    func makeNSView(context: Context) -> ContinuumMacPlayerView {
-        let view = ContinuumMacPlayerView()
+    func makeNSView(context: Context) -> SiloMacPlayerView {
+        let view = SiloMacPlayerView()
         view.attach(backend: backend)
         return view
     }
 
-    func updateNSView(_ nsView: ContinuumMacPlayerView, context: Context) {
+    func updateNSView(_ nsView: SiloMacPlayerView, context: Context) {
         nsView.attach(backend: backend)
     }
 
-    static func dismantleNSView(_ nsView: ContinuumMacPlayerView, coordinator: ()) {
+    static func dismantleNSView(_ nsView: SiloMacPlayerView, coordinator: ()) {
         nsView.detachSubtitleOverlay()
     }
 }
 
-final class ContinuumMacPlayerView: AVPlayerView {
+final class SiloMacPlayerView: AVPlayerView {
     let subtitleOverlay = SubtitleOverlayView()
     private weak var backend: AVPlayerBackend?
 

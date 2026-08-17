@@ -109,7 +109,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                             similarSection
                         }
                     }
-                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.horizontal, SiloTheme.safePadding)
                     .padding(.bottom, 160)
                 }
             }
@@ -312,7 +312,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
             if isLoadingEpisodes {
                 HStack {
                     Spacer()
-                    ProgressView().tint(.continuumOnSurface).padding()
+                    ProgressView().tint(.siloOnSurface).padding()
                     Spacer()
                 }
             } else {
@@ -327,7 +327,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                     favoriteStates: episodeFavoriteStates,
                     prefersCurrentContentFocus: true
                 )
-                .padding(.horizontal, -ContinuumTheme.safePadding)
+                .padding(.horizontal, -SiloTheme.safePadding)
             }
         }
     }

@@ -50,7 +50,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             .padding(.bottom, 40)
         }
         .ignoresSafeArea(edges: .top)
-        .continuumResumePlaybackAlert(
+        .siloResumePlaybackAlert(
             isPresented: $showResumeDialog,
             stoppedAt: resumeTimestamp
         ) {
@@ -223,7 +223,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             if let cast = detail.cast, !cast.isEmpty {
                 castSection(cast: cast)
             }
-            detailsSection.padding(.horizontal, ContinuumTheme.safePadding)
+            detailsSection.padding(.horizontal, SiloTheme.safePadding)
         }
     }
 
@@ -231,7 +231,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
     private var episodesSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(label: "This Season", title: "Episodes")
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
 
             PhoneSeasonEpisodeBrowser(
                 seasons: seasons,
@@ -250,7 +250,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
     private func castSection(cast: [CastMember]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(title: "Cast & Crew")
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
             PhoneCastRail(cast: cast, onTap: onPersonTap)
         }
     }

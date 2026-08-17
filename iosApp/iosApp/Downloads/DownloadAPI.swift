@@ -1,10 +1,10 @@
 import Foundation
 
 /// Typed download / offline-sync endpoints, grouped as an extension on the
-/// existing `ContinuumAPI` facade. These reuse the facade's injected `http`
+/// existing `SiloAPI` facade. These reuse the facade's injected `http`
 /// transport (auth injection, 401 refresh, snake_case JSON coders) rather
 /// than the legacy path dispatcher. Contract: server `docs/downloads-api.md`.
-extension ContinuumAPI {
+extension SiloAPI {
 
     // MARK: - Capability
 

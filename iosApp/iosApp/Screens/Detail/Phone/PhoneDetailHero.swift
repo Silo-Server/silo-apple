@@ -81,7 +81,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 factsAlignment: .center,
                 logoHeight: compactLogoHeight
             )
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
             .padding(.top, 4)
             .padding(.bottom, 8)
         }
@@ -126,7 +126,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 contentMode: .fill
             )
             .frame(width: posterWidth, height: posterHeight)
-            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             .shadow(color: .black.opacity(0.4), radius: 18, y: 10)
             .accessibilityHidden(true)
         }
@@ -142,7 +142,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                         contentMode: .fill
                     )
                 } else {
-                    Color.continuumSurface
+                    Color.siloSurface
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -152,9 +152,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
             LinearGradient(
                 stops: [
-                    .init(color: Color.continuumBackground.opacity(0.78), location: 0),
-                    .init(color: Color.continuumBackground.opacity(0.38), location: 0.48),
-                    .init(color: Color.continuumBackground.opacity(0.62), location: 1),
+                    .init(color: Color.siloBackground.opacity(0.78), location: 0),
+                    .init(color: Color.siloBackground.opacity(0.38), location: 0.48),
+                    .init(color: Color.siloBackground.opacity(0.62), location: 1),
                 ],
                 startPoint: .leading,
                 endPoint: .trailing
@@ -162,9 +162,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
             LinearGradient(
                 stops: [
-                    .init(color: Color.continuumBackground.opacity(0.18), location: 0),
-                    .init(color: Color.continuumBackground.opacity(0.28), location: 0.52),
-                    .init(color: Color.continuumBackground, location: 1),
+                    .init(color: Color.siloBackground.opacity(0.18), location: 0),
+                    .init(color: Color.siloBackground.opacity(0.28), location: 0.52),
+                    .init(color: Color.siloBackground, location: 1),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -196,7 +196,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     }
 
     private var posterHeight: CGFloat {
-        posterWidth / ContinuumTheme.posterAspectRatio
+        posterWidth / SiloTheme.posterAspectRatio
     }
 
     // MARK: - Backdrop
@@ -229,7 +229,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             if let url = backdropUrl, !url.isEmpty {
                 AsyncImageView(url: url, thumbhash: backdropThumbhash, contentMode: .fill)
             } else {
-                Color.continuumSurface
+                Color.siloSurface
             }
         }
         .frame(height: backdropHeight)
@@ -249,8 +249,8 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             stops: [
                 .init(color: .clear, location: 0.0),
                 .init(color: .clear, location: 0.55),
-                .init(color: Color.continuumBackground.opacity(0.6), location: 0.85),
-                .init(color: Color.continuumBackground, location: 1.0),
+                .init(color: Color.siloBackground.opacity(0.6), location: 0.85),
+                .init(color: Color.siloBackground, location: 1.0),
             ],
             startPoint: .top,
             endPoint: .bottom
@@ -325,23 +325,23 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                     if index > 0 {
                         Text("·")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.continuumOnSurface.opacity(0.4))
+                            .foregroundColor(.siloOnSurface.opacity(0.4))
                     }
                     Text(token)
                         .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.continuumOnSurface.opacity(0.85))
+                        .foregroundColor(.siloOnSurface.opacity(0.85))
                         .lineLimit(1)
                 }
                 if let ratingChip, !ratingChip.isEmpty {
                     Text(ratingChip)
                         .font(.system(size: 11, weight: .heavy))
                         .tracking(0.8)
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
                         .overlay(
                             RoundedRectangle(cornerRadius: 3)
-                                .stroke(Color.continuumOnSurface.opacity(0.55), lineWidth: 1)
+                                .stroke(Color.siloOnSurface.opacity(0.55), lineWidth: 1)
                         )
                         .padding(.leading, 2)
                 }
@@ -371,7 +371,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             VStack(spacing: 0) {
                 Text(overview)
                     .font(.system(size: 15, weight: .regular))
-                    .foregroundColor(.continuumOnSurface.opacity(0.78))
+                    .foregroundColor(.siloOnSurface.opacity(0.78))
                     .lineSpacing(3)
                     .lineLimit(showFullOverview ? nil : 3)
                     .multilineTextAlignment(.leading)
@@ -383,7 +383,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        withAnimation(.easeInOut(duration: ContinuumTheme.normalDuration)) {
+                        withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
                             showFullOverview.toggle()
                         }
                     }
@@ -394,18 +394,18 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     private var morePill: some View {
         Button {
-            withAnimation(.easeInOut(duration: ContinuumTheme.normalDuration)) {
+            withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
                 showFullOverview = true
             }
         } label: {
             Text("MORE")
                 .font(.system(size: 11, weight: .heavy))
                 .tracking(0.6)
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(
-                    Capsule().fill(Color.continuumSurfaceElevated)
+                    Capsule().fill(Color.siloSurfaceElevated)
                 )
         }
         .buttonStyle(.plain)
@@ -437,7 +437,7 @@ private struct PhoneHeroTitle: View {
         VStack(spacing: 4) {
             Text(parts.primary)
                 .font(.system(size: 30, weight: .heavy))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .lineLimit(2)
                 .multilineTextAlignment(textAlignment)
                 .fixedSize(horizontal: false, vertical: true)
@@ -445,7 +445,7 @@ private struct PhoneHeroTitle: View {
                 Text(subtitle.uppercased())
                     .font(.system(size: 13, weight: .heavy))
                     .tracking(1.2)
-                    .foregroundColor(.continuumOnSurface.opacity(0.8))
+                    .foregroundColor(.siloOnSurface.opacity(0.8))
                     .lineLimit(2)
                     .multilineTextAlignment(textAlignment)
                     .fixedSize(horizontal: false, vertical: true)
@@ -468,13 +468,13 @@ private struct PhoneEpisodeHierarchyTitle: View {
         VStack(spacing: 6) {
             Text(seriesTitle)
                 .font(.system(size: 34, weight: .heavy))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .lineLimit(2)
                 .multilineTextAlignment(textAlignment)
                 .fixedSize(horizontal: false, vertical: true)
             Text(parts.primary)
                 .font(.system(size: 22, weight: .semibold))
-                .foregroundColor(.continuumOnSurface.opacity(0.9))
+                .foregroundColor(.siloOnSurface.opacity(0.9))
                 .lineLimit(2)
                 .multilineTextAlignment(textAlignment)
                 .fixedSize(horizontal: false, vertical: true)
@@ -482,7 +482,7 @@ private struct PhoneEpisodeHierarchyTitle: View {
                 Text(subtitle.uppercased())
                     .font(.system(size: 13, weight: .heavy))
                     .tracking(1.0)
-                    .foregroundColor(.continuumOnSurface.opacity(0.76))
+                    .foregroundColor(.siloOnSurface.opacity(0.76))
                     .lineLimit(2)
                     .multilineTextAlignment(textAlignment)
                     .fixedSize(horizontal: false, vertical: true)
@@ -504,12 +504,12 @@ private struct PhoneHeroEyebrow: View {
         Text(text)
             .font(.system(size: 12, weight: .semibold))
             .tracking(0.6)
-            .foregroundColor(.continuumOnSurface)
+            .foregroundColor(.siloOnSurface)
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
             .background(
                 Capsule()
-                    .fill(Color.continuumSurfaceElevated)
+                    .fill(Color.siloSurfaceElevated)
             )
     }
 }
@@ -532,7 +532,7 @@ private struct FlowingFactsRow: View {
                    case .text = tokens[index - 1] {
                     Text("·")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface.opacity(0.4))
+                        .foregroundColor(.siloOnSurface.opacity(0.4))
                 }
                 factsItem(token)
             }
@@ -545,17 +545,17 @@ private struct FlowingFactsRow: View {
         case .text(let value):
             Text(value)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(.continuumOnSurface.opacity(0.78))
+                .foregroundColor(.siloOnSurface.opacity(0.78))
         case .chip(let value):
             Text(value)
                 .font(.system(size: 10, weight: .heavy))
                 .tracking(0.8)
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .overlay(
                     RoundedRectangle(cornerRadius: 3)
-                        .stroke(Color.continuumOnSurface.opacity(0.45), lineWidth: 1)
+                        .stroke(Color.siloOnSurface.opacity(0.45), lineWidth: 1)
                 )
         }
     }

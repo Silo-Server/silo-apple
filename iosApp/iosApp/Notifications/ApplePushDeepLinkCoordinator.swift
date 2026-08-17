@@ -13,7 +13,7 @@ final class ApplePushDeepLinkCoordinator {
         guard let url = Self.deepLinkURL(from: userInfo) else { return }
         pendingDeepLink = url
         NotificationCenter.default.post(
-            name: .continuumDeepLink,
+            name: .siloDeepLink,
             object: nil,
             userInfo: ["url": url]
         )

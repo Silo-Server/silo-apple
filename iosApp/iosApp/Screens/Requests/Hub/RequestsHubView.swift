@@ -12,22 +12,22 @@ struct RequestsHubView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: ContinuumTheme.largePadding) {
+            VStack(alignment: .leading, spacing: SiloTheme.largePadding) {
                 content
             }
-            .padding(.horizontal, ContinuumTheme.padding)
-            .padding(.top, ContinuumTheme.smallPadding)
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.top, SiloTheme.smallPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .continuumBackground()
+        .siloBackground()
         #if os(tvOS)
         .safeAreaPadding(.horizontal, 40)
         #endif
         .navigationTitle("Requests")
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumToolbarColorSchemeDark()
-        .continuumNavigationBarSurfaceBackground()
-        .continuumSearchable(text: $viewModel.query, prompt: "Search movies & series to request")
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloToolbarColorSchemeDark()
+        .siloNavigationBarSurfaceBackground()
+        .siloSearchable(text: $viewModel.query, prompt: "Search movies & series to request")
         .task {
             await viewModel.load()
         }
@@ -125,8 +125,8 @@ struct RequestsHubView: View {
         VStack(alignment: .leading, spacing: RequestsUI.headerSpacing) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Your requests")
-                    .font(.continuumHeadline)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloHeadline)
+                    .foregroundColor(.siloOnSurface)
 
                 Spacer(minLength: 0)
 
@@ -157,8 +157,8 @@ struct RequestsHubView: View {
             Image(systemName: "chevron.right")
                 .font(.system(size: seeAllChevronSize, weight: .semibold))
         }
-        .font(.continuumCaption)
-        .foregroundColor(.continuumSecondaryText)
+        .font(.siloCaption)
+        .foregroundColor(.siloSecondaryText)
     }
 
     // MARK: - Discover carousels
@@ -166,8 +166,8 @@ struct RequestsHubView: View {
     private func carouselRow(_ carousel: RequestCarousel) -> some View {
         VStack(alignment: .leading, spacing: RequestsUI.headerSpacing) {
             Text(carousel.title)
-                .font(.continuumHeadline)
-                .foregroundColor(.continuumOnSurface)
+                .font(.siloHeadline)
+                .foregroundColor(.siloOnSurface)
 
             RequestCardRail(items: carousel.results) { result in
                 RequestMediaCard(result: result, onTap: { router.openRequestResult(result) })

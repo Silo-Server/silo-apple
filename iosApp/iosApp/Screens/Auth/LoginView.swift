@@ -25,7 +25,7 @@ struct LoginView: View {
             VStack(spacing: 10) {
                 AuroraEyebrow(text: "Account", centered: true)
                 Text("Welcome back")
-                    .font(.continuumTitle)
+                    .font(.siloTitle)
                     .foregroundStyle(Color.auroraInk)
                 if let host = hostLabel {
                     Label(host, systemImage: "server.rack")
@@ -34,10 +34,10 @@ struct LoginView: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
                         .background(Capsule().fill(Color.white.opacity(0.07)))
-                        .overlay(Capsule().stroke(Color.continuumOutline, lineWidth: 1))
+                        .overlay(Capsule().stroke(Color.siloOutline, lineWidth: 1))
                 }
                 Text("Sign in to choose a profile and start watching.")
-                    .font(.continuumBody)
+                    .font(.siloBody)
                     .foregroundStyle(Color.auroraInkSecondary)
                     .multilineTextAlignment(.center)
             }

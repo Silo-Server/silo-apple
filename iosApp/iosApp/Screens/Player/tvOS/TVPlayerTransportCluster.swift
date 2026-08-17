@@ -127,7 +127,7 @@ struct TVPlayerTransportCluster: View {
                     lineWidth: 1
                 )
             )
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
             .contentShape(Circle())
             .focusable(allowsFocus)
             .focused($focusedButton, equals: focus)

@@ -65,15 +65,15 @@ struct PhoneLabeledAction: View {
             VStack(spacing: 6) {
                 Image(systemName: resolvedIcon)
                     .font(.system(size: 19, weight: .regular))
-                    .foregroundStyle(isActive ? Color.continuumAccent : Color.continuumOnSurface)
+                    .foregroundStyle(isActive ? Color.siloAccent : Color.siloOnSurface)
                     .frame(height: 22)
                     .contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
 
                 Text(label)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(isActive
-                                     ? Color.continuumAccent
-                                     : Color.continuumOnSurface.opacity(0.6))
+                                     ? Color.siloAccent
+                                     : Color.siloOnSurface.opacity(0.6))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
@@ -103,11 +103,11 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
             VStack(spacing: 6) {
                 Image(systemName: icon)
                     .font(.system(size: 19, weight: .regular))
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
                     .frame(height: 22)
                 Text(label)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.6))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.6))
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, minHeight: 44)

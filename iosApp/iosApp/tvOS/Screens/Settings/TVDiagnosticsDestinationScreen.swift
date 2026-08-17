@@ -16,7 +16,7 @@ struct TVDiagnosticsDestinationScreen: View {
                     .font(.largeTitle.bold())
                 Text("Silo Diagnostics is the default and does not require diagnostics storage on your own server.")
                     .font(.title2)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
 
                 Button("Silo Diagnostics") {
                     select(.hosted)

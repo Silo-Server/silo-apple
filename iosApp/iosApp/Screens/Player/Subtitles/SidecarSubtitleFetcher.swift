@@ -1,6 +1,6 @@
 //
 //  SidecarSubtitleFetcher.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Fetches server-provided subtitle sidecar URLs (`subtitle_urls[].url`)
 //  using the app's auth headers. The Silo server serves either raw

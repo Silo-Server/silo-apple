@@ -1,6 +1,6 @@
 //
 //  BitmapSubtitleCue.swift
-//  Continuum (Apple platforms)
+//  Silo (Apple platforms)
 //
 //  Pure model + conversion helpers for embedded bitmap subtitles
 //  (PGS, DVD "VobSub"). The FFmpeg extractor hands over paletted index

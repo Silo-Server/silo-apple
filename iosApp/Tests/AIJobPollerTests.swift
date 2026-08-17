@@ -3,7 +3,7 @@
 //  SiloTests
 //
 //  Behavioral tests for `AIJobPoller` using an injected fake `fetch` closure
-//  (no live `ContinuumAI`, no network): terminal-state stop on each terminal
+//  (no live `SiloAI`, no network): terminal-state stop on each terminal
 //  status, progress passthrough across snapshots, and cancellation.
 //
 

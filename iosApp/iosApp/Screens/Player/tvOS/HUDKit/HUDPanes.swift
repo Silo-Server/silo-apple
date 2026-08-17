@@ -68,7 +68,7 @@ struct HUDScrollablePane<Content: View>: View {
                     .padding(-10)
             )
             .scaleEffect(isFocused ? 1.01 : 1)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
             .accessibilityLabel(accessibilityLabel)
             .onMoveCommand { direction in
                 handleMove(direction, proxy: proxy)
@@ -109,7 +109,7 @@ struct HUDScrollablePane<Content: View>: View {
         guard nextIndex != scrollTargetIndex else { return }
         scrollTargetIndex = nextIndex
 
-        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+        withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
             proxy.scrollTo(scrollTargetIDs[nextIndex], anchor: .top)
         }
     }

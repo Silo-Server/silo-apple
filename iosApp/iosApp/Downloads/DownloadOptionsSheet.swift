@@ -92,8 +92,8 @@ struct DownloadOptionsSheet: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .continuumScrollContentBackgroundHidden()
-            .background(Color.continuumBackground)
+            .siloScrollContentBackgroundHidden()
+            .background(Color.siloBackground)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -124,11 +124,11 @@ struct DownloadOptionsSheet: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .lineLimit(2)
             Text(summaryDetail)
-                .font(.continuumCaption)
-                .foregroundColor(.continuumSecondaryText)
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
                 .lineLimit(3)
         }
         .padding(.vertical, 2)
@@ -362,7 +362,7 @@ struct DownloadOptionsSheet: View {
             Text(title)
             Spacer(minLength: 12)
             Text(detail)
-                .foregroundColor(.continuumSecondaryText)
+                .foregroundColor(.siloSecondaryText)
                 .multilineTextAlignment(.trailing)
         }
     }
@@ -379,12 +379,12 @@ struct DownloadOptionsSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                         .lineLimit(2)
                     if let detail, !detail.isEmpty {
                         Text(detail)
-                            .font(.continuumCaption)
-                            .foregroundColor(.continuumSecondaryText)
+                            .font(.siloCaption)
+                            .foregroundColor(.siloSecondaryText)
                             .lineLimit(2)
                     }
                 }
@@ -392,7 +392,7 @@ struct DownloadOptionsSheet: View {
                 if isSelected {
                     Image(systemName: "checkmark")
                         .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                 }
             }
             .padding(.vertical, 4)

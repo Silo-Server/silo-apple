@@ -4,7 +4,7 @@ import SwiftUI
 /// search section, and My Requests all agree on card geometry.
 enum RequestsUI {
     #if os(tvOS)
-    /// Slightly denser than `ContinuumTheme.posterCardWidth` so rails fit
+    /// Slightly denser than `SiloTheme.posterCardWidth` so rails fit
     /// more titles at 10 feet, matching the search grid's card size.
     static let cardWidth: CGFloat = 220
     static let railSpacing: CGFloat = 32
@@ -13,7 +13,7 @@ enum RequestsUI {
     /// by the rail's scroll bounds — same treatment as `TVSimilarRail`.
     static let railVerticalPadding: CGFloat = 24
     #else
-    static let cardWidth: CGFloat = ContinuumTheme.posterCardWidth
+    static let cardWidth: CGFloat = SiloTheme.posterCardWidth
     static let railSpacing: CGFloat = 12
     static let headerSpacing: CGFloat = 10
     #endif

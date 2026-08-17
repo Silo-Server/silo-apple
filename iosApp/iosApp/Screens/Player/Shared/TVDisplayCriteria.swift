@@ -26,7 +26,7 @@ enum TVDisplayCriteria {
     }
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app.tvos",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TVDisplayCriteria"
     )
 

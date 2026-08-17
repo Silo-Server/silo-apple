@@ -5,7 +5,7 @@ import Foundation
 /// Full profile payload as returned by the server.
 ///
 /// Distinct from ``UserProfile`` (the reduced shape used by the UI): this
-/// type maps every field the server sends. `ContinuumAPI.listProfiles()`
+/// type maps every field the server sends. `SiloAPI.listProfiles()`
 /// converts to `[UserProfile]` at the API boundary so call sites keep
 /// their existing types.
 struct Profile: Codable {
@@ -86,7 +86,7 @@ struct VerifyPinResponse: Codable {
 /// Wire-format body for POST /api/v1/profiles.
 ///
 /// Mirrors Kotlin `CreateProfileRequest`. The UI-facing ``CreateProfileBody``
-/// carries a subset; `ContinuumAPI.createProfile` expands it to this.
+/// carries a subset; `SiloAPI.createProfile` expands it to this.
 struct CreateProfileRequestBody: Codable {
     let name: String
     let avatar: String?

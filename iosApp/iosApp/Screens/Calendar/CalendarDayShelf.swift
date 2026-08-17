@@ -32,9 +32,9 @@ struct CalendarDayShelf: View {
     var body: some View {
         VStack(alignment: .leading, spacing: rowVerticalSpacing) {
             Text(heading)
-                .font(.continuumHeadline)
-                .foregroundColor(events.isEmpty ? .continuumSecondaryText : .continuumOnSurface)
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .font(.siloHeadline)
+                .foregroundColor(events.isEmpty ? .siloSecondaryText : .siloOnSurface)
+                .padding(.horizontal, SiloTheme.safePadding)
 
             if events.isEmpty {
                 emptyRow
@@ -77,7 +77,7 @@ struct CalendarDayShelf: View {
                     )
                 }
             }
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
             .padding(.vertical, verticalCardPadding)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -94,13 +94,13 @@ struct CalendarDayShelf: View {
     private var emptyRow: some View {
         HStack(spacing: 8) {
             Image(systemName: "moon.stars")
-                .font(.continuumCaption)
-                .foregroundColor(.continuumSecondaryText.opacity(0.5))
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText.opacity(0.5))
             Text("Nothing scheduled")
-                .font(.continuumCaption)
-                .foregroundColor(.continuumSecondaryText)
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
         }
-        .padding(.horizontal, ContinuumTheme.safePadding)
+        .padding(.horizontal, SiloTheme.safePadding)
     }
 
     private var shelfFocusBinding: FocusState<String?>.Binding? {
@@ -117,7 +117,7 @@ struct CalendarDayShelf: View {
         #if os(tvOS)
         return 20
         #else
-        return ContinuumTheme.smallPadding
+        return SiloTheme.smallPadding
         #endif
     }
 
@@ -125,7 +125,7 @@ struct CalendarDayShelf: View {
         #if os(tvOS)
         return 40
         #else
-        return ContinuumTheme.spacing
+        return SiloTheme.spacing
         #endif
     }
 

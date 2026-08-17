@@ -528,7 +528,7 @@ private struct VideoPane: View {
                 )
             }
         }
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: activePicker?.id)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: activePicker?.id)
     }
 
     private var qualityValue: String {
@@ -726,10 +726,10 @@ private struct SubtitlesPane: View {
                 .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showAppearanceDialog)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: activePicker?.id)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showAITranslateMenu)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSubtitleSearchMenu)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: showAppearanceDialog)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: activePicker?.id)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: showAITranslateMenu)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSubtitleSearchMenu)
     }
 
     private func closeAITranslateMenu() {

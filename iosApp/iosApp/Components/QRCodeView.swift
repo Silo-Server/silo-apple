@@ -37,6 +37,6 @@ struct QRCodeView: View {
         guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else {
             return nil
         }
-        return PlatformImage.continuumImage(cgImage: cgImage)
+        return PlatformImage.siloImage(cgImage: cgImage)
     }
 }

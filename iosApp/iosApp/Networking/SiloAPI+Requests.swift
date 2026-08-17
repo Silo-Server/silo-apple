@@ -5,7 +5,7 @@ import Foundation
 /// User-facing endpoints of the server's media-request system
 /// (`/api/v1/requests/*`, TMDB movies + series). Admin moderation stays on
 /// the web — the clients only search, create, track, and cancel.
-extension ContinuumAPI {
+extension SiloAPI {
     /// Feature probe — a 404 on older servers means "disabled".
     func requestsStatus() async throws -> RequestsFeatureStatus {
         try await http.get("/api/v1/requests/status")

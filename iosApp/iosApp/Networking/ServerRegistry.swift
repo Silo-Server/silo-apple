@@ -147,7 +147,7 @@ final class ServerRegistry {
     private static let migratedKey = "continuumServerRegistry.migrated.v1"
     private static let sharedTVRegistryAccount = "com.continuum.serverRegistry.v2"
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ServerRegistry"
     )
 

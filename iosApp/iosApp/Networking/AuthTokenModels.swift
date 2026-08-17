@@ -25,7 +25,7 @@ struct LoginResponse: Codable {
 ///
 /// Distinct from ``UserInfo`` (used by the rest of the app) because the
 /// server wire shape has more fields than the reduced `UserInfo` the UI
-/// needs. `ContinuumAPI` maps between the two at the API boundary.
+/// needs. `SiloAPI` maps between the two at the API boundary.
 struct AuthUser: Codable {
     let id: Int
     let username: String

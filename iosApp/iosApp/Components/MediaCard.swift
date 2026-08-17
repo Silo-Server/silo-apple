@@ -116,13 +116,13 @@ struct MediaCard: View {
     #endif
 
     private var cardWidth: CGFloat {
-        (cardWidthOverride ?? ContinuumTheme.posterCardWidth)
+        (cardWidthOverride ?? SiloTheme.posterCardWidth)
             * uiCustomization.cardPresentation.posterSize.scale
     }
     private var cardHeight: CGFloat {
         switch aspect {
         case .poster:
-            cardWidth * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
+            cardWidth * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
         case .square:
             cardWidth
         }
@@ -331,7 +331,7 @@ struct MediaCard: View {
             )
                 .frame(width: cardWidth, height: cardHeight)
                 .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
 
             // Server / user-customized overlays (resolution, HDR, ratings, …)
             // sit under the watched check + progress bar so those built-in
@@ -339,14 +339,14 @@ struct MediaCard: View {
             if let overlayData, overlayStore.enabled {
                 CardOverlays(data: overlayData, prefs: overlayStore.prefs, variant: .poster)
                     .frame(width: cardWidth, height: cardHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+                    .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
             // Episode badge (e.g. "S2 · E10") for episodes shown as posters,
             // so new episodes of the same series stay distinguishable.
             if let episodeBadge {
                 Text(episodeBadge)
-                    .font(.continuumCaption)
+                    .font(.siloCaption)
                     .fontWeight(.semibold)
                     .foregroundColor(.white)
                     .padding(.horizontal, episodeBadgeHPadding)
@@ -363,7 +363,7 @@ struct MediaCard: View {
                     ProgressBar(value: progress)
                 }
                 .frame(width: cardWidth, height: cardHeight)
-                .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
             // Watched indicator — white circle with check (Plezy style)
@@ -372,12 +372,12 @@ struct MediaCard: View {
                     Spacer()
                     ZStack {
                         Circle()
-                            .fill(Color.continuumOnSurface)
+                            .fill(Color.siloOnSurface)
                             .frame(width: checkBadgeSize, height: checkBadgeSize)
                             .shadow(color: .black.opacity(0.3), radius: 4)
                         Image(systemName: "checkmark")
                             .font(.system(size: checkIconSize, weight: .bold))
-                            .foregroundColor(Color.continuumBackground)
+                            .foregroundColor(Color.siloBackground)
                     }
                 }
                 .padding(checkBadgePadding)
@@ -406,8 +406,8 @@ struct MediaCard: View {
 
     private var titleText: some View {
         Text(title)
-            .font(.continuumSubheadline)
-            .foregroundColor(.continuumOnSurface)
+            .font(.siloSubheadline)
+            .foregroundColor(.siloOnSurface)
             // Reserve 2 lines of space so single- and multi-line titles
             // produce the same overall card height — keeps posters in a
             // row top-aligned when titles wrap.
@@ -418,8 +418,8 @@ struct MediaCard: View {
     private var yearText: some View {
         if let year {
             Text(String(year))
-                .font(.continuumCaption)
-                .foregroundColor(.continuumSecondaryText)
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
         }
     }
 
@@ -528,11 +528,11 @@ private struct FocusableMediaCard<Content: View>: View {
             if captionStyle.showsTitle {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
-                        .font(.continuumSubheadline)
+                        .font(.siloSubheadline)
                         .foregroundStyle(
                             isFocused
-                                ? Color.continuumOnSurface
-                                : Color.continuumOnSurface.opacity(0.85)
+                                ? Color.siloOnSurface
+                                : Color.siloOnSurface.opacity(0.85)
                         )
                         // Single line, truncated — keeps poster cards a uniform
                         // height and the row short under the bottom-anchored marquee.
@@ -542,8 +542,8 @@ private struct FocusableMediaCard<Content: View>: View {
 
                     if captionStyle.showsMetadata, let year {
                         Text(String(year))
-                            .font(.continuumCaption)
-                            .foregroundStyle(Color.continuumSecondaryText)
+                            .font(.siloCaption)
+                            .foregroundStyle(Color.siloSecondaryText)
                     }
                 }
                 .frame(width: cardWidth, alignment: .leading)

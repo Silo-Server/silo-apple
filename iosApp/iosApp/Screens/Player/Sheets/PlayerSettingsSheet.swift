@@ -189,7 +189,7 @@ struct PlayerSettingsSheet: View {
                         viewModel.setSubtitleMatchesSystemAppearance(enabled)
                     }
                 ))
-                .tint(.continuumAccent)
+                .tint(.siloAccent)
 
                 Toggle("Save for this device and profile", isOn: Binding(
                     get: { viewModel.settings.subtitleUsesDeviceAppearanceOverride },
@@ -197,7 +197,7 @@ struct PlayerSettingsSheet: View {
                         Task { await viewModel.setSubtitleDeviceOverrideEnabled(enabled) }
                     }
                 ))
-                .tint(.continuumAccent)
+                .tint(.siloAccent)
                 .disabled(matchesSystem)
             } footer: {
                 Text(matchesSystem
@@ -225,7 +225,7 @@ struct PlayerSettingsSheet: View {
                 }
 
                 Toggle("Text outline", isOn: appearanceBoolBinding(\.textOutline))
-                    .tint(.continuumAccent)
+                    .tint(.siloAccent)
 
                 Picker("Outline color", selection: appearanceStringBinding(\.textOutlineColor)) {
                     ForEach(SubtitleAppearance.outlineColors, id: \.hex) { color in
@@ -288,7 +288,7 @@ struct PlayerSettingsSheet: View {
                 next.backgroundOpacity = percent
                 Task { await viewModel.setSubtitleAppearance(next) }
             }
-            .tint(.continuumAccent)
+            .tint(.siloAccent)
             Text("\(Int(draftOpacity ?? committed))%")
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
@@ -329,7 +329,7 @@ struct PlayerSettingsSheet: View {
                 get: { viewModel.settings.autoPlayNextEpisode },
                 set: { viewModel.settings.setAutoPlayNextEpisode($0) }
             ))
-            .tint(.continuumAccent)
+            .tint(.siloAccent)
         }
     }
 
@@ -344,7 +344,7 @@ struct PlayerSettingsSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .tint(.continuumAccent)
+                .tint(.siloAccent)
             }
 
             NavigationLink {

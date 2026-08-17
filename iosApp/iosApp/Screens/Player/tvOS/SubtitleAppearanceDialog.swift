@@ -284,7 +284,7 @@ struct SubtitleAppearanceDialog: View {
                 )
             }
         }
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: activePicker?.id)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: activePicker?.id)
         // Defensive: the picker's own exit handler consumes Menu while it has
         // focus, but if focus ever escapes it we still want Menu to close the
         // picker, not tear down the whole dialog.

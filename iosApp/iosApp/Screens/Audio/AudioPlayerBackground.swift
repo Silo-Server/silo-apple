@@ -12,7 +12,7 @@ struct AudioPlayerBackground: View {
 
     var body: some View {
         ZStack {
-            Color.continuumBackground
+            Color.siloBackground
                 .ignoresSafeArea()
 
             if reduceMotion {

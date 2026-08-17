@@ -1,6 +1,6 @@
 //
 //  SubtitleSession.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Session-level coordinator for subtitle sources. Owns the mapping from
 //  `PlayerTrack` selection (both embedded FFmpeg streams and server-
@@ -59,7 +59,7 @@ struct SidecarSubtitleDescriptor: Hashable {
 
 final class SubtitleSession {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "SubtitleSession"
     )
 
@@ -175,7 +175,7 @@ final class SubtitleSession {
     /// whole-file conversions; slot independence makes the ordering
     /// immaterial either way.
     private let reinstallQueue = DispatchQueue(
-        label: "com.continuum.subtitle-session.reinstall",
+        label: "org.siloserver.silo.subtitle-session.reinstall",
         qos: .userInitiated
     )
 

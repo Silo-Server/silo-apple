@@ -38,7 +38,7 @@ private class LibraryCollectionsViewModel {
         error = nil
 
         do {
-            let response = try await ContinuumAPI.shared.libraryCollections(libraryId: libraryId)
+            let response = try await SiloAPI.shared.libraryCollections(libraryId: libraryId)
             let resolved = response.resolvedSections
             ResponseCache.shared.set(resolved, for: key)
             sections = resolved
@@ -71,13 +71,13 @@ struct LibraryCollectionsView: View {
         Group {
             if !viewModel.isEmpty {
                 ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: ContinuumTheme.padding) {
+                    VStack(alignment: .leading, spacing: SiloTheme.padding) {
                         ForEach(viewModel.sections) { section in
                             sectionView(section)
                         }
                     }
-                    .padding(ContinuumTheme.padding)
-                    .padding(.bottom, ContinuumTheme.largePadding)
+                    .padding(SiloTheme.padding)
+                    .padding(.bottom, SiloTheme.largePadding)
                 }
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadCollections(libraryId: libraryId) } })
@@ -91,7 +91,7 @@ struct LibraryCollectionsView: View {
                 )
             }
         }
-        .continuumBackground()
+        .siloBackground()
         .task(id: libraryId) {
             await viewModel.loadCollections(libraryId: libraryId)
         }
@@ -105,8 +105,8 @@ struct LibraryCollectionsView: View {
         VStack(alignment: .leading, spacing: 12) {
             if !section.name.isEmpty {
                 Text(section.name)
-                    .font(.continuumTitle)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloTitle)
+                    .foregroundColor(.siloOnSurface)
             }
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(section.collections) { collection in
@@ -135,10 +135,10 @@ private struct LibraryCollectionCard: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
 
     private var cardWidth: CGFloat {
-        ContinuumTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
+        SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
     }
     private var cardHeight: CGFloat {
-        cardWidth * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
+        cardWidth * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
     }
 
     var body: some View {
@@ -147,7 +147,7 @@ private struct LibraryCollectionCard: View {
                 poster
 
                 Text(countLabel)
-                    .font(.continuumSmall)
+                    .font(.siloSmall)
                     .foregroundColor(.white)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
@@ -156,19 +156,19 @@ private struct LibraryCollectionCard: View {
                     .padding(8)
             }
             .frame(width: cardWidth, height: cardHeight)
-            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius))
+            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius))
 
             if uiCustomization.cardPresentation.caption.showsTitle {
                 Text(collection.name)
-                    .font(.continuumCaption)
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .font(.siloCaption)
+                    .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(2, reservesSpace: true)
             }
 
             if uiCustomization.cardPresentation.caption.showsMetadata {
                 Text(typeLabel)
-                    .font(.continuumSmall)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .font(.siloSmall)
+                    .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(1)
             }
         }
@@ -188,10 +188,10 @@ private struct LibraryCollectionCard: View {
             .clipped()
         } else {
             ZStack {
-                Color.continuumSurfaceVariant
+                Color.siloSurfaceVariant
                 Image(systemName: "square.stack.3d.up.fill")
                     .font(.system(size: 28, weight: .semibold))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
             .frame(width: cardWidth, height: cardHeight)
         }
@@ -246,9 +246,9 @@ struct LibraryCollectionDetailView: View {
                 )
             }
         }
-        .continuumBackground()
+        .siloBackground()
         .navigationTitle(title ?? "Collection")
-        .continuumNavigationTitleDisplayMode(.large)
+        .siloNavigationTitleDisplayMode(.large)
         .task(id: "\(libraryId)-\(collectionId)") {
             await loadItems(reset: true)
         }
@@ -259,10 +259,10 @@ struct LibraryCollectionDetailView: View {
 
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: ContinuumTheme.padding) {
+            VStack(alignment: .leading, spacing: SiloTheme.padding) {
                 Text(countLabel)
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
 
                 CatalogGrid(
                     items: items,
@@ -276,9 +276,9 @@ struct LibraryCollectionDetailView: View {
                     }
                 )
             }
-            .padding(.horizontal, ContinuumTheme.padding)
-            .padding(.top, ContinuumTheme.smallPadding)
-            .padding(.bottom, ContinuumTheme.largePadding)
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.top, SiloTheme.smallPadding)
+            .padding(.bottom, SiloTheme.largePadding)
         }
     }
 
@@ -325,14 +325,14 @@ struct LibraryCollectionDetailView: View {
         do {
             let response: CatalogResponse
             if kind == .userCollections {
-                response = try await ContinuumAPI.shared.userCollectionItems(
+                response = try await SiloAPI.shared.userCollectionItems(
                     collectionId: collectionId,
                     offset: nextOffset,
                     limit: pageSize,
                     snapshot: snapshot
                 )
             } else {
-                response = try await ContinuumAPI.shared.libraryCollectionItems(
+                response = try await SiloAPI.shared.libraryCollectionItems(
                     libraryId: libraryId,
                     collectionId: collectionId,
                     offset: nextOffset,

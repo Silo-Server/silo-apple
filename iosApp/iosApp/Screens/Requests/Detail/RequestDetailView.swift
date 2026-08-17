@@ -23,11 +23,11 @@ struct RequestDetailView: View {
                 loadedContent(detail)
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.load() } })
-                    .continuumBackground()
+                    .siloBackground()
             } else {
                 LoadingView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .continuumBackground()
+                    .siloBackground()
             }
         }
         .task(id: viewModel.tmdbId) {
@@ -40,9 +40,9 @@ struct RequestDetailView: View {
         }
         #if !os(tvOS)
         .navigationTitle(viewModel.detail?.title ?? "")
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumToolbarColorSchemeDark()
-        .continuumNavigationBarSurfaceBackground()
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloToolbarColorSchemeDark()
+        .siloNavigationBarSurfaceBackground()
         #endif
     }
 
@@ -56,7 +56,7 @@ struct RequestDetailView: View {
             phoneContent(detail)
             #endif
         }
-        .continuumBackground()
+        .siloBackground()
         #if os(tvOS)
         .background(alignment: .top) {
             tvBackdrop(detail)
@@ -68,10 +68,10 @@ struct RequestDetailView: View {
 
     #if !os(tvOS)
     private func phoneContent(_ detail: RequestMediaDetail) -> some View {
-        VStack(alignment: .leading, spacing: ContinuumTheme.padding) {
+        VStack(alignment: .leading, spacing: SiloTheme.padding) {
             phoneHero(detail)
 
-            VStack(alignment: .leading, spacing: ContinuumTheme.padding) {
+            VStack(alignment: .leading, spacing: SiloTheme.padding) {
                 primaryActionButton(detail)
 
                 if let message = viewModel.actionErrorMessage {
@@ -80,15 +80,15 @@ struct RequestDetailView: View {
 
                 if let overview = detail.overview, !overview.isEmpty {
                     Text(overview)
-                        .font(.continuumBody)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloBody)
+                        .foregroundColor(.siloSecondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 recommendationsRail
             }
-            .padding(.horizontal, ContinuumTheme.padding)
-            .padding(.bottom, ContinuumTheme.largePadding)
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.bottom, SiloTheme.largePadding)
         }
     }
 
@@ -101,39 +101,39 @@ struct RequestDetailView: View {
                     .clipped()
                     .overlay(
                         LinearGradient(
-                            colors: [.clear, Color.continuumBackground.opacity(0.65), .continuumBackground],
+                            colors: [.clear, Color.siloBackground.opacity(0.65), .siloBackground],
                             startPoint: .top,
                             endPoint: .bottom
                         )
                     )
             } else {
                 Rectangle()
-                    .fill(Color.continuumSurfaceElevated)
+                    .fill(Color.siloSurfaceElevated)
                     .frame(height: 120)
             }
 
-            HStack(alignment: .bottom, spacing: ContinuumTheme.padding) {
+            HStack(alignment: .bottom, spacing: SiloTheme.padding) {
                 if let poster = RequestImageURL.build(detail.posterPath, size: .poster) {
                     AsyncImageView(url: poster, contentMode: .fill)
                         .frame(width: 96, height: 144)
-                        .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+                        .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
                         .shadow(color: .black.opacity(0.5), radius: 12, y: 6)
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text(detail.title)
-                        .font(.continuumTitle)
-                        .foregroundColor(.continuumOnSurface)
+                        .font(.siloTitle)
+                        .foregroundColor(.siloOnSurface)
                         .lineLimit(2)
 
                     Text(metaLine(detail))
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                         .lineLimit(2)
                 }
                 .padding(.bottom, 4)
             }
-            .padding(.horizontal, ContinuumTheme.padding)
+            .padding(.horizontal, SiloTheme.padding)
             .offset(y: 48)
         }
         .padding(.bottom, 48)
@@ -148,7 +148,7 @@ struct RequestDetailView: View {
             if let backdrop = RequestImageURL.build(detail.backdropPath, size: .backdrop) {
                 AsyncImageView(url: backdrop, contentMode: .fill)
             } else {
-                Color.continuumSurface
+                Color.siloSurface
             }
         }
         .frame(maxWidth: .infinity)
@@ -157,7 +157,7 @@ struct RequestDetailView: View {
                 colors: [
                     Color.black.opacity(0.35),
                     Color.black.opacity(0.72),
-                    Color.continuumBackground,
+                    Color.siloBackground,
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -174,22 +174,22 @@ struct RequestDetailView: View {
                 Text(eyebrow(detail))
                     .font(.system(size: 24, weight: .bold, design: .monospaced))
                     .tracking(3)
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
 
                 Text(detail.title)
                     .font(.system(size: 68, weight: .heavy))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .lineLimit(2)
 
                 Text(metaLine(detail))
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
                     .lineLimit(1)
 
                 if let overview = detail.overview, !overview.isEmpty {
                     Text(overview)
-                        .font(.continuumBody)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloBody)
+                        .foregroundColor(.siloSecondaryText)
                         .lineLimit(3)
                         .frame(maxWidth: 980, alignment: .leading)
                 }
@@ -200,12 +200,12 @@ struct RequestDetailView: View {
 
                 if let message = viewModel.actionErrorMessage {
                     Text(message)
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                 } else if case .request = viewModel.primaryAction {
                     Text("Reviewed by your server admin")
-                        .font(.continuumSmall)
-                        .foregroundColor(.continuumSecondaryText.opacity(0.7))
+                        .font(.siloSmall)
+                        .foregroundColor(.siloSecondaryText.opacity(0.7))
                 }
             }
             .focusSection()
@@ -253,11 +253,11 @@ struct RequestDetailView: View {
             .padding(.vertical, buttonVPadding)
             .frame(maxWidth: buttonMaxWidth)
             .background(
-                Capsule().fill(action.isInteractive ? Color.continuumOnSurface : Color.continuumChromeRestingFill)
+                Capsule().fill(action.isInteractive ? Color.siloOnSurface : Color.siloChromeRestingFill)
             )
             .overlay(
                 Capsule().stroke(
-                    action.isInteractive ? Color.clear : Color.continuumChromeRestingBorder,
+                    action.isInteractive ? Color.clear : Color.siloChromeRestingBorder,
                     lineWidth: 1
                 )
             )
@@ -293,7 +293,7 @@ struct RequestDetailView: View {
         case .submitting:
             ProgressView()
                 .controlSize(.small)
-                .tint(.continuumSecondaryText)
+                .tint(.siloSecondaryText)
         case .openInLibrary:
             Image(systemName: "play.fill")
         case .status(let state):
@@ -328,13 +328,13 @@ struct RequestDetailView: View {
     }
 
     private func buttonForeground(for action: RequestPrimaryAction) -> Color {
-        action.isInteractive ? .continuumBackground : .continuumOnSurface
+        action.isInteractive ? .siloBackground : .siloOnSurface
     }
 
     private func actionErrorBanner(_ message: String) -> some View {
         Text(message)
-            .font(.continuumCaption)
-            .foregroundColor(.continuumSecondaryText)
+            .font(.siloCaption)
+            .foregroundColor(.siloSecondaryText)
             .frame(maxWidth: .infinity, alignment: .center)
     }
 
@@ -346,8 +346,8 @@ struct RequestDetailView: View {
         if !recommendations.isEmpty {
             VStack(alignment: .leading, spacing: RequestsUI.headerSpacing) {
                 Text("More like this")
-                    .font(.continuumHeadline)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloHeadline)
+                    .foregroundColor(.siloOnSurface)
 
                 RequestCardRail(items: recommendations) { result in
                     RequestMediaCard(result: result, onTap: { router.openRequestResult(result) })
@@ -391,7 +391,7 @@ struct RequestDetailView: View {
         #if os(tvOS)
         .system(size: 30, weight: .semibold)
         #else
-        .continuumHeadline
+        .siloHeadline
         #endif
     }
 

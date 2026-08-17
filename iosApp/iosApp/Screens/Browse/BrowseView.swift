@@ -16,7 +16,7 @@ struct BrowseView: View {
         if let title {
             rootContent
                 .navigationTitle(title)
-                .continuumNavigationTitleDisplayMode(.large)
+                .siloNavigationTitleDisplayMode(.large)
         } else {
             rootContent
         }
@@ -34,13 +34,13 @@ struct BrowseView: View {
                 emptyContent
             }
         }
-        .continuumBackground()
+        .siloBackground()
         .overlay(alignment: .top) {
             // Grid is painted from cache but the server can't be reached —
             // flag the staleness instead of letting refresh fail silently.
             if ConnectionMonitor.shared.isOffline, !viewModel.items.isEmpty {
                 ServerUnreachablePill()
-                    .padding(.top, ContinuumTheme.padding)
+                    .padding(.top, SiloTheme.padding)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -62,7 +62,7 @@ struct BrowseView: View {
 
     private var emptyContent: some View {
         ScrollView {
-            VStack(spacing: ContinuumTheme.padding) {
+            VStack(spacing: SiloTheme.padding) {
                 if showsSearchShortcut {
                     searchBar
                 }
@@ -79,7 +79,7 @@ struct BrowseView: View {
                     subtitle: "Try adjusting your filters"
                 )
                 .frame(minHeight: 320)
-                .padding(.horizontal, ContinuumTheme.padding)
+                .padding(.horizontal, SiloTheme.padding)
             }
             .frame(maxWidth: .infinity)
         }
@@ -87,7 +87,7 @@ struct BrowseView: View {
 
     private var scrollContent: some View {
         ScrollView {
-            VStack(spacing: ContinuumTheme.padding) {
+            VStack(spacing: SiloTheme.padding) {
                 if showsSearchShortcut {
                     searchBar
                 }
@@ -107,7 +107,7 @@ struct BrowseView: View {
                         Task { await viewModel.loadItems() }
                     }
                 )
-                .padding(.horizontal, ContinuumTheme.padding)
+                .padding(.horizontal, SiloTheme.padding)
             }
         }
     }
@@ -120,25 +120,25 @@ struct BrowseView: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
                 Text("Search...")
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
                 Spacer()
             }
-            .font(.continuumBody)
+            .font(.siloBody)
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
-                    .fill(Color.continuumSurfaceVariant)
+                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                    .fill(Color.siloSurfaceVariant)
                     .overlay(
-                        RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
-                            .stroke(Color.continuumOutline, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                            .stroke(Color.siloOutline, lineWidth: 1)
                     )
             )
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, ContinuumTheme.padding)
+        .padding(.horizontal, SiloTheme.padding)
     }
 
     // MARK: - Control bar (Sort + Filter)
@@ -156,7 +156,7 @@ struct BrowseView: View {
             .buttonStyle(.plain)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, ContinuumTheme.padding)
+        .padding(.horizontal, SiloTheme.padding)
     }
 
     private var sortMenu: some View {
@@ -189,22 +189,22 @@ struct BrowseView: View {
             Image(systemName: icon)
                 .font(.system(size: 13, weight: .semibold))
             Text(text)
-                .font(.continuumBody)
+                .font(.siloBody)
             if let trailing {
                 Text(trailing)
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
             }
             if let badge, badge > 0 {
                 Text("\(badge)")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundColor(.continuumBackground)
+                    .foregroundColor(.siloBackground)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
-                    .background(Capsule().fill(Color.continuumOnSurface))
+                    .background(Capsule().fill(Color.siloOnSurface))
             }
         }
-        .foregroundColor(.continuumOnSurface)
+        .foregroundColor(.siloOnSurface)
         .padding(.horizontal, 13)
         .padding(.vertical, 8)
         .siloGlass(in: .capsule)
@@ -223,19 +223,19 @@ struct BrowseView: View {
                     }
                 }
             }
-            .padding(.horizontal, ContinuumTheme.padding)
+            .padding(.horizontal, SiloTheme.padding)
         }
     }
 
     private func filterChip(label: String, onRemove: @escaping () -> Void) -> some View {
         HStack(spacing: 4) {
             Text(label)
-                .font(.continuumCaption)
-                .foregroundColor(.continuumOnSurface)
+                .font(.siloCaption)
+                .foregroundColor(.siloOnSurface)
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 14))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
         }
         .padding(.horizontal, 10)
@@ -279,26 +279,26 @@ struct LibraryPageTabSelector: View {
             HStack(spacing: 8) {
                 ForEach(LibraryPageTab.allCases) { tab in
                     Button {
-                        withAnimation(.easeInOut(duration: ContinuumTheme.normalDuration)) {
+                        withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
                             selectedTab = tab
                         }
                     } label: {
                         Text(tab.title)
-                            .font(.continuumCaption)
+                            .font(.siloCaption)
                             .fontWeight(selectedTab == tab ? .semibold : .regular)
-                            .foregroundColor(selectedTab == tab ? Color.continuumBackground : .continuumSecondaryText)
+                            .foregroundColor(selectedTab == tab ? Color.siloBackground : .siloSecondaryText)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
                             .background(
                                 Capsule()
-                                    .fill(selectedTab == tab ? Color.continuumOnSurface : Color.continuumSurfaceElevated)
+                                    .fill(selectedTab == tab ? Color.siloOnSurface : Color.siloSurfaceElevated)
                             )
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, ContinuumTheme.padding)
-            .padding(.vertical, ContinuumTheme.smallPadding)
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.vertical, SiloTheme.smallPadding)
         }
     }
 }
@@ -339,7 +339,7 @@ struct LibraryDetailView: View {
             tabContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .continuumBackground()
+        .siloBackground()
         .task {
             await loadLibraryMetadataIfNeeded()
         }
@@ -454,7 +454,7 @@ struct LibraryRecommendedView: View {
         }
         .animation(.easeInOut(duration: 0.18), value: isRefreshing)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
-        .continuumBackground()
+        .siloBackground()
         .task(id: libraryId) {
             await viewModel.loadSections(libraryId: libraryId)
         }
@@ -465,7 +465,7 @@ struct LibraryRecommendedView: View {
 
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: ContinuumTheme.largePadding) {
+            LazyVStack(spacing: SiloTheme.largePadding) {
                 ForEach(viewModel.regularSections) { section in
                     SectionRow(
                         section: section,
@@ -473,13 +473,13 @@ struct LibraryRecommendedView: View {
                     )
                 }
             }
-            .padding(.bottom, ContinuumTheme.largePadding)
+            .padding(.bottom, SiloTheme.largePadding)
         }
-        .continuumScrollEdgeEffect()
+        .siloScrollEdgeEffect()
     }
 
     private var refreshStatusTopPadding: CGFloat {
-        ContinuumTheme.padding
+        SiloTheme.padding
     }
 
     private func refreshRecommendations() async {
@@ -528,7 +528,7 @@ private struct LibraryDetailTitleModifier: ViewModifier {
         if isEnabled {
             content
                 .navigationTitle(title)
-                .continuumNavigationTitleDisplayMode(.large)
+                .siloNavigationTitleDisplayMode(.large)
         } else {
             content
         }

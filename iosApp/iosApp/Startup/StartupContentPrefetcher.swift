@@ -118,7 +118,7 @@ enum StartupContentPrefetcher {
             task = homeSectionsTask
         } else {
             task = Task {
-                try await ContinuumAPI.shared.homeSections()
+                try await SiloAPI.shared.homeSections()
             }
             homeSectionsTask = task
         }
@@ -167,7 +167,7 @@ enum StartupContentPrefetcher {
             task = recommendationsTask
         } else {
             task = Task {
-                try await ContinuumAPI.shared.recommendationsDiscover()
+                try await SiloAPI.shared.recommendationsDiscover()
             }
             recommendationsTask = task
         }
@@ -196,7 +196,7 @@ enum StartupContentPrefetcher {
             task = userLibrariesTask
         } else {
             task = Task {
-                try await ContinuumAPI.shared.libraries()
+                try await SiloAPI.shared.libraries()
             }
             userLibrariesTask = task
         }
@@ -239,7 +239,7 @@ enum StartupContentPrefetcher {
             task = existing
         } else {
             task = Task {
-                try await ContinuumAPI.shared.librarySections(libraryId: libraryId)
+                try await SiloAPI.shared.librarySections(libraryId: libraryId)
             }
             librarySectionsTasks[libraryId] = task
         }
@@ -289,7 +289,7 @@ enum StartupContentPrefetcher {
                     limit: browsePageSize,
                     includeType: false
                 )
-                return try await ContinuumAPI.shared.catalog(query: query)
+                return try await SiloAPI.shared.catalog(query: query)
             }
             browseFirstPageTasks[key] = task
         }

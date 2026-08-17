@@ -24,7 +24,7 @@ struct SiloApp: App {
         // context opens. Drops a small allowlist of cosmetic warnings (PGS
         // probe codec-params, TrueHD bitstream gripes during prime) so the
         // player log stays readable; everything else still hits stderr.
-        ContinuumInstallFFmpegLogFilter()
+        SiloInstallFFmpegLogFilter()
 
         // Install the shared Nuke-backed image cache before any SwiftUI view
         // runs so poster/backdrop-heavy screens reuse the same pipeline on
@@ -50,7 +50,7 @@ struct SiloApp: App {
             ContentView()
                 .onOpenURL { url in
                     NotificationCenter.default.post(
-                        name: .continuumDeepLink,
+                        name: .siloDeepLink,
                         object: nil,
                         userInfo: ["url": url]
                     )
@@ -63,7 +63,7 @@ extension Notification.Name {
     /// Posted whenever the app receives a `continuum://` deep-link URL
     /// (debug launches, Top Shelf taps). `ContentView` consumes it and
     /// queues until the auth state machine reaches `.authenticated`.
-    static let continuumDeepLink = Notification.Name("continuumDeepLink")
+    static let siloDeepLink = Notification.Name("siloDeepLink")
 }
 
 #if DEBUG && os(macOS)
@@ -333,7 +333,7 @@ private enum DVLoopbackFixtureRunner {
         fputs(
             """
             Usage:
-              Continuum --debug-dv-fixture <input-file> [options]
+              Silo --debug-dv-fixture <input-file> [options]
 
             Options:
               --output-dir <path>         Output artifact directory.

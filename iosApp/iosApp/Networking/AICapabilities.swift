@@ -27,7 +27,7 @@ final class AICapabilities {
     /// menu opens), not as part of `refresh()`.
     private(set) var subtitleQuota: SubtitleAIQuota?
 
-    private let api: ContinuumAI
+    private let api: SiloAI
 
     /// Bumped on every `reset()`. Each in-flight `refresh()`/`refreshQuota()`
     /// captures the value before its network awaits and only commits results
@@ -36,7 +36,7 @@ final class AICapabilities {
     /// next account's capabilities.
     private var generation = 0
 
-    init(api: ContinuumAI = .shared) {
+    init(api: SiloAI = .shared) {
         self.api = api
     }
 

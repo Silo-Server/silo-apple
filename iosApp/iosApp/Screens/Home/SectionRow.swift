@@ -126,7 +126,7 @@ struct SectionRow: View {
         }
 
         do {
-            try await ContinuumAPI.shared.setWatched(
+            try await SiloAPI.shared.setWatched(
                 contentId: item.contentId,
                 played: played
             )

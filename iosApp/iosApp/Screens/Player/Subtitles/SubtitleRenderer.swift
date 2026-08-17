@@ -1,6 +1,6 @@
 //
 //  SubtitleRenderer.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  libass wrapper and frame compositor. Owns the singleton `ASS_Library`
 //  plus one `ASS_Renderer` per subtitle slot for the current playback
@@ -89,7 +89,7 @@ struct SubtitleRenderOutput {
 final class SubtitleRenderer {
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "SubtitleRenderer"
     )
     private static let sessionQueueKey = DispatchSpecificKey<String>()
@@ -98,7 +98,7 @@ final class SubtitleRenderer {
     /// Serial queue guarding all libass state. All `ass_*` calls run
     /// here — no exceptions.
     let sessionQueue = DispatchQueue(
-        label: "com.continuum.subtitle.session",
+        label: "org.siloserver.silo.subtitle.session",
         qos: .userInitiated
     )
     // Opaque pointers to the underlying C objects. `OpaquePointer` is

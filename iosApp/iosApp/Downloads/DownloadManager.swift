@@ -30,7 +30,7 @@ final class DownloadManager {
     static let shared = DownloadManager()
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "Downloads"
     )
 
@@ -318,7 +318,7 @@ final class DownloadManager {
         persist()
         let serverIds = ids
         Task {
-            for id in serverIds { try? await ContinuumAPI.shared.deleteDownloadRow(id: id) }
+            for id in serverIds { try? await SiloAPI.shared.deleteDownloadRow(id: id) }
         }
         processQueue()
         refreshStorageUsage()
@@ -428,7 +428,7 @@ final class DownloadManager {
     func refreshCapability() async {
         guard !scopeServerId.isEmpty else { return }
         do {
-            let capability = try await ContinuumAPI.shared.downloadCapability()
+            let capability = try await SiloAPI.shared.downloadCapability()
             file.capability = capability
             file.capabilityFetchedAt = Date()
             persist()
@@ -519,7 +519,7 @@ final class DownloadManager {
             seasonNumber: seasonNumber,
             caps: DownloadCaps.current()
         )
-        let rows = try await ContinuumAPI.shared.createDownload(request)
+        let rows = try await SiloAPI.shared.createDownload(request)
         for row in rows {
             upsertRow(
                 row,
@@ -561,7 +561,7 @@ final class DownloadManager {
                 downloadId: id
             )
         }
-        Task { try? await ContinuumAPI.shared.deleteDownloadRow(id: id) }
+        Task { try? await SiloAPI.shared.deleteDownloadRow(id: id) }
         processQueue()
         refreshStorageUsage()
     }
@@ -708,7 +708,7 @@ final class DownloadManager {
     private func startMediaPipeline(recordId: String) async {
         guard file.records[recordId] != nil else { return }
         do {
-            let manifest = try await ContinuumAPI.shared.fetchManifest(downloadId: recordId)
+            let manifest = try await SiloAPI.shared.fetchManifest(downloadId: recordId)
             await persistManifest(manifest, recordId: recordId)
             applyManifestDisplay(manifest, recordId: recordId)
             await fetchArtwork(manifest, recordId: recordId)
@@ -721,7 +721,7 @@ final class DownloadManager {
 
     private func startMediaTransfer(recordId: String) async {
         guard var record = file.records[recordId] else { return }
-        guard let fileURL = await ContinuumAPI.shared.downloadFileURL(downloadId: recordId) else {
+        guard let fileURL = await SiloAPI.shared.downloadFileURL(downloadId: recordId) else {
             handlePipelineError(DownloadError.fileURLUnavailable, recordId: recordId)
             return
         }
@@ -734,7 +734,7 @@ final class DownloadManager {
         record.localStatus = .downloading
         file.records[recordId] = record
         persist()
-        Task { try? await ContinuumAPI.shared.patchDownloadStatus(id: recordId, status: "downloading") }
+        Task { try? await SiloAPI.shared.patchDownloadStatus(id: recordId, status: "downloading") }
     }
 
     private func persistManifest(_ manifest: OfflineManifest, recordId: String) async {
@@ -788,7 +788,7 @@ final class DownloadManager {
             // omits artwork_urls.* (omitempty) when a title has no poster/
             // backdrop/logo, so synthesizing a path here would guarantee a 404.
             guard let path = entry.path else { continue }
-            guard let data = try? await ContinuumAPI.shared.fetchDownloadAssetData(path: path),
+            guard let data = try? await SiloAPI.shared.fetchDownloadAssetData(path: path),
                   !data.isEmpty,
                   let url = absoluteFileURLForNewAsset(recordId: recordId, filename: entry.filename) else {
                 continue
@@ -811,7 +811,7 @@ final class DownloadManager {
         for (index, subtitle) in subtitles.enumerated() {
             let ext = (subtitle.format ?? "srt").lowercased()
             let filename = "sub_\(index).\(ext)"
-            guard let data = try? await ContinuumAPI.shared.fetchDownloadAssetData(path: subtitle.fetchUrl),
+            guard let data = try? await SiloAPI.shared.fetchDownloadAssetData(path: subtitle.fetchUrl),
                   !data.isEmpty,
                   let url = absoluteFileURLForNewAsset(recordId: recordId, filename: filename) else {
                 continue
@@ -1002,7 +1002,7 @@ final class DownloadManager {
         DownloadNotifier.downloadCompleted(record)
         #endif
         let id = record.id
-        Task { try? await ContinuumAPI.shared.patchDownloadStatus(id: id, status: "completed") }
+        Task { try? await SiloAPI.shared.patchDownloadStatus(id: id, status: "completed") }
         processQueue()
         refreshStorageUsage()
         Task { await self.enforceRetention() }
@@ -1085,7 +1085,7 @@ final class DownloadManager {
             if refreshToken {
                 // Force HTTPClient's single-flight 401 refresh so the next
                 // background request carries a fresh token.
-                _ = try? await ContinuumAPI.shared.listDownloads()
+                _ = try? await SiloAPI.shared.listDownloads()
             }
             if let resumeData {
                 let taskId = self.sessionDelegate.resume(data: resumeData)
@@ -1125,7 +1125,7 @@ final class DownloadManager {
         guard !scopeServerId.isEmpty, downloadsEnabled else { return }
         let rows: [ServerDownloadRow]
         do {
-            rows = try await ContinuumAPI.shared.listDownloads()
+            rows = try await SiloAPI.shared.listDownloads()
         } catch {
             return
         }
@@ -1230,7 +1230,7 @@ final class DownloadManager {
             deleteWatched: deleteWatched,
             maxStorageBytes: maxStorageBytes
         )
-        let response = try await ContinuumAPI.shared.createSubscription(request)
+        let response = try await SiloAPI.shared.createSubscription(request)
         upsertSubscription(response.subscription, seriesTitle: seriesTitle)
         persist()
         await reconcileWithServer(triggerPipeline: true)
@@ -1252,7 +1252,7 @@ final class DownloadManager {
             maxStorageBytes: maxStorageBytes,
             active: active
         )
-        let response = try await ContinuumAPI.shared.updateSubscription(id: id, request)
+        let response = try await SiloAPI.shared.updateSubscription(id: id, request)
         upsertSubscription(response.subscription, seriesTitle: existingTitle)
         persist()
         await reconcileWithServer(triggerPipeline: true)
@@ -1261,7 +1261,7 @@ final class DownloadManager {
     func deleteSubscription(id: String) async {
         file.subscriptions.removeAll { $0.id == id }
         persist()
-        try? await ContinuumAPI.shared.deleteSubscription(id: id)
+        try? await SiloAPI.shared.deleteSubscription(id: id)
     }
 
     /// Subscription sync + offline progress reconciliation, run on
@@ -1273,7 +1273,7 @@ final class DownloadManager {
         var registered = 0
         if !file.subscriptions.isEmpty {
             priorRecordIds = Set(file.records.keys)
-            registered = (try? await ContinuumAPI.shared.syncSubscriptions()) ?? 0
+            registered = (try? await SiloAPI.shared.syncSubscriptions()) ?? 0
         }
         await flushProgressQueue()
         await pullProgressDeltas()
@@ -1364,7 +1364,7 @@ final class DownloadManager {
             )
         }
         do {
-            let results = try await ContinuumAPI.shared.syncProgressBatch(items: items)
+            let results = try await SiloAPI.shared.syncProgressBatch(items: items)
             let okItemIds = Set(results.filter { $0.isOK }.map { $0.mediaItemId })
             // Match queue entries by identity, not media item — an entry
             // appended while the POST was in flight carries a newer position
@@ -1388,7 +1388,7 @@ final class DownloadManager {
 
     func pullProgressDeltas() async {
         do {
-            let response = try await ContinuumAPI.shared.pullProgressDeltas(since: file.progressCursor)
+            let response = try await SiloAPI.shared.pullProgressDeltas(since: file.progressCursor)
             for item in response.progress {
                 let serverTime = item.updatedAt ?? Date()
                 var entry = file.localProgress[item.mediaItemId]

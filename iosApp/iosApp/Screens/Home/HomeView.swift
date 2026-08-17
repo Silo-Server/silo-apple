@@ -33,7 +33,7 @@ struct HomeView: View {
     /// Gap between the bottom of the floating header and the first content row.
     /// A touch larger than the inter-section spacing so the header reads as a
     /// distinct band above the rows.
-    private let headerToContentGap: CGFloat = ContinuumTheme.largePadding + ContinuumTheme.padding
+    private let headerToContentGap: CGFloat = SiloTheme.largePadding + SiloTheme.padding
     #endif
     #endif
     @Environment(AppRouter.self) private var router
@@ -90,7 +90,7 @@ struct HomeView: View {
         }
         #else
         ZStack(alignment: .top) {
-            Color.continuumBackground
+            Color.siloBackground
                 .ignoresSafeArea()
 
             Group {
@@ -121,7 +121,7 @@ struct HomeView: View {
                 // Trailing action cluster: cast / search / profile, evenly
                 // spaced as one group so the gaps between glyphs are uniform
                 // (matching Plex's top-right icon row).
-                HStack(spacing: ContinuumTheme.topBarIconSpacing) {
+                HStack(spacing: SiloTheme.topBarIconSpacing) {
                     #if os(iOS)
                     SiloControlModeButton(controller: siloControl) {
                         isShowingControlPicker = true
@@ -141,11 +141,11 @@ struct HomeView: View {
                     )
                 }
             }
-            .padding(.horizontal, ContinuumTheme.padding)
+            .padding(.horizontal, SiloTheme.padding)
             #if os(iOS)
             .padding(.top, headerTopInset)
             #endif
-            .padding(.bottom, ContinuumTheme.smallPadding)
+            .padding(.bottom, SiloTheme.smallPadding)
             .background {
                 homeHeaderChrome
                     .opacity(headerChromeOpacity)
@@ -220,7 +220,7 @@ struct HomeView: View {
                 }
                 .padding(.bottom, HomeFeedMetrics.bottomRunway)
             }
-            .continuumScrollEdgeEffect()
+            .siloScrollEdgeEffect()
         }
         // Keep the overlay chrome transparent at rest, then fade in a subtle
         // glass surface once content has moved underneath it.
@@ -330,18 +330,18 @@ struct HomeView: View {
 
     #if !os(tvOS)
     private var sectionSpacing: CGFloat {
-        ContinuumTheme.largePadding
+        SiloTheme.largePadding
     }
 
     private func topRunwaySpacing(topSafeAreaInset: CGFloat) -> CGFloat {
         // Mirror the floating header's vertical footprint (icon-frame height +
         // bottom padding) so the first row always clears it, then add the
         // top inset and the Plex-style gap beneath the header.
-        var runway = topSafeAreaInset + ContinuumTheme.topBarIconHitSize + ContinuumTheme.smallPadding
+        var runway = topSafeAreaInset + SiloTheme.topBarIconHitSize + SiloTheme.smallPadding
         #if os(iOS)
         runway += headerTopInset + headerToContentGap
         #else
-        runway += ContinuumTheme.largePadding + ContinuumTheme.smallPadding
+        runway += SiloTheme.largePadding + SiloTheme.smallPadding
         #endif
         return runway
     }

@@ -1,6 +1,6 @@
 //
 //  LiveSubtitleCoordinator.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  The live AI-subtitle state machine (Milestone 4). Layers a real-time,
 //  playhead-first cue experience over the websocket on top of the M3 polling
@@ -161,7 +161,7 @@ final class RealLiveSubtitleClock: LiveSubtitleClock {
 final class LiveSubtitleCoordinator {
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "LiveSubtitle"
     )
 

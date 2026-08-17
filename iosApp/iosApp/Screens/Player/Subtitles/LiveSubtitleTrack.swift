@@ -1,6 +1,6 @@
 //
 //  LiveSubtitleTrack.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Pure value-type conversion of a streamed AI subtitle cue
 //  `(start, end, text)` (absolute media-time seconds) into the exact

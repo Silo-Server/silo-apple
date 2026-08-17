@@ -33,7 +33,7 @@ struct AuroraErrorLabel: View {
             Text(text)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .font(.continuumCaption)
+        .font(.siloCaption)
         .foregroundStyle(Color.requestRose)
         .frame(maxWidth: .infinity, alignment: .leading)
         .transition(.opacity)
@@ -104,7 +104,7 @@ struct AuroraTextField<F: Hashable>: View {
             .frame(height: AuroraControl.height)
             .background(
                     RoundedRectangle(cornerRadius: AuroraControl.corner)
-                    .fill(isFocused ? AuroraControl.activeFill : Color.continuumSurfaceElevated.opacity(0.82))
+                    .fill(isFocused ? AuroraControl.activeFill : Color.siloSurfaceElevated.opacity(0.82))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: AuroraControl.corner)
@@ -113,7 +113,7 @@ struct AuroraTextField<F: Hashable>: View {
             )
             .shadow(color: isFocused ? Color.auroraAccent.opacity(0.22) : .clear,
                     radius: isFocused ? 12 : 0)
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
+            .animation(SiloTheme.springAnimation, value: isFocused)
         }
     }
 

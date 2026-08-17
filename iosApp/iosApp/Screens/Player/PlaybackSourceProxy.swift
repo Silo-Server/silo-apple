@@ -70,7 +70,7 @@ enum PlaybackSourceResponseEnd: Equatable {
 
 final class PlaybackSourceCache {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "PlaybackSourceCache"
     )
 
@@ -669,7 +669,7 @@ private struct PlaybackSourceRangeRequest {
 
 private final class PlaybackSourceResource {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "PlaybackSourceResource"
     )
 
@@ -2047,12 +2047,12 @@ private final class PlaybackSourceResource {
 
 final class PlaybackSourceProxy {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "PlaybackSourceProxy"
     )
 
     private let resource: PlaybackSourceResource
-    private let queue = DispatchQueue(label: "com.continuum.playback.sourceproxy", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "org.siloserver.silo.playback.sourceproxy", qos: .userInitiated)
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private let lock = NSLock()

@@ -1,6 +1,6 @@
 //
 //  FFmpegLogFilter.m
-//  Continuum
+//  Silo
 //
 //  See FFmpegLogFilter.h for context. Patterns dropped here:
 //
@@ -37,7 +37,7 @@
 
 #import <Libavutil/log.h>
 
-static void continuum_av_log_callback(void *avcl, int level, const char *fmt, va_list vl) {
+static void silo_av_log_callback(void *avcl, int level, const char *fmt, va_list vl) {
     if (level > av_log_get_level()) {
         return;
     }
@@ -67,6 +67,6 @@ static void continuum_av_log_callback(void *avcl, int level, const char *fmt, va
     fputs(line, stderr);
 }
 
-void ContinuumInstallFFmpegLogFilter(void) {
-    av_log_set_callback(continuum_av_log_callback);
+void SiloInstallFFmpegLogFilter(void) {
+    av_log_set_callback(silo_av_log_callback);
 }
