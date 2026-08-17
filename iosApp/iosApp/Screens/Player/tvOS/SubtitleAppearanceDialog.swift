@@ -337,10 +337,11 @@ struct SubtitleAppearanceDialog: View {
     private static let fontFamilyOptions: [HUDDropdownOption] =
         SubtitleFontFamilyPreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
 
-    private static let sizeOptions: [HUDDropdownOption] =
+    /// Also used by the HUD's Subtitles pane, which offers the same two rows.
+    static let sizeOptions: [HUDDropdownOption] =
         SubtitleFontSizePreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
 
-    private static let positionOptions: [HUDDropdownOption] =
+    static let positionOptions: [HUDDropdownOption] =
         SubtitlePositionPreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
 
     private static let opacityOptions: [HUDDropdownOption] =

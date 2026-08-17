@@ -369,8 +369,7 @@ struct MobilePlayerControls: View {
                     .fill(Color.white.opacity(0.2))
                     .frame(height: barHeight)
 
-                // Buffered range (AVPlayer routes only; CoreMedia reports 0
-                // so the layer simply never draws).
+                // Buffered range ahead of the playhead.
                 if let buffered = bufferedFraction, buffered > progress {
                     Capsule()
                         .fill(Color.white.opacity(0.22))

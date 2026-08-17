@@ -755,7 +755,7 @@ private struct SubtitlesPane: View {
     /// Whether the server's AI capabilities + the current track list offer any
     /// AI subtitle action (translate an existing text track, or transcribe
     /// audio). Gates the "Translate with AI…" row so it never opens an empty
-    /// menu. Shared with the iOS `TrackSelectionSheet` via the same helper.
+    /// menu. Shared with the iOS `MobilePlayerControls` via the same helper.
     private var aiSubtitlesAvailable: Bool {
         SubtitleTranslateMenu.hasActionableSource(viewModel)
     }
@@ -788,12 +788,6 @@ private struct SubtitlesPane: View {
         showAppearanceDialog = false
         focusedOption = .appearance
     }
-
-    private static let sizeOptions: [HUDDropdownOption] =
-        SubtitleFontSizePreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
-
-    private static let positionOptions: [HUDDropdownOption] =
-        SubtitlePositionPreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
 
     @ViewBuilder
     private var trackRows: some View {
@@ -955,7 +949,7 @@ private struct SubtitlesPane: View {
                         for: .size,
                         HUDPickerPresentation(
                             title: "Subtitle Size",
-                            options: Self.sizeOptions,
+                            options: SubtitleAppearanceDialog.sizeOptions,
                             selection: viewModel.settings.subtitleAppearance.fontSize.rawValue,
                             onSelect: { value in
                                 if let size = SubtitleFontSizePreset(rawValue: value) {
@@ -975,7 +969,7 @@ private struct SubtitlesPane: View {
                         for: .position,
                         HUDPickerPresentation(
                             title: "Subtitle Position",
-                            options: Self.positionOptions,
+                            options: SubtitleAppearanceDialog.positionOptions,
                             selection: viewModel.settings.subtitleAppearance.position.rawValue,
                             onSelect: { value in
                                 if let position = SubtitlePositionPreset(rawValue: value) {

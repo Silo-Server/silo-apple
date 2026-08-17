@@ -9,7 +9,7 @@
 //  from the spoken audio. No source-picking or transcribe-vs-translate step is
 //  shown; the routing is hidden behind the language choice.
 //
-//  Presented from ``TrackSelectionSheet`` (iOS) / ``TVPlayerInfoHUD`` (tvOS) and
+//  Presented from ``MobilePlayerControls`` (iOS) / ``TVPlayerInfoHUD`` (tvOS) and
 //  gated on the server's AI capabilities via ``hasActionableSource``.
 //
 //  Drives ``PlayerViewModel/subtitleAI`` (a ``SubtitleAIController``), which runs
@@ -28,13 +28,34 @@
 //      default audio track (`-1`). If the target equals the spoken audio
 //      language it's a plain transcribe; otherwise transcribe-and-translate.
 //
-//  Two-platform split mirrors ``TrackSelectionSheet``: iOS renders a sectioned
+//  Two-platform split mirrors ``SubtitleSearchMenu``: iOS renders a sectioned
 //  `List`; tvOS renders a centered floating panel with the same chrome and the
 //  same `onExitCommand` / backdrop-tap dismissal. The row-builders are shared;
 //  only the container + row view differ by platform.
 //
 
 import SwiftUI
+
+/// One selectable language row, shared by the AI and search subtitle menus.
+/// `hint` floats a short provenance tag ("Preferred" / "Original language")
+/// next to the suggested rows; nil for the plain language list.
+struct SubtitleLanguageChoice: Identifiable {
+    let code: String
+    let label: String
+    let hint: String?
+    var id: String { code }
+
+    /// Display name for a language code, preferring the curated label.
+    static func displayName(_ code: String) -> String {
+        if let opt = PlaybackLanguageOption.all.first(where: {
+            $0.code.caseInsensitiveCompare(code) == .orderedSame
+        }) {
+            return opt.label
+        }
+        return Locale(identifier: "en").localizedString(forLanguageCode: code)?.capitalized
+            ?? code.uppercased()
+    }
+}
 
 struct SubtitleTranslateMenu: View {
     let viewModel: PlayerViewModel
@@ -62,16 +83,6 @@ struct SubtitleTranslateMenu: View {
 
     private var controller: SubtitleAIController { viewModel.subtitleAI }
     private var capabilities: AICapabilities { .shared }
-
-    /// One selectable target language. `hint` floats a short provenance tag
-    /// ("Preferred" / "Original language") next to the suggested rows; nil for
-    /// the plain language list.
-    private struct LanguageChoice: Identifiable {
-        let code: String
-        let label: String
-        let hint: String?
-        var id: String { code }
-    }
 
     static func isBitmap(_ track: PlayerTrack) -> Bool {
         guard let codec = track.codec?.lowercased(), !codec.isEmpty else { return false }
@@ -208,21 +219,10 @@ struct SubtitleTranslateMenu: View {
         onJobStarted()
     }
 
-    /// Display name for a language code, preferring the curated label.
-    private func displayName(_ code: String) -> String {
-        if let opt = PlaybackLanguageOption.all.first(where: {
-            $0.code.caseInsensitiveCompare(code) == .orderedSame
-        }) {
-            return opt.label
-        }
-        return Locale(identifier: "en").localizedString(forLanguageCode: code)?.capitalized
-            ?? code.uppercased()
-    }
-
     /// Languages offered, deduped, with the profile's preferred language and the
     /// spoken/original language floated to the top.
-    private var orderedLanguages: [LanguageChoice] {
-        var result: [LanguageChoice] = []
+    private var orderedLanguages: [SubtitleLanguageChoice] {
+        var result: [SubtitleLanguageChoice] = []
         var seen = Set<String>()
         func add(_ code: String, hint: String?) {
             let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -230,7 +230,7 @@ struct SubtitleTranslateMenu: View {
             let key = trimmed.lowercased()
             guard !seen.contains(key) else { return }
             seen.insert(key)
-            result.append(.init(code: trimmed, label: displayName(trimmed), hint: hint))
+            result.append(.init(code: trimmed, label: SubtitleLanguageChoice.displayName(trimmed), hint: hint))
         }
         if let preferred = profilePrefs.preferredSubtitleLanguage {
             add(preferred, hint: "Preferred")
@@ -246,10 +246,10 @@ struct SubtitleTranslateMenu: View {
 
     /// Preferred + original, kept in priority order (these are deliberately
     /// floated to the top, so they are not alphabetized).
-    private var suggestedLanguages: [LanguageChoice] { orderedLanguages.filter { $0.hint != nil } }
+    private var suggestedLanguages: [SubtitleLanguageChoice] { orderedLanguages.filter { $0.hint != nil } }
 
     /// The full language list, sorted alphabetically by display name.
-    private var otherLanguages: [LanguageChoice] {
+    private var otherLanguages: [SubtitleLanguageChoice] {
         orderedLanguages
             .filter { $0.hint == nil }
             .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
@@ -267,7 +267,7 @@ struct SubtitleTranslateMenu: View {
 
     #if os(tvOS)
     /// Rows in display order: suggested (priority) then the alphabetized rest.
-    private var displayLanguages: [LanguageChoice] { suggestedLanguages + otherLanguages }
+    private var displayLanguages: [SubtitleLanguageChoice] { suggestedLanguages + otherLanguages }
 
     /// Move focus to the first serviceable row. Used on appear and to recover
     /// when focus falls to `nil`.
@@ -386,17 +386,33 @@ struct SubtitleTranslateMenu: View {
     }
 
     @ViewBuilder
-    private func tvLanguageRow(_ choice: LanguageChoice) -> some View {
-        TVLanguageRow(
-            name: choice.label,
-            detail: choice.hint,
-            systemImage: choice.hint == "Preferred" ? "star.fill" : "globe",
-            code: choice.code,
+    private func tvLanguageRow(_ choice: SubtitleLanguageChoice) -> some View {
+        TVSearchRow(
+            rowID: choice.code,
             isDisabled: !canServe(choice.code),
-            focusedID: $focusedLanguageID
+            focusedID: $focusedLanguageID,
+            action: { route(to: choice.code) }
         ) {
-            route(to: choice.code)
+            Image(systemName: choice.hint == "Preferred" ? "star.fill" : "globe")
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(.white.opacity(0.8))
+                .frame(width: 34)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(choice.label)
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                if let hint = choice.hint {
+                    Text(hint)
+                        .font(.system(size: 18, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 8)
         }
+        .accessibilityLabel(choice.label)
         .id(choice.code)
     }
     #endif
@@ -456,7 +472,7 @@ struct SubtitleTranslateMenu: View {
 
     #if !os(tvOS)
     @ViewBuilder
-    private func languageRow(_ choice: LanguageChoice) -> some View {
+    private func languageRow(_ choice: SubtitleLanguageChoice) -> some View {
         MenuRow(
             name: choice.label,
             detail: choice.hint,
@@ -544,19 +560,17 @@ struct SubtitleTranslateMenu: View {
 // MARK: - Section header (tvOS inline) + quota row
 
 private extension SubtitleTranslateMenu {
+    #if os(tvOS)
     @ViewBuilder
     func sectionHeader(_ text: String) -> some View {
-        #if os(tvOS)
         Text(text.uppercased())
             .font(.system(size: 14, weight: .semibold))
             .tracking(1.2)
             .foregroundStyle(.white.opacity(0.45))
             .padding(.horizontal, 12)
             .padding(.top, 10)
-        #else
-        EmptyView()
-        #endif
     }
+    #endif
 
     @ViewBuilder
     var quotaRow: some View {
@@ -584,77 +598,15 @@ private extension SubtitleTranslateMenu {
         }
     }
 
-    @ViewBuilder
     func progressButton(title: String, action: @escaping () -> Void) -> some View {
-        #if os(tvOS)
         Button(title, action: action)
             .buttonStyle(.bordered)
-        #else
-        Button(title, action: action)
-            .buttonStyle(.bordered)
-        #endif
     }
 }
 
-// MARK: - Menu row (platform-split, mirroring TrackSelectionSheet.TrackRow)
+// MARK: - Menu row (iOS; tvOS rows use the shared `TVSearchRow`)
 
-#if os(tvOS)
-/// tvOS language row: icon + two lines, row-fill focus highlight, bare
-/// `.focusable` + tap (no system halo), matching `TrackSelectionSheet`.
-///
-/// Focus is driven by a panel-level `@FocusState.Binding` keyed on the language
-/// `code` (rather than a self-owned `@FocusState`) so the list can scroll-follow
-/// focus and recover it when it falls to `nil`. Mirrors `TVSettingsPickerSheet`.
-private struct TVLanguageRow: View {
-    let name: String
-    let detail: String?
-    let systemImage: String
-    let code: String
-    var isDisabled: Bool = false
-    @FocusState.Binding var focusedID: String?
-    let action: () -> Void
-
-    private var isFocused: Bool { focusedID == code }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            Image(systemName: systemImage)
-                .font(.system(size: 22, weight: .regular))
-                .foregroundStyle(.white.opacity(0.8))
-                .frame(width: 34)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(name)
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                if let detail {
-                    Text(detail)
-                        .font(.system(size: 18, weight: .regular))
-                        .foregroundStyle(.white.opacity(0.55))
-                        .lineLimit(2)
-                }
-            }
-            Spacer(minLength: 8)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isFocused ? Color.white.opacity(0.16) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .focusable(!isDisabled)
-        .focused($focusedID, equals: code)
-        .onTapGesture(perform: action)
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.35 : 1.0)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(name)
-    }
-}
-#else
+#if !os(tvOS)
 /// iOS menu row: standard List row with a leading icon and a chevron.
 private struct MenuRow: View {
     let name: String

@@ -72,14 +72,6 @@ struct SubtitleSearchMenu: View {
     @FocusState private var focusedRowID: String?
     #endif
 
-    /// One selectable search language. Mirrors the AI menu's shape.
-    private struct LanguageChoice: Identifiable {
-        let code: String
-        let label: String
-        let hint: String?
-        var id: String { code }
-    }
-
     var body: some View {
         platformBody
             // The provider probe is async and fails open, so this menu can
@@ -121,20 +113,9 @@ struct SubtitleSearchMenu: View {
 
     // MARK: - Languages
 
-    /// Display name for a language code, preferring the curated label.
-    private func displayName(_ code: String) -> String {
-        if let opt = PlaybackLanguageOption.all.first(where: {
-            $0.code.caseInsensitiveCompare(code) == .orderedSame
-        }) {
-            return opt.label
-        }
-        return Locale(identifier: "en").localizedString(forLanguageCode: code)?.capitalized
-            ?? code.uppercased()
-    }
-
     /// Languages offered, deduped, preferred language floated to the top.
-    private var orderedLanguages: [LanguageChoice] {
-        var result: [LanguageChoice] = []
+    private var orderedLanguages: [SubtitleLanguageChoice] {
+        var result: [SubtitleLanguageChoice] = []
         var seen = Set<String>()
         func add(_ code: String, hint: String?) {
             let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -142,7 +123,7 @@ struct SubtitleSearchMenu: View {
             let key = trimmed.lowercased()
             guard !seen.contains(key) else { return }
             seen.insert(key)
-            result.append(.init(code: trimmed, label: displayName(trimmed), hint: hint))
+            result.append(.init(code: trimmed, label: SubtitleLanguageChoice.displayName(trimmed), hint: hint))
         }
         if let preferred = profilePrefs.preferredSubtitleLanguage {
             add(preferred, hint: "Preferred")
@@ -153,9 +134,9 @@ struct SubtitleSearchMenu: View {
         return result
     }
 
-    private var suggestedLanguages: [LanguageChoice] { orderedLanguages.filter { $0.hint != nil } }
+    private var suggestedLanguages: [SubtitleLanguageChoice] { orderedLanguages.filter { $0.hint != nil } }
 
-    private var otherLanguages: [LanguageChoice] {
+    private var otherLanguages: [SubtitleLanguageChoice] {
         orderedLanguages
             .filter { $0.hint == nil }
             .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
@@ -282,7 +263,7 @@ struct SubtitleSearchMenu: View {
         // Canonical-key check filters junk codes; display goes through the
         // same `displayName` as the picker so the strings stay consistent.
         if SubtitleDisplayOrder.canonicalLanguageKey(result.language) != nil {
-            parts.append(displayName(result.language))
+            parts.append(SubtitleLanguageChoice.displayName(result.language))
         }
         if result.downloads > 0 {
             parts.append("\(result.downloads) downloads")
@@ -294,7 +275,7 @@ struct SubtitleSearchMenu: View {
     }
 
     private var emptyResultsText: String {
-        let language = searchedLanguage.map(displayName) ?? "that language"
+        let language = searchedLanguage.map(SubtitleLanguageChoice.displayName) ?? "that language"
         return "No subtitles found for \(language)."
     }
 
@@ -302,7 +283,7 @@ struct SubtitleSearchMenu: View {
 
     #if os(tvOS)
     /// Rows in display order for focus recovery.
-    private var displayLanguages: [LanguageChoice] { suggestedLanguages + otherLanguages }
+    private var displayLanguages: [SubtitleLanguageChoice] { suggestedLanguages + otherLanguages }
 
     private func focusFirstRow() {
         switch phase {
@@ -426,7 +407,7 @@ struct SubtitleSearchMenu: View {
     }
 
     @ViewBuilder
-    private func tvLanguageRow(_ choice: LanguageChoice) -> some View {
+    private func tvLanguageRow(_ choice: SubtitleLanguageChoice) -> some View {
         TVSearchRow(
             rowID: choice.code,
             focusedID: $focusedRowID,
@@ -490,7 +471,7 @@ struct SubtitleSearchMenu: View {
             }
             .id("back-to-languages")
         } else {
-            sectionHeader(searchedLanguage.map { displayName($0) } ?? "Results")
+            sectionHeader(searchedLanguage.map { SubtitleLanguageChoice.displayName($0) } ?? "Results")
             ForEach(results, id: \.uniqueKey) { result in
                 tvResultRow(result)
             }
@@ -658,7 +639,7 @@ struct SubtitleSearchMenu: View {
     }
 
     @ViewBuilder
-    private func languageRow(_ choice: LanguageChoice) -> some View {
+    private func languageRow(_ choice: SubtitleLanguageChoice) -> some View {
         Button {
             search(language: choice.code)
         } label: {
@@ -698,7 +679,7 @@ struct SubtitleSearchMenu: View {
                     Button("Choose another language") { backToLanguages() }
                 }
             } else {
-                Section(searchedLanguage.map { displayName($0) } ?? "Results") {
+                Section(searchedLanguage.map { SubtitleLanguageChoice.displayName($0) } ?? "Results") {
                     ForEach(results, id: \.uniqueKey) { result in
                         resultRow(result)
                     }
@@ -770,11 +751,11 @@ struct SubtitleSearchMenu: View {
 // MARK: - tvOS focus row
 
 #if os(tvOS)
-/// Generic panel row for the search menu: bare `.focusable` + tap (no system
-/// halo), row-fill focus highlight, focus driven by the panel-level
-/// `@FocusState.Binding` keyed on `rowID` — the `TVLanguageRow` /
-/// `TrackSelectionSheet.TrackRow` idiom generalized over arbitrary content.
-private struct TVSearchRow<Content: View>: View {
+/// Generic panel row for the subtitle menus: bare `.focusable` + tap (no
+/// system halo), row-fill focus highlight, focus driven by the panel-level
+/// `@FocusState.Binding` keyed on `rowID`. Shared with
+/// ``SubtitleTranslateMenu``'s language rows.
+struct TVSearchRow<Content: View>: View {
     let rowID: String
     var isDisabled: Bool = false
     @FocusState.Binding var focusedID: String?

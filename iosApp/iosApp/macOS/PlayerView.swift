@@ -178,7 +178,7 @@ struct PlayerView: View {
     }
 
     private func nextSpeed(offset: Int) -> Double {
-        let speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+        let speeds = MacPlayerOptionsPanel.playbackSpeeds
         let current = viewModel.settings.playbackSpeed
         let index = speeds.enumerated().min { lhs, rhs in
             abs(lhs.element - current) < abs(rhs.element - current)
