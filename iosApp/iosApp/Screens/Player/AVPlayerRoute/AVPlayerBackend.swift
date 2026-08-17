@@ -585,7 +585,6 @@ final class AVPlayerBackend {
     /// here so transport KVO can reconcile those changes into Silo's intent.
     var isPictureInPictureActiveProvider: (() -> Bool)?
     var onSidecarTracksRegistered: (([SidecarSubtitleDescriptor]) -> Void)?
-    var onSubtitleLoadStatusChange: ((SubtitleSlot, SubtitleLoadStatus) -> Void)?
     /// Temporary [CMP-MEM]: source-proxy cache stats for the periodic
     /// footprint log line. The proxy is owned by PlayerViewModel, so it is
     /// injected as a closure rather than held here.
@@ -849,9 +848,6 @@ final class AVPlayerBackend {
         let session = SubtitleSession()
         session.onSidecarTracksRegistered = { [weak self] descriptors in
             self?.onSidecarTracksRegistered?(descriptors)
-        }
-        session.onStatusChange = { [weak self] slot, status in
-            self?.onSubtitleLoadStatusChange?(slot, status)
         }
         session.currentPositionSecondsProvider = { [weak self] in
             guard let self else { return 0 }

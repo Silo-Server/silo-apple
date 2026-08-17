@@ -160,8 +160,8 @@ struct TVPlayerControls: View {
             }
         }
         .onChange(of: viewModel.requestedTVHUDEntryPoint) { _, entryPoint in
-            guard let entryPoint else { return }
-            applyHUDEntryPoint(entryPoint)
+            guard entryPoint != nil else { return }
+            applyHUDEntryPoint()
             viewModel.consumeTVHUDEntryRequest()
         }
         .onChange(of: timelineSelectionRequest) { _, request in
@@ -612,7 +612,7 @@ struct TVPlayerControls: View {
         viewModel.openHUD()
     }
 
-    private func applyHUDEntryPoint(_ entryPoint: PlayerViewModel.TVHUDEntryPoint) {
+    private func applyHUDEntryPoint() {
         cancelPendingScrub = true
         isScrubberFocused = false
         focusedTransportButton = nil

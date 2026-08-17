@@ -36,27 +36,6 @@
 
 import SwiftUI
 
-/// One selectable language row, shared by the AI and search subtitle menus.
-/// `hint` floats a short provenance tag ("Preferred" / "Original language")
-/// next to the suggested rows; nil for the plain language list.
-struct SubtitleLanguageChoice: Identifiable {
-    let code: String
-    let label: String
-    let hint: String?
-    var id: String { code }
-
-    /// Display name for a language code, preferring the curated label.
-    static func displayName(_ code: String) -> String {
-        if let opt = PlaybackLanguageOption.all.first(where: {
-            $0.code.caseInsensitiveCompare(code) == .orderedSame
-        }) {
-            return opt.label
-        }
-        return Locale(identifier: "en").localizedString(forLanguageCode: code)?.capitalized
-            ?? code.uppercased()
-    }
-}
-
 struct SubtitleTranslateMenu: View {
     let viewModel: PlayerViewModel
     let onDismiss: () -> Void
@@ -387,7 +366,7 @@ struct SubtitleTranslateMenu: View {
 
     @ViewBuilder
     private func tvLanguageRow(_ choice: SubtitleLanguageChoice) -> some View {
-        TVSearchRow(
+        SubtitleSheetTVRow(
             rowID: choice.code,
             isDisabled: !canServe(choice.code),
             focusedID: $focusedLanguageID,
@@ -604,7 +583,7 @@ private extension SubtitleTranslateMenu {
     }
 }
 
-// MARK: - Menu row (iOS; tvOS rows use the shared `TVSearchRow`)
+// MARK: - Menu row (iOS; tvOS rows use the shared `SubtitleSheetTVRow`)
 
 #if !os(tvOS)
 /// iOS menu row: standard List row with a leading icon and a chevron.

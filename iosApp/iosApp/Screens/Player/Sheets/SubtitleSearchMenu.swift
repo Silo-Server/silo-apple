@@ -408,7 +408,7 @@ struct SubtitleSearchMenu: View {
 
     @ViewBuilder
     private func tvLanguageRow(_ choice: SubtitleLanguageChoice) -> some View {
-        TVSearchRow(
+        SubtitleSheetTVRow(
             rowID: choice.code,
             focusedID: $focusedRowID,
             action: { search(language: choice.code) }
@@ -455,7 +455,7 @@ struct SubtitleSearchMenu: View {
                 .foregroundStyle(.white.opacity(0.55))
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-            TVSearchRow(
+            SubtitleSheetTVRow(
                 rowID: "back-to-languages",
                 focusedID: $focusedRowID,
                 action: { backToLanguages() }
@@ -481,7 +481,7 @@ struct SubtitleSearchMenu: View {
     @ViewBuilder
     private func tvResultRow(_ result: SubtitleSearchResult) -> some View {
         let isDownloadingThis = downloadingId == result.uniqueKey
-        TVSearchRow(
+        SubtitleSheetTVRow(
             rowID: result.uniqueKey,
             isDisabled: downloadingId != nil && !isDownloadingThis,
             focusedID: $focusedRowID,
@@ -747,41 +747,3 @@ struct SubtitleSearchMenu: View {
         }
     }
 }
-
-// MARK: - tvOS focus row
-
-#if os(tvOS)
-/// Generic panel row for the subtitle menus: bare `.focusable` + tap (no
-/// system halo), row-fill focus highlight, focus driven by the panel-level
-/// `@FocusState.Binding` keyed on `rowID`. Shared with
-/// ``SubtitleTranslateMenu``'s language rows.
-struct TVSearchRow<Content: View>: View {
-    let rowID: String
-    var isDisabled: Bool = false
-    @FocusState.Binding var focusedID: String?
-    let action: () -> Void
-    @ViewBuilder let content: () -> Content
-
-    private var isFocused: Bool { focusedID == rowID }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            content()
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isFocused ? Color.white.opacity(0.16) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .focusable(!isDisabled)
-        .focused($focusedID, equals: rowID)
-        .onTapGesture(perform: action)
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.35 : 1.0)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-        .accessibilityAddTraits(.isButton)
-    }
-}
-#endif

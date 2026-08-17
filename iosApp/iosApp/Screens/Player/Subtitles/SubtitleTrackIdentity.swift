@@ -108,13 +108,3 @@ enum SubtitleFormat: Hashable {
     /// brittle against future server changes — libass parses SRT natively).
     case srt
 }
-
-/// Status of a subtitle slot's content loading. Published by
-/// `PlayerViewModel` so UI can show a spinner or a silent-failure
-/// indicator when needed.
-enum SubtitleLoadStatus: Equatable {
-    case idle
-    case fetching
-    case ready
-    case error(String)
-}
