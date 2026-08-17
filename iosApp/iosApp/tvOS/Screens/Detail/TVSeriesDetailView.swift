@@ -129,12 +129,12 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             seriesTitle: nil,
             logoUrl: detail.logoUrl,
             backdropUrl: detail.backdropUrl,
-            eyebrow: TVHeroMetadata.eyebrow(from: detail),
-            sourceTokens: TVHeroMetadata.seriesSourceTokens(from: detail),
-            ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
+            eyebrow: HeroMetadata.eyebrow(from: detail),
+            sourceTokens: HeroMetadata.seriesSourceTokens(from: detail),
+            ratingChip: HeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
-            factsLine: TVHeroMetadata.seriesFactsLine(from: detail),
-            starringText: TVHeroMetadata.starringText(from: detail),
+            factsLine: HeroMetadata.seriesFactsLine(from: detail),
+            starringText: HeroMetadata.starringText(from: detail),
             actions: { actionColumn },
             belowSynopsis: belowSynopsis
         )

@@ -80,7 +80,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                         ratingChip: nil,
                         overview: detail.overview,
                         factsLine: [],
-                        starringText: TVHeroMetadata.starringText(from: detail),
+                        starringText: HeroMetadata.starringText(from: detail),
                         actions: { actionColumn },
                         belowSynopsis: belowSynopsis
                     )

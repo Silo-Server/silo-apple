@@ -29,7 +29,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// Inline facts row shown above the action buttons. Mixes plain text
     /// (year / runtime / maturity) and outlined quality chips
     /// (4K / HDR / ATMOS / CC).
-    let factsLine: [TVHeroFactToken]
+    let factsLine: [HeroFactToken]
     /// Optional "Starring A, B, C" line floated on the right of the hero
     /// at mid-height. Hidden when nil.
     let starringText: String?
@@ -214,7 +214,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     }
 
     @ViewBuilder
-    private func factsItem(_ token: TVHeroFactToken) -> some View {
+    private func factsItem(_ token: HeroFactToken) -> some View {
         switch token {
         case .text(let value):
             Text(value)
@@ -406,11 +406,4 @@ private struct TVHeroEyebrow: View {
             )
     }
 }
-
-// MARK: - Tokens
-
-/// The tvOS hero renders exactly the strings the phone hero does; only the
-/// visual treatment differs, so both read from the same builders.
-typealias TVHeroFactToken = PhoneHeroFactToken
-typealias TVHeroMetadata = PhoneHeroMetadata
 #endif

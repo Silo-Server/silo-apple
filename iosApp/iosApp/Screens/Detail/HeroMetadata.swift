@@ -2,7 +2,7 @@ import Foundation
 
 /// A token in the hero's facts row. `.text` items get a separator between
 /// them; `.chip` renders an outlined uppercase pill (4K / HDR / ATMOS / CC).
-enum PhoneHeroFactToken: Hashable {
+enum HeroFactToken: Hashable {
     case text(String)
     case chip(String)
 }
@@ -11,7 +11,7 @@ enum PhoneHeroFactToken: Hashable {
 /// detail hero from an `ItemDetail`. Shared by the phone hero and the
 /// tvOS hero (`TVDetailHero`), which differ only in how they render the
 /// resulting strings.
-enum PhoneHeroMetadata {
+enum HeroMetadata {
 
     // MARK: - Source row
 
@@ -58,8 +58,8 @@ enum PhoneHeroMetadata {
 
     // MARK: - Facts row
 
-    static func movieFactsLine(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [PhoneHeroFactToken] {
-        var tokens: [PhoneHeroFactToken] = []
+    static func movieFactsLine(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [HeroFactToken] {
+        var tokens: [HeroFactToken] = []
         if detail.type == "episode",
            let airDate = DetailDateFormatting.abbreviatedDate(detail.airDate) {
             tokens.append(.text(airDate))
@@ -76,8 +76,8 @@ enum PhoneHeroMetadata {
         return tokens
     }
 
-    static func seriesFactsLine(from detail: ItemDetail) -> [PhoneHeroFactToken] {
-        var tokens: [PhoneHeroFactToken] = []
+    static func seriesFactsLine(from detail: ItemDetail) -> [HeroFactToken] {
+        var tokens: [HeroFactToken] = []
         if let year = detail.year, year > 0 { tokens.append(.text(String(year))) }
         if let count = detail.seasonCount, count > 0 {
             tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
@@ -171,9 +171,9 @@ enum PhoneHeroMetadata {
         }
     }
 
-    private static func qualityTokens(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [PhoneHeroFactToken] {
+    private static func qualityTokens(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [HeroFactToken] {
         guard let version = selectedVersion ?? preferredVersion(from: detail) else { return [] }
-        var tokens: [PhoneHeroFactToken] = []
+        var tokens: [HeroFactToken] = []
         if let res = resolutionLabel(version.resolution) { tokens.append(.chip(res)) }
         if version.hdr == true {
             tokens.append(.chip(dolbyVisionLabel(version: version) ?? "HDR"))
