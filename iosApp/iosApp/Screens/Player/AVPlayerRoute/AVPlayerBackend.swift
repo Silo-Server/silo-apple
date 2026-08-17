@@ -1171,7 +1171,25 @@ final class AVPlayerBackend {
     ) {
         guard completeSeekDeadline(id), item === currentItem else { return }
         isSeekPending = false
-        item?.cancelPendingSeeks()
+        // Clearing `isSeekPending` is all the deadline owes the watchdogs.
+        // Whether the seek itself is discarded depends on the kind: a
+        // `.recovery` seek from an item reload is issued right after
+        // `replaceCurrentItem` and stays queued in AVFoundation until the
+        // fresh item is ready, which is exactly what takes longer than the
+        // deadline on the paths that reload (poisoned loader, receiver-side
+        // LAN fetch after an AirPlay handoff). Cancelling it there would
+        // start the fresh item at zero and silently lose the resume
+        // position while the playhead watchdog saw an advancing clock and
+        // called the route healthy. Leaving it queued is safe: a late
+        // completion finds the deadline generation already closed and
+        // returns without touching a flag, and every following rung cancels
+        // pending seeks before issuing its own.
+        switch kind {
+        case .interactive, .initial:
+            item?.cancelPendingSeeks()
+        case .recovery:
+            break
+        }
 
         switch kind {
         case .interactive(let mediaTarget):
