@@ -304,7 +304,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             sourceStartTimeSeconds: 42.5,
             sourceBitrateBps: 18_000_000,
             videoMode: .convertProfile7To81,
-            videoOutputMode: .transcodeHEVC,
+            videoOutputMode: .copy,
             sourceVideoWidth: 3840,
             sourceVideoHeight: 2160,
             bridgedVideoParameterSets: parameterSets,

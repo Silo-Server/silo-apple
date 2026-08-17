@@ -73,9 +73,10 @@ creation).
 Current truth, and a common source of confusion:
 
 - Advertised **video codecs are `h264` and `hevc` only** (`h264` alone on
-  simulator). The client does not claim AV1/VP9/MPEG-2/VC-1 to the server even
-  though the loopback's video bridge can now play them — the bridge is a local
-  normalization capability, not a decode claim the server should plan against.
+  simulator), which is also everything the loopback can execute. The
+  on-device video bridge that once played AV1/VP9/MPEG-2/VC-1 locally was
+  retired on 2026-08-17 precisely because it was never advertised and so was
+  never reachable (see [09](09-video-bridge.md)).
 - Advertised **video containers** are `mp4`, `mov`, `m4v`, `mkv`, `matroska`,
   `webm`, `avi`, `ts`, `m2ts`, `mpegts` on device (no `webm`/`avi` on
   simulator), with both spellings of the aliased pairs so a scanner-recorded
@@ -127,9 +128,9 @@ is:
    native allowlist, and the route's capability contract satisfies the
    requirements. `reason = native_direct_asset`.
 3. **SiloPlayer loopback**, when `assessSiloRoute` is eligible. That assessment
-   resolves the video output mode (copy / bridge / AV1 passthrough — see
-   [09](09-video-bridge.md)), checks the container against the tier that mode
-   unlocks, checks subtitles, and resolves the audio bridge mode.
+   resolves the video output mode (always `.copy` since the bridge tier was
+   retired — see [09](09-video-bridge.md)), checks the container against the
+   copy allowlists, checks subtitles, and resolves the audio bridge mode.
 4. **Terminal rung.** If native direct is blocked and the Silo assessment is
    not eligible, the planner still takes `siloPlayerLoopback` when a loopback
    session spec exists at all (`native_direct_blocked_silo_fallback`);
@@ -143,7 +144,7 @@ gates the HLS route, and the vestigial flag plumbing has been removed.
 
 Every decision emits a trace. Useful tokens: `delivery_direct`,
 `container_<x>`, `video_<x>`, `silo_container_<x>`, `silo_video_<x>`,
-`silo_video_bridge_hevc`, `silo_vod_gate_open`, `silo_eligible`,
+`silo_vod_gate_open`, `silo_eligible`,
 `silo_reason_<reason>`, `silo_blocker_<blocker>`, and one of
 `fallback_order_native_silo_hls` / `fallback_order_silo_hls` /
 `fallback_order_hls_controlled_retry`.
@@ -173,8 +174,7 @@ AVPlayer-backed, so 'fall back' now means renegotiating the session with the
 server rather than swapping in another local decoder."
 
 Loopback writer failures that reach this rung include
-`LoopbackWriterError.videoBridgeTooSlow`, `.videoTranscodeSetup`,
-`.bootstrapFailed`, `.profile5ConfigUnusable`, `.vodMoovBlocked`, and
+`LoopbackWriterError.bootstrapFailed`, `.profile5ConfigUnusable`, `.vodMoovBlocked`, and
 `.prematureSourceEnd` (see
 [`LoopbackSegmentWriter.swift`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/LoopbackSegmentWriter.swift)).
 

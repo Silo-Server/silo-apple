@@ -24,31 +24,28 @@ with `silo_dv_profile_owned_by_dv_policy` for the same reason.
 | 7, with `preferProfile7HDR10Fallback` on | `.passthroughHEVC` | The Settings → Player toggle. When `DolbyVisionPolicy.resolution(forProfile:snapshot:)` returns `.profile7HDR10Fallback`, the loopback carries the HDR10-compatible base layer with DV signaling omitted. |
 | 8 | `.passthroughProfile8(baseLayer)` | Base layer from `transferKind(for:)`: PQ → 8.1 (`db1p`), SDR → 8.2 (`db2g`), HLG → 8.4 (`db4h`). |
 | 8, with Dolby Vision disabled | `.passthroughHEVC` | `dolby_vision_disabled_base_layer_loopback`. |
-| 10 (AV1 DV) | none | Not a live claim. `DolbyVisionFormat` recognizes AV1 DV metadata, but AV1 never reaches a DV `VideoMode`: the planner's DV arm only builds specs for profiles 5/7/8, and `loopbackVideoOutputMode` blocks any DV source on a non-copyable codec with `dv_not_bridgeable`. |
+| 10 (AV1 DV) | none | Not a live claim. `DolbyVisionFormat` recognizes AV1 DV metadata, but AV1 never reaches a DV `VideoMode`: the planner's DV arm only builds specs for profiles 5/7/8, and `loopbackVideoOutputMode` blocks any non-copyable codec with `video_not_copyable`. |
 
-## 2. Dolby Vision is never bridged
+## 2. Dolby Vision is never re-encoded
 
-This is a hard rule with its own gate, first in the decision order of
-`ApplePlaybackRoutePlanner.loopbackVideoOutputMode(for:version:capabilities:)`:
+Since the on-device video bridge was retired (2026-08-17, see
+[09](09-video-bridge.md)) this holds structurally rather than by a dedicated
+gate: `ApplePlaybackRoutePlanner.loopbackVideoOutputMode(for:)` has only one
+answer, and it is `.copy`.
 
 ```swift
-if dolbyVisionProfile(for: version) != nil {
-    return isCopyCodec ? (.copy, nil) : (.copy, "dv_not_bridgeable")
-}
+siloVideoCopyCodecs.contains(videoCodec) ? (.copy, nil) : (.copy, "video_not_copyable")
 ```
 
 - DV on `h264` / `hevc` → `.copy`. The bitstream, RPU, and enhancement layer
   are remuxed byte-for-byte.
-- DV on anything else → blocked with `dv_not_bridgeable`, which routes the
+- DV on anything else → blocked with `video_not_copyable`, which routes the
   session to `avPlayerHLS`.
 
-The reason is stated in the source: an RPU and enhancement layer cannot survive
+The original reason still stands: an RPU and enhancement layer cannot survive
 decode → re-encode, and Profile 5's IPT-PQ-c2 base has no viewable fallback if
-the DV metadata is stripped. Silently dropping to a bridged HEVC re-encode
-would either paint wrong colours or quietly demote a premium claim, so the
-planner refuses instead. `LoopbackVideoBridgePlannerTests.testDolbyVisionNeverBridges`
-pins this across profiles 5/7/8 and codecs vp9/av1/mpeg2video/vc1 — including
-on an AV1-hardware-decode device, where `.passthroughAV1` is *also* refused.
+the DV metadata is stripped. There is no longer a local re-encode tier that
+could get this wrong.
 
 The planner reinforces it at the call site: `directVideoOutputMode` is forced
 to `.copy` whenever `directDolbyVisionProfile != nil`, so even if the Silo
@@ -215,9 +212,7 @@ For the loopback route (`ApplePlaybackRoutePlanner.loopbackAudioOutputMode`):
 - TrueHD / MLP / MLPA use `.requireFLAC` and emit `fLaC` in the local fMP4/HLS
   output. Required FLAC does not silently fall back to E-AC-3, AC-3, or AAC.
 - Everything else transcodes: `.transcodeFLAC` above 2 channels, `.transcodeAAC`
-  at 2 or fewer. This default arm matters more than it used to — the containers
-  the video bridge unlocks routinely carry mp3, mp2, vorbis, opus, and wma, none
-  of which the mp4 muxer accepts as a copy.
+  at 2 or fewer.
 - TrueHD-to-FLAC preserves the lossless channel bed but not Atmos object
   metadata; `preservesAtmos=0` is the expected log value. Only copied E-AC-3/JOC
   sets `preservesAtmos=1`.
@@ -227,9 +222,10 @@ For the loopback route (`ApplePlaybackRoutePlanner.loopbackAudioOutputMode`):
 - verified: Dolby Vision profiles 5/7/8 claim `siloPlayerLoopback` ahead of the
   native-direct assessment in `makeExecutionPlan`, and `assessSiloRoute` returns
   early with `silo_dv_profile_owned_by_dv_policy` for any DV source.
-- verified: `loopbackVideoOutputMode` returns `dv_not_bridgeable` for DV on any
-  non-copy codec, and the planner independently forces `.copy` for DV sessions.
-  `LoopbackVideoBridgePlannerTests.testDolbyVisionNeverBridges` pins both.
+- corrected 2026-08-17: `loopbackVideoOutputMode` now returns
+  `video_not_copyable` for any non-copy codec (the DV-specific
+  `dv_not_bridgeable` arm went with the bridge tier), and the planner
+  independently forces `.copy` for DV sessions.
 - verified: the Profile 7 → 8.1 base-layer conversion, its `db1p` brand, and the
   `preferProfile7HDR10Fallback` escape hatch are unchanged by the one-player
   consolidation.

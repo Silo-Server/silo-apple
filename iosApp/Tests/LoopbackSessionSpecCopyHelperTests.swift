@@ -39,7 +39,7 @@ final class LoopbackSessionSpecCopyHelperTests: XCTestCase {
     /// Deliberately populates every optional so a dropped field shows up as a
     /// nil rather than as an equal default.
     private func makeSpec(
-        videoOutputMode: LoopbackSessionSpec.VideoOutputMode = .transcodeHEVC,
+        videoOutputMode: LoopbackSessionSpec.VideoOutputMode = .copy,
         bridgedVideoParameterSets: Data? = Data([0x01, 0x02, 0x03])
     ) -> LoopbackSessionSpec {
         LoopbackSessionSpec(
@@ -206,24 +206,19 @@ final class LoopbackSessionSpecCopyHelperTests: XCTestCase {
         assertCarriesEverything(copy, from: original, exceptParameterSets: true)
     }
 
-    /// The bridged video output mode is the reason this helper exists — a copy
-    /// that dropped it would leave a restarted producer copying the source
-    /// bitstream against encoder-authored parameter sets.
-    func testCarryingParameterSetsKeepsTheBridgedOutputMode() {
-        for mode: LoopbackSessionSpec.VideoOutputMode in [
-            .copy, .transcodeHEVC, .transcodeH264, .passthroughAV1
-        ] {
-            let copy = makeSpec(videoOutputMode: mode)
-                .carryingBridgedVideoParameterSets(Data([0x01]))
-            XCTAssertEqual(copy.videoOutputMode, mode, "\(mode)")
-            XCTAssertEqual(copy.sourceVideoWidth, 3840, "\(mode)")
-            XCTAssertEqual(copy.sourceVideoHeight, 2160, "\(mode)")
-        }
+    /// The video output mode and source dimensions ride through the helper.
+    /// (The video bridge that made these load-bearing was retired 2026-08-17;
+    /// the fields are dormant but still carried, so the contract is pinned.)
+    func testCarryingParameterSetsKeepsTheVideoOutputModeAndDimensions() {
+        let copy = makeSpec(videoOutputMode: .copy)
+            .carryingBridgedVideoParameterSets(Data([0x01]))
+        XCTAssertEqual(copy.videoOutputMode, .copy)
+        XCTAssertEqual(copy.sourceVideoWidth, 3840)
+        XCTAssertEqual(copy.sourceVideoHeight, 2160)
     }
 
     /// The two helpers compose in either order without losing the other's
-    /// contribution — which is exactly what a restarted bridged producer that
-    /// also reanchors depends on.
+    /// contribution.
     func testTheTwoHelpersCompose() {
         let original = makeSpec(bridgedVideoParameterSets: nil)
         let resolved = Data([0x11, 0x22])

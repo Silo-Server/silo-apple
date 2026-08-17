@@ -20,14 +20,6 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
 
     private static let streamURL = URL(string: "https://example.invalid/stream")!
 
-    /// Fixed device facts: no hardware AV1, HEVC encoder available. The
-    /// planner's bridge arm reads both, and `.probe()` would answer from the
-    /// host Mac's VideoToolbox.
-    private static let bridgeCapabilities = AppleVideoBridgeCapabilities(
-        supportsAV1HardwareDecode: false,
-        supportsHEVCEncode: true
-    )
-
     private func makeSession(playMethod: String = "direct") -> PlaybackSessionResponse {
         PlaybackSessionResponse(
             sessionId: "trace-session",
@@ -154,8 +146,7 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
                 preferredAudioTrackIndex: nil,
                 selectedPrimarySubtitleTrackId: nil,
                 selectedSecondarySubtitleTrackId: nil,
-                dolbyVisionPolicy: .default,
-                videoBridgeCapabilities: Self.bridgeCapabilities
+                dolbyVisionPolicy: .default
             )
         )
     }
@@ -259,35 +250,14 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
                     "fallback_order_silo_hls"
                 ]
             ),
+            // The on-device video bridge (retired 2026-08-17) used to take
+            // this source at ≤1080p; it now blocks on the video codec at any
+            // resolution and comes back from the server as HLS.
             Case(
                 label: "webm/vp9/opus 1080p",
                 version: version(
                     container: "webm", codecVideo: "vp9", codecAudio: "opus",
                     videoTracks: [video(codec: "vp9", width: 1920, height: 1080)],
-                    audioTracks: [audio(codec: "opus")]
-                ),
-                engine: .siloPlayerLoopback,
-                trace: [
-                    "vp9_video_bridge_loopback_selected",
-                    "delivery_direct",
-                    "container_webm",
-                    "video_vp9",
-                    "audio_opus",
-                    "silo_assessment",
-                    "silo_container_webm",
-                    "silo_video_vp9",
-                    "silo_video_bridge_hevc",
-                    "silo_vod_gate_open",
-                    "silo_eligible",
-                    "silo_reason_vp9_video_bridge_loopback",
-                    "fallback_order_silo_hls"
-                ]
-            ),
-            Case(
-                label: "webm/vp9/opus 2160p",
-                version: version(
-                    container: "webm", codecVideo: "vp9", codecAudio: "opus",
-                    videoTracks: [video(codec: "vp9")],
                     audioTracks: [audio(codec: "opus")]
                 ),
                 engine: .avPlayerHLS,
@@ -299,12 +269,12 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
                     "silo_assessment",
                     "silo_container_webm",
                     "silo_video_vp9",
-                    "silo_blocker_video_bridge_resolution_unsupported",
+                    "silo_blocker_video_not_copyable",
                     "fallback_order_hls_controlled_retry",
                     "blocker_container_not_allowlisted",
                     "blocker_video_codec_not_allowlisted",
                     "blocker_audio_codec_not_allowlisted",
-                    "blocker_silo_video_bridge_resolution_unsupported"
+                    "blocker_silo_video_not_copyable"
                 ]
             ),
             Case(
@@ -467,11 +437,11 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
                     "silo_assessment",
                     "silo_container_mkv",
                     "silo_video_cinepak",
-                    "silo_blocker_video_not_bridgeable",
+                    "silo_blocker_video_not_copyable",
                     "fallback_order_hls_controlled_retry",
                     "blocker_container_not_allowlisted",
                     "blocker_video_codec_not_allowlisted",
-                    "blocker_silo_video_not_bridgeable"
+                    "blocker_silo_video_not_copyable"
                 ]
             )
         ]

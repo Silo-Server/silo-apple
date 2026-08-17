@@ -75,14 +75,15 @@ enum ApplePlaybackV3Capabilities {
     /// narrower question than "what can this client demux".
     ///
     /// An original delivery is executed either natively by AVPlayer or by the
-    /// local loopback in copy mode, and the loopback refuses anything outside
-    /// its native-direct and silo source lists while the video output mode is
-    /// `.copy` (`ApplePlaybackRoutePlanner.siloContainerIsNormalizable`). The
-    /// wider `AppleDecodeCapabilities.containers` vocabulary — `webm` and
-    /// `avi` in particular — is only reachable through the bridge tier, which
-    /// no online plan can enter. Advertising those on this delivery bought
-    /// nothing but a granted `original_http` the planner then refused, which
-    /// the player could only answer with an abort-and-replan round trip.
+    /// local loopback, which only ever copies and refuses anything outside
+    /// its native-direct and silo source lists
+    /// (`ApplePlaybackRoutePlanner.siloContainerIsNormalizable`). The wider
+    /// `AppleDecodeCapabilities.containers` vocabulary — `webm` and `avi` in
+    /// particular — is a demux attestation with no local executor behind it
+    /// (the on-device video bridge that once opened them was retired
+    /// 2026-08-17). Advertising those on this delivery bought nothing but a
+    /// granted `original_http` the planner then refused, which the player
+    /// could only answer with an abort-and-replan round trip.
     ///
     /// Derived by filtering the flat vocabulary so the delivery list stays an
     /// ordered subset of the top-level attestation, which is how the server

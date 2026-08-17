@@ -213,7 +213,8 @@ final class LoopbackSegmentPlanTests: XCTestCase {
         // behind them. LoopbackSegmentCutter only opens a segment at a
         // keyframe, so a remuxed session would never produce some advertised
         // indices — and the VOD playlist (0..<segmentCount + ENDLIST) cannot
-        // heal a hole. Such a plan must not be served.
+        // heal a hole. Since the on-device video bridge was retired every
+        // session is a remux, so such a plan is never served.
         let plan = LoopbackSegmentPlan.build(
             keyframePts: [pts(0), pts(5000)],
             timeBaseNum: num, timeBaseDen: den,
@@ -221,26 +222,9 @@ final class LoopbackSegmentPlanTests: XCTestCase {
         )
         XCTAssertFalse(plan.usedKeyframeIndex)
         XCTAssertFalse(
-            LoopbackSegmentWriter.shouldServeVODPlan(plan, videoOutputMode: .copy),
-            "copy-mode sessions inherit the source keyframe cadence"
+            LoopbackSegmentWriter.shouldServeVODPlan(plan),
+            "remuxed sessions inherit the source keyframe cadence"
         )
-        XCTAssertFalse(
-            LoopbackSegmentWriter.shouldServeVODPlan(plan, videoOutputMode: .passthroughAV1),
-            "AV1 passthrough is a remux too — same skipped-index mechanism"
-        )
-    }
-
-    func testUntrustedUniformPlanIsServedForBridgedSessions() {
-        // Bridged sessions force the encoder to a keyframe on every uniform
-        // fence, so every advertised index is producible.
-        let plan = LoopbackSegmentPlan.build(
-            keyframePts: [pts(0), pts(5000)],
-            timeBaseNum: num, timeBaseDen: den,
-            sourceDurationSeconds: 10
-        )
-        XCTAssertFalse(plan.usedKeyframeIndex)
-        XCTAssertTrue(LoopbackSegmentWriter.shouldServeVODPlan(plan, videoOutputMode: .transcodeHEVC))
-        XCTAssertTrue(LoopbackSegmentWriter.shouldServeVODPlan(plan, videoOutputMode: .transcodeH264))
     }
 
     func testKeyframeTrustedPlanIsServedForRemuxedSessions() {
@@ -250,7 +234,7 @@ final class LoopbackSegmentPlanTests: XCTestCase {
             sourceDurationSeconds: 20
         )
         XCTAssertTrue(plan.usedKeyframeIndex)
-        XCTAssertTrue(LoopbackSegmentWriter.shouldServeVODPlan(plan, videoOutputMode: .copy))
+        XCTAssertTrue(LoopbackSegmentWriter.shouldServeVODPlan(plan))
     }
 
     // MARK: - Index lookup

@@ -34,7 +34,7 @@ was deleted on 2026-08-16 (see
 | Implementation route | Route family | Display label | Current role |
 | --- | --- | --- | --- |
 | `avPlayerNativeDirect` | NativePlayer | Native Player Direct | Narrow native-direct path for allowlisted `mp4` / `mov` / `m4v` assets whose video, audio, and embedded subtitle codecs all match the Apple allowlist |
-| `siloPlayerLoopback` | SiloPlayer | Direct Stream | **Primary** direct playback. Remuxes H.264/HEVC/Dolby Vision, and now also bridges the non-copyable codec tail (see the Video bridge sub-rows). Static-VOD serving mode (the only mode; the EVENT path and its `player.apple.siloplayer_primary_enabled` kill switch were retired 2026-08-17). Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
+| `siloPlayerLoopback` | SiloPlayer | Direct Stream | **Primary** direct playback. Remuxes H.264/HEVC/Dolby Vision and nothing else — the on-device video bridge that once covered the non-copyable codec tail was retired 2026-08-17 (see the Video output mode sub-rows). Static-VOD serving mode (the only mode; the EVENT path and its `player.apple.siloplayer_primary_enabled` kill switch were retired 2026-08-17). Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
 | `avPlayerHLS` | NativePlayer | Native Player HLS | Server-produced HLS for `remux` / `transcode` deliveries, and the **terminal fallback rung** for anything the loopback cannot normalize. No longer feature-flag gated |
 
 ## Matrix
@@ -61,26 +61,22 @@ was deleted on 2026-08-16 (see
 | AirPlay / external playback | Unsupported | Repo-verified | Validation required, downloads only |
 | Premium HDR / DV / Atmos claims | Validation required | Validation required | Validation required |
 
-### Video bridge (SiloPlayer only)
+### Video output mode (SiloPlayer only)
 
 `LoopbackSessionSpec.VideoOutputMode` is orthogonal to `VideoMode`: it answers
-"copy the source bitstream or re-encode it". Only the loopback route has one.
-Decided once, in
-`ApplePlaybackRoutePlanner.loopbackVideoOutputMode(for:version:capabilities:)`.
-Full detail in [09 - On-device video bridge](09-video-bridge.md).
+"copy the source bitstream or re-encode it". Only the loopback route has one,
+and since 2026-08-17 `.copy` is its only value — the on-device decode →
+VideoToolbox re-encode bridge and `.passthroughAV1` were deleted because no
+plan, online or offline, could reach them (the Apple capability surfaces only
+ever advertise `h264`/`hevc`). Decided once, in
+`ApplePlaybackRoutePlanner.loopbackVideoOutputMode(for:)`. Historical detail in
+[09 - On-device video bridge (retired)](09-video-bridge.md).
 
 | Sub-capability | `siloPlayerLoopback` |
 | --- | --- |
 | Copy (`.copy`) | Repo-verified — `h264`, `hevc`, and every Dolby Vision `VideoMode` |
-| Bridged encode (`.transcodeHEVC`) | Repo-verified — `av1` (no HW decode), `vp9`, `vp8`, `mpeg2video`, `mpeg4`, `msmpeg4v3`, `vc1`, `wmv3` |
-| Bridged encode fallback (`.transcodeH264`) | Repo-verified — same codec set when `hevc_videotoolbox` cannot be opened |
-| AV1 passthrough (`.passthroughAV1`) | Repo-verified — AV1 remuxed with an `av01` sample entry, only where `VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)`. Forced `false` on simulator |
-| Dolby Vision through the bridge | **Unsupported by design** — blocker `dv_not_bridgeable` |
-| HDR (PQ / HLG) through the bridge | Unsupported in phase 1 — blocker `video_hdr_bridge_unsupported` |
-| Bridged resolution above 1080p | Unsupported in phase 1 — blocker `video_bridge_resolution_unsupported` (cap is 1920 × 1080; unknown dimensions pass and rely on the runtime watchdog) |
-| Bridge-tier containers (`avi`, `wmv`, `asf`, `webm`, `flv`, `mpg`, `mpeg`, `m2v`, `vob`, `ogm`, `ogv`, `3gp`, `3g2`, `divx`) | Repo-verified for bridged/AV1-passthrough modes only; the copy tier still refuses them with `container_not_normalizable` |
-| Bridged session serving mode | VOD plan only — now the only loopback serving mode (the `video_bridge_requires_vod_plan` blocker was deleted with the EVENT path on 2026-08-17) |
-| Throughput floor | Repo-verified runtime watchdog: sustained output below 1.1× realtime throws `LoopbackWriterError.videoBridgeTooSlow` and the route falls to `avPlayerHLS` |
+| Every other video codec | Blocked with `video_not_copyable`; the route falls to `avPlayerHLS` and the server transcodes |
+| Containers | Repo-verified — `mkv`/`matroska`, `ts`/`m2ts`/`mts`/`mpegts`, `mp4`/`mov`/`m4v`. Anything else is `container_not_normalizable` |
 | Hardware validation | Apple TV 4K (3rd gen, tvOS 26.6) exposes hardware `hvc1` and `avc1` VideoToolbox encoders at 1080p **and** 4K, and accepts HEVC Main10. No thermal soak validation yet |
 
 ## Notes
@@ -133,9 +129,7 @@ Full detail in [09 - On-device video bridge](09-video-bridge.md).
   stranding the receiver. Hardware-validated 2026-07-24 from an iPhone 16 Pro to
   Apple TV with a Dolby Vision source. This validates external playback for that
   route, not a generalized Dolby Vision output-mode or premium-format claim.
-- Premium-media claims stay validation-gated on every route. A bridged session
-  additionally publishes the degradation warning "Video is re-encoded on this
-  device; quality is reduced."
+- Premium-media claims stay validation-gated on every route.
 
 ## Validation log
 
@@ -147,10 +141,11 @@ Full detail in [09 - On-device video bridge](09-video-bridge.md).
   buffered-ahead, chapters, external primary subtitles, secondary subtitles, and
   video gravity are uniformly available; subtitle delay/styling are raised
   per-track by `withSubtitleControls(_:)`.
-- verified: the video-bridge truth table is pinned by
-  [`LoopbackVideoBridgePlannerTests`](../../iosApp/Tests/LoopbackVideoBridgePlannerTests.swift)
-  with injected `AppleVideoBridgeCapabilities`, so the rows above hold on a Mac,
-  a CI runner, and an Apple TV alike.
+- corrected 2026-08-17: the video-bridge rows and their
+  `LoopbackVideoBridgePlannerTests` pin are gone with the tier. The surviving
+  copy/blocked truth table is pinned by
+  [`ApplePlaybackRoutePlannerPinTests`](../../iosApp/Tests/ApplePlaybackRoutePlannerPinTests.swift)
+  and [`ApplePlaybackDecisionTraceSnapshotTests`](../../iosApp/Tests/ApplePlaybackDecisionTraceSnapshotTests.swift).
 - corrected: the `HDR toggle` row previously read `Repo-verified` for
   `playerCoreDirect`. Both the route and the toggle are gone.
 - corrected: bitmap subtitles are no longer a blanket gap. PGS/DVD-sub/VobSub
