@@ -1,26 +1,26 @@
 # App cleanup — backlog and watch list
 
-Status as of 2026-08-16, after cleanup rounds 1 and 2 landed on `player/one-player-cleanup`
-(round 1: `20f5aff` → `5f1f17d`; round 2: `155d9bc` → `e5360ae`). This is the list of what is still known to be removable, what was
+Status as of 2026-08-17, after cleanup rounds 1–3 landed on `player/one-player-cleanup`
+(round 1: `20f5aff` → `5f1f17d`; round 2: `155d9bc` → `e5360ae`; round 3: `a835b59` → `6267a5a`). This is the list of what is still known to be removable, what was
 deliberately left alone, and where a closer look is likely to pay off. Line references are
-against `e5360ae` (§1) or `5f1f17d` (§2–4); re-grep before acting on any of them.
+against `6267a5a`; re-grep before acting on any of them.
 
 ## 0. Where we are
 
-Round 1 (survey → verify → 7 file-disjoint packages, each implemented and independently
-reviewed) removed **2,804 lines of Swift code**; round 2 (the §1 quick wins below, 6 packages)
-removed another **618**. cloc, comments/blanks excluded:
+Three rounds so far (survey → verify → file-disjoint packages, each implemented and independently
+reviewed by Opus agents in isolated worktrees). cloc, comments/blanks excluded:
 
-| | Before round 1 | After round 1 | After round 2 |
-|---|---|---|---|
-| App Swift code (`iosApp/iosApp` + `TopShelf`) | 122,609 | 119,805 | **119,187** |
-| Player (`Screens/Player`) | 43,323 | 42,564 | 42,540 |
-| Tests | 34,567 (1,367 cases) | 34,412 (1,355 cases) | 34,412 (1,355 cases) |
+| | Before round 1 | After round 1 | After round 2 | After round 3 |
+|---|---|---|---|---|
+| App Swift code (`iosApp/iosApp` + `TopShelf`) | 122,609 | 119,805 | 119,187 | **118,315** |
+| Player (`Screens/Player`) | 43,323 | 42,564 | 42,540 | 42,212 |
+| Tests | 34,567 (1,367 cases) | 34,412 (1,355) | 34,412 (1,355) | 34,234 (1,346) |
+| `ContinuumAPI.swift` | 803 | | | 407 |
 
-Raw git: round 1 −4,368 / +513, round 2 −866 / +165. Verification after each round: `Silo`,
-`SiloTV`, `SiloMac` build; iOS suite at the same baseline as before (14 failures, all
-pre-existing — see §4.6). The survey covered six slices with a cap of 12 findings each, so the
-tail below every slice's top-12 was **not** captured — a second survey pass will find more.
+Total: **−4,294 code lines (−3.5%)**; raw git −6,705 / +924. Verification after each round:
+`Silo`, `SiloTV`, `SiloMac` build; iOS suite at the same baseline (14 failures, all pre-existing —
+see §4.6). The round-1 survey capped each of six slices at 12 findings, so the tail below every
+slice's top-12 was **not** captured — a second survey pass will find more.
 
 ## 1. Ready to do — small, mechanical, unblocked
 
@@ -36,57 +36,71 @@ identical episode runtime formatter hoisted into `DetailFacts.swift` (divergent 
 alone, as intended); docs 04 / tvOS-detail spec no longer cite deleted symbols; tvOS-only
 `SettingsViewModel` members wrapped in `#if os(tvOS)`.
 
-**Left over / newly exposed by round 2** (all small, all mechanical):
+**Round 3 (2026-08-17, `a835b59` → `6267a5a`) closed 1.14–1.17:** `Route.collectionDetail` +
+`CollectionDetailView` deleted; `CollectionsView.swift` → `LibraryCollectionsView.swift`;
+`CollectionsResponse`/`CreateCollectionRequest` (+ `collections()`/`createCollection`/
+`deleteCollection`/`collectionItems`) removed with the dispatcher; `TVLibraryGridView` header path
+removed.
+
+**Still open / newly exposed by round 3:**
 
 | # | Item | Where | Notes |
 |---|---|---|---|
-| 1.14 | **`Route.collectionDetail` + `CollectionDetailView` are now orphaned** | `Navigation/Route.swift:29`, `Screens/Collections/CollectionDetailView.swift`, arms in `ContentView.swift` (~2191) and `TVMainTabView.swift` (~1217), `AppRouter.diagnosticsTarget` | The only constructor of `.collectionDetail(collectionId:)` was inside the deleted `CollectionsView`. Delete the case, the arms, and the view. Also removes one dispatcher call-site file (helps §2.1). |
-| 1.15 | **`CollectionsResponse`, `CreateCollectionRequest`** have no app consumer other than `ContinuumAPI` itself | `Networking/Models.swift` (~1497, ~1515), `Networking/ContinuumAPI.swift` (typed `collections()`/`createCollection` + dispatcher arm ~213) | Remove as a unit with the dispatcher arm — best folded into §2.1 rather than done alone. |
-| 1.16 | **`CollectionsView.swift` now only holds `LibraryCollections*`** | `Screens/Collections/CollectionsView.swift` (744 → ~350 lines: `LibraryCollectionsViewModel`, `LibraryCollectionsView`, `LibraryCollectionCard`, `LibraryCollectionDetailView`, `libraryCollectionAccessibilityLabel`) | `git mv` to `LibraryCollectionsView.swift` (folder glob; no project.yml change). |
-| 1.17 | **`TVLibraryGridView` header path is dead** | `tvOS/Screens/Libraries/TVLibraryGridView.swift:13, 17, 47–48` + the `header` view | Its single remaining call site passes `showsHeader: false`; `subtitle`, `showsHeader` and `header` can go. |
-| 1.18 | Divergent runtime formatters (3 styles) | `HomeFeedKit.swift:57`, `OverlayRegistry.swift:356`, `TVFocusMarquee.swift:173`, `HeroMetadata.swift` (`" min"`), `DetailFacts` (`"m"`) | **Product decision, not cleanup** — unify only if one output format is chosen for the whole app. |
+| 1.18 | Divergent runtime formatters (3 styles) | `HomeFeedKit.swift`, `OverlayRegistry.swift`, `TVFocusMarquee.swift`, `HeroMetadata.swift` (`" min"`), `DetailFacts` (`"m"`) | **Product decision, not cleanup** — unify only if one output format is chosen for the whole app. |
+| 1.19 | **`ContinuumAPI.moveCollectionToGroup(id:groupId:)`** is now app-wide unreferenced and is the sole thing keeping `UserCollection` and `UpdateUserCollectionGroupBody` alive | `Networking/ContinuumAPI.swift`, `Networking/Models.swift` | Round-3 dispatcher reviewer. Delete the three as a unit after a grep. |
+| 1.20 | `generatedHLSSpillPolicy` reason string `"local_hls_event_playlist"` | `AVPlayerBackend.swift` | Log token only; the policy is live (VOD disk cache). Rename to something VOD-neutral if it bothers anyone. |
 
 ## 2. Larger deferred cleanups — need their own PR and/or an owner decision
 
-### 2.1 Retire `ContinuumAPI`'s string-path dispatcher (~−360, medium risk)
+### 2.1 ~~Retire `ContinuumAPI`'s string-path dispatcher~~ — **done in round 3** (−484)
+All 18 call sites retargeted to the existing typed methods with identical query defaults;
+dispatcher, `pathComponents`/`queryInt`/`cast`/`requireBody`, `APIError.invalidPathParameter`/
+`.unsupportedPath`, and the unreachable `startPlayback`/`startTranscode`/`history` +
+`StartPlaybackRequest`/`TranscodeStartRequest`/`TranscodeStartResponse` removed. Only surface
+delta: a malformed id is now 404'd by the server instead of rejected client-side (unreachable with
+real ids). Leftover: 1.19.
 
-`Networking/ContinuumAPI.swift:45–331` is a `// MARK: - Path-based dispatcher (legacy)` that
-string-matches `/api/v1/...` and forwards to typed methods via `cast<T>()`/`requireBody`. After
-round 2 the call sites are in 7 files: `PersonalListGridView`, `SettingsViewModel`,
-`SearchViewModel`, `TVLibraryGridViewModel`, `ItemDetailViewModel`, `CollectionDetailView`
-(goes away with 1.14), `PlaybackSessionBridge`. Every path used already
-has a typed method. Plan: retarget the call sites (keeping the dispatcher's default
-`offset`/`limit` values — 100 for favorites/watchlist, 200 for collection items), delete the
-dispatcher + `pathComponents`/`queryInt`/`cast`/`requireBody` + the `APIError`
-`.invalidPathParameter`/`.unsupportedPath` cases, then delete the now-unreachable
-`startPlayback(request:)`, `startTranscode`, `history(offset:limit:)` and their models
-(`StartPlaybackRequest`, `TranscodeStartRequest`, `TranscodeStartResponse`,
-`CreateCollectionRequest`). Worth doing: it also removes ~20 route branches that nothing hits.
+### 2.2 ~~Legacy EVENT loopback serving mode + kill switch~~ — **done in round 3** (−462), with a correction
+Retired: `LoopbackServingMode` (both cases), `primaryGateKey`/`gated`,
+`LoopbackSessionSpec.servingMode`, `ApplePlaybackPlannerInput.siloPlayerPrimaryEnabled`, the three
+gate-only planner blockers (`h264_loopback_startup_unreliable`,
+`hevc_sdr_loopback_startup_unreliable`, `video_bridge_requires_vod_plan`),
+`initialLoopbackTimelineOffset`, the backend's EVENT seek-teardown/reanchor path
+(`reloadLocalLoopbackForSeek`, `localLoopbackReanchorReason`), the live-edge/bitrate
+forward-buffer ladder (steady state is the flat 4 s VOD target — which it already was for every
+default user), `writer.onTimelineAnchorResolved`, and 9 gate-only tests. Docs 01/02/03/05/08/09
+note the retirement.
 
-### 2.2 The legacy EVENT loopback serving mode behind the kill switch (~−800, **high risk**, product decision)
+**Correctly NOT removed (this backlog's premise was wrong):**
+- The writer's `vodActive == false` branches (`waitForGeneratedAheadIfNeeded`,
+  `retireSegmentsBehindPlaybackIfNeeded`, live runway, sliding-playlist emission — ~33 sites) are
+  a **live runtime fallback**, not the retired mode: `resolveVODPlanIfNeeded` degrades to a
+  plan-less growing playlist whenever `harvestVODPlan()` returns nil (container duration ≤ 0,
+  missing video stream, degenerate keyframe index) — log line "vod plan unavailable; degrading to
+  EVENT serving". Retiring it means replacing the fallback with a typed failure that drops to the
+  route ladder — a **behavior change needing an owner decision** (new item 2.5).
+- `LoopbackSegmentStore` spill machinery (`SpillPolicy`, `spillSegmentToDisk`, `retireSegments`,
+  `canAppendSegment`, `makeRoomForAppend`): `spillDirectory` is what `putVODSegmentOnDisk` writes
+  into, and `generatedHLSSpillPolicy` always returns `.enabled`. Load-bearing for the VOD disk
+  cache.
 
-`LoopbackServingMode.event` is documented as legacy (`PlaybackExecutionPlan.swift:346–349`);
-`gated` returns `.vodPlan` unless `player.apple.siloplayer_primary_enabled` is explicitly false
-("Stage 3 flipped the default ON", 2026-07-03). The video bridge is VOD-plan only. If the team is
-ready to retire the kill switch: delete `.event`/`gated`, make the planner always emit
-`.vodPlan`, then remove the ~34 `vodActive` branches in `LoopbackSegmentWriter`
-(`waitForGeneratedAheadIfNeeded`, `retireSegmentsBehindPlaybackIfNeeded`, live runway + sliding
-playlist emission, generated-ahead throttle constants), the memory-spill/eviction path in
-`LoopbackSegmentStore` (`SpillPolicy`, `spill*`, `retireSegments`, `generatedHLSSpillPolicy` in
-the backend) and the backend's EVENT-only seek-reanchor/live-edge code; update
-`LoopbackBufferPolicyTests` and `ApplePlaybackRoutePlannerPinTests`. **Needs a device pass on
-Apple TV and an explicit go from the player owner; do not bundle with mechanical cleanups.**
-This is the single largest lever left in the player.
+**Recommended on-device Apple TV pass** (status-quo coverage rather than regression hunt; the
+default-user control flow is byte-identical): (1) DV Profile 7 title, run 2–3 min past the
+initial-video gate, confirm `loopback buffer ramp forwardBuffer=4.0s` with no stall; (2)
+high-bitrate remux with TrueHD→FLAC bridged audio resumed far mid-title (resume pre-seek + `vod
+producer anchored`); (3) seek-heavy VOD session — far forward/back into never-produced regions,
+expect `vod producer restart`, never a session teardown; (4) a bridged-codec title (VP9/AV1) to
+confirm the removed `video_bridge_requires_vod_plan` blocker doesn't change the route; (5) any
+title with unknown/zero container duration to exercise the surviving plan-less fallback.
 
-### 2.3 Route-capability blocker scaffolding (~−80, medium risk, currently vacuous)
-
-`ApplePlaybackRouteCapabilities.blockingReasons()` can never return a blocker today (all six
-gated entries are `.repoVerified` on all four routes) and `keeps*DisabledUntilValidated` are
-always false in production. It was **kept on purpose**: `docs/tvos-player/05` calls the file the
-executable capability matrix, and the `needs*`/`keeps*` fields feed `summaryTokens` →
-`decisionTrace` (pinned in three test files). If the matrix is never going to be downgraded
-again, this can go along with its trace tokens; otherwise leave it. Decide once the player
-consolidation settles.
+### 2.3 ~~Route-capability blocker scaffolding~~ — **done in round 3** (−109), with a correction
+`blockingReasons(for:)`, seven `needs*`/`keeps*` requirement fields, their trace tokens and the
+PiP/external `degradationNotes` clauses removed; capability table + DV/Atmos claims kept; docs/05
+updated. **Kept:** `needsSecondarySubtitles` — it is live (set from `session.subtitleUrls`, drives
+the "secondary subtitles are sidecar-only" warning surfaced via `routeWarnings` →
+`PlayerSettingsSheet`). Only visible delta: `decisionTrace`/`[CMP-ROUTE] requirements=` lose the
+constant tokens `audio_selection`, `primary_subtitles`, `sidecar_primary_subtitles`, `chapters`,
+`now_playing`.
 
 ### 2.4 `OverlayPrefsStore` legacy `card_overlays` fallback (~−55) — **not a cleanup**
 
@@ -94,6 +108,16 @@ Refuted in round 1: it is a deliberate degraded path for pre-contract servers (a
 `50409d1`, #118) with wire-format parity to the web `useOverlayPrefs.ts` hook. Removing it
 changes behaviour on old servers. Only revisit as a coordinated server/web/Android decision to
 drop pre-contract support.
+
+### 2.5 The plan-less "degrade to EVENT serving" writer fallback (~−300 to −400, **behavior change**)
+
+See 2.2. `LoopbackSegmentWriter` still carries the growing-playlist producer path for sources whose
+container duration/keyframe index can't be harvested, plus the store's spill/eviction that path
+uses. Retiring it would (a) turn "vod plan unavailable" into a typed planner/backend failure that
+falls to the next route rung (server HLS), (b) delete the ~33 `vodActive == false` branches and the
+EVENT-only store helpers, (c) need a device pass on such a source. Decide whether "unknown
+duration → server HLS instead of local growing playlist" is acceptable; if yes it is the last big
+lever in the writer.
 
 ## 3. Intentionally kept — don't re-flag without new information
 
@@ -112,14 +136,15 @@ drop pre-contract support.
 ## 4. Areas worth a closer look (not yet surveyed for deletion, or needing a different brief)
 
 ### 4.1 The three files that are a third of the player
-`PlayerViewModel.swift` **6,294**, `LoopbackSegmentWriter.swift` **5,151**,
-`AVPlayerBackend.swift` **~3,780** code lines — 15.2k of the player's 42.5k. Round 1 only trimmed
-write-only state from them; the "delete dead code" brief cannot make them smaller. What would:
-(a) §2.2 (EVENT mode) takes a real bite out of the writer; (b) the VM still hosts several
+`PlayerViewModel.swift` **6,269**, `LoopbackSegmentWriter.swift` **5,145**,
+`AVPlayerBackend.swift` **3,635** code lines — 15.0k of the player's 42.2k. Rounds 1–3 trimmed
+write-only state and the EVENT kill-switch arms; the "delete dead code" brief cannot make them
+much smaller. What would: (a) §2.5 (plan-less fallback) takes the next real bite out of the writer;
+(b) the VM still hosts several
 distinct concerns behind `// MARK:` fences (route planning glue, subtitle sink adapter, HUD/entry
 points, stats enrichment, task registry, live-subtitle diagnostics) — a structural pass would
-extract these along existing seams rather than "split by size"; (c) `AVPlayerBackend` still
-carries EVENT-only seek/live-edge logic that §2.2 removes. Treat any structural pass as a
+extract these along existing seams rather than "split by size"; (c) `AVPlayerBackend` lost its EVENT-only
+seek/live-edge logic in round 3; what remains is the VOD recovery ladder. Treat any structural pass as a
 separate, reviewed effort with pinned behaviour tests — not as cleanup.
 
 ### 4.2 Comment density in the player
@@ -183,7 +208,9 @@ accidental complexity vs. essential.
 
 The two-stage workflow (survey → review packages → fix → merge) lives in `.claude/workflows/`
 (`app-cleanup-survey.js`, `app-cleanup-fix.js`, README) — local-only because `.gitignore`
-ignores `.claude/*` except `skills/`. Rules learned in rounds 1–2: keep packages file-disjoint;
+ignores `.claude/*` except `skills/`. Rules learned in rounds 1–3: keep packages file-disjoint;
 split mechanical deletions from riskier refactors; fixers must reset their worktree to the
 target branch's full SHA first (the harness worktrees start from `main`); run tests on cloned
-simulators; treat "green" as the documented baseline, not zero failures.
+simulators; treat "green" as the documented baseline, not zero failures; and expect the implementers to
+push back on a brief — three times in round 3 the brief's premise was wrong (`vodActive` fallback,
+store spill, `needsSecondarySubtitles`) and the agents kept the live code and said so.
