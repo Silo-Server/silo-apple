@@ -158,7 +158,7 @@ private struct PortraitPlayerLayout: View {
             .shadow(color: .black.opacity(0.55), radius: 28, y: 14)
             .scaleEffect(coverScale)
             .animation(
-                reduceMotion ? nil : ContinuumTheme.springAnimation,
+                reduceMotion ? nil : SiloTheme.springAnimation,
                 value: player.isPlaying
             )
     }
@@ -268,13 +268,13 @@ private struct AudioOptionChip: View {
             .font(.footnote.weight(.semibold))
             .monospacedDigit()
             .lineLimit(1)
-            .foregroundStyle(isActive ? accent : Color.continuumOnSurface)
+            .foregroundStyle(isActive ? accent : Color.siloOnSurface)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
             .background(.white.opacity(0.08), in: Capsule())
             .overlay {
                 Capsule().strokeBorder(
-                    isActive ? accent.opacity(0.5) : Color.continuumOutline,
+                    isActive ? accent.opacity(0.5) : Color.siloOutline,
                     lineWidth: 1
                 )
             }
@@ -300,25 +300,25 @@ private struct TVPlayerLayout: View {
             VStack(alignment: .leading, spacing: 28) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Audiobook")
-                        .font(.continuumSmall.weight(.semibold))
+                        .font(.siloSmall.weight(.semibold))
                         .textCase(.uppercase)
                         .kerning(2)
                         .foregroundStyle(.secondary)
 
                     Text(player.title)
-                        .font(.continuumTitle)
+                        .font(.siloTitle)
                         .lineLimit(2)
 
                     if let subtitle = player.subtitle, !subtitle.isEmpty {
                         Text(subtitle)
-                            .font(.continuumBody)
+                            .font(.siloBody)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
 
                     if let chapter = player.currentChapter {
                         Text(chapter.title ?? "Chapter \(chapter.index + 1)")
-                            .font(.continuumCaption)
+                            .font(.siloCaption)
                             .foregroundStyle(player.palette.accent.opacity(0.9))
                             .lineLimit(1)
                             .padding(.top, 6)
@@ -406,11 +406,11 @@ private struct TVPlayerLayout: View {
                     .accessibilityLabel("Stop Listening")
                 }
                 .buttonStyle(.bordered)
-                .font(.continuumCaption)
+                .font(.siloCaption)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, ContinuumTheme.safePadding)
+        .padding(.horizontal, SiloTheme.safePadding)
         .padding(.vertical, 60)
     }
 }
@@ -602,7 +602,7 @@ private struct AudioTransportControls: View {
             .accessibilityLabel("Next Chapter")
         }
         .buttonStyle(.plain)
-        .foregroundStyle(Color.continuumOnSurface)
+        .foregroundStyle(Color.siloOnSurface)
     }
 }
 #endif

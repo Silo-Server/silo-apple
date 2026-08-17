@@ -88,7 +88,7 @@ final class LoopbackSegmentStore {
     }
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "LoopbackSegmentStore"
     )
     /// Warm-tail floor: the evictor keeps up to this many recent segments

@@ -7,8 +7,8 @@ struct ProfileAvatarView: View {
     let avatar: String?
     let name: String
     var size: CGFloat
-    var backgroundColor: Color = .continuumSurfaceVariant
-    var textColor: Color = .continuumOnSurface
+    var backgroundColor: Color = .siloSurfaceVariant
+    var textColor: Color = .siloOnSurface
 
     var body: some View {
         ZStack {
@@ -30,7 +30,7 @@ struct ProfileAvatarView: View {
             } else {
                 Image(systemName: "person.fill")
                     .font(.system(size: size * 0.36))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
         }
         .frame(width: size, height: size)

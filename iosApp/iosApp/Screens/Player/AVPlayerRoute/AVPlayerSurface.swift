@@ -1,6 +1,6 @@
 //
 //  AVPlayerSurface.swift
-//  Continuum (iOS + tvOS) — shared AVPlayer render surface
+//  Silo (iOS + tvOS) — shared AVPlayer render surface
 //
 //  UIViewRepresentable hosting an AVPlayerLayer. Used whenever the active
 //  player route is AVPlayer-backed, including HLS playback, the narrow

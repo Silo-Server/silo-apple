@@ -1,6 +1,6 @@
 //
 //  LoopbackSegmentServer.swift
-//  Continuum (iOS + tvOS) — Dolby Vision Profile 5 AVPlayer route
+//  Silo (iOS + tvOS) — Dolby Vision Profile 5 AVPlayer route
 //
 //  Tiny HTTP server serving the HLS playlist and fMP4 segments that
 //  `LoopbackSegmentWriter` writes to a session-scoped store. It normally binds
@@ -40,7 +40,7 @@ final class LoopbackSegmentServer {
     private static let responseChunkBytes = 256 * 1024
     static let vodEarlyResponseDelaySeconds: TimeInterval = 2.0
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "LoopbackSegmentServer"
     )
 
@@ -49,7 +49,7 @@ final class LoopbackSegmentServer {
     private let accessToken: String?
 
     private var listener: NWListener?
-    private let queue = DispatchQueue(label: "com.continuum.dv.hlsserver", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "org.siloserver.silo.dv.hlsserver", qos: .userInitiated)
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private let lock = NSLock()
     /// Guarded by `lock`. Only true while an AirPlay handoff is live.

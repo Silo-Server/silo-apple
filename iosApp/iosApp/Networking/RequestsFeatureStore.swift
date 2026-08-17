@@ -27,9 +27,9 @@ final class RequestsFeatureStore {
     /// next account's flag.
     private var generation = 0
 
-    private let api: ContinuumAPI
+    private let api: SiloAPI
 
-    init(api: ContinuumAPI = .shared) {
+    init(api: SiloAPI = .shared) {
         self.api = api
     }
 

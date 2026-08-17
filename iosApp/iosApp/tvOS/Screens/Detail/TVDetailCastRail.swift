@@ -66,18 +66,18 @@ private struct CastCardLabel: View {
             VStack(spacing: 4) {
                 Text(member.name)
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundColor(isFocused ? .continuumOnSurface : Color.continuumOnSurface.opacity(0.88))
+                    .foregroundColor(isFocused ? .siloOnSurface : Color.siloOnSurface.opacity(0.88))
                     .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.center)
                 if let character = member.character, !character.isEmpty {
                     Text(character)
                         .font(.system(size: 18, weight: .regular))
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                         .lineLimit(1)
                         .multilineTextAlignment(.center)
                 }
             }
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
         }
         .frame(width: photoSize.width)
     }
@@ -85,7 +85,7 @@ private struct CastCardLabel: View {
     @ViewBuilder
     private var photo: some View {
         ZStack {
-            Color.continuumSurfaceElevated
+            Color.siloSurfaceElevated
             if let url = member.photoUrl, !url.isEmpty {
                 CachedAsyncImage(
                     url: url,
@@ -95,7 +95,7 @@ private struct CastCardLabel: View {
             } else {
                 Image(systemName: "person.fill")
                     .font(.system(size: photoSize.width * 0.4))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
         }
         .frame(width: photoSize.width, height: photoSize.height)
@@ -130,8 +130,8 @@ private struct CastCardBody: View {
                 radius: isFocused ? 14 : 0,
                 y: isFocused ? 6 : 0
             )
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 
     private var scale: CGFloat {

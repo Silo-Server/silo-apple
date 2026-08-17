@@ -80,7 +80,7 @@ actor HTTPClient {
     static let shared = HTTPClient()
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "HTTPClient"
     )
 
@@ -211,7 +211,7 @@ actor HTTPClient {
         return URLSession(configuration: config)
     }
 
-    /// Parser for the fractional-second ISO-8601 timestamps the Continuum
+    /// Parser for the fractional-second ISO-8601 timestamps the Silo
     /// server emits (e.g. `2026-04-13T04:46:42.211273Z`). The default
     /// `.iso8601` decoder strategy rejects fractional seconds outright.
     private static let isoFractional: ISO8601DateFormatter = {
@@ -1315,7 +1315,7 @@ actor HTTPClient {
                     NotificationCenter.default.post(
                         name: disposition == .temporarySessionExpired
                             ? .temporaryRemoteAuthExpired
-                            : .continuumSessionExpired,
+                            : .siloSessionExpired,
                         object: event
                     )
                 }
@@ -1477,7 +1477,7 @@ actor HTTPClient {
                     NotificationCenter.default.post(
                         name: disposition == .temporarySessionExpired
                             ? .temporaryRemoteAuthExpired
-                            : .continuumSessionExpired,
+                            : .siloSessionExpired,
                         object: event
                     )
                 }

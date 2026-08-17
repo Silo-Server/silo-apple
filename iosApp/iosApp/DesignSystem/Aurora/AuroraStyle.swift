@@ -7,10 +7,10 @@ import SwiftUI
 // migration, but the tokens deliberately map onto Silo's core palette.
 
 extension Color {
-    static let auroraInk = Color.continuumOnSurface
-    static let auroraAccent = Color.continuumBrandOrange
-    static let auroraNightBottom = Color.continuumBackground
-    static let auroraGlassTint = Color.continuumSurfaceVariant
+    static let auroraInk = Color.siloOnSurface
+    static let auroraAccent = Color.siloBrandOrange
+    static let auroraNightBottom = Color.siloBackground
+    static let auroraGlassTint = Color.siloSurfaceVariant
 
     static var auroraInkSecondary: Color { auroraInk.opacity(0.62) }
     static var auroraInkTertiary: Color { auroraInk.opacity(0.40) }
@@ -73,7 +73,7 @@ struct AuroraJourneyProgress: View {
 
                 if index > 0 {
                     Rectangle()
-                        .fill(step <= currentStep ? Color.auroraAccent : Color.continuumOutline)
+                        .fill(step <= currentStep ? Color.auroraAccent : Color.siloOutline)
                         .frame(height: 1)
                         .padding(.top, progressDotSize / 2)
                         .accessibilityHidden(true)
@@ -82,17 +82,17 @@ struct AuroraJourneyProgress: View {
                 VStack(spacing: 7) {
                     ZStack {
                         Circle()
-                            .fill(step <= currentStep ? Color.auroraAccent : Color.continuumSurfaceElevated)
+                            .fill(step <= currentStep ? Color.auroraAccent : Color.siloSurfaceElevated)
                         Circle()
-                            .stroke(step <= currentStep ? Color.auroraAccent : Color.continuumOutline, lineWidth: 1)
+                            .stroke(step <= currentStep ? Color.auroraAccent : Color.siloOutline, lineWidth: 1)
                         if step < currentStep {
                             Image(systemName: "checkmark")
                                 .font(.system(size: progressGlyphSize, weight: .bold))
-                                .foregroundStyle(Color.continuumBackground)
+                                .foregroundStyle(Color.siloBackground)
                         } else {
                             Text("\(step)")
                                 .font(.system(size: progressGlyphSize, weight: .bold, design: .monospaced))
-                                .foregroundStyle(step == currentStep ? Color.continuumBackground : Color.auroraInkSecondary)
+                                .foregroundStyle(step == currentStep ? Color.siloBackground : Color.auroraInkSecondary)
                         }
                     }
                     .frame(width: progressDotSize, height: progressDotSize)
@@ -182,19 +182,19 @@ private struct AuroraPrimaryBody: View {
         HStack(spacing: 10) {
             if isLoading {
                 ProgressView()
-                    .tint(Color.continuumBackground)
+                    .tint(Color.siloBackground)
                     .scaleEffect(0.8)
             }
             configuration.label
         }
         .font(.system(size: buttonFontSize, weight: .semibold))
-        .foregroundStyle(Color.continuumBackground)
+        .foregroundStyle(Color.siloBackground)
         .frame(maxWidth: .infinity)
         .frame(minHeight: AuroraControl.height)
         .padding(.horizontal, buttonHorizontalPadding)
         .background(
             RoundedRectangle(cornerRadius: AuroraControl.corner)
-                .fill(Color.continuumOnSurface)
+                .fill(Color.siloOnSurface)
         )
         .overlay(
             RoundedRectangle(cornerRadius: AuroraControl.corner)
@@ -214,7 +214,7 @@ private struct AuroraPrimaryBody: View {
             radius: isFocused ? 20 : 10, y: 6)
         .opacity(!isEnabled ? 0.4 : configuration.isPressed ? 0.75 : 1.0)
         .focusEffectDisabled()
-        .animation(ContinuumTheme.springAnimation, value: isFocused)
+        .animation(SiloTheme.springAnimation, value: isFocused)
     }
 
     #if os(tvOS)
@@ -252,7 +252,7 @@ private struct AuroraGhostBody: View {
     var body: some View {
         configuration.label
             .font(.system(size: fontSize, weight: .medium))
-            .foregroundStyle(isFocused ? Color.continuumBackground : Color.auroraInkSecondary)
+            .foregroundStyle(isFocused ? Color.siloBackground : Color.auroraInkSecondary)
             .padding(.horizontal, hPadding)
             .padding(.vertical, vPadding)
             .background(
@@ -267,7 +267,7 @@ private struct AuroraGhostBody: View {
             .scaleEffect(isFocused ? 1.025 : 1.0)
             .opacity(configuration.isPressed ? 0.7 : 1.0)
             .focusEffectDisabled()
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
+            .animation(SiloTheme.springAnimation, value: isFocused)
     }
 }
 
@@ -307,8 +307,8 @@ enum AuroraControl {
     #else
     static let corner: CGFloat = 10
     #endif
-    static let activeFill = Color.continuumOnSurface
-    static let activeInk = Color.continuumBackground
+    static let activeFill = Color.siloOnSurface
+    static let activeInk = Color.siloBackground
     static let activePlaceholder = Color(hex: "#5E6269")
 }
 
@@ -342,7 +342,7 @@ struct AuroraSegment: View {
                 RoundedRectangle(cornerRadius: AuroraControl.corner)
                     .stroke(stroke, lineWidth: 1.5)
             )
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
+            .animation(SiloTheme.springAnimation, value: isFocused)
     }
 
     private var textColor: Color {

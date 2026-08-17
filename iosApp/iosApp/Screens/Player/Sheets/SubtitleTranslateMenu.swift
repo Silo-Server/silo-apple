@@ -1,6 +1,6 @@
 //
 //  SubtitleTranslateMenu.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  In-player "AI subtitles" menu. One-tap, Ray-style: the user picks a single
 //  target language and the menu picks the method automatically — translate an
@@ -259,7 +259,7 @@ struct SubtitleTranslateMenu: View {
         guard let target = focusedLanguageID
             ?? displayLanguages.first(where: { canServe($0.code) })?.code else { return }
         if animated {
-            withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                 proxy.scrollTo(target, anchor: .center)
             }
         } else {
@@ -426,11 +426,11 @@ struct SubtitleTranslateMenu: View {
                             Text(explainer)
                         }
                     }
-                    .continuumGroupedListStyle()
+                    .siloGroupedListStyle()
                 }
             }
             .navigationTitle(title)
-            .continuumNavigationTitleDisplayMode(.inline)
+            .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { onDismiss() }
@@ -560,7 +560,7 @@ private extension SubtitleTranslateMenu {
                     .foregroundStyle(.white.opacity(0.5))
                 Text(quotaText)
                     .font(.system(size: 16))
-                    .foregroundStyle(isQuotaExhausted ? Color.continuumWarning : .white.opacity(0.6))
+                    .foregroundStyle(isQuotaExhausted ? Color.siloWarning : .white.opacity(0.6))
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
@@ -570,7 +570,7 @@ private extension SubtitleTranslateMenu {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(quotaText)
-                    .foregroundStyle(isQuotaExhausted ? Color.continuumWarning : .secondary)
+                    .foregroundStyle(isQuotaExhausted ? Color.siloWarning : .secondary)
             }
             .font(.footnote)
             #endif

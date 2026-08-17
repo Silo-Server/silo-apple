@@ -95,7 +95,7 @@ actor DiceBearImageCache {
                        !(200..<300).contains(http.statusCode) {
                         continue
                     }
-                    if let image = PlatformImage.continuumImage(data: data) {
+                    if let image = PlatformImage.siloImage(data: data) {
                         return image
                     }
                 } catch {

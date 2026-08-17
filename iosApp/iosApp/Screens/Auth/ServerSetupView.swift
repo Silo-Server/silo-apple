@@ -26,11 +26,11 @@ struct ServerSetupView: View {
             VStack(spacing: 10) {
                 AuroraEyebrow(text: "Connect", centered: true)
                 Text("Where is your Silo server?")
-                    .font(.continuumTitle)
+                    .font(.siloTitle)
                     .foregroundStyle(Color.auroraInk)
                     .multilineTextAlignment(.center)
                 Text("Enter the address you use to open Silo in a browser.")
-                    .font(.continuumBody)
+                    .font(.siloBody)
                     .foregroundStyle(Color.auroraInkSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -52,7 +52,7 @@ struct ServerSetupView: View {
                 )
 
                 Label("Silo tries secure HTTPS automatically.", systemImage: "lock.shield")
-                    .font(.continuumCaption)
+                    .font(.siloCaption)
                     .foregroundStyle(Color.auroraInkSecondary)
 
                 advancedDisclosure
@@ -84,7 +84,7 @@ struct ServerSetupView: View {
     @ViewBuilder
     private var advancedDisclosure: some View {
         Button {
-            withAnimation(ContinuumTheme.springAnimation) {
+            withAnimation(SiloTheme.springAnimation) {
                 viewModel.showsAdvancedOptions.toggle()
             }
         } label: {

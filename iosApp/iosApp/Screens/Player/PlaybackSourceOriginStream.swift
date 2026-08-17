@@ -341,7 +341,7 @@ final class PlaybackOriginStream {
     static let cachedRunSkipBytes: Int64 = 64 * 1024 * 1024
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "PlaybackOriginStream"
     )
 

@@ -97,7 +97,7 @@ struct PersonalListGridView: View {
                 )
             }
         }
-        .continuumBackground()
+        .siloBackground()
         .modifier(PersonalListNavigationChrome(title: showsNavigationTitle ? kind.navigationTitle : nil))
         .task {
             await load()
@@ -133,7 +133,7 @@ struct PersonalListGridView: View {
                     .frame(maxWidth: .infinity)
                 }
             }
-            .padding(ContinuumTheme.padding)
+            .padding(SiloTheme.padding)
         }
     }
 
@@ -165,9 +165,9 @@ struct PersonalListGridView: View {
             let response: CatalogResponse
             switch kind {
             case .favorites:
-                response = try await ContinuumAPI.shared.favorites(offset: 0, limit: 100)
+                response = try await SiloAPI.shared.favorites(offset: 0, limit: 100)
             case .watchlist:
-                response = try await ContinuumAPI.shared.watchlist(offset: 0, limit: 100)
+                response = try await SiloAPI.shared.watchlist(offset: 0, limit: 100)
             }
             ResponseCache.shared.set(response, for: kind.cacheKey)
             items = response.items

@@ -62,7 +62,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             if let url = backdropUrl, !url.isEmpty {
                 CachedAsyncImage(url: url, contentMode: .fill)
             } else {
-                Color.continuumSurface
+                Color.siloSurface
             }
         }
         .frame(height: heroHeight)
@@ -91,8 +91,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             stops: [
                 .init(color: .clear, location: 0.0),
                 .init(color: .clear, location: 0.55),
-                .init(color: Color.continuumBackground.opacity(0.55), location: 0.85),
-                .init(color: Color.continuumBackground, location: 1.0),
+                .init(color: Color.siloBackground.opacity(0.55), location: 0.85),
+                .init(color: Color.siloBackground, location: 1.0),
             ],
             startPoint: .top,
             endPoint: .bottom
@@ -117,8 +117,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .focusSection()
         }
-        .padding(.leading, ContinuumTheme.safePadding)
-        .padding(.trailing, ContinuumTheme.safePadding)
+        .padding(.leading, SiloTheme.safePadding)
+        .padding(.trailing, SiloTheme.safePadding)
         // Keep this tight: the detail pages' outer VStack already adds its
         // own spacing between the hero and the first content section, so a
         // large inset here reads as a dead band under the selector row.
@@ -246,7 +246,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 .lineLimit(2)
                 .frame(maxWidth: 460, alignment: .trailing)
                 .shadow(color: .black.opacity(0.55), radius: 6, y: 2)
-                .padding(.trailing, ContinuumTheme.safePadding)
+                .padding(.trailing, SiloTheme.safePadding)
                 .padding(.bottom, heroHeight * 0.45)
         }
     }

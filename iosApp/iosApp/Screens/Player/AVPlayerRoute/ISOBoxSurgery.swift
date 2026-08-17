@@ -1,6 +1,6 @@
 //
 //  ISOBoxSurgery.swift
-//  Continuum (iOS + tvOS) — Dolby Vision Profile 5 AVPlayer route
+//  Silo (iOS + tvOS) — Dolby Vision Profile 5 AVPlayer route
 //
 //  Pure functions over ISO/IEC 14496-12 (ISO Base Media File Format) byte
 //  buffers. `LoopbackSegmentWriter` uses these to post-process an fMP4 init segment

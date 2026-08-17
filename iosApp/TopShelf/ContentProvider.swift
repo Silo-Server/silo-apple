@@ -3,7 +3,7 @@ import TVServices
 
 /// Top Shelf content provider for the Apple TV Home Screen.
 ///
-/// tvOS invokes this out-of-process when the Continuum app icon is
+/// tvOS invokes this out-of-process when the Silo app icon is
 /// focused. We have a tight budget (a few seconds) to return content
 /// before the system falls back to the static top-shelf image.
 ///

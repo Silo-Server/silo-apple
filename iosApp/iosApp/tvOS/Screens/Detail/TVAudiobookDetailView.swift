@@ -43,7 +43,7 @@ struct TVAudiobookDetailView: View {
             background
             scrollBody
         }
-        .continuumBackground()
+        .siloBackground()
         .fullScreenCover(isPresented: $showChapters) {
             TVAudiobookChaptersView(detail: detail)
         }
@@ -73,7 +73,7 @@ struct TVAudiobookDetailView: View {
                         detail: detail,
                         onNavigateToItem: onNavigateToItem
                     )
-                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.horizontal, SiloTheme.safePadding)
                     .padding(.top, 64)
                     .padding(.bottom, 80)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -149,7 +149,7 @@ struct TVAudiobookDetailView: View {
             identity
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, ContinuumTheme.safePadding)
+        .padding(.horizontal, SiloTheme.safePadding)
         .padding(.leading, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -164,8 +164,8 @@ struct TVAudiobookDetailView: View {
                     contentMode: .fill
                 )
             } else {
-                RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius, style: .continuous)
-                    .fill(Color.continuumSurfaceElevated)
+                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous)
+                    .fill(Color.siloSurfaceElevated)
                     .overlay {
                         Image(systemName: "book.closed")
                             .font(.system(size: 460 * 0.22, weight: .semibold))
@@ -174,9 +174,9 @@ struct TVAudiobookDetailView: View {
             }
         }
         .frame(width: 460, height: 460)
-        .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.65), radius: 40, x: 0, y: 24)

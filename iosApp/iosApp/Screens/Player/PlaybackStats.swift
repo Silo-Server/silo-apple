@@ -378,7 +378,7 @@ extension PlaybackStats {
 
 enum AVFoundationPlaybackIntrospection {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "PlaybackStats"
     )
 

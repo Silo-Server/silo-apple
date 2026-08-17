@@ -56,7 +56,7 @@ class HistoryViewModel {
         let requestSnapshot = reset ? nil : snapshot
 
         do {
-            let response = try await ContinuumAPI.shared.historyCatalog(
+            let response = try await SiloAPI.shared.historyCatalog(
                 offset: requestOffset,
                 limit: pageSize,
                 snapshot: requestSnapshot,

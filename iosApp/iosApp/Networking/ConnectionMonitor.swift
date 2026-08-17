@@ -42,7 +42,7 @@ final class ConnectionMonitor {
     }
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ConnectionMonitor"
     )
 
@@ -59,7 +59,7 @@ final class ConnectionMonitor {
                 self?.applyPathUpdate(online: online)
             }
         }
-        pathMonitor.start(queue: DispatchQueue(label: "com.continuum.connection-monitor"))
+        pathMonitor.start(queue: DispatchQueue(label: "org.siloserver.silo.connection-monitor"))
     }
 
     // MARK: - Passive signals (reported by HTTPClient)

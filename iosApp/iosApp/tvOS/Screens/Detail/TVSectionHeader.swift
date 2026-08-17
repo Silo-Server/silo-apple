@@ -15,12 +15,12 @@ struct TVSectionHeader: View {
                 Text(label.uppercased())
                     .font(.system(size: 20, weight: .bold))
                     .tracking(3.0)
-                    .foregroundColor(.continuumOnSurface.opacity(0.55))
+                    .foregroundColor(.siloOnSurface.opacity(0.55))
             }
 
             Text(title)
                 .font(.system(size: 42, weight: .semibold))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
         }
     }
 }

@@ -4,57 +4,57 @@ extension Color {
     // MARK: - Core Palette (Plezy OLED Dark)
 
     /// Pure black background (#000000)
-    static let continuumBackground = Color(hex: "#000000")
+    static let siloBackground = Color(hex: "#000000")
 
     /// Barely-visible surface (#0A0A0A)
-    static let continuumSurface = Color(hex: "#0A0A0A")
+    static let siloSurface = Color(hex: "#0A0A0A")
 
     /// Surface variant for containers (#0E0F12)
-    static let continuumSurfaceVariant = Color(hex: "#0E0F12")
+    static let siloSurfaceVariant = Color(hex: "#0E0F12")
 
     /// Surface for elevated containers like episode cards (#15171C)
-    static let continuumSurfaceElevated = Color(hex: "#15171C")
+    static let siloSurfaceElevated = Color(hex: "#15171C")
 
     /// Primary interactive color — same as text (monochrome UI)
-    static let continuumPrimary = Color(hex: "#EDEDED")
+    static let siloPrimary = Color(hex: "#EDEDED")
 
     /// Primary text color (#EDEDED)
-    static let continuumOnSurface = Color(hex: "#EDEDED")
+    static let siloOnSurface = Color(hex: "#EDEDED")
 
     /// Accent for enabled control states (toggle tracks, prominent buttons).
     /// The monochrome palette made an on toggle a white knob on a white
     /// track; this matches the web client's blue-theme primary.
-    static let continuumAccent = Color(hex: "#78AEFC")
+    static let siloAccent = Color(hex: "#78AEFC")
 
     /// Orange sampled from the canonical Silo wordmark artwork. Reserved for
-    /// branded moments so ordinary signed-in controls retain `continuumAccent`.
-    static let continuumBrandOrange = Color(hex: "#FD7403")
+    /// branded moments so ordinary signed-in controls retain `siloAccent`.
+    static let siloBrandOrange = Color(hex: "#FD7403")
 
     /// Muted/secondary text — primary at 60% opacity (#99EDEDED)
-    static let continuumSecondaryText = Color(hex: "#99EDEDED")
+    static let siloSecondaryText = Color(hex: "#99EDEDED")
 
     /// Error red (#B00020)
-    static let continuumError = Color(hex: "#B00020")
+    static let siloError = Color(hex: "#B00020")
 
     /// Success green
-    static let continuumSuccess = Color.green
+    static let siloSuccess = Color.green
 
     /// Warning amber (ratings stars)
-    static let continuumWarning = Color(hex: "#FFC107")
+    static let siloWarning = Color(hex: "#FFC107")
 
     // MARK: - Skyline chrome (guide §4)
 
     /// Selected-but-unfocused tab/pill capsule fill — `chrome.selected`, white @ 14%
-    static let continuumChromeSelectedFill = Color.white.opacity(0.14)
+    static let siloChromeSelectedFill = Color.white.opacity(0.14)
 
     /// Inner border of the selected capsule — white @ 10%
-    static let continuumChromeSelectedBorder = Color.white.opacity(0.10)
+    static let siloChromeSelectedBorder = Color.white.opacity(0.10)
 
     /// Resting pill/chip fill — `chrome.unfocused-bg`, white @ 7%
-    static let continuumChromeRestingFill = Color.white.opacity(0.07)
+    static let siloChromeRestingFill = Color.white.opacity(0.07)
 
     /// Hairline border on resting pills/chips — white @ 9%
-    static let continuumChromeRestingBorder = Color.white.opacity(0.09)
+    static let siloChromeRestingBorder = Color.white.opacity(0.09)
 
     // MARK: - Request status dots
 
@@ -75,11 +75,11 @@ extension Color {
     // MARK: - Semantic Aliases
 
     /// Outline/border color — white at 12%
-    static let continuumOutline = Color.white.opacity(0.12)
+    static let siloOutline = Color.white.opacity(0.12)
 
     /// Divider/separator line color — white at 12%
-    static let continuumDivider = Color.white.opacity(0.12)
+    static let siloDivider = Color.white.opacity(0.12)
 
     /// Disabled control tint
-    static let continuumDisabled = Color(hex: "#4B5563")
+    static let siloDisabled = Color(hex: "#4B5563")
 }

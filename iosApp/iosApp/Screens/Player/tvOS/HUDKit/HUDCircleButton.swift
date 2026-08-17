@@ -22,7 +22,7 @@ struct HUDCircleButtonBody: View {
             .contentShape(Circle())
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 }
 

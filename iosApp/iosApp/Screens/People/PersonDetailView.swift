@@ -46,7 +46,7 @@ final class PersonDetailViewModel {
     /// settled — the server refresh ran and this is all the metadata it has.
     private static let metadataRefreshSettledPollCount = 5
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "PersonDetail"
     )
     private let pageSize = 60
@@ -100,7 +100,7 @@ final class PersonDetailViewModel {
 
         do {
             if person == nil {
-                person = try await ContinuumAPI.shared.person(id: personId)
+                person = try await SiloAPI.shared.person(id: personId)
             }
             scheduleMetadataRefreshIfNeeded(for: person)
             async let availability: Void = refreshAvailableFilters(generation: currentGeneration)
@@ -176,9 +176,9 @@ final class PersonDetailViewModel {
         }
 
         if shouldQueueRefresh,
-           let token = await ContinuumAPI.shared.currentAccessToken(),
+           let token = await SiloAPI.shared.currentAccessToken(),
            !token.isEmpty {
-            _ = try? await ContinuumAPI.shared.refreshPerson(id: personId)
+            _ = try? await SiloAPI.shared.refreshPerson(id: personId)
         }
 
         let deadline = Date.now.addingTimeInterval(Self.metadataRefreshWindowSeconds)
@@ -193,7 +193,7 @@ final class PersonDetailViewModel {
             guard !Task.isCancelled else { return }
 
             do {
-                let updatedPerson = try await ContinuumAPI.shared.person(id: personId)
+                let updatedPerson = try await SiloAPI.shared.person(id: personId)
                 guard personId == self.personId else { return }
                 if updatedPerson == person {
                     unchangedPolls += 1
@@ -222,7 +222,7 @@ final class PersonDetailViewModel {
         defer { isLoadingItems = false }
 
         do {
-            let response = try await ContinuumAPI.shared.personCatalogItems(
+            let response = try await SiloAPI.shared.personCatalogItems(
                 personId: personId,
                 type: selectedFilter.catalogType,
                 offset: nextOffset,
@@ -262,7 +262,7 @@ final class PersonDetailViewModel {
     /// remains visible rather than hiding content based on a network error.
     private func catalogHasItems(type: String) async -> Bool? {
         do {
-            let response = try await ContinuumAPI.shared.personCatalogItems(
+            let response = try await SiloAPI.shared.personCatalogItems(
                 personId: personId,
                 type: type,
                 offset: 0,
@@ -319,7 +319,7 @@ struct PersonDetailView: View {
             Color.clear
         } else {
             EmptyStateView(icon: "person", title: "Person not found")
-                .continuumBackground()
+                .siloBackground()
         }
     }
 
@@ -349,7 +349,7 @@ private struct TVPersonDetailContent: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 48) {
                 header
-                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.horizontal, SiloTheme.safePadding)
                     .padding(.top, 48)
 
                 VStack(alignment: .leading, spacing: 28) {
@@ -384,11 +384,11 @@ private struct TVPersonDetailContent: View {
                         )
                     }
                 }
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
             }
             .padding(.bottom, 72)
         }
-        .continuumBackground()
+        .siloBackground()
     }
 
     private var header: some View {
@@ -398,15 +398,15 @@ private struct TVPersonDetailContent: View {
             VStack(alignment: .leading, spacing: 22) {
                 Text(person.name)
                     .font(.system(size: 72, weight: .bold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .lineLimit(2)
 
                 metadataRow
 
                 if let bio = clean(person.bio) {
                     Text(bio)
-                        .font(.continuumBody)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloBody)
+                        .foregroundColor(.siloSecondaryText)
                         .lineLimit(7)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: 920, alignment: .leading)
@@ -420,13 +420,13 @@ private struct TVPersonDetailContent: View {
         HStack(spacing: 12) {
             ForEach(metadataBadges, id: \.self) { badge in
                 Text(badge)
-                    .font(.continuumSmall)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloSmall)
+                    .foregroundColor(.siloOnSurface)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
                     .background(
                         Capsule()
-                            .fill(Color.continuumSurfaceVariant)
+                            .fill(Color.siloSurfaceVariant)
                     )
             }
 
@@ -440,13 +440,13 @@ private struct TVPersonDetailContent: View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Filmography")
-                    .font(.continuumHeadline)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloHeadline)
+                    .foregroundColor(.siloOnSurface)
 
                 if let label = totalLabel {
                     Text(label)
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                 }
 
                 Spacer()
@@ -477,7 +477,7 @@ private struct PhonePersonDetailContent: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header
-                    .padding(.horizontal, ContinuumTheme.padding)
+                    .padding(.horizontal, SiloTheme.padding)
                     .padding(.top, 12)
 
                 VStack(alignment: .leading, spacing: 16) {
@@ -485,7 +485,7 @@ private struct PhonePersonDetailContent: View {
 
                     if viewModel.items.isEmpty && viewModel.isLoadingItems {
                         ProgressView()
-                            .tint(.continuumOnSurface)
+                            .tint(.siloOnSurface)
                             .frame(maxWidth: .infinity, minHeight: 180)
                     } else if let error = viewModel.error, viewModel.items.isEmpty {
                         ErrorView(state: error, onRetry: { Task { await viewModel.reload() } })
@@ -509,13 +509,13 @@ private struct PhonePersonDetailContent: View {
                                 Task { await viewModel.loadMoreIfNeeded() }
                             }
                         )
-                        .padding(.horizontal, ContinuumTheme.padding)
+                        .padding(.horizontal, SiloTheme.padding)
                     }
                 }
             }
-            .padding(.bottom, ContinuumTheme.largePadding)
+            .padding(.bottom, SiloTheme.largePadding)
         }
-        .continuumBackground()
+        .siloBackground()
     }
 
     private var header: some View {
@@ -525,15 +525,15 @@ private struct PhonePersonDetailContent: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(person.name)
                     .font(.system(size: 30, weight: .bold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .lineLimit(3)
 
                 metadataWrap
 
                 if let bio = clean(person.bio) {
                     Text(bio)
-                        .font(.continuumBody)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloBody)
+                        .foregroundColor(.siloSecondaryText)
                         .lineLimit(8)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -545,13 +545,13 @@ private struct PhonePersonDetailContent: View {
         FlowLayout(spacing: 6) {
             ForEach(person.personMetadataBadges, id: \.self) { badge in
                 Text(badge)
-                    .font(.continuumSmall)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloSmall)
+                    .foregroundColor(.siloOnSurface)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
                     .background(
                         Capsule()
-                            .fill(Color.continuumSurfaceVariant)
+                            .fill(Color.siloSurfaceVariant)
                     )
             }
 
@@ -565,8 +565,8 @@ private struct PhonePersonDetailContent: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Filmography")
-                    .font(.continuumHeadline)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloHeadline)
+                    .foregroundColor(.siloOnSurface)
 
                 if let label = personFilmographyCountLabel(
                     total: viewModel.totalItems,
@@ -574,18 +574,18 @@ private struct PhonePersonDetailContent: View {
                     hasMore: viewModel.hasMore
                 ) {
                     Text(label)
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                 }
 
                 Spacer()
             }
-            .padding(.horizontal, ContinuumTheme.padding)
+            .padding(.horizontal, SiloTheme.padding)
 
             PersonFilterBar(filters: viewModel.availableFilters, selected: viewModel.selectedFilter) { filter in
                 Task { await viewModel.applyFilter(filter) }
             }
-            .padding(.horizontal, ContinuumTheme.padding)
+            .padding(.horizontal, SiloTheme.padding)
         }
     }
 }
@@ -599,7 +599,7 @@ private struct PersonPortrait: View {
 
     var body: some View {
         ZStack {
-            Color.continuumSurfaceElevated
+            Color.siloSurfaceElevated
 
             if let photoUrl = clean(person.photoUrl) {
                 AsyncImageView(
@@ -611,13 +611,13 @@ private struct PersonPortrait: View {
             } else {
                 Text(person.initials)
                     .font(.system(size: width * 0.28, weight: .semibold))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
         }
         .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+        .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
         .overlay(
-            RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
+            RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
                 .stroke(Color.white.opacity(0.10), lineWidth: 1)
         )
     }
@@ -628,17 +628,17 @@ private struct PersonMetadataRefreshIndicator: View {
         HStack(spacing: 8) {
             ProgressView()
                 .controlSize(controlSize)
-                .tint(.continuumOnSurface)
+                .tint(.siloOnSurface)
 
             Text("Loading metadata")
-                .font(.continuumSmall)
-                .foregroundColor(.continuumSecondaryText)
+                .font(.siloSmall)
+                .foregroundColor(.siloSecondaryText)
         }
         .padding(.horizontal, horizontalPadding)
         .padding(.vertical, verticalPadding)
         .background(
             Capsule()
-                .fill(Color.continuumSurfaceVariant.opacity(0.72))
+                .fill(Color.siloSurfaceVariant.opacity(0.72))
         )
         .accessibilityElement(children: .combine)
     }
@@ -715,32 +715,32 @@ private struct PersonFilterButton: View {
                         .stroke(strokeColor, lineWidth: isFocused ? 2 : 1)
                 )
         }
-        .buttonStyle(.continuumFlat)
+        .buttonStyle(.siloFlat)
         .focused($isFocused)
         .scaleEffect(isFocused ? 1.06 : 1.0)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isSelected)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isSelected)
     }
 
     private var foregroundColor: Color {
-        isSelected || isFocused ? .continuumOnSurface : .continuumSecondaryText
+        isSelected || isFocused ? .siloOnSurface : .siloSecondaryText
     }
 
     private var backgroundColor: Color {
-        if isSelected { return .continuumSurfaceVariant }
-        if isFocused { return Color.continuumSurfaceVariant.opacity(0.8) }
-        return Color.continuumSurfaceElevated.opacity(0.55)
+        if isSelected { return .siloSurfaceVariant }
+        if isFocused { return Color.siloSurfaceVariant.opacity(0.8) }
+        return Color.siloSurfaceElevated.opacity(0.55)
     }
 
     private var strokeColor: Color {
-        isFocused ? .continuumOnSurface.opacity(0.85) : Color.white.opacity(isSelected ? 0.16 : 0.08)
+        isFocused ? .siloOnSurface.opacity(0.85) : Color.white.opacity(isSelected ? 0.16 : 0.08)
     }
 
     private var buttonFont: Font {
         #if os(tvOS)
-        .continuumCaption
+        .siloCaption
         #else
-        .continuumCaption
+        .siloCaption
         #endif
     }
 

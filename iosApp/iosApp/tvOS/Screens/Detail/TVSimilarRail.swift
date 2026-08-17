@@ -78,11 +78,11 @@ struct TVSimilarRail: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: cardSpacing) {
                 ForEach(0..<4, id: \.self) { _ in
-                    RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
-                        .fill(Color.continuumSurfaceElevated)
+                    RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                        .fill(Color.siloSurfaceElevated)
                         .frame(
-                            width: ContinuumTheme.posterCardWidth,
-                            height: ContinuumTheme.posterCardHeight
+                            width: SiloTheme.posterCardWidth,
+                            height: SiloTheme.posterCardHeight
                         )
                 }
             }
@@ -100,7 +100,7 @@ struct TVSimilarRail: View {
         items = []
 
         do {
-            let scored = try await ContinuumAPI.shared.recommendationsSimilar(
+            let scored = try await SiloAPI.shared.recommendationsSimilar(
                 contentId: contentId,
                 limit: 12
             )
@@ -110,7 +110,7 @@ struct TVSimilarRail: View {
             let resolved = await withTaskGroup(of: (Int, ItemDetail?).self) { group in
                 for (index, ref) in scored.enumerated() {
                     group.addTask {
-                        let detail = try? await ContinuumAPI.shared.itemDetail(
+                        let detail = try? await SiloAPI.shared.itemDetail(
                             contentId: ref.mediaItemId
                         )
                         return (index, detail)

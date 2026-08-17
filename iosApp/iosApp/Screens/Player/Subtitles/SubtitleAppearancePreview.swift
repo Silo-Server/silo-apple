@@ -1,6 +1,6 @@
 //
 //  SubtitleAppearancePreview.swift
-//  Continuum (iOS + tvOS + macOS)
+//  Silo (iOS + tvOS + macOS)
 //
 //  Live approximation of the configured subtitle style over a dark
 //  film-frame stand-in. The real pipeline renders through libass; this

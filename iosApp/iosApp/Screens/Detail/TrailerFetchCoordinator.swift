@@ -14,7 +14,7 @@ import os
 /// item was checked within the last week) and `disabled` (every library
 /// holding it has remote videos switched off) resolve immediately.
 ///
-/// Both dependencies are injected closures rather than `ContinuumAPI.shared`
+/// Both dependencies are injected closures rather than `SiloAPI.shared`
 /// so the whole state machine is testable headless with scripted responses
 /// (the `AIJobPoller` precedent). ``statusMessage`` carries the user-facing
 /// copy so iOS and tvOS render identical strings.
@@ -120,7 +120,7 @@ final class TrailerFetchCoordinator {
     static let defaultMinimumObservationSeconds: TimeInterval = 60
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TrailerFetch"
     )
 

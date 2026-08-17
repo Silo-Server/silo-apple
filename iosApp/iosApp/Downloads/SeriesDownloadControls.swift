@@ -43,13 +43,13 @@ struct SeriesDownloadMenuButton: View {
         VStack(spacing: 6) {
             Image(systemName: isMonitored ? "arrow.down.circle.fill" : "arrow.down.to.line")
                 .font(.system(size: 19, weight: .regular))
-                .foregroundColor(isMonitored ? Color.continuumAccent : Color.continuumOnSurface)
+                .foregroundColor(isMonitored ? Color.siloAccent : Color.siloOnSurface)
                 .frame(height: 22)
             Text(isMonitored ? "Monitored" : "Download")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(isMonitored
-                                 ? Color.continuumAccent
-                                 : Color.continuumOnSurface.opacity(0.6))
+                                 ? Color.siloAccent
+                                 : Color.siloOnSurface.opacity(0.6))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
         }
@@ -180,8 +180,8 @@ private struct SeriesDownloadOptionsSheet: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .continuumScrollContentBackgroundHidden()
-            .background(Color.continuumBackground)
+            .siloScrollContentBackgroundHidden()
+            .background(Color.siloBackground)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -231,20 +231,20 @@ private struct SeriesDownloadOptionsSheet: View {
             HStack(spacing: 12) {
                 Image(systemName: icon)
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                     Text(detail)
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                 }
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
             .padding(.vertical, 4)
         }
@@ -291,13 +291,13 @@ struct SeriesMonitorSheet: View {
                                     else { selectedSeasons.remove(season.seasonNumber) }
                                 }
                             ))
-                            .tint(.continuumAccent)
+                            .tint(.siloAccent)
                         }
                     }
                 }
                 Section("Storage") {
                     Toggle("Delete watched episodes", isOn: $deleteWatched)
-                        .tint(.continuumAccent)
+                        .tint(.siloAccent)
                     Picker("Limit", selection: $maxStorageGB) {
                         ForEach(storageLimitOptionsGB, id: \.self) { gb in
                             Text(gb == 0 ? "Unlimited" : "\(gb) GB").tag(gb)

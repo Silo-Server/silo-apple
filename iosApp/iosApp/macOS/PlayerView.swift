@@ -191,10 +191,10 @@ struct PlayerView: View {
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 40))
-                .foregroundStyle(Color.continuumError)
+                .foregroundStyle(Color.siloError)
 
             Text(error)
-                .font(.continuumBody)
+                .font(.siloBody)
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 520)

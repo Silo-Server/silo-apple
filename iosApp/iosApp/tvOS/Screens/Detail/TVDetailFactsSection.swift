@@ -35,11 +35,11 @@ struct TVDetailFactsSection: View {
                         Text(fact.label.uppercased())
                             .font(.system(size: 18, weight: .bold))
                             .tracking(2.0)
-                            .foregroundColor(.continuumOnSurface.opacity(0.5))
+                            .foregroundColor(.siloOnSurface.opacity(0.5))
                             .frame(width: 260, alignment: .leading)
                         Text(fact.value)
                             .font(.system(size: 22, weight: .regular))
-                            .foregroundColor(.continuumOnSurface)
+                            .foregroundColor(.siloOnSurface)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.vertical, 22)
@@ -49,7 +49,7 @@ struct TVDetailFactsSection: View {
             // Focus highlight bleeds outward via negative padding so the
             // facts text stays aligned with the "Details" header above it.
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous)
                     .fill(Color.white.opacity(isFocused ? 0.06 : 0))
                     .padding(.horizontal, -28)
                     .padding(.vertical, -14)
@@ -57,7 +57,7 @@ struct TVDetailFactsSection: View {
             .contentShape(Rectangle())
             .focusable(true)
             .focused($isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
         }
     }
 }

@@ -1,6 +1,6 @@
 //
 //  SubtitleAIController.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Per-session orchestrator for the in-player AI subtitle suite — translate
 //  an existing text track, transcribe audio (Whisper), or transcribe-and-
@@ -26,7 +26,7 @@
 //  controller behaves exactly like M3: poll, no live cues.
 //
 //  Isolation: `@MainActor @Observable` so the UI binds its state directly and
-//  all mutations stay on main. The networking lives behind the ``ContinuumAI``
+//  all mutations stay on main. The networking lives behind the ``SiloAI``
 //  actor and the ``AIJobPoller`` actor, which hop back to main when delivering
 //  snapshots.
 //
@@ -41,7 +41,7 @@ import OSLog
 final class SubtitleAIController {
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "SubtitleAI"
     )
 
@@ -92,7 +92,7 @@ final class SubtitleAIController {
     // MARK: - Injected collaborators
 
     /// AI endpoints facade.
-    private let api: ContinuumAI
+    private let api: SiloAI
 
     /// Job poller (authority for `result_subtitle_id`).
     private let poller: AIJobPoller
@@ -220,7 +220,7 @@ final class SubtitleAIController {
     /// main-actor `let`s from a nonisolated context) is what keeps the
     /// Swift-6 actor-isolation warnings off this initializer.
     init(
-        api: ContinuumAI = .shared,
+        api: SiloAI = .shared,
         poller: AIJobPoller = AIJobPoller(),
         // `nil` default rather than `.shared`: the shared capabilities holder is
         // `@MainActor`-isolated, and default arguments evaluate in a nonisolated

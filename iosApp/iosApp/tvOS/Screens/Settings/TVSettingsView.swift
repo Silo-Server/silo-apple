@@ -67,7 +67,7 @@ struct TVSettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSignOutConfirm)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSignOutConfirm)
         .task {
             await viewModel.loadSettings()
             await diagnosticsModel.load(profile: viewModel.activeProfile)
@@ -85,7 +85,7 @@ struct TVSettingsView: View {
             if case .category(let category) = focus {
                 preferredDetailFocus = initialDetailFocus(for: category)
                 if category != selectedCategory {
-                    withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
+                    withAnimation(.easeOut(duration: SiloTheme.normalDuration)) {
                         selectedCategory = category
                     }
                 }
@@ -125,11 +125,11 @@ struct TVSettingsView: View {
                 .padding(24)
                 .background(
                     RoundedRectangle(cornerRadius: 26)
-                        .fill(Color.continuumSurface.opacity(0.74))
+                        .fill(Color.siloSurface.opacity(0.74))
                 )
                 .overlay {
                     RoundedRectangle(cornerRadius: 26)
-                        .strokeBorder(Color.continuumOutline, lineWidth: 1)
+                        .strokeBorder(Color.siloOutline, lineWidth: 1)
                 }
                 .frame(width: 490)
                 .disabled(
@@ -162,7 +162,7 @@ struct TVSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .focusScope(settingsFocusScope)
-        .safeAreaPadding(.horizontal, ContinuumTheme.Skyline.safeAreaX)
+        .safeAreaPadding(.horizontal, SiloTheme.Skyline.safeAreaX)
         .safeAreaPadding(.top, 48)
         .safeAreaPadding(.bottom, 44)
     }
@@ -174,11 +174,11 @@ struct TVSettingsView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Settings")
                     .font(.system(size: 42, weight: .bold))
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
 
                 Text("Make Silo work the way you like.")
                     .font(.system(size: 18))
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 20)
@@ -197,7 +197,7 @@ struct TVSettingsView: View {
             Text("Silo \(Self.versionString)")
                 .font(.system(size: 16, weight: .medium, design: .monospaced))
                 .tracking(1)
-                .foregroundColor(.continuumSecondaryText.opacity(0.7))
+                .foregroundColor(.siloSecondaryText.opacity(0.7))
                 .padding(.leading, 20)
                 .padding(.top, 10)
         }
@@ -433,11 +433,11 @@ struct TVSettingsView: View {
 
                 Text(selectedCategory.title)
                     .font(.system(size: 38, weight: .semibold))
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
 
                 Text(selectedCategory.blurb)
                     .font(.system(size: 20))
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
             }
         }
         .padding(.horizontal, 24)
@@ -631,7 +631,7 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
     var tint: Color {
         switch self {
         case .general, .playback, .subtitles:
-            return .continuumAccent
+            return .siloAccent
         case .diagnostics:
             return .orange
         case .server:

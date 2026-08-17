@@ -9,7 +9,7 @@ protocol OnboardingTourAPI: Sendable {
     func setDeviceSetting(key: String, value: String) async throws
 }
 
-extension ContinuumAPI: OnboardingTourAPI {}
+extension SiloAPI: OnboardingTourAPI {}
 
 private enum OnboardingTourError: LocalizedError {
     case unsupportedSetting(String)
@@ -50,7 +50,7 @@ class OnboardingTourViewModel {
     private let activeProfileId: @MainActor () -> String?
 
     init(
-        api: any OnboardingTourAPI = ContinuumAPI.shared,
+        api: any OnboardingTourAPI = SiloAPI.shared,
         runtimeSettingsRefresher: (any OnboardingRuntimeSettingsRefreshing)? = nil,
         activeProfileId: @escaping @MainActor () -> String? = { AuthService.shared.profileId }
     ) {

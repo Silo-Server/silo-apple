@@ -24,7 +24,7 @@ struct StartupSplashView: View {
 
     var body: some View {
         ZStack {
-            Color.continuumBackground.ignoresSafeArea()
+            Color.siloBackground.ignoresSafeArea()
 
             if isVideoAvailable {
                 startupVideo
@@ -32,7 +32,7 @@ struct StartupSplashView: View {
                 fallbackContent
             }
         }
-        .accessibilityLabel("Loading Continuum")
+        .accessibilityLabel("Loading Silo")
         .onAppear(perform: startPlayback)
         .onDisappear(perform: stopPlayback)
     }
@@ -68,7 +68,7 @@ struct StartupSplashView: View {
             SiloWordmarkView(width: 132)
 
             ProgressView()
-                .tint(.continuumOnSurface)
+                .tint(.siloOnSurface)
                 .scaleEffect(1.2)
         }
     }

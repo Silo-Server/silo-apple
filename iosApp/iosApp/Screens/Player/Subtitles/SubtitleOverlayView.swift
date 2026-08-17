@@ -1,6 +1,6 @@
 //
 //  SubtitleOverlayView.swift
-//  Continuum (Apple platforms)
+//  Silo (Apple platforms)
 //
 //  Composites libass output onto the player surface. Sits above the
 //  AVPlayer video layer. Pinned to all four edges — libass handles the subtitle positioning via its

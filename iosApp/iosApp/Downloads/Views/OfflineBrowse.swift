@@ -29,7 +29,7 @@ struct OfflineSeriesBrowseView: View {
                     title: "No Downloads",
                     subtitle: "This series has no downloaded episodes."
                 )
-                .background(Color.continuumBackground)
+                .background(Color.siloBackground)
             }
         }
         .navigationTitle(group?.title ?? "Series")
@@ -52,7 +52,7 @@ struct OfflineSeriesBrowseView: View {
                 }
             }
         }
-        .continuumToolbarColorSchemeDark()
+        .siloToolbarColorSchemeDark()
     }
 
     private func content(_ group: DownloadSeriesGroup) -> some View {
@@ -92,7 +92,7 @@ struct OfflineSeriesBrowseView: View {
                 Color.clear.frame(height: 30)
             }
         }
-        .background(Color.continuumBackground)
+        .background(Color.siloBackground)
     }
 
     private func seasonChips(_ group: DownloadSeriesGroup) -> some View {
@@ -105,15 +105,15 @@ struct OfflineSeriesBrowseView: View {
                     } label: {
                         Text(season.isSpecials ? "Specials" : "Season \(season.seasonNumber)")
                             .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundColor(isSelected ? .continuumOnSurface : .continuumSecondaryText)
+                            .foregroundColor(isSelected ? .siloOnSurface : .siloSecondaryText)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 8)
                             .background(
                                 Capsule()
-                                    .fill(isSelected ? Color.continuumChromeSelectedFill : Color.continuumChromeRestingFill)
+                                    .fill(isSelected ? Color.siloChromeSelectedFill : Color.siloChromeRestingFill)
                                     .overlay(
                                         Capsule().stroke(
-                                            isSelected ? Color.continuumChromeSelectedBorder : Color.continuumChromeRestingBorder,
+                                            isSelected ? Color.siloChromeSelectedBorder : Color.siloChromeRestingBorder,
                                             lineWidth: 1
                                         )
                                     )
@@ -131,11 +131,11 @@ struct OfflineSeriesBrowseView: View {
         HStack {
             Text("Episodes")
                 .font(.system(size: 16, weight: .bold))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
             Spacer()
             Text("\(season.episodeCount) on this device · \(DownloadFormatting.bytes(season.totalBytes))")
                 .font(.system(size: 11.5))
-                .foregroundColor(.continuumOnSurface.opacity(0.38))
+                .foregroundColor(.siloOnSurface.opacity(0.38))
         }
         .padding(.horizontal, 20)
         .padding(.top, 18)
@@ -207,7 +207,7 @@ struct OfflineDownloadDetailView: View {
                 content(record)
             } else {
                 EmptyStateView(icon: "arrow.down.circle", title: "Download Removed", subtitle: nil)
-                    .background(Color.continuumBackground)
+                    .background(Color.siloBackground)
             }
         }
         .navigationTitle("")
@@ -217,7 +217,7 @@ struct OfflineDownloadDetailView: View {
         .task {
             if manifest == nil, let record { manifest = await manager.loadManifest(for: record) }
         }
-        .continuumToolbarColorSchemeDark()
+        .siloToolbarColorSchemeDark()
     }
 
     private func content(_ record: DownloadRecord) -> some View {
@@ -230,15 +230,15 @@ struct OfflineDownloadDetailView: View {
                         Text(episodeEyebrow(record))
                             .font(.system(size: 12, weight: .semibold))
                             .tracking(0.4)
-                            .foregroundColor(.continuumSecondaryText)
+                            .foregroundColor(.siloSecondaryText)
                             .padding(.bottom, 5)
                     }
                     Text(record.title ?? record.contentId)
                         .font(.system(size: 21, weight: .bold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                     Text(metaLine(record))
                         .font(.system(size: 12))
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                         .padding(.top, 4)
 
                     availabilityChip(record)
@@ -250,7 +250,7 @@ struct OfflineDownloadDetailView: View {
                     if let overview = manifest?.overview, !overview.isEmpty {
                         Text(overview)
                             .font(.system(size: 13))
-                            .foregroundColor(.continuumSecondaryText)
+                            .foregroundColor(.siloSecondaryText)
                             .lineSpacing(2)
                             .padding(.top, 16)
                     }
@@ -267,14 +267,14 @@ struct OfflineDownloadDetailView: View {
                 Color.clear.frame(height: 30)
             }
         }
-        .background(Color.continuumBackground)
+        .background(Color.siloBackground)
     }
 
     private func still(_ record: DownloadRecord) -> some View {
         Button { play(record) } label: {
             ZStack {
                 LinearGradient(
-                    colors: [Color.continuumSurfaceElevated, Color.continuumBackground],
+                    colors: [Color.siloSurfaceElevated, Color.siloBackground],
                     startPoint: .top,
                     endPoint: .bottom
                 )
@@ -286,8 +286,8 @@ struct OfflineDownloadDetailView: View {
                         Spacer()
                         GeometryReader { geo in
                             ZStack(alignment: .leading) {
-                                Color.continuumOnSurface.opacity(0.22)
-                                Color.continuumOnSurface.frame(width: geo.size.width * fraction)
+                                Color.siloOnSurface.opacity(0.22)
+                                Color.siloOnSurface.frame(width: geo.size.width * fraction)
                             }
                         }
                         .frame(height: 4)
@@ -309,13 +309,13 @@ struct OfflineDownloadDetailView: View {
             Text(availabilityText(record))
                 .font(.system(size: 11.5, weight: .semibold))
         }
-        .foregroundColor(.continuumOnSurface)
+        .foregroundColor(.siloOnSurface)
         .padding(.horizontal, 11)
         .padding(.vertical, 6)
         .background(
             Capsule()
-                .fill(Color.continuumChromeSelectedFill)
-                .overlay(Capsule().stroke(Color.continuumChromeSelectedBorder, lineWidth: 1))
+                .fill(Color.siloChromeSelectedFill)
+                .overlay(Capsule().stroke(Color.siloChromeSelectedBorder, lineWidth: 1))
         )
     }
 
@@ -329,7 +329,7 @@ struct OfflineDownloadDetailView: View {
                 .font(.system(size: 14.5))
                 .frame(maxWidth: .infinity)
                 .frame(height: 46)
-                .background(Color.continuumOnSurface)
+                .background(Color.siloOnSurface)
                 .foregroundColor(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
             }
@@ -339,14 +339,14 @@ struct OfflineDownloadDetailView: View {
                 Button { playFromStart(record) } label: {
                     Image(systemName: "gobackward")
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                         .frame(width: 46, height: 46)
                         .background(
                             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                .fill(Color.continuumChromeRestingFill)
+                                .fill(Color.siloChromeRestingFill)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                        .stroke(Color.continuumChromeRestingBorder, lineWidth: 1)
+                                        .stroke(Color.siloChromeRestingBorder, lineWidth: 1)
                                 )
                         )
                 }
@@ -362,17 +362,17 @@ struct OfflineDownloadDetailView: View {
                 HStack {
                     Text(key)
                         .font(.system(size: 12.5))
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                     Spacer()
                     Text(value)
                         .font(.system(size: 12.5, weight: .medium))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                 }
                 .padding(.vertical, 11)
-                Divider().overlay(Color.continuumDivider)
+                Divider().overlay(Color.siloDivider)
             }
         }
-        .overlay(Divider().overlay(Color.continuumDivider), alignment: .top)
+        .overlay(Divider().overlay(Color.siloDivider), alignment: .top)
     }
 
     private func deleteButton(_ record: DownloadRecord) -> some View {
@@ -388,13 +388,13 @@ struct OfflineDownloadDetailView: View {
             .font(.system(size: 13.5))
             .frame(maxWidth: .infinity)
             .frame(height: 44)
-            .foregroundColor(.continuumError)
+            .foregroundColor(.siloError)
             .background(
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(Color.continuumChromeRestingFill)
+                    .fill(Color.siloChromeRestingFill)
                     .overlay(
                         RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .stroke(Color.continuumChromeRestingBorder, lineWidth: 1)
+                            .stroke(Color.siloChromeRestingBorder, lineWidth: 1)
                     )
             )
         }
@@ -515,16 +515,16 @@ private struct OfflineBrowseHero: View {
                     HStack(spacing: 7) {
                         Text(eyebrow)
                             .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundColor(.continuumSecondaryText)
+                            .foregroundColor(.siloSecondaryText)
                         if isMonitored {
                             Image(systemName: "antenna.radiowaves.left.and.right")
                                 .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(.continuumOnSurface)
+                                .foregroundColor(.siloOnSurface)
                         }
                     }
                     Text(title)
                         .font(.system(size: 24, weight: .bold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                         .lineLimit(2)
                 }
             }
@@ -535,13 +535,13 @@ private struct OfflineBrowseHero: View {
                 Text(availability)
                     .font(.system(size: 11.5, weight: .semibold))
             }
-            .foregroundColor(.continuumOnSurface)
+            .foregroundColor(.siloOnSurface)
             .padding(.horizontal, 11)
             .padding(.vertical, 6)
             .background(
                 Capsule()
-                    .fill(Color.continuumChromeSelectedFill)
-                    .overlay(Capsule().stroke(Color.continuumChromeSelectedBorder, lineWidth: 1))
+                    .fill(Color.siloChromeSelectedFill)
+                    .overlay(Capsule().stroke(Color.siloChromeSelectedBorder, lineWidth: 1))
             )
 
             Button(action: onPlay) {
@@ -552,7 +552,7 @@ private struct OfflineBrowseHero: View {
                 .font(.system(size: 15))
                 .frame(maxWidth: .infinity)
                 .frame(height: 48)
-                .background(Color.continuumOnSurface)
+                .background(Color.siloOnSurface)
                 .foregroundColor(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
@@ -561,7 +561,7 @@ private struct OfflineBrowseHero: View {
         .padding(20)
         .background(
             LinearGradient(
-                colors: [Color.continuumSurfaceVariant, Color.continuumBackground],
+                colors: [Color.siloSurfaceVariant, Color.siloBackground],
                 startPoint: .top,
                 endPoint: .bottom
             )

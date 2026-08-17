@@ -1,6 +1,6 @@
 //
 //  SubtitleScriptFont.swift
-//  Continuum (iOS + tvOS + macOS)
+//  Silo (iOS + tvOS + macOS)
 //
 //  Script-aware font fallback for generated ASS documents. The user's
 //  chosen subtitle family is often Latin-only, so Arabic cues would

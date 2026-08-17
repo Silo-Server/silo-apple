@@ -7,7 +7,7 @@ struct SettingsPageHeader: View {
     let title: String
     let subtitle: String
     let systemImage: String
-    var tint: Color = .continuumAccent
+    var tint: Color = .siloAccent
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
@@ -26,11 +26,11 @@ struct SettingsPageHeader: View {
                 Text(title)
                     .font(.title2)
                     .bold()
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
 
                 Text(subtitle)
                     .font(.subheadline)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -47,8 +47,8 @@ extension View {
     }
 
     func settingsListChrome() -> some View {
-        continuumGroupedListStyle()
-            .continuumScrollContentBackgroundHidden()
+        siloGroupedListStyle()
+            .siloScrollContentBackgroundHidden()
             .background(SettingsBackdrop())
     }
 }

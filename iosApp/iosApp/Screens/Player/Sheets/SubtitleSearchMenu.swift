@@ -1,6 +1,6 @@
 //
 //  SubtitleSearchMenu.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  In-player external subtitle search (OpenSubtitles / SubDL / Subsource via
 //  silo-server). Android/web parity: pick a language (the profile's preferred
@@ -241,9 +241,9 @@ struct SubtitleSearchMenu: View {
 
     private func scoreColor(_ score: Double) -> Color {
         switch SubtitleSearchScoreTier(score: score) {
-        case .good: return .continuumSuccess
-        case .fair: return .continuumWarning
-        case .poor: return .continuumError
+        case .good: return .siloSuccess
+        case .fair: return .siloWarning
+        case .poor: return .siloError
         }
     }
 
@@ -301,7 +301,7 @@ struct SubtitleSearchMenu: View {
     private func scrollToFocusedRow(_ proxy: ScrollViewProxy, animated: Bool = true) {
         guard let target = focusedRowID else { return }
         if animated {
-            withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                 proxy.scrollTo(target, anchor: .center)
             }
         } else {
@@ -440,7 +440,7 @@ struct SubtitleSearchMenu: View {
         ForEach(warnings, id: \.self) { warning in
             Label(warning, systemImage: "exclamationmark.triangle")
                 .font(.system(size: 16))
-                .foregroundStyle(Color.continuumWarning)
+                .foregroundStyle(Color.siloWarning)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 4)
         }
@@ -602,7 +602,7 @@ struct SubtitleSearchMenu: View {
                 }
             }
             .navigationTitle(phase == .results ? "Results" : title)
-            .continuumNavigationTitleDisplayMode(.inline)
+            .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { onDismiss() }
@@ -635,7 +635,7 @@ struct SubtitleSearchMenu: View {
                 Text(explainer)
             }
         }
-        .continuumGroupedListStyle()
+        .siloGroupedListStyle()
     }
 
     @ViewBuilder
@@ -668,7 +668,7 @@ struct SubtitleSearchMenu: View {
                     ForEach(warnings, id: \.self) { warning in
                         Label(warning, systemImage: "exclamationmark.triangle")
                             .font(.footnote)
-                            .foregroundStyle(Color.continuumWarning)
+                            .foregroundStyle(Color.siloWarning)
                     }
                 }
             }
@@ -686,7 +686,7 @@ struct SubtitleSearchMenu: View {
                 }
             }
         }
-        .continuumGroupedListStyle()
+        .siloGroupedListStyle()
     }
 
     @ViewBuilder

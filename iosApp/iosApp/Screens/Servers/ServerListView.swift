@@ -36,11 +36,11 @@ struct ServerListView: View {
             }
         }
         .background(SettingsBackdrop())
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: removeTarget)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: removeTarget)
         #else
         contentList
             .navigationTitle("")
-            .continuumNavigationTitleDisplayMode(.inline)
+            .siloNavigationTitleDisplayMode(.inline)
             .alert(
                 "Remove this server?",
                 isPresented: Binding(
@@ -67,13 +67,13 @@ struct ServerListView: View {
                     Text("CONNECTION")
                         .font(.system(size: 15, weight: .semibold, design: .monospaced))
                         .tracking(2)
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                     Text("Manage Servers")
                         .font(.system(size: 38, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                     Text("Manage saved Silo servers or add another connection.")
                         .font(.system(size: 20))
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                 }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 18)
@@ -114,7 +114,7 @@ struct ServerListView: View {
             .padding(.bottom, 64)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .safeAreaPadding(.horizontal, ContinuumTheme.Skyline.safeAreaX)
+        .safeAreaPadding(.horizontal, SiloTheme.Skyline.safeAreaX)
         .safeAreaPadding(.top, 64)
         .defaultFocus($focusedRow, defaultTVRow)
     }
@@ -188,19 +188,19 @@ struct ServerListView: View {
                 }
             } header: {
                 Text("Saved servers")
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
-            .listRowBackground(Color.continuumSurfaceElevated)
+            .listRowBackground(Color.siloSurfaceElevated)
 
             Section {
                 Button {
                     router.resetToServerSetup()
                 } label: {
                     Label("Add Server", systemImage: "plus")
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                 }
             }
-            .listRowBackground(Color.continuumSurfaceElevated)
+            .listRowBackground(Color.siloSurfaceElevated)
         }
         .settingsListChrome()
     }
@@ -215,17 +215,17 @@ struct ServerListView: View {
                       ? "checkmark.circle.fill"
                       : "server.rack")
                     .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .frame(width: 28)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(entry.displayName)
-                        .font(.continuumSubheadline)
-                        .foregroundColor(.continuumOnSurface)
+                        .font(.siloSubheadline)
+                        .foregroundColor(.siloOnSurface)
                         .lineLimit(1)
                     Text(entry.url)
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                         .lineLimit(1)
                 }
                 Spacer()

@@ -1,6 +1,6 @@
 //
 //  OverlayPrefsStore.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Cached card-overlay configuration for the signed-in profile.
 //  Resolves a single rendered `CardOverlayPrefs` from one of two
@@ -94,7 +94,7 @@ final class OverlayPrefsStore: ObservableObject {
             }
         }
 
-        let api = ContinuumAPI.shared
+        let api = SiloAPI.shared
         var resolvedEnabled = true
         var resolvedAdminDefaults: String?
         var resolvedError: String?

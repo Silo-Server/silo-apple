@@ -10,7 +10,7 @@ extension RequestStatusTint {
         case .sky: .requestSky
         case .emerald: .requestEmerald
         case .rose: .requestRose
-        case .neutral: .continuumSecondaryText
+        case .neutral: .siloSecondaryText
         }
     }
 }
@@ -30,16 +30,16 @@ struct RequestStatusChip: View {
             Text(text)
                 .font(font)
                 .fontWeight(.semibold)
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .lineLimit(1)
         }
         .padding(.horizontal, hPadding)
         .padding(.vertical, vPadding)
         .background(
-            Capsule().fill(Color.continuumChromeRestingFill)
+            Capsule().fill(Color.siloChromeRestingFill)
         )
         .overlay(
-            Capsule().stroke(Color.continuumChromeRestingBorder, lineWidth: 1)
+            Capsule().stroke(Color.siloChromeRestingBorder, lineWidth: 1)
         )
         .accessibilityElement(children: .combine)
         .accessibilityLabel(text)
@@ -56,7 +56,7 @@ struct RequestStatusChip: View {
         #if os(tvOS)
         .system(size: 24)
         #else
-        .continuumCaption
+        .siloCaption
         #endif
     }
 

@@ -31,11 +31,11 @@ struct TVLibraryCollectionsView: View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: 44, pinnedViews: []) {
                 Color.clear
-                    .frame(height: ContinuumTheme.Skyline.libraryContentTopInset)
+                    .frame(height: SiloTheme.Skyline.libraryContentTopInset)
 
                 gridContent
             }
-            .padding(.bottom, ContinuumTheme.largePadding)
+            .padding(.bottom, SiloTheme.largePadding)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
@@ -75,25 +75,25 @@ struct TVLibraryCollectionsView: View {
                             // cascade/dropdown section headers, at grid scale.
                             Text(section.name.uppercased())
                                 .font(.system(
-                                    size: ContinuumTheme.Skyline.collectionGridGroupHeaderSize,
+                                    size: SiloTheme.Skyline.collectionGridGroupHeaderSize,
                                     design: .monospaced
                                 ))
-                                .tracking(ContinuumTheme.Skyline.collectionGridGroupHeaderSize * 0.26)
-                                .foregroundColor(.continuumOnSurface.opacity(0.38))
+                                .tracking(SiloTheme.Skyline.collectionGridGroupHeaderSize * 0.26)
+                                .foregroundColor(.siloOnSurface.opacity(0.38))
                                 .lineLimit(1)
-                                .padding(.leading, ContinuumTheme.safePadding)
+                                .padding(.leading, SiloTheme.safePadding)
                         }
                         LazyVGrid(
                             columns: Array(
                                 repeating: GridItem(
                                     .flexible(),
-                                    spacing: ContinuumTheme.Skyline.collectionGridColumnSpacing,
+                                    spacing: SiloTheme.Skyline.collectionGridColumnSpacing,
                                     alignment: .top
                                 ),
                                 count: resolvedColumnCount
                             ),
                             alignment: .leading,
-                            spacing: ContinuumTheme.Skyline.collectionGridRowSpacing
+                            spacing: SiloTheme.Skyline.collectionGridRowSpacing
                         ) {
                             ForEach(section.collections) { collection in
                                 let isFirstOverall =
@@ -116,7 +116,7 @@ struct TVLibraryCollectionsView: View {
                                 .frame(maxWidth: .infinity)
                             }
                         }
-                        .padding(.horizontal, ContinuumTheme.safePadding)
+                        .padding(.horizontal, SiloTheme.safePadding)
                     }
                 }
             }
@@ -182,7 +182,7 @@ struct TVLibraryCollectionsView: View {
     private func loadCollections() async {
         isLoadingCollections = true
         do {
-            let response = try await ContinuumAPI.shared.libraryCollections(libraryId: library.id)
+            let response = try await SiloAPI.shared.libraryCollections(libraryId: library.id)
             collectionSections = response.resolvedSections
         } catch {
             collectionSections = []
@@ -191,7 +191,7 @@ struct TVLibraryCollectionsView: View {
     }
 
     private var resolvedColumnCount: Int {
-        let standard = ContinuumTheme.Skyline.collectionGridColumnCount
+        let standard = SiloTheme.Skyline.collectionGridColumnCount
         switch uiCustomization.cardPresentation.posterSize {
         case .compact: return standard + 1
         case .standard: return standard

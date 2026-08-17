@@ -15,9 +15,9 @@ final class MyRequestsViewModel {
     /// In-flight bus-triggered reload; cancelled and replaced on the next
     /// event so a slow earlier response can't overwrite a newer one.
     private var reloadTask: Task<Void, Never>?
-    private let api: ContinuumAPI
+    private let api: SiloAPI
 
-    init(api: ContinuumAPI = .shared) {
+    init(api: SiloAPI = .shared) {
         self.api = api
     }
 

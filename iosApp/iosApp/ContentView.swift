@@ -74,7 +74,7 @@ struct ContentView: View {
             isEnabled: router.authState == .authenticated
         ))
         #endif
-        .onReceive(NotificationCenter.default.publisher(for: .continuumDeepLink)) { notification in
+        .onReceive(NotificationCenter.default.publisher(for: .siloDeepLink)) { notification in
             guard let url = notification.userInfo?["url"] as? URL else { return }
             #if os(iOS)
             ApplePushDeepLinkCoordinator.shared.clearPendingDeepLink(matching: url)
@@ -91,7 +91,7 @@ struct ContentView: View {
             }
             #endif
         }
-        .onReceive(NotificationCenter.default.publisher(for: .continuumSessionExpired)) { notification in
+        .onReceive(NotificationCenter.default.publisher(for: .siloSessionExpired)) { notification in
             guard let event = notification.object as? SessionExpiryEvent,
                   event.disposition == .persistentSessionCleared else { return }
             Task { @MainActor in
@@ -107,7 +107,7 @@ struct ContentView: View {
                 router.expiredSession()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .continuumProfileSelectionRequired)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .siloProfileSelectionRequired)) { _ in
             guard shouldPresentProfileSelectionAfterRecovery(
                 isLoggedIn: AuthService.shared.isLoggedIn,
                 activeProfileID: AuthService.shared.profileId
@@ -572,7 +572,7 @@ struct ContentView: View {
     @MainActor
     private func routePlayDeepLink(contentId: String) async {
         do {
-            let detail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+            let detail = try await SiloAPI.shared.itemDetail(contentId: contentId)
             if detail.isAudiobook {
                 audioStore.play(contentId: contentId)
                 return
@@ -678,7 +678,7 @@ struct ContentView: View {
         didAttemptDebugAutoPlay = true
 
         do {
-            let sections = try await ContinuumAPI.shared.homeSections()
+            let sections = try await SiloAPI.shared.homeSections()
             guard let contentId = sections.sections.lazy
                 .compactMap({ $0.items.first?.contentId })
                 .first else {
@@ -773,7 +773,7 @@ struct ContentView: View {
     #endif
 
     private func resolveDebugSearchContentId(query: String) async throws -> String {
-        let response = try await ContinuumAPI.shared.catalog(query: [
+        let response = try await SiloAPI.shared.catalog(query: [
             "source": "query",
             "q": query,
             "limit": "20",
@@ -793,12 +793,12 @@ struct ContentView: View {
         }
 
         if preferredItem.type == "series" {
-            let seasons = try await ContinuumAPI.shared.seasons(seriesId: preferredItem.contentId)
+            let seasons = try await SiloAPI.shared.seasons(seriesId: preferredItem.contentId)
             guard let firstSeason = seasons.seasons.sorted(by: { $0.seasonNumber < $1.seasonNumber }).first else {
                 throw DebugAutoPlayError.noPlayableEpisode(seriesTitle: preferredItem.title)
             }
 
-            let episodes = try await ContinuumAPI.shared.episodes(
+            let episodes = try await SiloAPI.shared.episodes(
                 seriesId: preferredItem.contentId,
                 seasonNumber: firstSeason.seasonNumber
             )
@@ -841,7 +841,7 @@ struct ContentView: View {
                 title: "Coming Soon",
                 subtitle: "This screen is under construction."
             )
-            .continuumBackground()
+            .siloBackground()
         }
     }
 
@@ -870,7 +870,7 @@ struct ContentView: View {
             #endif
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumBackground()
+                .siloBackground()
         }
     }
 }
@@ -1616,7 +1616,7 @@ struct MainTabView: View {
                 tabLayout
             }
         }
-        .tint(.continuumOnSurface)
+        .tint(.siloOnSurface)
         .task(id: currentLibraryAuthority) {
             await loadVisibleLibraries(for: currentLibraryAuthority)
         }
@@ -1893,8 +1893,8 @@ struct MainTabView: View {
         HStack(spacing: 0) {
             Color.clear
                 .frame(
-                    width: ContinuumTheme.topBarIconHitSize,
-                    height: ContinuumTheme.topBarIconHitSize
+                    width: SiloTheme.topBarIconHitSize,
+                    height: SiloTheme.topBarIconHitSize
                 )
                 .accessibilityHidden(true)
 
@@ -1907,8 +1907,8 @@ struct MainTabView: View {
                 Image(systemName: "arrow.left")
                     .font(.body.weight(.semibold))
                     .frame(
-                        width: ContinuumTheme.topBarIconHitSize,
-                        height: ContinuumTheme.topBarIconHitSize
+                        width: SiloTheme.topBarIconHitSize,
+                        height: SiloTheme.topBarIconHitSize
                     )
                     .contentShape(Rectangle())
             }
@@ -2206,7 +2206,7 @@ struct MainTabView: View {
         case .downloads:
             #if os(tvOS)
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumBackground()
+                .siloBackground()
             #else
             DownloadsView()
             #endif
@@ -2226,20 +2226,20 @@ struct MainTabView: View {
         case .offlineSeriesBrowse(let seriesId):
             #if os(tvOS)
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumBackground()
+                .siloBackground()
             #else
             OfflineSeriesBrowseView(seriesId: seriesId)
             #endif
         case .offlineDownloadDetail(let downloadId):
             #if os(tvOS)
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumBackground()
+                .siloBackground()
             #else
             OfflineDownloadDetailView(downloadId: downloadId)
             #endif
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumBackground()
+                .siloBackground()
         }
     }
 

@@ -91,7 +91,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                         detailsSection
                         similarSection
                     }
-                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.horizontal, SiloTheme.safePadding)
                     .padding(.bottom, 160)
                 }
             }
@@ -338,7 +338,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             if let count = selectedSeason?.episodeCount, count > 0 {
                 Text("\(count) episode\(count == 1 ? "" : "s")")
                     .font(.system(size: 22, weight: .medium))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
         }
     }
@@ -361,13 +361,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         } else if isLoadingEpisodes {
             HStack {
                 Spacer()
-                ProgressView().tint(.continuumOnSurface).padding()
+                ProgressView().tint(.siloOnSurface).padding()
                 Spacer()
             }
         } else if episodes.isEmpty {
             Text("No episodes available")
                 .font(.system(size: 22, weight: .regular))
-                .foregroundColor(.continuumSecondaryText)
+                .foregroundColor(.siloSecondaryText)
         } else {
             TVEpisodeRail(
                 episodes: episodes,

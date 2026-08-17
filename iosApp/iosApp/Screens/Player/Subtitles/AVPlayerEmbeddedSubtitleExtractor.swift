@@ -1,6 +1,6 @@
 //
 //  AVPlayerEmbeddedSubtitleExtractor.swift
-//  Continuum
+//  Silo
 //
 //  Subtitle-only FFmpeg extractor used by AVPlayer routes. AVPlayer keeps
 //  owning media transport; this object opens the original media source in a
@@ -90,7 +90,7 @@ final class AVPlayerEmbeddedSubtitleExtractor {
     }
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "AVPlayerEmbeddedSubtitleExtractor"
     )
 

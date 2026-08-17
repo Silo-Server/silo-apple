@@ -6,6 +6,6 @@ struct ThumbhashImage: View {
     let thumbhash: String?
 
     var body: some View {
-        Color.continuumSurfaceVariant
+        Color.siloSurfaceVariant
     }
 }

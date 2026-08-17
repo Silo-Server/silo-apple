@@ -179,7 +179,7 @@ struct PlayerView: View {
                             timeDisplayMode: timelineTimeDisplayMode,
                             timelineSelectionRequest: timelineSelectionRequest,
                             onToggleTimeDisplayMode: {
-                                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+                                withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                                     timelineTimeDisplayMode.toggle()
                                 }
                             },
@@ -370,7 +370,7 @@ struct PlayerView: View {
             }
             #endif
         }
-        .continuumStatusBarHidden()
+        .siloStatusBarHidden()
         #if !os(tvOS)
         .navigationBarHidden(true)
         #endif
@@ -392,7 +392,7 @@ struct PlayerView: View {
         timelinePreviewHideTask?.cancel()
         timelinePreviewHideTask = nil
         timelinePreviewContactCanToggle = isTimelinePreviewVisible
-        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+        withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
             if !isTimelinePreviewVisible {
                 isTimelinePreviewVisible = true
             }
@@ -402,7 +402,7 @@ struct PlayerView: View {
     private func handleTimelinePreviewContactEnded() {
         guard isTimelinePreviewVisible else { return }
         if timelinePreviewContactCanToggle {
-            withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                 timelineTimeDisplayMode.toggle()
             }
         }
@@ -433,7 +433,7 @@ struct PlayerView: View {
         if immediately {
             isTimelinePreviewVisible = false
         } else {
-            withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                 isTimelinePreviewVisible = false
             }
             // A dismissed quick preview always starts fresh in duration mode
@@ -518,10 +518,10 @@ struct PlayerView: View {
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 40))
-                .foregroundStyle(Color.continuumError)
+                .foregroundStyle(Color.siloError)
 
             Text(error)
-                .font(.continuumBody)
+                .font(.siloBody)
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
@@ -1055,8 +1055,8 @@ private struct AutoPlayToggleButtonBody: View {
             #if os(tvOS)
             .focusEffectDisabled()
             #endif
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
+            .animation(SiloTheme.springAnimation, value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 }
 

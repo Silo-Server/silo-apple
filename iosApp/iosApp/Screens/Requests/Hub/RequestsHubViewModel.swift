@@ -21,9 +21,9 @@ final class RequestsHubViewModel {
     private(set) var hasSearched = false
 
     private var searchTask: Task<Void, Never>?
-    private let api: ContinuumAPI
+    private let api: SiloAPI
 
-    init(api: ContinuumAPI = .shared) {
+    init(api: SiloAPI = .shared) {
         self.api = api
     }
 

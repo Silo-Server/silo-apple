@@ -25,7 +25,7 @@ struct TVMediaCard: View {
     /// Width of the poster. Defaults to the theme's standard poster size.
     /// Override with a smaller value in space-constrained grids (e.g. the
     /// Library tab where the alphabet rail forces cards to shrink).
-    var cardWidth: CGFloat = ContinuumTheme.posterCardWidth
+    var cardWidth: CGFloat = SiloTheme.posterCardWidth
     var aspect: MediaCardAspect = .poster
     var prefersDefaultFocus: Bool = false
     var defaultFocusNamespace: Namespace.ID? = nil
@@ -169,12 +169,12 @@ struct TVMediaCard: View {
                 contentMode: .fill
             )
             .frame(width: resolvedCardWidth, height: cardHeight)
-            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
 
             if let overlayData, overlayStore.enabled {
                 CardOverlays(data: overlayData, prefs: overlayStore.prefs, variant: .poster)
                     .frame(width: resolvedCardWidth, height: cardHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+                    .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
             if userState?.played == true {
@@ -188,9 +188,9 @@ struct TVMediaCard: View {
             // halo is suppressed in TVPosterRingButtonStyle), matching the
             // episode/cast cards.
             if focusTreatment == .ring {
-                RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
+                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
                     .stroke(Color.white.opacity(isFocused ? 0.9 : 0), lineWidth: isFocused ? 4 : 0)
-                    .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+                    .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
             }
         }
     }
@@ -202,16 +202,16 @@ struct TVMediaCard: View {
         VStack(spacing: 4) {
             Text(title)
                 .font(.system(size: 22, weight: .semibold))
-                .foregroundColor(isFocused ? .continuumOnSurface : .continuumOnSurface.opacity(0.92))
+                .foregroundColor(isFocused ? .siloOnSurface : .siloOnSurface.opacity(0.92))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
 
             if uiCustomization.cardPresentation.caption.showsMetadata,
                let secondLine = subtitle ?? year.map(String.init) {
                 Text(secondLine)
                     .font(.system(size: 18, weight: .regular))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
         }
         .multilineTextAlignment(.center)
@@ -221,12 +221,12 @@ struct TVMediaCard: View {
     private var watchedBadge: some View {
         ZStack {
             Circle()
-                .fill(Color.continuumOnSurface)
+                .fill(Color.siloOnSurface)
                 .frame(width: 40, height: 40)
                 .shadow(color: .black.opacity(0.3), radius: 4)
             Image(systemName: "checkmark")
                 .font(.system(size: 20, weight: .bold))
-                .foregroundColor(Color.continuumBackground)
+                .foregroundColor(Color.siloBackground)
         }
     }
 
@@ -267,8 +267,8 @@ private struct TVPosterRingButtonBody: View {
                 y: isFocused ? 8 : 0
             )
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 
     private var scale: CGFloat {

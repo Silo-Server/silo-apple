@@ -50,7 +50,7 @@ struct TVEpisodeRail: View {
                     }
                 }
                 .padding(.vertical, 32)
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
             }
             .focusSection()
             .applyDefaultFocusIfPresent(
@@ -69,7 +69,7 @@ struct TVEpisodeRail: View {
                 // Run on next tick so the LazyHStack has instantiated the
                 // target cell before we try to anchor on it.
                 DispatchQueue.main.async {
-                    withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
+                    withAnimation(.easeOut(duration: SiloTheme.normalDuration)) {
                         proxy.scrollTo(id, anchor: .center)
                     }
                 }
@@ -220,7 +220,7 @@ private struct EpisodeCardLabel: View {
                             Text(episodeNumberLabel)
                                 .font(.system(size: 18, weight: .bold))
                                 .tracking(2.0)
-                                .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
+                                .foregroundStyle(Color.siloOnSurface.opacity(0.55))
                         if isCurrent {
                             nowViewingTag
                         }
@@ -239,29 +239,29 @@ private struct EpisodeCardLabel: View {
                         if let metadataLine = episodeMetadataLine {
                             Text(metadataLine)
                                 .font(.system(size: 20, weight: .medium))
-                                .foregroundStyle(Color.continuumSecondaryText)
+                                .foregroundStyle(Color.siloSecondaryText)
                                 .lineLimit(1)
                         }
 
                         if let overview = episode.overview, !overview.isEmpty {
                             Text(overview)
                                 .font(.system(size: 20, weight: .regular))
-                                .foregroundStyle(Color.continuumSecondaryText)
+                                .foregroundStyle(Color.siloSecondaryText)
                                 .lineLimit(3, reservesSpace: true)
                                 .lineSpacing(3)
                                 .padding(.top, 4)
                         }
                     }
                 }
-                .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
             }
         }
         .frame(width: cardWidth, alignment: .leading)
     }
 
     private var titleColor: Color {
-        if isCurrent { return .continuumOnSurface }
-        return isFocused ? .continuumOnSurface : Color.continuumOnSurface.opacity(0.92)
+        if isCurrent { return .siloOnSurface }
+        return isFocused ? .siloOnSurface : Color.siloOnSurface.opacity(0.92)
     }
 
     private var nowViewingTag: some View {
@@ -291,7 +291,7 @@ private struct EpisodeCardLabel: View {
 
     private var still: some View {
         ZStack(alignment: .bottom) {
-            Color.continuumSurfaceElevated
+            Color.siloSurfaceElevated
                 .frame(width: cardWidth, height: stillHeight)
 
             if let url = episode.stillUrl, !url.isEmpty {
@@ -304,7 +304,7 @@ private struct EpisodeCardLabel: View {
             } else {
                 Image(systemName: "film")
                     .font(.system(size: 48))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
                     .frame(width: cardWidth, height: stillHeight)
             }
 
@@ -406,8 +406,8 @@ private struct EpisodeCardStyleBody: View {
                 radius: isFocused ? 18 : 8,
                 y: isFocused ? 8 : 4
             )
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 
     private var scale: CGFloat {

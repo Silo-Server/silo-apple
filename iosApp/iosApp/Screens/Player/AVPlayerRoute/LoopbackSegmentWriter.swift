@@ -1,6 +1,6 @@
 //
 //  LoopbackSegmentWriter.swift
-//  Continuum (iOS + tvOS) — Dolby Vision AVPlayer loopback route
+//  Silo (iOS + tvOS) — Dolby Vision AVPlayer loopback route
 //
 //  Re-demuxes a remote source with libavformat, re-muxes it into fragmented
 //  MP4 via the `mp4` muxer (the `hls` muxer isn't compiled into our
@@ -22,7 +22,7 @@
 //
 //  Threading:
 //    All libavformat I/O runs on a dedicated serial queue
-//    (`com.continuum.dv.mux`). The only cross-thread communication is the
+//    (`org.siloserver.silo.dv.mux`). The only cross-thread communication is the
 //    initial start()/stop() and an Atomic callback that notifies the backend
 //    when enough initial media is ready to serve (so AVPlayer can begin
 //    loading the manifest without a guessing race).
@@ -359,7 +359,7 @@ struct LoopbackBridgedDriftGovernor {
 
 final class LoopbackSegmentWriter {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "LoopbackSegmentWriter"
     )
     private static let verboseSegmentLogging =
@@ -501,7 +501,7 @@ final class LoopbackSegmentWriter {
             forKey: "player.apple.loopback_mux_qos_boost"
         ) as? Bool ?? true
     private let muxQueue = DispatchQueue(
-        label: "com.continuum.dv.mux",
+        label: "org.siloserver.silo.dv.mux",
         qos: LoopbackSegmentWriter.muxQoSBoostEnabled ? .userInitiated : .utility
     )
     /// Cancellation flag. Guarded by `cancelLock` so `stop()` can flip it

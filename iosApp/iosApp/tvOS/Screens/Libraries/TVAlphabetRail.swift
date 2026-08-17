@@ -100,7 +100,7 @@ private struct LetterButton: View {
                 // every letter the same advance width so the column reads as
                 // an even rail rather than a ragged proportional list.
                 .font(.system(
-                    size: isExpanded ? ContinuumTheme.Skyline.alphabetRailLetterSize : 10,
+                    size: isExpanded ? SiloTheme.Skyline.alphabetRailLetterSize : 10,
                     weight: .semibold,
                     design: .monospaced
                 ))
@@ -137,26 +137,26 @@ private struct LetterButtonBody: View {
                 // and the focused letter inverts the same way. A rounded
                 // rectangle (not a capsule) gives the "chip" read; both
                 // states fill white so each reads clearly.
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous)
                     .fill(background)
             )
             .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
             // Reduce Motion snaps the focus/press treatment (§4.2 acceptance).
-            .animation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .animation(reduceMotion ? nil : .easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 
     private var foreground: Color {
         // White-chip states (focused or current) take a dark label so the
         // letter stays legible on the inverted fill.
-        if isFocused || isSelected { return .continuumBackground }
-        return .continuumSecondaryText
+        if isFocused || isSelected { return .siloBackground }
+        return .siloSecondaryText
     }
 
     private var background: Color {
         // Current letter inverts to a solid white chip (§6.4); the focused
         // letter inverts identically. Everything else is bare.
-        if isFocused || isSelected { return .continuumOnSurface }
+        if isFocused || isSelected { return .siloOnSurface }
         return .clear
     }
 }

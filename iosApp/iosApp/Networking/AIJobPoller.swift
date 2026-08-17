@@ -1,15 +1,15 @@
 //
 //  AIJobPoller.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Generic poller for an AI subtitle job. Emits each fetched ``SubtitleJob``
 //  snapshot on a fixed cadence and stops once the job reaches a terminal
 //  state (`completed` / `failed` / `cancelled`).
 //
-//  The `fetch` closure is injected rather than the live ``ContinuumAI``
+//  The `fetch` closure is injected rather than the live ``SiloAI``
 //  facade so the poller is unit-testable headless — a fake `fetch` can
 //  return a scripted sequence of snapshots (see `AIJobPollerTests`). In
-//  production the caller passes `{ try await ContinuumAI.shared.subtitleJob(id: $0) }`.
+//  production the caller passes `{ try await SiloAI.shared.subtitleJob(id: $0) }`.
 //
 //  This is the authority/fallback layer under the (M4) live websocket path:
 //  the poller owns `result_subtitle_id` and the completion handoff, so a

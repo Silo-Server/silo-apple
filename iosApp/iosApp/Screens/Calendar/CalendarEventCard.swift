@@ -35,10 +35,10 @@ struct CalendarEventCard: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
 
     private var cardWidth: CGFloat {
-        ContinuumTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
+        SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
     }
     private var cardHeight: CGFloat {
-        cardWidth * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
+        cardWidth * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
     }
 
     var body: some View {
@@ -95,12 +95,12 @@ struct CalendarEventCard: View {
             if event.isWatched {
                 ZStack {
                     Circle()
-                        .fill(Color.continuumOnSurface)
+                        .fill(Color.siloOnSurface)
                         .frame(width: checkBadgeSize, height: checkBadgeSize)
                         .shadow(color: .black.opacity(0.3), radius: 4)
                     Image(systemName: "checkmark")
                         .font(.system(size: checkIconSize, weight: .bold))
-                        .foregroundColor(.continuumBackground)
+                        .foregroundColor(.siloBackground)
                 }
                 .padding(overlayPadding)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -118,7 +118,7 @@ struct CalendarEventCard: View {
             }
         }
         .frame(width: cardWidth, height: cardHeight)
-        .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+        .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
     }
 
     // MARK: - Caption (shared layout, used directly on iOS)
@@ -207,10 +207,10 @@ private struct CalendarBadgePill: View {
             .font(.system(size: fontSize, weight: .bold))
             .tracking(0.8)
             .lineLimit(1)
-            .foregroundColor(.continuumBackground)
+            .foregroundColor(.siloBackground)
             .padding(.horizontal, horizontalPadding)
             .padding(.vertical, verticalPadding)
-            .background(Capsule().fill(Color.continuumOnSurface.opacity(0.92)))
+            .background(Capsule().fill(Color.siloOnSurface.opacity(0.92)))
     }
 
     private var fontSize: CGFloat {
@@ -251,14 +251,14 @@ private struct CalendarCardCaption: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(event.title)
-                .font(.continuumSubheadline)
-                .foregroundColor(isFocused ? .continuumOnSurface : .continuumOnSurface.opacity(0.85))
+                .font(.siloSubheadline)
+                .foregroundColor(isFocused ? .siloOnSurface : .siloOnSurface.opacity(0.85))
                 .lineLimit(2, reservesSpace: true)
 
             if showsMetadata, let subtitle {
                 Text(subtitle)
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
                     .lineLimit(1)
             }
         }

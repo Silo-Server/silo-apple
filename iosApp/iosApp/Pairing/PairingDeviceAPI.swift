@@ -39,7 +39,7 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         self.decoder = decoder
     }
 
-    /// Parser for the fractional-second ISO-8601 timestamps the Continuum
+    /// Parser for the fractional-second ISO-8601 timestamps the Silo
     /// server emits (e.g. `2026-04-13T04:46:42.211273Z`). The default
     /// `.iso8601` decoder strategy rejects fractional seconds outright.
     private static let isoFractional: ISO8601DateFormatter = {

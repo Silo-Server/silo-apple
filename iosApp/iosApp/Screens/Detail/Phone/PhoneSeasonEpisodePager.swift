@@ -64,7 +64,7 @@ struct PhoneSeasonEpisodePager: View {
                 if reduceMotion {
                     visibleSeasonId = newId
                 } else {
-                    withAnimation(.easeInOut(duration: ContinuumTheme.normalDuration)) {
+                    withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
                         visibleSeasonId = newId
                     }
                 }

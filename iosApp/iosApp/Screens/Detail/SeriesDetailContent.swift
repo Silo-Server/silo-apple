@@ -62,7 +62,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             .padding(.bottom, 40)
         }
         .ignoresSafeArea(edges: .top)
-        .continuumResumePlaybackAlert(
+        .siloResumePlaybackAlert(
             isPresented: $showResumeDialog,
             stoppedAt: resumeTimestamp
         ) {
@@ -270,7 +270,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             }
             trailersSection
             detailsSection
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
             similarSection
         }
     }
@@ -315,7 +315,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 title: "Episodes",
                 trailingText: episodeCountSubtitle
             )
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
 
             PhoneSeasonEpisodeBrowser(
                 seasons: seasons,
@@ -340,7 +340,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     private func castSection(cast: [CastMember]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(title: "Cast & Crew")
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
             PhoneCastRail(cast: cast, onTap: onPersonTap)
         }
     }

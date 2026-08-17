@@ -35,7 +35,7 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
     }
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "PlaybackOriginChunkFetcher"
     )
 
@@ -83,7 +83,7 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
     /// start another one. The queue-specific fast path avoids self-deadlock
     /// when a callback synchronously invalidates its owning source resource.
     private let stateQueue = DispatchQueue(
-        label: "com.continuum.PlaybackOriginChunkFetcher.state",
+        label: "org.siloserver.silo.PlaybackOriginChunkFetcher.state",
         qos: .userInitiated
     )
     private let stateQueueKey = DispatchSpecificKey<UInt8>()

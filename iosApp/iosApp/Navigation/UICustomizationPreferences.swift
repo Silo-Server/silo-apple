@@ -386,10 +386,10 @@ extension UICustomizationTransport {
     }
 }
 
-final class ContinuumUICustomizationTransport: UICustomizationTransport {
-    private let api: ContinuumAPI
+final class SiloUICustomizationTransport: UICustomizationTransport {
+    private let api: SiloAPI
 
-    init(api: ContinuumAPI = .shared) {
+    init(api: SiloAPI = .shared) {
         self.api = api
     }
 
@@ -700,7 +700,7 @@ final class UICustomizationPreferences {
 
     init(
         defaults: SharedDefaults = .shared,
-        transport: UICustomizationTransport = ContinuumUICustomizationTransport(),
+        transport: UICustomizationTransport = SiloUICustomizationTransport(),
         cacheKey: @escaping @MainActor () -> String? = UICustomizationPreferences.activeCacheKey,
         requestIdentity: @escaping @MainActor () -> HTTPRequestIdentity? = UICustomizationPreferences.activeRequestIdentity,
         initialCapabilityState: UICustomizationCapabilityState = .checking

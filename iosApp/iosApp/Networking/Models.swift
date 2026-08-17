@@ -1204,20 +1204,6 @@ struct WatchDetail: Codable {
 
 // MARK: - Collections
 
-struct UserCollection: Codable, Identifiable {
-    let id: String
-    let name: String
-    let collectionType: String?
-    let createdAt: String?
-    let description: String?
-    let groupId: String?
-    let sortOrder: Int?
-    let itemCount: Int?
-    let posterUrl: String?
-    let posterThumbhash: String?
-    let includeInServerCollections: Bool?
-}
-
 /// A user-defined grouping bucket for personal collections. Matches the
 /// server's `/api/v1/collections` `groups[*]` shape.
 struct CollectionGroup: Codable, Identifiable, Hashable {
@@ -1360,7 +1346,7 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
     }
 }
 
-/// Runtime-synthesized response from `ContinuumAPI.libraryCollections`.
+/// Runtime-synthesized response from `SiloAPI.libraryCollections`.
 /// Not decoded from wire JSON directly — `LibraryCollectionsWireResponse`
 /// handles that and is mapped into this shape at the API boundary.
 struct LibraryCollectionsResponse {
@@ -1457,28 +1443,6 @@ struct CreateCollectionGroupRequest: Codable {
 
 struct UpdateCollectionGroupRequest: Codable {
     let name: String?
-}
-
-/// Move-to-group payload. Always serializes `group_id`, including the
-/// JSON `null` literal when [groupId] is nil — the server needs to
-/// distinguish "clear group" from "don't change group", and the default
-/// synthesized `encode(to:)` would otherwise drop the nil via
-/// `encodeIfPresent`.
-struct UpdateUserCollectionGroupBody: Encodable {
-    let groupId: String?
-
-    enum CodingKeys: String, CodingKey {
-        case groupId
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        if let groupId {
-            try c.encode(groupId, forKey: .groupId)
-        } else {
-            try c.encodeNil(forKey: .groupId)
-        }
-    }
 }
 
 // MARK: - Settings (generic key/value)

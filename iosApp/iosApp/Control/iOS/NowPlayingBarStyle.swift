@@ -21,7 +21,7 @@ struct NowPlayingBarChrome: ViewModifier {
                 .siloGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(Color.continuumOutline, lineWidth: 1)
+                        .strokeBorder(Color.siloOutline, lineWidth: 1)
                 )
         case .accessory:
             content

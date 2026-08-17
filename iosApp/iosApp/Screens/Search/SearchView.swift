@@ -17,11 +17,11 @@ struct SearchView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: ContinuumTheme.padding) {
+            VStack(spacing: SiloTheme.padding) {
                 if shouldShowFilters {
                     mediaTypeFilter
                     #if os(tvOS)
-                        .padding(.horizontal, ContinuumTheme.padding)
+                        .padding(.horizontal, SiloTheme.padding)
                         // The picker is a centered 760pt pill inside a
                         // 1600pt column. Stretch its focus section across
                         // the full row so up-moves from the grid's outer
@@ -30,7 +30,7 @@ struct SearchView: View {
                         .frame(maxWidth: .infinity)
                         .focusSection()
                     #elseif os(macOS)
-                        .padding(.horizontal, ContinuumTheme.padding)
+                        .padding(.horizontal, SiloTheme.padding)
                     #endif
                 }
 
@@ -41,25 +41,25 @@ struct SearchView: View {
                 // server has requests disabled.
                 RequestSearchSectionView(viewModel: requestsViewModel)
             }
-            .padding(.horizontal, ContinuumTheme.padding)
+            .padding(.horizontal, SiloTheme.padding)
             #if os(tvOS)
-            .padding(.top, usesTVTopMenuInset ? TVTopMenuLayout.contentTopInset : ContinuumTheme.padding)
+            .padding(.top, usesTVTopMenuInset ? TVTopMenuLayout.contentTopInset : SiloTheme.padding)
             #else
-            .padding(.top, ContinuumTheme.smallPadding)
+            .padding(.top, SiloTheme.smallPadding)
             #endif
 #if os(tvOS)
-            .continuumFormWidth(tvSearchContentWidth)
+            .siloFormWidth(tvSearchContentWidth)
 #endif
         }
-        .continuumBackground()
+        .siloBackground()
         #if os(tvOS)
         .safeAreaPadding(.horizontal, tvSearchSafeHorizontalPadding)
         #endif
         .navigationTitle("Search")
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumToolbarColorSchemeDark()
-        .continuumNavigationBarSurfaceBackground()
-        .continuumSearchable(text: $viewModel.query, prompt: searchPrompt)
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloToolbarColorSchemeDark()
+        .siloNavigationBarSurfaceBackground()
+        .siloSearchable(text: $viewModel.query, prompt: searchPrompt)
         #if os(iOS)
         .searchFocused($isSearchFieldFocused)
         .task {
@@ -149,10 +149,10 @@ struct SearchView: View {
                 )
             }
         } else {
-            VStack(alignment: .leading, spacing: ContinuumTheme.padding) {
+            VStack(alignment: .leading, spacing: SiloTheme.padding) {
                 Text("\(viewModel.total) result\(viewModel.total == 1 ? "" : "s")")
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
 
 #if os(tvOS)
                 TVCatalogGrid(
@@ -211,7 +211,7 @@ struct SearchView: View {
         }
         .pickerStyle(.segmented)
 #if os(tvOS)
-        .continuumFormWidth(tvFilterWidth)
+        .siloFormWidth(tvFilterWidth)
 #endif
     }
 

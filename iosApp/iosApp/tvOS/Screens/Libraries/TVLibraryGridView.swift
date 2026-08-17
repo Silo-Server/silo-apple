@@ -38,7 +38,7 @@ struct TVLibraryGridView: View {
         libraryId: Int,
         libraryType: String,
         showsAlphabetRail: Bool = true,
-        topContentInset: CGFloat = ContinuumTheme.smallPadding,
+        topContentInset: CGFloat = SiloTheme.smallPadding,
         focusRequest: Int = 0,
         isTopMenuFocused: Bool = false,
         onTopMenuFocusRequest: (() -> Void)? = nil
@@ -81,7 +81,7 @@ struct TVLibraryGridView: View {
             }
         }
         .animation(.easeOut(duration: 0.18), value: openPanel)
-        .continuumBackground()
+        .siloBackground()
         .task {
             if viewModel.items.isEmpty {
                 await viewModel.loadInitial()
@@ -137,7 +137,7 @@ struct TVLibraryGridView: View {
                     onSort: { openPanel = .sort },
                     onFilter: { openPanel = .filter }
                 )
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
 
                 if viewModel.items.isEmpty && viewModel.isLoading {
                     Color.clear
@@ -166,7 +166,7 @@ struct TVLibraryGridView: View {
                         },
                         focusRequest: gridFocusRequest
                     )
-                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.horizontal, SiloTheme.safePadding)
                 }
             }
             .padding(.bottom, 48)

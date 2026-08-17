@@ -18,7 +18,7 @@ import UIKit
 /// lifecycle (init in `loadAndPlay`, tear down in `cleanup`).
 final class NowPlayingController {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "NowPlaying"
     )
 

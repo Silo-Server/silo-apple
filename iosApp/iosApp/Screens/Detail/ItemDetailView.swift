@@ -92,9 +92,9 @@ private struct ItemDetailPhoneContent: View {
                 Color.clear
             }
         }
-        .continuumBackground()
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumNavigationBarBackgroundHidden()
+        .siloBackground()
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloNavigationBarBackgroundHidden()
         .task(id: contentId) {
             preferredVersionFileId = nil
             preferredAudioTrackIndex = nil
@@ -204,7 +204,7 @@ private struct ItemDetailPhoneContent: View {
                             ? "appletvremote.gen4.fill"
                             : "appletvremote.gen4")
                     }
-                    .tint(.continuumOnSurface)
+                    .tint(.siloOnSurface)
                     .accessibilityLabel("Remote Control")
                 }
             }
@@ -864,7 +864,7 @@ private struct ItemDetailPhoneContent: View {
         preferredNextUpSubtitleTrackIndex = nil
 
         do {
-            let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: nextUp.contentId)
+            let watchDetail = try await SiloAPI.shared.watchDetail(contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             nextUpWatchDetail = watchDetail
             preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(

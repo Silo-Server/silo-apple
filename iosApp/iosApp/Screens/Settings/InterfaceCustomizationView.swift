@@ -142,7 +142,7 @@ struct InterfaceCustomizationView: View {
             if let message = preferences.capabilityMessage {
                 Section {
                     Label(message, systemImage: "server.rack")
-                        .foregroundStyle(Color.continuumSecondaryText)
+                        .foregroundStyle(Color.siloSecondaryText)
                 }
             }
 
@@ -207,7 +207,7 @@ struct InterfaceCustomizationView: View {
                             HStack(spacing: 8) {
                                 Image(systemName: "arrow.turn.down.right")
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color.continuumSecondaryText)
+                                    .foregroundStyle(Color.siloSecondaryText)
                                     .frame(width: 18)
                                 shortcutLabel(for: item, isNestedLibrary: true)
                             }
@@ -300,11 +300,11 @@ struct InterfaceCustomizationView: View {
                 Section {
                     Label(message, systemImage: "icloud.slash")
                         .font(.footnote)
-                        .foregroundStyle(Color.continuumSecondaryText)
+                        .foregroundStyle(Color.siloSecondaryText)
                 }
             }
         }
-        .continuumGroupedListStyle()
+        .siloGroupedListStyle()
         .navigationTitle("Interface")
         .task {
             await preferences.refresh()
@@ -438,7 +438,7 @@ struct InterfaceCustomizationView: View {
                     ).uppercased()
                 )
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(Color.continuumSecondaryText.opacity(0.75))
+                    .foregroundStyle(Color.siloSecondaryText.opacity(0.75))
                     .lineLimit(1)
             }
         }

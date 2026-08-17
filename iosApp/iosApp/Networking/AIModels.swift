@@ -1,6 +1,6 @@
 //
 //  AIModels.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Wire types for silo-server's two AI features: metadata translation
 //  (overviews/taglines localized into the viewer's preferred language,
@@ -15,7 +15,7 @@
 //  ``SubtitleAIKind/transcribeTranslate`` whose wire value
 //  (`transcribe_translate`) isn't a clean snake_case of the case name.
 //
-//  Endpoints in play (see ``ContinuumAI``):
+//  Endpoints in play (see ``SiloAI``):
 //    GET  /api/v1/metadata/ai/status
 //    POST /api/v1/items/{id}/translate-description
 //    GET  /api/v1/subtitles/ai/status

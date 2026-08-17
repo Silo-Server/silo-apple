@@ -28,8 +28,8 @@ struct DiagnosticsSettingsView: View {
         }
         .settingsListChrome()
         .navigationTitle("")
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumToolbarColorSchemeDark()
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloToolbarColorSchemeDark()
         .task {
             await model.load(profile: profile)
             selectedMode = model.consentMode
@@ -54,7 +54,7 @@ struct DiagnosticsSettingsView: View {
                 Text("Showing the last known diagnostics state. Reports stay on this device while the server is offline.")
             }
         }
-        .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
+        .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
     }
 
     private var preferencesSection: some View {
@@ -69,7 +69,7 @@ struct DiagnosticsSettingsView: View {
             }
 
             Toggle("Debug Logging", isOn: $model.debugLoggingEnabled)
-                .tint(.continuumAccent)
+                .tint(.siloAccent)
 
             Picker("Crash Reports", selection: $selectedMode) {
                 Text("Ask").tag(DiagnosticsConsentChoice.ask)
@@ -116,7 +116,7 @@ struct DiagnosticsSettingsView: View {
                 Text("Crash report consent is tied to this server account. Debug logging is a setting for this device.")
             }
         }
-        .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
+        .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
     }
 
     private var pendingSection: some View {
@@ -141,7 +141,7 @@ struct DiagnosticsSettingsView: View {
         } header: {
             Text("Pending Reports (\(model.pendingReports.count))")
         }
-        .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
+        .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
     }
 
     private var manualSection: some View {
@@ -177,7 +177,7 @@ struct DiagnosticsSettingsView: View {
                 Text("A manual report includes device capability details, recent playback session identifiers, and recent diagnostic logs for this server.")
             }
         }
-        .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
+        .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
     }
 
     private var sentHistorySection: some View {
@@ -202,7 +202,7 @@ struct DiagnosticsSettingsView: View {
                 }
             }
         }
-        .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
+        .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
     }
 
     private func requestModeChange(_ mode: DiagnosticsConsentChoice) {

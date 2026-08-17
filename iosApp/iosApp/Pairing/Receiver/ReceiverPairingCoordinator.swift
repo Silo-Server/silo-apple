@@ -62,7 +62,7 @@ final class ReceiverPairingCoordinator {
     /// cancellable task so the stream reader below is NEVER blocked by polling.
     private var pollTask: Task<Void, Never>?
     private var idleTask: Task<Void, Never>?
-    private static let logger = Logger(subsystem: "com.continuum.app", category: "pairing.receiver")
+    private static let logger = Logger(subsystem: "org.siloserver.silo", category: "pairing.receiver")
 
     init(
         api: any PairingDeviceAuthorizing = PairingDeviceAPI(),

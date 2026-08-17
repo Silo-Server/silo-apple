@@ -17,7 +17,7 @@ struct TVCollectionPosterCard: View {
 
     /// Poster width; height tracks the 2:3 ratio. Defaults to the standard
     /// tvOS poster so the collections grid matches the library grid.
-    var cardWidth: CGFloat = ContinuumTheme.posterCardWidth
+    var cardWidth: CGFloat = SiloTheme.posterCardWidth
     /// Default-focus hook for the grid's first card on tab entry.
     var prefersDefaultFocus: Bool = false
     var defaultFocusNamespace: Namespace.ID? = nil
@@ -73,7 +73,7 @@ struct TVCollectionPosterCard: View {
             }
         }
         .frame(width: resolvedCardWidth, height: cardHeight)
-        .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+        .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
     }
 
     /// Art-less fallback: a deterministic gradient + stack glyph so the tile
@@ -103,15 +103,15 @@ struct TVCollectionPosterCard: View {
         VStack(spacing: 4) {
             Text(collection.name)
                 .font(.system(size: 22, weight: .semibold))
-                .foregroundColor(isFocused ? .continuumOnSurface : .continuumOnSurface.opacity(0.92))
+                .foregroundColor(isFocused ? .siloOnSurface : .siloOnSurface.opacity(0.92))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
 
             if uiCustomization.cardPresentation.caption.showsMetadata, let countText {
                 Text(countText)
                     .font(.system(size: 18, weight: .regular))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
                     .lineLimit(1)
             }
         }

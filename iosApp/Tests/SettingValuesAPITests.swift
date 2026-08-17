@@ -659,7 +659,7 @@ final class SettingValuesAPITests: XCTestCase {
         let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
-            forName: .continuumSessionExpired,
+            forName: .siloSessionExpired,
             object: nil,
             queue: nil
         ) { _ in
@@ -732,7 +732,7 @@ final class SettingValuesAPITests: XCTestCase {
         )
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
-            forName: .continuumSessionExpired,
+            forName: .siloSessionExpired,
             object: nil,
             queue: nil
         ) { _ in
@@ -785,7 +785,7 @@ final class SettingValuesAPITests: XCTestCase {
         let harness = try await makeRefreshHarness(testName: "TransientRefresh")
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
-            forName: .continuumSessionExpired,
+            forName: .siloSessionExpired,
             object: nil,
             queue: nil
         ) { _ in
@@ -852,7 +852,7 @@ final class SettingValuesAPITests: XCTestCase {
         let harness = try await makeRefreshHarness(testName: "MalformedRefresh")
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
-            forName: .continuumSessionExpired,
+            forName: .siloSessionExpired,
             object: nil,
             queue: nil
         ) { _ in
@@ -1243,7 +1243,7 @@ final class SettingValuesAPITests: XCTestCase {
             }
         }
         let persistentObserver = NotificationCenter.default.addObserver(
-            forName: .continuumSessionExpired,
+            forName: .siloSessionExpired,
             object: nil,
             queue: nil
         ) { _ in
@@ -2013,7 +2013,7 @@ final class SettingValuesAPITests: XCTestCase {
         let harness = try await makeRefreshHarness(testName: "RefreshServerSwitch")
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
-            forName: .continuumSessionExpired,
+            forName: .siloSessionExpired,
             object: nil,
             queue: nil
         ) { _ in
@@ -2062,7 +2062,7 @@ final class SettingValuesAPITests: XCTestCase {
         let harness = try await makeRefreshHarness(testName: "RefreshSignOut")
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
-            forName: .continuumSessionExpired,
+            forName: .siloSessionExpired,
             object: nil,
             queue: nil
         ) { _ in
@@ -2102,7 +2102,7 @@ final class SettingValuesAPITests: XCTestCase {
         let harness = try await makeRefreshHarness(testName: "RefreshNewerToken")
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
-            forName: .continuumSessionExpired,
+            forName: .siloSessionExpired,
             object: nil,
             queue: nil
         ) { _ in
@@ -2490,9 +2490,9 @@ final class SettingValuesAPITests: XCTestCase {
 
     static let stubProfileId = "profile-under-test"
 
-    /// A ContinuumAPI whose HTTPClient talks to SettingsStubProtocol, with a
+    /// A SiloAPI whose HTTPClient talks to SettingsStubProtocol, with a
     /// TokenStore isolated to this test.
-    private func makeStubbedAPI(profileId: String? = SettingValuesAPITests.stubProfileId) async -> ContinuumAPI {
+    private func makeStubbedAPI(profileId: String? = SettingValuesAPITests.stubProfileId) async -> SiloAPI {
         let suiteName = "settings-values-tests-\(UUID().uuidString)"
         let suite = UserDefaults(suiteName: suiteName)!
         addTeardownBlock {
@@ -2508,7 +2508,7 @@ final class SettingValuesAPITests: XCTestCase {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [SettingsStubProtocol.self]
         let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
-        return ContinuumAPI(http: http, tokenStore: tokenStore)
+        return SiloAPI(http: http, tokenStore: tokenStore)
     }
 
     private func makeRefreshHarness(testName: String) async throws -> (

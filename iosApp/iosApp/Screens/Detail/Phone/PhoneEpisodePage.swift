@@ -15,7 +15,7 @@ struct PhoneEpisodePage: View {
                 HStack {
                     Spacer()
                     ProgressView()
-                        .tint(.continuumOnSurface)
+                        .tint(.siloOnSurface)
                         .padding(32)
                     Spacer()
                 }
@@ -23,7 +23,7 @@ struct PhoneEpisodePage: View {
                 Text("No episodes available")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.horizontal, SiloTheme.safePadding)
                     .padding(.vertical, 12)
             } else if usesExpandedList {
                 PhoneEpisodeList(

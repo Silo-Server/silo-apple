@@ -1,6 +1,6 @@
 //
 //  SubtitleLanguageChoice.swift
-//  Continuum (iOS + tvOS + macOS)
+//  Silo (iOS + tvOS + macOS)
 //
 //  Types shared by the two in-player subtitle sheets, ``SubtitleTranslateMenu``
 //  and ``SubtitleSearchMenu``: the language row model both menus list, and the
@@ -62,7 +62,7 @@ struct SubtitleSheetTVRow<Content: View>: View {
         .onTapGesture(perform: action)
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.35 : 1.0)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
         .accessibilityAddTraits(.isButton)
     }
 }

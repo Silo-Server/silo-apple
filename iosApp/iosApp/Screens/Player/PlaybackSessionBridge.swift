@@ -195,7 +195,7 @@ actor PlaybackV3CapabilityGate {
             } else {
                 probe = Task {
                     do {
-                        let capability = try await ContinuumAPI.shared.playbackV3Capability()
+                        let capability = try await SiloAPI.shared.playbackV3Capability()
                         return PlaybackSessionBridge.supportsNeutralProtocolV3(capability)
                     } catch {
                         if PlaybackSessionBridge.isMissingProtocolV3Capability(error) {
@@ -226,7 +226,7 @@ actor PlaybackV3CapabilityGate {
     }
 }
 
-/// Manages the lifecycle of a playback session with the Continuum API.
+/// Manages the lifecycle of a playback session with the Silo API.
 /// Handles session creation, periodic progress reporting, and cleanup.
 ///
 /// Apple playback runs entirely through the shared `AVPlayerBackend`, so
@@ -237,7 +237,7 @@ actor PlaybackSessionBridge {
     private static let pastEndResumeClampSeconds: Double = 0.25
 
     private let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "Playback"
     )
 
@@ -342,7 +342,7 @@ actor PlaybackSessionBridge {
     /// the final fallback.
     private func stopStaleSession(_ staleSessionId: String) {
         Task {
-            try? await ContinuumAPI.shared.stopPlayback(sessionId: staleSessionId)
+            try? await SiloAPI.shared.stopPlayback(sessionId: staleSessionId)
         }
     }
 
@@ -388,7 +388,7 @@ actor PlaybackSessionBridge {
         preferredQualityOverride: String? = nil
     ) async throws -> PreparedPlayback {
         logger.info("Fetching watch detail for \(contentId, privacy: .public)")
-        let watchDetail: WatchDetail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
+        let watchDetail: WatchDetail = try await SiloAPI.shared.watchDetail(contentId: contentId)
         logger.info("Got \(watchDetail.versions.count) versions, type=\(watchDetail.type, privacy: .public)")
 
         guard !watchDetail.versions.isEmpty else {
@@ -698,12 +698,12 @@ actor PlaybackSessionBridge {
         )
         let response: PlaybackV3DecisionResponse
         do {
-            response = try await ContinuumAPI.shared.startPlaybackV3(request: request)
+            response = try await SiloAPI.shared.startPlaybackV3(request: request)
         } catch let error as HTTPError {
             guard case .network = error else { throw error }
             // Reuse the exact request and playback_attempt_id so an ambiguous
             // first response cannot allocate a second logical attempt.
-            response = try await ContinuumAPI.shared.startPlaybackV3(request: request)
+            response = try await SiloAPI.shared.startPlaybackV3(request: request)
         }
 
         switch response.validatedForApple() {
@@ -722,7 +722,7 @@ actor PlaybackSessionBridge {
             )
         case .incompatible(let allocatedSessionId):
             if let allocatedSessionId {
-                try? await ContinuumAPI.shared.stopPlayback(sessionId: allocatedSessionId)
+                try? await SiloAPI.shared.stopPlayback(sessionId: allocatedSessionId)
             }
             throw PlaybackV3TerminalFailure(
                 reason: "invalid_playback_plan",
@@ -733,13 +733,13 @@ actor PlaybackSessionBridge {
             do {
                 try ApplePlaybackV3PlanAdapter.validate(plan)
             } catch {
-                try? await ContinuumAPI.shared.stopPlayback(sessionId: resolvedSessionId)
+                try? await SiloAPI.shared.stopPlayback(sessionId: resolvedSessionId)
                 throw error
             }
             guard let effectiveVersion = watchDetail.versions.first(where: {
                 $0.fileId == plan.effectiveMediaFileId
             }) else {
-                try? await ContinuumAPI.shared.stopPlayback(sessionId: resolvedSessionId)
+                try? await SiloAPI.shared.stopPlayback(sessionId: resolvedSessionId)
                 throw PlaybackV3TerminalFailure(
                     reason: "effective_file_unavailable",
                     message: "The server selected a media version that is not present in the item response.",
@@ -966,10 +966,10 @@ actor PlaybackSessionBridge {
             terminal: terminal
         )
         do {
-            try await ContinuumAPI.shared.reportPlaybackRouteEventV3(event)
+            try await SiloAPI.shared.reportPlaybackRouteEventV3(event)
         } catch {
             Logger(
-                subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+                subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
                 category: "Playback"
             ).warning(
                 "Protocol V3 terminal-start route event failed: \(String(describing: error), privacy: .public)"
@@ -1124,7 +1124,7 @@ actor PlaybackSessionBridge {
             clientCapabilities: active.snapshot.capabilities,
             clientPlaybackContext: active.snapshot.context
         )
-        let response = try await ContinuumAPI.shared.replanPlaybackV3(
+        let response = try await SiloAPI.shared.replanPlaybackV3(
             sessionId: currentSessionId,
             request: request
         )
@@ -1148,7 +1148,7 @@ actor PlaybackSessionBridge {
             )
         case .incompatible(let allocatedSessionId):
             if let allocatedSessionId, allocatedSessionId != currentSessionId {
-                try? await ContinuumAPI.shared.stopPlayback(sessionId: allocatedSessionId)
+                try? await SiloAPI.shared.stopPlayback(sessionId: allocatedSessionId)
             }
             await emitProtocolV3Terminal(
                 active: active,
@@ -1166,7 +1166,7 @@ actor PlaybackSessionBridge {
                 try ApplePlaybackV3PlanAdapter.validate(nextPlan)
             } catch {
                 if nextSessionId != currentSessionId {
-                    try? await ContinuumAPI.shared.stopPlayback(sessionId: nextSessionId)
+                    try? await SiloAPI.shared.stopPlayback(sessionId: nextSessionId)
                 }
                 await emitProtocolV3Terminal(
                     active: active,
@@ -1179,7 +1179,7 @@ actor PlaybackSessionBridge {
             let nextKey = nextPlan.planAttemptKey
             guard isSeekReanchor || !attemptedKeys.contains(nextKey) else {
                 if nextSessionId != currentSessionId {
-                    try? await ContinuumAPI.shared.stopPlayback(sessionId: nextSessionId)
+                    try? await SiloAPI.shared.stopPlayback(sessionId: nextSessionId)
                 }
                 await emitProtocolV3Terminal(
                     active: active,
@@ -1197,7 +1197,7 @@ actor PlaybackSessionBridge {
                 $0.fileId == nextPlan.effectiveMediaFileId
             }) else {
                 if nextSessionId != currentSessionId {
-                    try? await ContinuumAPI.shared.stopPlayback(sessionId: nextSessionId)
+                    try? await SiloAPI.shared.stopPlayback(sessionId: nextSessionId)
                 }
                 await emitProtocolV3Terminal(
                     active: active,
@@ -1345,7 +1345,7 @@ actor PlaybackSessionBridge {
             diagnostics: diagnostics
         )
         do {
-            try await ContinuumAPI.shared.reportPlaybackRouteEventV3(event)
+            try await SiloAPI.shared.reportPlaybackRouteEventV3(event)
         } catch {
             logger.warning("Protocol V3 route event \(event.event, privacy: .public) failed: \(String(describing: error), privacy: .public)")
         }
@@ -1432,7 +1432,7 @@ actor PlaybackSessionBridge {
 
         let report = ProgressReport(position: position, isPaused: isPaused)
         do {
-            try await ContinuumAPI.shared.reportPlaybackProgress(sessionId: sid, report: report)
+            try await SiloAPI.shared.reportPlaybackProgress(sessionId: sid, report: report)
             consecutiveProgressFailures = 0
             emittedOrphanedSessionWarning = false
             return .success
@@ -1472,7 +1472,7 @@ actor PlaybackSessionBridge {
         }
 
         do {
-            try await ContinuumAPI.shared.syncProgress(
+            try await SiloAPI.shared.syncProgress(
                 mediaItemId: contentId,
                 position: position,
                 duration: duration.isFinite && duration > 0 ? duration : 0,
@@ -1517,7 +1517,7 @@ actor PlaybackSessionBridge {
         if position.isFinite, position >= 0 {
             let report = ProgressReport(position: position, isPaused: isPaused)
             do {
-                try await ContinuumAPI.shared.reportPlaybackProgress(sessionId: sid, report: report)
+                try await SiloAPI.shared.reportPlaybackProgress(sessionId: sid, report: report)
             } catch {
                 logger.warning(
                     "final stop-session progress report failed for \(sid, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -1526,7 +1526,7 @@ actor PlaybackSessionBridge {
         }
 
         do {
-            try await ContinuumAPI.shared.stopPlayback(sessionId: sid)
+            try await SiloAPI.shared.stopPlayback(sessionId: sid)
         } catch {
             // Best-effort delete; the server times out idle sessions on its
             // own, but a missed delete extends the grace period. Log so
