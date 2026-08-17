@@ -42,13 +42,6 @@ enum PersonalListKind: Hashable {
         }
     }
 
-    var path: String {
-        switch self {
-        case .favorites: return "/api/v1/favorites"
-        case .watchlist: return "/api/v1/watchlist"
-        }
-    }
-
     /// Whether an item carrying `state` still belongs in this list.
     func contains(_ state: MediaItemUserState) -> Bool {
         switch self {
@@ -169,9 +162,13 @@ struct PersonalListGridView: View {
         }
         error = nil
         do {
-            let response: CatalogResponse = try await ContinuumAPI.shared.get(
-                kind.path
-            )
+            let response: CatalogResponse
+            switch kind {
+            case .favorites:
+                response = try await ContinuumAPI.shared.favorites(offset: 0, limit: 100)
+            case .watchlist:
+                response = try await ContinuumAPI.shared.watchlist(offset: 0, limit: 100)
+            }
             ResponseCache.shared.set(response, for: kind.cacheKey)
             items = response.items
         } catch let err {

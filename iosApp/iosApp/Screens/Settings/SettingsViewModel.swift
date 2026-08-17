@@ -170,7 +170,7 @@ class SettingsViewModel {
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
         subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
 
-        async let user: UserInfo? = try? ContinuumAPI.shared.get("/api/v1/user/me")
+        async let user: UserInfo? = try? ContinuumAPI.shared.currentUser()
         async let profiles: [UserProfile] = (try? AuthService.shared.getProfiles()) ?? []
 
         let (loadedUser, loadedProfiles) = await (user, profiles)
