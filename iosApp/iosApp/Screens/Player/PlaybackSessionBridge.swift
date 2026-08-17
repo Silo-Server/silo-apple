@@ -388,9 +388,7 @@ actor PlaybackSessionBridge {
         preferredQualityOverride: String? = nil
     ) async throws -> PreparedPlayback {
         logger.info("Fetching watch detail for \(contentId, privacy: .public)")
-        let watchDetail: WatchDetail = try await ContinuumAPI.shared.get(
-            "/api/v1/watch/\(contentId)"
-        )
+        let watchDetail: WatchDetail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
         logger.info("Got \(watchDetail.versions.count) versions, type=\(watchDetail.type, privacy: .public)")
 
         guard !watchDetail.versions.isEmpty else {
@@ -1434,10 +1432,7 @@ actor PlaybackSessionBridge {
 
         let report = ProgressReport(position: position, isPaused: isPaused)
         do {
-            try await ContinuumAPI.shared.postVoid(
-                "/api/v1/playback/\(sid)/progress",
-                body: report
-            )
+            try await ContinuumAPI.shared.reportPlaybackProgress(sessionId: sid, report: report)
             consecutiveProgressFailures = 0
             emittedOrphanedSessionWarning = false
             return .success
@@ -1522,10 +1517,7 @@ actor PlaybackSessionBridge {
         if position.isFinite, position >= 0 {
             let report = ProgressReport(position: position, isPaused: isPaused)
             do {
-                try await ContinuumAPI.shared.postVoid(
-                    "/api/v1/playback/\(sid)/progress",
-                    body: report
-                )
+                try await ContinuumAPI.shared.reportPlaybackProgress(sessionId: sid, report: report)
             } catch {
                 logger.warning(
                     "final stop-session progress report failed for \(sid, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -1534,7 +1526,7 @@ actor PlaybackSessionBridge {
         }
 
         do {
-            try await ContinuumAPI.shared.delete("/api/v1/playback/\(sid)")
+            try await ContinuumAPI.shared.stopPlayback(sessionId: sid)
         } catch {
             // Best-effort delete; the server times out idle sessions on its
             // own, but a missed delete extends the grace period. Log so

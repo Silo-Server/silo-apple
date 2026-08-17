@@ -1153,19 +1153,6 @@ struct SubtitleUrl: Codable, Identifiable, Hashable {
     }
 }
 
-// MARK: - Transcode Start Response
-
-struct TranscodeStartResponse: Codable {
-    let sessionId: String
-    let status: String
-    let switchedFileId: Int?
-    let manifestUrl: String
-    let durationSeconds: Double?
-    let playerStartSeconds: Double
-    let timelineOffsetSeconds: Double
-    let canSeekAnywhere: Bool
-}
-
 // MARK: - Watch Detail
 
 struct WatchDetail: Codable {
@@ -1453,79 +1440,12 @@ struct SyncProgressItem: Codable {
     }
 }
 
-// MARK: - Playback Start Request (sent to server)
-
-/// Body for POST /api/v1/playback/start.
-///
-/// Server shape is **flat** — there is no `client_capabilities` wrapper
-/// (see `Continuum/internal/api/handlers/playback.go::startPlaybackRequest`).
-/// Apple normally requests the selected original file (`playMethod == direct`)
-/// and performs route selection locally. `preserveDirectAudioSelection` tells
-/// the server not to remux solely to map a selected embedded audio track.
-struct StartPlaybackRequest: Codable {
-    let fileId: Int
-    let profileId: String?
-    let playMethod: String?
-    let startPosition: Double?
-    let audioTrackIndex: Int?
-    let preserveDirectAudioSelection: Bool
-    let codecsVideo: [String]
-    let codecsAudio: [String]
-    let containers: [String]
-    let maxResolution: String?
-    let hdr: Bool
-    /// Audiobooks only: the session's file-local position must not overwrite
-    /// the book-level resume point, which the client reports separately via
-    /// `/api/v1/sync/progress` on the whole-book timeline.
-    var disableProgressPersistence: Bool?
-}
-
-struct TranscodeStartRequest: Codable {
-    let sessionId: String
-    let seekSeconds: Double
-    let targetResolution: String?
-    let targetCodecVideo: String?
-    let targetCodecAudio: String?
-    let targetBitrateKbps: Int
-    let segmentDuration: Int
-    let subtitleTrackIndex: Int
-    let subtitleBurnIn: Bool
-}
-
-// MARK: - Collection Create
-
-struct CreateCollectionRequest: Codable {
-    let name: String
-    let collectionType: String
-}
-
 // MARK: - User Info
 
 struct UserInfo: Codable {
     let id: String?
     let username: String
     let isAdmin: Bool?
-}
-
-// MARK: - Collections Response (array wrapper)
-
-/// Server payload for `GET /api/v1/collections`. The server emits both
-/// `collections` and `groups` arrays alongside each other; the latter is
-/// optional for backward compatibility with older deployments.
-struct CollectionsResponse: Codable {
-    let collections: [UserCollection]?
-    let groups: [CollectionGroup]?
-
-    init(collections: [UserCollection]?, groups: [CollectionGroup]?) {
-        self.collections = collections
-        self.groups = groups
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        collections = try c.decodeIfPresent([UserCollection].self, forKey: .collections)
-        groups = try c.decodeIfPresent([CollectionGroup].self, forKey: .groups)
-    }
 }
 
 // MARK: - Collection group requests

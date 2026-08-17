@@ -109,9 +109,7 @@ class ItemDetailViewModel {
         }
 
         do {
-            let item: ItemDetail = try await ContinuumAPI.shared.get(
-                "/api/v1/catalog/items/\(contentId)"
-            )
+            let item: ItemDetail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
             let enriched = await adoptDetail(item, contentId: contentId, generation: generation)
 
             do {
@@ -510,9 +508,7 @@ class ItemDetailViewModel {
 
     func loadSeasons(seriesId: String, autoSelectInitial: Bool = true) async {
         do {
-            let response: SeasonsResponse = try await ContinuumAPI.shared.get(
-                "/api/v1/catalog/series/\(seriesId)/seasons"
-            )
+            let response: SeasonsResponse = try await ContinuumAPI.shared.seasons(seriesId: seriesId)
             ResponseCache.shared.set(response, for: CacheKey.itemSeasons(seriesId))
             seasons = response.seasons.sortedForDisplay()
             if autoSelectInitial, let target = preferredInitialSeason(seasons: seasons) {
@@ -599,8 +595,9 @@ class ItemDetailViewModel {
         }
 
         do {
-            let response: EpisodesResponse = try await ContinuumAPI.shared.get(
-                "/api/v1/catalog/series/\(seriesId)/seasons/\(seasonNumber)/episodes"
+            let response: EpisodesResponse = try await ContinuumAPI.shared.episodes(
+                seriesId: seriesId,
+                seasonNumber: seasonNumber
             )
             ResponseCache.shared.set(response, for: key)
             let sorted = response.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
@@ -690,11 +687,7 @@ class ItemDetailViewModel {
         isFavorite.toggle()
         writeBackUserState(contentId: contentId)
         do {
-            if isFavorite {
-                try await ContinuumAPI.shared.putVoid("/api/v1/favorites/\(contentId)")
-            } else {
-                try await ContinuumAPI.shared.delete("/api/v1/favorites/\(contentId)")
-            }
+            try await ContinuumAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
             invalidateRelatedCaches(contentId: contentId)
         } catch {
             isFavorite.toggle() // Revert on failure
@@ -707,11 +700,7 @@ class ItemDetailViewModel {
         inWatchlist.toggle()
         writeBackUserState(contentId: contentId)
         do {
-            if inWatchlist {
-                try await ContinuumAPI.shared.putVoid("/api/v1/watchlist/\(contentId)")
-            } else {
-                try await ContinuumAPI.shared.delete("/api/v1/watchlist/\(contentId)")
-            }
+            try await ContinuumAPI.shared.toggleWatchlist(contentId: contentId, isInWatchlist: inWatchlist)
             invalidateRelatedCaches(contentId: contentId)
         } catch {
             inWatchlist.toggle() // Revert on failure
@@ -726,11 +715,7 @@ class ItemDetailViewModel {
         guard let contentId = detail?.contentId else { return }
         isWatched.toggle()
         do {
-            if isWatched {
-                try await ContinuumAPI.shared.postVoid("/api/v1/watched/\(contentId)")
-            } else {
-                try await ContinuumAPI.shared.delete("/api/v1/watched/\(contentId)")
-            }
+            try await ContinuumAPI.shared.setWatched(contentId: contentId, played: isWatched)
             invalidateRelatedCaches(contentId: contentId)
         } catch {
             isWatched.toggle() // Revert on failure
