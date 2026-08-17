@@ -72,6 +72,5 @@ enum AppleDecodeCapabilities {
     /// explicit pixel dimensions, so "no cap" has nothing to mean there.
     static let maxResolutionToken: String = maxResolution ?? "2160p"
 
-    static let maxDecodeWidth: Int = isSimulator ? 1_920 : 3_840
     static let maxDecodeHeight: Int = isSimulator ? 1_080 : 2_160
 }

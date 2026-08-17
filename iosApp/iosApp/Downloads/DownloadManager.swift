@@ -127,7 +127,6 @@ final class DownloadManager {
     }
 
     var activeRecords: [DownloadRecord] { records.filter { $0.localStatus.isActive } }
-    var completedRecords: [DownloadRecord] { records.filter { !$0.localStatus.isActive } }
     var subscriptions: [DownloadSubscription] { file.subscriptions }
 
     var totalBytesUsed: Int64 { storageBytesUsed }
@@ -284,13 +283,6 @@ final class DownloadManager {
         )
     }
 
-    /// Total bytes downloaded for one series across all seasons.
-    func bytesForSeries(_ seriesId: String) -> Int64 {
-        onDeviceRecords
-            .filter { $0.seriesId == seriesId }
-            .reduce(0) { $0 + $1.fileSize }
-    }
-
     /// The unified, sorted list the Manager renders: one entry per series
     /// group and one per standalone movie.
     func downloadListItems(sortedBy option: DownloadSortOption) -> [DownloadListItem] {
@@ -391,12 +383,6 @@ final class DownloadManager {
         guard downloadsEnabled else { return }
         await reconcileWithServer(triggerPipeline: true)
         await runMonitoringAndProgressSync()
-    }
-
-    /// Profile/server switched — load the new scope and refresh.
-    func onScopeChanged() async {
-        deactivate()
-        await onAppActive()
     }
 
     /// Sign-out: stop active transfers and drop in-memory state. On-disk

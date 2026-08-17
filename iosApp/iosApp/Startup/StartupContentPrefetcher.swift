@@ -189,12 +189,6 @@ enum StartupContentPrefetcher {
         }
     }
 
-    static func prefetchUserLibraries() {
-        Task {
-            _ = try? await fetchUserLibraries()
-        }
-    }
-
     static func fetchUserLibraries() async throws -> LibrariesResponse {
         let generation = profileScopedGeneration
         let task: Task<LibrariesResponse, Error>

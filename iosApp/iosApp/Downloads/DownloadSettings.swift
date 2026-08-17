@@ -76,11 +76,6 @@ final class DownloadSettings {
     /// Bytes per gigabyte (GiB), shared by the storage-cap conversions.
     static let bytesPerGB: Int64 = 1_073_741_824
 
-    var defaultMaxStorageBytes: Int64 {
-        guard defaultMaxStorageGB > 0 else { return 0 }
-        return Int64(defaultMaxStorageGB) * Self.bytesPerGB
-    }
-
     private enum Keys {
         static let preferredFormat = "downloads.preferredFormat"
         static let wifiOnly = "downloads.wifiOnly"
