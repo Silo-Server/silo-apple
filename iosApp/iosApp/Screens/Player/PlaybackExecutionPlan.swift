@@ -314,6 +314,30 @@ struct LoopbackSessionSpec {
         )
     }
 
+    /// Re-points the spec at a replacement source (the local source-proxy URL
+    /// and its header set) while preserving every execution decision the
+    /// planner made. Rebuilding the spec by hand at that seam silently dropped
+    /// `videoOutputMode`, the source dimensions and the bridged parameter
+    /// sets. Routing through the designated initializer means the start-time
+    /// clamp and the selected-audio marking re-run, which is idempotent here.
+    func withSource(url: URL, headers: [String: String]) -> LoopbackSessionSpec {
+        LoopbackSessionSpec(
+            sourceURL: url,
+            headers: headers,
+            sourceStartTimeSeconds: sourceStartTimeSeconds,
+            sourceBitrateBps: sourceBitrateBps,
+            videoMode: videoMode,
+            videoOutputMode: videoOutputMode,
+            sourceVideoWidth: sourceVideoWidth,
+            sourceVideoHeight: sourceVideoHeight,
+            bridgedVideoParameterSets: bridgedVideoParameterSets,
+            sourceVideoFrameRate: sourceVideoFrameRate,
+            selectedAudio: selectedAudio,
+            availableAudioTracks: availableAudioTracks,
+            manifestMetadata: manifestMetadata
+        )
+    }
+
     /// Pins the parameter sets a restarted bridged producer must reproduce.
     /// Called once per player item, from the backend's
     /// `onBridgedVideoParameterSetsResolved` handler.

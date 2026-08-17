@@ -552,6 +552,14 @@ class PlayerViewModel {
         get { tasks[.cleanupCompletion] }
         set { tasks[.cleanupCompletion] = newValue }
     }
+    /// The tvOS background-suspend stop, registered so it is observable
+    /// instead of unstructured. Like the cleanup flush it belongs to no
+    /// teardown scope: cancelling it mid-flight would leave the server
+    /// session behind.
+    private var suspendStopSessionTask: Task<Void, Never>? {
+        get { tasks[.suspendStopSession] }
+        set { tasks[.suspendStopSession] = newValue }
+    }
 
     /// Build the live-subtitle coordinator with adapters bound to this VM. The
     /// adapters touch the VM's playback + live-track + notice surface, so they
@@ -967,6 +975,10 @@ class PlayerViewModel {
     private static let introAutoSkipCountdownDefaultSeconds = 5
     static var nextUpCountdownTotal: Int { nextUpCountdownDefaultSeconds }
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
+    /// How much media may still sit ahead of the playhead for a near-end
+    /// failure to still read as the stream draining. A real drain leaves the
+    /// player with essentially nothing queued.
+    private static let nearEndPlaybackErrorMaxBufferedAheadSeconds: Double = 1
     private struct SuspendedPlaybackContext {
         let request: LoadRequest
         let resumePosition: Double
@@ -1649,16 +1661,39 @@ class PlayerViewModel {
     }
 
     private func shouldTreatPlaybackErrorAsNaturalEnd() -> Bool {
-        Self.shouldTreatPlaybackErrorAsNaturalEnd(duration: duration, currentTime: currentTime)
+        Self.shouldTreatPlaybackErrorAsNaturalEnd(
+            duration: duration,
+            currentTime: currentTime,
+            bufferedAheadSeconds: bufferedAheadSeconds,
+            isSourceOutageActive: sourceOutageActive
+                || (sourceProxy?.isOriginOutageActive ?? false)
+        )
     }
 
-    static func shouldTreatPlaybackErrorAsNaturalEnd(duration: Double, currentTime: Double) -> Bool {
+    /// Converting a playback error into a natural end is only safe when the
+    /// stream really did run out. The position alone cannot tell the two
+    /// apart, so the decision is corroborated: the source must not be in an
+    /// outage (the failure is then a transport problem the recovery ladder
+    /// owns) and the player must be out of runway (a failure with media still
+    /// queued ahead is a mid-stream fault, not a drain). Without the
+    /// corroboration the caller falls through to the normal ladder, which is
+    /// also what makes `handleEndOfFile`'s premature branch reachable again —
+    /// the old ratio arm made this predicate the exact negation of that check.
+    static func shouldTreatPlaybackErrorAsNaturalEnd(
+        duration: Double,
+        currentTime: Double,
+        bufferedAheadSeconds: Double,
+        isSourceOutageActive: Bool
+    ) -> Bool {
         guard duration.isFinite, duration > 0, currentTime.isFinite, currentTime > 0 else {
             return false
         }
-        let remaining = duration - currentTime
-        let progress = currentTime / duration
-        return remaining <= Self.nearEndPlaybackErrorThresholdSeconds || progress >= 0.985
+        guard !isSourceOutageActive else { return false }
+        if bufferedAheadSeconds.isFinite,
+           bufferedAheadSeconds > Self.nearEndPlaybackErrorMaxBufferedAheadSeconds {
+            return false
+        }
+        return duration - currentTime <= Self.nearEndPlaybackErrorThresholdSeconds
     }
 
     private func loadNextUpCandidate(for detail: WatchDetail) {
@@ -2738,6 +2773,17 @@ class PlayerViewModel {
         let backend = reusingActiveEngine && avPlayerBackend != nil
             ? prepareBackend(for: loadPlan.engine)
             : installBackend(for: loadPlan.engine)
+        // Re-wire unconditionally. The handlers capture `streamLoadGeneration`
+        // by value, so a reused backend still carries the closures built for
+        // the generation this load invalidated when it bumped the counter
+        // above — every callback from the replacement stream (file loaded,
+        // tracks, errors, EOF) would be discarded by their own staleness
+        // guard, leaving `isLoading` latched forever. Re-applying on the
+        // install path too is a harmless second assignment at the same
+        // generation.
+        applyCallbacks(makeCallbacks(), to: backend)
+        wireSubtitleCallbacks(to: backend)
+        backend.setServerChapters(serverProvidedChapters)
         let backendTimelineOffset = avPlayerTimelineOffset(for: loadPlan)
         if loadPlan.engine == .siloPlayerLoopback {
             playbackTimelineOffset = backendTimelineOffset
@@ -2932,17 +2978,7 @@ class PlayerViewModel {
                 serverUrl: plan.streamRequest.serverUrl
             )
             let loopbackSession = plan.loopbackSession.map { session in
-                LoopbackSessionSpec(
-                    sourceURL: localURL,
-                    headers: [:],
-                    sourceStartTimeSeconds: session.sourceStartTimeSeconds,
-                    sourceBitrateBps: session.sourceBitrateBps,
-                    videoMode: session.videoMode,
-                    sourceVideoFrameRate: session.sourceVideoFrameRate,
-                    selectedAudio: session.selectedAudio,
-                    availableAudioTracks: session.availableAudioTracks,
-                    manifestMetadata: session.manifestMetadata
-                )
+                session.withSource(url: localURL, headers: [:])
             }
             let proxiedPlan = PlaybackExecutionPlan(
                 delivery: plan.delivery,
@@ -7504,7 +7540,11 @@ class PlayerViewModel {
         nowPlaying.detach()
         avPlayerBackend?.dispose()
 
-        Task { [weak self] in
+        // Registered rather than unstructured so the stop is observable, but
+        // in no teardown scope: cancelling it would strand the server session.
+        // A resume that overtakes it stays safe because the bridge clears its
+        // identity only when the stopped session is still the current one.
+        suspendStopSessionTask = Task { [weak self] in
             await self?.realtimeClient.unbind()
             await self?.sessionBridge.stopSession(position: position, isPaused: true)
         }
@@ -7565,6 +7605,19 @@ private enum SiloControlPlayerError: LocalizedError {
 extension PlayerViewModel {
     @MainActor
     func applySiloControlCommand(_ command: SiloControlCommand) throws {
+        // Track, quality and seek commands replace what is playing (a V3
+        // replan or an in-place restart). Accepting one from the LAN remote
+        // while a load is already in flight would stack a second replacement
+        // on top of the first; the realtime command path guards its seek the
+        // same way. Transport-only commands stay live, and the ignore is
+        // quiet — a remote peer should not see a failure for pressing a
+        // button mid-load.
+        switch command.name {
+        case .seek, .selectAudioTrack, .selectSubtitleTrack, .setQuality:
+            guard !isLoading else { return }
+        default:
+            break
+        }
         switch command.name {
         case .play:
             avPlayerBackend?.play()

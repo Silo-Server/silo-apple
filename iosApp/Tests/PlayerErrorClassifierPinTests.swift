@@ -59,46 +59,65 @@ final class PlayerErrorClassifierPinTests: XCTestCase {
 
     // MARK: - shouldTreatPlaybackErrorAsNaturalEnd
 
+    /// Corroborated near-end conversion: 8 seconds remaining, no source
+    /// outage, and no runway left. The 98.5% ratio arm is gone — it made this
+    /// predicate the exact negation of `handleEndOfFile`'s premature check, so
+    /// the "Connection lost" branch could never run on the error path.
+    private func isNaturalEnd(
+        duration: Double,
+        currentTime: Double,
+        bufferedAhead: Double = 0,
+        outage: Bool = false
+    ) -> Bool {
+        PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
+            duration: duration,
+            currentTime: currentTime,
+            bufferedAheadSeconds: bufferedAhead,
+            isSourceOutageActive: outage
+        )
+    }
+
     func testShouldTreatPlaybackErrorAsNaturalEndTable() {
-        // Threshold is 8 seconds remaining, or 98.5% progress.
-        XCTAssertTrue(PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
-            duration: 100, currentTime: 92
-        ))
-        XCTAssertTrue(PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
-            duration: 100, currentTime: 98.5
-        ))
-        XCTAssertFalse(PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
-            duration: 100, currentTime: 91.9
-        ))
-        // PIN: current behavior. On a short title the 8-second window swallows
-        // most of the runtime, so almost any error reads as a natural end.
-        XCTAssertTrue(PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
-            duration: 10, currentTime: 2.1
-        ))
+        // Threshold is 8 seconds remaining, with the buffer drained.
+        XCTAssertTrue(isNaturalEnd(duration: 100, currentTime: 92))
+        XCTAssertTrue(isNaturalEnd(duration: 100, currentTime: 98.5))
+        XCTAssertFalse(isNaturalEnd(duration: 100, currentTime: 91.9))
+        // The former ratio arm: 98.7% progress but 13 seconds still to play is
+        // now a mid-stream failure for the recovery ladder, not a natural end.
+        XCTAssertFalse(isNaturalEnd(duration: 1000, currentTime: 987))
 
         // Guard rails: non-positive or non-finite inputs are never "near end".
-        XCTAssertFalse(PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
-            duration: 0, currentTime: 0
-        ))
-        XCTAssertFalse(PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
-            duration: 100, currentTime: 0
-        ))
-        XCTAssertFalse(PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
-            duration: .infinity, currentTime: 50
-        ))
-        XCTAssertFalse(PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
-            duration: .nan, currentTime: 50
-        ))
-        XCTAssertFalse(PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
-            duration: 100, currentTime: .nan
-        ))
-        XCTAssertFalse(PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
-            duration: -100, currentTime: 50
-        ))
+        XCTAssertFalse(isNaturalEnd(duration: 0, currentTime: 0))
+        XCTAssertFalse(isNaturalEnd(duration: 100, currentTime: 0))
+        XCTAssertFalse(isNaturalEnd(duration: .infinity, currentTime: 50))
+        XCTAssertFalse(isNaturalEnd(duration: .nan, currentTime: 50))
+        XCTAssertFalse(isNaturalEnd(duration: 100, currentTime: .nan))
+        XCTAssertFalse(isNaturalEnd(duration: -100, currentTime: 50))
         // PIN: current behavior. currentTime past duration still counts.
-        XCTAssertTrue(PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
-            duration: 100, currentTime: 150
-        ))
+        XCTAssertTrue(isNaturalEnd(duration: 100, currentTime: 150))
+    }
+
+    func testNearEndConversionRequiresCorroboratingTransportEvidence() {
+        // Same position, three verdicts: only the drained, outage-free player
+        // is treated as a finished title.
+        XCTAssertTrue(isNaturalEnd(duration: 100, currentTime: 95))
+        XCTAssertFalse(isNaturalEnd(duration: 100, currentTime: 95, outage: true))
+        XCTAssertFalse(isNaturalEnd(duration: 100, currentTime: 95, bufferedAhead: 5))
+        // A residual second of queued media is still a drain.
+        XCTAssertTrue(isNaturalEnd(duration: 100, currentTime: 95, bufferedAhead: 1))
+        // A non-finite buffer report carries no evidence either way and must
+        // not veto the conversion.
+        XCTAssertTrue(isNaturalEnd(duration: 100, currentTime: 95, bufferedAhead: .nan))
+
+        // Short titles: the 8-second window still covers most of a 10-second
+        // item's runtime, so position alone would call an error at 2.1 s a
+        // natural end. With a live runway it now stays on the ladder.
+        XCTAssertFalse(isNaturalEnd(duration: 10, currentTime: 2.1, bufferedAhead: 5))
+        XCTAssertFalse(isNaturalEnd(duration: 10, currentTime: 2.1, outage: true))
+        // PIN: with the buffer genuinely drained the short-title case is
+        // unchanged — narrowing the window is a product decision (review §10
+        // P10), not part of this fix.
+        XCTAssertTrue(isNaturalEnd(duration: 10, currentTime: 2.1))
     }
 
     // MARK: - isPlaybackSessionMissingMessage

@@ -1535,6 +1535,14 @@ actor PlaybackSessionBridge {
                 "stop-session DELETE failed for \(sid, privacy: .public); server-side session may linger until idle timeout: \(String(describing: error), privacy: .public)"
             )
         }
+        // Three awaits happened above; a newer session may have been adopted
+        // in the meantime (tvOS background suspend racing an explicit resume).
+        // Clearing identity unconditionally would erase that live session and
+        // leave progress reporting, renewal and replans without one, so the
+        // clear is identity-conditional like every other post-await mutation
+        // here. The replacement session runs its own stop, including the tvOS
+        // Top Shelf nudge below.
+        guard sessionId == sid else { return }
         sessionId = nil
         currentSession = nil
         activeProtocolV3 = nil

@@ -36,6 +36,7 @@ final class PlayerTaskRegistry {
 
     enum Key: CaseIterable {
         case cleanupCompletion
+        case suspendStopSession
         case settingsRefresh
 
         case freshLoad
@@ -68,6 +69,13 @@ final class PlayerTaskRegistry {
             // The final progress flush. Teardown installs it, so no sweep may
             // cancel it.
             case .cleanupCompletion:
+                return []
+            // The tvOS background-suspend stop. Suspend itself installs it
+            // (after its own sweeps), and the bridge's identity guard is what
+            // makes a resume that overtakes it safe — so no sweep may cancel
+            // it either. Registered purely so it is observable rather than
+            // unstructured.
+            case .suspendStopSession:
                 return []
             // Awaited by `beginFreshLoad` instead of being reissued, so it
             // only dies with the view model.
