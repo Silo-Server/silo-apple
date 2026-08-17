@@ -195,15 +195,6 @@ struct PINEntryView: View {
         guard !pin.isEmpty else { return }
         pin.removeLast()
     }
-
-    /// Trigger a shake animation (e.g., on wrong PIN).
-    func shakeAndReset() {
-        isShaking = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            isShaking = false
-            pin = ""
-        }
-    }
 }
 
 // MARK: - Number Pad Button

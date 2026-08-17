@@ -828,15 +828,6 @@ struct ContentView: View {
             #else
             ServerNeedsSetupView(router: router)
             #endif
-        case .onboardingTour:
-            #if os(tvOS)
-            EmptyStateView(icon: "sparkles", title: "Take the tour on your phone or the web", subtitle: nil)
-                .continuumBackground()
-            #else
-            OnboardingTourView(router: router)
-            #endif
-        case .login:
-            loginRoot
         case .serverSetup:
             #if os(tvOS)
             TVServerSetupView(router: router)
@@ -870,12 +861,6 @@ struct ContentView: View {
             TVServerSetupView(router: router)
             #else
             ServerSetupView(router: router)
-            #endif
-        case .login:
-            #if os(tvOS)
-            TVLoginView(router: router)
-            #else
-            LoginView(router: router)
             #endif
         case .serverNeedsSetup:
             #if os(tvOS)
@@ -2197,13 +2182,11 @@ struct MainTabView: View {
             EmptyView()
             #endif
         case .favorites:
-            FavoritesView()
+            PersonalListGridView(kind: .favorites)
         case .watchlist:
-            WatchlistView()
+            PersonalListGridView(kind: .watchlist)
         case .history:
             HistoryView()
-        case .collections:
-            CollectionsView()
         case .collectionDetail(let id):
             CollectionDetailView(collectionId: id)
         case .browse(let libraryId):
@@ -2272,26 +2255,4 @@ struct MainTabView: View {
         }
     }
     #endif
-
-    private var settingsPlaceholder: some View {
-        List {
-            Section {
-                Button("Switch Profile") {
-                    router.switchProfile()
-                }
-                .foregroundColor(.continuumOnSurface)
-            }
-
-            Section {
-                Button("Sign Out") {
-                    router.signOutAndReset()
-                }
-                .foregroundColor(.continuumError)
-            }
-        }
-        .continuumScrollContentBackgroundHidden()
-        .background(Color.continuumBackground)
-        .navigationTitle("Settings")
-        .continuumToolbarColorSchemeDark()
-    }
 }

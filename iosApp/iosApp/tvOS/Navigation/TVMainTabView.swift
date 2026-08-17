@@ -1208,13 +1208,11 @@ struct TVMainTabView: View {
                 resumePositionOverride: resumePosition
             )
         case .favorites:
-            FavoritesView()
+            PersonalListGridView(kind: .favorites)
         case .watchlist:
-            WatchlistView()
+            PersonalListGridView(kind: .watchlist)
         case .history:
             HistoryView()
-        case .collections:
-            CollectionsView()
         case .collectionDetail(let id):
             CollectionDetailView(collectionId: id)
         case .browse(let libraryId):
@@ -1240,14 +1238,6 @@ struct TVMainTabView: View {
             // tree entirely. Successful `connect()` flips authState to
             // `.needsLogin` and replaces this view tree.
             TVServerSetupView(router: router)
-        case .tvLibraryGrid(let libraryId, let libraryName, let libraryType, let payload, let subtitle):
-            TVLibraryGridView(
-                libraryId: libraryId,
-                libraryName: libraryName,
-                libraryType: libraryType,
-                initialFilter: payload.toFilterState(),
-                subtitle: subtitle
-            )
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .continuumBackground()

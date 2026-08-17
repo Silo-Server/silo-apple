@@ -18,9 +18,6 @@ extension Color {
     /// Primary interactive color — same as text (monochrome UI)
     static let continuumPrimary = Color(hex: "#EDEDED")
 
-    /// Kept for backwards compat — same as primary
-    static let continuumPrimaryLight = Color(hex: "#EDEDED")
-
     /// Primary text color (#EDEDED)
     static let continuumOnSurface = Color(hex: "#EDEDED")
 
@@ -59,15 +56,6 @@ extension Color {
     /// Hairline border on resting pills/chips — white @ 9%
     static let continuumChromeRestingBorder = Color.white.opacity(0.09)
 
-    /// Anchored dropdown panel fill — `glass.strong`, #16171B @ 86% over blur
-    static let continuumGlassStrong = Color(hex: "#16171B").opacity(0.86)
-
-    /// Shelf/base dropdown fill — `glass.regular`, black @ 55% over blur.
-    static let continuumGlassRegular = Color.black.opacity(0.55)
-
-    /// Page scrim behind anchored dropdowns — `scrim.dropdown`, black @ 55%
-    static let continuumDropdownScrim = Color.black.opacity(0.55)
-
     // MARK: - Request status dots
 
     /// The requests UI keeps chips monochrome; these tint only the small
@@ -88,9 +76,6 @@ extension Color {
 
     /// Outline/border color — white at 12%
     static let continuumOutline = Color.white.opacity(0.12)
-
-    /// Overlay for sheets and modals
-    static let continuumOverlay = Color.black.opacity(0.6)
 
     /// Divider/separator line color — white at 12%
     static let continuumDivider = Color.white.opacity(0.12)

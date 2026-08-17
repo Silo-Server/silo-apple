@@ -1,7 +1,66 @@
 import SwiftUI
 
-/// Grid of the user's favorited items.
-struct FavoritesView: View {
+/// Which saved list a ``PersonalListGridView`` renders. Both lists share the
+/// same grid, loading, and removal behavior; they differ only in copy, cache
+/// key, endpoint, and which user-state flag keeps an item in the grid.
+enum PersonalListKind: Hashable {
+    case favorites
+    case watchlist
+
+    var navigationTitle: String {
+        switch self {
+        case .favorites: return "Favorites"
+        case .watchlist: return "Watchlist"
+        }
+    }
+
+    var emptyIcon: String {
+        switch self {
+        case .favorites: return "heart"
+        case .watchlist: return "bookmark"
+        }
+    }
+
+    var emptyTitle: String {
+        switch self {
+        case .favorites: return "No favorites"
+        case .watchlist: return "Watchlist is empty"
+        }
+    }
+
+    var emptySubtitle: String {
+        switch self {
+        case .favorites: return "Tap the heart icon on any item to add it here"
+        case .watchlist: return "Tap the bookmark icon on any item to add it here"
+        }
+    }
+
+    var cacheKey: String {
+        switch self {
+        case .favorites: return CacheKey.favorites
+        case .watchlist: return CacheKey.watchlist
+        }
+    }
+
+    var path: String {
+        switch self {
+        case .favorites: return "/api/v1/favorites"
+        case .watchlist: return "/api/v1/watchlist"
+        }
+    }
+
+    /// Whether an item carrying `state` still belongs in this list.
+    func contains(_ state: MediaItemUserState) -> Bool {
+        switch self {
+        case .favorites: return state.isFavorite
+        case .watchlist: return state.inWatchlist
+        }
+    }
+}
+
+/// Grid of one of the user's saved lists.
+struct PersonalListGridView: View {
+    let kind: PersonalListKind
     let showsNavigationTitle: Bool
 
     @State private var items: [BrowseItem] = []
@@ -18,7 +77,8 @@ struct FavoritesView: View {
         )
     }
 
-    init(showsNavigationTitle: Bool = true) {
+    init(kind: PersonalListKind, showsNavigationTitle: Bool = true) {
+        self.kind = kind
         self.showsNavigationTitle = showsNavigationTitle
     }
 
@@ -27,7 +87,7 @@ struct FavoritesView: View {
             if !items.isEmpty {
                 gridContent
             } else if let error {
-                ErrorView(state: error, onRetry: { Task { await loadFavorites() } })
+                ErrorView(state: error, onRetry: { Task { await load() } })
             } else if isLoading {
                 // tvOS: this is a pushed destination, so the top menu bar
                 // isn't there to hold focus — without a focusable element
@@ -38,19 +98,19 @@ struct FavoritesView: View {
                 #endif
             } else {
                 EmptyStateView(
-                    icon: "heart",
-                    title: "No favorites",
-                    subtitle: "Tap the heart icon on any item to add it here"
+                    icon: kind.emptyIcon,
+                    title: kind.emptyTitle,
+                    subtitle: kind.emptySubtitle
                 )
             }
         }
         .continuumBackground()
-        .modifier(PersonalListNavigationChrome(title: showsNavigationTitle ? "Favorites" : nil))
+        .modifier(PersonalListNavigationChrome(title: showsNavigationTitle ? kind.navigationTitle : nil))
         .task {
-            await loadFavorites()
+            await load()
         }
         .refreshable {
-            await loadFavorites()
+            await load()
         }
     }
 
@@ -71,7 +131,7 @@ struct FavoritesView: View {
                         playAction: playAction(for: item),
                         contentId: item.contentId,
                         onUserStateChanged: { state in
-                            guard !state.isFavorite else { return }
+                            guard !kind.contains(state) else { return }
                             withAnimation {
                                 items.removeAll { $0.contentId == item.contentId }
                             }
@@ -99,9 +159,9 @@ struct FavoritesView: View {
         #endif
     }
 
-    private func loadFavorites() async {
+    private func load() async {
         if items.isEmpty,
-           let cached: CatalogResponse = ResponseCache.shared.get(CacheKey.favorites) {
+           let cached: CatalogResponse = ResponseCache.shared.get(kind.cacheKey) {
             items = cached.items
         }
         if items.isEmpty {
@@ -110,9 +170,9 @@ struct FavoritesView: View {
         error = nil
         do {
             let response: CatalogResponse = try await ContinuumAPI.shared.get(
-                "/api/v1/favorites"
+                kind.path
             )
-            ResponseCache.shared.set(response, for: CacheKey.favorites)
+            ResponseCache.shared.set(response, for: kind.cacheKey)
             items = response.items
         } catch let err {
             if items.isEmpty {

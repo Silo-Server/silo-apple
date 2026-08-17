@@ -17,8 +17,6 @@ enum HomeFeedMetrics {
     /// Wider than today's 120pt. At 120 the cards read as thumbnails against
     /// 24pt row gaps; the screen ends up feeling sparse rather than spacious.
     static let posterWidth: CGFloat = 132
-    /// Poster Wall trades size for count.
-    static let densePosterWidth: CGFloat = 104
     /// 16:9 still used by resume rows. Tuned so a still row shows the same
     /// "two cards plus a peek" as a poster row — at 210 the stills were
     /// noticeably less dense than the 132pt posters directly below them, which
@@ -77,17 +75,6 @@ enum HomeFeedMeta {
               let duration = item.durationSeconds,
               duration > 0, position > 0 else { return nil }
         return min(max(position / duration, 0), 1)
-    }
-
-    /// "1968  ·  Horror  ·  1h 36m" — the meta line under a hero title.
-    static func heroLine(for item: SectionItem, maxGenres: Int = 2) -> String {
-        var parts: [String] = []
-        if let year = item.year { parts.append(String(year)) }
-        if let genres = item.genres, !genres.isEmpty {
-            parts.append(contentsOf: genres.prefix(maxGenres))
-        }
-        if let runtime = runtime(minutes: item.runtime) { parts.append(runtime) }
-        return parts.joined(separator: "  ·  ")
     }
 
     static func episodeCode(for item: SectionItem) -> String? {

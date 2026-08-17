@@ -379,14 +379,8 @@ private extension Route {
         switch self {
         case .serverSetup:
             return "serverSetup"
-        case .login:
-            return "login"
         case .serverNeedsSetup:
             return "serverNeedsSetup"
-        case .onboardingTour:
-            return "onboardingTour"
-        case .profileSelection:
-            return "profileSelection"
         case .home:
             return "home"
         case .search:
@@ -411,8 +405,6 @@ private extension Route {
             return "watchlist"
         case .history:
             return "history"
-        case .collections:
-            return "collections"
         case .collectionDetail:
             return "collectionDetail"
         case .settings:
@@ -435,8 +427,6 @@ private extension Route {
             return "offlineSeriesBrowse"
         case .offlineDownloadDetail:
             return "offlineDownloadDetail"
-        case .tvLibraryGrid:
-            return "tvLibraryGrid"
         }
     }
 }
