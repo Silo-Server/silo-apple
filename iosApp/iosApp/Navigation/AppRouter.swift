@@ -405,8 +405,6 @@ private extension Route {
             return "watchlist"
         case .history:
             return "history"
-        case .collectionDetail:
-            return "collectionDetail"
         case .settings:
             return "settings"
         case .recommendations:
