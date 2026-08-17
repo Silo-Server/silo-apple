@@ -31,9 +31,6 @@ struct ContinuumTheme {
     static let cardCornerRadius: CGFloat = 14
     #endif
 
-    /// Pill-shaped elements — use Capsule() instead of a fixed radius
-    static let pillCornerRadius: CGFloat = 100
-
     // MARK: - Top Bar
 
     /// Tap-target frame for chrome-free top-bar icon buttons (Search / Cast).
@@ -70,21 +67,10 @@ struct ContinuumTheme {
     static let safePadding: CGFloat = 16
     #endif
 
-    // MARK: - Elevation
-
-    /// Card elevation — zero for Plezy-style flat cards
-    static let cardElevation: CGFloat = 0
-
     // MARK: - Media Aspect Ratios
 
     /// Movie/show poster (2:3.3 — Plezy uses slightly taller posters)
     static let posterAspectRatio: CGFloat = 2.0 / 3.3
-
-    /// Backdrop/banner image (16:9)
-    static let backdropAspectRatio: CGFloat = 16.0 / 9.0
-
-    /// Episode thumbnail (16:9)
-    static let thumbnailAspectRatio: CGFloat = 16.0 / 9.0
 
     // MARK: - Media Card Dimensions
 
@@ -122,9 +108,6 @@ struct ContinuumTheme {
     /// Slow — image crossfades, content reveals (300ms)
     static let slowDuration: Double = 0.30
 
-    /// Standard transition duration
-    static let animationDuration: Double = 0.20
-
     /// Standard spring animation
     static let springAnimation = Animation.spring(response: 0.35, dampingFraction: 0.85)
 
@@ -147,22 +130,12 @@ struct ContinuumTheme {
         static let tabPaddingVertical: CGFloat = 12
         /// Square hit target of the search button and the profile avatar.
         static let barIconSize: CGFloat = 58
-        /// Gap between the search button and the avatar.
-        static let barTrailingSpacing: CGFloat = 22
         static let wordmarkSize: CGFloat = 26
         /// Wordmark letter tracking — +0.34 em.
         static let wordmarkTracking: CGFloat = 26 * 0.34
         /// Bar opacity while focus is down in the content zone (§5.1).
         static let barDimmedOpacity: Double = 0.7
 
-        /// Pill row offset from the screen top — 30 below the bar (§5.2).
-        static let pillRowTopInset: CGFloat = 150
-        static let pillSpacing: CGFloat = 12
-        static let pillLabelSize: CGFloat = 19
-        static let pillPaddingHorizontal: CGFloat = 22
-        static let pillPaddingVertical: CGFloat = 9
-        /// Right-aligned scope caption in the pill row.
-        static let pillCaptionSize: CGFloat = 18
         /// Upward drift of incoming sub-pill content on a pill switch
         /// (§4.2: "200 ms crossfade + 12 px upward drift of incoming
         /// content"). Paired with the shared 200 ms `normalDuration`.
@@ -175,9 +148,6 @@ struct ContinuumTheme {
         /// Top inset for library-tab content that has no hero of its own
         /// (grids, chip clouds): clears the bar and the pill row.
         static let libraryContentTopInset: CGFloat = 216
-        /// Extra top inset the featured hero needs on library tabs so its
-        /// card deck starts below the pill row instead of under it.
-        static let libraryHeroExtraTopInset: CGFloat = 88
 
         /// Anchored dropdown panel (§5.3/§5.8).
         static let dropdownWidth: CGFloat = 460
@@ -200,10 +170,6 @@ struct ContinuumTheme {
         static let cascadeOpenDuration: Double = 0.18
         /// Scrim fade duration behind the cascade (§4.2, 150 ms).
         static let cascadeScrimDuration: Double = 0.15
-        /// Width of the notch tab pointing from a panel to its anchor.
-        static let cascadeNotchWidth: CGFloat = 20
-        /// Height the notch protrudes toward its anchor.
-        static let cascadeNotchHeight: CGFloat = 10
 
         /// Level-1 library row metrics (§5.3).
         static let cascadeRowTextSize: CGFloat = 22
@@ -225,8 +191,6 @@ struct ContinuumTheme {
         static let flyoutRowPaddingVertical: CGFloat = 13
         static let flyoutRowCornerRadius: CGFloat = 12
         static let flyoutHeaderSize: CGFloat = 13
-        /// Open scale-up for the flyout (§4.2, 0.97 → 1.0).
-        static let flyoutOpenScale: CGFloat = 0.97
         static let flyoutOpenDuration: Double = 0.16
         /// Rest debounce before the flyout follows focus to a new library
         /// row (§5.3) — rolling the list never thrashes the flyout.
@@ -238,27 +202,19 @@ struct ContinuumTheme {
         /// this lands the marquee's bottom edge at the midpoint so the lower
         /// half can hold the focused row plus a peek of the next row.
         static let marqueeBottomInsetHome: CGFloat = 540
-        /// Marquee block bottom inset — library (compact) scale. Matched to
-        /// Home so the Skyline feed keeps a consistent 50/50 marquee-to-row
-        /// split across Home and library landings.
-        static let marqueeBottomInsetLibrary: CGFloat = 540
         /// Marquee content block width.
         static let marqueeContentWidth: CGFloat = 880
         static let marqueeTitleSizeHome: CGFloat = 84
-        static let marqueeTitleSizeLibrary: CGFloat = 66
         static let marqueeMetaSizeHome: CGFloat = 20
-        static let marqueeMetaSizeLibrary: CGFloat = 19
         static let marqueeSynopsisSize: CGFloat = 22
         /// Synopsis column cap (§4.1) — narrower than the content block.
         static let marqueeSynopsisMaxWidth: CGFloat = 780
         /// Cached server logo art caps in the marquee title slot. With
         /// the row stack owning the lower half of the screen, Home affords
-        /// the full §5.4 cap; the library scale stays tighter because the
-        /// pill row eats into its band. While a logo is shown the synopsis
-        /// drops a line, like a wrapped title.
+        /// the full §5.4 cap. While a logo is shown the synopsis drops a
+        /// line, like a wrapped title.
         static let marqueeLogoMaxWidth: CGFloat = 880
         static let marqueeLogoMaxHeightHome: CGFloat = 200
-        static let marqueeLogoMaxHeightLibrary: CGFloat = 150
         /// Codec/HDR badge chip label size (§4.1).
         static let marqueeBadgeSize: CGFloat = 15
         /// Focus must rest this long before the marquee swaps (§4.2) —
@@ -286,17 +242,6 @@ struct ContinuumTheme {
         /// Regular rows keep the wider tvOS padding so focus lift has more
         /// space in standard scroll layouts.
         static let rowBandCardVerticalPadding: CGFloat = 14
-        /// Duration for the vertical row-stack scroll when paging up/down.
-        static let rowBandScrollDuration: Double = 0.18
-        /// Distance the outgoing focused row travels as it fades behind the
-        /// marquee/title area during row paging.
-        static let rowBandExitOffset: CGFloat = 140
-        /// Passive row preview tint so it reads as available content without
-        /// competing with the focused row.
-        static let rowPreviewOpacity: Double = 0.74
-        /// Number of preview cards to paint. Enough to fill the visible width
-        /// without doing unnecessary image work for off-screen cards.
-        static let rowPreviewItemLimit = 8
         /// Dense poster card (§5.6) for Home + Browse poster rows. Sized so
         /// a full poster row (header + 2:3 poster + title/year) fits in the
         /// top of the lower-half row band while leaving a preview of the next

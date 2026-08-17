@@ -274,8 +274,8 @@ struct TVItemDetailView: View {
                         .id(detail.contentId)
                 }
             )
-            .task(id: seasonNextUpEpisodeContentId(for: detail)) {
-                await loadSeasonNextUpPlaybackDetail(for: detail)
+            .task(id: nextUpEpisode(for: detail)?.contentId) {
+                await loadNextUpPlaybackDetail(for: detail)
             }
         } else if detail.type == "series" {
             TVSeriesDetailView(
@@ -402,8 +402,8 @@ struct TVItemDetailView: View {
                         .id(detail.contentId)
                 }
             )
-            .task(id: seriesNextUpEpisodeContentId(for: detail)) {
-                await loadSeriesNextUpPlaybackDetail(for: detail)
+            .task(id: nextUpEpisode(for: detail)?.contentId) {
+                await loadNextUpPlaybackDetail(for: detail)
             }
         } else {
             TVMovieDetailView(
@@ -728,8 +728,8 @@ struct TVItemDetailView: View {
         TrackSelectionPersistence.saveSubtitle(prefKey: prefKey, request: request)
     }
 
-    private func seasonNextUpEpisode(for detail: ItemDetail) -> EpisodeListItem? {
-        guard detail.type == "season" else { return nil }
+    private func nextUpEpisode(for detail: ItemDetail) -> EpisodeListItem? {
+        guard detail.type == "season" || detail.type == "series" else { return nil }
         if let inProgress = viewModel.episodes.first(where: { $0.userData?.isInProgress == true }) {
             return inProgress
         }
@@ -739,12 +739,8 @@ struct TVItemDetailView: View {
         return viewModel.episodes.first
     }
 
-    private func seasonNextUpEpisodeContentId(for detail: ItemDetail) -> String? {
-        seasonNextUpEpisode(for: detail)?.contentId
-    }
-
-    private func loadSeasonNextUpPlaybackDetail(for detail: ItemDetail) async {
-        guard let nextUp = seasonNextUpEpisode(for: detail) else {
+    private func loadNextUpPlaybackDetail(for detail: ItemDetail) async {
+        guard let nextUp = nextUpEpisode(for: detail) else {
             nextUpPlaybackDetail = nil
             isLoadingNextUpPlaybackDetail = false
             didLoadNextUpPlaybackDetail = false
@@ -766,7 +762,7 @@ struct TVItemDetailView: View {
         do {
             let item = try await ContinuumAPI.shared.itemDetail(contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
-            let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
+            let enriched = await viewModel.enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             nextUpPlaybackDetail = enriched
             preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
@@ -782,132 +778,6 @@ struct TVItemDetailView: View {
             didLoadNextUpPlaybackDetail = true
         }
         isLoadingNextUpPlaybackDetail = false
-    }
-
-    private func seriesNextUpEpisode(for detail: ItemDetail) -> EpisodeListItem? {
-        guard detail.type == "series" else { return nil }
-        if let inProgress = viewModel.episodes.first(where: { $0.userData?.isInProgress == true }) {
-            return inProgress
-        }
-        if let unwatched = viewModel.episodes.first(where: { !($0.userData?.played ?? false) }) {
-            return unwatched
-        }
-        return viewModel.episodes.first
-    }
-
-    private func seriesNextUpEpisodeContentId(for detail: ItemDetail) -> String? {
-        seriesNextUpEpisode(for: detail)?.contentId
-    }
-
-    private func loadSeriesNextUpPlaybackDetail(for detail: ItemDetail) async {
-        guard let nextUp = seriesNextUpEpisode(for: detail) else {
-            nextUpPlaybackDetail = nil
-            isLoadingNextUpPlaybackDetail = false
-            didLoadNextUpPlaybackDetail = false
-            preferredNextUpFileId = nil
-            preferredNextUpAudioTrackIndex = nil
-            preferredNextUpSubtitleTrackIndex = nil
-            didClearNextUpSubtitleOverride = false
-            return
-        }
-
-        nextUpPlaybackDetail = nil
-        isLoadingNextUpPlaybackDetail = true
-        didLoadNextUpPlaybackDetail = false
-        preferredNextUpFileId = nil
-        preferredNextUpAudioTrackIndex = nil
-        preferredNextUpSubtitleTrackIndex = nil
-        didClearNextUpSubtitleOverride = false
-
-        do {
-            let item = try await ContinuumAPI.shared.itemDetail(contentId: nextUp.contentId)
-            guard !Task.isCancelled else { return }
-            let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
-            guard !Task.isCancelled else { return }
-            nextUpPlaybackDetail = enriched
-            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
-                version: effectiveVersion(for: enriched, versionFileId: nil),
-                signature: enriched.effectiveSubtitleTrackSignature,
-                mode: enriched.effectiveSubtitleMode,
-                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
-            )
-            didLoadNextUpPlaybackDetail = true
-        } catch {
-            guard !Task.isCancelled else { return }
-            nextUpPlaybackDetail = nil
-            didLoadNextUpPlaybackDetail = true
-        }
-        isLoadingNextUpPlaybackDetail = false
-    }
-
-    private func enrichPlaybackMetadata(for item: ItemDetail, contentId: String) async -> ItemDetail {
-        guard item.type != "series" else { return item }
-
-        do {
-            let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
-            return ItemDetail(
-                contentId: item.contentId,
-                type: item.type,
-                status: item.status,
-                title: item.title,
-                sortTitle: item.sortTitle,
-                originalTitle: item.originalTitle,
-                originalLanguage: item.originalLanguage,
-                showStatus: item.showStatus,
-                year: item.year,
-                overview: item.overview,
-                tagline: item.tagline,
-                runtime: item.runtime,
-                contentRating: item.contentRating,
-                genres: item.genres,
-                ratingImdb: item.ratingImdb,
-                ratingTmdb: item.ratingTmdb,
-                ratingRtCritic: item.ratingRtCritic,
-                ratingRtAudience: item.ratingRtAudience,
-                imdbId: item.imdbId,
-                tmdbId: item.tmdbId,
-                tvdbId: item.tvdbId,
-                cast: item.cast,
-                crew: item.crew,
-                studios: item.studios,
-                networks: item.networks,
-                countries: item.countries,
-                releaseDate: item.releaseDate,
-                firstAirDate: item.firstAirDate,
-                lastAirDate: item.lastAirDate,
-                posterUrl: item.posterUrl,
-                posterThumbhash: item.posterThumbhash,
-                backdropUrl: item.backdropUrl,
-                backdropThumbhash: item.backdropThumbhash,
-                logoUrl: item.logoUrl,
-                seasonCount: item.seasonCount,
-                seriesId: item.seriesId,
-                seriesTitle: item.seriesTitle,
-                seasonNumber: item.seasonNumber,
-                episodeNumber: item.episodeNumber,
-                episodeCount: item.episodeCount,
-                airDate: item.airDate,
-                isSpecials: item.isSpecials,
-                userData: item.userData,
-                versions: watchDetail.versions,
-                subtitles: watchDetail.subtitles,
-                intro: watchDetail.intro,
-                credits: watchDetail.credits,
-                effectiveSubtitleMode: watchDetail.effectiveSubtitleMode,
-                effectiveShowForcedSubtitles: watchDetail.effectiveShowForcedSubtitles,
-                effectiveSubtitleTrackSignature: watchDetail.effectiveSubtitleTrackSignature,
-                overlaySummary: item.overlaySummary,
-                audiobook: item.audiobook,
-                pendingTranslationLanguage: item.pendingTranslationLanguage,
-                // Catalog-only fields: the watch detail knows nothing about
-                // them, so they must be carried across or the trailers rail
-                // would disappear the moment enrichment succeeds.
-                videos: item.videos,
-                extras: item.extras
-            )
-        } catch {
-            return item
-        }
     }
 }
 #endif

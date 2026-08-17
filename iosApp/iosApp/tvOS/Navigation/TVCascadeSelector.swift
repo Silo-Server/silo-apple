@@ -13,7 +13,7 @@ import SwiftUI
 ///   the others a `›`. Single-library tabs collapse this away and show the
 ///   sections panel directly.
 /// - **Level 2 — sections flyout.** Anchored to the focused library row's
-///   right, listing that type's pill set (§3 / `TVLibraryPill.set`). It
+///   right, listing that type's pill set (§3 / `TVLibraryPill`). It
 ///   follows focus up/down the library list after a 150 ms rest debounce
 ///   and never steals focus. Its first section row aligns with the highlighted
 ///   library row so the two-column selector reads as one continuous menu.
@@ -87,7 +87,7 @@ struct TVCascadeSelector: View {
         case section(Int, TVLibraryPill)
     }
 
-    private var pills: [TVLibraryPill] { TVLibraryPill.set(for: type) }
+    private var pills: [TVLibraryPill] { TVLibraryPill.allCases }
 
     /// A single-library tab skips the library list and shows just that
     /// library's sections (§5.3 single-level panel).

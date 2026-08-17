@@ -46,12 +46,6 @@ final class ItemDetailCache {
         return vm
     }
 
-    /// Peek without creating or touching. Used by invalidation helpers
-    /// that need to walk the parent chain from an existing entry.
-    func peek(_ contentId: String) -> ItemDetailViewModel? {
-        entries[contentId]
-    }
-
     /// Invalidate the cached entry and any parent series/season entries
     /// derived from its `ItemDetail`. Meant for mutations that change
     /// userData the parent page reads back (mark-watched, playback
@@ -69,11 +63,6 @@ final class ItemDetailCache {
                 refresh("\(seriesId)-S\(seasonNumber)")
             }
         }
-    }
-
-    /// Refresh a single entry. No-op if we don't hold one.
-    func markStale(contentId: String) {
-        refresh(contentId)
     }
 
     /// Drop every cached entry. Called from `AuthService.signOut` and

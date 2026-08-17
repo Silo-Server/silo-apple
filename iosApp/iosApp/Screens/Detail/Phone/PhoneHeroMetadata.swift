@@ -1,19 +1,16 @@
-#if !os(tvOS)
 import Foundation
 
-/// A token in the hero's facts row. `.text` items get a middle-dot
-/// separator between them; `.rating` renders a green check + maturity
-/// label; `.chip` renders an outlined uppercase pill (4K / HDR / ATMOS / CC).
+/// A token in the hero's facts row. `.text` items get a separator between
+/// them; `.chip` renders an outlined uppercase pill (4K / HDR / ATMOS / CC).
 enum PhoneHeroFactToken: Hashable {
     case text(String)
-    case rating(String)
     case chip(String)
 }
 
 /// Builds the eyebrow / source / facts / starring strings shown by the
-/// phone hero from an `ItemDetail`. Mirrors `TVHeroMetadata` — the same
-/// editorial logic, just exposed under an iOS-only namespace so the
-/// tvOS surface doesn't leak across.
+/// detail hero from an `ItemDetail`. Shared by the phone hero and the
+/// tvOS hero (`TVDetailHero`), which differ only in how they render the
+/// resulting strings.
 enum PhoneHeroMetadata {
 
     // MARK: - Source row
@@ -115,6 +112,15 @@ enum PhoneHeroMetadata {
             }
         }
         return nil
+    }
+
+    // MARK: - Starring (first 3 cast names)
+
+    static func starringText(from detail: ItemDetail) -> String? {
+        guard let cast = detail.cast, !cast.isEmpty else { return nil }
+        let names = cast.prefix(3).map(\.name)
+        guard !names.isEmpty else { return nil }
+        return "Starring " + names.joined(separator: ", ")
     }
 
     // MARK: - Title parts
@@ -235,4 +241,3 @@ enum PhoneHeroMetadata {
         return "\(minutes) min"
     }
 }
-#endif

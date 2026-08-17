@@ -28,28 +28,12 @@ struct TVDetailCastRail: View {
             .padding(.vertical, 24)
         }
         .focusSection()
-        .applyCastRailDefaultFocus(defaultFocusId, binding: $focusedCastId)
+        .applyDefaultFocusIfPresent($focusedCastId, id: defaultFocusId)
         .scrollClipDisabled()
     }
 
     private var defaultFocusId: String? {
         cast.prefix(maxEntries).first?.id
-    }
-}
-
-private extension View {
-    /// When focus enters the cast/crew rail, land on the first person rather
-    /// than letting tvOS choose a geometrically-nearest card.
-    @ViewBuilder
-    func applyCastRailDefaultFocus(
-        _ firstCastId: String?,
-        binding: FocusState<String?>.Binding
-    ) -> some View {
-        if let firstCastId {
-            self.defaultFocus(binding, firstCastId, priority: .userInitiated)
-        } else {
-            self
-        }
     }
 }
 

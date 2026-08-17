@@ -34,7 +34,6 @@ struct TopShelfItem: Decodable {
     let durationSeconds: Double?
     let progressUpdatedAt: String?
     let posterUrl: String?
-    let backdropUrl: String?
 
     /// 0.0...1.0 or nil when we don't have both position and duration.
     var playbackProgress: Double? {

@@ -143,8 +143,8 @@ struct TVMediaCard: View {
                 .buttonStyle(.card)
                 .focused($isFocused)
                 .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
-                .applyRailFocus(focusBinding, contentId: focusContentId)
-                .applyTVCardPlayPauseAction(playAction)
+                .applyFocusBindingIfPresent(focusBinding, id: focusContentId)
+                .applyPlayPauseAction(playAction)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(accessibilityDescription)
         case .ring:
@@ -152,8 +152,8 @@ struct TVMediaCard: View {
                 .buttonStyle(TVPosterRingButtonStyle())
                 .focused($isFocused)
                 .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
-                .applyRailFocus(focusBinding, contentId: focusContentId)
-                .applyTVCardPlayPauseAction(playAction)
+                .applyFocusBindingIfPresent(focusBinding, id: focusContentId)
+                .applyPlayPauseAction(playAction)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(accessibilityDescription)
         }
@@ -240,29 +240,6 @@ struct TVMediaCard: View {
             components.append("Watched")
         }
         return components.joined(separator: ", ")
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func applyTVCardPlayPauseAction(_ action: (() -> Void)?) -> some View {
-        if let action {
-            self.onPlayPauseCommand(perform: action)
-        } else {
-            self
-        }
-    }
-
-    /// Binds the inner button to a parent rail's `@FocusState` so the rail can
-    /// route d-pad-entry default focus onto this specific card. No-op when the
-    /// rail doesn't manage focus. Mirrors `MediaCard.applyRowFocus`.
-    @ViewBuilder
-    func applyRailFocus(_ binding: FocusState<String?>.Binding?, contentId: String?) -> some View {
-        if let binding, let contentId {
-            self.focused(binding, equals: contentId)
-        } else {
-            self
-        }
     }
 }
 

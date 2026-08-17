@@ -83,10 +83,10 @@ struct CalendarDayShelf: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         #if os(tvOS)
         .scrollClipDisabled()
-        .applyDefaultFirstEventFocus(
-            enabled: prefersDefaultFocusOnFirstItem,
-            binding: $focusedItemId,
-            firstItemId: events.first?.contentId
+        .applyDefaultFocusIfPresent(
+            $focusedItemId,
+            id: events.first?.contentId,
+            enabled: prefersDefaultFocusOnFirstItem
         )
         #endif
     }
@@ -156,23 +156,6 @@ private struct TVShelfMoveHandler: ViewModifier {
             }
         } else {
             content
-        }
-    }
-}
-
-private extension View {
-    /// Routes both initial and d-pad-entry focus to the shelf's first
-    /// card — same `.userInitiated` defaultFocus pattern as `MediaRow`.
-    @ViewBuilder
-    func applyDefaultFirstEventFocus(
-        enabled: Bool,
-        binding: FocusState<String?>.Binding,
-        firstItemId: String?
-    ) -> some View {
-        if enabled, let firstItemId {
-            self.defaultFocus(binding, firstItemId, priority: .userInitiated)
-        } else {
-            self
         }
     }
 }

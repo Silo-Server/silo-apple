@@ -559,7 +559,7 @@ private struct FocusableMediaCard<Content: View>: View {
         }
         .buttonStyle(.card)
         .focused($isFocused)
-        .applyRowFocus(focusedItemId, itemId: itemId)
+        .applyFocusBindingIfPresent(focusedItemId, id: itemId)
         .applyPlayPauseAction(playAction)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
@@ -620,30 +620,4 @@ private struct FocusableMediaCard<Content: View>: View {
     }
 }
 
-private extension View {
-    @ViewBuilder
-    func applyPlayPauseAction(_ action: (() -> Void)?) -> some View {
-        if let action {
-            self.onPlayPauseCommand(perform: action)
-        } else {
-            self
-        }
-    }
-
-    /// Conditionally binds this view to the parent row's `@FocusState`
-    /// so `defaultFocus(... priority: .userInitiated)` upstream can land
-    /// focus on it. No-op when either argument is nil (e.g., on iOS or
-    /// when this card isn't inside a row that manages focus).
-    @ViewBuilder
-    func applyRowFocus(
-        _ binding: FocusState<String?>.Binding?,
-        itemId: String?
-    ) -> some View {
-        if let binding, let itemId {
-            self.focused(binding, equals: itemId)
-        } else {
-            self
-        }
-    }
-}
 #endif

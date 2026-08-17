@@ -103,7 +103,7 @@ struct TVSeasonChipRow: View {
             }
             .scrollClipDisabled()
             .focusSection()
-            .applyChipRowDefaultFocus(selectedSeasonId, binding: $focusedSeasonId)
+            .applyDefaultFocusIfPresent($focusedSeasonId, id: selectedSeasonId)
             .onChange(of: selectedSeasonId) { _, newId in
                 guard let newId else { return }
                 withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
@@ -119,23 +119,6 @@ struct TVSeasonChipRow: View {
                 guard let selectedSeasonId else { return }
                 proxy.scrollTo(selectedSeasonId, anchor: .center)
             }
-        }
-    }
-}
-
-private extension View {
-    /// See `TVEpisodeRail.applyRailDefaultFocus` for the rationale —
-    /// `.userInitiated` priority is what makes `defaultFocus` win over
-    /// tvOS's geometric proximity logic on d-pad entry.
-    @ViewBuilder
-    func applyChipRowDefaultFocus(
-        _ selectedSeasonId: String?,
-        binding: FocusState<String?>.Binding
-    ) -> some View {
-        if let selectedSeasonId {
-            self.defaultFocus(binding, selectedSeasonId, priority: .userInitiated)
-        } else {
-            self
         }
     }
 }

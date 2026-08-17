@@ -1042,12 +1042,6 @@ final class UICustomizationPreferencesTests: XCTestCase {
             .browse,
             "the direct pin's cascade owns a writable section independent of its category"
         )
-        XCTAssertTrue(TVLibraryMenuRootKind.category.hasSectionCascade)
-        XCTAssertTrue(
-            TVLibraryMenuRootKind.directShortcut.hasSectionCascade,
-            "D-pad Down on a direct pin must enter its one-library section cascade"
-        )
-        XCTAssertFalse(TVLibraryMenuRootKind.staticRoot.hasSectionCascade)
     }
 
     func testTVCustomizationControlsDisableAcrossCapabilityChanges() {

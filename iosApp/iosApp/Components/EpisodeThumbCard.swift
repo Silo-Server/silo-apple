@@ -323,8 +323,8 @@ struct EpisodeThumbCard: View {
         }
         .buttonStyle(.card)
         .focused($isFocused)
-        .applyRowFocus(focusedItemId, itemId: item.contentId)
-        .applyEpisodePlayPauseAction(playAction)
+        .applyFocusBindingIfPresent(focusedItemId, id: item.contentId)
+        .applyPlayPauseAction(playAction)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
 
@@ -376,30 +376,3 @@ struct EpisodeThumbCard: View {
         }
     }
 }
-
-#if os(tvOS)
-private extension View {
-    @ViewBuilder
-    func applyEpisodePlayPauseAction(_ action: (() -> Void)?) -> some View {
-        if let action {
-            self.onPlayPauseCommand(perform: action)
-        } else {
-            self
-        }
-    }
-
-    /// Mirrors `MediaCard.applyRowFocus` so episode thumbs participate
-    /// in the row's `defaultFocus(... priority: .userInitiated)` mechanism.
-    @ViewBuilder
-    func applyRowFocus(
-        _ binding: FocusState<String?>.Binding?,
-        itemId: String?
-    ) -> some View {
-        if let binding, let itemId {
-            self.focused(binding, equals: itemId)
-        } else {
-            self
-        }
-    }
-}
-#endif

@@ -53,9 +53,9 @@ struct TVEpisodeRail: View {
                 .padding(.horizontal, ContinuumTheme.safePadding)
             }
             .focusSection()
-            .applyCurrentEpisodeDefaultFocus(
-                prefersCurrentContentFocus ? currentContentId : nil,
-                binding: $focusedCardId
+            .applyDefaultFocusIfPresent(
+                $focusedCardId,
+                id: prefersCurrentContentFocus ? currentContentId : nil
             )
             .scrollClipDisabled()
             .onChange(of: focusedCardId) { _, contentId in
@@ -74,20 +74,6 @@ struct TVEpisodeRail: View {
                     }
                 }
             }
-        }
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func applyCurrentEpisodeDefaultFocus(
-        _ contentId: String?,
-        binding: FocusState<String?>.Binding
-    ) -> some View {
-        if let contentId {
-            defaultFocus(binding, contentId, priority: .userInitiated)
-        } else {
-            self
         }
     }
 }

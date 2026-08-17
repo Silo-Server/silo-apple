@@ -223,26 +223,8 @@ private struct AudiobookCoverRail: View {
                 .padding(.vertical, 24)
             }
             .focusSection()
-            .applyCoverRailDefaultFocus(items.first?.contentId, binding: $focusedItemId)
+            .applyDefaultFocusIfPresent($focusedItemId, id: items.first?.contentId)
             .scrollClipDisabled()
-        }
-    }
-}
-
-private extension View {
-    /// Land d-pad entry on the first card rather than the geometrically-
-    /// nearest one. `.userInitiated` priority is what makes `defaultFocus`
-    /// win over proximity on rail entry — same helper shape as
-    /// `TVSimilarRail.applySimilarRailDefaultFocus`. No-op when empty.
-    @ViewBuilder
-    func applyCoverRailDefaultFocus(
-        _ firstContentId: String?,
-        binding: FocusState<String?>.Binding
-    ) -> some View {
-        if let firstContentId {
-            self.defaultFocus(binding, firstContentId, priority: .userInitiated)
-        } else {
-            self
         }
     }
 }

@@ -137,15 +137,6 @@ final class TVLibraryGridViewModel {
         PosterImageCache.prefetcher.startPrefetching(with: newURLs)
     }
 
-    func cancelPrefetch(in range: Range<Int>) {
-        let urls = items[safe: range]
-            .compactMap { $0.posterUrl }
-            .compactMap { URL(string: $0) }
-        guard !urls.isEmpty else { return }
-        urls.forEach { prefetchedPosterURLs.remove($0) }
-        PosterImageCache.prefetcher.stopPrefetching(with: urls)
-    }
-
     // MARK: - Fetch logic
 
     private func reload() async {

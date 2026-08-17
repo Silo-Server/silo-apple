@@ -14,18 +14,6 @@ extension View {
         self.background(Color.continuumBackground.ignoresSafeArea())
     }
 
-    /// Card-style surface with rounded corners — zero elevation (Plezy style).
-    func continuumCard() -> some View {
-        self
-            .background(Color.continuumSurface)
-            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
-    }
-
-    /// Standard content padding on all sides.
-    func continuumPadding() -> some View {
-        self.padding(ContinuumTheme.padding)
-    }
-
     /// Hide the view conditionally.
     @ViewBuilder
     func hidden(_ isHidden: Bool) -> some View {
@@ -477,6 +465,49 @@ extension View {
     func applyDefaultFocusIfNeeded(_ prefersDefaultFocus: Bool, namespace: Namespace.ID?) -> some View {
         if let namespace {
             self.prefersDefaultFocus(prefersDefaultFocus, in: namespace)
+        } else {
+            self
+        }
+    }
+
+    /// Routes a scope's d-pad-entry focus onto a specific id. `.userInitiated`
+    /// priority is what makes `defaultFocus` win over tvOS' geometric
+    /// proximity logic on entry. No-op while the target id is nil (empty or
+    /// still-loading rail) or the caller has disabled the claim.
+    @ViewBuilder
+    func applyDefaultFocusIfPresent<ID: Hashable>(
+        _ binding: FocusState<ID?>.Binding,
+        id: ID?,
+        enabled: Bool = true,
+        priority: DefaultFocusEvaluationPriority = .userInitiated
+    ) -> some View {
+        if enabled, let id {
+            self.defaultFocus(binding, id, priority: priority)
+        } else {
+            self
+        }
+    }
+
+    /// Binds this view to a parent row/rail's `@FocusState` so the parent's
+    /// `defaultFocus` can land on it. No-op when either argument is nil —
+    /// i.e. the parent doesn't manage focus.
+    @ViewBuilder
+    func applyFocusBindingIfPresent<ID: Hashable>(
+        _ binding: FocusState<ID?>.Binding?,
+        id: ID?
+    ) -> some View {
+        if let binding, let id {
+            self.focused(binding, equals: id)
+        } else {
+            self
+        }
+    }
+
+    /// Siri Remote play/pause on a card, when the caller supplies an action.
+    @ViewBuilder
+    func applyPlayPauseAction(_ action: (() -> Void)?) -> some View {
+        if let action {
+            self.onPlayPauseCommand(perform: action)
         } else {
             self
         }
