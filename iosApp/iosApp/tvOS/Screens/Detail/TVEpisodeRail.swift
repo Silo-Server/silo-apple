@@ -284,7 +284,7 @@ private struct EpisodeCardLabel: View {
             parts.append(airDate)
         }
         if let runtime = episode.runtime, runtime > 0 {
-            parts.append(formatRuntime(runtime))
+            parts.append(DetailFacts.episodeRuntime(minutes: runtime))
         }
         return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
@@ -381,13 +381,6 @@ private struct EpisodeCardLabel: View {
               dur > 0, pos > 0, pos < dur
         else { return nil }
         return pos / dur
-    }
-
-    private func formatRuntime(_ minutes: Int) -> String {
-        if minutes >= 60 {
-            return "\(minutes / 60)h \(minutes % 60)m"
-        }
-        return "\(minutes)m"
     }
 }
 
