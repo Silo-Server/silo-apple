@@ -116,4 +116,34 @@ final class LoopbackSegmentStoreTests: XCTestCase {
             "retiring a spilled segment should free enough spill budget for one more append"
         )
     }
+
+    func testProgressiveBytesAreReportedAndClearedWhenTheSegmentLands() {
+        // Progressive publications are a SECOND resident copy of the open
+        // segment (the writer's pending buffer is the first). They are not
+        // eviction candidates, so they stay out of `memoryBytes`, but stats
+        // must not understate resident memory by hiding them entirely.
+        let store = LoopbackSegmentStore(
+            generation: UInt64(Date().timeIntervalSince1970 * 1000) + 2,
+            memoryBudgetBytes: 1_000_000,
+            spillPolicy: .disabled(reason: "test")
+        )
+        let name = "seg_000000.m4s"
+
+        XCTAssertEqual(store.stats().progressiveBytes, 0)
+
+        store.beginProgressiveSegment(named: name)
+        store.appendProgressiveSegment(named: name, bytes: Data(repeating: 0x41, count: 40))
+        store.appendProgressiveSegment(named: name, bytes: Data(repeating: 0x42, count: 60))
+
+        let streaming = store.stats()
+        XCTAssertEqual(streaming.progressiveBytes, 100, "both published fragments must be accounted")
+        XCTAssertEqual(streaming.memoryBytes, 0, "progressive bytes must stay out of the eviction budget")
+
+        // The complete segment supersedes the in-progress publication.
+        _ = store.putSegment(name: name, data: Data(repeating: 0x43, count: 100), duration: 1)
+
+        let landed = store.stats()
+        XCTAssertEqual(landed.progressiveBytes, 0, "the superseded publication must stop being counted")
+        XCTAssertEqual(landed.memoryBytes, 100, "the stored segment moves into the eviction budget")
+    }
 }

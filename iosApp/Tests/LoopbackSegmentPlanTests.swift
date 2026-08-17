@@ -206,6 +206,53 @@ final class LoopbackSegmentPlanTests: XCTestCase {
         XCTAssertEqual(plan.segmentCount, 3)
     }
 
+    // MARK: - VOD serving gate
+
+    func testUntrustedUniformPlanIsRefusedForRemuxedSessions() {
+        // A uniform plan fences segments at fixed multiples with no keyframe
+        // behind them. LoopbackSegmentCutter only opens a segment at a
+        // keyframe, so a remuxed session would never produce some advertised
+        // indices — and the VOD playlist (0..<segmentCount + ENDLIST) cannot
+        // heal a hole. Such a plan must not be served.
+        let plan = LoopbackSegmentPlan.build(
+            keyframePts: [pts(0), pts(5000)],
+            timeBaseNum: num, timeBaseDen: den,
+            sourceDurationSeconds: 10
+        )
+        XCTAssertFalse(plan.usedKeyframeIndex)
+        XCTAssertFalse(
+            LoopbackSegmentWriter.shouldServeVODPlan(plan, videoOutputMode: .copy),
+            "copy-mode sessions inherit the source keyframe cadence"
+        )
+        XCTAssertFalse(
+            LoopbackSegmentWriter.shouldServeVODPlan(plan, videoOutputMode: .passthroughAV1),
+            "AV1 passthrough is a remux too — same skipped-index mechanism"
+        )
+    }
+
+    func testUntrustedUniformPlanIsServedForBridgedSessions() {
+        // Bridged sessions force the encoder to a keyframe on every uniform
+        // fence, so every advertised index is producible.
+        let plan = LoopbackSegmentPlan.build(
+            keyframePts: [pts(0), pts(5000)],
+            timeBaseNum: num, timeBaseDen: den,
+            sourceDurationSeconds: 10
+        )
+        XCTAssertFalse(plan.usedKeyframeIndex)
+        XCTAssertTrue(LoopbackSegmentWriter.shouldServeVODPlan(plan, videoOutputMode: .transcodeHEVC))
+        XCTAssertTrue(LoopbackSegmentWriter.shouldServeVODPlan(plan, videoOutputMode: .transcodeH264))
+    }
+
+    func testKeyframeTrustedPlanIsServedForRemuxedSessions() {
+        let plan = LoopbackSegmentPlan.build(
+            keyframePts: stride(from: 0.0, through: 18.0, by: 2.0).map(pts),
+            timeBaseNum: num, timeBaseDen: den,
+            sourceDurationSeconds: 20
+        )
+        XCTAssertTrue(plan.usedKeyframeIndex)
+        XCTAssertTrue(LoopbackSegmentWriter.shouldServeVODPlan(plan, videoOutputMode: .copy))
+    }
+
     // MARK: - Index lookup
 
     func testSegmentIndexLookupClamps() {
