@@ -481,6 +481,8 @@ final class DetailVersionSelectionTests: XCTestCase {
         data.resolution = "2160p"
         data.hdr = nil
         XCTAssertEqual(combined.getValue(data), "4K")
+        data.hdr = "HLG"
+        XCTAssertEqual(combined.getValue(data), "4K HLG")
     }
 
     func testHomeVideoBadgesStaySeparateInDifferentCorners() {

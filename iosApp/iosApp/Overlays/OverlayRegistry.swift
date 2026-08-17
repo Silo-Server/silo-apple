@@ -118,7 +118,7 @@ private extension OverlayRegistry {
         let lowered = value.lowercased()
         return lowered.contains("dv") || lowered.contains("dolby vision")
             ? "DV"
-            : "HDR"
+            : value
     }
 
     /// Mirrors web's `hdrIcon`: only exact wordmark matches get a brand
