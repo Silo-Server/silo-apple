@@ -105,54 +105,17 @@ struct LoopbackSessionSpec {
         }
     }
 
-    /// How the loopback writer produces the VIDEO track. Deliberately a
-    /// sibling of `VideoMode` rather than more cases on it: `VideoMode` is the
-    /// Dolby-Vision / sample-entry decision and is switched exhaustively in a
-    /// dozen places, while this answers the orthogonal "copy the source
-    /// bitstream or re-encode it" question. Mirrors `AudioOutputMode`.
+    /// How the loopback writer produces the VIDEO track. The on-device
+    /// decode → VideoToolbox re-encode bridge (`.transcodeHEVC` /
+    /// `.transcodeH264`) and `.passthroughAV1` were retired on 2026-08-17:
+    /// no online plan could ever reach them (the V3 capability snapshot only
+    /// advertises h264/hevc, so the server never returns `original_http` for
+    /// a bridge codec) and `DownloadCaps` blocked them offline for the same
+    /// reason. Copy is the only remaining answer; the enum is kept so the
+    /// spec field, and the sites that carry it, stay unchanged.
     enum VideoOutputMode: Equatable {
-        /// Today's remux. The only value for Dolby Vision, HEVC, and H.264.
+        /// Remux. The only value for Dolby Vision, HEVC, and H.264.
         case copy
-        /// FFmpeg software decode → `hevc_videotoolbox` encode.
-        case transcodeHEVC
-        /// Same pipeline through `h264_videotoolbox`; the fallback when the
-        /// HEVC encoder cannot be opened on this device.
-        case transcodeH264
-        /// AV1 remuxed as-is because the device has hardware AV1 decode.
-        case passthroughAV1
-
-        var isBridged: Bool {
-            self == .transcodeHEVC || self == .transcodeH264
-        }
-
-        /// Sample entry fourcc the muxer must write when this mode decides it.
-        /// `.copy` returns nil and defers to `VideoMode.sampleEntryCodec`,
-        /// which owns the Dolby Vision `dvh1` distinction.
-        var sampleEntryCodec: String? {
-            switch self {
-            case .copy:
-                return nil
-            case .transcodeHEVC:
-                return "hvc1"
-            case .transcodeH264:
-                return "avc1"
-            case .passthroughAV1:
-                return "av01"
-            }
-        }
-
-        var logToken: String {
-            switch self {
-            case .copy:
-                return "copy"
-            case .transcodeHEVC:
-                return "bridge_hevc"
-            case .transcodeH264:
-                return "bridge_h264"
-            case .passthroughAV1:
-                return "av1_passthrough"
-            }
-        }
     }
 
     struct SelectedAudio: Equatable {
@@ -194,20 +157,20 @@ struct LoopbackSessionSpec {
     let sourceStartTimeSeconds: Double
     let sourceBitrateBps: Double?
     let videoMode: VideoMode
-    /// Whether the writer copies the source video bitstream or bridges it
-    /// through decode + VideoToolbox encode. Defaults to `.copy` so every
-    /// pre-existing construction site keeps today's behavior.
+    /// How the writer produces the video track. Single-valued since the
+    /// bridge tier was retired.
     let videoOutputMode: VideoOutputMode
-    /// Source video dimensions when the planner knows them. Consumed by the
-    /// bridge's bitrate ladder; nil leaves the ladder on the decoded frame's
-    /// own dimensions.
+    /// Source video dimensions when the planner knows them. DORMANT: their
+    /// only consumer was the retired bridge's bitrate ladder. Kept so the
+    /// spec's copy helpers and the backend's spec rebuilds stay untouched;
+    /// remove with the next edit of `AVPlayerBackend`/`ApplePlaybackV3PlanAdapter`.
     let sourceVideoWidth: Int?
     let sourceVideoHeight: Int?
-    /// The `hvcC` / `avcC` record the FIRST bridged producer of this player
-    /// item published. AVPlayer fetches `EXT-X-MAP` once per item, so a
-    /// restarted producer must install the original parameter sets rather
-    /// than whatever its own fresh encoder session synthesizes; the writer
-    /// also asserts the two match and fails the session if they do not.
+    /// DORMANT: the `hvcC` / `avcC` record the first bridged producer of a
+    /// player item published. Nothing resolves it any more (the writer no
+    /// longer re-encodes video), so it is always nil in practice; retained
+    /// only because `AVPlayerBackend` still carries the pinning block that
+    /// would set it. Remove together with that block.
     let bridgedVideoParameterSets: Data?
     let sourceVideoFrameRate: Float?
     let selectedAudio: SelectedAudio
@@ -249,11 +212,9 @@ struct LoopbackSessionSpec {
         self.manifestMetadata = manifestMetadata
     }
 
-    /// Diagnostics token for the video normalization actually performed. A
-    /// bridged or AV1-passthrough session's `videoMode` only describes the
-    /// sample entry, so reporting it alone would read as a plain remux.
+    /// Diagnostics token for the video normalization actually performed.
     var videoNormalizationLogToken: String {
-        videoOutputMode == .copy ? videoMode.logToken : videoOutputMode.logToken
+        videoMode.logToken
     }
 
     /// The selected mux input is authoritative. The planner can resolve it
@@ -338,9 +299,9 @@ struct LoopbackSessionSpec {
         )
     }
 
-    /// Pins the parameter sets a restarted bridged producer must reproduce.
-    /// Called once per player item, from the backend's
-    /// `onBridgedVideoParameterSetsResolved` handler.
+    /// DORMANT: pinned the parameter sets a restarted bridged producer had to
+    /// reproduce. The writer no longer resolves any, so the backend handler
+    /// that calls this never fires. Remove with `bridgedVideoParameterSets`.
     func carryingBridgedVideoParameterSets(_ data: Data) -> LoopbackSessionSpec {
         LoopbackSessionSpec(
             sourceURL: sourceURL,

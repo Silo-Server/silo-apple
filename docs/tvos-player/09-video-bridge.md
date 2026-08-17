@@ -1,6 +1,26 @@
 Repo snapshot date: 2026-08-16 (branch `player/one-player-cleanup`, HEAD `6818819`)
 
-# On-Device Video Bridge
+# On-Device Video Bridge — RETIRED 2026-08-17
+
+> **This tier no longer exists.** `LoopbackVideoBridge.swift`, the
+> `.transcodeHEVC` / `.transcodeH264` / `.passthroughAV1` video output modes,
+> the bridge container and codec allowlists, the 1080p cap and the
+> `videoBridgeTooSlow` watchdog were all deleted on 2026-08-17.
+>
+> Reason: the tier was unreachable. Online, the V3 capability snapshot only
+> ever advertised `h264`/`hevc`
+> (`AppleDecodeCapabilities.videoCodecs`), and the server fails closed on a
+> codec it was not offered (`capabilities_v3.go` `videoEligibleV3`), so no
+> `original_http` plan could ever name a bridge codec. Offline,
+> `DownloadCaps.current()` reports the same two codecs, so no bridgeable
+> artifact could be downloaded either. See
+> `docs/cleanup/player-review/2026-08-17-architecture-review.md`
+> §3 row 13, §7 Option B, §9 Stage 3.1 and §10 P4.
+>
+> The non-copyable codec tail is the server's job again: the planner blocks
+> the silo route with `video_not_copyable` and the source comes back as
+> server HLS. Everything below is retained as the historical record of what
+> the tier did and why.
 
 ## 1. Purpose
 

@@ -48,7 +48,7 @@ to point it at is the server.
   what the tvOS shell exposes today.
 - **[05 - Apple route capability matrix](05-route-capability-matrix.md)**
   Route-by-route truth for subtitles, chapters, PiP, external playback, the
-  video bridge, and premium-media claims.
+  loopback video output mode, and premium-media claims.
 - **[06 - Apple validation record template](06-validation-record-template.md)**
   The validation fields required before Dolby Vision, Atmos, PiP, or external
   playback claims can be treated as real.
@@ -59,9 +59,10 @@ to point it at is the server.
 - **[08 - Validated Apple player review](08-validated-player-review.md)**
   Historical (2026-04-29) source-verified review. Superseded in part by the
   one-player consolidation; see its header note.
-- **[09 - On-device video bridge](09-video-bridge.md)**
-  The software-decode → VideoToolbox-encode path that lets the loopback take
-  VP9/VP8/AV1/MPEG-2/MPEG-4/VC-1/WMV3 sources.
+- **[09 - On-device video bridge — RETIRED 2026-08-17](09-video-bridge.md)**
+  Historical record of the software-decode → VideoToolbox-encode path. The tier
+  was deleted on 2026-08-17: no online or offline plan could reach it, because
+  the Apple capability surfaces only ever advertise `h264`/`hevc`.
 - **[Cast remote](cast-remote.md)**
   The iOS → tvOS LAN remote protocol and the player commands it drives.
 
@@ -80,16 +81,14 @@ to point it at is the server.
 - **How is Dolby Vision handled?**
   DV profiles 5 / 7 / 8 route to `siloPlayerLoopback`. Profile 7 is converted
   to a Profile 8.1 base layer (`convertProfile7To81`), 5 and 8 pass through.
-  Dolby Vision is **never** bridged: `loopbackVideoOutputMode` returns `.copy`
-  for DV on a copyable codec and the blocker `dv_not_bridgeable` for DV on
-  anything else, because an RPU/enhancement layer cannot survive decode →
-  re-encode.
-- **What is the video bridge?**
-  The loopback can now decode a source in software (libdav1d / vp9 / vp8 /
-  mpeg2video / mpeg4 / msmpeg4v3 / vc1 / wmv3) and re-encode through
-  `hevc_videotoolbox` (falling back to `h264_videotoolbox`) instead of copying
-  the bitstream. Phase 1 gates it to SDR at ≤ 1080p. See
-  [09 - On-device video bridge](09-video-bridge.md).
+  Dolby Vision is always a pure copy: `loopbackVideoOutputMode` returns `.copy`
+  for DV on a copyable codec, and there is no re-encode tier to lose an
+  RPU/enhancement layer to.
+- **What was the video bridge?**
+  A software-decode → VideoToolbox-encode tier inside the loopback writer,
+  retired 2026-08-17 because nothing could route to it. The loopback only
+  remuxes today. See
+  [09 - On-device video bridge (retired)](09-video-bridge.md).
 - **Are subtitle features complete?**
   Text subtitles are Silo-rendered on controlled tracks: primary, secondary
   sidecar, delay, styling, and chapters are route-aware. PGS / DVD-sub /
@@ -98,12 +97,10 @@ to point it at is the server.
   route; DVB subtitles still do (`bitmap_subtitles_require_hls`).
 - **What still falls to server transcode?**
   Sources the loopback cannot open or normalize: an unknown container or video
-  codec, a codec outside both the copy and bridge sets
-  (`video_not_bridgeable`), an HDR source on a bridge codec
-  (`video_hdr_bridge_unsupported`), a bridge codec above 1080p
-  (`video_bridge_resolution_unsupported`), DVB subtitles, plus any runtime
-  loopback failure — including the bridge throughput watchdog
-  (`LoopbackWriterError.videoBridgeTooSlow`).
+  codec, any video codec outside the copy set (`video_not_copyable`), a
+  container outside the native-direct and silo source lists
+  (`container_not_normalizable`), DVB subtitles, plus any runtime loopback
+  failure.
 - **Is HDR mode matching public API?**
   Yes. tvOS uses `AVDisplayCriteria(refreshRate:formatDescription:)` (tvOS 17+)
   via [`TVDisplayCriteria`](../../iosApp/iosApp/Screens/Player/Shared/TVDisplayCriteria.swift),

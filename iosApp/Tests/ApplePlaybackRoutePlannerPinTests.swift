@@ -514,13 +514,13 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
 
     // MARK: - 8: codecs and containers that fall through to server HLS
 
-    func testUncopyableVideoAndContainersRouteThroughTheVideoBridge() {
-        // With the compatibility player gone and the on-device video bridge in
-        // place, codecs AVPlayer cannot decode are still direct-played from the
-        // server: SiloPlayer decodes them in software and re-encodes them with
-        // VideoToolbox inside the loopback remux. Only sources the bridge also
-        // cannot handle fall through to the server HLS route (see
-        // LoopbackVideoBridgePlannerTests.testUnbridgeableCodecFallsToServerHLS).
+    func testUncopyableVideoAndContainersFallThroughToServerHLS() {
+        // The on-device decode → VideoToolbox re-encode bridge was retired on
+        // 2026-08-17 (unreachable online — the V3 snapshot only ever
+        // advertised h264/hevc — and blocked offline by the same `DownloadCaps`
+        // list). The loopback now only remuxes h264/hevc, so every other video
+        // codec blocks the silo route with `video_not_copyable` and comes back
+        // from the server as HLS.
         let cases: [(container: String, videoCodec: String, audioCodec: String)] = [
             ("mkv", "av1", "aac"),
             ("mkv", "vp9", "aac"),
@@ -538,11 +538,11 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             )
             let result = plan(version: version)
 
-            XCTAssertEqual(result.engine, .siloPlayerLoopback, label)
-            XCTAssertEqual(result.reason, "\(testCase.videoCodec)_video_bridge_loopback", label)
-            XCTAssertEqual(result.loopbackSession?.videoOutputMode.isBridged, true, label)
-            XCTAssertEqual(result.parityBlockers, [], label)
-            XCTAssertEqual(result.routeFamily, .siloPlayer, label)
+            XCTAssertEqual(result.engine, .avPlayerHLS, label)
+            XCTAssertEqual(result.reason, "native_direct_blocked_hls_fallback", label)
+            XCTAssertNil(result.loopbackSession, label)
+            XCTAssertTrue(result.parityBlockers.contains("silo_video_not_copyable"), label)
+            XCTAssertEqual(result.routeFamily, .nativePlayer, label)
         }
     }
 

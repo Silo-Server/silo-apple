@@ -85,7 +85,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         // gate has nothing to say about them.
         where !AppleDecodeCapabilities.audioContainers.contains(container) {
             XCTAssertTrue(
-                ApplePlaybackRoutePlanner.siloContainerIsNormalizable(container, videoOutputMode: .copy),
+                ApplePlaybackRoutePlanner.siloContainerIsNormalizable(container),
                 "\(container) is advertised on original_http but the copy tier refuses it"
             )
         }

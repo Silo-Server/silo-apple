@@ -1,6 +1,5 @@
 import AVFoundation
 import Foundation
-import VideoToolbox
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -107,40 +106,6 @@ struct ApplePlaybackDisplayCapabilities: Equatable {
     }
 }
 
-/// Device facts the video-bridge decision needs, injected rather than probed
-/// inline so `loopbackVideoOutputMode` stays a pure function. The simulator
-/// lies about `VTIsHardwareDecodeSupported` (it answers for the host GPU, see
-/// `ApplePlaybackV3Capabilities`), which is exactly why the probe is separated
-/// from the decision.
-struct AppleVideoBridgeCapabilities: Equatable {
-    /// Whether the device decodes AV1 in hardware. When true an AV1 source is
-    /// remuxed untouched instead of being decoded in software and re-encoded.
-    let supportsAV1HardwareDecode: Bool
-    /// Whether an HEVC VideoToolbox encoder can be opened at all. False falls
-    /// the bridge to H.264.
-    let supportsHEVCEncode: Bool
-
-    static let none = AppleVideoBridgeCapabilities(
-        supportsAV1HardwareDecode: false,
-        supportsHEVCEncode: false
-    )
-
-    static func probe() -> AppleVideoBridgeCapabilities {
-        #if targetEnvironment(simulator)
-        // `VTIsHardwareDecodeSupported` reports the host Mac's GPU inside the
-        // simulator, so an AV1-capable development Mac would otherwise make
-        // the simulator claim an AV1 passthrough the device cannot honor.
-        let av1 = false
-        #else
-        let av1 = VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
-        #endif
-        return AppleVideoBridgeCapabilities(
-            supportsAV1HardwareDecode: av1,
-            supportsHEVCEncode: LoopbackVideoBridge.hevcEncoderAvailable
-        )
-    }
-}
-
 struct ApplePlaybackPlannerInput {
     let session: PlaybackSessionResponse
     let selectedVersion: FileVersion
@@ -153,9 +118,6 @@ struct ApplePlaybackPlannerInput {
     let selectedSecondarySubtitleTrackId: Int64?
     /// Snapshot of the user's Dolby Vision settings, captured at plan time.
     let dolbyVisionPolicy: DolbyVisionPolicy.Snapshot
-    /// Device facts the video-bridge decision needs. Injectable so planner
-    /// tests never depend on the host's VideoToolbox answers.
-    let videoBridgeCapabilities: AppleVideoBridgeCapabilities
     /// Captured at plan-creation time so route choice and degradation
     /// warnings can reflect the actual output, not just source metadata.
     /// Defaults to `.unknown` (conservative no-knowledge state) so older
@@ -173,8 +135,7 @@ struct ApplePlaybackPlannerInput {
         selectedPrimarySubtitleTrackId: Int64?,
         selectedSecondarySubtitleTrackId: Int64?,
         dolbyVisionPolicy: DolbyVisionPolicy.Snapshot,
-        displayCapabilities: ApplePlaybackDisplayCapabilities = .unknown,
-        videoBridgeCapabilities: AppleVideoBridgeCapabilities = .probe()
+        displayCapabilities: ApplePlaybackDisplayCapabilities = .unknown
     ) {
         self.session = session
         self.selectedVersion = selectedVersion
@@ -187,7 +148,6 @@ struct ApplePlaybackPlannerInput {
         self.selectedSecondarySubtitleTrackId = selectedSecondarySubtitleTrackId
         self.dolbyVisionPolicy = dolbyVisionPolicy
         self.displayCapabilities = displayCapabilities
-        self.videoBridgeCapabilities = videoBridgeCapabilities
     }
 }
 
@@ -203,33 +163,13 @@ struct ApplePlaybackRoutePlanner {
         "ass", "ssa", "mov_text", "tx3g", "wvtt", "webvtt"
     ]
     static let siloSourceContainers: Set<String> = ["mkv", "matroska", "ts", "m2ts", "mts", "mpegts"]
-    /// Containers the loopback only opens for a BRIDGED (or AV1-passthrough)
-    /// video track. The long tail of the real catalog is container-shaped, not
-    /// just codec-shaped — mpeg4 lives in `.avi`, wmv3/vc1 in `.wmv`/`.asf`,
-    /// vp9/av1 in `.webm` — so a bridge tier that only widened the codec set
-    /// would still be refused with `container_not_normalizable`. libavformat
-    /// demuxes all of these; the copy tier is deliberately left alone because
-    /// a copied bitstream out of these containers has never been validated
-    /// against AVPlayer's fMP4 expectations.
-    private static let siloBridgeSourceContainers: Set<String> = [
-        "avi", "wmv", "asf", "webm", "flv", "mpg", "mpeg", "m2v", "vob",
-        "ogm", "ogv", "3gp", "3g2", "divx"
-    ]
-    /// Video codecs the writer remuxes untouched.
+    /// Video codecs the writer remuxes untouched. This is the whole local
+    /// video vocabulary: the on-device decode → VideoToolbox re-encode bridge
+    /// tier was retired on 2026-08-17 (it was unreachable online — the V3
+    /// capability snapshot only ever advertised h264/hevc — and blocked
+    /// offline by the same list in `DownloadCaps`). Everything else is the
+    /// server's to transcode.
     private static let siloVideoCopyCodecs: Set<String> = ["h264", "hevc"]
-    /// Video codecs the writer can decode in software and re-encode through
-    /// VideoToolbox. All confirmed present in the vendored (non-GPL) FFmpeg
-    /// product: `libdav1d`, `vp9`, `vp8`, `mpeg2video`, `mpeg4`, `msmpeg4v3`,
-    /// `vc1`, and `wmv3` decoders.
-    private static let siloVideoBridgeCodecs: Set<String> = [
-        "av1", "vp9", "vp8", "mpeg2video", "mpeg2", "mpeg4", "msmpeg4v3", "vc1", "wmv3"
-    ]
-    /// Widest resolution the bridge accepts in phase 1. Software decode of 4K
-    /// VP9/AV1 is CPU-bound even threaded (see `PlayerCore`'s software-decode
-    /// notes) and would stutter ahead of the playhead on Apple TV; anything
-    /// larger falls to server HLS transcode.
-    private static let siloVideoBridgeMaxWidth = 1920
-    private static let siloVideoBridgeMaxHeight = 1080
     private static let siloTextSubtitleCodecs: Set<String> = [
         "ass", "ssa", "srt", "subrip", "webvtt", "mov_text", "tx3g"
     ]
@@ -296,17 +236,12 @@ struct ApplePlaybackRoutePlanner {
                 pendingAudioFfIndex: input.pendingAudioFfIndex,
                 preferredAudioTrackIndex: input.preferredAudioTrackIndex,
                 selectedPrimarySubtitleTrackId: input.selectedPrimarySubtitleTrackId,
-                selectedSecondarySubtitleTrackId: input.selectedSecondarySubtitleTrackId,
-                videoBridgeCapabilities: input.videoBridgeCapabilities
+                selectedSecondarySubtitleTrackId: input.selectedSecondarySubtitleTrackId
             )
             if directLoopbackVideoMode == nil, let mode = siloAssessment.videoMode {
                 directLoopbackVideoMode = mode
             }
-            // Dolby Vision owns its own video mode and never bridges, so the
-            // assessment's output mode only applies when the DV path did not
-            // already claim the session.
-            let directVideoOutputMode: LoopbackSessionSpec.VideoOutputMode =
-                directDolbyVisionProfile == nil ? siloAssessment.videoOutputMode : .copy
+            let directVideoOutputMode: LoopbackSessionSpec.VideoOutputMode = .copy
             directLoopbackSession = directLoopbackVideoMode.flatMap { videoMode in
                 Self.makeLoopbackSessionSpec(
                     for: selectedVersion,
@@ -573,82 +508,25 @@ struct SiloRouteAssessment {
 }
 
 extension ApplePlaybackRoutePlanner {
-    /// The single place the loopback's video normalization is decided. Pure:
-    /// every device fact arrives through `capabilities`, so the truth table is
-    /// unit-testable without touching VideoToolbox.
+    /// The single place the loopback's video normalization is decided. Pure,
+    /// so the truth table is unit-testable without touching VideoToolbox.
     ///
-    /// Returns `.copy` with a nil blocker for the codecs the writer remuxes
-    /// today, a bridged mode when the source must be re-encoded and the phase-1
-    /// gates pass, and a blocker token when the route must fall to the server.
-    /// The blocker vocabulary mirrors the existing `video_not_copyable` shape
-    /// so `assessSiloRoute` can append it unchanged.
-    ///
-    /// Decision order (all four gates are load-bearing):
-    /// 1. Dolby Vision never bridges. The RPU and enhancement layer cannot
-    ///    survive decode → re-encode, and Profile 5's IPT-PQ-c2 base has no
-    ///    viewable fallback. DV on a copy codec stays `.copy`; DV on a bridge
-    ///    codec is blocked rather than silently stripped.
-    /// 2. AV1 with hardware decode is remuxed, not bridged.
-    /// 3. h264/hevc copy exactly as before.
-    /// 4. Bridge codecs re-encode when SDR and at most 1080p.
+    /// Since the on-device bridge tier was retired the answer is always
+    /// `.copy`: either the writer remuxes the bitstream untouched, or the
+    /// route is blocked and the server transcodes. The blocker vocabulary
+    /// mirrors the existing `video_not_copyable` shape so `assessSiloRoute`
+    /// can append it unchanged.
     static func loopbackVideoOutputMode(
-        for videoCodec: String,
-        version: FileVersion,
-        capabilities: AppleVideoBridgeCapabilities
+        for videoCodec: String
     ) -> (mode: LoopbackSessionSpec.VideoOutputMode, blocker: String?) {
-        let isCopyCodec = siloVideoCopyCodecs.contains(videoCodec)
-        let isBridgeCodec = siloVideoBridgeCodecs.contains(videoCodec)
-
-        if dolbyVisionProfile(for: version) != nil {
-            return isCopyCodec ? (.copy, nil) : (.copy, "dv_not_bridgeable")
-        }
-        if videoCodec == "av1", capabilities.supportsAV1HardwareDecode {
-            return (.passthroughAV1, nil)
-        }
-        if isCopyCodec {
-            return (.copy, nil)
-        }
-        guard isBridgeCodec else {
-            return (.copy, "video_not_bridgeable")
-        }
-        guard (transferKind(for: version) ?? "SDR") == "SDR" else {
-            // Phase 1 is SDR-only: a PQ/HLG re-encode needs the full 10-bit
-            // colour chain (P010 buffers, Main10 profile, explicit primaries /
-            // transfer / matrix plus mastering-display side data) and missing
-            // any one of them paints washed-out or over-bright.
-            return (.copy, "video_hdr_bridge_unsupported")
-        }
-        guard bridgeResolutionIsSupported(for: version) else {
-            return (.copy, "video_bridge_resolution_unsupported")
-        }
-        return (capabilities.supportsHEVCEncode ? .transcodeHEVC : .transcodeH264, nil)
+        siloVideoCopyCodecs.contains(videoCodec) ? (.copy, nil) : (.copy, "video_not_copyable")
     }
 
-    /// True when every known video track fits the phase-1 bridge cap. An
-    /// unknown resolution passes: the server's metadata is missing, not large,
-    /// and the runtime `videoBridgeTooSlow` watchdog is the backstop.
-    static func bridgeResolutionIsSupported(for version: FileVersion) -> Bool {
-        (version.videoTracks ?? []).allSatisfy { track in
-            let width = track.width ?? 0
-            let height = track.height ?? 0
-            guard width > 0, height > 0 else { return true }
-            return width <= siloVideoBridgeMaxWidth && height <= siloVideoBridgeMaxHeight
-        }
-    }
-
-    /// Whether the loopback writer will open this container for the resolved
-    /// video output mode. The copy tier keeps its historical allowlist; the
-    /// bridge tier additionally accepts the containers the catalog's long tail
-    /// actually ships in.
-    static func siloContainerIsNormalizable(
-        _ container: String,
-        videoOutputMode: LoopbackSessionSpec.VideoOutputMode
-    ) -> Bool {
-        if siloSourceContainers.contains(container) || nativeDirectContainers.contains(container) {
-            return true
-        }
-        guard videoOutputMode != .copy else { return false }
-        return siloBridgeSourceContainers.contains(container)
+    /// Whether the loopback writer will open this container. A copied
+    /// bitstream out of anything wider than these two lists has never been
+    /// validated against AVPlayer's fMP4 expectations.
+    static func siloContainerIsNormalizable(_ container: String) -> Bool {
+        siloSourceContainers.contains(container) || nativeDirectContainers.contains(container)
     }
 
     /// Which encoder (if any) the loopback's audio bridge runs. Everything
@@ -776,8 +654,7 @@ extension ApplePlaybackRoutePlanner {
         pendingAudioFfIndex: Int?,
         preferredAudioTrackIndex: Int?,
         selectedPrimarySubtitleTrackId: Int64?,
-        selectedSecondarySubtitleTrackId: Int64?,
-        videoBridgeCapabilities: AppleVideoBridgeCapabilities
+        selectedSecondarySubtitleTrackId: Int64?
     ) -> SiloRouteAssessment {
         var blockers: [String] = []
         var trace: [String] = ["silo_assessment"]
@@ -821,22 +698,13 @@ extension ApplePlaybackRoutePlanner {
             return blockedSilo(blockers: blockers, trace: trace, degradations: degradations)
         }
         trace.append("silo_video_\(videoCodec)")
-        let videoDecision = loopbackVideoOutputMode(
-            for: videoCodec,
-            version: selectedVersion,
-            capabilities: videoBridgeCapabilities
-        )
+        let videoDecision = loopbackVideoOutputMode(for: videoCodec)
         if let blocker = videoDecision.blocker {
             blockers.append(blocker)
             return blockedSilo(blockers: blockers, trace: trace, degradations: degradations)
         }
         let videoOutputMode = videoDecision.mode
-        if videoOutputMode != .copy {
-            trace.append("silo_video_\(videoOutputMode.logToken)")
-        }
-        // Container eligibility depends on the video decision: the bridge tier
-        // opens `.avi`/`.wmv`/`.webm`-class containers the copy tier does not.
-        if !siloContainerIsNormalizable(container, videoOutputMode: videoOutputMode) {
+        if !siloContainerIsNormalizable(container) {
             blockers.append("container_not_normalizable")
         }
 
@@ -886,28 +754,14 @@ extension ApplePlaybackRoutePlanner {
             return blockedSilo(blockers: blockers, trace: trace, degradations: degradations)
         }
 
-        // The sample entry the writer must emit. For a bridged session that is
-        // the ENCODER's codec, not the source's — the manifest and the `hvc1`
-        // / `avc1` fourcc have to describe what actually lands in the fMP4.
+        // The sample entry the writer must emit; the `hvc1` / `avc1` fourcc
+        // has to describe what actually lands in the fMP4.
         let mode: LoopbackSessionSpec.VideoMode = switch videoOutputMode {
-        case .transcodeHEVC:
-            .passthroughHEVC
-        case .transcodeH264:
-            .passthroughH264
-        case .passthroughAV1:
-            // AV1 has no `VideoMode` of its own; `.passthroughHEVC` is the
-            // non-DV, HDR-capable shape, and `VideoOutputMode.sampleEntryCodec`
-            // overrides the `hvc1` fourcc with `av01` at the muxer.
-            .passthroughHEVC
         case .copy:
             videoCodec == "hevc" ? .passthroughHEVC : .passthroughH264
         }
         let reason: String
-        if videoOutputMode.isBridged {
-            reason = "\(videoCodec)_video_bridge_loopback"
-        } else if videoOutputMode == .passthroughAV1 {
-            reason = "av1_passthrough_loopback"
-        } else if nativeAssessment.blockers.contains("audio_codec_not_allowlisted") {
+        if nativeAssessment.blockers.contains("audio_codec_not_allowlisted") {
             reason = "\(videoCodec)_audio_normalization_loopback"
         } else if nativeAssessment.blockers.contains("embedded_subtitles_require_hls") {
             reason = "\(videoCodec)_subtitle_normalization_loopback"
@@ -915,9 +769,6 @@ extension ApplePlaybackRoutePlanner {
             reason = "\(videoCodec)_container_loopback"
         }
         trace.append("silo_vod_gate_open")
-        if videoOutputMode.isBridged {
-            degradations.append("Video is re-encoded on this device; quality is reduced.")
-        }
         return SiloRouteAssessment(
             isEligible: true,
             videoMode: mode,

@@ -102,11 +102,7 @@ final class OfflinePlaybackMappingMatrixTests: XCTestCase {
                 preferredAudioTrackIndex: preferredAudioTrackIndex,
                 selectedPrimarySubtitleTrackId: nil,
                 selectedSecondarySubtitleTrackId: nil,
-                dolbyVisionPolicy: .default,
-                videoBridgeCapabilities: AppleVideoBridgeCapabilities(
-                    supportsAV1HardwareDecode: false,
-                    supportsHEVCEncode: true
-                )
+                dolbyVisionPolicy: .default
             )
         )
     }
