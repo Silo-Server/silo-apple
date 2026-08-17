@@ -23,9 +23,10 @@ struct TVItemDetailView: View {
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
     /// Whether the YouTube app is installed, probed once per page appearance.
-    /// Remote trailer cards are hidden entirely when it isn't — tvOS has no
-    /// in-app web fallback, so a card that cannot open must not exist.
-    /// Always false on the simulator, which has no YouTube app.
+    /// Remote trailer cards and the "Find Trailers" action are hidden when it
+    /// isn't — tvOS has no in-app web fallback, so content that cannot open
+    /// must not be offered. Always false on the simulator, which has no
+    /// YouTube app.
     @State private var allowRemoteTrailers = false
     @Environment(AppRouter.self) private var router
     private static let focusLogger = Logger(
@@ -297,7 +298,7 @@ struct TVItemDetailView: View {
                 nextUpSubtitleOverrideCleared: didClearNextUpSubtitleOverride,
                 trailerEntries: trailerEntries(for: detail),
                 onSelectTrailer: playTrailer,
-                supportsTrailerFetch: viewModel.supportsTrailerFetch,
+                supportsTrailerFetch: viewModel.supportsTrailerFetch && allowRemoteTrailers,
                 onFindTrailers: {
                     // Without the YouTube app the rail hides remote cards, so
                     // new remote videos must not be reported as a find.
@@ -422,7 +423,7 @@ struct TVItemDetailView: View {
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 trailerEntries: trailerEntries(for: detail),
                 onSelectTrailer: playTrailer,
-                supportsTrailerFetch: viewModel.supportsTrailerFetch,
+                supportsTrailerFetch: viewModel.supportsTrailerFetch && allowRemoteTrailers,
                 onFindTrailers: {
                     // Without the YouTube app the rail hides remote cards, so
                     // new remote videos must not be reported as a find.
