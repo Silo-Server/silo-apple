@@ -469,4 +469,33 @@ final class LoopbackStartupRecoveryPolicyTests: XCTestCase {
             .failBackstop
         )
     }
+
+    // MARK: - Loopback rebuild budget
+
+    func testRebuildBudgetAllowsExactlyTheConfiguredRebuilds() {
+        var budget = LoopbackRebuildBudget()
+        for spent in 1...LoopbackRebuildBudget.maximumRebuildsPerLoad {
+            XCTAssertTrue(budget.consume())
+            XCTAssertEqual(budget.used, spent)
+        }
+        XCTAssertTrue(budget.isExhausted)
+    }
+
+    func testExhaustedRebuildBudgetRefusesFurtherRebuilds() {
+        var budget = LoopbackRebuildBudget()
+        while budget.consume() {}
+        XCTAssertTrue(budget.isExhausted)
+        XCTAssertFalse(budget.consume())
+        XCTAssertFalse(budget.consume())
+        XCTAssertEqual(budget.used, LoopbackRebuildBudget.maximumRebuildsPerLoad)
+    }
+
+    func testRebuildBudgetResetRestoresAFullBudget() {
+        var budget = LoopbackRebuildBudget()
+        while budget.consume() {}
+        budget.reset()
+        XCTAssertEqual(budget.used, 0)
+        XCTAssertFalse(budget.isExhausted)
+        XCTAssertTrue(budget.consume())
+    }
 }
