@@ -530,7 +530,7 @@ final class AVPlayerBackend {
     var onPauseChange: ((Bool) -> Void)?
     var onFileLoaded: (() -> Void)?
     var onFirstFrame: ((Int) -> Void)?
-    var onError: ((String) -> Void)?
+    var onError: ((PlaybackFailure) -> Void)?
     var onEndOfFile: (() -> Void)?
     var onBufferingChange: ((Bool) -> Void)?
     var onBufferedAheadChange: ((Double) -> Void)?
@@ -618,7 +618,9 @@ final class AVPlayerBackend {
         performVODStallRecovery(attempt: 1, frozenPosition: currentTime())
     }
 
-    let avPlayer = AVPlayer()
+    /// Injected so a test can hand the backend a player it controls; the
+    /// default keeps every production call site unchanged (review §9 stage 1).
+    let avPlayer: AVPlayer
     private let subtitleOverlayAttachments = SubtitleOverlayAttachmentRegistry()
     var subtitleOverlay: SubtitleOverlayView? {
         subtitleOverlayAttachments.currentOverlay
@@ -819,7 +821,8 @@ final class AVPlayerBackend {
     private var externalPlaybackObs: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
 
-    init() {
+    init(player: AVPlayer = AVPlayer()) {
+        avPlayer = player
         // Stays off until a route that the receiver can actually fetch is
         // loaded; `applyExternalPlaybackPolicy(for:)` opens it per strategy.
         avPlayer.allowsExternalPlayback = false
@@ -1975,7 +1978,9 @@ final class AVPlayerBackend {
                       self.activeLoopbackSessionID == sessionID else {
                     return
                 }
-                self.reportError("Local HLS server failed to start: \(error)")
+                self.reportFailure(
+                    .loopbackServerBindFailed(detail: String(describing: error))
+                )
                 return
             }
             guard let self, !self.isDisposed else {
@@ -2120,7 +2125,10 @@ final class AVPlayerBackend {
                 guard let self, !self.isDisposed else { return }
                 guard self.activeLoopbackSessionID == sessionID else { return }
                 if let error {
-                    self.reportError("Remuxer failed: \(error)")
+                    self.reportFailure(.writerFailed(
+                        kind: Self.writerFailureKind(for: error),
+                        detail: String(describing: error)
+                    ))
                 }
             }
         }
@@ -2202,7 +2210,7 @@ final class AVPlayerBackend {
             }
         }
         guard let url = externalURL ?? server.resourceURL(for: playlistName) else {
-            reportError("Local playback server could not produce a playable URL.")
+            reportFailure(.loopbackPlaylistURLUnavailable)
             return
         }
         loopbackPlaylistName = playlistName
@@ -3521,10 +3529,10 @@ final class AVPlayerBackend {
             // Every rebuild resets the latches that decided to rebuild, so
             // without this bound the same wedge rebuilds forever. Hand the
             // failure to the view model's ladder instead.
-            reportError(
-                "loopback_rebuild_budget_exhausted (reason=\(reason) "
-                + "rebuilds=\(loopbackRebuildBudget.used))"
-            )
+            reportFailure(.loopbackRebuildBudgetExhausted(
+                reason: reason,
+                rebuilds: loopbackRebuildBudget.used
+            ))
             return
         }
         let mediaSeconds = max(0, mediaTime(for: playerSeconds))
@@ -3743,11 +3751,11 @@ final class AVPlayerBackend {
             escalateLoopbackStartupRecovery(trigger: "fetches_frozen")
         case .failBackstop:
             cancelLoopbackStartupWatchdog()
-            reportError(
-                "Local loopback startup never became ready within "
-                + "\(Int(Self.loopbackStartupAbsoluteBackstopSeconds))s "
-                + "(requestsServed=\(served) stage=\(loopbackStartupRecoveryStage))"
-            )
+            reportFailure(.loopbackStartupBackstop(
+                seconds: Int(Self.loopbackStartupAbsoluteBackstopSeconds),
+                requestsServed: served,
+                stage: "\(loopbackStartupRecoveryStage)"
+            ))
         }
     }
 
@@ -3774,9 +3782,7 @@ final class AVPlayerBackend {
             reloadLoopbackStartupItem()
         case .reloaded:
             cancelLoopbackStartupWatchdog()
-            reportError(
-                "Local loopback startup stalled after nudge and item reload (trigger=\(trigger))"
-            )
+            reportFailure(.loopbackStartupStalled(trigger: trigger))
         }
     }
 
@@ -3807,7 +3813,7 @@ final class AVPlayerBackend {
         guard let oldItem = currentItem,
               let asset = oldItem.asset as? AVURLAsset else {
             cancelLoopbackStartupWatchdog()
-            reportError("Local loopback startup stalled with no reloadable item URL")
+            reportFailure(.loopbackStartupItemUnreloadable)
             return
         }
         let url = asset.url
@@ -4371,9 +4377,33 @@ final class AVPlayerBackend {
         segmentServer?.redactingAccessToken(in: value) ?? value
     }
 
-    private func reportError(_ message: String) {
-        cmpLog("[CMP-AVP] ERROR: \(message)")
-        onError?(message)
+    private func reportFailure(_ failure: PlaybackFailure) {
+        cmpLog("[CMP-AVP] ERROR: \(failure.legacyMessage)")
+        onError?(failure)
+    }
+
+    /// Triage a `LoopbackWriterError` into the typed failure channel. Switching
+    /// over the writer's own cases keeps the view model out of the business of
+    /// re-reading a reflected description.
+    private static func writerFailureKind(for error: Error) -> PlaybackFailure.WriterFailureKind {
+        guard let writerError = error as? LoopbackWriterError else { return .other }
+        switch writerError {
+        case .prematureSourceEnd:
+            return .prematureSourceEnd
+        case .initSegmentMissing:
+            return .initSegmentMissing
+        case .unsupportedSelectedAudioCodec:
+            return .unsupportedSelectedAudioCodec
+        case .videoBridgeTooSlow:
+            return .videoBridgeTooSlow
+        case .allocInput, .allocOutput, .allocPacket, .openInput, .seekInput,
+             .findStreamInfo, .noStreams:
+            return .sourceUnavailable
+        case .writeHeader, .audioTranscodeSetup, .videoTranscodeSetup, .bootstrapFailed,
+             .profile81ConversionFailed, .profile5ConfigUnusable, .muxWriteFailures,
+             .fileWriteFailed, .vodMoovBlocked, .vodStartupConsumerWedge:
+            return .remux
+        }
     }
 
     private func logReadyItemFormat(_ item: AVPlayerItem) {
@@ -4495,17 +4525,14 @@ final class AVPlayerBackend {
             return "uri=\(uri) status=\(event.errorStatusCode) domain=\(event.errorDomain) comment=\(comment)"
         }
 
-        var details = "AVPlayer item failed: \(description) domain=\(domain) code=\(code)"
-        if let failingURL, !failingURL.isEmpty {
-            details += " failingURL=\(failingURL)"
-        }
-        if let underlying, !underlying.isEmpty {
-            details += " underlying=\(underlying)"
-        }
-        if let latestErrorLog, !latestErrorLog.isEmpty {
-            details += " errorLog=\(latestErrorLog)"
-        }
-        reportError(details)
+        reportFailure(.itemFailed(PlaybackFailure.ItemFailure(
+            description: description,
+            domain: domain,
+            code: code,
+            failingURL: failingURL,
+            underlying: underlying,
+            errorLog: latestErrorLog
+        )))
     }
 
     private func preserveLoopbackArtifactsIfDebugEnabled(reason: String) {

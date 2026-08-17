@@ -74,7 +74,7 @@ struct PlayerCallbacks {
     var onPauseChange: ((Bool) -> Void)?
     var onFileLoaded: (() -> Void)?
     var onFirstFrame: ((Int) -> Void)?
-    var onError: ((String) -> Void)?
+    var onError: ((PlaybackFailure) -> Void)?
     var onEndOfFile: (() -> Void)?
     var onBufferingChange: ((Bool) -> Void)?
     /// Seconds buffered ahead of `currentTime`, from `loadedTimeRanges`.
@@ -1339,14 +1339,14 @@ class PlayerViewModel {
                   ) else { return }
             Task { await self.sessionBridge.reportProtocolV3FirstFrame(milliseconds: milliseconds) }
         }
-        cb.onError = { [weak self] message in
+        cb.onError = { [weak self] failure in
             guard let self,
                   !self.isDisposed,
                   Self.isCurrentStreamCallback(
                       callbackGeneration,
                       currentGeneration: self.streamLoadGeneration
                   ) else { return }
-            self.handlePlaybackError(message)
+            self.handlePlaybackError(failure)
         }
         cb.onTracksChange = { [weak self] tracks in
             guard let self,
@@ -1514,7 +1514,10 @@ class PlayerViewModel {
         )
     }
 
-    private func handlePlaybackError(_ message: String) {
+    /// The backend's failure ladder. `failure` is typed (review §4 item 4); the
+    /// legacy string survives only as the text the user and the server see.
+    private func handlePlaybackError(_ failure: PlaybackFailure) {
+        let message = failure.legacyMessage
         Self.logger.error("Player error: \(message, privacy: .public)")
         guard !hasReachedEndOfFile else {
             Self.logger.info("Ignoring playback error after EOF: \(message, privacy: .public)")
@@ -1530,10 +1533,10 @@ class PlayerViewModel {
             return
         }
         if activePreparedProtocolV3 != nil {
-            attemptProtocolV3Recovery(after: message)
+            attemptProtocolV3Recovery(after: failure)
             return
         }
-        if Self.isPlaybackSessionMissingMessage(message) {
+        if failure.isPlaybackSessionMissing {
             if attemptBackgroundSessionRenewal(reason: "player_error", observedPosition: currentTime) {
                 return
             }
@@ -1541,7 +1544,7 @@ class PlayerViewModel {
                 return
             }
         }
-        if Self.isPrematureSourceEndMessage(message) {
+        if failure.isPrematureSourceEnd {
             Self.logger.warning(
                 "Routing premature source end into server outage recovery: \(message, privacy: .public)"
             )
@@ -1559,20 +1562,20 @@ class PlayerViewModel {
             triggerAutomaticInterruptionRecovery()
             return
         }
-        if attemptNativeDirectRouteRecovery(after: message) {
+        if attemptNativeDirectRouteRecovery(after: failure) {
             return
         }
-        if attemptSiloRouteHLSFallback(after: message) {
+        if attemptSiloRouteHLSFallback(after: failure) {
             return
         }
         finalizeTerminalPlaybackError(message)
     }
 
-    private func attemptProtocolV3Recovery(after message: String) {
+    private func attemptProtocolV3Recovery(after failure: PlaybackFailure) {
         attemptProtocolV3Replan(
             position: currentTime,
-            classification: Self.protocolV3FailureClassification(message),
-            message: message
+            classification: failure.classification,
+            message: failure.legacyMessage
         )
     }
 
@@ -1652,23 +1655,6 @@ class PlayerViewModel {
                 self.finalizeTerminalPlaybackError(error.localizedDescription)
             }
         }
-    }
-
-    static func protocolV3FailureClassification(_ message: String) -> String {
-        let value = message.lowercased()
-        if value.contains("decoder") || value.contains("videotoolbox") || value.contains("-129") {
-            return "decoder_error"
-        }
-        if value.contains("unsupported") || value.contains("cannot decode") {
-            return "unsupported_stream"
-        }
-        if value.contains("network") || value.contains("timed out") || value.contains("connection") {
-            return "network_degraded"
-        }
-        if value.contains("http 404") || value.contains("not found") || value.contains("source ended") {
-            return "source_unavailable"
-        }
-        return "playback_error"
     }
 
     private func shouldTreatPlaybackErrorAsNaturalEnd() -> Bool {
@@ -2167,7 +2153,7 @@ class PlayerViewModel {
         )
     }
 
-    private func attemptNativeDirectRouteRecovery(after message: String) -> Bool {
+    private func attemptNativeDirectRouteRecovery(after failure: PlaybackFailure) -> Bool {
         guard !isDisposed,
               let activeExecutionPlan,
               activeExecutionPlan.engine == .avPlayerNativeDirect,
@@ -2189,7 +2175,7 @@ class PlayerViewModel {
             // Nothing local can remux this source, so the only rung left is a
             // server-produced HLS rendition.
             guard requestServerHLSRouteFallback(
-                after: message,
+                after: failure,
                 classification: "native_direct_avplayer_failed",
                 trace: "native_direct_blocked_hls_fallback"
             ) else {
@@ -2201,7 +2187,7 @@ class PlayerViewModel {
         hasAttemptedNativeDirectRouteRecovery = true
 
         Self.logger.warning(
-            "[CMP-ROUTE] native-direct AVPlayer failed; retrying route=\(fallbackPlan.implementationRoute, privacy: .public) error=\(message, privacy: .public)"
+            "[CMP-ROUTE] native-direct AVPlayer failed; retrying route=\(fallbackPlan.implementationRoute, privacy: .public) error=\(failure.legacyMessage, privacy: .public)"
         )
         let preferredAudioTrackIndex = resolvedAudioTrackIndexForResume()
         let preferredSubtitleTrackIndex = resolvedSubtitleTrackIndexForResume()
@@ -2251,7 +2237,7 @@ class PlayerViewModel {
     /// Last rung: the SiloPlayer loopback failed, and there is no other local
     /// engine to hand the source to. Ask the server to replan the session so
     /// playback continues on a server-produced HLS rendition.
-    private func attemptSiloRouteHLSFallback(after message: String) -> Bool {
+    private func attemptSiloRouteHLSFallback(after failure: PlaybackFailure) -> Bool {
         guard !isDisposed,
               let activeExecutionPlan,
               activeExecutionPlan.engine == .siloPlayerLoopback,
@@ -2259,7 +2245,7 @@ class PlayerViewModel {
             return false
         }
         guard requestServerHLSRouteFallback(
-            after: message,
+            after: failure,
             classification: "silo_loopback_failed",
             trace: "fallback_hls_after_silo"
         ) else {
@@ -2273,18 +2259,18 @@ class PlayerViewModel {
     /// AVPlayer-backed, so "fall back" now means renegotiating the session
     /// with the server rather than swapping in another local decoder.
     private func requestServerHLSRouteFallback(
-        after message: String,
+        after failure: PlaybackFailure,
         classification: String,
         trace: String
     ) -> Bool {
         guard currentWatchDetail != nil, protocolV3ReplanTask == nil else { return false }
         Self.logger.warning(
-            "[CMP-ROUTE] \(trace, privacy: .public); requesting a server HLS replan failureToken=\(Self.stablePlaybackFailureToken(for: message), privacy: .public)"
+            "[CMP-ROUTE] \(trace, privacy: .public); requesting a server HLS replan failureToken=\(failure.stableToken, privacy: .public)"
         )
         attemptProtocolV3Replan(
             position: currentTime,
             classification: classification,
-            message: message
+            message: failure.legacyMessage
         )
         return true
     }
@@ -2730,7 +2716,10 @@ class PlayerViewModel {
             // the one that produced this plan — so a direct source the server
             // refuses to re-plan terminates instead of looping.
             if !requestServerHLSRouteFallback(
-                after: message,
+                // View-model-authored, not a backend report: it only ever
+                // existed as text, so it enters the typed channel as `.unknown`
+                // and the ladders see the identical string they saw before.
+                after: PlaybackFailure(legacyMessage: message),
                 classification: "direct_source_unplayable",
                 trace: "direct source resolved to the server HLS route with no manifest"
             ) {
@@ -4469,29 +4458,6 @@ class PlayerViewModel {
         }
 
         return false
-    }
-
-    static func isPlaybackSessionMissingMessage(_ message: String) -> Bool {
-        let lowered = message.lowercased()
-        return lowered.contains("playback_session_not_found")
-            || lowered.contains("playback session not found")
-    }
-
-    /// The loopback writer's ingest ended clearly short of the known content
-    /// (`LoopbackWriterError.prematureSourceEnd`) — an origin outage, not an
-    /// engine defect. It must route into server-outage recovery, not the
-    /// engine-fallback ladder: retargeting the route against a dead origin
-    /// trades a recoverable stream for a second failure.
-    /// Case-insensitive on purpose: the token reaches us as a raw
-    /// `LoopbackWriterError` description on one path and as a re-cased server
-    /// string on another, and a spelling miss silently skips outage recovery.
-    ///
-    /// Follow-up: this and its siblings (`protocolV3FailureClassification`,
-    /// `stablePlaybackFailureToken`, `isPlaybackSessionMissingMessage`) are
-    /// substring classifiers over backend error *strings*. Typed backend errors
-    /// would make the whole ladder exhaustive; deliberately out of scope here.
-    static func isPrematureSourceEndMessage(_ message: String) -> Bool {
-        message.lowercased().contains("prematuresourceend")
     }
 
     func loadAndPlay(
@@ -6754,20 +6720,6 @@ class PlayerViewModel {
         stats.sourceOriginBitrateBps = sourceStats.currentOriginBitrateBps
         stats.sourceResumeCapable = sourceStats.resumeCapable
         stats.sourceResumeServerAdvertised = sourceStats.serverAdvertisesDirectStreamResume
-    }
-
-    static func stablePlaybackFailureToken(for message: String) -> String {
-        let lowered = message.lowercased()
-        if lowered.contains("timed out") || lowered.contains("timeout") { return "timeout" }
-        if lowered.contains("404") || lowered.contains("not found") { return "not_found" }
-        if lowered.contains("401") || lowered.contains("403") || lowered.contains("unauthorized") || lowered.contains("forbidden") {
-            return "auth"
-        }
-        if lowered.contains("cancel") { return "cancelled" }
-        if lowered.contains("decode") { return "decode" }
-        if lowered.contains("remux") || lowered.contains("mux") { return "remux" }
-        if lowered.contains("network") || lowered.contains("connection") { return "network" }
-        return "playback_error"
     }
 
     /// Loopback spec for a route-fallback plan. Routed through the planner so
