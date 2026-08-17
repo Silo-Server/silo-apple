@@ -176,6 +176,7 @@ targets:
           - "**/*.xcworkspace"
           - "Info.plist"
           - "tvOS-Info.plist"
+          - "PrivacyInfo.xcprivacy"
           - "TopShelf/**"
           - "tvOS/**"
           - "Screens/Player/AVPlayerRoute/AVPlayerSurface.swift"
