@@ -52,10 +52,6 @@ final class OverlayPrefsStore: ObservableObject {
 
     private var hasHydrated = false
     private var adminDefaultsRaw: String?
-    /// `true` once a read established that this server predates the
-    /// canonical settings API. Writes then target the legacy endpoint
-    /// the old server still accepts instead of failing every save.
-    private var usesLegacyAPI = false
     /// Invalidates an older refresh when the active server changes or a newer
     /// refresh starts, preventing late responses from repopulating stale prefs.
     private var refreshGeneration: UInt = 0
@@ -115,7 +111,6 @@ final class OverlayPrefsStore: ObservableObject {
 
         var userRaw: String?
         var userFetchFailed = false
-        var resolvedLegacyAPI = usesLegacyAPI
         do {
             let response = try await api.getEffectiveValues(keys: [.uiCardOverlays])
             if let entry = response.value(for: .uiCardOverlays),
@@ -123,12 +118,10 @@ final class OverlayPrefsStore: ObservableObject {
                entry.value != .null {
                 userRaw = Self.jsonString(from: entry.value)
             }
-            resolvedLegacyAPI = false
         } catch SettingsAPIError.serverUpgradeRequired {
             // Pre-contract server: the canonical routes don't exist.
             // Read the legacy string-valued user setting instead, where
             // a 404 is the documented "not set yet".
-            resolvedLegacyAPI = true
             do {
                 let entry = try await api.getUserSetting(key: Self.legacySettingKey)
                 userRaw = entry.value
@@ -159,7 +152,6 @@ final class OverlayPrefsStore: ObservableObject {
             self.adminDefaultsRaw = resolvedAdminDefaults
         }
         if !userFetchFailed {
-            self.usesLegacyAPI = resolvedLegacyAPI
             // Use the freshly-resolved admin defaults when we have them;
             // fall back to the cached value when the config fetch failed
             // this round but a prior refresh had captured it.
@@ -184,7 +176,6 @@ final class OverlayPrefsStore: ObservableObject {
         enabled = true
         prefs = OverlaySchema.buildDefaults()
         adminDefaultsRaw = nil
-        usesLegacyAPI = false
         hasHydrated = false
         lastError = nil
     }

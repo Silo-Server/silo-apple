@@ -68,7 +68,7 @@ Reused from `docs/skyline-design-guide.md` and `ContinuumTheme.swift`:
 ## 4. The squared control family
 
 All interactive controls move to one 8 pt-radius family. Retire the capsule
-(`Capsule()`/`pillCornerRadius`) and circle geometries on the detail page.
+(`Capsule()`) and circle geometries on the detail page.
 
 - **Primary — Play / Resume.** Solid white, black label, icon + label, 8 pt
   radius. Default focus target. Resume shows position (e.g. `Resume S2·E4` for

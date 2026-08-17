@@ -74,10 +74,9 @@ away from the scrubber does not turn the current preview position into a seek.
 The scrubber also shows chapter ticks from `viewModel.chapters`, a floating time
 bubble while focused, and buffered-ahead fill.
 
-Current truth: `bufferedAheadSeconds` is published on **every** route now.
-`PlayerBackendCapabilities.avFoundation.supportsBufferedAhead` is `true` and
-every engine kind maps to it, so the buffered fill is always live. The old
-"empty on the default path" caveat was a `PlayerCore` limitation.
+Current truth: `bufferedAheadSeconds` is published on **every** route now, so
+the buffered fill is always live. The old "empty on the default path" caveat
+was a `PlayerCore` limitation.
 
 ## 5. Transport row
 
@@ -175,10 +174,9 @@ a full-pane dialog with its own focus handling. The generic HUD control kit —
 [`tvOS/HUDKit/`](../../iosApp/iosApp/Screens/Player/tvOS/HUDKit); the panes
 themselves stay in `TVPlayerInfoHUD.swift`.
 
-Current truth: `bufferedAheadSeconds` is published on **every** route now.
-`PlayerBackendCapabilities.avFoundation.supportsBufferedAhead` is `true` and
-every engine kind maps to it, so the buffered fill is always live. The old
-"empty on the default path" caveat was a `PlayerCore` limitation.
+Current truth: `bufferedAheadSeconds` is published on **every** route now, so
+the buffered fill is always live. The old "empty on the default path" caveat
+was a `PlayerCore` limitation.
 
 ## 5. Transport row
 
@@ -311,8 +309,8 @@ The shell no longer branches on backend identity:
   `avPlayerNativeDirect`, `siloPlayerLoopback`, and `macAVFoundation`; the only
   surviving surface is the read-only `Audio delay` status row in the macOS
   options panel, which tvOS never renders.
-- verified: `PlayerBackendCapabilities.avFoundation.supportsBufferedAhead` is
-  `true`, so the scrubber's buffered fill is live on every route.
+- verified: `bufferedAheadSeconds` is published on every route, so the
+  scrubber's buffered fill is live everywhere.
 - verified: the HUD control kit lives in `tvOS/HUDKit/` and
   `SubtitleAppearanceDialog` in its own file (pure moves, no behavior change).
 - corrected: earlier revisions described route-specific Audio-pane behavior for

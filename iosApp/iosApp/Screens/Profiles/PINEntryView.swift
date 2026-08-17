@@ -7,7 +7,6 @@ struct PINEntryView: View {
     let onCancel: (() -> Void)?
 
     @State private var pin: String = ""
-    @State private var isShaking: Bool = false
     @FocusState private var focusedPadKey: String?
     @Environment(\.dismiss) private var dismiss
 
@@ -116,13 +115,6 @@ struct PINEntryView: View {
                     .frame(width: dotSize, height: dotSize)
             }
         }
-        .offset(x: isShaking ? -8 : 0)
-        .animation(
-            isShaking
-                ? .default.repeatCount(3, autoreverses: true).speed(6)
-                : .default,
-            value: isShaking
-        )
     }
 
     private var numberPad: some View {
