@@ -1,21 +1,216 @@
 import XCTest
 @testable import Silo
 
-/// Stage-0 characterization: the two string classifiers that turn the
-/// backend's only failure channel (`onError: (String) -> Void`) into a wire
-/// classification and a diagnostics token.
+/// Characterization for the two string ladders that turn a backend failure into
+/// a wire classification and a diagnostics token.
 ///
-/// `PlayerErrorClassifierPinTests` already pins a short table for each. This
-/// file widens both to ~30 messages, drawn from the shapes the backend, the
-/// loopback writer and Foundation actually emit, so a typed-failure rewrite
-/// has a full mapping to answer to rather than a sample of one.
+/// The backend's failure channel is now typed (`onError: (PlaybackFailure) ->
+/// Void`), but the ladders themselves did not change: they run over
+/// `PlaybackFailure.legacyMessage`, which reproduces the pre-migration string
+/// byte-for-byte. That is what makes the migration provably behaviour-
+/// preserving, so this file does two things:
 ///
-/// Both functions are ordered substring matches over a lowercased message.
-/// Where that produces a surprising answer it is pinned as `PIN:` and left
-/// alone — this file must not change production behavior.
+/// 1. pins both ladders across ~30 messages each, drawn from the shapes the
+///    backend, the loopback writer and Foundation actually emit; and
+/// 2. runs the *old* `PlayerViewModel` implementations, copied in verbatim as
+///    oracles, against every typed case's `legacyMessage` and asserts the new
+///    code agrees.
+///
+/// Where the ladders produce a surprising answer it is pinned as `PIN:` and
+/// left alone — this file must not change production behavior.
 final class PlayerErrorClassificationMatrixTests: XCTestCase {
 
-    // MARK: - protocolV3FailureClassification × 30
+    // MARK: - Oracles (the pre-migration PlayerViewModel implementations)
+
+    private func oracleClassification(_ message: String) -> String {
+        let value = message.lowercased()
+        if value.contains("decoder") || value.contains("videotoolbox") || value.contains("-129") {
+            return "decoder_error"
+        }
+        if value.contains("unsupported") || value.contains("cannot decode") {
+            return "unsupported_stream"
+        }
+        if value.contains("network") || value.contains("timed out") || value.contains("connection") {
+            return "network_degraded"
+        }
+        if value.contains("http 404") || value.contains("not found") || value.contains("source ended") {
+            return "source_unavailable"
+        }
+        return "playback_error"
+    }
+
+    private func oracleStableToken(_ message: String) -> String {
+        let lowered = message.lowercased()
+        if lowered.contains("timed out") || lowered.contains("timeout") { return "timeout" }
+        if lowered.contains("404") || lowered.contains("not found") { return "not_found" }
+        if lowered.contains("401") || lowered.contains("403") || lowered.contains("unauthorized") || lowered.contains("forbidden") {
+            return "auth"
+        }
+        if lowered.contains("cancel") { return "cancelled" }
+        if lowered.contains("decode") { return "decode" }
+        if lowered.contains("remux") || lowered.contains("mux") { return "remux" }
+        if lowered.contains("network") || lowered.contains("connection") { return "network" }
+        return "playback_error"
+    }
+
+    private func oracleIsSessionMissing(_ message: String) -> Bool {
+        let lowered = message.lowercased()
+        return lowered.contains("playback_session_not_found")
+            || lowered.contains("playback session not found")
+    }
+
+    private func oracleIsPrematureSourceEnd(_ message: String) -> Bool {
+        message.lowercased().contains("prematuresourceend")
+    }
+
+    // MARK: - Every failure the backend can report today
+
+    /// One instance of each `PlaybackFailure` case, with the arguments the
+    /// backend's reporting sites actually pass.
+    private var everyBackendFailure: [PlaybackFailure] {
+        [
+            .itemFailed(PlaybackFailure.ItemFailure(
+                description: "The operation could not be completed",
+                domain: "CoreMediaErrorDomain",
+                code: -12889,
+                failingURL: "http://127.0.0.1:51234/seg00007.m4s",
+                underlying: "NSOSStatusErrorDomain(-12889): unknown",
+                errorLog: "uri=http://127.0.0.1:51234/seg00007.m4s status=-12889 domain=CoreMediaErrorDomain comment=nil"
+            )),
+            .itemFailed(PlaybackFailure.ItemFailure(
+                description: "AVPlayer item failed",
+                domain: "unknown",
+                code: 0
+            )),
+            .loopbackServerBindFailed(detail: "bindFailed(48)"),
+            .loopbackPlaylistURLUnavailable,
+            .loopbackRebuildBudgetExhausted(reason: "loopback_item_death", rebuilds: 3),
+            .loopbackStartupBackstop(seconds: 45, requestsServed: 0, stage: "reloaded"),
+            .loopbackStartupStalled(trigger: "fetches_frozen"),
+            .loopbackStartupItemUnreloadable,
+            .writerFailed(kind: .prematureSourceEnd, detail: "prematureSourceEnd(readRC: -541478725, shortfallBytes: Optional(4096), shortfallSeconds: Optional(12.5))"),
+            .writerFailed(kind: .initSegmentMissing, detail: "initSegmentMissing"),
+            .writerFailed(kind: .unsupportedSelectedAudioCodec, detail: "unsupportedSelectedAudioCodec(\"dts\")"),
+            .writerFailed(kind: .videoBridgeTooSlow, detail: "videoBridgeTooSlow(fps: 11.0, required: 24.0)"),
+            .writerFailed(kind: .sourceUnavailable, detail: "openInput(-2)"),
+            .writerFailed(kind: .remux, detail: "vodMoovBlocked(closingSegment: 7, audioRouted: true)"),
+            .writerFailed(kind: .other, detail: "someFutureWriterError"),
+            .unknown("Something else entirely")
+        ]
+    }
+
+    /// The typed cases must reproduce the exact strings the backend used to
+    /// interpolate: they are the user-visible error text and the `message`
+    /// field sent to the server on a replan.
+    func testLegacyMessagesAreReproducedByteForByte() {
+        let expected: [(PlaybackFailure, String)] = [
+            (
+                .itemFailed(PlaybackFailure.ItemFailure(
+                    description: "The operation could not be completed",
+                    domain: "CoreMediaErrorDomain",
+                    code: -12889,
+                    failingURL: "http://127.0.0.1:51234/seg00007.m4s",
+                    underlying: "NSOSStatusErrorDomain(-12889): unknown",
+                    errorLog: "uri=x status=-12889 domain=CoreMediaErrorDomain comment=nil"
+                )),
+                "AVPlayer item failed: The operation could not be completed domain=CoreMediaErrorDomain code=-12889"
+                    + " failingURL=http://127.0.0.1:51234/seg00007.m4s"
+                    + " underlying=NSOSStatusErrorDomain(-12889): unknown"
+                    + " errorLog=uri=x status=-12889 domain=CoreMediaErrorDomain comment=nil"
+            ),
+            (
+                .itemFailed(PlaybackFailure.ItemFailure(
+                    description: "AVPlayer item failed",
+                    domain: "unknown",
+                    code: 0
+                )),
+                "AVPlayer item failed: AVPlayer item failed domain=unknown code=0"
+            ),
+            (
+                // Empty optional parts are omitted, exactly as before.
+                .itemFailed(PlaybackFailure.ItemFailure(
+                    description: "d",
+                    domain: "dom",
+                    code: 1,
+                    failingURL: "",
+                    underlying: "",
+                    errorLog: ""
+                )),
+                "AVPlayer item failed: d domain=dom code=1"
+            ),
+            (
+                .loopbackServerBindFailed(detail: "bindFailed(48)"),
+                "Local HLS server failed to start: bindFailed(48)"
+            ),
+            (
+                .loopbackPlaylistURLUnavailable,
+                "Local playback server could not produce a playable URL."
+            ),
+            (
+                .loopbackRebuildBudgetExhausted(reason: "loopback_item_death", rebuilds: 3),
+                "loopback_rebuild_budget_exhausted (reason=loopback_item_death rebuilds=3)"
+            ),
+            (
+                .loopbackStartupBackstop(seconds: 45, requestsServed: 0, stage: "reloaded"),
+                "Local loopback startup never became ready within 45s (requestsServed=0 stage=reloaded)"
+            ),
+            (
+                .loopbackStartupStalled(trigger: "fetches_frozen"),
+                "Local loopback startup stalled after nudge and item reload (trigger=fetches_frozen)"
+            ),
+            (
+                .loopbackStartupItemUnreloadable,
+                "Local loopback startup stalled with no reloadable item URL"
+            ),
+            (
+                .writerFailed(kind: .remux, detail: "vodMoovBlocked"),
+                "Remuxer failed: vodMoovBlocked"
+            ),
+            (.unknown("raw text"), "raw text")
+        ]
+        for (failure, want) in expected {
+            XCTAssertEqual(failure.legacyMessage, want)
+        }
+    }
+
+    /// The migration's core claim: for every failure the backend can report,
+    /// the typed properties answer exactly what the four `PlayerViewModel`
+    /// substring classifiers answered for the same failure.
+    func testTypedFailuresAgreeWithTheRetiredViewModelClassifiers() {
+        for failure in everyBackendFailure {
+            let message = failure.legacyMessage
+            XCTAssertEqual(
+                failure.classification,
+                oracleClassification(message),
+                "classification message=\(message)"
+            )
+            XCTAssertEqual(
+                failure.stableToken,
+                oracleStableToken(message),
+                "stableToken message=\(message)"
+            )
+            XCTAssertEqual(
+                failure.isPlaybackSessionMissing,
+                oracleIsSessionMissing(message),
+                "sessionMissing message=\(message)"
+            )
+            // `isPrematureSourceEnd` is the one decision the typed case is
+            // allowed to answer on its own — and for the writer's real
+            // description it agrees with the old substring match anyway.
+            if case .writerFailed(.prematureSourceEnd, _) = failure {
+                XCTAssertTrue(failure.isPrematureSourceEnd)
+                XCTAssertTrue(oracleIsPrematureSourceEnd(message))
+            } else {
+                XCTAssertEqual(
+                    failure.isPrematureSourceEnd,
+                    oracleIsPrematureSourceEnd(message),
+                    "prematureSourceEnd message=\(message)"
+                )
+            }
+        }
+    }
+
+    // MARK: - classification × 30
 
     func testProtocolV3FailureClassificationWideMatrix() {
         let expected: [(String, String)] = [
@@ -62,7 +257,7 @@ final class PlayerErrorClassificationMatrixTests: XCTestCase {
         ]
         for (message, want) in expected {
             XCTAssertEqual(
-                PlayerViewModel.protocolV3FailureClassification(message),
+                PlaybackFailure.classification(forLegacyMessage: message),
                 want,
                 "message=\(message)"
             )
@@ -72,13 +267,21 @@ final class PlayerErrorClassificationMatrixTests: XCTestCase {
     /// PIN: current behavior; likely bug, see cleanup notes.
     /// The writer's own premature-source-end token spells the words without a
     /// separator, so it misses the `"source ended"` substring the classifier
-    /// looks for and reports as a generic playback error — even though
-    /// `isPrematureSourceEndMessage` recognises exactly this string.
+    /// looks for and reports as a generic playback error — even though the
+    /// premature-source-end predicate recognises exactly this string.
+    ///
+    /// The typed channel does not paper over it: the wire classification is
+    /// deliberately unchanged, and the routing decision that matters
+    /// (`isPrematureSourceEnd`) is now made by the case, not the spelling.
     func testWriterPrematureSourceEndTokenDoesNotReachSourceUnavailable() {
         let message = "LoopbackWriterError.prematureSourceEnd(expected: 120)"
-        XCTAssertTrue(PlayerViewModel.isPrematureSourceEndMessage(message))
+        XCTAssertTrue(PlaybackFailure.isPrematureSourceEnd(legacyMessage: message))
         XCTAssertEqual(
-            PlayerViewModel.protocolV3FailureClassification(message),
+            PlaybackFailure.classification(forLegacyMessage: message),
+            "playback_error"
+        )
+        XCTAssertEqual(
+            PlaybackFailure.writerFailed(kind: .prematureSourceEnd, detail: "prematureSourceEnd(readRC: -1, shortfallBytes: nil, shortfallSeconds: nil)").classification,
             "playback_error"
         )
     }
@@ -98,14 +301,14 @@ final class PlayerErrorClassificationMatrixTests: XCTestCase {
         ]
         for (message, want) in expected {
             XCTAssertEqual(
-                PlayerViewModel.protocolV3FailureClassification(message),
+                PlaybackFailure.classification(forLegacyMessage: message),
                 want,
                 "message=\(message)"
             )
         }
     }
 
-    // MARK: - stablePlaybackFailureToken × 30
+    // MARK: - stableToken × 30
 
     func testStablePlaybackFailureTokenWideMatrix() {
         let expected: [(String, String)] = [
@@ -158,7 +361,7 @@ final class PlayerErrorClassificationMatrixTests: XCTestCase {
         ]
         for (message, want) in expected {
             XCTAssertEqual(
-                PlayerViewModel.stablePlaybackFailureToken(for: message),
+                PlaybackFailure.stableToken(forLegacyMessage: message),
                 want,
                 "message=\(message)"
             )
@@ -179,19 +382,20 @@ final class PlayerErrorClassificationMatrixTests: XCTestCase {
         ]
         for (message, want) in expected {
             XCTAssertEqual(
-                PlayerViewModel.stablePlaybackFailureToken(for: message),
+                PlaybackFailure.stableToken(forLegacyMessage: message),
                 want,
                 "message=\(message)"
             )
         }
     }
 
-    // MARK: - The two classifiers disagree
+    // MARK: - The two ladders disagree
 
     /// The wire classification and the diagnostics token are computed by two
     /// independent ladders over the same string, so the same failure can be
-    /// filed as two different things. Pinned so a typed-failure rewrite has to
-    /// decide which of the two it is preserving.
+    /// filed as two different things. Pinned because the typed channel
+    /// preserves both verdicts rather than reconciling them — reconciling is a
+    /// wire-contract change, not part of this migration.
     func testTheTwoClassifiersDisagreeOnTheSameMessage() {
         let disagreements: [(message: String, classification: String, token: String)] = [
             ("Failed to decode frame", "playback_error", "decode"),
@@ -205,12 +409,12 @@ final class PlayerErrorClassificationMatrixTests: XCTestCase {
         ]
         for entry in disagreements {
             XCTAssertEqual(
-                PlayerViewModel.protocolV3FailureClassification(entry.message),
+                PlaybackFailure.classification(forLegacyMessage: entry.message),
                 entry.classification,
                 "message=\(entry.message)"
             )
             XCTAssertEqual(
-                PlayerViewModel.stablePlaybackFailureToken(for: entry.message),
+                PlaybackFailure.stableToken(forLegacyMessage: entry.message),
                 entry.token,
                 "message=\(entry.message)"
             )

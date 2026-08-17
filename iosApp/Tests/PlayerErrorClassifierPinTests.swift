@@ -1,16 +1,17 @@
 import XCTest
 @testable import Silo
 
-/// Characterization ("pin") tests for the string/threshold classifiers that
-/// steer `PlayerViewModel`'s error-recovery ladder.
+/// Characterization ("pin") tests for the classifiers that steer
+/// `PlayerViewModel`'s error-recovery ladder.
 ///
-/// These were instance methods purely by habit; they are now `static` so the
-/// classification rules can be pinned without standing up a view model. The
-/// bodies are unchanged — this file records what they decide today so the
+/// The four substring classifiers used to live on `PlayerViewModel`. They now
+/// have a single owner, `PlaybackFailure`, which is the typed channel out of
+/// `AVPlayerBackend`; the ladders themselves are unchanged, because they decide
+/// what the server is told. This file records what they decide today so the
 /// one-player refactor cannot quietly reroute a failure class.
 final class PlayerErrorClassifierPinTests: XCTestCase {
 
-    // MARK: - protocolV3FailureClassification
+    // MARK: - classification(forLegacyMessage:)
 
     func testProtocolV3FailureClassificationTable() {
         let expected: [(String, String)] = [
@@ -30,7 +31,13 @@ final class PlayerErrorClassifierPinTests: XCTestCase {
         ]
         for (message, want) in expected {
             XCTAssertEqual(
-                PlayerViewModel.protocolV3FailureClassification(message),
+                PlaybackFailure.classification(forLegacyMessage: message),
+                want,
+                "message=\(message)"
+            )
+            // The instance property is the same ladder over `legacyMessage`.
+            XCTAssertEqual(
+                PlaybackFailure(legacyMessage: message).classification,
                 want,
                 "message=\(message)"
             )
@@ -43,16 +50,16 @@ final class PlayerErrorClassifierPinTests: XCTestCase {
     /// and "connection" beats "404" in a message that carries both.
     func testProtocolV3FailureClassificationOrderingWins() {
         XCTAssertEqual(
-            PlayerViewModel.protocolV3FailureClassification("network timeout in decoder thread"),
+            PlaybackFailure.classification(forLegacyMessage: "network timeout in decoder thread"),
             "decoder_error"
         )
         XCTAssertEqual(
-            PlayerViewModel.protocolV3FailureClassification("connection closed: HTTP 404"),
+            PlaybackFailure.classification(forLegacyMessage: "connection closed: HTTP 404"),
             "network_degraded"
         )
         // "-129" matches as a substring anywhere, including inside a byte count.
         XCTAssertEqual(
-            PlayerViewModel.protocolV3FailureClassification("read 4-1298 bytes"),
+            PlaybackFailure.classification(forLegacyMessage: "read 4-1298 bytes"),
             "decoder_error"
         )
     }
@@ -120,35 +127,46 @@ final class PlayerErrorClassifierPinTests: XCTestCase {
         XCTAssertTrue(isNaturalEnd(duration: 10, currentTime: 2.1))
     }
 
-    // MARK: - isPlaybackSessionMissingMessage
+    // MARK: - isPlaybackSessionMissing
 
     func testIsPlaybackSessionMissingMessageTable() {
-        XCTAssertTrue(PlayerViewModel.isPlaybackSessionMissingMessage("playback_session_not_found"))
-        XCTAssertTrue(PlayerViewModel.isPlaybackSessionMissingMessage(
-            "server said: PLAYBACK_SESSION_NOT_FOUND"
+        XCTAssertTrue(PlaybackFailure.isPlaybackSessionMissing(legacyMessage: "playback_session_not_found"))
+        XCTAssertTrue(PlaybackFailure.isPlaybackSessionMissing(
+            legacyMessage: "server said: PLAYBACK_SESSION_NOT_FOUND"
         ))
-        XCTAssertTrue(PlayerViewModel.isPlaybackSessionMissingMessage("Playback session not found"))
-        XCTAssertFalse(PlayerViewModel.isPlaybackSessionMissingMessage("session not found"))
-        XCTAssertFalse(PlayerViewModel.isPlaybackSessionMissingMessage("HTTP 404"))
-        XCTAssertFalse(PlayerViewModel.isPlaybackSessionMissingMessage(""))
+        XCTAssertTrue(PlaybackFailure.isPlaybackSessionMissing(legacyMessage: "Playback session not found"))
+        XCTAssertFalse(PlaybackFailure.isPlaybackSessionMissing(legacyMessage: "session not found"))
+        XCTAssertFalse(PlaybackFailure.isPlaybackSessionMissing(legacyMessage: "HTTP 404"))
+        XCTAssertFalse(PlaybackFailure.isPlaybackSessionMissing(legacyMessage: ""))
     }
 
-    // MARK: - isPrematureSourceEndMessage
+    // MARK: - isPrematureSourceEnd
 
     func testIsPrematureSourceEndMessageIsCaseInsensitive() {
-        XCTAssertTrue(PlayerViewModel.isPrematureSourceEndMessage(
-            "LoopbackWriterError.prematureSourceEnd(expected: 120)"
+        XCTAssertTrue(PlaybackFailure.isPrematureSourceEnd(
+            legacyMessage: "LoopbackWriterError.prematureSourceEnd(expected: 120)"
         ))
         // Matches its siblings now: casing cannot make a premature-source-end
         // report miss server-outage recovery.
-        XCTAssertTrue(PlayerViewModel.isPrematureSourceEndMessage("PrematureSourceEnd"))
-        XCTAssertTrue(PlayerViewModel.isPrematureSourceEndMessage("PREMATURESOURCEEND"))
+        XCTAssertTrue(PlaybackFailure.isPrematureSourceEnd(legacyMessage: "PrematureSourceEnd"))
+        XCTAssertTrue(PlaybackFailure.isPrematureSourceEnd(legacyMessage: "PREMATURESOURCEEND"))
         // Still a single token — the spaced-out spelling is not this error.
-        XCTAssertFalse(PlayerViewModel.isPrematureSourceEndMessage("premature source end"))
-        XCTAssertFalse(PlayerViewModel.isPrematureSourceEndMessage(""))
+        XCTAssertFalse(PlaybackFailure.isPrematureSourceEnd(legacyMessage: "premature source end"))
+        XCTAssertFalse(PlaybackFailure.isPrematureSourceEnd(legacyMessage: ""))
     }
 
-    // MARK: - stablePlaybackFailureToken
+    /// The typed case answers directly, so a writer whose description someday
+    /// stops spelling the token still routes into server-outage recovery.
+    func testPrematureSourceEndIsDecidedByTheTypedCaseNotTheSpelling() {
+        let typed = PlaybackFailure.writerFailed(kind: .prematureSourceEnd, detail: "readRC: -1")
+        XCTAssertTrue(typed.isPrematureSourceEnd)
+        XCTAssertFalse(PlaybackFailure.isPrematureSourceEnd(legacyMessage: typed.legacyMessage))
+
+        let otherWriterFailure = PlaybackFailure.writerFailed(kind: .remux, detail: "vodMoovBlocked")
+        XCTAssertFalse(otherWriterFailure.isPrematureSourceEnd)
+    }
+
+    // MARK: - stableToken(forLegacyMessage:)
 
     func testStablePlaybackFailureTokenTable() {
         let expected: [(String, String)] = [
@@ -170,7 +188,12 @@ final class PlayerErrorClassifierPinTests: XCTestCase {
         ]
         for (message, want) in expected {
             XCTAssertEqual(
-                PlayerViewModel.stablePlaybackFailureToken(for: message),
+                PlaybackFailure.stableToken(forLegacyMessage: message),
+                want,
+                "message=\(message)"
+            )
+            XCTAssertEqual(
+                PlaybackFailure(legacyMessage: message).stableToken,
                 want,
                 "message=\(message)"
             )
@@ -181,13 +204,13 @@ final class PlayerErrorClassifierPinTests: XCTestCase {
     /// Substring matching is unanchored and order-dependent: "mux" matches
     /// inside "demuxer", and a 404 that also mentions a timeout is a timeout.
     func testStablePlaybackFailureTokenOrderingAndSubstringQuirks() {
-        XCTAssertEqual(PlayerViewModel.stablePlaybackFailureToken(for: "demuxer failed"), "remux")
+        XCTAssertEqual(PlaybackFailure.stableToken(forLegacyMessage: "demuxer failed"), "remux")
         XCTAssertEqual(
-            PlayerViewModel.stablePlaybackFailureToken(for: "timed out fetching 404"),
+            PlaybackFailure.stableToken(forLegacyMessage: "timed out fetching 404"),
             "timeout"
         )
         XCTAssertEqual(
-            PlayerViewModel.stablePlaybackFailureToken(for: "decoder cancelled"),
+            PlaybackFailure.stableToken(forLegacyMessage: "decoder cancelled"),
             "cancelled"
         )
         // PIN: current behavior; likely bug, see cleanup notes.
@@ -195,11 +218,11 @@ final class PlayerErrorClassifierPinTests: XCTestCase {
         // "decoder failed" is a decode failure but the equally common
         // "decoding failed" falls through to the generic bucket.
         XCTAssertEqual(
-            PlayerViewModel.stablePlaybackFailureToken(for: "decoder failed"),
+            PlaybackFailure.stableToken(forLegacyMessage: "decoder failed"),
             "decode"
         )
         XCTAssertEqual(
-            PlayerViewModel.stablePlaybackFailureToken(for: "decoding failed"),
+            PlaybackFailure.stableToken(forLegacyMessage: "decoding failed"),
             "playback_error"
         )
     }
