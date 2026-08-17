@@ -30,6 +30,33 @@ struct AVPlayerSeekDeadlineState {
     }
 }
 
+/// Session-scoped budget for full Silo loopback session rebuilds.
+///
+/// The starvation/exhaustion latch that guards a rebuild (`didEscalateLoopbackStall`)
+/// is cleared *by* the rebuild it guards, so on its own it bounds nothing
+/// across sessions: a title that wedges the same way every time rebuilds
+/// forever. The budget is the outer bound — once it is spent the backend
+/// reports the failure and the view model's ladder owns the decision.
+struct LoopbackRebuildBudget {
+    static let maximumRebuildsPerLoad = 2
+
+    private(set) var used = 0
+
+    var isExhausted: Bool { used >= Self.maximumRebuildsPerLoad }
+
+    /// Spends one rebuild. Returns false when the budget is exhausted, in
+    /// which case the caller must not rebuild.
+    mutating func consume() -> Bool {
+        guard !isExhausted else { return false }
+        used += 1
+        return true
+    }
+
+    mutating func reset() {
+        used = 0
+    }
+}
+
 struct LoopbackItemDeathRecoveryState {
     enum Action: Equatable {
         case waitForConfirmation
@@ -536,16 +563,39 @@ final class AVPlayerBackend {
     /// their blocking source reads can park through a flagged outage. Owned
     /// by PlayerViewModel like `proxyStatsProvider`.
     var sourceOutageStateProvider: (() -> Bool)?
-    /// While true (view-model-flagged origin outage ride-through), the
-    /// playhead watchdog must not rebuild the pipeline for starvation or
-    /// reanchor exhaustion: the route isn't broken, the network is, and the
-    /// outage budget owns the terminal decision.
-    private var externalStallSuppressionActive = false
+    /// Reasons an external owner has asked the backend to hold every in-route
+    /// recovery ladder. Reason-keyed because two owners can overlap: the
+    /// view model's origin-outage ride-through and a view-model-owned server
+    /// replan. While any reason is held the route isn't the thing that broke
+    /// — the view model owns the terminal decision — so the backend keeps
+    /// observing and logging but takes no recovery action.
+    private var recoverySuspensionReasons: Set<String> = []
+    /// Reason key for the view model's origin-outage ride-through.
+    static let originOutageRecoverySuspensionReason = "origin_outage"
+    /// Reason key for a view-model-owned server replan: the view model sets
+    /// this for the whole replan round trip so backend ladders cannot
+    /// reanchor, reload or rebuild the session mid-negotiation.
+    static let serverReplanRecoverySuspensionReason = "server_replan"
 
+    private var isRecoverySuspended: Bool { !recoverySuspensionReasons.isEmpty }
+
+    /// Suspends (or resumes) every in-route recovery ladder for one owner.
+    /// Suspension is reference-counted by `reason`, so one owner clearing its
+    /// reason does not release another owner's hold.
+    func setRecoverySuspended(_ suspended: Bool, reason: String) {
+        let changed = suspended
+            ? recoverySuspensionReasons.insert(reason).inserted
+            : (recoverySuspensionReasons.remove(reason) != nil)
+        guard changed else { return }
+        cmpLog(
+            "[CMP-OUTAGE] recovery suspension \(suspended ? "on" : "off") reason=\(reason) "
+            + "held=[\(recoverySuspensionReasons.sorted().joined(separator: ","))]"
+        )
+    }
+
+    /// The origin-outage ride-through's view of the same latch.
     func setExternalStallSuppression(_ active: Bool) {
-        guard externalStallSuppressionActive != active else { return }
-        externalStallSuppressionActive = active
-        cmpLog("[CMP-OUTAGE] watchdog suppression \(active ? "on" : "off")")
+        setRecoverySuspended(active, reason: Self.originOutageRecoverySuspensionReason)
     }
 
     /// Proactive recovery when the view model reports an origin outage has
@@ -608,6 +658,11 @@ final class AVPlayerBackend {
     private enum SeekDeadlineKind {
         case interactive(mediaTarget: Double)
         case initial(mediaTarget: Double)
+        /// A seek issued by an in-route recovery rung (stall nudge, item
+        /// reload). It carries no follow-up recovery of its own: the deadline
+        /// exists so a recovery seek that never completes stops masking the
+        /// playhead watchdog, which owns the next rung and its budgets.
+        case recovery(reason: String)
     }
     /// Kind of the seek behind the active deadline generation. When a new
     /// deadline supersedes an in-flight `.initial` seek, its AVPlayer
@@ -712,6 +767,10 @@ final class AVPlayerBackend {
     private var watchdogReanchorCount = 0
     private var watchdogReanchorWindowStartWall: CFTimeInterval = 0
     private var didEscalateLoopbackStall = false
+    /// Outer bound on full loopback session rebuilds. Reset only when a new
+    /// playback is loaded from the outside — never by a rebuild or reanchor,
+    /// both of which run through the private `load(strategy:startTime:)`.
+    private var loopbackRebuildBudget = LoopbackRebuildBudget()
     private var isUserPaused = false
     /// Guards `reconcileSystemTransportIntent` against the `.initial` KVO
     /// delivery, which reports pre-roll state rather than a transport command.
@@ -815,6 +874,7 @@ final class AVPlayerBackend {
         startTime: Double,
     ) {
         isUserPaused = false
+        loopbackRebuildBudget.reset()
         load(
             strategy: .siloLoopback(spec: sessionSpec),
             startTime: startTime
@@ -823,6 +883,7 @@ final class AVPlayerBackend {
 
     func loadRemoteHLS(url: URL, headers: [String: String], startTime: Double) {
         isUserPaused = false
+        loopbackRebuildBudget.reset()
         load(
             strategy: .remoteHLS(url: url, headers: headers),
             startTime: startTime
@@ -831,6 +892,7 @@ final class AVPlayerBackend {
 
     func loadDirectFile(url: URL, headers: [String: String], startTime: Double) {
         isUserPaused = false
+        loopbackRebuildBudget.reset()
         load(
             strategy: .remoteDirect(url: url, headers: headers),
             startTime: startTime
@@ -1134,6 +1196,16 @@ final class AVPlayerBackend {
             }
             vodPendingSeekMediaTarget = nil
 
+        case .recovery(let reason):
+            // Do not stack another recovery here: the rung that issued this
+            // seek (playhead watchdog, item-death reload) owns the ladder and
+            // its retry budget, and it was blind while `isSeekPending` was
+            // latched. Clearing the flag above hands control straight back.
+            Self.logger.error(
+                "[CMP-SEEK] recovery seek deadline reason=\(reason, privacy: .public) id=\(id, privacy: .public); releasing the watchdog"
+            )
+            cmpLog("[CMP-AVP] recovery seek never completed reason=\(reason)")
+
         case .initial(let mediaTarget):
             isInitialSeekInFlight = false
             initialSeekRetryCount += 1
@@ -1149,6 +1221,25 @@ final class AVPlayerBackend {
             } else if let item = currentItem {
                 startPlaybackIfNeeded(for: item)
             }
+        }
+    }
+
+    /// Issues an in-route recovery seek through the same deadline machinery a
+    /// user seek uses. Recovery seeks used to be fire-and-forget, so one that
+    /// never completed left the route wedged with nothing recording it.
+    /// Marking the seek pending also keeps the position watchdogs from
+    /// stacking another recovery on top of an in-flight one; the 15 s
+    /// deadline bounds that quiet window and hands the ladder back.
+    private func performRecoverySeek(to time: CMTime, reason: String) {
+        isSeekPending = true
+        let seekID = beginSeekDeadline(kind: .recovery(reason: reason), item: currentItem)
+        avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+            guard let self, !self.isDisposed else { return }
+            guard self.completeSeekDeadline(seekID) else { return }
+            self.isSeekPending = false
+            Self.logger.info(
+                "[CMP-SEEK] recovery seek complete reason=\(reason, privacy: .public) finished=\(finished, privacy: .public)"
+            )
         }
     }
 
@@ -1745,7 +1836,7 @@ final class AVPlayerBackend {
         if attempt <= 1 {
             cmpLog("[CMP-AVP] vod stall recovery nudge anchorPlayer=\(anchorPlayer)")
             currentItem?.cancelPendingSeeks()
-            avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+            performRecoverySeek(to: time, reason: "vod_stall_nudge")
             avPlayer.play()
         } else {
             cmpLog("[CMP-AVP] vod stall recovery in-place item reload anchorPlayer=\(anchorPlayer)")
@@ -1779,10 +1870,14 @@ final class AVPlayerBackend {
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         currentItem = item
         attachItemObservers(item)
+        // A fresh item has not played to its end, whatever the retired one
+        // did; leaving the latch set would suppress transport-intent
+        // resolution and the auto-resume rung for the rest of the session.
+        hasReachedItemEnd = false
         avPlayer.replaceCurrentItem(with: item)
 
         let target = CMTime(seconds: max(0, playerSeconds), preferredTimescale: 600)
-        avPlayer.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        performRecoverySeek(to: target, reason: "item_reload_\(reason)")
         if !isUserPaused {
             avPlayer.play()
         }
@@ -2858,8 +2953,11 @@ final class AVPlayerBackend {
                     storeMiB, proxyMiB
                 )
             }
+            let suspendedSuffix = isRecoverySuspended
+                ? " suspended=[\(recoverySuspensionReasons.sorted().joined(separator: ","))]"
+                : ""
             cmpLog(
-                "[CMP-AVP] loopback playhead state pos=\(position) tc=\(statusLabel) rate=\(avPlayer.rate) paused=\(isUserPaused ? 1 : 0) bufAhead=\(bufferedAhead) generatedAhead=\(generatedAhead) stationaryFor=\(stationaryFor)\(memSuffix)"
+                "[CMP-AVP] loopback playhead state pos=\(position) tc=\(statusLabel) rate=\(avPlayer.rate) paused=\(isUserPaused ? 1 : 0) bufAhead=\(bufferedAhead) generatedAhead=\(generatedAhead) stationaryFor=\(stationaryFor)\(memSuffix)\(suspendedSuffix)"
             )
         }
 
@@ -2869,7 +2967,7 @@ final class AVPlayerBackend {
             playbackEstablished: didFireFileLoaded,
             userPaused: isUserPaused,
             transportState: transportState,
-            recoverySuppressed: externalStallSuppressionActive
+            recoverySuppressed: isRecoverySuspended
                 || isWaitingForInitialVideoDisplay,
             mediaAvailableAhead: bufferedAhead >= 0.5 || generatedAhead >= 2.0
         )
@@ -2897,6 +2995,13 @@ final class AVPlayerBackend {
             return
         }
 
+        // Observation above (advance tracking, telemetry, item-death
+        // evidence) keeps running while an external owner holds the recovery
+        // latch, but no rung below may act: the route isn't what broke (the
+        // origin is down, or the view model is renegotiating the plan) and
+        // the view model owns the terminal decision.
+        if isRecoverySuspended { return }
+
         // Producer-dead starvation: waiting on an empty buffer with no
         // successful segment serves for a sustained stretch. Rebuild the
         // Silo loopback session at the rendered clock; changing playback
@@ -2908,14 +3013,6 @@ final class AVPlayerBackend {
            (segmentStore?.secondsSinceLastSegmentServe() ?? .infinity)
                >= Self.playheadWatchdogStarvationServeQuietSeconds,
            !didEscalateLoopbackStall {
-            if externalStallSuppressionActive {
-                // Starved because the origin is down, not because the route
-                // wedged. The outage budget owns the terminal decision.
-                cmpLog(
-                    "[CMP-OUTAGE] loopback starvation suppressed during origin outage (frozen \(Int(stationaryFor))s)"
-                )
-                return
-            }
             didEscalateLoopbackStall = true
             cmpLog(
                 "[CMP-AVP] loopback starvation: playhead frozen \(Int(stationaryFor))s with empty buffer and no segment serves; rebuilding Silo loopback"
@@ -2948,12 +3045,6 @@ final class AVPlayerBackend {
 
         if watchdogReanchorCount >= Self.playheadWatchdogMaxReanchors {
             guard !didEscalateLoopbackStall else { return }
-            if externalStallSuppressionActive {
-                cmpLog(
-                    "[CMP-OUTAGE] playhead_watchdog exhaustion suppressed during origin outage (reanchors=\(watchdogReanchorCount))"
-                )
-                return
-            }
             didEscalateLoopbackStall = true
             Self.logger.error(
                 "[CMP-AVP] local loopback playhead_watchdog exhausted reanchors=\(self.watchdogReanchorCount, privacy: .public) pos=\(position, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public); rebuilding Silo loopback"
@@ -3347,7 +3438,8 @@ final class AVPlayerBackend {
     ) {
         guard case .some(.siloLoopback) = currentSourceStrategy,
               item === currentItem,
-              didFireFileLoaded else { return }
+              didFireFileLoaded,
+              !isRecoverySuspended else { return }
         let position = currentTime()
         let action = loopbackItemDeathRecoveryState.record(
             position: position,
@@ -3407,6 +3499,16 @@ final class AVPlayerBackend {
         guard case .some(.siloLoopback(let spec)) = currentSourceStrategy,
               playerSeconds.isFinite,
               !isUserPaused else { return }
+        guard loopbackRebuildBudget.consume() else {
+            // Every rebuild resets the latches that decided to rebuild, so
+            // without this bound the same wedge rebuilds forever. Hand the
+            // failure to the view model's ladder instead.
+            reportError(
+                "loopback_rebuild_budget_exhausted (reason=\(reason) "
+                + "rebuilds=\(loopbackRebuildBudget.used))"
+            )
+            return
+        }
         let mediaSeconds = max(0, mediaTime(for: playerSeconds))
         loopbackItemDeathRecoveryState.reset()
         loopbackItemDeathConfirmationState.resetCandidate()
@@ -3432,7 +3534,8 @@ final class AVPlayerBackend {
         guard case .some(.siloLoopback(let spec)) = currentSourceStrategy,
               item === currentItem,
               didFireFileLoaded,
-              !isUserPaused else { return }
+              !isUserPaused,
+              !isRecoverySuspended else { return }
         let now = CACurrentMediaTime()
         guard now - lastLocalLoopbackStallRecoveryAt >= 10 else { return }
         let playerSeconds = currentTime()
@@ -3460,6 +3563,10 @@ final class AVPlayerBackend {
               item === currentItem,
               didFireFileLoaded,
               !isUserPaused,
+              // The item played to its end: a buffer KVO arriving afterwards
+              // must not restart transport behind the end-of-file handoff.
+              !hasReachedItemEnd,
+              !isRecoverySuspended,
               avPlayer.rate == 0 else { return }
         let playerSeconds = currentTime()
         guard playerSeconds.isFinite else { return }
@@ -3629,11 +3736,13 @@ final class AVPlayerBackend {
     /// Startup recovery ladder (AetherEngine consumer re-engage pattern):
     /// stage 1 nudges AVFoundation's loader with a zero-tolerance seek,
     /// stage 2 swaps in a fresh AVPlayerItem against the same loopback
-    /// session, stage 3 surfaces the error so the route planner can fall
-    /// back to the Compatibility player. Also driven directly by the item
-    /// errorLog observer on loader-poison signatures.
+    /// session, stage 3 reports the error, which hands the decision to
+    /// `PlayerViewModel`'s ladder (`attemptSiloRouteHLSFallback` → server-HLS
+    /// replan). Also driven directly by the item errorLog observer on
+    /// loader-poison signatures.
     private func escalateLoopbackStartupRecovery(trigger: String) {
-        guard !isDisposed, !didFireFileLoaded, currentItem != nil else { return }
+        guard !isDisposed, !didFireFileLoaded, currentItem != nil,
+              !isRecoverySuspended else { return }
         switch loopbackStartupRecoveryStage {
         case .initial:
             loopbackStartupRecoveryStage = .nudged
@@ -3693,6 +3802,8 @@ final class AVPlayerBackend {
         }
         currentItem = item
         attachItemObservers(item)
+        // Fresh item: the end-of-item latch belongs to the retired one.
+        hasReachedItemEnd = false
         avPlayer.replaceCurrentItem(with: item)
         issueVODResumePreSeekIfNeeded(context: "startup_reload")
     }
@@ -4133,6 +4244,12 @@ final class AVPlayerBackend {
         cancelSeekDeadline()
         loopbackItemDeathRecoveryState.reset()
         loopbackItemDeathConfirmationState.reset()
+        // Only `handleFirstSegmentReady` consumes this latch, so a session
+        // whose writer never reported a first segment would hand it to the
+        // next load and suppress that load's HDMI settle wait. `load()`
+        // re-sets it right after this teardown, so clearing here is scoped to
+        // the retired session.
+        isPreservingTVDisplayCriteriaForReload = false
         if clearDisplayCriteria {
             clearTVDisplayCriteria(context: "teardown")
         } else {
