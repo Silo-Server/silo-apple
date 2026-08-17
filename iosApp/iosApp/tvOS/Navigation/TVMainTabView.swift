@@ -220,6 +220,7 @@ struct TVMainTabView: View {
             await uiCustomization.refresh()
             controlReceiver.start(router: router)
             await loadCurrentProfile()
+            restoreTrailerReturnIfNeeded()
         }
         .task(id: currentLibraryAuthority) {
             await loadLibraries(for: currentLibraryAuthority)
@@ -1098,6 +1099,22 @@ struct TVMainTabView: View {
 
     private func switchProfile() {
         router.switchProfile()
+    }
+
+    /// Cold-launch tail of a remote-trailer handoff: if Silo was jetsammed
+    /// while the YouTube app played a trailer, put the user back on the
+    /// detail page they left from instead of stranding them on Home. The
+    /// store consumes its record on first call (and the eligibility rules
+    /// live in `TrailerReturnPolicy`), so this is a plain push when a fresh,
+    /// identity-matching record exists and a no-op otherwise. Guarded on an
+    /// empty stack: if something else already navigated (deep link, control
+    /// receiver), that intent wins.
+    private func restoreTrailerReturnIfNeeded() {
+        guard let contentId = TVTrailerReturnStore.shared.consumeColdLaunchRestore(),
+              router.path.isEmpty else {
+            return
+        }
+        router.navigate(to: .itemDetail(contentId: contentId))
     }
 
     private func loadCurrentProfile() async {

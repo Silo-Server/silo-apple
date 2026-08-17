@@ -29,6 +29,7 @@ struct TVItemDetailView: View {
     /// YouTube app.
     @State private var allowRemoteTrailers = false
     @Environment(AppRouter.self) private var router
+    @Environment(\.scenePhase) private var scenePhase
     private static let focusLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "TVFocus"
@@ -75,6 +76,14 @@ struct TVItemDetailView: View {
             // otherwise keep running (and retaining the view model) after
             // this route pops.
             viewModel.stopTrailerFetch()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            // A warm return from the YouTube app lands here with the page
+            // still alive — nothing to restore, so the handoff record must
+            // not survive to be replayed on some later cold launch.
+            if newPhase == .active {
+                TVTrailerReturnStore.shared.clear()
+            }
         }
         .task(id: contentId) {
             didClearSubtitleOverride = false
@@ -139,6 +148,12 @@ struct TVItemDetailView: View {
     private func playTrailer(_ entry: TrailerRailEntry) {
         switch entry {
         case .remote(let video):
+            // Recorded before the deep link so a jetsam during the trailer
+            // can restore this page on the next cold launch (see
+            // `TVTrailerReturnStore`). tvOS cannot bring the user back from
+            // YouTube; this is the fallback for when suspension doesn't
+            // preserve the page either.
+            TVTrailerReturnStore.shared.saveHandoff(contentId: contentId)
             TVTrailerLaunch.open(siteKey: video.siteKey)
         case .local(let extra):
             router.navigate(
