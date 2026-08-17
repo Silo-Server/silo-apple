@@ -1,0 +1,30 @@
+# Validation record — Dolby Vision MKV titles: NOT validated. The client never received a Dolby Vision plan from either server.
+# Recorded to prevent the DV rows in docs/tvos-player/05 being treated as validated by the Round-1 build.
+date: 2026-08-17
+platform: tvOS 26.6
+device: Apple TV 4K (3rd generation) — AppleTV14,1 ("bedroom TV")
+app_build: SiloTV Debug from silo-apple player/architecture-remediation @ ed761e3, and A/B with the pre-Round-1 backup 36393b4
+server: production (silo.arkyncdn.net) for device runs; shared dev for the API replay
+output_path: HDMI -> HDR TV (client output snapshot: hdr10=true dolbyVision=true dvModes=5,8)
+runs:
+  - title_ref: movie-tmdb-513347   # DV Profile 5, 1080p HEVC/EAC3 24.000 MKV (also has an H.264 alternate version)
+    expected: siloPlayerLoopback with videoMode=passthroughProfile5; TV enters Dolby Vision
+    actual: Failed (server-side) — production planned server_remux_progressive (decision_reason=container_normalization); AVPlayer failed it (-11850/-12939); server_remux_hls returned HTTP 502 from the transcode proxy; the server switched to the H.264 alternate version, whose progressive remux failed the same way and whose HLS transcode played (H.264 1080p, dynamicRange=nil, EAC-3 stereo)
+    evidence:
+      - "[CMP-ROUTE] ... wireDelivery=server_remux_progressive implementationRoute=avPlayerNativeDirect reason=v3_container_normalization"
+      - "[CMP-AVP] ERROR: AVPlayer item failed: Operation Stopped domain=AVFoundationErrorDomain code=-11850 underlying=NSOSStatusErrorDomain(-12939)"
+      - "[CMP-AVP] ERROR: ... CoreMediaErrorDomain error -16848 - HTTP 502: Bad Gateway (server_remux_hls)"
+      - "prod log: playback plan decided ... decision_reason=container_normalization delivery=server_remux_progressive requested_file_id=982063 dv_profile=5 dynamic_range=dolby_vision"
+  - title_ref: movie-tmdb-1117126   # DV Profile 8, 3840x1600 HEVC/EAC3 23.976 MKV
+    expected: siloPlayerLoopback with videoMode=passthroughProfile8; TV enters Dolby Vision
+    actual: Failed (server-side) — same shape: server_remux_progressive → -12939 → server_remux_hls played but as HDR10 (DV stripped). Identical result on the pre-Round-1 build 36393b4 (A/B), so this is not a Round-1 regression.
+    evidence:
+      - "[CMP-AVP] item ready format videoCodec=HEVC videoDetail=3840x1600 dynamicRange=HDR10 audioCodec=E-AC-3 audioDetail=5.1, 48000 Hz  (both builds)"
+  - api_replay: shared dev, POST /api/v1/playback/start with an Apple-shaped V3 request (platform_attested hevc hardware decode, hdr_details {hdr10, dolby_vision_profiles:[5,8]}, original_http containers incl. mkv)
+    results:
+      - file 223805 (HDR10 HEVC MKV) -> outcome=playable, delivery=original_http, decision_reason=validated_original_playback
+      - file 223792 (DV P8 HEVC MKV) -> outcome=adaptation_unavailable (terminal)
+      - file 741 (DV P5 HEVC MKV) -> outcome=adaptation_unavailable (terminal)
+conclusion:
+  - Dolby Vision loopback rows (review §11 rows 1, 2) cannot be validated until the server planner grants original_http for DV 5/8 sources to a client that advertises them; root cause is being traced in silo-server (see docs/cleanup/player-review follow-ups).
+  - Additional server-side findings from the same runs: server_remux_progressive is never playable by AVPlayer on tvOS (-12939 every attempt) — a wasted rung; the transcode proxy returned 502 for one HLS remux.

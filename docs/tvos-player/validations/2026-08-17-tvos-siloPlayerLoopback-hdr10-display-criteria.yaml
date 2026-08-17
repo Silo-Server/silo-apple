@@ -1,0 +1,41 @@
+# Validation record — HDR10 HEVC MKV via siloPlayerLoopback with tvOS display-criteria (HDR mode + frame-rate) switching.
+# Two titles, same session/build; recorded from the app console (devicectl --console) on the bedroom Apple TV.
+date: 2026-08-17
+platform: tvOS 26.6
+device: Apple TV 4K (3rd generation) — AppleTV14,1 ("bedroom TV")
+app_build: SiloTV Debug from silo-apple player/architecture-remediation @ ed761e3 (Round 1 merged)
+server: production (silo.arkyncdn.net) — client-only validation; server untouched
+route_family: SiloPlayer
+implementation_route: siloPlayerLoopback
+delivery: direct (wireDelivery=original_http, server decision_reason=validated_original_playback)
+output_path: HDMI -> HDR TV (sinkType=HDMIOutput; client output snapshot hdr10=true dolbyVision=true dvModes=5,8)
+runs:
+  - title_ref: movie-tmdb-852590
+    asset: { container: mkv, video: hevc Main 10 3840x2160, frame_rate: 24.000, range: HDR10 (bt2020nc/PQ), audio: eac3 5.1, subtitles: none selected }
+    expected: loopback VOD plan; tvOS display criteria applied for PQ @ 24.000 before item attach; item ready HDR10; no recovery
+    actual: Passed
+    evidence:
+      - "[CMP-ROUTE] ... wireDelivery=original_http routeFamily=SiloPlayer implementationRoute=siloPlayerLoopback"
+      - "[CMP-AVP] load strategy=siloLoopback(... videoMode=hevc_passthrough ...)"
+      - "[CMP-AVP] vod plan resolved segments=1203 keyframes=1892 trusted=true duration=6152.1s"
+      - "[CMP-AVP] tv display apply hdr context=before_prepare_master.m3u8 range=PQ fps=24.000 outcome=applied preservedReload=0"
+      - "[CMP-AVP] tv display settle hdrHosted=1"
+      - "[CMP-TTFF] route=siloLoopback(...) first_segment_ms=1128 ready_ms=4177 first_frame_ms=4613"
+      - "[CMP-AVP] item ready format videoCodec=HEVC videoDetail=3840x2160 dynamicRange=HDR10 audioCodec=E-AC-3 audioDetail=5.1, 48000 Hz"
+      - "0 [CMP-AVP] ERROR lines; no [CMP-RECOVERY] lines"
+  - title_ref: movie-tmdb-974663
+    asset: { container: mkv, video: hevc Main 10 3840x2160, frame_rate: 29.970, range: HDR10, audio: ac3 5.1, subtitles: none selected }
+    expected: as above but criteria applied for PQ @ 29.970 (frame-rate switch relative to the previous title)
+    actual: Passed
+    evidence:
+      - "[CMP-AVP] vod plan resolved segments=1470 keyframes=5872 trusted=true duration=5877.0s"
+      - "[CMP-AVP] tv display apply hdr context=before_prepare_master.m3u8 range=PQ fps=29.970 outcome=applied preservedReload=0"
+      - "[CMP-TTFF] ... first_segment_ms=1076 ready_ms=4113 first_frame_ms=4540"
+      - "[CMP-AVP] item ready format videoCodec=HEVC videoDetail=3840x2160 dynamicRange=HDR10 audioCodec=AC-3 audioDetail=5.1, 48000 Hz"
+      - "0 [CMP-AVP] ERROR lines"
+not_validated_in_this_pass:
+  - Seek-heavy behaviour (pyatv companion/MRP key presses did not reach the player from the Mini; needs a hands-on Siri Remote pass — see review §11 row 7)
+  - TV-side mode banner photo / AVR panel (log evidence only)
+notes:
+  - The console also showed the Round-1 recovery-suspension latch toggling only during server replans ("[CMP-OUTAGE] recovery suspension on/off reason=server_replan"), never during these two loopback sessions.
+  - Do not generalize to Dolby Vision: see the companion record for why no DV plan was obtainable.
