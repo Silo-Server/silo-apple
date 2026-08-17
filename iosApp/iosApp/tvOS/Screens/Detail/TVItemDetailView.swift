@@ -88,8 +88,11 @@ struct TVItemDetailView: View {
         .onChange(of: scenePhase) { _, newPhase in
             // A warm return from the YouTube app lands here with the page
             // still alive — nothing to restore, so the handoff record must
-            // not survive to be replayed on some later cold launch.
+            // not survive to be replayed on some later cold launch. Re-probe
+            // YouTube as well because its installation can change while Silo
+            // is suspended.
             if newPhase == .active {
+                allowRemoteTrailers = TVTrailerLaunch.isYouTubeAppInstalled()
                 TVTrailerReturnStore.shared.clear()
             }
         }

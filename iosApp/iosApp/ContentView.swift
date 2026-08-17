@@ -192,11 +192,13 @@ struct ContentView: View {
             #endif
             await maybeAutoPlayForDebug()
             if router.authState == .authenticated {
+                let hasPendingDeepLink = pendingDeepLink != nil
                 if let pending = pendingDeepLink {
                     pendingDeepLink = nil
                     handleDeepLink(pending)
                 }
                 #if os(tvOS)
+                restoreTrailerReturnIfNeeded(hasPriorityLaunchIntent: hasPendingDeepLink)
                 await ExitSentinel.shared.captureLeftoverIfNeeded()
                 #endif
                 #if os(iOS) || os(tvOS)
@@ -640,6 +642,21 @@ struct ContentView: View {
             break
         }
     }
+
+    #if os(tvOS)
+    /// Consumes a fresh trailer handoff as soon as authentication resolves,
+    /// before unrelated startup hydration can delay navigation. A queued deep
+    /// link remains the priority launch intent, but the trailer record is still
+    /// consumed so it cannot ghost-navigate a later launch.
+    private func restoreTrailerReturnIfNeeded(hasPriorityLaunchIntent: Bool) {
+        guard let contentId = TVTrailerReturnStore.shared.consumeColdLaunchRestore(),
+              !hasPriorityLaunchIntent,
+              router.path.isEmpty else {
+            return
+        }
+        router.navigate(to: .itemDetail(contentId: contentId))
+    }
+    #endif
 
     @MainActor
     private func routePlayDeepLink(contentId: String) async {
