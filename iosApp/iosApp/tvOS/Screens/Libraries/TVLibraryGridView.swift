@@ -8,13 +8,7 @@ import SwiftUI
 /// on the current filter, so "Action / T" is a valid composite state.
 struct TVLibraryGridView: View {
     let libraryId: Int
-    let libraryName: String
     let libraryType: String
-    let subtitle: String?
-    /// Pushed full-screen entries render the big library header; Skyline
-    /// pill embeds hide it — the top bar + pill row already say where the
-    /// user is.
-    let showsHeader: Bool
     /// The A–Z jump rail only makes sense for title-sorted browsing; the
     /// Recently Added pill turns it off.
     let showsAlphabetRail: Bool
@@ -42,10 +36,7 @@ struct TVLibraryGridView: View {
 
     init(
         libraryId: Int,
-        libraryName: String,
         libraryType: String,
-        subtitle: String? = nil,
-        showsHeader: Bool = true,
         showsAlphabetRail: Bool = true,
         topContentInset: CGFloat = ContinuumTheme.smallPadding,
         focusRequest: Int = 0,
@@ -53,10 +44,7 @@ struct TVLibraryGridView: View {
         onTopMenuFocusRequest: (() -> Void)? = nil
     ) {
         self.libraryId = libraryId
-        self.libraryName = libraryName
         self.libraryType = libraryType
-        self.subtitle = subtitle
-        self.showsHeader = showsHeader
         self.showsAlphabetRail = showsAlphabetRail
         self.topContentInset = topContentInset
         self.focusRequest = focusRequest
@@ -136,14 +124,8 @@ struct TVLibraryGridView: View {
     private var gridColumn: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 32) {
-                if showsHeader {
-                    header
-                        .padding(.horizontal, ContinuumTheme.safePadding)
-                        .padding(.top, topContentInset)
-                } else {
-                    Color.clear
-                        .frame(height: topContentInset)
-                }
+                Color.clear
+                    .frame(height: topContentInset)
 
                 TVBrowseControlRow(
                     sortLabel: viewModel.filter.sort.label,
@@ -209,37 +191,6 @@ struct TVLibraryGridView: View {
         if SiloMediaType.isSeries(libraryType) { return "tv" }
         if SiloMediaType.isAudiobook(libraryType) { return "book.closed" }
         return "film.stack"
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(libraryName)
-                .font(.system(size: 64, weight: .bold))
-                .foregroundColor(.continuumOnSurface)
-
-            if let prefix = selectedPrefix {
-                Text(prefix == "#" ? "Titles starting with a number or symbol" : "Titles starting with \(prefix)")
-                    .font(.continuumHeadline)
-                    .foregroundColor(.continuumSecondaryText)
-            } else if let subtitle {
-                Text(subtitle)
-                    .font(.continuumHeadline)
-                    .foregroundColor(.continuumSecondaryText)
-            } else if let total = totalLabel {
-                Text(total)
-                    .font(.continuumHeadline)
-                    .foregroundColor(.continuumSecondaryText)
-            }
-        }
-    }
-
-    private var totalLabel: String? {
-        guard !viewModel.items.isEmpty else { return nil }
-        return viewModel.hasMore
-            ? "\(viewModel.items.count)+ titles"
-            : "\(viewModel.items.count) titles"
     }
 }
 #endif
