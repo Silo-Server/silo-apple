@@ -81,9 +81,7 @@ struct TVLibraryTypeTabView: View {
         case .browse:
             TVLibraryGridView(
                 libraryId: library.id,
-                libraryName: library.name,
                 libraryType: library.type,
-                showsHeader: false,
                 showsAlphabetRail: true,
                 topContentInset: ContinuumTheme.Skyline.libraryContentTopInset,
                 focusRequest: focusRequest,
