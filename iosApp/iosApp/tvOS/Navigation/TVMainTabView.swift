@@ -894,32 +894,22 @@ struct TVMainTabView: View {
         return TVLibraryScopeStore.shared.resolvedLibrary(for: type, in: available)
     }
 
-    private func pillSelection(for type: TVLibraryTabType) -> Binding<TVLibraryPill> {
-        Binding(
-            get: {
-                resolvedLibraryRootPill(
-                    categorySelection: pillSelections[type] ?? .recommended,
-                    directSelection: nil,
-                    isDirectLibraryShortcut: false
-                )
-            },
-            set: { pillSelections[type] = $0 }
+    private func pillSelection(for type: TVLibraryTabType) -> TVLibraryPill {
+        resolvedLibraryRootPill(
+            categorySelection: pillSelections[type] ?? .recommended,
+            directSelection: nil,
+            isDirectLibraryShortcut: false
         )
     }
 
     private func shortcutPillSelection(
         for libraryId: Int,
         categoryType: TVLibraryTabType
-    ) -> Binding<TVLibraryPill> {
-        Binding(
-            get: {
-                resolvedLibraryRootPill(
-                    categorySelection: pillSelections[categoryType] ?? .recommended,
-                    directSelection: shortcutPillSelections[libraryId],
-                    isDirectLibraryShortcut: true
-                )
-            },
-            set: { shortcutPillSelections[libraryId] = $0 }
+    ) -> TVLibraryPill {
+        resolvedLibraryRootPill(
+            categorySelection: pillSelections[categoryType] ?? .recommended,
+            directSelection: shortcutPillSelections[libraryId],
+            isDirectLibraryShortcut: true
         )
     }
 

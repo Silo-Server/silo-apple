@@ -3,15 +3,13 @@ import SwiftUI
 
 /// Grid + letter-rail view for a single library on tvOS.
 ///
-/// Can be entered either from the landing page (with a pre-applied filter,
-/// e.g. genre=Action) or directly (`TVLibraryFilter.none`) for a full browse.
-/// The letter rail always sits on the right and modifies `namePrefix` on the
-/// current filter, so "Action / T" is a valid composite state.
+/// Entered as a full browse; the view model restores any persisted per-library
+/// filter. The letter rail always sits on the right and modifies `namePrefix`
+/// on the current filter, so "Action / T" is a valid composite state.
 struct TVLibraryGridView: View {
     let libraryId: Int
     let libraryName: String
     let libraryType: String
-    let initialFilter: CatalogFilterState
     let subtitle: String?
     /// Pushed full-screen entries render the big library header; Skyline
     /// pill embeds hide it — the top bar + pill row already say where the
@@ -46,7 +44,6 @@ struct TVLibraryGridView: View {
         libraryId: Int,
         libraryName: String,
         libraryType: String,
-        initialFilter: CatalogFilterState = .none,
         subtitle: String? = nil,
         showsHeader: Bool = true,
         showsAlphabetRail: Bool = true,
@@ -58,7 +55,6 @@ struct TVLibraryGridView: View {
         self.libraryId = libraryId
         self.libraryName = libraryName
         self.libraryType = libraryType
-        self.initialFilter = initialFilter
         self.subtitle = subtitle
         self.showsHeader = showsHeader
         self.showsAlphabetRail = showsAlphabetRail
@@ -68,10 +64,8 @@ struct TVLibraryGridView: View {
         self.onTopMenuFocusRequest = onTopMenuFocusRequest
         _viewModel = State(initialValue: TVLibraryGridViewModel(
             libraryId: libraryId,
-            libraryType: libraryType,
-            initialFilter: initialFilter
+            libraryType: libraryType
         ))
-        _selectedPrefix = State(initialValue: initialFilter.namePrefix)
     }
 
     var body: some View {

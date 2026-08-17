@@ -8,8 +8,8 @@ import SwiftUI
 ///
 /// The on-page pill row was removed — the tab lands on Recommended with no
 /// chrome over the hero. The other sub-destinations (Collections · Browse)
-/// stay reachable from the top-bar cascade dropdown (§5.3), which commits
-/// `selectedPill`.
+/// stay reachable from the top-bar cascade dropdown (§5.3), which commits the
+/// shell's pill selection.
 ///
 /// Focus zones (§7), top to bottom: top bar → content. Content now hands
 /// Up straight to the bar, since nothing sits between them.
@@ -23,9 +23,9 @@ struct TVLibraryTypeTabView: View {
     let activeLibrary: Library?
     /// Selected sub-destination, owned by the shell so it survives tab
     /// switches within a session (§8); cold start always lands on
-    /// Recommended. The on-page pill row is gone, so this is written only by
-    /// the cascade dropdown.
-    @Binding var selectedPill: TVLibraryPill
+    /// Recommended. The on-page pill row is gone, so the shell writes it only
+    /// when the cascade dropdown commits.
+    let selectedPill: TVLibraryPill
     var focusRequest: Int = 0
     var isTopMenuFocused: Bool = false
     let onTopMenuFocusRequest: (() -> Void)?
@@ -39,10 +39,10 @@ struct TVLibraryTypeTabView: View {
                     pillContent(for: activeLibrary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         // §4.2 sub-destination content switch: the cascade
-                        // dropdown commits a new `selectedPill`, and selecting
-                        // the tab crossfades the swap. Keyed on the pill so a
-                        // switch inserts the new content and removes the old;
-                        // Reduce Motion drops the drift to opacity only.
+                        // dropdown commits a new pill in the shell, and
+                        // selecting the tab crossfades the swap. Keyed on the
+                        // pill so a switch inserts the new content and removes
+                        // the old; Reduce Motion drops the drift to opacity only.
                         .id(selectedPill)
                         .transition(pillContentTransition)
                 }
@@ -83,7 +83,6 @@ struct TVLibraryTypeTabView: View {
                 libraryId: library.id,
                 libraryName: library.name,
                 libraryType: library.type,
-                initialFilter: .none,
                 showsHeader: false,
                 showsAlphabetRail: true,
                 topContentInset: ContinuumTheme.Skyline.libraryContentTopInset,
