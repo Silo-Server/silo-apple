@@ -20,6 +20,7 @@ struct TVSettingsView: View {
     @State private var viewModel = TVSettingsViewModel()
     @State private var diagnosticsModel = DiagnosticsViewModel()
     @State private var showSignOutConfirm = false
+    @State private var showPrivacyPolicy = false
     @State private var selectedCategory: TVSettingsCategory = .general
     @State private var activePicker: TVSettingsPickerRequest?
     @State private var pendingPickerFocus: TVSettingsDetailFocus?
@@ -65,6 +66,12 @@ struct TVSettingsView: View {
                 .onDisappear(perform: restorePickerFocus)
                 .zIndex(2)
             }
+
+            if showPrivacyPolicy {
+                TVPrivacyPolicyOverlay(dismiss: dismissPrivacyPolicy)
+                    .transition(.opacity)
+                    .zIndex(3)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSignOutConfirm)
@@ -76,6 +83,7 @@ struct TVSettingsView: View {
             if focus != nil,
                activePicker == nil,
                !showSignOutConfirm,
+               !showPrivacyPolicy,
                !isRestoringDetailFocus {
                 preferredFocusOwner = .rail
             }
@@ -95,6 +103,7 @@ struct TVSettingsView: View {
             if let focus,
                activePicker == nil,
                !showSignOutConfirm,
+               !showPrivacyPolicy,
                !isRestoringDetailFocus {
                 preferredDetailFocus = focus
                 preferredFocusOwner = .detail
@@ -134,6 +143,7 @@ struct TVSettingsView: View {
                 .frame(width: 490)
                 .disabled(
                     showSignOutConfirm
+                        || showPrivacyPolicy
                         || activePicker != nil
                         || isRestoringDetailFocus
                 )
@@ -149,7 +159,7 @@ struct TVSettingsView: View {
 
             detailPane
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .disabled(showSignOutConfirm || activePicker != nil)
+                .disabled(showSignOutConfirm || showPrivacyPolicy || activePicker != nil)
                 .defaultFocus(
                     $detailFocus,
                     preferredDetailFocus,
@@ -336,6 +346,29 @@ struct TVSettingsView: View {
         }
     }
 
+    private func presentPrivacyPolicy() {
+        preferredFocusOwner = .detail
+        preferredDetailFocus = .serverPrivacyPolicy
+        railFocus = nil
+        detailFocus = nil
+        showPrivacyPolicy = true
+    }
+
+    private func dismissPrivacyPolicy() {
+        showPrivacyPolicy = false
+        preferredFocusOwner = .detail
+        preferredDetailFocus = .serverPrivacyPolicy
+        isRestoringDetailFocus = true
+        Task { @MainActor in
+            await Task.yield()
+            resetFocus(in: settingsFocusScope)
+            resetFocus(in: detailFocusScope)
+            detailFocus = .serverPrivacyPolicy
+            try? await Task.sleep(for: .milliseconds(120))
+            isRestoringDetailFocus = false
+        }
+    }
+
     private func presentPicker(_ request: TVSettingsPickerRequest) {
         // Remove every underlying focus candidate in the same update that
         // mounts the modal. The picker then becomes the sole focus owner.
@@ -509,6 +542,20 @@ struct TVSettingsView: View {
 
             TVSettingsInfoRow(title: "App Version", value: Self.versionString)
 
+            Button(action: presentPrivacyPolicy) {
+                HStack(spacing: 16) {
+                    Image(systemName: "hand.raised.fill")
+                        .font(.system(size: 22, weight: .medium))
+                    Text("Privacy Policy")
+                        .font(.system(size: 26))
+                    Spacer(minLength: 0)
+                    Image(systemName: "qrcode")
+                        .font(.system(size: 18, weight: .semibold))
+                        .opacity(0.55)
+                }
+            }
+            .buttonStyle(TVSettingsPaneRowStyle())
+            .focused($detailFocus, equals: .serverPrivacyPolicy)
         }
     }
 
@@ -562,6 +609,7 @@ enum TVSettingsDetailFocus: Hashable {
     case subtitleBackgroundOpacity
     case subtitleBackgroundColor
     case subtitlePosition
+    case serverPrivacyPolicy
 }
 
 // MARK: - Categories
