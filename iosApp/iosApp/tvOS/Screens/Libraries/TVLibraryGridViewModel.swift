@@ -44,19 +44,12 @@ final class TVLibraryGridViewModel {
     private var prefetchedPosterURLs: Set<URL> = []
     private var generation: Int = 0
 
-    init(libraryId: Int, libraryType: String, initialFilter: CatalogFilterState = .none) {
+    init(libraryId: Int, libraryType: String) {
         self.libraryId = libraryId
         self.mediaType = BrowseMediaType.from(libraryType: libraryType)
         self.sendsType = SiloMediaType.isSeries(libraryType) || SiloMediaType.isMovieLibrary(libraryType)
-        // A non-default initial filter (a deep-linked landing tap) wins;
-        // otherwise restore the persisted per-library state.
-        if !initialFilter.isDefault {
-            self.filter = initialFilter
-        } else if let saved = BrowsePrefsStore.shared.savedState(libraryId: libraryId) {
-            self.filter = saved
-        } else {
-            self.filter = initialFilter
-        }
+        // Restore the persisted per-library state, else start unfiltered.
+        self.filter = BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
         facets = FacetLoader.shared.cachedFacets(libraryId: libraryId)
         hydratePage1FromCache()
     }
