@@ -1,6 +1,6 @@
 import Foundation
 
-/// Encodes/decodes `CardOverlayPrefs` to/from the JSON document the server
+/// Decodes `CardOverlayPrefs` from the JSON document the server
 /// stores under the `ui.card_overlays` contract setting (and, on
 /// pre-contract servers, the legacy `card_overlays` user setting). The
 /// shape must stay compatible with the web's `parseOverlayPrefs` in
@@ -47,18 +47,6 @@ enum OverlaySchema {
             return parseV2(dict)
         }
         return migrateFromV1(dict)
-    }
-
-    static func serialize(_ prefs: CardOverlayPrefs) -> String {
-        let dict = toDict(prefs)
-        // Sorted keys keep the wire format stable so the user setting
-        // doesn't churn the server-side change log on every save.
-        let options: JSONSerialization.WritingOptions = [.sortedKeys, .withoutEscapingSlashes]
-        guard let data = try? JSONSerialization.data(withJSONObject: dict, options: options),
-              let str = String(data: data, encoding: .utf8) else {
-            return "{}"
-        }
-        return str
     }
 
     // MARK: - V2
@@ -136,26 +124,5 @@ enum OverlaySchema {
 
     private static func isHexColor(_ value: String) -> Bool {
         value.range(of: #"^#[0-9a-fA-F]{6}$"#, options: .regularExpression) != nil
-    }
-
-    // MARK: - Encoding
-
-    private static func toDict(_ prefs: CardOverlayPrefs) -> [String: Any] {
-        var items: [String: Any] = [:]
-        for (id, cfg) in prefs.items {
-            var entry: [String: Any] = [
-                "enabled": cfg.enabled,
-                "position": cfg.position.rawValue,
-            ]
-            if let accent = cfg.accentColor { entry["accentColor"] = accent }
-            if let showIcon = cfg.showIcon { entry["showIcon"] = showIcon }
-            items[id.rawValue] = entry
-        }
-        return [
-            "version": prefs.version,
-            "preset": prefs.preset.rawValue,
-            "order": prefs.order.map { $0.rawValue },
-            "items": items,
-        ]
     }
 }

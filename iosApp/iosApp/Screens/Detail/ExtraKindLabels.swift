@@ -7,19 +7,6 @@ import Foundation
 /// list; unknown kinds degrade to the generic label rather than showing a
 /// raw identifier like `behind_the_scenes` to a viewer.
 enum ExtraKindLabels {
-    /// Every kind the server can store, in display order. `deleted_scene`
-    /// is local-only — remote providers never emit it.
-    static let allKinds = [
-        "trailer",
-        "teaser",
-        "featurette",
-        "clip",
-        "behind_the_scenes",
-        "bloopers",
-        "deleted_scene",
-        "other",
-    ]
-
     private static let singular: [String: String] = [
         "trailer": "Trailer",
         "teaser": "Teaser",

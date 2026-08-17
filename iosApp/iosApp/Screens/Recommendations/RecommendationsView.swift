@@ -174,9 +174,9 @@ struct RecommendationsView: View {
 
             switch savedListSelection {
             case .watchlist:
-                WatchlistView(showsNavigationTitle: false)
+                PersonalListGridView(kind: .watchlist, showsNavigationTitle: false)
             case .favorites:
-                FavoritesView(showsNavigationTitle: false)
+                PersonalListGridView(kind: .favorites, showsNavigationTitle: false)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

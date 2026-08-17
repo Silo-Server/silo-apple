@@ -44,15 +44,6 @@ enum OverlayPosition: String, CaseIterable, Codable, Hashable {
     case topRight = "top-right"
     case bottomLeft = "bottom-left"
     case bottomRight = "bottom-right"
-
-    var displayName: String {
-        switch self {
-        case .topLeft:     return "Top Left"
-        case .topRight:    return "Top Right"
-        case .bottomLeft:  return "Bottom Left"
-        case .bottomRight: return "Bottom Right"
-        }
-    }
 }
 
 enum OverlayCategory: String, CaseIterable, Codable, Hashable {
@@ -60,24 +51,6 @@ enum OverlayCategory: String, CaseIterable, Codable, Hashable {
     case ratings
     case metadata
     case ribbons
-
-    var displayName: String {
-        switch self {
-        case .tech:     return "Media Info"
-        case .ratings:  return "Ratings"
-        case .metadata: return "Metadata"
-        case .ribbons:  return "Ribbons"
-        }
-    }
-
-    var description: String {
-        switch self {
-        case .tech:     return "Quality and codec details from the file itself."
-        case .ratings:  return "External scores and age ratings."
-        case .metadata: return "Year, runtime, studio, network, language."
-        case .ribbons:  return "Status badges and award ribbons (data sources pending)."
-        }
-    }
 }
 
 enum PresetId: String, CaseIterable, Codable, Hashable {
@@ -308,24 +281,4 @@ struct OverlayPreset {
         case capsule
         case rounded(CGFloat)
     }
-}
-
-/// Curated accent palette shown in the settings UI. Mirrors the web
-/// `ACCENT_PALETTE` so a color picked on one platform looks the same on
-/// the other.
-enum OverlayAccentPalette {
-    static let entries: [(label: String, hex: String)] = [
-        ("Gold",    "#f5c518"),
-        ("Tomato",  "#fa320a"),
-        ("Orange",  "#f97316"),
-        ("Amber",   "#f59e0b"),
-        ("Emerald", "#10b981"),
-        ("Cyan",    "#06b6d4"),
-        ("Blue",    "#3b82f6"),
-        ("Indigo",  "#6366f1"),
-        ("Violet",  "#8b5cf6"),
-        ("Pink",    "#ec4899"),
-        ("Slate",   "#64748b"),
-        ("White",   "#ffffff"),
-    ]
 }
