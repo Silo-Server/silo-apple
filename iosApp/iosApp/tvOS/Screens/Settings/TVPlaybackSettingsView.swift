@@ -5,7 +5,7 @@ import SwiftUI
 /// the two-pane `TVSettingsView`. The root view owns modal picker
 /// presentation so only one focus graph is active at a time.
 struct TVPlaybackSettingsPane: View {
-    @Bindable var viewModel: TVSettingsViewModel
+    @Bindable var viewModel: SettingsViewModel
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let presentPicker: (TVSettingsPickerRequest) -> Void
 

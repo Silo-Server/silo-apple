@@ -6,7 +6,7 @@ import SwiftUI
 /// / forced) save through the root view's `onChange` handlers; the
 /// appearance block writes a per-device override directly.
 struct TVSubtitleSettingsPane: View {
-    @Bindable var viewModel: TVSettingsViewModel
+    @Bindable var viewModel: SettingsViewModel
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let presentPicker: (TVSettingsPickerRequest) -> Void
     @State private var showResetConfirmation = false

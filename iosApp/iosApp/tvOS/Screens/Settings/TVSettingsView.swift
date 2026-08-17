@@ -17,7 +17,7 @@ import SwiftUI
 /// geometric proximity can select a lower row. The outer scope still chooses
 /// the active pane for page entry and modal restoration (see docs/tvos-focus.md).
 struct TVSettingsView: View {
-    @State private var viewModel = TVSettingsViewModel()
+    @State private var viewModel = SettingsViewModel()
     @State private var diagnosticsModel = DiagnosticsViewModel()
     @State private var showSignOutConfirm = false
     @State private var selectedCategory: TVSettingsCategory = .general
@@ -69,7 +69,7 @@ struct TVSettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSignOutConfirm)
         .task {
-            await viewModel.load()
+            await viewModel.loadSettings()
             await diagnosticsModel.load(profile: viewModel.activeProfile)
         }
         .onChange(of: railFocus) { _, focus in

@@ -1,6 +1,7 @@
 import Foundation
 
-/// State container for the iOS settings screen.
+/// State container for the settings screen on every platform: iOS, tvOS
+/// and macOS all drive their settings UI from this one type.
 ///
 /// Two scopes meet here. Playback choices that belong to *this device* (quality,
 /// skip behaviour, sync offsets) go through ``PlayerSettings`` at
@@ -8,13 +9,13 @@ import Foundation
 /// metadata language are the *profile's* choices and go through
 /// ``ProfileSettingsWriter`` at `profile` — the same keys, scope and wire
 /// values the web and Android clients use, so an edit made on any of them reads
-/// back the same on the others. The tvOS screen is the twin of this one.
+/// back the same on the others. The server resolves series → library → device →
+/// profile at playback time, so a profile-level edit applies everywhere unless a
+/// narrower override exists.
 @Observable
 class SettingsViewModel {
     var userInfo: UserInfo?
     var activeProfile: UserProfile?
-    var isLoading = false
-    var error: String?
 
     /// Active server URL. Reads through the registry so a server switch
     /// reflects here without a reload. Used by the account-card subtitle
@@ -47,7 +48,6 @@ class SettingsViewModel {
 
     // Subtitle styling (local — applies to renderer overrides, not the
     // language/behavior selection that lives server-side).
-    var subtitleSize: String = "medium"
     var subtitleAppearance: SubtitleAppearance = PlayerSettings.shared.subtitleAppearance
     var subtitleUsesDeviceAppearanceOverride: Bool = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
     var subtitleMatchesSystemAppearance: Bool = PlayerSettings.shared.subtitleMatchesSystemAppearance
@@ -59,9 +59,8 @@ class SettingsViewModel {
     }
 
     /// Profile-scoped preferences, written at `scope=profile` through the
-    /// canonical settings API. Shared with the tvOS screen so the two cannot
-    /// drift; the properties below forward to it so this type's existing API
-    /// is unchanged for its views.
+    /// canonical settings API. The properties below forward to it so this
+    /// type's existing API is unchanged for its views.
     let prefs = ProfilePrefsEditor()
 
     typealias PrefSaveState = ProfilePrefsEditor.PrefSaveState
@@ -122,6 +121,31 @@ class SettingsViewModel {
         )
     }
 
+    // MARK: - Derived
+
+    var isAdmin: Bool { userInfo?.isAdmin == true }
+
+    var displayName: String {
+        if let profileName = activeProfile?.name, !profileName.isEmpty {
+            return profileName
+        }
+        return userInfo?.username ?? "Silo"
+    }
+
+    var accountSubtitle: String {
+        if isAdmin { return "Administrator" }
+        if let username = userInfo?.username, !username.isEmpty {
+            return username
+        }
+        return "Signed in"
+    }
+
+    var profileAvatar: String? {
+        activeProfile?.avatarEmoji
+    }
+
+    // MARK: - Load / save
+
     /// Main-actor isolated: it publishes into observable state the settings
     /// views are already rendering, and seeds the profile editor, which is
     /// itself main-actor bound.
@@ -138,7 +162,6 @@ class SettingsViewModel {
         dolbyVisionEnabled = PlayerSettings.shared.dolbyVisionEnabled
         preferProfile7HDR10Fallback = PlayerSettings.shared.preferProfile7HDR10Fallback
         seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
-        subtitleSize = UserDefaults.standard.string(forKey: "subtitleSize") ?? "medium"
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
         subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
@@ -162,10 +185,6 @@ class SettingsViewModel {
         prefs.bindProfile(id: activeProfileId)
         prefs.seed(from: activeProfile)
         await prefs.load()
-    }
-
-    func saveSubtitleSizePreference() {
-        UserDefaults.standard.set(subtitleSize, forKey: "subtitleSize")
     }
 
     /// Apply a shared quality preset, which stores the contract's two axes.
@@ -258,6 +277,14 @@ class SettingsViewModel {
         await PlayerSettings.shared.setSubtitleDeviceOverrideEnabled(enabled)
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
+    }
+
+    @MainActor
+    func resetSubtitleAppearance() async {
+        await PlayerSettings.shared.setSubtitleAppearance(.default)
+        subtitleAppearance = PlayerSettings.shared.subtitleAppearance
+        subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
+        subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
     }
 
     @MainActor
