@@ -75,7 +75,7 @@ Retired along with it:
 | Source shape | Old route | Current route |
 | --- | --- | --- |
 | H.264 / HEVC in `mkv`, `ts`, `m2ts` | CompatibilityPlayer (or loopback when DV/HDR) | `siloPlayerLoopback`, `videoOutputMode = .copy` |
-| SDR HEVC, long-GOP H.264 | CompatibilityPlayer (loopback was blocked as startup-unreliable) | `siloPlayerLoopback` under the VOD serving mode; the old `h264_loopback_startup_unreliable` / `hevc_sdr_loopback_startup_unreliable` blockers only apply when `player.apple.siloplayer_primary_enabled` is explicitly `false` |
+| SDR HEVC, long-GOP H.264 | CompatibilityPlayer (loopback was blocked as startup-unreliable) | `siloPlayerLoopback` under the VOD serving mode; the old `h264_loopback_startup_unreliable` / `hevc_sdr_loopback_startup_unreliable` blockers were deleted with the EVENT serving mode on 2026-08-17 |
 | AV1, hardware-decode device | CompatibilityPlayer | `siloPlayerLoopback`, `videoOutputMode = .passthroughAV1` (remuxed with an `av01` sample entry) |
 | AV1 without hardware decode; VP9, VP8, MPEG-2, MPEG-4 Part 2, MSMPEG4v3, VC-1, WMV3 — SDR, ≤ 1080p | CompatibilityPlayer | `siloPlayerLoopback`, `videoOutputMode = .transcodeHEVC` (or `.transcodeH264` when no HEVC encoder opens) |
 | The same bridge codecs in `avi`, `wmv`, `asf`, `webm`, `flv`, `mpg`, `vob`, … | CompatibilityPlayer | `siloPlayerLoopback` — the bridge tier of `siloContainerIsNormalizable` opens these containers; the copy tier still does not |

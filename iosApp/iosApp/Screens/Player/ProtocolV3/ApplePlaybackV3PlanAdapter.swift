@@ -336,8 +336,7 @@ enum ApplePlaybackV3PlanAdapter {
             sourceVideoFrameRate: base.sourceVideoFrameRate,
             selectedAudio: base.selectedAudio,
             availableAudioTracks: base.availableAudioTracks,
-            manifestMetadata: manifestMetadata,
-            servingMode: base.servingMode
+            manifestMetadata: manifestMetadata
         )
     }
 

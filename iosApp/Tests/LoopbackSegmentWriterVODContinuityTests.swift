@@ -66,8 +66,7 @@ final class LoopbackSegmentWriterVODContinuityTests: XCTestCase {
                 compatibilityBrand: nil,
                 videoRange: "SDR",
                 mayClaimAtmos: false
-            ),
-            servingMode: .vodPlan
+            )
         )
     }
 

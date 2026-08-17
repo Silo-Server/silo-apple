@@ -101,8 +101,7 @@ final class LoopbackVideoBridgeWriterTests: XCTestCase {
                 compatibilityBrand: nil,
                 videoRange: "SDR",
                 mayClaimAtmos: false
-            ),
-            servingMode: .vodPlan
+            )
         )
     }
 

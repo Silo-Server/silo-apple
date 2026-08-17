@@ -2314,7 +2314,6 @@ class PlayerViewModel {
                 preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
                 selectedPrimarySubtitleTrackId: selectedSubtitleId,
                 selectedSecondarySubtitleTrackId: selectedSecondarySubtitleId,
-                siloPlayerPrimaryEnabled: LoopbackServingMode.gated == .vodPlan,
                 dolbyVisionPolicy: settings.dolbyVisionPolicySnapshot,
                 displayCapabilities: ApplePlaybackDisplayCapabilities.probe()
             )
@@ -2739,8 +2738,7 @@ class PlayerViewModel {
         let backend = reusingActiveEngine && avPlayerBackend != nil
             ? prepareBackend(for: loadPlan.engine)
             : installBackend(for: loadPlan.engine)
-        let startTime = loadPlan.startMode.seconds
-        let backendTimelineOffset = avPlayerTimelineOffset(for: loadPlan, startTime: startTime)
+        let backendTimelineOffset = avPlayerTimelineOffset(for: loadPlan)
         if loadPlan.engine == .siloPlayerLoopback {
             playbackTimelineOffset = backendTimelineOffset
         }
@@ -2943,8 +2941,7 @@ class PlayerViewModel {
                     sourceVideoFrameRate: session.sourceVideoFrameRate,
                     selectedAudio: session.selectedAudio,
                     availableAudioTracks: session.availableAudioTracks,
-                    manifestMetadata: session.manifestMetadata,
-                    servingMode: session.servingMode
+                    manifestMetadata: session.manifestMetadata
                 )
             }
             let proxiedPlan = PlaybackExecutionPlan(
@@ -3026,11 +3023,13 @@ class PlayerViewModel {
         session: PlaybackSessionResponse,
         requestedStart: Double?
     ) -> Double {
+        // The static VOD playlist's requested start is an in-item seek on the
+        // plan's stable playlist axis, not the playlist origin. Treating it as
+        // the origin would double the reported position after a mid-playback
+        // replan; start at zero and let the backend publish the resolved
+        // segment-plan anchor before item creation.
         if plan.engine == .siloPlayerLoopback {
-            return Self.initialLoopbackTimelineOffset(
-                servingMode: plan.loopbackSession?.servingMode,
-                startTime: plan.startMode.seconds
-            )
+            return 0
         }
         guard plan.delivery == .remux,
               plan.engine == .avPlayerHLS,
@@ -3046,37 +3045,17 @@ class PlayerViewModel {
         return 0
     }
 
-    private func avPlayerTimelineOffset(
-        for plan: PlaybackExecutionPlan,
-        startTime: Double
-    ) -> Double {
+    private func avPlayerTimelineOffset(for plan: PlaybackExecutionPlan) -> Double {
         switch plan.engine {
         case .siloPlayerLoopback:
-            return Self.initialLoopbackTimelineOffset(
-                servingMode: plan.loopbackSession?.servingMode,
-                startTime: startTime
-            )
+            // See `timelineOffset(for:session:requestedStart:)`: the static
+            // VOD item always starts on the plan's own axis.
+            return 0
         case .avPlayerHLS:
             return playbackTimelineOffset
         case .avPlayerNativeDirect:
             return 0
         }
-    }
-
-    /// The growing EVENT playlist is reanchored at each requested start, so
-    /// its AVPlayer clock is relative to that start. A static VOD playlist is
-    /// different: the requested start is an in-item seek on the plan's stable
-    /// playlist axis. Treating it as the playlist origin doubles the reported
-    /// position after a mid-playback replan. Start VOD at zero and let the
-    /// backend publish the resolved segment-plan anchor before item creation.
-    static func initialLoopbackTimelineOffset(
-        servingMode: LoopbackServingMode?,
-        startTime: Double
-    ) -> Double {
-        if servingMode == .vodPlan {
-            return 0
-        }
-        return startTime.isFinite ? max(0, startTime) : 0
     }
 
     /// A server transcode is exposed as a growing HLS playlist while FFmpeg is
@@ -6764,8 +6743,7 @@ class PlayerViewModel {
                 streamRequest: streamRequest,
                 videoMode: videoMode,
                 videoRange: videoRange,
-                sourceStartTimeSeconds: sourceStartTimeSeconds,
-                servingMode: LoopbackServingMode.gated
+                sourceStartTimeSeconds: sourceStartTimeSeconds
             )
         }
     }

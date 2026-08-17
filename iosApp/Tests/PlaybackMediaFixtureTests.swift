@@ -163,7 +163,6 @@ final class PlaybackMediaFixtureTests: XCTestCase {
                     preferredAudioTrackIndex: 0,
                     selectedPrimarySubtitleTrackId: nil,
                     selectedSecondarySubtitleTrackId: nil,
-                    siloPlayerPrimaryEnabled: true,
                     dolbyVisionPolicy: .default
                 )
             )
@@ -225,7 +224,6 @@ final class PlaybackMediaFixtureTests: XCTestCase {
                 preferredAudioTrackIndex: nil,
                 selectedPrimarySubtitleTrackId: nil,
                 selectedSecondarySubtitleTrackId: nil,
-                siloPlayerPrimaryEnabled: true,
                 dolbyVisionPolicy: .default
             )
         )
