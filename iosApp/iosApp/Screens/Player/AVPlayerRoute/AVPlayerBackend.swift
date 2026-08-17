@@ -4394,12 +4394,10 @@ final class AVPlayerBackend {
             return .initSegmentMissing
         case .unsupportedSelectedAudioCodec:
             return .unsupportedSelectedAudioCodec
-        case .videoBridgeTooSlow:
-            return .videoBridgeTooSlow
         case .allocInput, .allocOutput, .allocPacket, .openInput, .seekInput,
              .findStreamInfo, .noStreams:
             return .sourceUnavailable
-        case .writeHeader, .audioTranscodeSetup, .videoTranscodeSetup, .bootstrapFailed,
+        case .writeHeader, .audioTranscodeSetup, .bootstrapFailed,
              .profile81ConversionFailed, .profile5ConfigUnusable, .muxWriteFailures,
              .fileWriteFailed, .vodMoovBlocked, .vodStartupConsumerWedge:
             return .remux

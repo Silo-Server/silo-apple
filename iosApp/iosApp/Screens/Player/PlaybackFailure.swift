@@ -65,8 +65,6 @@ enum PlaybackFailure: Equatable {
         case initSegmentMissing
         /// The selected audio codec has no route into fMP4.
         case unsupportedSelectedAudioCodec
-        /// Software decode + encode fell below realtime for good.
-        case videoBridgeTooSlow
         /// The source could not be opened, seeked, or probed at all.
         case sourceUnavailable
         /// The mux side produced no usable output.

@@ -91,7 +91,6 @@ final class PlayerErrorClassificationMatrixTests: XCTestCase {
             .writerFailed(kind: .prematureSourceEnd, detail: "prematureSourceEnd(readRC: -541478725, shortfallBytes: Optional(4096), shortfallSeconds: Optional(12.5))"),
             .writerFailed(kind: .initSegmentMissing, detail: "initSegmentMissing"),
             .writerFailed(kind: .unsupportedSelectedAudioCodec, detail: "unsupportedSelectedAudioCodec(\"dts\")"),
-            .writerFailed(kind: .videoBridgeTooSlow, detail: "videoBridgeTooSlow(fps: 11.0, required: 24.0)"),
             .writerFailed(kind: .sourceUnavailable, detail: "openInput(-2)"),
             .writerFailed(kind: .remux, detail: "vodMoovBlocked(closingSegment: 7, audioRouted: true)"),
             .writerFailed(kind: .other, detail: "someFutureWriterError"),
