@@ -240,19 +240,9 @@ final class LoopbackSegmentStore {
         // The complete segment supersedes any in-progress publication;
         // streaming readers finish from the stored data.
         progressiveSegments.removeValue(forKey: name)
-        var vodDoomedURLs: [URL] = []
-        if vodRetentionBudgetBytes > 0 {
-            if let index = Self.segmentIndex(fromName: name) {
-                vodHighWaterIndex = max(vodHighWaterIndex, index)
-            }
-            vodDoomedURLs = vodPruneLocked()
-        }
         let evicted = evictIfNeededLocked()
         lock.broadcast()
         lock.unlock()
-        for url in vodDoomedURLs {
-            try? FileManager.default.removeItem(at: url)
-        }
         mirror(data, name: name)
         return SegmentAppendResult(evictedSegmentNames: evicted)
     }

@@ -957,10 +957,6 @@ final class AVPlayerBackend {
         return true
     }
 
-    func prepareToBackground() {
-        pause()
-    }
-
     var isExternalPlaybackActive: Bool {
         avPlayer.isExternalPlaybackActive
     }
@@ -1346,7 +1342,6 @@ final class AVPlayerBackend {
         applyUserGain()
     }
     var currentUserVolume: Float { userVolume }
-    var currentUserMuted: Bool { userMuted }
 
     // User mute is modeled as volume = 0, NOT avPlayer.isMuted: the latter is
     // owned by the initial-video-display gate (begin/finishInitialVideoDisplayGate)
@@ -1850,7 +1845,6 @@ final class AVPlayerBackend {
                 sessionSpec: spec.reanchored(at: plan.sourceStartSeconds(ofSegment: current)),
                 sessionDir: sessionDir,
                 segmentStore: store,
-                debugDirectory: nil,
                 vodBaseIndex: current,
                 recycledInput: handoff
             )
@@ -2017,8 +2011,7 @@ final class AVPlayerBackend {
             self.startSiloLoopbackWriter(sessionID: sessionID,
                                              sessionSpec: sessionSpec,
                                              sessionDir: sessionDir,
-                                             segmentStore: store,
-                                             debugDirectory: nil)
+                                             segmentStore: store)
         }
     }
 
@@ -2028,7 +2021,6 @@ final class AVPlayerBackend {
         sessionSpec: LoopbackSessionSpec,
         sessionDir: URL,
         segmentStore: LoopbackSegmentStore,
-        debugDirectory: URL?,
         vodBaseIndex: Int = 0,
         recycledInput: LoopbackInputHandoff? = nil
     ) {
@@ -2036,7 +2028,6 @@ final class AVPlayerBackend {
             sessionSpec: sessionSpec,
             outputDirectory: sessionDir,
             segmentStore: segmentStore,
-            debugOutputDirectory: debugDirectory,
             vodPlan: vodPlanForCurrentSource(spec: sessionSpec),
             vodBaseIndex: vodBaseIndex,
             recycledInputHandoff: recycledInput

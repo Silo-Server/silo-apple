@@ -222,13 +222,6 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         stateLock.unlock()
     }
 
-    /// Stream index currently being fed into `slot`, or nil when idle.
-    func selectedStreamIndex(for slot: SubtitleSlot) -> Int32? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return activeSelections[slot]?.streamIndex
-    }
-
     func seek(to mediaSeconds: Double) {
         stateLock.lock()
         let selections = activeSelections

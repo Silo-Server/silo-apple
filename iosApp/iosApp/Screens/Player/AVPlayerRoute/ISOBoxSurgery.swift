@@ -115,10 +115,6 @@ enum ISOBoxSurgery {
     /// `hdlr` layout (ISO/IEC 14496-12 §8.4.3): 4-byte FullBox header
     /// (version + flags) then 4 bytes pre_defined (zero) then the 4-byte
     /// handler_type. For video tracks that's `vide`.
-    static func isVideoTrak(in data: Data, trak: Box) -> Bool {
-        trakHandler(in: data, trak: trak) == "vide"
-    }
-
     private static func trakHandler(in data: Data, trak: Box) -> String? {
         guard let mdia = findChildBox(in: data, parent: trak, childType: "mdia") else { return nil }
         guard let hdlr = findChildBox(in: data, parent: mdia, childType: "hdlr") else { return nil }
@@ -174,9 +170,18 @@ enum ISOBoxSurgery {
     }
 
     static func childBoxes(in data: Data, parent: Box, contentSkip: Int = 0) -> [(type: String, box: Box)] {
+        boxes(
+            in: data,
+            from: parent.start + 8 + contentSkip,
+            to: parent.start + parent.size
+        )
+    }
+
+    /// Walk the boxes laid out in `[start, end)`. Used both for a parent box's
+    /// children and for a whole-buffer top-level scan.
+    static func boxes(in data: Data, from start: Int, to end: Int) -> [(type: String, box: Box)] {
         var result: [(type: String, box: Box)] = []
-        var cursor = parent.start + 8 + contentSkip
-        let end = parent.start + parent.size
+        var cursor = start
         while cursor + 8 <= end {
             let size = Int(readU32BE(data, at: cursor))
             if size < 8 || cursor + size > end { return result }

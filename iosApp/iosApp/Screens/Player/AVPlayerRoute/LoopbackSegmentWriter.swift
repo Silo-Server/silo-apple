@@ -362,7 +362,6 @@ final class LoopbackSegmentWriter {
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "LoopbackSegmentWriter"
     )
-    private static let traceTopLevelBoxes = false
     private static let verboseSegmentLogging =
         ProcessInfo.processInfo.environment["SILO_TRACE_DV_SEGMENTS"] == "1"
     /// Producer-loop stage timing, logged once per second beside the source
@@ -386,7 +385,6 @@ final class LoopbackSegmentWriter {
     let sourceStartTimeSeconds: Double
     let outputDirectory: URL
     let segmentStore: LoopbackSegmentStore?
-    let debugOutputDirectory: URL?
     let selectedAudioTrackIndex: Int
     let videoMode: LoopbackSessionSpec.VideoMode
     /// Whether the video track is copied or re-encoded. Captured once, like
@@ -569,12 +567,6 @@ final class LoopbackSegmentWriter {
     /// Running total of media duration written to the playlist so we don't
     /// rescan `segmentEntries` on every append.
     private var totalMediaDuration: Double = 0
-    /// Wall-clock-independent sliding retention remains disabled for the local
-    /// fMP4 segments. Spill cleanup is instead coupled to AVPlayer playback
-    /// position via `retireSegmentsBehindPlaybackIfNeeded()`, but normal spill
-    /// retirement leaves the playlist append-only so AVPlayer keeps EVENT
-    /// timeline semantics instead of switching to a sliding live item midstream.
-    private static let segmentRetentionWindowSeconds: Double = 0
     /// Media sequence number of the first segment currently in
     /// `segmentEntries`. Bumped each time the head is evicted; emitted as
     /// `#EXT-X-MEDIA-SEQUENCE` so AVPlayer's EVENT-style refetch sees a
@@ -919,7 +911,6 @@ final class LoopbackSegmentWriter {
         sessionSpec: LoopbackSessionSpec,
         outputDirectory: URL,
         segmentStore: LoopbackSegmentStore? = nil,
-        debugOutputDirectory: URL? = nil,
         targetSegmentDuration: Double = 4.0,
         minimumStartupMediaDuration: Double? = nil,
         vodPlan: LoopbackSegmentPlan? = nil,
@@ -933,7 +924,6 @@ final class LoopbackSegmentWriter {
         self.sourceStartTimeSeconds = sessionSpec.sourceStartTimeSeconds
         self.outputDirectory = outputDirectory
         self.segmentStore = segmentStore
-        self.debugOutputDirectory = debugOutputDirectory
         self.selectedAudioTrackIndex = sessionSpec.selectedAudio.trackIndex
         self.videoMode = sessionSpec.videoMode
         self.videoOutputMode = sessionSpec.videoOutputMode
@@ -5764,10 +5754,6 @@ final class LoopbackSegmentWriter {
 
     private func handleTopLevelBox(type: String, range: Range<Int>) {
         let slice = boxBuffer[range]
-        if Self.traceTopLevelBoxes {
-            cmpLog("[CMP-AVP] box \(type) size=\(range.count) initDone=\(initSegmentWritten)", verbose: true)
-        }
-
         if !initSegmentWritten {
             // Everything up to and including the first `moov` is init segment.
             // `ftyp`, `free`, `moov`. First `moof` or `mdat` marks end of init.
@@ -5907,9 +5893,6 @@ final class LoopbackSegmentWriter {
         } else {
             try data.write(to: outputDirectory.appendingPathComponent(name), options: .atomic)
         }
-        if let debugOutputDirectory {
-            try data.write(to: debugOutputDirectory.appendingPathComponent(name), options: .atomic)
-        }
     }
 
     private func writeMediaSegment(_ data: Data, name: String, duration: Double) throws {
@@ -5918,9 +5901,6 @@ final class LoopbackSegmentWriter {
             removeEvictedSegmentsFromPlaylist(result.evictedSegmentNames)
         } else {
             try data.write(to: outputDirectory.appendingPathComponent(name), options: .atomic)
-        }
-        if let debugOutputDirectory {
-            try data.write(to: debugOutputDirectory.appendingPathComponent(name), options: .atomic)
         }
     }
 
@@ -5933,9 +5913,6 @@ final class LoopbackSegmentWriter {
             }
         } else {
             try body.write(to: outputDirectory.appendingPathComponent(name), atomically: true, encoding: .utf8)
-        }
-        if let debugOutputDirectory {
-            try body.write(to: debugOutputDirectory.appendingPathComponent(name), atomically: true, encoding: .utf8)
         }
     }
 
@@ -6168,7 +6145,7 @@ final class LoopbackSegmentWriter {
     /// stray `styp`/`sidx`-only leftover) carries neither and must not be
     /// published under a plan-indexed segment name.
     private func pendingSegmentContainsMediaBox() -> Bool {
-        for box in childBoxes(in: pendingSegmentBytes, from: 0, to: pendingSegmentBytes.count)
+        for box in ISOBoxSurgery.boxes(in: pendingSegmentBytes, from: 0, to: pendingSegmentBytes.count)
         where box.type == "moof" || box.type == "mdat" {
             return true
         }
@@ -6261,7 +6238,7 @@ final class LoopbackSegmentWriter {
         if vodActive, segmentEntries.count < 3 {
             var tfdts: [String] = []
             var firstVideoTfdt: UInt64?
-            for moof in childBoxes(in: pendingSegmentBytes, from: 0, to: pendingSegmentBytes.count)
+            for moof in ISOBoxSurgery.boxes(in: pendingSegmentBytes, from: 0, to: pendingSegmentBytes.count)
             where moof.type == "moof" {
                 for timing in trackFragmentTimings(inMoof: pendingSegmentBytes, moof: moof.box) {
                     tfdts.append("\(timing.trackID):\(timing.baseDecodeTime)")
@@ -6308,7 +6285,6 @@ final class LoopbackSegmentWriter {
         pendingSegmentBytes = Data()
         pendingSegmentHasVideo = false
         pendingSegmentHasMoof = false
-        evictExpiredSegmentsIfNeeded()
         retireSegmentsBehindPlaybackIfNeeded()
         emitPlaylists(isFinal: false)
         if shouldLogSegmentProgress(index: idx) {
@@ -6475,48 +6451,7 @@ final class LoopbackSegmentWriter {
         guard !names.isEmpty else { return }
 
         let retired = segmentStore.retireSegments(names: names)
-        if LocalHLSPlaylistPolicy.shouldRemoveRetiredSegmentsFromPlaylist {
-            removeEvictedSegmentsFromPlaylist(retired)
-        }
-    }
-
-    /// Evict head segments whose end time is older than the retention window
-    /// behind the live edge. Updates `firstMediaSequence` and removes the
-    /// segment files from disk. No-op when the window is disabled or when
-    /// fewer than 2 segments remain (we always keep the head segment so
-    /// AVPlayer has at least one playable position).
-    private func evictExpiredSegmentsIfNeeded() {
-        guard !vodActive else { return }
-        let window = Self.segmentRetentionWindowSeconds
-        guard window > 0, segmentEntries.count > 1 else { return }
-        var removable = 0
-        var olderDuration: Double = 0
-        for entry in segmentEntries {
-            // Total duration of segments older than `entry`.
-            if olderDuration + entry.duration < totalMediaDuration - window {
-                olderDuration += entry.duration
-                removable += 1
-            } else {
-                break
-            }
-        }
-        // Always keep at least one entry so `EXT-X-MAP` / first-segment
-        // semantics stay sensible while playback is running.
-        removable = min(removable, segmentEntries.count - 1)
-        guard removable > 0 else { return }
-        for entry in segmentEntries.prefix(removable) {
-            let name = String(format: "seg_%06d.m4s", entry.index)
-            let url = outputDirectory.appendingPathComponent(name)
-            do {
-                try FileManager.default.removeItem(at: url)
-            } catch {
-                Self.logger.info(
-                    "[CMP-AVP] evict failed for \(name, privacy: .public): \(String(describing: error), privacy: .public)"
-                )
-            }
-        }
-        segmentEntries.removeFirst(removable)
-        firstMediaSequence += removable
+        removeEvictedSegmentsFromPlaylist(retired)
     }
 
     private struct TrackFragmentTiming {
@@ -6527,7 +6462,7 @@ final class LoopbackSegmentWriter {
 
     private func segmentMediaDuration(in segment: Data) -> Double? {
         var durationsByTrackID: [UInt32: Double] = [:]
-        for moof in childBoxes(in: segment, from: 0, to: segment.count) where moof.type == "moof" {
+        for moof in ISOBoxSurgery.boxes(in: segment, from: 0, to: segment.count) where moof.type == "moof" {
             for timing in trackFragmentTimings(inMoof: segment, moof: moof.box) {
                 guard timing.duration > 0,
                       let timeBase = trackTimeBasesByID[timing.trackID],
@@ -6544,19 +6479,18 @@ final class LoopbackSegmentWriter {
 
     private func trackFragmentTimings(inMoof data: Data, moof: ISOBoxSurgery.Box) -> [TrackFragmentTiming] {
         var timings: [TrackFragmentTiming] = []
-        let moofEnd = moof.start + moof.size
-        for traf in childBoxes(in: data, from: moof.start + 8, to: moofEnd) where traf.type == "traf" {
-            guard let tfhd = childBoxes(in: data, from: traf.box.start + 8, to: traf.box.start + traf.box.size)
+        for traf in ISOBoxSurgery.childBoxes(in: data, parent: moof) where traf.type == "traf" {
+            guard let tfhd = ISOBoxSurgery.childBoxes(in: data, parent: traf.box)
                 .first(where: { $0.type == "tfhd" }),
                 let header = parseTfhd(in: data, box: tfhd.box),
-                let tfdt = childBoxes(in: data, from: traf.box.start + 8, to: traf.box.start + traf.box.size)
+                let tfdt = ISOBoxSurgery.childBoxes(in: data, parent: traf.box)
                     .first(where: { $0.type == "tfdt" }),
                 let baseDecodeTime = parseTfdtBaseDecodeTime(in: data, box: tfdt.box) else {
                 continue
             }
 
             var duration: UInt64 = 0
-            for trun in childBoxes(in: data, from: traf.box.start + 8, to: traf.box.start + traf.box.size)
+            for trun in ISOBoxSurgery.childBoxes(in: data, parent: traf.box)
                 where trun.type == "trun" {
                 duration += parseTrunDuration(in: data, box: trun.box, defaultSampleDuration: header.defaultSampleDuration)
             }
@@ -6569,23 +6503,6 @@ final class LoopbackSegmentWriter {
             }
         }
         return timings
-    }
-
-    private func childBoxes(
-        in data: Data,
-        from start: Int,
-        to end: Int
-    ) -> [(type: String, box: ISOBoxSurgery.Box)] {
-        var result: [(type: String, box: ISOBoxSurgery.Box)] = []
-        var cursor = start
-        while cursor + 8 <= end {
-            let size = Int(ISOBoxSurgery.readU32BE(data, at: cursor))
-            guard size >= 8, cursor + size <= end else { return result }
-            let type = ISOBoxSurgery.readFourCC(data, at: cursor + 4)
-            result.append((type, ISOBoxSurgery.Box(start: cursor, size: size)))
-            cursor += size
-        }
-        return result
     }
 
     private func parseTfhd(

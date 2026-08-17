@@ -1,12 +1,9 @@
-import CoreVideo
 import Libavutil
 import XCTest
 @testable import Silo
 
-/// Covers the pure decision helpers behind the software decode path's
-/// bit-depth-aware output: which FFmpeg pixel formats count as >8-bit, and
-/// which CoreVideo P010 variant each color range maps to. These drive whether
-/// 10-bit VP9/AV1 keeps its depth or falls back to the 8-bit paths.
+/// Covers the pure bit-depth helper behind the probe's reported source depth:
+/// which FFmpeg pixel formats count as >8-bit.
 final class SoftwareVideoOutputFormatTests: XCTestCase {
     func testEightBitFormatsReportDepthEight() {
         XCTAssertEqual(VideoColorMetadata.sourceBitDepth(AV_PIX_FMT_YUV420P), 8)
@@ -27,29 +24,5 @@ final class SoftwareVideoOutputFormatTests: XCTestCase {
         // AV_PIX_FMT_NONE has no descriptor; the helper must not treat it
         // as high bit depth (that would send garbage into the P010 path).
         XCTAssertEqual(VideoColorMetadata.sourceBitDepth(AV_PIX_FMT_NONE), 8)
-    }
-
-    func testHighBitDepthOutputRangeMapping() {
-        XCTAssertEqual(
-            VideoColorMetadata.highBitDepthOutputPixelFormat(fullRange: false),
-            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-        )
-        XCTAssertEqual(
-            VideoColorMetadata.highBitDepthOutputPixelFormat(fullRange: true),
-            kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
-        )
-    }
-
-    func testLocalColorRangeOverridesServerFallback() {
-        XCTAssertTrue(VideoColorMetadata.isFullRange(AVCOL_RANGE_JPEG, fallbackName: "tv"))
-        XCTAssertFalse(VideoColorMetadata.isFullRange(AVCOL_RANGE_MPEG, fallbackName: "pc"))
-        XCTAssertFalse(VideoColorMetadata.isFullRange(AVCOL_RANGE_NB, fallbackName: "pc"))
-    }
-
-    func testServerColorRangeFillsOnlyUnspecifiedLocalMetadata() {
-        XCTAssertTrue(VideoColorMetadata.isFullRange(AVCOL_RANGE_UNSPECIFIED, fallbackName: "pc"))
-        XCTAssertFalse(VideoColorMetadata.isFullRange(AVCOL_RANGE_UNSPECIFIED, fallbackName: "tv"))
-        XCTAssertFalse(VideoColorMetadata.isFullRange(AVCOL_RANGE_UNSPECIFIED, fallbackName: "unknown"))
-        XCTAssertFalse(VideoColorMetadata.isFullRange(AVCOL_RANGE_UNSPECIFIED, fallbackName: nil))
     }
 }
