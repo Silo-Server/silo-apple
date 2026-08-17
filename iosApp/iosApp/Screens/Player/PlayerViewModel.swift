@@ -2267,7 +2267,6 @@ class PlayerViewModel {
             return nil
         }
         let fallbackCapabilities = PlaybackEngineKind.siloPlayerLoopback.routeCapabilities
-        let blockers = fallbackCapabilities.blockingReasons(for: requirements)
         return PlaybackExecutionPlan(
             delivery: .direct,
             engine: .siloPlayerLoopback,
@@ -2277,10 +2276,8 @@ class PlayerViewModel {
             loopbackSession: loopbackSession,
             routeCapabilities: fallbackCapabilities,
             requirements: requirements,
-            parityBlockers: blockers,
-            decisionTrace: activeExecutionPlan.decisionTrace
-                + [traceToken]
-                + blockers.map { "blocker_\($0)" },
+            parityBlockers: [],
+            decisionTrace: activeExecutionPlan.decisionTrace + [traceToken],
             degradationWarnings: fallbackCapabilities.degradationNotes(for: requirements),
             reason: reason,
             playbackSessionId: activeExecutionPlan.playbackSessionId,

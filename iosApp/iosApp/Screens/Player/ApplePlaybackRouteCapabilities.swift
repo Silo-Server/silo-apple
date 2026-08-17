@@ -55,14 +55,7 @@ struct ApplePlaybackPremiumClaimSet: Equatable {
 }
 
 struct PlaybackRouteRequirements: Equatable {
-    let needsPrimaryAudioSelection: Bool
-    let needsPrimarySubtitleSelection: Bool
-    let needsSidecarPrimarySubtitles: Bool
     let needsSecondarySubtitles: Bool
-    let needsChapters: Bool
-    let needsNowPlayingIntegration: Bool
-    let keepsPictureInPictureDisabledUntilValidated: Bool
-    let keepsExternalPlaybackDisabledUntilValidated: Bool
     /// Split per claim so a route where the user disabled Dolby Vision can
     /// drop the DV clause from warnings without touching the Atmos one.
     let needsValidatedDolbyVisionClaim: Bool
@@ -73,29 +66,15 @@ struct PlaybackRouteRequirements: Equatable {
     }
 
     static let baseline = PlaybackRouteRequirements(
-        needsPrimaryAudioSelection: false,
-        needsPrimarySubtitleSelection: false,
-        needsSidecarPrimarySubtitles: false,
         needsSecondarySubtitles: false,
-        needsChapters: false,
-        needsNowPlayingIntegration: false,
-        keepsPictureInPictureDisabledUntilValidated: true,
-        keepsExternalPlaybackDisabledUntilValidated: true,
         needsValidatedDolbyVisionClaim: false,
         needsValidatedAtmosClaim: false
     )
 
     var summaryTokens: [String] {
         var tokens: [String] = []
-        if needsPrimaryAudioSelection { tokens.append("audio_selection") }
-        if needsPrimarySubtitleSelection { tokens.append("primary_subtitles") }
-        if needsSidecarPrimarySubtitles { tokens.append("sidecar_primary_subtitles") }
         if needsSecondarySubtitles { tokens.append("secondary_subtitles") }
-        if needsChapters { tokens.append("chapters") }
-        if needsNowPlayingIntegration { tokens.append("now_playing") }
         if needsValidatedPremiumClaims { tokens.append("premium_claim_validation") }
-        if keepsPictureInPictureDisabledUntilValidated { tokens.append("pip_disabled_until_validated") }
-        if keepsExternalPlaybackDisabledUntilValidated { tokens.append("external_playback_disabled_until_validated") }
         return tokens
     }
 }
@@ -138,43 +117,8 @@ struct ApplePlaybackRouteCapabilities: Equatable {
         return summary
     }
 
-    func blockingReasons(for requirements: PlaybackRouteRequirements) -> [String] {
-        var blockers: [String] = []
-        if requirements.needsPrimaryAudioSelection && !primaryAudioSelection.state.isAvailableNow {
-            blockers.append("primary_audio_selection_unavailable")
-        }
-        if requirements.needsPrimarySubtitleSelection && !primarySubtitleSelection.state.isAvailableNow {
-            blockers.append("primary_subtitle_selection_unavailable")
-        }
-        if requirements.needsSidecarPrimarySubtitles && !sidecarPrimarySubtitles.state.isAvailableNow {
-            blockers.append("sidecar_primary_subtitles_unavailable")
-        }
-        if requirements.needsSecondarySubtitles && !secondarySubtitles.state.isAvailableNow {
-            blockers.append("secondary_subtitles_unavailable")
-        }
-        if requirements.needsChapters && !chapters.state.isAvailableNow {
-            blockers.append("chapters_unavailable")
-        }
-        if requirements.needsNowPlayingIntegration && !nowPlayingIntegration.state.isAvailableNow {
-            blockers.append("now_playing_integration_unavailable")
-        }
-        return blockers
-    }
-
     func degradationNotes(for requirements: PlaybackRouteRequirements) -> [String] {
         var notes: [String] = []
-
-        if requirements.keepsPictureInPictureDisabledUntilValidated {
-            notes.append(
-                "Picture in Picture remains \(pictureInPicture.state.shortLabel.lowercased()) on \(routeLabel)."
-            )
-        }
-
-        if requirements.keepsExternalPlaybackDisabledUntilValidated {
-            notes.append(
-                "External playback remains \(externalPlayback.state.shortLabel.lowercased()) on \(routeLabel)."
-            )
-        }
 
         switch (requirements.needsValidatedDolbyVisionClaim, requirements.needsValidatedAtmosClaim) {
         case (true, true):

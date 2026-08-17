@@ -16,6 +16,15 @@ which is the executable version of the same table. It separates:
 - `Unsupported` / `Unclaimed`: behavior Silo does not currently promise on that
   route
 
+The matrix is informational. It feeds the per-route status rows in the player
+options UI, and the Dolby Vision / Atmos claim flags on
+`PlaybackRouteRequirements` still raise degradation warnings. It no longer gates
+route selection: the requirements-vs-capabilities blocker check
+(`blockingReasons(for:)`) was removed on 2026-08-17 because every capability it
+could block on was `Repo-verified` on every surviving route, so it never
+produced a blocker. Route eligibility is decided by the container / codec /
+subtitle allowlists in `ApplePlaybackRoutePlanner` alone.
+
 ## Routes
 
 The `playerCoreDirect` / CompatibilityPlayer column is **gone** — the backend
@@ -86,7 +95,7 @@ Full detail in [09 - On-device video bridge](09-video-bridge.md).
   only, and the cast command is an explicit no-op.
 - `avPlayerNativeDirect` is intentionally narrow. It applies only to direct
   assets whose container, codecs, and embedded subtitle shape all match the
-  client-side allowlist, and whose route capabilities satisfy the requirements.
+  client-side allowlist.
 - Secondary subtitles remain sidecar-only on every route. The UI must not imply
   arbitrary embedded-secondary parity.
 - "Silo-rendered tracks" means subtitle tracks whose presentation goes through
@@ -146,3 +155,6 @@ Full detail in [09 - On-device video bridge](09-video-bridge.md).
   `playerCoreDirect`. Both the route and the toggle are gone.
 - corrected: bitmap subtitles are no longer a blanket gap. PGS/DVD-sub/VobSub
   render client-side on the loopback route; only DVB still forces the server.
+- corrected (2026-08-17): the matrix no longer blocks routes. `blockingReasons`
+  and the `needs*` / `keeps*` requirement flags it consumed are gone; the two
+  premium-claim flags and the per-route capability entries stay.
