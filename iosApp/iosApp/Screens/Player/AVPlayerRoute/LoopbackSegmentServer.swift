@@ -44,8 +44,7 @@ final class LoopbackSegmentServer {
         category: "LoopbackSegmentServer"
     )
 
-    let rootDirectory: URL?
-    private let segmentStore: LoopbackSegmentStore?
+    private let segmentStore: LoopbackSegmentStore
     private let exposure: Exposure
     private let accessToken: String?
 
@@ -84,17 +83,7 @@ final class LoopbackSegmentServer {
     /// successfully (the listener is bound and in `.ready` state).
     private(set) var port: UInt16 = 0
 
-    init(rootDirectory: URL, exposure: Exposure = .loopbackOnly) {
-        self.rootDirectory = rootDirectory
-        self.segmentStore = nil
-        self.exposure = exposure
-        self.accessToken = exposure == .localNetwork
-            ? UUID().uuidString.replacingOccurrences(of: "-", with: "")
-            : nil
-    }
-
     init(segmentStore: LoopbackSegmentStore, exposure: Exposure = .loopbackOnly) {
-        self.rootDirectory = nil
         self.segmentStore = segmentStore
         self.exposure = exposure
         self.accessToken = exposure == .localNetwork
@@ -168,7 +157,7 @@ final class LoopbackSegmentServer {
                     resumeOnce(.failure(LoopbackSegmentServerError.bindTimeout))
                 }
             }
-            let serving = self.rootDirectory?.path ?? "memory-store-\(self.segmentStore?.generation ?? 0)"
+            let serving = "memory-store-\(self.segmentStore.generation)"
             let host = exposure == .localNetwork ? "local-network" : "127.0.0.1"
             Self.logger.info("LoopbackSegmentServer listening on \(host, privacy: .public):\(port) serving \(serving, privacy: .public)")
         } catch {
@@ -484,51 +473,21 @@ final class LoopbackSegmentServer {
         on connection: NWConnection
     ) {
         let started = CFAbsoluteTimeGetCurrent()
-        // Directory-traversal guard: require the normalized path to remain
-        // inside rootDirectory. Anything with ".." or leading "/" outside
-        // the root gets rejected.
+        // Directory-traversal guard: reject anything with ".." before it can
+        // be resolved against the store's resource names.
         let trimmed = requestPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if trimmed.contains("..") {
             logRequest(method: method, path: requestPath, status: 403, bytes: 0, range: rangeHeader, started: started)
             respondError(403, "Forbidden", on: connection)
             return
         }
-        if let segmentStore {
-            respondWithStoreResource(
-                path: trimmed,
-                method: method,
-                range: rangeHeader,
-                started: started,
-                on: connection,
-                store: segmentStore
-            )
-            return
-        }
-        guard let rootDirectory else {
-            logRequest(method: method, path: requestPath, status: 404, bytes: 0, range: rangeHeader, started: started)
-            respondError(404, "Not Found", on: connection)
-            return
-        }
-        let target = rootDirectory.appendingPathComponent(trimmed)
-        guard target.path.hasPrefix(rootDirectory.path) else {
-            logRequest(method: method, path: requestPath, status: 403, bytes: 0, range: rangeHeader, started: started)
-            respondError(403, "Forbidden", on: connection)
-            return
-        }
-        guard let data = try? Data(contentsOf: target) else {
-            logRequest(method: method, path: requestPath, status: 404, bytes: 0, range: rangeHeader, started: started)
-            respondError(404, "Not Found", on: connection)
-            return
-        }
-        let mime = mimeType(for: target.pathExtension.lowercased())
-        respondWithData(
-            data,
-            mime: mime,
-            requestPath: requestPath,
+        respondWithStoreResource(
+            path: trimmed,
             method: method,
             range: rangeHeader,
             started: started,
-            on: connection
+            on: connection,
+            store: segmentStore
         )
     }
 
@@ -729,7 +688,7 @@ final class LoopbackSegmentServer {
         started: CFAbsoluteTime,
         on connection: NWConnection
     ) {
-        guard method == .get, let store = segmentStore else {
+        guard method == .get else {
             logRequest(method: method, path: requestPath, status: 200, bytes: 0, range: rangeHeader, started: started)
             var header = "HTTP/1.1 200 OK\r\n"
             header += "Content-Type: \(mime)\r\n"
@@ -743,6 +702,7 @@ final class LoopbackSegmentServer {
         header += "Cache-Control: no-store\r\n"
         header += "Connection: close\r\n\r\n"
         logRequest(method: method, path: requestPath, status: 200, bytes: 0, range: rangeHeader, started: started)
+        let store = segmentStore
         let overallDeadline = Date().addingTimeInterval(Self.progressiveStreamMaxSeconds)
         send(Data(header.utf8), on: connection, andClose: false) { [weak self] in
             self?.pumpProgressiveStream(

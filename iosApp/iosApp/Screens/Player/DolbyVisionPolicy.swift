@@ -3,8 +3,7 @@ import Foundation
 /// Pure decision logic for whether a Dolby Vision source presents as Dolby
 /// Vision or falls back to its base layer, given the user's Dolby Vision
 /// setting and the narrower Profile 7 HDR10 Fallback toggle. Single source
-/// of truth consulted by both playback engines — the loopback route planner
-/// and the compatibility engine's `DolbyVisionFormat` — so the precedence
+/// of truth consulted by the loopback route planner, so the precedence
 /// between the two settings can never diverge. Kept free of platform state
 /// so it stays unit-testable, mirroring `HDRDisplayCriteriaPolicy`.
 enum DolbyVisionPolicy {
@@ -20,10 +19,9 @@ enum DolbyVisionPolicy {
         )
     }
 
-    /// How a given DV profile should present for this session. Each engine
+    /// How a given DV profile should present for this session. The engine
     /// maps a resolution onto its own vocabulary (`LoopbackSessionSpec
-    /// .VideoMode` / `DolbyVisionFormat.Routing`); the policy only decides
-    /// intent.
+    /// .VideoMode`); the policy only decides intent.
     enum Resolution: Equatable {
         /// Present as Dolby Vision, as far as the engine supports the
         /// profile.

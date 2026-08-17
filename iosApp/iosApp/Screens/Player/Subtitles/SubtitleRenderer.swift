@@ -207,12 +207,6 @@ final class SubtitleRenderer {
         }
     }
 
-    // MARK: - Library accessors
-
-    /// Handle for the `ASS_Library*`. Used by the session to add
-    /// embedded fonts via `ass_add_font`.
-    var libraryPointer: OpaquePointer? { library }
-
     // MARK: - Track management
 
     /// Create a new empty track in the given slot. Replaces any existing

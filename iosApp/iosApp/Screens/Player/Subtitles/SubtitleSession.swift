@@ -126,9 +126,6 @@ final class SubtitleSession {
     /// Populated once on playback start; read on demand when the user
     /// selects a sidecar track. Guarded by `lock`.
     private var sidecarDescriptors: [Int: SidecarSubtitleDescriptor] = [:]
-    var hasRegisteredSidecars: Bool {
-        withLock { !sidecarDescriptors.isEmpty }
-    }
 
     /// Caller-supplied way to read the current playback position in
     /// seconds. Used for subtitle diagnostics and future seek-aware
@@ -639,11 +636,6 @@ final class SubtitleSession {
         }
         renderer.dropTrack(slot: slot)
         publishStatus(slot: slot, .idle)
-    }
-
-    /// Whether the given slot is currently a live AI track.
-    func isLiveSlot(_ slot: SubtitleSlot) -> Bool {
-        withLock { liveSlots.contains(slot) }
     }
 
     // MARK: - Lifecycle

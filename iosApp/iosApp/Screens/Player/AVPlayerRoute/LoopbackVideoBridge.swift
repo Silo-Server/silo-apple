@@ -56,12 +56,6 @@ final class LoopbackVideoBridge {
         avcodec_find_encoder_by_name("hevc_videotoolbox") != nil
     }
 
-    /// Whether ANY VideoToolbox encoder exists. False means the bridge cannot
-    /// run on this build and the route must fall to server transcode.
-    static var anyEncoderAvailable: Bool {
-        hevcEncoderAvailable || avcodec_find_encoder_by_name("h264_videotoolbox") != nil
-    }
-
     // MARK: - Configuration
 
     private let outputMode: LoopbackSessionSpec.VideoOutputMode
