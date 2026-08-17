@@ -76,7 +76,6 @@ final class ResponseCache {
 enum CacheKey {
     static let homeSections = "home:sections"
     static let recommendations = "recommendations:discover"
-    static let collections = "collections:list"
     static let profiles = "profiles:list"
     static let favorites = "personal:favorites"
     static let history = "personal:history"
@@ -122,7 +121,6 @@ enum CacheKey {
         "personal:",
         "item:",
         "collection:",
-        "collections:",
         "calendar:",
         "user:",
         // Browse pages and facet lists are access-filtered per profile, and
