@@ -1,21 +1,23 @@
 # App cleanup — backlog and watch list
 
-Status as of 2026-08-17, after cleanup rounds 1–3 landed on `player/one-player-cleanup`
-(round 1: `20f5aff` → `5f1f17d`; round 2: `155d9bc` → `e5360ae`; round 3: `a835b59` → `6267a5a`). This is the list of what is still known to be removable, what was
+Status as of 2026-08-17, after cleanup rounds 1–4 landed on `player/one-player-cleanup`
+(round 1: `20f5aff` → `5f1f17d`; round 2: `155d9bc` → `e5360ae`; round 3: `a835b59` → `6267a5a`;
+round 4: `702ce7d` → `1768542`). This is the list of what is still known to be removable, what was
 deliberately left alone, and where a closer look is likely to pay off. Line references are
-against `6267a5a`; re-grep before acting on any of them.
+against `1768542`; re-grep before acting on any of them.
 
 ## 0. Where we are
 
-Three rounds so far (survey → verify → file-disjoint packages, each implemented and independently
-reviewed by Opus agents in isolated worktrees). cloc, comments/blanks excluded:
+Four rounds so far (survey → verify → file-disjoint packages, each implemented and independently
+reviewed by Opus agents in isolated worktrees). Round 4 was the Continuum→Silo identifier rename
+(303 files, net −47, no persisted/OS/wire string touched) plus 1.19. cloc, comments/blanks excluded:
 
 | | Before round 1 | After round 1 | After round 2 | After round 3 |
 |---|---|---|---|---|
 | App Swift code (`iosApp/iosApp` + `TopShelf`) | 122,609 | 119,805 | 119,187 | **118,315** |
 | Player (`Screens/Player`) | 43,323 | 42,564 | 42,540 | 42,212 |
 | Tests | 34,567 (1,367 cases) | 34,412 (1,355) | 34,412 (1,355) | 34,234 (1,346) |
-| `ContinuumAPI.swift` | 803 | | | 407 |
+| `SiloAPI.swift` (née `ContinuumAPI.swift`) | 803 | | | 407 |
 
 Total: **−4,294 code lines (−3.5%)**; raw git −6,705 / +924. Verification after each round:
 `Silo`, `SiloTV`, `SiloMac` build; iOS suite at the same baseline (14 failures, all pre-existing —
@@ -47,12 +49,13 @@ removed.
 | # | Item | Where | Notes |
 |---|---|---|---|
 | 1.18 | Divergent runtime formatters (3 styles) | `HomeFeedKit.swift`, `OverlayRegistry.swift`, `TVFocusMarquee.swift`, `HeroMetadata.swift` (`" min"`), `DetailFacts` (`"m"`) | **Product decision, not cleanup** — unify only if one output format is chosen for the whole app. |
-| 1.19 | **`ContinuumAPI.moveCollectionToGroup(id:groupId:)`** is now app-wide unreferenced and is the sole thing keeping `UserCollection` and `UpdateUserCollectionGroupBody` alive | `Networking/ContinuumAPI.swift`, `Networking/Models.swift` | Round-3 dispatcher reviewer. Delete the three as a unit after a grep. |
+| ~~1.19~~ | ~~`moveCollectionToGroup` + `UserCollection` + `UpdateUserCollectionGroupBody`~~ | | **Done in round 4.** |
 | 1.20 | `generatedHLSSpillPolicy` reason string `"local_hls_event_playlist"` | `AVPlayerBackend.swift` | Log token only; the policy is live (VOD disk cache). Rename to something VOD-neutral if it bothers anyone. |
+| 1.21 | Historical "Continuum" mentions in comments/docs | `DesignSystem/Aurora/AuroraTextField.swift:6`, `PlaybackRealtimeProtocol.swift:~452`, a few `docs/` pages | Prose only; left because rewriting them would make them factually wrong (they describe the old brand). Harmless. |
 
 ## 2. Larger deferred cleanups — need their own PR and/or an owner decision
 
-### 2.1 ~~Retire `ContinuumAPI`'s string-path dispatcher~~ — **done in round 3** (−484)
+### 2.1 ~~Retire `ContinuumAPI`'s (now `SiloAPI`) string-path dispatcher~~ — **done in round 3** (−484)
 All 18 call sites retargeted to the existing typed methods with identical query defaults;
 dispatcher, `pathComponents`/`queryInt`/`cast`/`requireBody`, `APIError.invalidPathParameter`/
 `.unsupportedPath`, and the unreachable `startPlayback`/`startTranscode`/`history` +
@@ -119,6 +122,27 @@ EVENT-only store helpers, (c) need a device pass on such a source. Decide whethe
 duration → server HLS instead of local growing playlist" is acceptable; if yes it is the last big
 lever in the writer.
 
+### 2.6 Continuum brand keys that are persisted / OS-registered / on the wire (**migration, not cleanup**)
+
+Round 4 renamed every *code identifier* to Silo (`SiloAPI`, `SiloAI`, `SiloTheme`, `Color.silo*`,
+`Font.silo*`, `Silo*ButtonStyle`, `SiloTextFieldStyle`, `SiloMacPlayerView`, `Silo*Transport`, the
+`silo*` view modifiers, in-process `Notification.Name`s, the `SiloKeychainAccessGroup` /
+`SiloUsesUserIndependentKeychain` plist keys, os_log subsystem `org.siloserver.silo`, dispatch-queue
+labels, tvOS press tags, "Loading Silo"). These 29 literals were **deliberately kept** because
+changing them either breaks existing installs or needs the server/Android side:
+
+| Kind | Literals | Why kept / what a migration needs |
+|---|---|---|
+| Keychain service + accounts | `com.continuum.app` (service), `com.continuum.<serverID>.accessToken/.refreshToken/.profileToken/.accountEpoch`, `com.continuum.app.accessToken/.refreshToken/.profileToken`, `com.continuum.device.identity`, `com.continuum.serverRegistry.v2`, `com.continuum.topshelf.accessToken/.profileToken`, `com.continuum.diagnostics.hosted.installationID/.installationToken` | Renaming logs every user out and drops the tvOS server registry. Needs a one-time read-old/write-new/delete-old migration in `SharedKeychain`/`TokenStore` + Top Shelf, and TestFlight continuity (CLAUDE.md). |
+| UserDefaults keys | `continuumServerRegistry.v1`, `continuumServerRegistry.migrated.v1` | Same shape of migration; `ProfileLaunchPolicyTests` asserts on the v1 key. |
+| OS-registered ids | BGTask `com.continuum.play.downloads-refresh` (also in Info.plist), background `URLSession` `com.continuum.play.downloads` | Renaming orphans in-flight downloads on upgrade; needs plist + code together and a "resume old session id once" shim. |
+| URL scheme | `continuum` (CFBundleURLSchemes, both plists) and the `continuum://item|play|downloads` builders/parsers | Server push payloads / Top Shelf / Home Screen use it. Add `silo` as a second scheme first, migrate senders (silo-server, silo-android parity), keep `continuum` for a deprecation window. |
+| On-disk names | `continuum-source-cache`, `continuum-dv-hls`, `continuum-dv-hls-debug`, Nuke `DataCache(name: "com.continuum.app.apple.posters")` | Renaming orphans existing caches (GBs on tvOS). Needs a one-time delete-old-dir. |
+| Wire values | realtime client names `continuum-ios` / `continuum-tvos` / `continuum-macos` (`X-Silo-Client` product names, `PlaybackRealtimeProtocol.swift`) | Server stores/keys on them — coordinate with silo-server before changing. |
+
+Decide per row; the keychain/defaults rows are the only ones with real user-visible downside if
+done wrong.
+
 ## 3. Intentionally kept — don't re-flag without new information
 
 - `LoopbackSegmentWriter` throughput probe (`traceThroughput`, `ThroughputTiming`, 11 timed/untimed
@@ -164,7 +188,7 @@ fact platform-neutral (`HeroMetadata` was moved out in round 2; `PhoneEpisodeFor
 may follow). Rule of thumb from `docs/tvos-focus.md`: share models and formatting,
 keep focus ownership per-platform.
 
-### 4.4 `ContinuumAPI` surface after §2.1
+### 4.4 `SiloAPI` (formerly `ContinuumAPI`) surface after §2.1
 Round 1 removed nine dead endpoints and six wire models; the reviewers noted the durable
 consequence is *reduced client API surface* (per-library playback prefs, `/settings/effective`,
 collection reordering, batch manifests, subscriptions list, continue-watching undo). Worth a
@@ -208,7 +232,7 @@ accidental complexity vs. essential.
 
 The two-stage workflow (survey → review packages → fix → merge) lives in `.claude/workflows/`
 (`app-cleanup-survey.js`, `app-cleanup-fix.js`, README) — local-only because `.gitignore`
-ignores `.claude/*` except `skills/`. Rules learned in rounds 1–3: keep packages file-disjoint;
+ignores `.claude/*` except `skills/`. Rules learned in rounds 1–4: keep packages file-disjoint;
 split mechanical deletions from riskier refactors; fixers must reset their worktree to the
 target branch's full SHA first (the harness worktrees start from `main`); run tests on cloned
 simulators; treat "green" as the documented baseline, not zero failures; and expect the implementers to
