@@ -34,8 +34,6 @@ struct TVPlayerScrubber: View {
 
     private static let scrubBackwardStep: Double = 10
     private static let scrubForwardStep: Double = 30
-    private static let timelineHoldBackwardStep: Double = 2
-    private static let timelineHoldForwardStep: Double = 2
     private static let timelineAutoSeekTickNanos: UInt64 = 100_000_000
     private static let timelineAutoSeekBaseStep: Double = 2
     private static let timelineAutoSeekRates = [-32, -16, -8, -4, -2, -1, 1, 2, 4, 8, 16, 32]
@@ -196,8 +194,7 @@ struct TVPlayerScrubber: View {
                 // playhead and the end of the loaded range. Rendering from
                 // x=0 would put it entirely under the played fill (invisible)
                 // and mis-represent the semantic — buffer is inherently a
-                // forward-looking indicator. Stays 0-width on the CoreMedia
-                // path where `bufferedAheadSeconds` is always 0.
+                // forward-looking indicator.
                 let bufferedAhead = max(0, bufferedFraction - progressFraction)
                 if bufferedAhead > 0 {
                     Capsule(style: .continuous)
@@ -467,11 +464,6 @@ struct TVPlayerScrubber: View {
             hasTimelineSelectionMoved = true
         }
         viewModel.updateScrub(fraction: target / viewModel.duration)
-    }
-
-    private func stepTimelineHold(direction: Int) {
-        let step = direction < 0 ? -Self.timelineHoldBackwardStep : Self.timelineHoldForwardStep
-        stepTimeline(by: step)
     }
 }
 #endif

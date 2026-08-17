@@ -16,7 +16,9 @@ struct MacPlayerOptionsPanel: View {
     @Binding var selectedTab: Tab
     let onDismiss: () -> Void
 
-    private let playbackSpeeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+    /// Speed ladder for the Playback tab, also stepped through by the
+    /// player window's speed-up / speed-down shortcuts.
+    static let playbackSpeeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -123,7 +125,7 @@ struct MacPlayerOptionsPanel: View {
                     .padding(.top, 2)
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 82), spacing: 8)], spacing: 8) {
-                    ForEach(playbackSpeeds, id: \.self) { speed in
+                    ForEach(Self.playbackSpeeds, id: \.self) { speed in
                         Button {
                             viewModel.setPlaybackSpeed(speed)
                         } label: {

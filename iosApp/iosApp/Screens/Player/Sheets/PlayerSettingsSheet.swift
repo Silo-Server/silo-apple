@@ -1,39 +1,6 @@
 #if os(iOS)
 import SwiftUI
 
-/// Labeled `Stepper` row used by the subtitle-delay control.
-private struct RangeSpinner<Value: Hashable & Strideable>: View
-where Value.Stride: SignedInteger {
-    let title: String
-    @Binding var value: Value
-    let range: ClosedRange<Value>
-    let step: Value.Stride
-    let display: (Value) -> String
-    let onCommit: () -> Void
-
-    var body: some View {
-        Stepper(
-            value: Binding(
-                get: { value },
-                set: { newValue in
-                    value = newValue
-                    onCommit()
-                }
-            ),
-            in: range,
-            step: step
-        ) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(display(value))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-        }
-    }
-}
-
 /// Player configuration sheet. Apply-on-change — the VM's
 /// `applySettingsToPlayer()` is already called on file-loaded; live mutation
 /// re-applies one property at a time through the binding helpers below.
@@ -166,19 +133,25 @@ struct PlayerSettingsSheet: View {
                 }
 
                 if viewModel.backendCapabilities.supportsSubtitleDelay {
-                    RangeSpinner(
-                        title: "Subtitle Delay",
+                    Stepper(
                         value: Binding(
                             get: { viewModel.settings.subtitleSyncMs },
-                            set: { viewModel.settings.subtitleSyncMs = $0 }
+                            set: { newValue in
+                                viewModel.settings.subtitleSyncMs = newValue
+                                viewModel.setSubtitleSyncMilliseconds(newValue)
+                            }
                         ),
-                        range: -10000...10000,
-                        step: 100,
-                        display: { formatMs($0) },
-                        onCommit: {
-                            viewModel.setSubtitleSyncMilliseconds(viewModel.settings.subtitleSyncMs)
+                        in: -10000...10000,
+                        step: 100
+                    ) {
+                        HStack {
+                            Text("Subtitle Delay")
+                            Spacer()
+                            Text(formatMs(viewModel.settings.subtitleSyncMs))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
                         }
-                    )
+                    }
                 }
             }
         }

@@ -12,19 +12,6 @@ struct HUDDropdownOption: Identifiable, Hashable {
 }
 
 enum HUDPickerOptions {
-    static let onOff: [HUDDropdownOption] = [
-        .init(id: "on", label: "On"),
-        .init(id: "off", label: "Off")
-    ]
-
-    static func boolSelection(_ value: Bool) -> String {
-        value ? "on" : "off"
-    }
-
-    static func boolValue(for id: String) -> Bool {
-        id.caseInsensitiveCompare("on") == .orderedSame
-    }
-
     static func boolLabel(_ value: Bool) -> String {
         value ? "On" : "Off"
     }
