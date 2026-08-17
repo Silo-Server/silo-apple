@@ -518,7 +518,9 @@ final class LoopbackSegmentWriter {
     }
     private var inputCtx: UnsafeMutablePointer<AVFormatContext>?
     private var outputCtx: UnsafeMutablePointer<AVFormatContext>?
-    private var ioBuffer: UnsafeMutablePointer<UInt8>?
+    /// The AVIOContext owns its working buffer once `avio_alloc_context`
+    /// succeeds (and may replace it), so the allocation is never cached in a
+    /// field — `teardown` frees whatever the context holds at the time.
     private var ioContext: UnsafeMutablePointer<AVIOContext>?
 
     /// Maps input stream index → output stream index, so we can rewrite
@@ -991,6 +993,32 @@ final class LoopbackSegmentWriter {
     /// resume-derived for a first session starting mid-title.
     private var vodEffectiveBaseIndex = 0
 
+    /// Whether a resolved plan may be SERVED as a static VOD presentation.
+    ///
+    /// A uniform-stride plan (`usedKeyframeIndex == false`) fences segments
+    /// at fixed multiples of the target duration. That is safe only when the
+    /// writer controls the output keyframes: a bridged session forces the
+    /// encoder to a keyframe on every fence (`forceUniformStride`). A remuxed
+    /// session — `.copy` and `.passthroughAV1` alike — inherits the source's
+    /// keyframe cadence, and `LoopbackSegmentCutter` deliberately opens a
+    /// segment only at a keyframe, so fences with no keyframe behind them are
+    /// skipped and those indices are never produced. The VOD playlist
+    /// advertises `0..<segmentCount` plus ENDLIST, so a skipped index becomes
+    /// a permanent 503/404 the restart path cannot heal (the restarted
+    /// producer re-runs the same cutter and skips it again).
+    ///
+    /// Refusing the plan here — before `onSegmentPlanResolved` fires — is what
+    /// keeps a restarted producer from ever being handed an untrusted plan, so
+    /// the provided-plan branch of `resolveVODPlanIfNeeded` needs no check of
+    /// its own. The session then serves the growing EVENT playlist instead,
+    /// which names segments from the cutter's own index and cannot hole.
+    static func shouldServeVODPlan(
+        _ plan: LoopbackSegmentPlan,
+        videoOutputMode: LoopbackSessionSpec.VideoOutputMode
+    ) -> Bool {
+        plan.usedKeyframeIndex || videoOutputMode.isBridged
+    }
+
     /// Resolves (or installs) the segment plan and cutter. Runs after
     /// `openInput` — the keyframe index needs `find_stream_info` plus the
     /// cue-prewarm seek — and before `openOutput`/`writeHeader`, which pick
@@ -1002,8 +1030,21 @@ final class LoopbackSegmentWriter {
                 // published — the playlist and every restarted producer are
                 // built from whatever goes out here.
                 plan = resumeAnchorValidatedPlan(plan)
-                vodPlan = plan
-                onSegmentPlanResolved?(plan)
+                if Self.shouldServeVODPlan(plan, videoOutputMode: videoOutputMode) {
+                    vodPlan = plan
+                    onSegmentPlanResolved?(plan)
+                } else {
+                    cmpLog("[CMP-AVP] vod plan untrusted keyframe index in copy mode; degrading to EVENT serving")
+                    if resumeAnchorProbeMovedCursor,
+                       sourceStartTimeSeconds <= 0,
+                       let inCtx = inputCtx {
+                        // The shared degrade guard below only re-seeks when
+                        // there IS a start time. A probe that consumed
+                        // packets still has to hand the EVENT path a cursor
+                        // at the head (harvestVODPlan's own rewind contract).
+                        _ = avformat_seek_file(inCtx, -1, Int64.min, 0, Int64.max, AVSEEK_FLAG_BACKWARD)
+                    }
+                }
             }
         } else {
             // Restarted (plan-provided) session: this demuxer's cue index is
@@ -3064,7 +3105,6 @@ final class LoopbackSegmentWriter {
         guard let buf = av_malloc(bufSize)?.assumingMemoryBound(to: UInt8.self) else {
             throw LoopbackWriterError.allocOutput
         }
-        ioBuffer = buf
 
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         let avio = avio_alloc_context(
@@ -3089,8 +3129,9 @@ final class LoopbackSegmentWriter {
             /* seek */ nil
         )
         guard let avio else {
-            av_free(ioBuffer)
-            ioBuffer = nil
+            // Ownership only transfers on success; free our buffer exactly
+            // once here (teardown's context-owned free never runs).
+            av_free(buf)
             throw LoopbackWriterError.allocOutput
         }
         ioContext = avio
@@ -4593,7 +4634,13 @@ final class LoopbackSegmentWriter {
     ) throws {
         guard let decoderCtx = audioDecoderCtx else { return }
         let sendR = avcodec_send_packet(decoderCtx, pkt)
-        if sendR < 0 && sendR != avErrorAgain {
+        if sendR == avErrorAgain {
+            // Decoder full: this packet was NOT taken and no site re-sends
+            // it, so it is dropped. Unreachable while every send is followed
+            // by the drain-to-EAGAIN loop below; counted so a regression is
+            // visible rather than silent.
+            noteSendEagainDrop(stage: "audio-decoder-send")
+        } else if sendR < 0 {
             noteAudioDecodeError(stage: "send", rc: sendR)
             return
         }
@@ -4610,6 +4657,9 @@ final class LoopbackSegmentWriter {
                 return
             }
             if recvR < 0 {
+                // Terminal for this drain, deliberately not `continue`: a
+                // non-EAGAIN/EOF receive error repeats every iteration, so
+                // looping would spin. The next packet re-enters the drain.
                 noteAudioDecodeError(stage: "receive", rc: recvR)
                 return
             }
@@ -4797,6 +4847,22 @@ final class LoopbackSegmentWriter {
         cmpLog(logLine, verbose: true)
     }
 
+    /// A codec send that returns EAGAIN has NOT consumed its packet/frame,
+    /// and no site here re-sends it, so that input is dropped. Every send is
+    /// followed by a drain-to-EAGAIN loop, which makes this unreachable on
+    /// the happy path — counted so a pipeline that starts shedding input is
+    /// diagnosable instead of silently losing audio.
+    private func noteSendEagainDrop(stage: String) {
+        sendEagainDropTotal += 1
+        if sendEagainDropTotal <= 5 || sendEagainDropTotal % 64 == 0 {
+            Self.logger.warning(
+                "[CMP-AVP] ffmpeg \(stage, privacy: .public) EAGAIN dropped input total=\(self.sendEagainDropTotal, privacy: .public)"
+            )
+        }
+    }
+
+    private var sendEagainDropTotal = 0
+
     private func noteAudioDecodeError(stage: String, rc: Int32) {
         audioDecodeErrorCount += 1
         audioDecodeErrorTotal += 1
@@ -4868,7 +4934,9 @@ final class LoopbackSegmentWriter {
         nextEncodedAudioPTS += Int64(converted)
         let sendR = avcodec_send_frame(encoderCtx, outFrame)
         av_frame_free(&convertedFrame)
-        if sendR < 0 && sendR != avErrorAgain {
+        if sendR == avErrorAgain {
+            noteSendEagainDrop(stage: "audio-encoder-send-direct")
+        } else if sendR < 0 {
             throw LoopbackWriterError.audioTranscodeSetup("audio encoder send failed rc=\(sendR)")
         }
         try drainEncodedPackets()
@@ -5061,7 +5129,9 @@ final class LoopbackSegmentWriter {
     private func sendPreparedAudioFrameToEncoder(_ frame: UnsafeMutablePointer<AVFrame>) throws {
         guard let encoderCtx = audioEncoderCtx else { return }
         let sendR = avcodec_send_frame(encoderCtx, frame)
-        if sendR < 0 && sendR != avErrorAgain {
+        if sendR == avErrorAgain {
+            noteSendEagainDrop(stage: "audio-encoder-send-fifo")
+        } else if sendR < 0 {
             throw LoopbackWriterError.audioTranscodeSetup("audio encoder send failed rc=\(sendR)")
         }
         try drainEncodedPackets()
@@ -5777,13 +5847,18 @@ final class LoopbackSegmentWriter {
                 if !initSegmentBytes.isEmpty {
                     writeInitSegment()
                 } else {
-                    // No moov ever arrived — init.mp4 is missing from disk.
-                    // Don't fire `onFirstSegmentReady` here; AVPlayer would
-                    // 404 on EXT-X-MAP. Let `finalizeCurrentSegment` catch
-                    // the fire signal once a real segment lands, and the
-                    // caller sees a delayed-but-valid stream.
-                    initSegmentWritten = true
-                    emitPlaylists(isFinal: false)
+                    // No moov ever arrived, so init.mp4 does not exist and
+                    // never will — the muxer emits moov once. Latching
+                    // `initSegmentWritten` here published a playlist whose
+                    // EXT-X-MAP points at a file that 404s forever, and a VOD
+                    // playlist carries ENDLIST so nothing can heal it. Fail
+                    // the session instead and let the route ladder fall back.
+                    Self.logger.error("moof arrived before any moov and no init bytes were buffered")
+                    cmpLog("[CMP-AVP] moof before moov with no init bytes; failing session (no init.mp4 can exist)")
+                    if fatalIOError == nil {
+                        fatalIOError = .initSegmentMissing
+                    }
+                    return
                 }
                 let fragmentHasVideo = fragmentHasVideoTrack(in: slice)
                 if pendingSegmentBytes.isEmpty {
@@ -6005,6 +6080,31 @@ final class LoopbackSegmentWriter {
         ) as? Bool ?? true
     private var vodProgressiveActiveName: String?
     private var vodProgressivePublishedBytes = 0
+    /// Hard ceiling on how many bytes of one open segment are mirrored into
+    /// the store. Progressive publication keeps a SECOND copy of the open
+    /// segment resident (the writer's `pendingSegmentBytes` is the first),
+    /// and the cut is keyframe-gated only — a source whose next keyframe is
+    /// minutes away grows both copies without bound. Past the ceiling the
+    /// writer stops publishing partials for that segment, so at most one
+    /// copy of the excess exists; the segment still cuts at its next
+    /// keyframe boundary and is stored whole as usual, exactly as it would
+    /// be with progressive serving switched off.
+    private static let progressivePublishCeilingBytes = 96 * 1024 * 1024
+    /// Constrained tvOS devices (the same <= 3.5 GB tier
+    /// `generatedAheadThrottleSeconds` detects) get a third of that.
+    private static let progressivePublishCeilingConstrainedBytes = 32 * 1024 * 1024
+    private var progressivePublishCeilingBytes: Int {
+        #if os(tvOS)
+        return ProcessInfo.processInfo.physicalMemory <= 3_500_000_000
+            ? Self.progressivePublishCeilingConstrainedBytes
+            : Self.progressivePublishCeilingBytes
+        #else
+        return Self.progressivePublishCeilingBytes
+        #endif
+    }
+    /// Once per open segment, so a long capped segment logs once, not per
+    /// fragment.
+    private var vodProgressiveCeilingLogged = false
     private var vodLastInterimFlushPts = Int64.min
     private var vodInterimFlushRequested = false
     /// True while `pendingSegmentBytes` holds progressively-accumulated
@@ -6035,9 +6135,17 @@ final class LoopbackSegmentWriter {
         if vodProgressiveActiveName != name {
             vodProgressiveActiveName = name
             vodProgressivePublishedBytes = 0
+            vodProgressiveCeilingLogged = false
             store.beginProgressiveSegment(named: name)
         }
         guard pendingSegmentBytes.count > vodProgressivePublishedBytes else { return }
+        guard vodProgressivePublishedBytes < progressivePublishCeilingBytes else {
+            if !vodProgressiveCeilingLogged {
+                vodProgressiveCeilingLogged = true
+                cmpLog("[CMP-AVP] progressive publish ceiling reached name=\(name) published=\(vodProgressivePublishedBytes) pending=\(pendingSegmentBytes.count); streaming stops until the cut")
+            }
+            return
+        }
         let delta = pendingSegmentBytes.subdata(
             in: vodProgressivePublishedBytes..<pendingSegmentBytes.count
         )
@@ -6854,10 +6962,13 @@ final class LoopbackSegmentWriter {
             avformat_free_context(ctx)
             outputCtx = nil
         }
-        if ioContext != nil {
+        if let avio = ioContext {
+            // `avio_context_free` frees only the context struct — the working
+            // buffer is ours to release, and it must be read off the context
+            // rather than from the pointer handed to `avio_alloc_context`:
+            // libavformat may have reallocated it during the session.
+            av_freep(&avio.pointee.buffer)
             avio_context_free(&ioContext)
-            // avio_context_free frees the internal buffer too.
-            ioBuffer = nil
         }
         cancelLock.lock()
         didTeardown = true
@@ -6978,6 +7089,11 @@ enum LoopbackWriterError: Error {
     /// consecutive packets. The mux is no longer producing valid output; abort
     /// rather than continue writing a half-broken HLS presentation.
     case muxWriteFailures(lastRC: Int32, consecutive: Int)
+    /// The muxer emitted media (`moof`) before any `moov`, so no init segment
+    /// exists and none ever will. Publishing a playlist anyway advertises an
+    /// EXT-X-MAP that 404s for the life of the session; fail instead so the
+    /// route ladder falls back.
+    case initSegmentMissing
     /// On-disk write of an init segment, media segment, or playlist failed.
     /// These are catastrophic for HLS playback and are propagated rather than
     /// silently logged.

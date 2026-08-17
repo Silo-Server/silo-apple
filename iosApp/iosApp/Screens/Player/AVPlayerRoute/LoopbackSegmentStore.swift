@@ -4,6 +4,11 @@ import OSLog
 struct LoopbackSegmentStoreStats: Equatable {
     let generation: UInt64
     let memoryBytes: Int64
+    /// Bytes held by in-progress (progressive) segment publications. Kept
+    /// separate from `memoryBytes` — they are not eviction candidates — but
+    /// reported so resident-memory diagnostics stop understating the store:
+    /// an open anchor segment can run 30–60 MB on long-GOP sources.
+    let progressiveBytes: Int64
     let memoryBudgetBytes: Int64
     let tempSpillBytes: Int64
     let tempSpillBudgetBytes: Int64
@@ -132,9 +137,13 @@ final class LoopbackSegmentStore {
     /// Anchor segments the producer is still writing, published fragment by
     /// fragment so the server can stream them before the cut completes
     /// (seek-latency: AVPlayer only needs the first ~2 s of a 10 s anchor
-    /// segment to render). NOT counted against `memoryBytes` — the bytes
-    /// transiently duplicate the writer's own pending buffer, bounded by
-    /// one segment. Replaced wholesale by `beginProgressiveSegment` (a
+    /// segment to render). NOT counted against `memoryBytes` — they are not
+    /// eviction candidates — but reported separately as
+    /// `LoopbackSegmentStoreStats.progressiveBytes`, because they are a
+    /// second resident copy of the writer's own pending buffer and are large
+    /// enough to matter on constrained devices. The writer caps how much of
+    /// an open segment it publishes here; see its progressive-publish
+    /// ceiling. Replaced wholesale by `beginProgressiveSegment` (a
     /// restarted producer re-publishing the same name must not append to a
     /// dead predecessor's prefix) and cleared when the complete segment
     /// arrives via `append` or the name leaves the VOD window.
@@ -842,6 +851,7 @@ final class LoopbackSegmentStore {
         let snapshot = LoopbackSegmentStoreStats(
             generation: generation,
             memoryBytes: Int64(memoryBytes),
+            progressiveBytes: Int64(progressiveSegments.values.reduce(0) { $0 + $1.count }),
             memoryBudgetBytes: Int64(memoryBudgetBytes),
             tempSpillBytes: tempSpillBytes,
             tempSpillBudgetBytes: spillPolicy.maxBytes,

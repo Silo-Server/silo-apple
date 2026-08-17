@@ -407,11 +407,17 @@ final class LoopbackVideoBridge {
         defer { encodeWallSeconds += CFAbsoluteTimeGetCurrent() - started }
 
         let sendR = avcodec_send_packet(decoderCtx, pkt)
-        // AVERROR(EAGAIN) means the decoder is full; the receive loop below
-        // drains it and the packet is retried by the caller's next read. A
-        // hard decode error is counted, not thrown: a damaged GOP must not
-        // fail the whole session.
-        if sendR < 0, sendR != -Int32(EAGAIN) {
+        // AVERROR(EAGAIN) means the decoder is full and did NOT take this
+        // packet. Nothing re-sends it — `transcodePacket` returns Void and
+        // every caller discards the packet — so the input is lost; the
+        // receive loop below only drains what the decoder already holds.
+        // Unreachable on the happy path (every send is followed by that
+        // drain-to-EAGAIN loop), so count it rather than restructure. A hard
+        // decode error is likewise counted, not thrown: a damaged GOP must
+        // not fail the whole session.
+        if sendR == -Int32(EAGAIN) {
+            noteSendEagainDrop(stage: "decoder-send")
+        } else if sendR < 0 {
             noteDecodeError(stage: "send", rc: sendR)
         }
         try drainDecoder(inputStreamIndex: inputStreamIndex, emitEncodedPackets: emitEncodedPackets, sink: sink)
@@ -431,6 +437,9 @@ final class LoopbackVideoBridge {
                 return
             }
             if recvR < 0 {
+                // Terminal for this drain, deliberately not `continue`: a
+                // non-EAGAIN/EOF receive error repeats every iteration, so
+                // looping would spin. The next packet re-enters the drain.
                 noteDecodeError(stage: "receive", rc: recvR)
                 return
             }
@@ -482,7 +491,10 @@ final class LoopbackVideoBridge {
 
         guard let encoderCtx else { return }
         let sendR = avcodec_send_frame(encoderCtx, converted)
-        if sendR < 0, sendR != -Int32(EAGAIN) {
+        if sendR == -Int32(EAGAIN) {
+            // Encoder full: this frame was not taken and is not re-sent.
+            noteSendEagainDrop(stage: "encoder-send")
+        } else if sendR < 0 {
             throw LoopbackWriterError.videoTranscodeSetup("video encoder send failed rc=\(sendR)")
         }
         try drainEncoder(inputStreamIndex: inputStreamIndex, sink: sink)
@@ -784,6 +796,21 @@ final class LoopbackVideoBridge {
     }
 
     private var decodeErrorTotal = 0
+
+    /// A send that returns EAGAIN has NOT consumed its packet/frame, and no
+    /// site here re-sends it, so the input is dropped. Counted (not thrown)
+    /// so a pipeline that starts shedding input is diagnosable instead of
+    /// silently losing frames.
+    private func noteSendEagainDrop(stage: String) {
+        sendEagainDropTotal += 1
+        if sendEagainDropTotal <= 5 || sendEagainDropTotal % 64 == 0 {
+            Self.logger.error(
+                "[CMP-AVP] video bridge \(stage, privacy: .public) EAGAIN dropped input total=\(self.sendEagainDropTotal, privacy: .public)"
+            )
+        }
+    }
+
+    private var sendEagainDropTotal = 0
 
     // MARK: - Teardown
 
