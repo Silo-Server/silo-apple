@@ -286,15 +286,13 @@ struct ApplePlaybackRoutePlanner {
         case .direct:
             let directAssessment = Self.assessNativeDirectRoute(
                 selectedVersion: selectedVersion,
-                session: session,
-                requirements: input.routeRequirements
+                session: session
             )
             let siloAssessment = Self.assessSiloRoute(
                 selectedVersion: selectedVersion,
                 session: session,
                 nativeAssessment: directAssessment,
                 sourceMetadata: sourceMetadata,
-                requirements: input.routeRequirements,
                 selectedAudioTrackId: input.selectedAudioTrackId,
                 pendingAudioFfIndex: input.pendingAudioFfIndex,
                 preferredAudioTrackIndex: input.preferredAudioTrackIndex,
@@ -420,9 +418,6 @@ struct ApplePlaybackRoutePlanner {
             startMode = .absolutePosition(session.position)
         }
 
-        let capabilityBlockers = routeCapabilities.blockingReasons(for: input.routeRequirements)
-        let allBlockers = parityBlockers + capabilityBlockers
-
         return PlaybackExecutionPlan(
             delivery: delivery,
             engine: engine,
@@ -431,8 +426,8 @@ struct ApplePlaybackRoutePlanner {
             loopbackSession: engine == .siloPlayerLoopback ? directLoopbackSession : nil,
             routeCapabilities: routeCapabilities,
             requirements: input.routeRequirements,
-            parityBlockers: allBlockers,
-            decisionTrace: decisionTrace + allBlockers.map { "blocker_\($0)" },
+            parityBlockers: parityBlockers,
+            decisionTrace: decisionTrace + parityBlockers.map { "blocker_\($0)" },
             degradationWarnings: degradationWarnings,
             reason: reason,
             playbackSessionId: session.sessionId,
@@ -451,10 +446,7 @@ struct ApplePlaybackRoutePlanner {
         session: PlaybackSessionResponse,
         dolbyVisionPolicy: DolbyVisionPolicy.Snapshot
     ) -> PlaybackRouteRequirements {
-        let hasPrimaryAudioSelection = !(selectedVersion.audioTracks ?? []).isEmpty
-        let hasEmbeddedSubtitles = (selectedVersion.subtitleTracks ?? []).contains { !($0.external ?? false) }
         let hasSidecarSubtitles = !(session.subtitleUrls ?? []).isEmpty
-        let hasChapters = !Self.chapterInfoList(from: selectedVersion).isEmpty
         // The source's DV claim only needs output-path validation when the
         // resolved route still presents Dolby Vision — a "Dolby Vision off"
         // fallback plays plain HDR10 and must not surface DV-claim warnings.
@@ -467,14 +459,7 @@ struct ApplePlaybackRoutePlanner {
             )
 
         return PlaybackRouteRequirements(
-            needsPrimaryAudioSelection: hasPrimaryAudioSelection,
-            needsPrimarySubtitleSelection: hasEmbeddedSubtitles || hasSidecarSubtitles,
-            needsSidecarPrimarySubtitles: hasSidecarSubtitles,
             needsSecondarySubtitles: hasSidecarSubtitles,
-            needsChapters: hasChapters,
-            needsNowPlayingIntegration: true,
-            keepsPictureInPictureDisabledUntilValidated: false,
-            keepsExternalPlaybackDisabledUntilValidated: false,
             needsValidatedDolbyVisionClaim: claimsDolbyVision,
             needsValidatedAtmosClaim: Self.versionHasPotentialAtmos(selectedVersion)
         )
@@ -739,8 +724,7 @@ extension ApplePlaybackRoutePlanner {
 extension ApplePlaybackRoutePlanner {
     static func assessNativeDirectRoute(
         selectedVersion: FileVersion,
-        session: PlaybackSessionResponse,
-        requirements: PlaybackRouteRequirements
+        session: PlaybackSessionResponse
     ) -> NativeDirectAssessment {
         var blockers: [String] = []
         var trace: [String] = ["delivery_direct"]
@@ -781,10 +765,6 @@ extension ApplePlaybackRoutePlanner {
             trace.append("embedded_subtitles_\(unsupportedSubtitleCodecs.joined(separator: "_"))")
         }
 
-        let capabilityBlockers = PlaybackEngineKind.avPlayerNativeDirect.routeCapabilities
-            .blockingReasons(for: requirements)
-        blockers.append(contentsOf: capabilityBlockers)
-
         return NativeDirectAssessment(
             isEligible: blockers.isEmpty,
             blockers: blockers,
@@ -797,7 +777,6 @@ extension ApplePlaybackRoutePlanner {
         session: PlaybackSessionResponse,
         nativeAssessment: NativeDirectAssessment,
         sourceMetadata: PlaybackSourceMetadata,
-        requirements: PlaybackRouteRequirements,
         selectedAudioTrackId: Int64?,
         pendingAudioFfIndex: Int?,
         preferredAudioTrackIndex: Int?,
@@ -907,12 +886,6 @@ extension ApplePlaybackRoutePlanner {
         ).first(where: { $0.isSelected }).map(loopbackAudioOutputMode)
         if audioMode == .transcodeAAC || audioMode == .transcodeAC3 || audioMode == .transcodeEC3 {
             degradations.append("Loopback audio may use an explicit lossy fallback.")
-        }
-
-        if !PlaybackEngineKind.siloPlayerLoopback.routeCapabilities
-            .blockingReasons(for: requirements).isEmpty {
-            blockers.append(contentsOf: PlaybackEngineKind.siloPlayerLoopback.routeCapabilities
-                .blockingReasons(for: requirements))
         }
 
         guard blockers.isEmpty else {
@@ -1294,26 +1267,6 @@ extension ApplePlaybackRoutePlanner {
                 || codec == "eac3"
                 || title?.localizedCaseInsensitiveContains("atmos") == true
         }
-    }
-
-    static func chapterInfoList(from version: FileVersion) -> [PlayerChapterInfo] {
-        (version.chapters ?? [])
-            .filter { chapter in
-                chapter.startSeconds.isFinite && chapter.startSeconds >= 0
-            }
-            .sorted { lhs, rhs in
-                if lhs.startSeconds == rhs.startSeconds {
-                    return lhs.index < rhs.index
-                }
-                return lhs.startSeconds < rhs.startSeconds
-            }
-            .map { chapter in
-                PlayerChapterInfo(
-                    index: chapter.index,
-                    title: chapter.title,
-                    time: chapter.startSeconds
-                )
-            }
     }
 
     static func makeLoopbackAudioTracks(for version: FileVersion) -> [PlayerTrack] {

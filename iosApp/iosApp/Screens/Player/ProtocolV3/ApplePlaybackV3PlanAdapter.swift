@@ -285,7 +285,7 @@ enum ApplePlaybackV3PlanAdapter {
             loopbackSession: engine == .siloPlayerLoopback ? loopbackSession : nil,
             routeCapabilities: routeCapabilities,
             requirements: routeRequirements,
-            parityBlockers: routeCapabilities.blockingReasons(for: routeRequirements),
+            parityBlockers: [],
             decisionTrace: basePlan.decisionTrace + [
                 "protocol_v3", "v3_plan_\(plan.planId)", "v3_delivery_\(plan.delivery)"
             ] + transformationTokens + quirkTokens + correctionTokens,

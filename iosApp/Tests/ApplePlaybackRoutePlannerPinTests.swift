@@ -183,8 +183,6 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertEqual(result.routeFamily, .nativePlayer)
         // Full trace pinned once, to lock ordering as well as membership.
         XCTAssertEqual(result.decisionTrace, [
-            "pip_disabled_until_validated",
-            "external_playback_disabled_until_validated",
             "delivery_direct",
             "container_mp4",
             "video_h264",
@@ -258,8 +256,6 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         ])
         // Full trace pinned: this is the fallback path most likely to shift.
         XCTAssertEqual(result.decisionTrace, [
-            "pip_disabled_until_validated",
-            "external_playback_disabled_until_validated",
             "delivery_direct",
             "container_mkv",
             "video_h264",
@@ -715,8 +711,6 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         XCTAssertEqual(enabled.startMode, .absolutePosition(42))
         XCTAssertNil(enabled.loopbackSession)
         XCTAssertEqual(enabled.decisionTrace, [
-            "pip_disabled_until_validated",
-            "external_playback_disabled_until_validated",
             "delivery_transcode",
             "avplayer_hls_enabled",
             "fallback_order_hls_controlled_retry"
@@ -1054,18 +1048,9 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             dolbyVisionPolicy: .default
         )
 
-        XCTAssertTrue(requirements.needsPrimaryAudioSelection)
-        XCTAssertTrue(requirements.needsPrimarySubtitleSelection)
-        XCTAssertFalse(requirements.needsSidecarPrimarySubtitles)
         XCTAssertFalse(requirements.needsSecondarySubtitles)
-        XCTAssertFalse(requirements.needsChapters)
-        XCTAssertTrue(requirements.needsNowPlayingIntegration)
         XCTAssertTrue(requirements.needsValidatedDolbyVisionClaim)
         XCTAssertTrue(requirements.needsValidatedAtmosClaim)
-        // PIN: current behavior. PiP/external playback are never held back by
-        // `makeRouteRequirements`, unlike `.baseline`.
-        XCTAssertFalse(requirements.keepsPictureInPictureDisabledUntilValidated)
-        XCTAssertFalse(requirements.keepsExternalPlaybackDisabledUntilValidated)
 
         // Turning Dolby Vision off clears the DV claim but not the Atmos one.
         let dvOff = ApplePlaybackRoutePlanner.makeRouteRequirements(
