@@ -91,6 +91,71 @@ final class PlaybackV3FixtureRoundTripTests: XCTestCase {
         XCTAssertEqual(start.clientCapabilities.videoEvidence, PlaybackProtocolV3.Evidence.exact)
     }
 
+    /// Every fixture the app has a production model for decodes into it, so a
+    /// re-vendor that changes a shape fails here rather than on the wire.
+    /// Two are excluded on purpose and pinned separately below: `route_event`
+    /// (the sample is narrower than `PlaybackV3RouteEvent`) and `replan_request`
+    /// (the server omits `local_mutations` when empty). The remaining three are
+    /// server-side scenario documents with no Apple model at all.
+    func testEveryFixtureWithAProductionModelDecodesIntoIt() throws {
+        _ = try PlaybackV3FixtureTestSupport.decode(
+            PlaybackV3CapabilityResponse.self,
+            named: "capability_response",
+            bundleClass: Self.self
+        )
+        _ = try PlaybackV3FixtureTestSupport.decode(
+            PlaybackV3DecisionResponse.self,
+            named: "decision_response",
+            bundleClass: Self.self
+        )
+        _ = try PlaybackV3FixtureTestSupport.decode(
+            PlaybackV3StartRequest.self,
+            named: "start_request",
+            bundleClass: Self.self
+        )
+    }
+
+    /// PIN: `local_mutations` is `omitempty` on the server, so its generated
+    /// replan sample omits the key, while `PlaybackV3ReplanRequest` declares it
+    /// non-optional. Apple only ever *encodes* this type, so the asymmetry is
+    /// benign — but it is the reason the fixture is not in the decode sweep
+    /// above, and a model that starts decoding replans must close it first.
+    func testReplanRequestFixtureOmitsLocalMutations() throws {
+        let url = try PlaybackV3FixtureTestSupport.fixtureURL(
+            named: "replan_request",
+            bundleClass: Self.self
+        )
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        )
+        XCTAssertNil(object["local_mutations"])
+        XCTAssertEqual(object["plan_attempt_key"] as? String, "v3:f0144c47fa349e3e")
+        XCTAssertThrowsError(
+            try PlaybackV3FixtureTestSupport.decode(
+                PlaybackV3ReplanRequest.self,
+                named: "replan_request",
+                bundleClass: Self.self
+            )
+        )
+
+        // The request Apple actually builds always carries the key, so the
+        // encoder side of the contract round-trips.
+        let decoded = try PlaybackV3FixtureTestSupport.decoder.decode(
+            PlaybackV3ReplanRequest.self,
+            from: try JSONSerialization.data(
+                withJSONObject: object.merging(["local_mutations": []]) { _, new in new }
+            )
+        )
+        let reencoded = try encoder.encode(decoded)
+        XCTAssertEqual(
+            try PlaybackV3FixtureTestSupport.decoder.decode(
+                PlaybackV3ReplanRequest.self,
+                from: reencoded
+            ),
+            decoded
+        )
+    }
+
     // MARK: - Fixtures with no production model
 
     /// `error_response` is the 426 upgrade envelope. Apple has no model for it

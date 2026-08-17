@@ -226,6 +226,78 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(object["attempted_plan_keys"] as? [String], [])
     }
 
+    /// An output-route change is an intent, but only a server advertising
+    /// `output_change_v1` understands the dedicated operation. Against an older
+    /// server the request must keep its `failure_recovery` +
+    /// `output_route_changed` shape, or the replan is rejected outright.
+    func testOutputRouteChangeUsesTheDedicatedOperationOnlyWhenTheServerAdvertisesIt() throws {
+        XCTAssertEqual(
+            PlaybackSessionBridge.replanOperation(
+                forClassification: "output_route_changed",
+                serverFeatures: [
+                    PlaybackProtocolV3.planFeature,
+                    PlaybackProtocolV3.outputChangeFeature
+                ]
+            ),
+            PlaybackProtocolV3.ReplanOperation.outputChange
+        )
+        XCTAssertEqual(
+            PlaybackSessionBridge.replanOperation(
+                forClassification: "output_route_changed",
+                serverFeatures: [PlaybackProtocolV3.planFeature]
+            ),
+            PlaybackProtocolV3.ReplanOperation.failureRecovery
+        )
+        XCTAssertEqual(
+            PlaybackSessionBridge.replanOperation(forClassification: "output_route_changed"),
+            PlaybackProtocolV3.ReplanOperation.failureRecovery
+        )
+        // The feature never promotes any other classification.
+        XCTAssertEqual(
+            PlaybackSessionBridge.replanOperation(
+                forClassification: "decoder_failed",
+                serverFeatures: [PlaybackProtocolV3.outputChangeFeature]
+            ),
+            PlaybackProtocolV3.ReplanOperation.failureRecovery
+        )
+
+        // The server rejects an output_change request that carries a failure.
+        XCTAssertNil(
+            PlaybackSessionBridge.replanFailure(
+                operation: PlaybackProtocolV3.ReplanOperation.outputChange,
+                classification: "output_route_changed",
+                message: "The Apple audio output route changed."
+            )
+        )
+        let request = makeReplanRequest(
+            planAttemptKey: "v3:output",
+            operation: PlaybackProtocolV3.ReplanOperation.outputChange,
+            failure: nil
+        )
+        let object = try encodedObject(request)
+        XCTAssertEqual(object["operation"] as? String, "output_change")
+        XCTAssertNil(object["failure"])
+    }
+
+    /// The vendored fixtures are the server's own generated goldens, so the
+    /// decision fixture is also the proof that Apple reads the advertisement it
+    /// now gates on.
+    func testGoldenDecisionAdvertisesTheOutputChangeFeature() throws {
+        let decision = try PlaybackV3FixtureTestSupport.decode(
+            PlaybackV3DecisionResponse.self,
+            named: "decision_response",
+            bundleClass: Self.self
+        )
+        XCTAssertTrue(decision.serverFeatures.contains(PlaybackProtocolV3.outputChangeFeature))
+
+        let capability = try PlaybackV3FixtureTestSupport.decode(
+            PlaybackV3CapabilityResponse.self,
+            named: "capability_response",
+            bundleClass: Self.self
+        )
+        XCTAssertTrue(capability.features.contains(PlaybackProtocolV3.outputChangeFeature))
+    }
+
     func testOutputRouteReplanRequiresChangedOutputContextIdentity() {
         XCTAssertFalse(
             PlaybackSessionBridge.isMaterialOutputRouteChange(

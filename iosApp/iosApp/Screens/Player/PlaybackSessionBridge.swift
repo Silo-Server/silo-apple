@@ -894,14 +894,23 @@ actor PlaybackSessionBridge {
 
     /// Maps a local failure/intent classification onto the protocol's replan
     /// operation. A user-initiated track or quality change is an intent, not a
-    /// failure, and carries no `failure` block. An output-route change stays
-    /// failure recovery: the route the plan was chosen for no longer exists.
-    static func replanOperation(forClassification classification: String) -> String {
+    /// failure, and carries no `failure` block. An output-route change is also
+    /// an intent — nothing failed, the sink capabilities changed — but only a
+    /// server advertising `outputChangeFeature` understands the dedicated
+    /// operation; against an older server it stays failure recovery carrying
+    /// the `output_route_changed` classification.
+    static func replanOperation(
+        forClassification classification: String,
+        serverFeatures: [String] = []
+    ) -> String {
         switch classification {
         case "audio_track_changed", "subtitle_track_changed":
             return PlaybackProtocolV3.ReplanOperation.trackChange
         case "quality_changed":
             return PlaybackProtocolV3.ReplanOperation.qualityChange
+        case "output_route_changed"
+            where serverFeatures.contains(PlaybackProtocolV3.outputChangeFeature):
+            return PlaybackProtocolV3.ReplanOperation.outputChange
         default:
             return PlaybackProtocolV3.ReplanOperation.failureRecovery
         }
@@ -985,6 +994,7 @@ actor PlaybackSessionBridge {
         switch operation {
         case PlaybackProtocolV3.ReplanOperation.trackChange,
              PlaybackProtocolV3.ReplanOperation.qualityChange,
+             PlaybackProtocolV3.ReplanOperation.outputChange,
              PlaybackProtocolV3.ReplanOperation.seekReanchor:
             return nil
         default:
@@ -1007,11 +1017,16 @@ actor PlaybackSessionBridge {
         subtitleTrackIndex: Int? = nil,
         outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
     ) async throws -> PreparedPlayback? {
-        let operation = operation ?? Self.replanOperation(forClassification: classification)
         guard var active = activeProtocolV3,
               let currentSessionId = sessionId else {
             return nil
         }
+        // Derived after the guard: the mapping gates the `output_change`
+        // operation on what this server advertised for the active plan.
+        let operation = operation ?? Self.replanOperation(
+            forClassification: classification,
+            serverFeatures: active.serverFeatures
+        )
         let expectedAttempt = ProtocolV3AttemptIdentity(active)
         guard active.attemptCount < 8 else {
             await emitProtocolV3Terminal(

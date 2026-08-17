@@ -7,6 +7,7 @@
     "playback_route_diagnostics",
     "device_quirks_v1",
     "seek_reanchor_v1",
+    "output_change_v1",
     "direct_stream_resume_v1",
     "plan_source_duration_v1"
   ],
@@ -25,7 +26,7 @@
       "container": "mp4",
       "mime_type": "video/mp4",
       "headers": {},
-      "header_refresh": "session"
+      "header_refresh": "none"
     },
     "timeline": {
       "source_start_seconds": 12.5,

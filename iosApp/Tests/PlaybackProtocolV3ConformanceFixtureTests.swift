@@ -22,7 +22,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         )
         XCTAssertEqual(matrix.schemaVersion, 1)
         XCTAssertEqual(matrix.plannerScenarios.count, 17)
-        XCTAssertEqual(matrix.replanScenarios.count, 9)
+        XCTAssertEqual(matrix.replanScenarios.count, 10)
         XCTAssertEqual(matrix.protocolScenarios.count, 8)
 
         let categories = Set(
@@ -41,6 +41,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
                 "available_qualities",
                 "track_change_replan",
                 "quality_change_replan",
+                "output_change_replan",
                 "idempotent_replan",
                 "concurrent_replan",
                 "mid_seek_replan",
@@ -164,6 +165,28 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
                 PlaybackProtocolV3.neutralContractFeature
             ) == true
         )
+    }
+
+    /// The server's `output_change` vector: an intent operation that refreshes
+    /// output capabilities, so it names the operation explicitly and carries no
+    /// failure body. Apple emits exactly this shape once the server advertises
+    /// `output_change_v1`.
+    func testOutputChangeReplanVectorIsAnIntentWithNoFailure() throws {
+        let matrix = try PlaybackV3FixtureTestSupport.decode(
+            PlaybackV3ConformanceMatrix.self,
+            named: "conformance_matrix",
+            bundleClass: Self.self
+        )
+        let outputChange = try XCTUnwrap(
+            matrix.replanScenarios.first { $0.category == "output_change_replan" }
+        )
+        XCTAssertEqual(
+            outputChange.request.operation,
+            PlaybackProtocolV3.ReplanOperation.outputChange
+        )
+        XCTAssertNil(outputChange.request.failure)
+        XCTAssertEqual(outputChange.expected.httpStatus, 200)
+        XCTAssertEqual(outputChange.expected.preserveUnmodifiedTracks, true)
     }
 
     private func plannerScenario(

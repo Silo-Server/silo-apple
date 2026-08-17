@@ -1,6 +1,9 @@
-Source: silo-server docs/design/schemas/playback-v3/v3/fixtures/valid and internal/playback/testdata/protocol_v3
-Server ref: codex/playback-v3-neutral-server
-Server commit: ce2f3e6df084f52c62595db8e3011f55c3a925ef
-Vendored: 2026-08-10
+Source: silo-server internal/playback/testdata/protocol_v3
+Server ref: main
+Server commit: 5fdb5d73acc9529837cac90d253e9e3bfc0055bb
+Vendored: 2026-08-17
 
-Refresh these files from the exact server commit above, then regenerate Silo.xcodeproj with cd iosApp && xcodegen generate.
+All nine files are byte-for-byte copies of the server's generated fixtures
+(cmd/playbackfixtures). Do not hand-edit them: refresh from the exact server
+commit above, verify with shasum that every file matches the server copy, then
+regenerate Silo.xcodeproj with cd iosApp && xcodegen generate.
