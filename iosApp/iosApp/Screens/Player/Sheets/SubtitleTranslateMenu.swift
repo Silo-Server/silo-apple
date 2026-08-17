@@ -19,11 +19,13 @@
 //
 //  Routing (`route(to:)`):
 //    - Translate: prefer an existing text subtitle track in a *different*
-//      language than the target. Its combined index is `track.srcId`
-//      (== `subtitle_urls[].index`); embedded-text translation is out of scope
-//      for v1, so only tracks with a resolvable `srcId` qualify. Bitmap subs
-//      (PGS / DVD / DVB / VobSub, detected via `track.codec`) are never a
-//      translation source.
+//      language than the target. The job's source index is the server's
+//      *combined* subtitle index, which only sidecar/downloaded tracks carry
+//      (`track.srcId` == `subtitle_urls[].index`). Embedded tracks carry an
+//      FFmpeg stream index in `srcId` instead — a different index space — and
+//      embedded-text translation is out of scope for v1, so they don't
+//      qualify. Bitmap subs (PGS / DVD / DVB / VobSub, detected via
+//      `track.codec`) are never a translation source either.
 //    - Transcribe: when no translatable text source exists, transcribe the
 //      default audio track (`-1`). If the target equals the spoken audio
 //      language it's a plain transcribe; otherwise transcribe-and-translate.
@@ -74,10 +76,17 @@ struct SubtitleTranslateMenu: View {
             || codec.contains("dvb_sub") || codec.contains("vobsub")
     }
 
-    /// Text subtitle tracks with a resolvable combined index — the only ones
-    /// that can be AI-translated in v1.
+    /// Text subtitle tracks with a resolvable **server combined** index — the
+    /// only ones that can be AI-translated in v1. The combined-index rule lives
+    /// in ``SubtitleAIController/translationSourceIndex(for:)`` so the menu
+    /// offers exactly the tracks the controller will accept (an embedded track
+    /// carries an FFmpeg stream index in `srcId`, not a combined index).
+    static func translatableSubtitleTracks(_ tracks: [PlayerTrack]) -> [PlayerTrack] {
+        tracks.filter { !isBitmap($0) && SubtitleAIController.translationSourceIndex(for: $0) != nil }
+    }
+
     static func translatableSubtitleTracks(_ viewModel: PlayerViewModel) -> [PlayerTrack] {
-        viewModel.subtitleTracks.filter { !isBitmap($0) && $0.srcId != nil }
+        translatableSubtitleTracks(viewModel.subtitleTracks)
     }
 
     /// Whether the menu would show at least one serviceable language, so the

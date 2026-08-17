@@ -434,6 +434,100 @@ final class SubtitleAIControllerTests: XCTestCase {
         XCTAssertFalse(h.controller.livePresentationActive)
         XCTAssertEqual(h.controller.phase, .idle)
     }
+
+    // MARK: - Translation source index space (review §3 #11)
+
+    /// A subtitle row as the player publishes it. `srcId` means different
+    /// things per partition, which is exactly what these tests pin.
+    private func subtitleTrack(trackId: Int64, ffIndex: Int?, srcId: Int?, isExternal: Bool) -> PlayerTrack {
+        PlayerTrack(
+            trackId: trackId,
+            kind: .sub,
+            title: "Track",
+            lang: "en",
+            codec: "subrip",
+            audioChannelsLayout: nil,
+            audioChannelCount: nil,
+            bitrate: nil,
+            isDefault: false,
+            isForced: false,
+            isHearingImpaired: false,
+            isVisualImpaired: false,
+            isExternal: isExternal,
+            isSelected: false,
+            ffIndex: ffIndex,
+            srcId: srcId
+        )
+    }
+
+    /// A controller whose submit can never reach the network: `mediaFileId` is
+    /// nil, so anything that passes the identity guard stops at the "playback
+    /// isn't ready" guard with a DIFFERENT message.
+    private func makeGuardOnlyController() -> SubtitleAIController {
+        SubtitleAIController(
+            mediaFileId: { nil },
+            currentTime: { 0 },
+            handoffContext: { nil },
+            registerAndSelectDescriptor: { _ in }
+        )
+    }
+
+    private var sidecarTrack: PlayerTrack {
+        subtitleTrack(
+            trackId: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3),
+            ffIndex: nil,
+            srcId: 3,
+            isExternal: true
+        )
+    }
+
+    /// The extractor sets BOTH `ffIndex` and `srcId` to the FFmpeg stream
+    /// index (AVPlayerEmbeddedSubtitleExtractor), which is not the server's
+    /// combined index.
+    private var embeddedTrack: PlayerTrack {
+        subtitleTrack(
+            trackId: SubtitleTrackIdSpace.makeAVPlayerEmbeddedTrackId(streamIndex: 4),
+            ffIndex: 4,
+            srcId: 4,
+            isExternal: false
+        )
+    }
+
+    /// Sidecar `srcId` IS the server combined index (`subtitle_urls[].index`),
+    /// so it passes straight through as the job's `source_index`.
+    func testSidecarTrackTranslatesWithItsCombinedIndex() {
+        XCTAssertEqual(SubtitleAIController.translationSourceIndex(for: sidecarTrack), 3)
+        XCTAssertEqual(
+            SubtitleTranslateMenu.translatableSubtitleTracks([sidecarTrack]).map(\.trackId),
+            [sidecarTrack.trackId]
+        )
+    }
+
+    /// An embedded extracted row carries the FFmpeg stream index in `srcId` —
+    /// a different index space. Without the version's subtitle inventory it
+    /// cannot be converted, so it must not be offered or submitted.
+    func testEmbeddedTrackIsNotOfferedAsATranslationSource() {
+        XCTAssertNil(SubtitleAIController.translationSourceIndex(for: embeddedTrack))
+        XCTAssertTrue(SubtitleTranslateMenu.translatableSubtitleTracks([embeddedTrack]).isEmpty)
+    }
+
+    /// Defence in depth: even called directly, the controller refuses the
+    /// embedded row instead of sending its FFmpeg index as a combined index.
+    func testTranslateExistingRefusesEmbeddedTrack() {
+        let controller = makeGuardOnlyController()
+        controller.translateExisting(track: embeddedTrack, to: "es")
+        XCTAssertEqual(controller.phase, .failed)
+        XCTAssertEqual(controller.errorMessage, "This subtitle track can't be translated.")
+    }
+
+    /// …while a sidecar row clears that guard (it stops later, at the
+    /// no-media-file guard, which proves the identity check admitted it).
+    func testTranslateExistingAdmitsSidecarTrack() {
+        let controller = makeGuardOnlyController()
+        controller.translateExisting(track: sidecarTrack, to: "es")
+        XCTAssertEqual(controller.phase, .failed)
+        XCTAssertEqual(controller.errorMessage, "Playback isn't ready yet.")
+    }
 }
 
 // MARK: - Local job builder (no network)
