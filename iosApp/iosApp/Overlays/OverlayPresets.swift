@@ -29,7 +29,6 @@ enum OverlayPresets {
         iconSize: 10,
         preferIcon: false,
         gap: 2,
-        accentStrategy: .text,
         backgroundColor: { _ in .clear },
         foregroundColor: { accent in accent ?? Color.white.opacity(0.85) },
         borderColor: { _ in nil },
@@ -49,7 +48,6 @@ enum OverlayPresets {
         iconSize: 11,
         preferIcon: false,
         gap: 4,
-        accentStrategy: .background,
         backgroundColor: { accent in
             if let accent { return accent.mix(with: Color.black.opacity(0.6), amount: 0.72) }
             return Color.black.opacity(0.6)
@@ -72,7 +70,6 @@ enum OverlayPresets {
         iconSize: 12,
         preferIcon: true,
         gap: 4,
-        accentStrategy: .background,
         backgroundColor: { accent in accent ?? Color(white: 0.86) },
         foregroundColor: { accent in accent == nil ? .black : .white },
         borderColor: { _ in nil },
@@ -92,7 +89,6 @@ enum OverlayPresets {
         iconSize: 12,
         preferIcon: true,
         gap: 4,
-        accentStrategy: .background,
         backgroundColor: { accent in
             let base = Color(red: 20/255, green: 20/255, blue: 30/255).opacity(0.7)
             if let accent { return accent.mix(with: base, amount: 0.8) }
@@ -116,7 +112,6 @@ enum OverlayPresets {
         iconSize: 10,
         preferIcon: false,
         gap: 2,
-        accentStrategy: .border,
         backgroundColor: { _ in Color.black.opacity(0.8) },
         foregroundColor: { accent in accent ?? .white },
         borderColor: { accent in accent },

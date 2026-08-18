@@ -30,7 +30,9 @@ struct CalendarView: View {
         rootLayout
             .task {
                 await viewModel.load()
-                await loadCurrentProfile()
+                #if !os(tvOS)
+                currentProfile = await AuthService.shared.activeProfile()
+                #endif
             }
         #if !os(tvOS)
             .refreshable {
@@ -407,17 +409,4 @@ struct CalendarView: View {
     }
     #endif
 
-    /// Load the active profile so the iOS top bar can render its avatar.
-    /// Non-fatal on failure — the bar falls back to a generic icon.
-    private func loadCurrentProfile() async {
-        #if !os(tvOS)
-        guard let profileId = AuthService.shared.profileId else { return }
-        do {
-            let profiles = try await AuthService.shared.getProfiles()
-            currentProfile = profiles.first(where: { $0.id == profileId })
-        } catch {
-            // Leave currentProfile nil; the top bar renders a fallback.
-        }
-        #endif
-    }
 }

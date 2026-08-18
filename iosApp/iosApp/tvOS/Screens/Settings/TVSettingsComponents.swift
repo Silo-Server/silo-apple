@@ -539,6 +539,24 @@ struct TVSettingsConfirmationOverlay: View {
     private var buttonWidth: CGFloat {
         additionalDestructiveTitle == nil ? 260 : 320
     }
+
+    /// The sign-out confirmation, identical wherever it is offered (top menu,
+    /// settings pane, profile picker).
+    static func signOut(
+        cancel: @escaping () -> Void,
+        confirm: @escaping () -> Void,
+        removeServer: @escaping () -> Void
+    ) -> TVSettingsConfirmationOverlay {
+        TVSettingsConfirmationOverlay(
+            title: "Sign Out",
+            message: "Choose whether to keep or remove this server from this Apple TV.",
+            confirmTitle: "Sign Out",
+            additionalDestructiveTitle: "Sign Out & Remove Server",
+            cancel: cancel,
+            confirm: confirm,
+            additionalDestructiveAction: removeServer
+        )
+    }
 }
 
 // MARK: - Privacy policy handoff

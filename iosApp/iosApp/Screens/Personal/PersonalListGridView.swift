@@ -121,7 +121,7 @@ struct PersonalListGridView: View {
                         action: {
                             router.navigate(to: .itemDetail(contentId: item.contentId))
                         },
-                        playAction: playAction(for: item),
+                        playAction: router.playAction(for: item),
                         contentId: item.contentId,
                         onUserStateChanged: { state in
                             guard !kind.contains(state) else { return }
@@ -135,21 +135,6 @@ struct PersonalListGridView: View {
             }
             .padding(SiloTheme.padding)
         }
-    }
-
-    private func playAction(for item: BrowseItem) -> (() -> Void)? {
-        #if os(tvOS)
-        guard SiloMediaType.isDirectlyPlayable(item.type) else { return nil }
-        return {
-            router.presentPlayer(
-                contentId: item.contentId,
-                posterURL: item.posterUrl,
-                backdropURL: item.backdropUrl
-            )
-        }
-        #else
-        return nil
-        #endif
     }
 
     private func load() async {

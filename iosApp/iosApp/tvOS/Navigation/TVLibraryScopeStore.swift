@@ -34,10 +34,7 @@ struct TVLibraryScopeStore {
         guard let key = key(for: type) else { return nil }
         // `integer(forKey:)` can't distinguish "0" from "absent", so gate
         // on object presence — library ids are positive but be defensive.
-        guard defaults.suite.object(forKey: key) != nil
-            || UserDefaults.standard.object(forKey: key) != nil else {
-            return nil
-        }
+        guard defaults.containsObject(forKey: key) else { return nil }
         let stored = defaults.integer(forKey: key)
         return stored
     }

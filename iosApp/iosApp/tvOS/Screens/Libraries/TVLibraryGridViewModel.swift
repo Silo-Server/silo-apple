@@ -199,7 +199,7 @@ final class TVLibraryGridViewModel {
 
 // MARK: - Safe subscript
 
-private extension Array {
+extension Array {
     subscript(safe range: Range<Int>) -> ArraySlice<Element> {
         let lower = Swift.max(0, range.lowerBound)
         let upper = Swift.min(count, range.upperBound)

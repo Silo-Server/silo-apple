@@ -90,13 +90,6 @@ struct SiloTheme {
     static let thumbnailCardHeight: CGFloat = 90
     #endif
 
-    /// Profile avatar size
-    #if os(tvOS)
-    static let profileAvatarSize: CGFloat = 160
-    #else
-    static let profileAvatarSize: CGFloat = 80
-    #endif
-
     // MARK: - Animation Durations (Plezy mono_tokens)
 
     /// Fast — focus state changes, hover effects (120ms)

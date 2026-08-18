@@ -244,6 +244,33 @@ enum PrimaryMenuItem: Hashable, Identifiable, Sendable {
     }
 }
 
+/// Weave edited, editor-visible rows back through the complete resolved menu.
+/// Targets the editor cannot render (section/collection destinations,
+/// temporarily unavailable libraries) must survive an unrelated reorder so
+/// another client in the same family does not lose them.
+func mergePrimaryMenuVisibleItems(
+    resolved: [PrimaryMenuItem],
+    currentlyVisibleIds: Set<String>,
+    replacements updatedVisibleItems: [PrimaryMenuItem]
+) -> [PrimaryMenuItem] {
+    var replacements = updatedVisibleItems.makeIterator()
+    var result: [PrimaryMenuItem] = []
+
+    for item in resolved {
+        if currentlyVisibleIds.contains(item.id) {
+            if let replacement = replacements.next() {
+                result.append(replacement)
+            }
+        } else {
+            result.append(item)
+        }
+    }
+    while let remaining = replacements.next() {
+        result.append(remaining)
+    }
+    return result
+}
+
 extension PrimaryMenuItem: Codable {
     private enum ItemType: String, Codable {
         case builtin
@@ -976,7 +1003,7 @@ final class UICustomizationPreferences {
     /// audiobook opt-in remains part of that default until the user authors a
     /// new menu. Profile-wide shortcuts stay available to every family, but
     /// only an explicit family menu places them in that family's navigation.
-    func resolvedPrimaryMenuItems(availableLibraries _: [Library] = []) -> [PrimaryMenuItem] {
+    func resolvedPrimaryMenuItems() -> [PrimaryMenuItem] {
         if let primaryMenu, primaryMenu.isValid {
             return primaryMenu.items
         }
@@ -987,13 +1014,7 @@ final class UICustomizationPreferences {
             .builtin(.series),
             .builtin(.music),
         ]
-        #if os(tvOS)
-        // TVNavPreferences is the semantic owner used by the legacy tvOS
-        // settings row (currently a typealias of AppNavPreferences).
-        let legacyShowsAudiobooks = TVNavPreferences.shared.showAudiobooks
-        #else
         let legacyShowsAudiobooks = AppNavPreferences.shared.showAudiobooks
-        #endif
         if legacyShowsAudiobooks {
             items.append(.builtin(.audiobooks))
         }

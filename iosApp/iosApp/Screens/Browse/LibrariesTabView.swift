@@ -284,7 +284,7 @@ struct LibrariesTabView: View {
             // under the new destination.
             applyLibrarySelection()
             await loadLibraries()
-            await loadCurrentProfile()
+            currentProfile = await AuthService.shared.activeProfile()
         }
         .onChange(of: navPrefs.showAudiobooks) {
             applyLibrarySelection()
@@ -479,17 +479,6 @@ struct LibrariesTabView: View {
         }
     }
 
-    /// Load the currently-selected profile so we can render its avatar in
-    /// the top bar. Non-fatal on failure — we fall back to a generic icon.
-    private func loadCurrentProfile() async {
-        guard let profileId = AuthService.shared.profileId else { return }
-        do {
-            let profiles = try await AuthService.shared.getProfiles()
-            currentProfile = profiles.first(where: { $0.id == profileId })
-        } catch {
-            // Leave currentProfile nil; the top bar renders a fallback.
-        }
-    }
 }
 
 // MARK: - Top Bar

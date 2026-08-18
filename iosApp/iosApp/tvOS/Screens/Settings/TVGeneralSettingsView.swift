@@ -8,7 +8,7 @@ import SwiftUI
 struct TVGeneralSettingsPane: View {
     @State private var preferences = UICustomizationPreferences.shared
     @State private var launchPreferences = ProfileLaunchPreferences.shared
-    @State private var navPrefs = TVNavPreferences.shared
+    @State private var navPrefs = AppNavPreferences.shared
     @State private var activePicker: PickerKind?
     @State private var showsMenuEditor = false
     @State private var registry = ServerRegistry.shared
@@ -271,10 +271,7 @@ struct TVGeneralSettingsPane: View {
     }
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {
-        MainTabLibraryAuthority(
-            serverId: registry.activeServerId,
-            profileId: registry.activeProfileId
-        )
+        MainTabLibraryAuthority.current
     }
 
     private var libraries: [Library] {
@@ -549,22 +546,11 @@ private struct TVMenuCustomizationSheet: View {
     /// are not renderable roots on Apple TV yet, but must survive an unrelated
     /// reorder so another TV-family client does not lose them.
     private func persistVisibleItems(_ updatedVisibleItems: [PrimaryMenuItem]) {
-        let currentlyVisibleIds = Set(visibleItems.map(\.id))
-        var replacements = updatedVisibleItems.makeIterator()
-        var result: [PrimaryMenuItem] = []
-
-        for item in preferences.resolvedPrimaryMenuItems() {
-            if currentlyVisibleIds.contains(item.id) {
-                if let replacement = replacements.next() {
-                    result.append(replacement)
-                }
-            } else {
-                result.append(item)
-            }
-        }
-        while let remaining = replacements.next() {
-            result.append(remaining)
-        }
+        let result = mergePrimaryMenuVisibleItems(
+            resolved: preferences.resolvedPrimaryMenuItems(),
+            currentlyVisibleIds: Set(visibleItems.map(\.id)),
+            replacements: updatedVisibleItems
+        )
         preferences.setPrimaryMenuItems(result)
     }
 

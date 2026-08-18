@@ -822,18 +822,10 @@ private func personAge(from birthValue: String?, to deathValue: String?) -> Int?
 
 private func parsePersonDate(_ value: String?) -> Date? {
     guard let value = clean(value) else { return nil }
-    return SelfDateFormatter.personISO.date(from: value)
+    return DateFormatters.isoDate.date(from: value)
 }
 
 private enum SelfDateFormatter {
-    static let personISO: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
-
     static let personDisplay: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
@@ -843,14 +835,3 @@ private enum SelfDateFormatter {
         return formatter
     }()
 }
-
-#if os(tvOS)
-private extension Array {
-    subscript(safe range: Range<Int>) -> ArraySlice<Element> {
-        let lower = Swift.max(0, range.lowerBound)
-        let upper = Swift.min(count, range.upperBound)
-        guard lower < upper else { return [] }
-        return self[lower..<upper]
-    }
-}
-#endif

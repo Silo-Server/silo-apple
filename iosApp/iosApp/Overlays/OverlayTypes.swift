@@ -239,15 +239,6 @@ enum OverlayIconId: String, Hashable {
     }
 }
 
-/// How the preset paints the accent color. Mirrors web's
-/// `AccentStrategy` so the visual outcome matches per-platform.
-enum AccentStrategy: String {
-    case background
-    case border
-    case text
-    case dot
-}
-
 /// Visual recipe for a badge. The renderer applies `font`, `padding`,
 /// `cornerStyle`, etc. uniformly to every badge; per-badge variation
 /// comes from the registry (icon) and the user's `accentColor`.
@@ -264,7 +255,6 @@ struct OverlayPreset {
     let preferIcon: Bool
     /// Spacing between stacked badges in the same corner.
     let gap: CGFloat
-    let accentStrategy: AccentStrategy
     /// Compute the background color given the user's accent override (or
     /// the registry default). Returns `.clear` for transparent presets.
     let backgroundColor: (Color?) -> Color
