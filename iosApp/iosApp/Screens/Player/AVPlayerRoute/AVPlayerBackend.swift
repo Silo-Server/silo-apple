@@ -442,6 +442,16 @@ final class AVPlayerBackend {
     private static let loopbackStartupAbsoluteBackstopSeconds: TimeInterval = 60.0
     private static let seekCompletionDeadlineSeconds: TimeInterval = 15.0
 
+    /// Initial video display gate. The gate holds `onFileLoaded` (and with it
+    /// the app's loading overlay) until the render surface reports the first
+    /// frame, so a start reads as one continuous loader instead of dismissing
+    /// onto a black panel and handing off to the transport's buffering chip.
+    /// The fallback bounds a surface that never reports readiness; the backstop
+    /// bounds the fallback's own re-arm during an HDMI mode switch, so a
+    /// display manager wedged mid-switch can never strand the overlay.
+    private static let initialVideoDisplayFallbackSeconds: TimeInterval = 3.0
+    private static let initialVideoDisplayAbsoluteBackstopSeconds: TimeInterval = 15.0
+
     /// Local DV loopback playhead watchdog. Driven by an independent wall-clock
     /// timer (AVPlayer's periodic time observer stops firing when the playhead
     /// freezes, so it cannot detect a stationary playhead on its own). When
@@ -729,6 +739,13 @@ final class AVPlayerBackend {
     private var isWaitingForInitialVideoDisplay = false
     private var didTemporarilyMuteForInitialVideoDisplay = false
     private var initialVideoDisplayGateStartTime: Double?
+    private var initialVideoDisplayGateArmedAt: Date?
+    /// Startup is the only load that waits for the surface's first-frame
+    /// signal. A reanchor re-arms the same gate against a layer that has
+    /// already displayed this player once, so it keeps the permissive
+    /// clock-advance release rather than risking a seek that sits on the
+    /// overlay waiting for a readiness edge that may not come a second time.
+    private var didCompleteInitialVideoDisplayGate = false
     private var initialVideoDisplayFallback: DispatchWorkItem?
     private var loopbackStartupWatchdog: Timer?
     private var loopbackStartupWatchdogStartedAt: Date?
@@ -3806,6 +3823,7 @@ final class AVPlayerBackend {
         initialVideoDisplayFallback = nil
         isInitialVideoDisplayGatePrepared = true
         isWaitingForInitialVideoDisplay = false
+        initialVideoDisplayGateArmedAt = nil
         didTemporarilyMuteForInitialVideoDisplay = !avPlayer.isMuted
         if didTemporarilyMuteForInitialVideoDisplay {
             avPlayer.isMuted = true
@@ -3818,11 +3836,20 @@ final class AVPlayerBackend {
         isInitialVideoDisplayGatePrepared = false
         isWaitingForInitialVideoDisplay = true
         initialVideoDisplayGateStartTime = avPlayer.currentTime().seconds
+        initialVideoDisplayGateArmedAt = Date()
         Self.logger.info("[CMP-AVP] waiting for initial video frame before unmuting startup audio")
     }
 
+    /// On the startup gate this release is reserved for the one surface that
+    /// can never report layer readiness: AirPlay renders on the receiver, so
+    /// `videoSurfaceBecameReadyForDisplay()` never fires for it. A local start
+    /// waits for the real first frame (or the fallback below) — the loopback
+    /// route disables `automaticallyWaitsToMinimizeStalling`, so its clock
+    /// starts on `play()` and would otherwise clear the gate a tenth of a
+    /// second in, well before anything is on screen.
     private func releaseInitialVideoDisplayGateIfPlaybackAdvanced(currentTime: Double) {
         guard isWaitingForInitialVideoDisplay, let item = currentItem else { return }
+        guard didCompleteInitialVideoDisplayGate || avPlayer.isExternalPlaybackActive else { return }
         let startTime = initialVideoDisplayGateStartTime ?? currentTime
         guard currentTime.isFinite, startTime.isFinite, currentTime - startTime >= 0.05 else { return }
         finishInitialVideoDisplayGate(for: item, reason: "playback_clock_advanced")
@@ -3831,11 +3858,39 @@ final class AVPlayerBackend {
     private func scheduleInitialVideoDisplayFallback(for item: AVPlayerItem) {
         guard initialVideoDisplayFallback == nil else { return }
         let work = DispatchWorkItem { [weak self, weak item] in
-            guard let self, let item, !self.isDisposed, item === self.currentItem else { return }
+            // Clear the slot before any early return: this is the only
+            // scheduler, so a work item that retires without releasing it
+            // would leave the gate with no timeout at all.
+            guard let self, !self.isDisposed else { return }
+            self.initialVideoDisplayFallback = nil
+            guard self.isWaitingForInitialVideoDisplay else { return }
+            // The startup watchdog reloads the item in place under an open
+            // gate, so follow it rather than leaving the new item uncovered.
+            guard let item, item === self.currentItem else {
+                if let current = self.currentItem {
+                    self.scheduleInitialVideoDisplayFallback(for: current)
+                }
+                return
+            }
+            // The panel is blacked out for the whole HDMI negotiation, so
+            // nothing can have been displayed yet — wait it out instead of
+            // dismissing the loading overlay onto the blackout. Same
+            // reset-don't-penalize rule the loopback startup watchdog applies.
+            let armedAt = self.initialVideoDisplayGateArmedAt ?? Date()
+            let elapsed = Date().timeIntervalSince(armedAt)
+            if !self.didCompleteInitialVideoDisplayGate,
+               self.isTVDisplayModeSwitchInProgress(),
+               elapsed < Self.initialVideoDisplayAbsoluteBackstopSeconds {
+                self.scheduleInitialVideoDisplayFallback(for: item)
+                return
+            }
             self.finishInitialVideoDisplayGate(for: item, reason: "ready_for_display_timeout")
         }
         initialVideoDisplayFallback = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: work)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.initialVideoDisplayFallbackSeconds,
+            execute: work
+        )
     }
 
     private func finishInitialVideoDisplayGate(for item: AVPlayerItem, reason: String) {
@@ -3845,7 +3900,9 @@ final class AVPlayerBackend {
             return
         }
         isWaitingForInitialVideoDisplay = false
+        didCompleteInitialVideoDisplayGate = true
         initialVideoDisplayGateStartTime = nil
+        initialVideoDisplayGateArmedAt = nil
         initialVideoDisplayFallback?.cancel()
         initialVideoDisplayFallback = nil
         finishInitialLoadIfNeeded(for: item)
@@ -4265,6 +4322,7 @@ final class AVPlayerBackend {
         isInitialVideoDisplayGatePrepared = false
         isWaitingForInitialVideoDisplay = false
         initialVideoDisplayGateStartTime = nil
+        initialVideoDisplayGateArmedAt = nil
         initialVideoDisplayFallback?.cancel()
         initialVideoDisplayFallback = nil
         cancelLoopbackStartupWatchdog()
