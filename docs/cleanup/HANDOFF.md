@@ -1,7 +1,8 @@
 # Silo Apple streamlining program — session handoff
 
 **Read this first when picking the program up in a new session.** It is the single entry point; every other
-document it names is supporting evidence. Last updated 2026-08-18 after round 5 landed (`4f5a3a6`).
+document it names is supporting evidence. Last updated 2026-08-18: owner answered P1/P2/P5 (§7 — loopback
+stays, Stage 3/Option B and Stage 5/Option C are off the table); round 5 landed (`4f5a3a6`).
 
 ---
 
@@ -156,25 +157,30 @@ From round 5's deferred list (backlog §0 "Round-5 deferred"):
 ### 6b. Gated — the big levers (need an owner decision or a server change first)
 | Work | What it is | Gate |
 |---|---|---|
-| **Round 3 = Stage 2 control-plane extraction** (review §8/§9) | `PlaybackBackend` protocol, pure `PlaybackReducer` + `PlaybackSessionActor`, `PlaybackEngineSession`, one `RecoveryPolicy` replacing six backend ladders + VM outage ride-through, `TrackSelectionCoordinator` extraction from the VM's subtitle half. This is the real answer to `PlayerViewModel` ≈ 8k raw lines / `AVPlayerBackend` ≈ 4.6k. Ships behind `player.apple.control_plane: off|native_direct|loopback|all`. | Needs the **remote key in silo-server settings** (P11; pattern: `SettingKeys.generated.swift`, `PlayerSettings.swift`, `flusher.enqueue`). Until it exists there is no non-TestFlight rollback. Also wants a control run on the HDR10 anomaly (§8) first. Run via `player-remediation-fix.js` with spec JSONs; roughly 5–7 implementers + reviewers. |
-| **Stage 3 = narrow the local matrix (Option B deletions)** | EC3/AC3/AAC encoder ladders in the writer; the plan-less EVENT writer fallback (backlog §2.5, ~−300…−600); server-authoritative tightening (planner limited to execution detail, `local_mutations` populated, `ApplePlaybackRouteCapabilities` premium claims → `plan.claims`). Each behind the route key. | **P1, P2, P5** (see §7). |
-| Stage 4/5 | Default the new control plane on; one release later delete the old VM core + ladders. Stage 5 (Option C, delete ~11.6k loopback lines + FFmpeg dep) only if P1 = no. | Stages 2–3 first; P1. |
+| **Round 3 = Stage 2 control-plane extraction** (review §8/§9) | `PlaybackBackend` protocol, pure `PlaybackReducer` + `PlaybackSessionActor`, `PlaybackEngineSession`, one `RecoveryPolicy` replacing six backend ladders + VM outage ride-through, `TrackSelectionCoordinator` extraction from the VM's subtitle half. This is the real answer to `PlayerViewModel` ≈ 8k raw lines / `AVPlayerBackend` ≈ 4.6k. Ships behind `player.apple.control_plane: off|native_direct|loopback|all`. | Remote key (P11) **in progress 2026-08-18**: being added to silo-server `contracts/settings/v1/manifest.json` + `make settings-bindings` regeneration (precedent #670); Apple consumption pattern: `SettingKeys.generated.swift`, `PlayerSettings.swift`, `flusher.enqueue`. Also wants a control run on the HDR10 anomaly (§8) first. Run via `player-remediation-fix.js` with spec JSONs; roughly 5–7 implementers + reviewers. |
+| ~~Stage 3 = narrow the local matrix (Option B deletions)~~ **Cancelled 2026-08-18** | P1 = yes, P2 = no, P5 = no (§7): the encoder ladders, the EVENT fallback and common-container local playback all stay. Only the server-authoritative tightening items (planner limited to execution detail, `local_mutations` populated, `ApplePlaybackRouteCapabilities` premium claims → `plan.claims`) remain candidates — as Stage 2 territory. | Decided — closed. |
+| Stage 4 | Default the new control plane on; one release later delete the old VM core + ladders. (The former Stage 5 / Option C is dead: P1 = yes.) | Stage 2 first. |
 | Review items still open | #10 server audio pick on native-direct/HLS (needs server audio-index semantics; largely moot now that non-default audio → loopback); #11 combined-index translation for embedded tracks (needs the version inventory plumbed from the VM); six online-unreachable error rungs (PVM `1524-1553` at review time); `cmpLog` vs `os_log` unification; macOS scene-phase divergence; audiobook engine as a second V3 client. | Mostly Stage 2 territory; small ones could go in a follow-up package. |
 | Another DRY survey pass | Round 5's finders each ran a whole-repo identifier scan and found **zero orphan types**; remaining yield is repetition. Expect a diminishing tail unless Stage 2/3 reshape the code first. | Owner's call on spend; say "use a workflow". |
 
-## 7. Decisions the owner still needs to make (asked 2026-08-17, unanswered)
+## 7. Product decisions (P1–P13)
 
-Full list: review §10 (P1–P13). The ones that gate work now:
+Full list: review §10. The gating ones were answered by the owner on **2026-08-18**:
 
-- **P1** — Are *Dolby Vision presented as DV* (P8.1 conversion, not HDR10) and *lossless multichannel audio*
-  (FLAC/LPCM, not AAC) commitments? These are the only things loopback provides that the server cannot.
-  Yes → keep loopback (Options B/D, current path). No → Option C becomes possible (delete ~11.6k loopback lines +
-  FFmpeg + 17 test files; DV→HDR10, lossless→AAC, every MKV play becomes a server session).
-- **P2** — May common H.264/HEVC MKV/TS playback move to server remux? (server capacity + outage posture)
-- **P5** — Unknown-duration / untrusted-keyframe sources → server HLS instead of the local growing playlist?
-  (enables deleting the EVENT fallback, backlog §2.5)
-- **P11** — Agree the remote kill-switch key(s) with silo-server before Stage 2.
-- Backlog 1.18 — three divergent runtime-format styles across the app: unify only if one output format is chosen.
+- **P1 = yes** — *Dolby Vision presented as DV* and *lossless multichannel audio* (FLAC/LPCM) **are**
+  product commitments. The loopback tier stays; Option C (delete ~11.6k loopback lines + FFmpeg + 17 test
+  files) is permanently off the table.
+- **P2 = no** — common H.264/HEVC MKV/TS playback stays on the local path; no move to server remux.
+- **P5 = no** — unknown-duration / untrusted-keyframe sources keep the local growing-playlist EVENT
+  fallback; backlog §2.5 is closed as intentionally kept (backlog §3).
+- **P11** — in progress: `player.apple.control_plane` (`off|native_direct|loopback|all`, default `off`)
+  being added to silo-server `contracts/settings/v1/manifest.json` (precedent silo-server #670).
+
+**Consequences:** Stage 3 (Option B local-matrix narrowing) and Stage 5 (Option C) are cancelled. The
+remaining big lever is Stage 2 (Round 3 control-plane extraction), then Stage 4.
+
+Still open: the rest of P1–P13 (review §10), and backlog 1.18 — three divergent runtime-format styles
+across the app: unify only if one output format is chosen.
 
 ## 8. Open validation item (does not block landing, does need closing)
 

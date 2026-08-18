@@ -150,6 +150,10 @@ drop pre-contract support.
 
 ### 2.5 The plan-less "degrade to EVENT serving" writer fallback (~−300 to −400, **behavior change**)
 
+**Decided 2026-08-18: kept (P5 = no).** Unknown-duration / untrusted-keyframe sources stay on the
+local growing playlist; listed in §3. Do not re-raise without new information. Original analysis kept
+below for context.
+
 See 2.2. `LoopbackSegmentWriter` still carries the growing-playlist producer path for sources whose
 container duration/keyframe index can't be harvested, plus the store's spill/eviction that path
 uses. Retiring it would (a) turn "vod plan unavailable" into a typed planner/backend failure that
@@ -218,6 +222,14 @@ migration sources. What landed:
   unused to a naive grep.
 - Keychain/registry migrations, `SiloControl` v1 peer compatibility, and the onboarding
   legacy-suppression record: TestFlight-continuity and user-data paths, deliberately not surveyed.
+- **The loopback tier as a whole** (owner decision P1 = yes, 2026-08-18): DV presented as DV and
+  lossless multichannel audio (FLAC/LPCM) are product commitments — the only things loopback provides
+  that the server cannot. Option C (delete ~11.6k loopback lines + FFmpeg + 17 test files) is
+  permanently off the table.
+- **Common H.264/HEVC MKV/TS playback staying local** (P2 = no, 2026-08-18): no move to server remux;
+  the writer's encoder ladders stay.
+- **The plan-less EVENT writer fallback** (§2.5; P5 = no, 2026-08-18): unknown-duration /
+  untrusted-keyframe sources keep the local growing playlist.
 
 ## 4. Areas worth a closer look (not yet surveyed for deletion, or needing a different brief)
 
