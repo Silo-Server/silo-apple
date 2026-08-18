@@ -470,7 +470,10 @@ final class ServerRegistry {
             // signed-in servers can keep authState at .authenticated, so
             // without this the Requests entry points would stay hidden
             // until the next foreground. Fire-and-forget — the probe
-            // degrades to disabled on any failure.
+            // degrades to disabled on any failure. Removal of the active
+            // server reaches here too: the fallback server may already be
+            // signed in, again with no auth-state change to trigger the
+            // usual probe.
             Task { await RequestsFeatureStore.shared.refresh() }
             // Same reason, opposite default: the reset above restored
             // "available", so this re-probe is what *dims* the search row on
@@ -740,17 +743,7 @@ final class ServerRegistry {
         #endif
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         if removesActiveServer {
-            await MainActor.run {
-                AICapabilities.shared.reset()
-                RequestsFeatureStore.shared.reset()
-                SubtitleProvidersStore.shared.reset()
-                RequestsEventBus.shared.reset()
-                // Same rationale as `switchTo`: the fallback server may
-                // already be signed in, with no auth-state change to
-                // trigger the usual probe.
-                Task { await RequestsFeatureStore.shared.refresh() }
-                Task { await SubtitleProvidersStore.shared.refresh() }
-            }
+            await refreshFeaturesAfterServerSwitch()
         }
         return true
     }

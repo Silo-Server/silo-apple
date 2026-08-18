@@ -172,7 +172,6 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let networks: [String]?
     let showStatus: String?
     let overview: String?
-    let itemSource: String?
     let positionSeconds: Double?
     let durationSeconds: Double?
     let progressUpdatedAt: String?
@@ -208,7 +207,6 @@ struct SectionItem: Codable, Identifiable, Hashable {
         networks = try c.decodeIfPresent([String].self, forKey: .networks)
         showStatus = try c.decodeIfPresent(String.self, forKey: .showStatus)
         overview = try c.decodeIfPresent(String.self, forKey: .overview)
-        itemSource = try c.decodeIfPresent(String.self, forKey: .itemSource)
         positionSeconds = try c.decodeIfPresent(Double.self, forKey: .positionSeconds)
         durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
         progressUpdatedAt = try c.decodeIfPresent(String.self, forKey: .progressUpdatedAt)
@@ -673,13 +671,11 @@ struct Person: Codable, Identifiable, Hashable {
     let birthDate: String?
     let deathDate: String?
     let birthplace: String?
-    let homepage: String?
     let photoUrl: String?
     let photoThumbhash: String?
     let tmdbId: String?
     let imdbId: String?
     let tvdbId: String?
-    let plexGuid: String?
 }
 
 struct PersonRefreshQueuedResponse: Codable, Hashable {
@@ -731,14 +727,12 @@ extension Array where Element == Season {
 struct SeasonUserData: Codable, Hashable {
     let played: Bool
     let watchedCount: Int?
-    let unplayedCount: Int?
     let inProgressCount: Int?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         played = try c.decodeIfPresent(Bool.self, forKey: .played) ?? false
         watchedCount = try c.decodeIfPresent(Int.self, forKey: .watchedCount)
-        unplayedCount = try c.decodeIfPresent(Int.self, forKey: .unplayedCount)
         inProgressCount = try c.decodeIfPresent(Int.self, forKey: .inProgressCount)
     }
 }
@@ -908,8 +902,6 @@ struct VersionChapter: Codable, Hashable {
     let startSeconds: Double
     let endSeconds: Double?
     let source: String?
-    let thumbnailUrl: String?
-    let thumbnailThumbhash: String?
 }
 
 struct VideoTrack: Codable, Identifiable, Hashable {
@@ -1023,9 +1015,6 @@ struct LeafItemUserData: Codable, Hashable {
     let positionSeconds: Double?
     let durationSeconds: Double?
     let lastFileId: Int?
-    let lastResolution: String?
-    let lastHdr: Bool?
-    let lastCodecVideo: String?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1034,9 +1023,6 @@ struct LeafItemUserData: Codable, Hashable {
         positionSeconds = try c.decodeIfPresent(Double.self, forKey: .positionSeconds)
         durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
         lastFileId = try c.decodeIfPresent(Int.self, forKey: .lastFileId)
-        lastResolution = try c.decodeIfPresent(String.self, forKey: .lastResolution)
-        lastHdr = try c.decodeIfPresent(Bool.self, forKey: .lastHdr)
-        lastCodecVideo = try c.decodeIfPresent(String.self, forKey: .lastCodecVideo)
     }
 }
 

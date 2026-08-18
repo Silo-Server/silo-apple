@@ -157,10 +157,8 @@ struct RequestMediaDetail: Codable {
     let runtime: Int?
     let genres: [String]?
     let voteAverage: Double?
-    let voteCount: Int?
     let contentRating: String?
     let numberOfSeasons: Int?
-    let numberOfEpisodes: Int?
     let networks: [String]?
     let director: String?
     let creators: [String]?

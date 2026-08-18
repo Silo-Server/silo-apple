@@ -11,12 +11,9 @@ enum SiloDeepLink {
     /// Scheme emitted by every deep-link builder in this repo.
     static let preferredScheme = "silo"
 
-    /// Every scheme the apps accept, lowercased. Order is not significant.
-    static let acceptedSchemes = [preferredScheme]
-
     static func isSupported(scheme: String?) -> Bool {
         guard let scheme = scheme?.lowercased() else { return false }
-        return acceptedSchemes.contains(scheme)
+        return scheme == preferredScheme
     }
 
     static func isSupported(_ url: URL) -> Bool {

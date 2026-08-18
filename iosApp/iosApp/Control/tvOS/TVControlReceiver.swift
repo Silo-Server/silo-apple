@@ -504,9 +504,10 @@ final class TVControlReceiver {
         }
     }
 
-    private func handleConnectionClosed(connectionId: UUID) {
-        guard activeConnectionId == connectionId else { return }
-        cancelPendingHandoff()
+    /// Wipes every per-session field. Does NOT cancel a pending handoff —
+    /// both callers do that themselves, first, so their statement order is
+    /// preserved.
+    private func resetSessionState() {
         activeSession = nil
         activeConnectionId = nil
         remoteControllerName = nil
@@ -525,26 +526,17 @@ final class TVControlReceiver {
         standbyState = nil
     }
 
+    private func handleConnectionClosed(connectionId: UUID) {
+        guard activeConnectionId == connectionId else { return }
+        cancelPendingHandoff()
+        resetSessionState()
+    }
+
     private func closeActiveSession(sendClose: Bool) {
         cancelPendingHandoff()
         let session = activeSession
         let read = readTask
-        activeSession = nil
-        activeConnectionId = nil
-        remoteControllerName = nil
-        readTask = nil
-        stateTask?.cancel()
-        stateTask = nil
-        heartbeatTask?.cancel(); heartbeatTask = nil
-        authWatchdogTask?.cancel(); authWatchdogTask = nil
-        missedHeartbeats = 0
-        isAuthorized = false
-        didReceiveHello = false
-        negotiatedVersion = nil
-        remoteLaunchReady = false
-        remoteControllerDeviceId = nil
-        remoteControllerServerId = nil
-        standbyState = nil
+        resetSessionState()
 
         guard let session else {
             read?.cancel()
@@ -652,35 +644,7 @@ final class TVControlReceiver {
 
     private func sendLoadingState(for contentId: String) {
         guard let session = activeSession else { return }
-        let state = SiloControlPlaybackState(
-            contentId: contentId,
-            sessionId: nil,
-            title: "Loading",
-            subtitle: nil,
-            isPlaying: false,
-            isLoading: true,
-            isBuffering: false,
-            currentTime: 0,
-            duration: 0,
-            audioTracks: [],
-            subtitleTracks: [],
-            selectedAudioTrackId: nil,
-            selectedSubtitleTrackId: nil,
-            qualityOptions: [],
-            activeQualityId: ApplePlaybackQuality.autoId,
-            isQualitySwitching: false,
-            playbackSpeed: PlayerSettings.shared.playbackSpeed,
-            videoGravity: PlayerSettings.shared.videoGravity.rawValue,
-            hdrEnabled: false,
-            supportsVideoGravity: false,
-            supportsHDRToggle: false,
-            volume: 1.0,
-            isMuted: false,
-            hasNextEpisode: false,
-            nextEpisodeTitle: nil,
-            error: nil
-        )
-        session.enqueue(.state(state))
+        session.enqueue(.state(idleState(contentId: contentId, title: "Loading", isLoading: true)))
     }
 
     private func sendError(code: String, message: String) {
@@ -700,14 +664,18 @@ final class TVControlReceiver {
         ))
     }
 
-    private func idleState() -> SiloControlPlaybackState {
+    private func idleState(
+        contentId: String? = nil,
+        title: String = "Ready",
+        isLoading: Bool = false
+    ) -> SiloControlPlaybackState {
         SiloControlPlaybackState(
-            contentId: nil,
+            contentId: contentId,
             sessionId: nil,
-            title: "Ready",
+            title: title,
             subtitle: nil,
             isPlaying: false,
-            isLoading: false,
+            isLoading: isLoading,
             isBuffering: false,
             currentTime: 0,
             duration: 0,

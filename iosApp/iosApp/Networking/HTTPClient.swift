@@ -1792,15 +1792,59 @@ actor HTTPClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         do {
             request.httpBody = try encoder.encode(RefreshRequest(refreshValue))
+        } catch {
+            // Unlike the ordinary path, a scoped encode failure feeds
+            // reachability and logs under the shared "threw" line.
+            await noteServerUnreachable(for: error)
+            Self.logger.error("Scoped refresh threw: \(String(describing: error), privacy: .public)")
+            return false
+        }
+        // A scoped cancellation is silent: the registry switch that cancels
+        // it already logs the transition.
+        return await commitRefresh(
+            captured: captured,
+            request: request,
+            logPrefix: "Scoped refresh",
+            cancelLogMessage: nil,
+            tokenStore: tokenStore,
+            session: session,
+            decoder: decoder
+        )
+    }
+
+    /// Post-encode tail shared by `performScopedRefresh` and `performRefresh`:
+    /// send the refresh, save rotated tokens on success, and classify a
+    /// rejection. The two callers differ only in their log prefix and in
+    /// whether a post-response cancellation is logged.
+    private static func commitRefresh(
+        captured: CapturedRefreshCredential,
+        request: URLRequest,
+        logPrefix: String,
+        cancelLogMessage: String?,
+        tokenStore: TokenStore,
+        session: URLSession,
+        decoder: JSONDecoder
+    ) async -> Bool {
+        do {
             let (data, response) = try await performRefreshTransport(
                 request: request,
                 session: session
             )
-            guard !Task.isCancelled else { return false }
-            guard let http = response as? HTTPURLResponse else {
-                Self.logger.error("Scoped refresh: non-HTTP response")
+            // If the surrounding registry switch cancelled us while the
+            // network call was in flight, drop the response on the floor
+            // rather than writing tokens into what may now be a different
+            // server's Keychain slot.
+            if Task.isCancelled {
+                if let cancelLogMessage {
+                    Self.logger.info("\(cancelLogMessage, privacy: .public)")
+                }
                 return false
             }
+            guard let http = response as? HTTPURLResponse else {
+                Self.logger.error("\(logPrefix, privacy: .public): non-HTTP response")
+                return false
+            }
+            // Refresh bypasses perform(), so feed reachability from here too.
             await MainActor.run {
                 ConnectionMonitor.shared.noteServerResponded()
             }
@@ -1815,7 +1859,7 @@ actor HTTPClient {
 
             let body = String(data: data, encoding: .utf8) ?? ""
             Self.logger.error(
-                "Scoped refresh failed: status=\(http.statusCode, privacy: .public) body=\(body, privacy: .private)"
+                "\(logPrefix, privacy: .public) failed: status=\(http.statusCode, privacy: .public) body=\(body, privacy: .private)"
             )
             guard shouldInvalidateSessionAfterRefreshFailure(http.statusCode) else {
                 return false
@@ -1827,6 +1871,9 @@ actor HTTPClient {
                    SessionExpiryEvent(account: captured.account, disposition: disposition)
                ),
                !Task.isCancelled {
+                // Tell the UI to route back to login for the current
+                // server. The registry entry (URL + display name) is
+                // preserved so the user doesn't have to re-add it.
                 let event = SessionExpiryEvent(
                     account: captured.account,
                     disposition: disposition
@@ -1844,7 +1891,7 @@ actor HTTPClient {
             return false
         } catch {
             await noteServerUnreachable(for: error)
-            Self.logger.error("Scoped refresh threw: \(String(describing: error), privacy: .public)")
+            Self.logger.error("\(logPrefix, privacy: .public) threw: \(String(describing: error), privacy: .public)")
             return false
         }
     }
@@ -1950,68 +1997,15 @@ actor HTTPClient {
             return false
         }
 
-        do {
-            let (data, response) = try await performRefreshTransport(
-                request: request,
-                session: session
-            )
-            // If the surrounding registry switch cancelled us while the
-            // network call was in flight, drop the response on the floor
-            // rather than writing tokens into what may now be a different
-            // server's Keychain slot.
-            if Task.isCancelled {
-                Self.logger.info("Refresh cancelled post-response; skipping token save")
-                return false
-            }
-            guard let http = response as? HTTPURLResponse else {
-                Self.logger.error("Refresh: non-HTTP response")
-                return false
-            }
-            // Refresh bypasses perform(), so feed reachability from here too.
-            await MainActor.run {
-                ConnectionMonitor.shared.noteServerResponded()
-            }
-            if (200..<300).contains(http.statusCode) {
-                let tokens = try decoder.decode(RefreshResponse.self, from: data)
-                return await tokenStore.saveRefreshedTokens(
-                    tokens.accessToken,
-                    tokens.refreshToken,
-                    replacing: captured
-                )
-            } else {
-                let body = String(data: data, encoding: .utf8) ?? ""
-                Self.logger.error("Refresh failed: status=\(http.statusCode, privacy: .public) body=\(body, privacy: .private)")
-                guard shouldInvalidateSessionAfterRefreshFailure(http.statusCode) else {
-                    return false
-                }
-                let disposition = await tokenStore.invalidateRejectedRefresh(captured)
-                let event = disposition.map {
-                    SessionExpiryEvent(account: captured.account, disposition: $0)
-                }
-                guard let disposition,
-                      let event,
-                      !Task.isCancelled,
-                      await tokenStore.shouldConsumeSessionExpiryEvent(event),
-                      !Task.isCancelled else { return false }
-                // Tell the UI to route back to login for the current
-                // server. The registry entry (URL + display name) is
-                // preserved so the user doesn't have to re-add it.
-                await MainActor.run {
-                    guard !Task.isCancelled else { return }
-                    NotificationCenter.default.post(
-                        name: disposition == .temporarySessionExpired
-                            ? .temporaryRemoteAuthExpired
-                            : .siloSessionExpired,
-                        object: event
-                    )
-                }
-                return false
-            }
-        } catch {
-            await noteServerUnreachable(for: error)
-            Self.logger.error("Refresh threw: \(String(describing: error), privacy: .public)")
-            return false
-        }
+        return await commitRefresh(
+            captured: captured,
+            request: request,
+            logPrefix: "Refresh",
+            cancelLogMessage: "Refresh cancelled post-response; skipping token save",
+            tokenStore: tokenStore,
+            session: session,
+            decoder: decoder
+        )
     }
 
     /// Match Android's refresh-failure classifier. Client/auth rejection is

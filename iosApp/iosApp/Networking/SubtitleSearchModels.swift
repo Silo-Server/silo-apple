@@ -39,7 +39,6 @@ struct SubtitleSearchResult: Codable, Equatable {
     let score: Double
     let downloads: Int
     let hearingImpaired: Bool
-    let uploadDate: String?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -51,7 +50,6 @@ struct SubtitleSearchResult: Codable, Equatable {
         score = try c.decodeIfPresent(Double.self, forKey: .score) ?? 0
         downloads = try c.decodeIfPresent(Int.self, forKey: .downloads) ?? 0
         hearingImpaired = try c.decodeIfPresent(Bool.self, forKey: .hearingImpaired) ?? false
-        uploadDate = try c.decodeIfPresent(String.self, forKey: .uploadDate)
     }
 
     /// Memberwise init for tests / previews.
@@ -63,8 +61,7 @@ struct SubtitleSearchResult: Codable, Equatable {
         format: String = "",
         score: Double = 0,
         downloads: Int = 0,
-        hearingImpaired: Bool = false,
-        uploadDate: String? = nil
+        hearingImpaired: Bool = false
     ) {
         self.id = id
         self.provider = provider
@@ -74,7 +71,6 @@ struct SubtitleSearchResult: Codable, Equatable {
         self.score = score
         self.downloads = downloads
         self.hearingImpaired = hearingImpaired
-        self.uploadDate = uploadDate
     }
 
     /// Composite row identity — the `(provider, id)` pair the download API

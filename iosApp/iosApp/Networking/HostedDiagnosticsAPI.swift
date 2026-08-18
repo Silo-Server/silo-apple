@@ -403,16 +403,21 @@ actor HostedDiagnosticsAPI {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
 
-    private func perform<Response: Decodable>(
+    /// Shared transport for every hosted call: the acceptable-status predicate
+    /// and the body handling are the only things that vary. `decode` runs
+    /// inside the same `do` so a `DecodingError` still surfaces as
+    /// `.underlying`, exactly as it did when each caller decoded inline.
+    private func perform<Response>(
         _ request: URLRequest,
-        as type: Response.Type
+        accepting isAcceptable: (Int) -> Bool,
+        decode: (Data) throws -> Response
     ) async throws -> Response {
         do {
             let (data, response) = try await session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw HostedDiagnosticsAPIError.invalidResponse
             }
-            guard (200...299).contains(httpResponse.statusCode) else {
+            guard isAcceptable(httpResponse.statusCode) else {
                 let envelope = try? DiagnosticsJSONCoding.makeDecoder().decode(
                     HostedErrorEnvelope.self,
                     from: data
@@ -422,11 +427,20 @@ actor HostedDiagnosticsAPI {
                     code: envelope?.error
                 )
             }
-            return try DiagnosticsJSONCoding.makeDecoder().decode(type, from: data)
+            return try decode(data)
         } catch let error as HostedDiagnosticsAPIError {
             throw error
         } catch {
             throw HostedDiagnosticsAPIError.underlying(String(describing: error))
+        }
+    }
+
+    private func perform<Response: Decodable>(
+        _ request: URLRequest,
+        as type: Response.Type
+    ) async throws -> Response {
+        try await perform(request, accepting: { (200...299).contains($0) }) {
+            try DiagnosticsJSONCoding.makeDecoder().decode(type, from: $0)
         }
     }
 
@@ -434,50 +448,14 @@ actor HostedDiagnosticsAPI {
         _ request: URLRequest,
         as type: Response.Type
     ) async throws -> Response {
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw HostedDiagnosticsAPIError.invalidResponse
-            }
-            guard httpResponse.statusCode == 202 else {
-                let envelope = try? DiagnosticsJSONCoding.makeDecoder().decode(
-                    HostedErrorEnvelope.self,
-                    from: data
-                )
-                throw HostedDiagnosticsAPIError.http(
-                    statusCode: httpResponse.statusCode,
-                    code: envelope?.error
-                )
-            }
-            return try DiagnosticsJSONCoding.makeDecoder().decode(type, from: data)
-        } catch let error as HostedDiagnosticsAPIError {
-            throw error
-        } catch {
-            throw HostedDiagnosticsAPIError.underlying(String(describing: error))
+        try await perform(request, accepting: { $0 == 202 }) {
+            try DiagnosticsJSONCoding.makeDecoder().decode(type, from: $0)
         }
     }
 
+    /// A 204 carries no body, so nothing is ever decoded on the happy path.
     private func performNoContent(_ request: URLRequest) async throws {
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw HostedDiagnosticsAPIError.invalidResponse
-            }
-            guard httpResponse.statusCode == 204 else {
-                let envelope = try? DiagnosticsJSONCoding.makeDecoder().decode(
-                    HostedErrorEnvelope.self,
-                    from: data
-                )
-                throw HostedDiagnosticsAPIError.http(
-                    statusCode: httpResponse.statusCode,
-                    code: envelope?.error
-                )
-            }
-        } catch let error as HostedDiagnosticsAPIError {
-            throw error
-        } catch {
-            throw HostedDiagnosticsAPIError.underlying(String(describing: error))
-        }
+        try await perform(request, accepting: { $0 == 204 }) { _ in }
     }
 }
 

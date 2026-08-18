@@ -32,13 +32,6 @@ struct AuthUser: Codable {
     let email: String
     let role: String
     let downloadAllowed: Bool?
-    let impersonation: ImpersonationInfo?
-}
-
-struct ImpersonationInfo: Codable {
-    let active: Bool
-    let impersonatorUserId: Int
-    let impersonatorUsername: String
 }
 
 /// Body for POST /api/v1/auth/refresh.

@@ -30,7 +30,6 @@ struct Profile: Codable {
     let autoSkipRecap: Bool?
     let libraryRestrictionsEnabled: Bool?
     let allowedLibraryIds: [Int]?
-    let maxPlaybackQuality: String?
     let createdAt: String?
     let updatedAt: String?
 

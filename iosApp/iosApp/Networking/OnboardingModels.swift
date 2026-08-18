@@ -43,7 +43,6 @@ struct OnboardingState: Codable {
     let tourId: String
     let lastStep: String?
     let completedAt: String?
-    let skippedAt: String?
     let done: Bool
 }
 
