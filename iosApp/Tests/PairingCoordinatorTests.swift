@@ -563,7 +563,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
             return false
         }
         coordinator.allowPendingServer()
-        guard await waitForIdentityTransitionWaiter(http) else {
+        guard await waitUntil({ await http.pendingIdentityTransitionCount() > 0 }) else {
             await http.endIdentityTransition(blockingLease)
             channel.dropConnection()
             await runTask.value
@@ -581,15 +581,4 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
 
         await http.endIdentityTransition(blockingLease)
     }
-}
-
-private func waitForIdentityTransitionWaiter(_ http: HTTPClient) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(2)
-    while ContinuousClock.now < deadline {
-        if await http.pendingIdentityTransitionCount() > 0 {
-            return true
-        }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    return false
 }

@@ -27,16 +27,16 @@ final class DiagnosticsContractTests: XCTestCase {
 
     func testValidFixturesDecodeAndValidate() throws {
         for fixture in validManifestFixtures {
-            let url = try fixtureURL(fixture, sourceSubdirectory: "fixtures/valid")
+            let url = try diagnosticsContractFixtureURL(fixture, subdirectory: "fixtures/valid", bundleClass: Self.self)
             let manifest = try DiagnosticsJSONCoding.makeDecoder().decode(DiagnosticsManifest.self, from: Data(contentsOf: url))
             try manifest.validate()
         }
 
-        let deviceURL = try fixtureURL(validDeviceFixture, sourceSubdirectory: "fixtures/valid")
+        let deviceURL = try diagnosticsContractFixtureURL(validDeviceFixture, subdirectory: "fixtures/valid", bundleClass: Self.self)
         let payload = try DiagnosticsJSONCoding.makeDecoder().decode(DeviceSnapshotPayload.self, from: Data(contentsOf: deviceURL))
         try payload.validate()
 
-        let logLineURL = try fixtureURL(validLogLineFixture, sourceSubdirectory: "fixtures/valid")
+        let logLineURL = try diagnosticsContractFixtureURL(validLogLineFixture, subdirectory: "fixtures/valid", bundleClass: Self.self)
         try validateJSONLFixture(logLineURL)
     }
 
@@ -76,7 +76,7 @@ final class DiagnosticsContractTests: XCTestCase {
 
     func testInvalidFixturesFailAtExpectedStage() throws {
         for (fileName, expectation) in invalidExpectations {
-            let url = try fixtureURL(fileName, sourceSubdirectory: "fixtures/invalid")
+            let url = try diagnosticsContractFixtureURL(fileName, subdirectory: "fixtures/invalid", bundleClass: Self.self)
             let data = try Data(contentsOf: url)
             switch expectation {
             case .decode:
@@ -101,37 +101,5 @@ final class DiagnosticsContractTests: XCTestCase {
             let decoded = try DiagnosticsJSONCoding.makeDecoder().decode(DiagnosticsLogLine.self, from: payload)
             try decoded.validate()
         }
-    }
-
-    private func fixtureURL(_ fileName: String, sourceSubdirectory: String) throws -> URL {
-        let bundle = Bundle(for: Self.self)
-        let baseName = (fileName as NSString).deletingPathExtension
-        let ext = (fileName as NSString).pathExtension
-
-        if let flattened = bundle.url(forResource: baseName, withExtension: ext) {
-            return flattened
-        }
-
-        let candidates = [
-            bundle.resourceURL?
-                .appendingPathComponent("DiagnosticsContract")
-                .appendingPathComponent(sourceSubdirectory)
-                .appendingPathComponent(fileName),
-            bundle.resourceURL?
-                .appendingPathComponent("Fixtures")
-                .appendingPathComponent("DiagnosticsContract")
-                .appendingPathComponent(sourceSubdirectory)
-                .appendingPathComponent(fileName),
-        ].compactMap { $0 }
-
-        for candidate in candidates where FileManager.default.fileExists(atPath: candidate.path) {
-            return candidate
-        }
-
-        throw NSError(
-            domain: "DiagnosticsContractTests",
-            code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Diagnostics contract fixture missing from test bundle: \(fileName)"]
-        )
     }
 }

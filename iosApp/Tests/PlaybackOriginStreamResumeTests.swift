@@ -996,20 +996,6 @@ final class PlaybackOriginStreamResumeTests: XCTestCase {
         )
     }
 
-    private func waitUntil(
-        timeout: TimeInterval = 2,
-        _ predicate: @escaping () -> Bool
-    ) async -> Bool {
-        let deadline = Date.now.addingTimeInterval(timeout)
-        while Date.now < deadline {
-            if predicate() {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return predicate()
-    }
-
     func testParkDetachesAndDemandReopensExactRangeWithIfRange() async throws {
         let originalGrace = PlaybackOriginStreamPolicy.detachAfterSeconds
         PlaybackOriginStreamPolicy.detachAfterSeconds = 1

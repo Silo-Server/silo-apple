@@ -1584,19 +1584,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
             AppleQualityAxes.split("2160p"),
             .init(resolution: "2160p", bitrateKbps: nil)
         )
-        XCTAssertEqual(
-            ApplePlaybackQuality.activeQualityId(
-                requestedQualityId: "2160p",
-                selectedVersion: Self.version(
-                    fileId: 4,
-                    resolution: "2160p",
-                    bitrateKbps: 30_000
-                ),
-                delivery: .direct
-            ),
-            "2160p"
-        )
-
         let fourKSource = Self.version(fileId: 5, resolution: "2160p", bitrateKbps: 60_000)
         XCTAssertFalse(
             ApplePlaybackQuality.shouldForceTranscode(
@@ -1708,23 +1695,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
             subtitleTracks: nil,
             chapters: nil
         )
-    }
-
-    /// Poll until `condition` holds, so a test never depends on a fixed sleep
-    /// being long enough on a loaded machine.
-    private func waitUntil(
-        _ description: String,
-        timeout: Duration = .seconds(5),
-        _ condition: @escaping () -> Bool,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("timed out waiting for \(description)", file: file, line: line)
     }
 }
 

@@ -226,7 +226,7 @@ final class DiagnosticsAttributeRegistryParityTests: XCTestCase {
     }
 
     private func loadCanonicalRegistry() throws -> (schemaVersion: Int, registry: CanonicalRegistry) {
-        let url = try fixtureURL("attr-registry.json")
+        let url = try diagnosticsContractFixtureURL("attr-registry.json", bundleClass: Self.self)
         let root = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
         guard let object = root as? [String: Any],
               let schemaVersion = object["schema_version"] as? Int,
@@ -268,35 +268,6 @@ final class DiagnosticsAttributeRegistryParityTests: XCTestCase {
             code: 1,
             userInfo: [NSLocalizedDescriptionKey: message]
         )
-    }
-
-    /// Mirrors `DiagnosticsContractTests.fixtureURL`: XcodeGen may flatten the
-    /// fixture tree into the bundle root, so try that first and fall back to the
-    /// on-disk directory layout.
-    private func fixtureURL(_ fileName: String) throws -> URL {
-        let bundle = Bundle(for: Self.self)
-        let baseName = (fileName as NSString).deletingPathExtension
-        let ext = (fileName as NSString).pathExtension
-
-        if let flattened = bundle.url(forResource: baseName, withExtension: ext) {
-            return flattened
-        }
-
-        let candidates = [
-            bundle.resourceURL?
-                .appendingPathComponent("DiagnosticsContract")
-                .appendingPathComponent(fileName),
-            bundle.resourceURL?
-                .appendingPathComponent("Fixtures")
-                .appendingPathComponent("DiagnosticsContract")
-                .appendingPathComponent(fileName),
-        ].compactMap { $0 }
-
-        for candidate in candidates where FileManager.default.fileExists(atPath: candidate.path) {
-            return candidate
-        }
-
-        throw registryError("Diagnostics contract fixture missing from test bundle: \(fileName)")
     }
 }
 

@@ -270,7 +270,7 @@ final class ChunkedUploadStubProtocol: URLProtocol {
     override func startLoading() {
         let path = request.url?.path ?? ""
         let method = request.httpMethod ?? ""
-        let body = Self.requestBody(of: request)
+        let body = request.drainedHTTPBody
 
         switch (method, path) {
         case ("POST", "/api/v1/diagnostics/reports/uploads"):
@@ -285,7 +285,7 @@ final class ChunkedUploadStubProtocol: URLProtocol {
             }
             Self.mutate {
                 $0.chunkIndexes.append(index)
-                $0.chunkBodies.append(body ?? Data())
+                $0.chunkBodies.append(body)
             }
             respond(status: 200, json: #"{"received_chunks":\#(index + 1),"total_chunks":3}"#)
         case ("POST", "/api/v1/diagnostics/reports/uploads/stub-session/complete"):
@@ -300,28 +300,6 @@ final class ChunkedUploadStubProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
-
-    /// URLSession surfaces outgoing bodies to URLProtocol as a stream, not
-    /// `httpBody`; drain it.
-    private static func requestBody(of request: URLRequest) -> Data? {
-        if let body = request.httpBody {
-            return body
-        }
-        guard let stream = request.httpBodyStream else {
-            return nil
-        }
-        stream.open()
-        defer { stream.close() }
-        var data = Data()
-        let bufferSize = 64 * 1024
-        var buffer = [UInt8](repeating: 0, count: bufferSize)
-        while stream.hasBytesAvailable {
-            let read = stream.read(&buffer, maxLength: bufferSize)
-            guard read > 0 else { break }
-            data.append(buffer, count: read)
-        }
-        return data
-    }
 
     private func respond(status: Int, json: String) {
         guard let url = request.url, let client else { return }

@@ -8,46 +8,18 @@ import XCTest
 /// recognised as Dolby Vision at all.
 final class ISOBoxSurgeryDolbyVisionConfigTests: XCTestCase {
 
-    // MARK: - Synthetic box-tree builder
-
-    private func box(_ type: String, _ payload: Data) -> Data {
-        var out = Data()
-        let size = UInt32(8 + payload.count)
-        out.append(contentsOf: [
-            UInt8((size >> 24) & 0xFF), UInt8((size >> 16) & 0xFF),
-            UInt8((size >> 8) & 0xFF), UInt8(size & 0xFF),
-        ])
-        out.append(type.data(using: .ascii)!)
-        out.append(payload)
-        return out
-    }
-
-    private func hdlr(_ handler: String) -> Data {
-        var payload = Data(count: 8)  // FullBox version/flags + pre_defined
-        payload.append(handler.data(using: .ascii)!)
-        payload.append(0)  // empty name
-        return box("hdlr", payload)
-    }
-
-    private func trak(handler: String, stblChildren: Data) -> Data {
-        let stbl = box("stbl", stblChildren)
-        let minf = box("minf", stbl)
-        let mdia = box("mdia", hdlr(handler) + minf)
-        return box("trak", mdia)
-    }
-
     /// A `dvh1` VisualSampleEntry: 78 bytes of entry fields, then children.
     private func dvh1Entry(children: Data) -> Data {
-        box("dvh1", Data(count: 78) + children)
+        ISOBoxTestTree.box("dvh1", Data(count: 78) + children)
     }
 
     /// An init segment shaped like the muxer's: audio trak first (MKV
     /// ordering FFmpeg preserves), so the walk has to find `vide` by handler.
     private func initSegment(sampleEntryChildren: Data) -> Data {
         let stsdPayload = Data(count: 8) + dvh1Entry(children: sampleEntryChildren)
-        let videoTrak = trak(handler: "vide", stblChildren: box("stsd", stsdPayload))
-        let audioTrak = trak(handler: "soun", stblChildren: Data())
-        return box("ftyp", Data(count: 8)) + box("moov", audioTrak + videoTrak)
+        let videoTrak = ISOBoxTestTree.trak(handler: "vide", stblChildren: ISOBoxTestTree.box("stsd", stsdPayload))
+        let audioTrak = ISOBoxTestTree.trak(handler: "soun", stblChildren: Data())
+        return ISOBoxTestTree.box("ftyp", Data(count: 8)) + ISOBoxTestTree.box("moov", audioTrak + videoTrak)
     }
 
     private let hvcCBox = Data([0x00, 0x00, 0x00, 0x1F]) + "hvcC".data(using: .ascii)!
