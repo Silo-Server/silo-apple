@@ -175,11 +175,15 @@ enum SubtitleStylingOverride {
         )? {
             switch systemTextEdgeStyle {
             case .some(.raised):
-                return (-1, -1, "#FFFFFF", 80)
+                return SubtitleStylingOverride.systemEdgeShadow(for: .raised)
             case .some(.depressed):
-                return boxEnabled ? (1, 1, "#000000", 90) : nil
+                return boxEnabled
+                    ? SubtitleStylingOverride.systemEdgeShadow(for: .depressed)
+                    : nil
             case .some(.dropShadow):
-                return boxEnabled ? (1.5, 1.5, "#000000", 50) : nil
+                return boxEnabled
+                    ? SubtitleStylingOverride.systemEdgeShadow(for: .dropShadow)
+                    : nil
             case .some(.none), .some(.uniform), nil:
                 return nil
             }
@@ -255,6 +259,26 @@ enum SubtitleStylingOverride {
                 verticalPosition: sanitized.position.legacyPosition,
                 syncOffsetMs: syncOffsetMs
             )
+        }
+    }
+
+    // MARK: - System edge styles
+
+    /// Offset/color/opacity of the single drop shadow that represents a
+    /// system caption text-edge style. `nil` for the styles that have no
+    /// single-offset shadow (`.none`, `.uniform`).
+    static func systemEdgeShadow(
+        for style: SystemCaptionTextEdgeStyle?
+    ) -> (offsetX: Double, offsetY: Double, colorHex: String, opacityPercent: Int)? {
+        switch style {
+        case .some(.raised):
+            return (-1, -1, "#FFFFFF", 80)
+        case .some(.depressed):
+            return (1, 1, "#000000", 90)
+        case .some(.dropShadow):
+            return (1.5, 1.5, "#000000", 50)
+        case .some(.none), .some(.uniform), nil:
+            return nil
         }
     }
 

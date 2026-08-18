@@ -73,12 +73,6 @@ final class ASSTrackHandle {
 struct SubtitleRenderOutput {
     let image: CGImage?
     let isDirty: Bool
-    /// Whether libass produced an image list for *this* timestamp, i.e. a cue
-    /// is actually being rasterized right now — independent of `isDirty` (which
-    /// only flags a change since the previous frame). Used by the live-subtitle
-    /// diagnostic to tell "cue painted" from "cue fed but rendered nothing"
-    /// (e.g. a font/shaping miss).
-    var hasContent: Bool = false
     /// Placement of `image` in overlay points (top-left origin). The
     /// composite covers only the union of the rects libass painted, not
     /// the full frame; the overlay positions its contents layer here.
@@ -114,6 +108,30 @@ final class SubtitleRenderer {
     private let handleLock = NSLock()
     private var primary: ASSTrackHandle?
     private var secondary: ASSTrackHandle?
+
+    private func handle(for slot: SubtitleSlot) -> ASSTrackHandle? {
+        handleLock.lock()
+        defer { handleLock.unlock() }
+        switch slot {
+        case .primary:   return primary
+        case .secondary: return secondary
+        }
+    }
+
+    private func setHandle(_ handle: ASSTrackHandle?, for slot: SubtitleSlot) {
+        handleLock.lock()
+        switch slot {
+        case .primary:   primary = handle
+        case .secondary: secondary = handle
+        }
+        handleLock.unlock()
+    }
+
+    private func handles() -> (primary: ASSTrackHandle?, secondary: ASSTrackHandle?) {
+        handleLock.lock()
+        defer { handleLock.unlock() }
+        return (primary, secondary)
+    }
 
     // Cached frame/storage size in pixels. Only updated when it changes
     // so we don't churn libass's internal caches.
@@ -243,12 +261,7 @@ final class SubtitleRenderer {
             ass_set_check_readorder(track, 0)
 
             let handle = ASSTrackHandle(ptr: track, isNativeASS: isNativeASS, flushesOnSeek: true)
-            self.handleLock.lock()
-            switch slot {
-            case .primary:   self.primary = handle
-            case .secondary: self.secondary = handle
-            }
-            self.handleLock.unlock()
+            self.setHandle(handle, for: slot)
 
             // Apply current styling overrides now that the slot is live.
             SubtitleStylingOverride.apply(
@@ -301,12 +314,7 @@ final class SubtitleRenderer {
                 flushesOnSeek: false,
                 preservesScriptSpecificFonts: preservesScriptSpecificFonts
             )
-            self.handleLock.lock()
-            switch slot {
-            case .primary:   self.primary = handle
-            case .secondary: self.secondary = handle
-            }
-            self.handleLock.unlock()
+            self.setHandle(handle, for: slot)
 
             SubtitleStylingOverride.apply(
                 renderer: self.renderer(for: slot),
@@ -324,12 +332,7 @@ final class SubtitleRenderer {
     func dropTrack(slot: SubtitleSlot) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            self.handleLock.lock()
-            switch slot {
-            case .primary:   self.primary = nil
-            case .secondary: self.secondary = nil
-            }
-            self.handleLock.unlock()
+            self.setHandle(nil, for: slot)
         }
     }
 
@@ -358,14 +361,7 @@ final class SubtitleRenderer {
     func flushTrack(slot: SubtitleSlot) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            self.handleLock.lock()
-            let handle: ASSTrackHandle? = {
-                switch slot {
-                case .primary:   return self.primary
-                case .secondary: return self.secondary
-                }
-            }()
-            self.handleLock.unlock()
+            let handle = self.handle(for: slot)
             if let h = handle, h.flushesOnSeek {
                 ass_flush_events(h.ptr)
             }
@@ -384,14 +380,7 @@ final class SubtitleRenderer {
         let text = eventText
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            self.handleLock.lock()
-            let handle: ASSTrackHandle? = {
-                switch slot {
-                case .primary:   return self.primary
-                case .secondary: return self.secondary
-                }
-            }()
-            self.handleLock.unlock()
+            let handle = self.handle(for: slot)
             guard let h = handle else { return }
             text.withCString { cstr in
                 let len = Int32(strlen(cstr))
@@ -473,10 +462,7 @@ final class SubtitleRenderer {
     /// compensation) to both slot renderers. Callable only from
     /// `sessionQueue`.
     private func reapplyStylingOnSessionQueue() {
-        handleLock.lock()
-        let primaryHandle = primary
-        let secondaryHandle = secondary
-        handleLock.unlock()
+        let (primaryHandle, secondaryHandle) = handles()
         SubtitleStylingOverride.apply(
             renderer: primaryRenderer,
             params: currentParams,
@@ -602,10 +588,7 @@ final class SubtitleRenderer {
         }
         ensureFrameSizeOnSessionQueue(frameSize, scale: scale, videoInsets: videoInsets)
 
-        handleLock.lock()
-        let primaryHandle = primary
-        let secondaryHandle = secondary
-        handleLock.unlock()
+        let (primaryHandle, secondaryHandle) = handles()
 
         let widthPx = Int(lastWidth)
         let heightPx = Int(lastHeight)
@@ -623,8 +606,6 @@ final class SubtitleRenderer {
             guard let renderer = primaryRenderer else { return nil }
             return ass_render_frame(renderer, $0.ptr, now, &changePrimary)
         }
-        let hasContent = imgPrimary != nil || imgSecondary != nil
-
         // libass's detect_change flag is unreliable here: it reports
         // content change (2) on every render of a static cue. The culprit
         // is the background-box layer — libass re-rasterizes the box bitmap
@@ -665,9 +646,7 @@ final class SubtitleRenderer {
         let imagesChanged = imageFingerprint != lastCompositedImageFingerprint
         let anyChange = imagesChanged || frameSizeDirty
         if !anyChange {
-            return SubtitleRenderOutput(
-                image: nil, isDirty: false, hasContent: hasContent
-            )
+            return SubtitleRenderOutput(image: nil, isDirty: false)
         }
 
         frameSizeDirty = false
@@ -835,17 +814,7 @@ final class SubtitleRenderer {
             guard let handle else { return [] }
             if handle.isNativeASS,
                currentParams.systemContentOverrides.contains(.edge) {
-                let single: (Double, Double, String, Int)?
-                switch currentParams.systemTextEdgeStyle {
-                case .some(.none), nil:
-                    return []
-                case .some(.raised):
-                    single = (-1, -1, "#FFFFFF", 80)
-                case .some(.depressed):
-                    single = (1, 1, "#000000", 90)
-                case .some(.dropShadow):
-                    single = (1.5, 1.5, "#000000", 50)
-                case .some(.uniform):
+                if currentParams.systemTextEdgeStyle == .uniform {
                     let radius = max(
                         1,
                         Int((currentParams.effectiveBorderSize * playfieldScale).rounded())
@@ -864,12 +833,14 @@ final class SubtitleRenderer {
                         (radius, radius, color, 255),
                     ]
                 }
-                guard let single else { return [] }
+                guard let single = SubtitleStylingOverride.systemEdgeShadow(
+                    for: currentParams.systemTextEdgeStyle
+                ) else { return [] }
                 return [(
-                    Int((single.0 * playfieldScale).rounded()),
-                    Int((single.1 * playfieldScale).rounded()),
-                    SubtitleStylingOverride.rgbBytes(fromHex: single.2),
-                    UInt8(max(0, min(255, single.3 * 255 / 100)))
+                    Int((single.offsetX * playfieldScale).rounded()),
+                    Int((single.offsetY * playfieldScale).rounded()),
+                    SubtitleStylingOverride.rgbBytes(fromHex: single.colorHex),
+                    UInt8(max(0, min(255, single.opacityPercent * 255 / 100)))
                 )]
             }
             guard let shadow = currentParams.compositedEdgeShadow else { return [] }
@@ -906,9 +877,7 @@ final class SubtitleRenderer {
         guard maxX > minX, maxY > minY else {
             // Cue ended (or everything rasterized off-frame): dirty with a
             // nil image so the overlay clears without a full-frame pass.
-            return SubtitleRenderOutput(
-                image: nil, isDirty: true, hasContent: hasContent
-            )
+            return SubtitleRenderOutput(image: nil, isDirty: true)
         }
 
         func draw(
@@ -1072,12 +1041,12 @@ final class SubtitleRenderer {
             )
         }
 
-        let cgImage = canvas.snapshot(scale: scale)
+        let cgImage = canvas.snapshot()
         // Canvas pixels map to points through the (possibly capped) render
         // scale, not the requested display scale.
         let renderScale = Self.renderScale(for: frameSize, requested: scale)
         return SubtitleRenderOutput(
-            image: cgImage, isDirty: true, hasContent: hasContent,
+            image: cgImage, isDirty: true,
             imageFrame: CGRect(
                 x: CGFloat(minX) / renderScale,
                 y: CGFloat(minY) / renderScale,
@@ -1469,12 +1438,11 @@ private final class CompositorCanvas {
         }
     }
 
-    /// Produce a `CGImage` copying the current buffer state. Scale is
-    /// informational only (we use pixel dimensions everywhere); the
-    /// layer host applies `contentsScale` to map to point dimensions.
-    func snapshot(scale: CGFloat) -> CGImage? {
-        _ = scale
-        return context.makeImage()
+    /// Produce a `CGImage` copying the current buffer state. We use pixel
+    /// dimensions everywhere; the layer host applies `contentsScale` to map
+    /// to point dimensions.
+    func snapshot() -> CGImage? {
+        context.makeImage()
     }
 
     private func unpackDocumentedRenderColor(_ color: UInt32) -> (r: UInt8, g: UInt8, b: UInt8, alpha: UInt8) {

@@ -105,15 +105,7 @@ actor SidecarSubtitleFetcher {
             throw SidecarSubtitleFetchError.emptyBody
         }
 
-        // Subtitle files should be UTF-8. Tolerate occasional stray bytes
-        // by falling back to `String(decoding:as:)`, which replaces invalid
-        // sequences with U+FFFD rather than failing.
-        let content: String
-        if let utf8 = String(data: data, encoding: .utf8) {
-            content = utf8
-        } else {
-            content = String(decoding: data, as: UTF8.self)
-        }
+        let content = Self.decodeText(data)
 
         let format = detectFormat(
             contentType: http.value(forHTTPHeaderField: "Content-Type"),
@@ -247,12 +239,7 @@ actor SidecarSubtitleFetcher {
             throw SidecarSubtitleFetchError.emptyBody
         }
 
-        let content: String
-        if let utf8 = String(data: data, encoding: .utf8) {
-            content = utf8
-        } else {
-            content = String(decoding: data, as: UTF8.self)
-        }
+        let content = Self.decodeText(data)
 
         let format = detectFormat(
             contentType: nil,
@@ -285,6 +272,18 @@ actor SidecarSubtitleFetcher {
             request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token")
         }
         return request
+    }
+
+    // MARK: - Decoding
+
+    /// Subtitle files should be UTF-8. Tolerate occasional stray bytes
+    /// by falling back to `String(decoding:as:)`, which replaces invalid
+    /// sequences with U+FFFD rather than failing.
+    private static func decodeText(_ data: Data) -> String {
+        if let utf8 = String(data: data, encoding: .utf8) {
+            return utf8
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 
     // MARK: - Format detection

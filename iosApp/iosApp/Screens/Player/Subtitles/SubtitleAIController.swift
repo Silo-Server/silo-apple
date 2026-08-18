@@ -385,16 +385,9 @@ final class SubtitleAIController {
 
     // MARK: - Submit + poll
 
-    private func submit(
-        kind: SubtitleAIKind,
-        sourceIndex: Int,
-        sourceLanguage: String?,
-        targetLanguage: String?
-    ) {
-        guard let mediaFileId = mediaFileIdProvider() else {
-            fail(with: "Playback isn't ready yet.")
-            return
-        }
+    /// Open a fresh submit window: retire any prior job's state and enter
+    /// `.submitting`. Returns the new generation.
+    private func beginSubmitWindow() -> Int {
         generation &+= 1
         let gen = generation
         // Replace any prior in-flight job.
@@ -416,6 +409,20 @@ final class SubtitleAIController {
         activeJob = nil
         liveCoordinator?.beginPreparing()
         refreshLivePresentationState()
+        return gen
+    }
+
+    private func submit(
+        kind: SubtitleAIKind,
+        sourceIndex: Int,
+        sourceLanguage: String?,
+        targetLanguage: String?
+    ) {
+        guard let mediaFileId = mediaFileIdProvider() else {
+            fail(with: "Playback isn't ready yet.")
+            return
+        }
+        let gen = beginSubmitWindow()
 
         // M4: pass `session_id` so the server streams cues live over the
         // playback control websocket — UNLESS realtime is not live-ready, in
@@ -503,19 +510,7 @@ final class SubtitleAIController {
     /// before `seedAcceptedJobForTesting` are buffered and then replayed.
     /// Test-only.
     func beginSubmitWindowForTesting() {
-        pollDrainTask?.cancel()
-        pollDrainTask = nil
-        liveCoordinator?.teardown()
-        livePresentationActive = false
-        generation &+= 1
-        handoffJobId = nil
-        ownedHandoffSubtitleId = nil
-        clearEarlyFrameBuffer()
-        phase = .submitting
-        errorMessage = nil
-        activeJob = nil
-        liveCoordinator?.beginPreparing()
-        refreshLivePresentationState()
+        _ = beginSubmitWindow()
     }
 
     /// Seed `activeJob` as if the 202 accept landed (non-terminal), without
