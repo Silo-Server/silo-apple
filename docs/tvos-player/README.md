@@ -63,6 +63,10 @@ to point it at is the server.
   Historical record of the software-decode → VideoToolbox-encode path. The tier
   was deleted on 2026-08-17: no online or offline plan could reach it, because
   the Apple capability surfaces only ever advertise `h264`/`hevc`.
+- **[10 - Playback continuity](10-playback-continuity.md)**
+  How playback rides out server restarts and origin outages: background
+  session renewal, runway-aware outage parking, and cache adoption across
+  recovery reloads.
 - **[Cast remote](cast-remote.md)**
   The iOS → tvOS LAN remote protocol and the player commands it drives.
 
@@ -113,12 +117,9 @@ to point it at is the server.
   not just planned or suspected.
 - Phase-2 / planned work is labelled as such and is never written as current
   behavior.
-- Historical context lives in the dated audit files in this folder
-  ([08](08-validated-player-review.md), the 2026-07-07 AetherEngine parity
-  audit) and in the commit history. Those explain why the stack moved this way;
-  this suite explains what it does now. Note that several older documents and a
-  few source comments still cite a `docs/plans/` directory that does not exist
-  in this repository.
+- Historical context lives in [08](08-validated-player-review.md) (dated,
+  source-verified review) and in the commit history. Those explain why the
+  stack moved this way; this suite explains what it does now.
 - When a source-file comment disagrees with the executable control flow, this
   suite follows the executable control flow and calls the mismatch out.
 

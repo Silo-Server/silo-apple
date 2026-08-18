@@ -6,7 +6,7 @@ import Foundation
 /// half-delivered range). The writer previously treated every negative code
 /// as clean EOF and finalized the remux as a complete VOD — a truncated
 /// movie reported as success
-/// (docs/superpowers/plans/2026-07-07-playback-continuity-client.md, B2a).
+/// (see `docs/tvos-player/10-playback-continuity.md`).
 ///
 /// The verdict is deliberately conservative: any signal that the content is
 /// substantially complete — bytes consumed to (near) the known file size, or
