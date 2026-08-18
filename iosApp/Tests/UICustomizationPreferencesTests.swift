@@ -407,9 +407,14 @@ final class UICustomizationPreferencesTests: XCTestCase {
             .builtin(.series),
             .builtin(.audiobooks),
         ])
+        // No library backs any authored category, so all three are filtered
+        // out and only Home survives — which is exactly the "menu came back
+        // empty" shape that PR #132's fallback answers with the Apple default
+        // roots (`testHomeOnlyMainTabProjectionRestoresAppleDefaults`). What
+        // this case pins is that no *category* root is among them.
         XCTAssertEqual(
             projectedMainTabDestinations(primaryMenu: menu).map(\.id),
-            [.app(.home)],
+            [.app(.home), .app(.recommendations), .app(.calendar)],
             "authored categories with no matching profile library must not render dead roots"
         )
 
@@ -508,11 +513,18 @@ final class UICustomizationPreferencesTests: XCTestCase {
             libraries: [library]
         )
 
+        // Library 7 is dropped because the snapshot belongs to the previous
+        // profile, leaving Home alone — so PR #132's fallback fills the rest
+        // with the Apple default roots. The point of the case is that
+        // `.library(7)` is not one of them.
         let staleProjection = projectedMainTabDestinations(
             primaryMenu: menu,
             availableLibraries: staleSnapshot.availableLibraries(for: secondProfile)
         )
-        XCTAssertEqual(staleProjection.map(\.id), [.app(.home)])
+        XCTAssertEqual(
+            staleProjection.map(\.id),
+            [.app(.home), .app(.recommendations), .app(.calendar)]
+        )
         XCTAssertEqual(
             resolvedVisibleMainTabDestination(
                 .library(library.id),
@@ -538,7 +550,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
                 libraries: []
             ).availableLibraries(for: secondProfile)
         )
-        XCTAssertEqual(revokedProjection.map(\.id), [.app(.home)])
+        XCTAssertEqual(
+            revokedProjection.map(\.id),
+            [.app(.home), .app(.recommendations), .app(.calendar)]
+        )
         XCTAssertEqual(
             resolvedVisibleMainTabDestination(
                 .library(library.id),
