@@ -19,6 +19,7 @@ recommended a control-plane rewrite + narrowed loopback ("Option D"). Rounds so 
 | R2 (Stage 1 seams) | typed `PlaybackFailure` channel (VM string classifiers retired, oracle tests); V3 fixtures re-vendored from server `5fdb5d73` + `output_change` op; `silo://` scheme; dormant video-bridge tier + `.passthroughAV1` deleted (−2,185) | 1407 / 14 |
 | R2b (brand) | full `continuum` → `silo` migration of every persisted / OS-registered / on-disk / wire literal with one-time migrations (§2.6 below); only `LegacyBrandKeys` still names the old brand | 1414 / 14 / 3 skipped |
 | Server pairing | silo-server PR #670 `client_audio_track_selection_v1`; Apple advertises it, routes non-default audio to loopback, marks `progressive` unsupported on device (AVPlayer −12939) | 1419 / 14 / 3 skipped |
+| Cleanup tail | dead client API/cache/legacy-quality surface; shared phone/tvOS similar-item loading and episode formatting; documentation truth pass | net −275 raw lines; local iOS/tvOS/macOS builds; focused 76 / 0; suite 1,524 / 2; shared-dev iOS/tvOS smoke |
 
 Hardware records: `docs/tvos-player/validations/2026-08-17-*.yaml`, `2026-08-18-*.yaml` (HDR10 loopback + display
 criteria validated on 08-17; DV rows blocked until PR #670 reaches the server the TV is on; **open**: an HDR10 loopback
@@ -200,8 +201,6 @@ migration sources. What landed:
   `player.apple.loopback_trace_throughput`) that identified the 2026-07-05 ingest ceiling; gated
   the same way as the sibling `SILO_TRACE_DV_SEGMENTS` probe. If it stays, the duplicated call
   bodies could collapse onto one `measure(into:)` helper — but that's a refactor, not a deletion.
-- `LoopbackVideoBridge` and the on-device bridge path: dormant on the live path by design
-  (`docs/tvos-player/09-video-bridge.md`).
 - `PlayerTaskRegistry.Key.protocolV3Replan`: live (single-flight guard in the VM) despite looking
   unused to a naive grep.
 - Keychain/registry migrations, `SiloControl` v1 peer compatibility, and the onboarding

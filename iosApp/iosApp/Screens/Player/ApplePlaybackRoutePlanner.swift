@@ -539,13 +539,6 @@ extension ApplePlaybackRoutePlanner {
     /// dash-strip pass, which mapped "e-ac-3" but missed "ec3" / "ec-3" — an
     /// already-Apple-compatible EC-3 track was then re-encoded to AAC and lost
     /// its Atmos substream.
-    ///
-    /// Follow-up: `AVPlayerBackend` still carries a private copy of this table
-    /// (`loopbackAudioOutputMode` / `loopbackPreservesAtmos` /
-    /// `normalizedCodecToken`) that it uses when rebuilding a loopback spec for
-    /// an in-place audio-track change. It has both bugs this fix removes, so an
-    /// "ec3"-spelled track copies on the initial route and re-encodes after an
-    /// audio switch. That copy should route here too.
     static func loopbackAudioOutputMode(for track: PlayerTrack) -> LoopbackSessionSpec.AudioOutputMode {
         switch normalizedAudioCodec(track.codec) {
         case "aac", "ac3", "eac3":

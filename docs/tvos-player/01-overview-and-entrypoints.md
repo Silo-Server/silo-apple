@@ -216,9 +216,11 @@ auto-resume on wake, and tvOS Picture in Picture is unsupported.
   appears.
 - Cleanup deletes the server playback session even though the player UI itself
   has already been torn down locally.
-- The `siloPlayerLoopback` route always serves the static VOD plan. The legacy
-  growing EVENT playlist and the `player.apple.siloplayer_primary_enabled` kill
-  switch were retired on 2026-08-17 (the key is no longer read), and with them
+- The `siloPlayerLoopback` route normally serves a static VOD plan. The explicit
+  EVENT serving mode and `player.apple.siloplayer_primary_enabled` kill switch
+  were retired on 2026-08-17 (the key is no longer read), but the writer still
+  falls back internally to a growing EVENT playlist when it cannot build a safe
+  VOD plan; see the cleanup backlog's section 2.5. The retired mode also removed
   the planner blockers that only existed when the gate was off
   (`h264_loopback_startup_unreliable`, `hevc_sdr_loopback_startup_unreliable`,
   `video_bridge_requires_vod_plan`).

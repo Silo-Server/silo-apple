@@ -34,7 +34,7 @@ was deleted on 2026-08-16 (see
 | Implementation route | Route family | Display label | Current role |
 | --- | --- | --- | --- |
 | `avPlayerNativeDirect` | NativePlayer | Native Player Direct | Narrow native-direct path for allowlisted `mp4` / `mov` / `m4v` assets whose video, audio, and embedded subtitle codecs all match the Apple allowlist |
-| `siloPlayerLoopback` | SiloPlayer | Direct Stream | **Primary** direct playback. Remuxes H.264/HEVC/Dolby Vision and nothing else — the on-device video bridge that once covered the non-copyable codec tail was retired 2026-08-17 (see the Video output mode sub-rows). Static-VOD serving mode (the only mode; the EVENT path and its `player.apple.siloplayer_primary_enabled` kill switch were retired 2026-08-17). Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
+| `siloPlayerLoopback` | SiloPlayer | Direct Stream | **Primary** direct playback. Remuxes H.264/HEVC/Dolby Vision and nothing else — the on-device video bridge that once covered the non-copyable codec tail was retired 2026-08-17 (see the Video output mode sub-rows). Static VOD is the primary serving path. The explicit EVENT mode and its `player.apple.siloplayer_primary_enabled` kill switch were retired, while an internal growing-playlist fallback remains for sources without a safe VOD plan (cleanup backlog §2.5). Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
 | `avPlayerHLS` | NativePlayer | Native Player HLS | Server-produced HLS for `remux` / `transcode` deliveries, and the **terminal fallback rung** for anything the loopback cannot normalize. No longer feature-flag gated |
 
 ## Matrix

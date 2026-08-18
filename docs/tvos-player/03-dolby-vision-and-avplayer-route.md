@@ -97,9 +97,12 @@ The SiloPlayer route is not "AVPlayer on the original URL". `AVPlayerBackend`:
 `AVPlayerSurface` is only the render layer: a `UIViewRepresentable` hosting an
 `AVPlayerLayer` with a black background and `.resizeAspect`.
 
-The loopback serves a static VOD playlist built from a load-time segment plan.
-The legacy growing EVENT playlist and its `player.apple.siloplayer_primary_enabled`
-kill switch were retired on 2026-08-17; the key is no longer read.
+The loopback normally serves a static VOD playlist built from a load-time segment
+plan. Its explicit EVENT serving mode and
+`player.apple.siloplayer_primary_enabled` kill switch were retired on 2026-08-17;
+the key is no longer read. The writer still falls back internally to a growing
+EVENT playlist when no safe VOD plan is available; see the cleanup backlog's
+section 2.5.
 
 ## 5. Why the loopback exists
 
