@@ -1,6 +1,20 @@
 #if !os(tvOS)
 import SwiftUI
 
+/// "Cast & Crew" header + rail, as used by every phone detail body.
+struct PhoneCastSection: View {
+    let cast: [CastMember]
+    let onTap: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            PhoneSectionHeader(title: "Cast & Crew")
+                .padding(.horizontal, SiloTheme.safePadding)
+            PhoneCastRail(cast: cast, onTap: onTap)
+        }
+    }
+}
+
 /// Horizontal cast rail for the phone detail page. Round portrait
 /// thumbnails with the actor's name and character beneath. Mirrors
 /// `TVDetailCastRail` semantics — the same data source, scaled down

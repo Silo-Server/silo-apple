@@ -3,6 +3,8 @@ import SwiftUI
 
 /// Horizontal cast rail used on the tvOS item detail screen. Each card is
 /// a focus-liftable portrait with the actor's name and character label.
+/// Header lives inside the rail so it disappears with the cards, matching
+/// `TVSimilarRail` / `TVTrailersRail`.
 struct TVDetailCastRail: View {
     let cast: [CastMember]
     let onTap: (String) -> Void
@@ -14,22 +16,25 @@ struct TVDetailCastRail: View {
     @FocusState private var focusedCastId: String?
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: cardSpacing) {
-                ForEach(cast.prefix(maxEntries)) { member in
-                    TVCastCard(
-                        member: member,
-                        photoSize: CGSize(width: photoWidth, height: photoHeight),
-                        onTap: onTap
-                    )
-                    .focused($focusedCastId, equals: member.id)
+        VStack(alignment: .leading, spacing: 28) {
+            TVSectionHeader(title: "Cast & Crew")
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: cardSpacing) {
+                    ForEach(cast.prefix(maxEntries)) { member in
+                        TVCastCard(
+                            member: member,
+                            photoSize: CGSize(width: photoWidth, height: photoHeight),
+                            onTap: onTap
+                        )
+                        .focused($focusedCastId, equals: member.id)
+                    }
                 }
+                .padding(.vertical, 24)
             }
-            .padding(.vertical, 24)
+            .focusSection()
+            .applyDefaultFocusIfPresent($focusedCastId, id: defaultFocusId)
+            .scrollClipDisabled()
         }
-        .focusSection()
-        .applyDefaultFocusIfPresent($focusedCastId, id: defaultFocusId)
-        .scrollClipDisabled()
     }
 
     private var defaultFocusId: String? {

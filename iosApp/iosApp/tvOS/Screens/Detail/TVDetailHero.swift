@@ -263,7 +263,7 @@ private struct TVHeroTitle: View {
     let title: String
 
     var body: some View {
-        let parts = split(title)
+        let parts = splitHeroTitle(title)
         VStack(alignment: .leading, spacing: 4) {
             Text(parts.primary.uppercased())
                 .font(primaryFont)
@@ -286,32 +286,28 @@ private struct TVHeroTitle: View {
     }
 
     private var primaryFont: Font {
-        if #available(tvOS 16.0, *) {
-            return .system(size: 92, weight: .black).width(.compressed)
-        }
-        return .system(size: 88, weight: .black)
+        .system(size: 92, weight: .black).width(.compressed)
     }
 
     private var subtitleFont: Font {
-        if #available(tvOS 16.0, *) {
-            return .system(size: 40, weight: .heavy).width(.compressed)
-        }
-        return .system(size: 38, weight: .heavy)
+        .system(size: 40, weight: .heavy).width(.compressed)
     }
+}
 
-    private func split(_ raw: String) -> (primary: String, subtitle: String?) {
-        let separators: [String] = [": ", " — ", " – ", " - "]
-        for sep in separators {
-            if let range = raw.range(of: sep) {
-                let head = String(raw[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
-                let tail = String(raw[range.upperBound...]).trimmingCharacters(in: .whitespaces)
-                if !head.isEmpty, !tail.isEmpty {
-                    return (head, tail)
-                }
+/// Split a display title into title + subtitle on the first separator it
+/// contains — e.g. "Monarch: Legacy of Monsters".
+private func splitHeroTitle(_ raw: String) -> (primary: String, subtitle: String?) {
+    let separators: [String] = [": ", " — ", " – ", " - "]
+    for sep in separators {
+        if let range = raw.range(of: sep) {
+            let head = String(raw[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
+            let tail = String(raw[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+            if !head.isEmpty, !tail.isEmpty {
+                return (head, tail)
             }
         }
-        return (raw, nil)
     }
+    return (raw, nil)
 }
 
 private struct TVEpisodeHierarchyTitle: View {
@@ -319,7 +315,7 @@ private struct TVEpisodeHierarchyTitle: View {
     let episodeTitle: String
 
     var body: some View {
-        let parts = split(episodeTitle)
+        let parts = splitHeroTitle(episodeTitle)
         VStack(alignment: .leading, spacing: 10) {
             Text(seriesTitle.uppercased())
                 .font(seriesFont)
@@ -349,38 +345,15 @@ private struct TVEpisodeHierarchyTitle: View {
     }
 
     private var seriesFont: Font {
-        if #available(tvOS 16.0, *) {
-            return .system(size: 92, weight: .black).width(.compressed)
-        }
-        return .system(size: 88, weight: .black)
+        .system(size: 92, weight: .black).width(.compressed)
     }
 
     private var episodeFont: Font {
-        if #available(tvOS 16.0, *) {
-            return .system(size: 50, weight: .heavy).width(.compressed)
-        }
-        return .system(size: 48, weight: .heavy)
+        .system(size: 50, weight: .heavy).width(.compressed)
     }
 
     private var subtitleFont: Font {
-        if #available(tvOS 16.0, *) {
-            return .system(size: 32, weight: .heavy).width(.compressed)
-        }
-        return .system(size: 30, weight: .heavy)
-    }
-
-    private func split(_ raw: String) -> (primary: String, subtitle: String?) {
-        let separators: [String] = [": ", " — ", " – ", " - "]
-        for sep in separators {
-            if let range = raw.range(of: sep) {
-                let head = String(raw[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
-                let tail = String(raw[range.upperBound...]).trimmingCharacters(in: .whitespaces)
-                if !head.isEmpty, !tail.isEmpty {
-                    return (head, tail)
-                }
-            }
-        }
-        return (raw, nil)
+        .system(size: 32, weight: .heavy).width(.compressed)
     }
 }
 

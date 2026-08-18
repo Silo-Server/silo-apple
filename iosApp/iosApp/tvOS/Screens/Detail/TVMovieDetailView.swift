@@ -101,7 +101,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                                 .id(episodeSectionScrollId)
                         }
                         if let cast = detail.cast, !cast.isEmpty {
-                            castSection(cast: cast)
+                            TVDetailCastRail(cast: cast, onTap: onPersonTap)
                         }
                         trailersSection
                         detailsSection
@@ -275,11 +275,10 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     }
 
     private var resumePositionSeconds: Double? {
-        guard let pos = detail.userData?.positionSeconds, pos > 30 else { return nil }
-        if let dur = detail.userData?.durationSeconds, dur > 0, pos >= dur - 5 {
-            return nil
-        }
-        return pos
+        DetailPlaybackFormatting.playableResumePosition(
+            position: detail.userData?.positionSeconds,
+            duration: detail.userData?.durationSeconds
+        )
     }
 
     private var hasResumeProgress: Bool { resumePositionSeconds != nil }
@@ -383,16 +382,6 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
         // Header lives inside the rail so it disappears with the cards when
         // the item has neither remote videos nor local extras.
         TVTrailersRail(entries: trailerEntries, onSelect: onSelectTrailer)
-    }
-
-    // MARK: - Cast
-
-    @ViewBuilder
-    private func castSection(cast: [CastMember]) -> some View {
-        VStack(alignment: .leading, spacing: 28) {
-            TVSectionHeader(title: "Cast & Crew")
-            TVDetailCastRail(cast: cast, onTap: onPersonTap)
-        }
     }
 
     // MARK: - Details section

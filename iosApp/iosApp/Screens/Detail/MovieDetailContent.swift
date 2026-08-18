@@ -287,7 +287,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             }
 
             if let cast = detail.cast, !cast.isEmpty {
-                castSection(cast: cast)
+                PhoneCastSection(cast: cast, onTap: onPersonTap)
             }
 
             trailersSection
@@ -355,17 +355,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
         return "This Season"
     }
 
-    // MARK: - Cast
-
-    @ViewBuilder
-    private func castSection(cast: [CastMember]) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Cast & Crew")
-                .padding(.horizontal, SiloTheme.safePadding)
-            PhoneCastRail(cast: cast, onTap: onPersonTap)
-        }
-    }
-
     // MARK: - More Like This
 
     /// Hide the similar rail on episode pages — viewers usually want
@@ -396,11 +385,10 @@ struct MovieDetailContent<BelowOverview: View>: View {
     // MARK: - Resume / play helpers
 
     private var resumePositionSeconds: Double? {
-        guard let pos = detail.userData?.positionSeconds, pos > 30 else { return nil }
-        if let dur = detail.userData?.durationSeconds, dur > 0, pos >= dur - 5 {
-            return nil
-        }
-        return pos
+        DetailPlaybackFormatting.playableResumePosition(
+            position: detail.userData?.positionSeconds,
+            duration: detail.userData?.durationSeconds
+        )
     }
 
     private var hasResumeProgress: Bool { resumePositionSeconds != nil }

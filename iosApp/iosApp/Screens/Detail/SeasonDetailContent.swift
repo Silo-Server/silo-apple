@@ -174,13 +174,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
     }
 
     private var nextUpEpisode: EpisodeListItem? {
-        if let inProgress = episodes.first(where: { $0.userData?.isInProgress == true }) {
-            return inProgress
-        }
-        if let unwatched = episodes.first(where: { !($0.userData?.played ?? false) }) {
-            return unwatched
-        }
-        return episodes.first
+        EpisodeRailFormatting.nextUp(in: episodes)
     }
 
     /// Show "Play E5" — the user picks resume vs. restart in the
@@ -195,11 +189,10 @@ struct SeasonDetailContent<BelowOverview: View>: View {
     }
 
     private var nextUpResumePositionSeconds: Double? {
-        guard let pos = nextUpEpisode?.userData?.positionSeconds, pos > 30 else { return nil }
-        if let dur = nextUpEpisode?.userData?.durationSeconds, dur > 0, pos >= dur - 5 {
-            return nil
-        }
-        return pos
+        DetailPlaybackFormatting.playableResumePosition(
+            position: nextUpEpisode?.userData?.positionSeconds,
+            duration: nextUpEpisode?.userData?.durationSeconds
+        )
     }
 
     private var nextUpVersions: [FileVersion] {
@@ -221,7 +214,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
         VStack(alignment: .leading, spacing: 36) {
             episodesSection
             if let cast = detail.cast, !cast.isEmpty {
-                castSection(cast: cast)
+                PhoneCastSection(cast: cast, onTap: onPersonTap)
             }
             detailsSection.padding(.horizontal, SiloTheme.safePadding)
         }
@@ -243,15 +236,6 @@ struct SeasonDetailContent<BelowOverview: View>: View {
                 onSelectEpisode: onEpisodeTap,
                 allowsSeasonPaging: false
             )
-        }
-    }
-
-    @ViewBuilder
-    private func castSection(cast: [CastMember]) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Cast & Crew")
-                .padding(.horizontal, SiloTheme.safePadding)
-            PhoneCastRail(cast: cast, onTap: onPersonTap)
         }
     }
 

@@ -19,6 +19,40 @@ enum DetailPlaybackFormatting {
         var id: String { stableId }
     }
 
+    // MARK: - Resume
+
+    /// Resume offset the play button should use: only past the 30s mark,
+    /// and never within the last 5s (that reads as finished, so restart).
+    static func playableResumePosition(position: Double?, duration: Double?) -> Double? {
+        guard let position, position.isFinite, position > 30 else { return nil }
+        if let duration, duration.isFinite, duration > 0, position >= duration - 5 {
+            return nil
+        }
+        return position
+    }
+
+    // MARK: - Track index sanitizing
+
+    /// Drop an audio pick the resolved version cannot satisfy.
+    static func sanitizedAudioIndex(version: FileVersion?, candidate: Int?) -> Int? {
+        guard let candidate else { return nil }
+        guard let version else { return nil }
+        let tracks = version.audioTracks ?? []
+        return tracks.indices.contains(candidate) ? candidate : nil
+    }
+
+    /// Drop a subtitle pick the resolved version cannot satisfy. Negative
+    /// candidates are the "off" sentinel and always survive.
+    static func sanitizedSubtitleIndex(version: FileVersion?, candidate: Int?) -> Int? {
+        guard let candidate else { return nil }
+        if candidate < 0 { return candidate }
+        guard let version else { return nil }
+        let available = version.subtitleTracks?.compactMap(\.index) ?? []
+        return available.contains(candidate) ? candidate : nil
+    }
+
+    // MARK: - Version labels
+
     static func versionShortLabel(_ version: FileVersion?) -> String {
         guard let version else { return "Auto" }
         let tokens = [

@@ -209,7 +209,7 @@ struct TVItemDetailView: View {
                     let episode = viewModel.episodes.first { $0.contentId == id }
                     let resumePosition = startFromBeginning
                         ? nil
-                        : playableResumePosition(
+                        : DetailPlaybackFormatting.playableResumePosition(
                             position: episode?.userData?.positionSeconds,
                             duration: episode?.userData?.durationSeconds
                         )
@@ -266,7 +266,7 @@ struct TVItemDetailView: View {
                         versionFileId: preferredNextUpFileId,
                         candidate: index
                     )
-                    persistAudioSelection(
+                    TrackSelectionPersistence.persistAudio(
                         prefKey: prefKey(for: nextUpPlaybackDetail),
                         version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
                         requested: index,
@@ -280,7 +280,7 @@ struct TVItemDetailView: View {
                         versionFileId: preferredNextUpFileId,
                         candidate: index
                     )
-                    persistSubtitleSelection(
+                    TrackSelectionPersistence.persistSubtitle(
                         prefKey: prefKey(for: nextUpPlaybackDetail),
                         version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
                         requested: index,
@@ -394,7 +394,7 @@ struct TVItemDetailView: View {
                         versionFileId: preferredNextUpFileId,
                         candidate: index
                     )
-                    persistAudioSelection(
+                    TrackSelectionPersistence.persistAudio(
                         prefKey: prefKey(for: nextUpPlaybackDetail),
                         version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
                         requested: index,
@@ -408,7 +408,7 @@ struct TVItemDetailView: View {
                         versionFileId: preferredNextUpFileId,
                         candidate: index
                     )
-                    persistSubtitleSelection(
+                    TrackSelectionPersistence.persistSubtitle(
                         prefKey: prefKey(for: nextUpPlaybackDetail),
                         version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
                         requested: index,
@@ -505,7 +505,7 @@ struct TVItemDetailView: View {
                         versionFileId: preferredVersionFileId,
                         candidate: index
                     )
-                    persistAudioSelection(
+                    TrackSelectionPersistence.persistAudio(
                         prefKey: prefKey(for: detail),
                         version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
                         requested: index,
@@ -520,7 +520,7 @@ struct TVItemDetailView: View {
                         versionFileId: preferredVersionFileId,
                         candidate: index
                     )
-                    persistSubtitleSelection(
+                    TrackSelectionPersistence.persistSubtitle(
                         prefKey: prefKey(for: detail),
                         version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
                         requested: index,
@@ -548,7 +548,7 @@ struct TVItemDetailView: View {
                 onEpisodeTap: { id in
                     let episode = viewModel.episodes.first { $0.contentId == id }
                     let isCurrentEpisode = id == detail.contentId
-                    let resumePosition = playableResumePosition(
+                    let resumePosition = DetailPlaybackFormatting.playableResumePosition(
                         position: episode?.userData?.positionSeconds,
                         duration: episode?.userData?.durationSeconds
                     )
@@ -611,18 +611,10 @@ struct TVItemDetailView: View {
     }
 
     private func playableResumePosition(for detail: ItemDetail) -> Double? {
-        playableResumePosition(
+        DetailPlaybackFormatting.playableResumePosition(
             position: detail.userData?.positionSeconds,
             duration: detail.userData?.durationSeconds
         )
-    }
-
-    private func playableResumePosition(position: Double?, duration: Double?) -> Double? {
-        guard let position, position.isFinite, position > 30 else { return nil }
-        if let duration, duration.isFinite, duration > 0, position >= duration - 5 {
-            return nil
-        }
-        return position
     }
 
     private func effectiveVersion(for detail: ItemDetail, versionFileId: Int?) -> FileVersion? {
@@ -645,11 +637,10 @@ struct TVItemDetailView: View {
         candidate: Int?
     ) -> Int? {
         guard let candidate else { return nil }
-        guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
-            return nil
-        }
-        let tracks = version.audioTracks ?? []
-        return tracks.indices.contains(candidate) ? candidate : nil
+        return DetailPlaybackFormatting.sanitizedAudioIndex(
+            version: effectiveVersion(for: detail, versionFileId: versionFileId),
+            candidate: candidate
+        )
     }
 
     private func sanitizedSubtitleTrackIndex(
@@ -659,11 +650,10 @@ struct TVItemDetailView: View {
     ) -> Int? {
         guard let candidate else { return nil }
         if candidate < 0 { return candidate }
-        guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
-            return nil
-        }
-        let available = version.subtitleTracks?.compactMap(\.index) ?? []
-        return available.contains(candidate) ? candidate : nil
+        return DetailPlaybackFormatting.sanitizedSubtitleIndex(
+            version: effectiveVersion(for: detail, versionFileId: versionFileId),
+            candidate: candidate
+        )
     }
 
     private func sanitizedAudioTrackIndex(
@@ -718,55 +708,9 @@ struct TVItemDetailView: View {
         TrackSelectionPersistence.prefKey(seriesId: detail?.seriesId, contentId: detail?.contentId)
     }
 
-    private func persistAudioSelection(
-        prefKey: String?,
-        version: FileVersion?,
-        requested: Int?,
-        sanitized: Int?
-    ) {
-        guard let prefKey else { return }
-        guard let requested else {
-            TrackSelectionPersistence.clearAudio(prefKey: prefKey)
-            return
-        }
-        guard requested == sanitized,
-              let version,
-              let request = TrackSelectionPersistence.audioRequest(version: version, ordinal: requested)
-        else { return }
-        TrackSelectionPersistence.saveAudio(prefKey: prefKey, request: request)
-    }
-
-    private func persistSubtitleSelection(
-        prefKey: String?,
-        version: FileVersion?,
-        requested: Int?,
-        sanitized: Int?,
-        showForced: Bool?
-    ) {
-        guard let prefKey else { return }
-        guard let requested else {
-            TrackSelectionPersistence.clearSubtitle(prefKey: prefKey)
-            return
-        }
-        guard requested == sanitized, let version,
-              let request = TrackSelectionPersistence.subtitleRequest(
-                  version: version,
-                  ffIndex: requested,
-                  showForced: showForced
-              )
-        else { return }
-        TrackSelectionPersistence.saveSubtitle(prefKey: prefKey, request: request)
-    }
-
     private func nextUpEpisode(for detail: ItemDetail) -> EpisodeListItem? {
         guard detail.type == "season" || detail.type == "series" else { return nil }
-        if let inProgress = viewModel.episodes.first(where: { $0.userData?.isInProgress == true }) {
-            return inProgress
-        }
-        if let unwatched = viewModel.episodes.first(where: { !($0.userData?.played ?? false) }) {
-            return unwatched
-        }
-        return viewModel.episodes.first
+        return EpisodeRailFormatting.nextUp(in: viewModel.episodes)
     }
 
     private func loadNextUpPlaybackDetail(for detail: ItemDetail) async {
