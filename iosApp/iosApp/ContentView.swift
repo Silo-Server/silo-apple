@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var serverRegistry = ServerRegistry.shared
     @State private var audioStore = AudioPlaybackStore()
     @State private var launchPreferences = ProfileLaunchPreferences.shared
+    @State private var deepLinkCoordinator = ContinuumDeepLinkCoordinator.shared
     @State private var isApplyingProfileReturnPolicy = false
     #if os(iOS)
     @State private var siloControl = SiloControlClient()
@@ -78,14 +79,11 @@ struct ContentView: View {
             isEnabled: router.authState == .authenticated
         ))
         #endif
-        .onReceive(NotificationCenter.default.publisher(for: .continuumDeepLink)) { notification in
-            guard let url = notification.userInfo?["url"] as? URL else { return }
-            #if os(iOS)
-            ApplePushDeepLinkCoordinator.shared.clearPendingDeepLink(matching: url)
-            #endif
-            handleDeepLink(url)
+        .onChange(of: deepLinkCoordinator.pendingURL) { _, _ in
+            drainIncomingDeepLink()
         }
         .onAppear {
+            drainIncomingDeepLink()
             #if os(iOS) || os(tvOS)
             // The first frame SwiftUI actually produced. A launch whose
             // breadcrumbs stop at `process_start` never got here, which
@@ -95,11 +93,6 @@ struct ContentView: View {
             #endif
             #if os(tvOS)
             ExitSentinel.shared.appDidEnterForeground()
-            #endif
-            #if os(iOS)
-            if let url = ApplePushDeepLinkCoordinator.shared.consumePendingDeepLink() {
-                handleDeepLink(url)
-            }
             #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: .continuumSessionExpired)) { notification in
@@ -199,9 +192,11 @@ struct ContentView: View {
             #endif
             if router.authState == .authenticated {
                 let hasPendingDeepLink = pendingDeepLink != nil
-                if let pending = pendingDeepLink {
-                    pendingDeepLink = nil
-                    handleDeepLink(pending)
+                let waitsForDownloadCapability = pendingDeepLink.map(
+                    shouldWaitForDownloadCapability
+                ) ?? false
+                if !waitsForDownloadCapability {
+                    drainPendingDeepLink()
                 }
                 #if os(tvOS)
                 restoreTrailerReturnIfNeeded(hasPriorityLaunchIntent: hasPendingDeepLink)
@@ -225,6 +220,9 @@ struct ContentView: View {
                 #endif
                 #if !os(tvOS)
                 await DownloadManager.shared.onAppActive()
+                if waitsForDownloadCapability {
+                    drainPendingDeepLink()
+                }
                 #endif
             }
         }
@@ -600,6 +598,25 @@ struct ContentView: View {
     ///
     /// If the auth state isn't ready yet, the link is queued in
     /// `pendingDeepLink` until startup commits its initial route.
+    private func drainIncomingDeepLink() {
+        guard let url = deepLinkCoordinator.consumePendingURL() else { return }
+        handleDeepLink(url)
+    }
+
+    private func drainPendingDeepLink() {
+        guard let url = pendingDeepLink else { return }
+        pendingDeepLink = nil
+        handleDeepLink(url)
+    }
+
+    private func shouldWaitForDownloadCapability(_ url: URL) -> Bool {
+        #if os(tvOS)
+        false
+        #else
+        url.host?.lowercased() == "downloads"
+        #endif
+    }
+
     private func handleDeepLink(_ url: URL) {
         guard url.scheme?.lowercased() == "continuum",
               let host = url.host?.lowercased() else { return }

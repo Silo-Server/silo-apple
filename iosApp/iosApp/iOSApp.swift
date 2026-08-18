@@ -48,21 +48,10 @@ struct SiloApp: App {
         WindowGroup {
             ContentView()
                 .onOpenURL { url in
-                    NotificationCenter.default.post(
-                        name: .continuumDeepLink,
-                        object: nil,
-                        userInfo: ["url": url]
-                    )
+                    ContinuumDeepLinkCoordinator.shared.receive(url)
                 }
         }
     }
-}
-
-extension Notification.Name {
-    /// Posted whenever the app receives a `continuum://` deep-link URL
-    /// (debug launches, Top Shelf taps). `ContentView` consumes it and
-    /// queues until the auth state machine reaches `.authenticated`.
-    static let continuumDeepLink = Notification.Name("continuumDeepLink")
 }
 
 #if os(iOS) || os(tvOS)
