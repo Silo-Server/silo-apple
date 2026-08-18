@@ -59,7 +59,7 @@ Repository: silo-apple (Swift/SwiftUI clients for iOS, tvOS, macOS).
 - Target membership is in iosApp/project.yml (XcodeGen). Silo (iOS), SiloTV (tvOS), SiloMac (macOS) compile most of iosApp/iosApp/. Never hand-edit Silo.xcodeproj; edit project.yml and regenerate.
 - Context: an independent architecture review of the player (${REVIEW_DOC}, with per-slice evidence under docs/cleanup/player-review/slices/) ranked 16 defects. This work package fixes a subset. Read the relevant §3 rows and the cited slice file(s) before editing — they carry the exact evidence and the smallest safe correction. Line numbers there were taken at 36393b4; the base commit for this package is one docs-only commit later, so they should still match — re-grep anyway.
 - Xcode DerivedData lives at /Volumes/NVMe/DeveloperCache/xcode-derived-data; a cold build takes several minutes — wait for it. The iOS test suite (~1355 tests) takes ~10 minutes including simulator boot.
-- BASELINE TEST FAILURES on the base branch (environment issues, NOT regressions): ProfileLaunchIdentityTests (2), ProfileLaunchMigrationTests.testLegacyRegistryProfileMigratesBeforeProfileFieldIsRemoved, SettingValuesAPITests (2), UICustomizationPreferencesTests (2+); "Executed ~1355 tests, with 14 failures" is the green baseline. Any OTHER failure is yours to fix; a changed total must be explained by tests you added/removed.
+- BASELINE TEST FAILURES: none — since 2026-08-18 the suite is genuinely green (full suite: "Executed 1520 tests, with 3 tests skipped and 0 failures"; totals differ under -only-testing scopes and drift by host, so take a same-host control at the base SHA). ANY failure is yours to fix; a changed total must be explained by tests you added/removed.
 `
 
 const BUILD_CMDS = {

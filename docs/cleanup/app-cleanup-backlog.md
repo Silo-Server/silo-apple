@@ -21,6 +21,7 @@ recommended a control-plane rewrite + narrowed loopback ("Option D"). Rounds so 
 | Server pairing | silo-server PR #670 `client_audio_track_selection_v1`; Apple advertises it, routes non-default audio to loopback, marks `progressive` unsupported on device (AVPlayer −12939) | 1419 / 14 / 3 skipped |
 | Cleanup tail | dead client API/cache/legacy-quality surface; shared phone/tvOS similar-item loading and episode formatting; documentation truth pass | net −275 raw lines; local iOS/tvOS/macOS builds; focused 76 / 0; suite 1,524 / 2; shared-dev iOS/tvOS smoke |
 | Round 5 (DRY/KISS/YAGNI survey, `0064fc8` → merge of eight `cleanup/*` branches) | second-generation survey (`.claude/workflows/app-cleanup-survey-v2.js`: Sonnet mechanical inventory → Opus finders → Opus skeptics → packager; 25 agents, 72 findings, 67 survived, 8 file-disjoint packages) then `app-cleanup-fix` (Opus implementer + independent Opus reviewer per package). Landed: video-bridge deletion residue (spec fields, writer callback, backend pinning) and the one-case `VideoOutputMode` enum; `PlayerTrack.selecting` (×4 rebuilds), throughput-probe `measure` helper (×9), constrained-device predicate (×4), `PlayerOnDeckItem` trimmed to what the view reads, seek-reanchor preamble (×3) and ETag validation (×2) shared; caption-appearance snapshot collapse (×10), renderer lock accessors (×6), session open/clear dedupe; subtitle-sheet language list, palette sampler, audio VM/engine dupes; phone/tvOS detail track/resume/next-up helpers hoisted onto `DetailPlaybackFormatting`/`DetailVersionSelection`/`TrackSelectionPersistence` (rules that were written out ×6), cast sections, tvOS 16 `#available` fallbacks; `loadCurrentProfile` (×4), `playAction` (×3), `refreshAuthState` → `AppRouter`, sign-out overlay (×3), `TVNavPreferences` alias file + no-op `#if` fork, write-only `AccentStrategy`; `HTTPClient` refresh tail (×2), `HostedDiagnosticsAPI` perform (×3), decode-only model fields, `PairingDeviceAPI` decoder reuse, `TVControlReceiver` idle-state/session-wipe (×2 each), `includeTechnical` knob, single-element `acceptedSchemes`; test plumbing (`TestPolling`, `TestHTTPStubSupport`, `ISOBoxTestTree`, tautological `LoopbackBufferPolicyTests`, test-only `activeQualityId`). Skipped by the implementers with evidence: `card-title-episode-badge-dupes` (`HomeFeedMeta` is `#if !os(tvOS)`), and `PlayerOnDeckItem.artworkUrl/Thumbhash` (read by `PlayerView.backgroundArtwork`). | 104 files, +1,148 / −2,231 raw (net −1,083); every package built Silo/SiloTV/SiloMac and ran the suite on a cloned sim at 1,525–1,526 / 14 env / 3 skipped |
+| Env baseline + round-5 tail (2026-08-18, two hand-briefed Opus packages, `cleanup/env-test-baseline` + `cleanup/round5-tail`) | **The 14 "environment" failures are gone — the suite is genuinely green.** Root cause was two unrelated problems: 11 assertions were `errSecMissingEntitlement (-34018)` (the unsigned `CODE_SIGNING_ALLOWED=NO` test host fails every `SecItem*` call) — fixed by a `KeychainBackend` seam on `SharedKeychain` (nil in the app, injected `InMemoryKeychainBackend` in tests; `BrandMigrationTests` keeps its probe-and-skip cases because there the Keychain *is* the subject); 3 were stale pre-#132 `projectedMainTabDestinations` expectations (never environmental — the "some hosts see 2" mystery), updated to the shipped fallback; 2 orphaned scoped-refresh tests deleted together with the two dead `TokenStore` overloads (follow-up noted: re-cover the `.temporary`-scope guard against the live funnel). Tail: unused `displayCapabilities:` planner input dropped (capability probe no longer runs per plan — side-effect-free); `VideoTrack.colorSpace`/`.colorPrimaries` deleted after a premise correction (`colorRange`, `colorTransfer`, `videoRange`, `dolbyVision` are all read by the planner/HDR decision/detail UI and stay; write-only `bitDepth` kept deliberately — HDR10-adjacent); the three `NWListener` origin fakes merged into `Tests/RangeOriginStub.swift` with Retarget's cursor/end recursion as the superset (`CountingReader`s and the StreamResume entity-matrix stub deliberately not merged); spill reason token `local_hls_event_playlist` → `local_hls_vod_cache` (log-only, verified unparsed). | 20 files, +378 / −763 raw (net −385); **suite 1520 / 0 failures / 3 skipped, `** TEST SUCCEEDED **`**; Silo/SiloTV/SiloMac green |
 
 Hardware records: `docs/tvos-player/validations/2026-08-17-*.yaml`, `2026-08-18-*.yaml` (HDR10 loopback + display
 criteria validated on 08-17; DV rows blocked until PR #670 reaches the server the TV is on; **open**: an HDR10 loopback
@@ -31,11 +32,10 @@ setting), #10 (needs the audio-index semantics on native-direct/HLS), #11 combin
 divergence, log-channel unification, six online-unreachable error rungs, and product decisions P1/P2 before Stage 3.
 Skipped by design in R1: #10; the review's §12 lists rejected/narrowed claims.
 
-**Round-5 deferred / refuted (for the next survey pass).** Deferred: `displayCapabilities:` planner argument the
-planner never consumes (PVM ↔ `ApplePlaybackRoutePlanner`, file collision this round); two dead `TokenStore`
-refresh overloads kept alive only by `SettingValuesAPITests` (a red-baseline file, §4.6); `VideoTrack` write-only
-colour fields (collision with the bridge-residue package); the `NWListener` range-origin fake written three times in
-tests (~−250, medium risk — needs the Retarget cursor/end recursion as the merged superset). Refuted and not to be
+**Round-5 deferred / refuted.** All four deferred items landed 2026-08-18 (row above): `displayCapabilities:`
+planner argument ✓; dead `TokenStore` overloads ✓ (with their red-baseline tests); `VideoTrack` colour fields
+✓ *with premise correction* — only `colorSpace`/`colorPrimaries` were write-only, the rest are read and stay;
+`NWListener` range-origin fake ✓ (merged as `RangeOriginStub`). Refuted and not to be
 re-flagged: `ApplePlaybackRouteCapabilities` "unread" entries (it is the executable capability table, docs/05); the
 ×16 callback-generation guard (Stage 2 replaces it); the subtitle renderer primary/secondary twin (review §8 says do
 not rewrite the renderer); `DiagnosticsJSONValue` vs `SettingJSONValue` (identical, but a merge crosses the
@@ -86,7 +86,7 @@ removed.
 |---|---|---|---|
 | 1.18 | Divergent runtime formatters (3 styles) | `HomeFeedKit.swift`, `OverlayRegistry.swift`, `TVFocusMarquee.swift`, `HeroMetadata.swift` (`" min"`), `DetailFacts` (`"m"`) | **Product decision, not cleanup** — unify only if one output format is chosen for the whole app. |
 | ~~1.19~~ | ~~`moveCollectionToGroup` + `UserCollection` + `UpdateUserCollectionGroupBody`~~ | | **Done in round 4.** |
-| 1.20 | `generatedHLSSpillPolicy` reason string `"local_hls_event_playlist"` | `AVPlayerBackend.swift` | Log token only; the policy is live (VOD disk cache). Rename to something VOD-neutral if it bothers anyone. |
+| 1.20 | `generatedHLSSpillPolicy` reason string `"local_hls_event_playlist"` | `AVPlayerBackend.swift` | **Done 2026-08-18**: renamed to `local_hls_vod_cache` after verifying it is a log token only. |
 | 1.21 | Historical "Continuum" mentions in comments/docs | `DesignSystem/Aurora/AuroraTextField.swift:6`, `PlaybackRealtimeProtocol.swift:~452`, a few `docs/` pages | Prose only; left because rewriting them would make them factually wrong (they describe the old brand). Harmless. |
 
 ## 2. Larger deferred cleanups — need their own PR and/or an owner decision
@@ -275,12 +275,13 @@ Plain dictionary, no TTL/LRU. Round 1 removed a write-only entry (`itemWatchDeta
 of which keys still have readers, and whether the cache is doing anything on tvOS where
 `ItemDetailCache` also exists, is cheap.
 
-### 4.6 The 14 baseline test failures
-`ProfileLaunchIdentityTests` (2), `ProfileLaunchMigrationTests` (1), `SettingValuesAPITests`
-(2), `UICustomizationPreferencesTests` (2, counted more than once by xcresult) fail on the base
-branch and on `main`, independent of the cleanup — they look like keychain / profile-identity
-environment assumptions in the simulator. Either fix the environment or mark them; a suite that
-is "green at 14 failures" hides regressions.
+### 4.6 The 14 baseline test failures — **resolved 2026-08-18**
+Fixed on `player/architecture-remediation` (see the §0 round row). 11 assertions were
+`errSecMissingEntitlement` from the unsigned simulator test host (fixed via the `KeychainBackend`
+seam + in-memory fake); 3 were stale pre-#132 tab-projection expectations misclassified as
+environmental (updated). The green contract is now **0 failures** (`Executed 1520 tests, 3
+skipped` on this host); any failure at all is a regression. The old "green at 14" language in
+docs/scripts was updated the same day.
 
 ### 4.7 tvOS focus helpers
 Round 1 consolidated eight private copies onto three shared `View` extensions in

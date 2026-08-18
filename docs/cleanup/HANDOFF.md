@@ -1,8 +1,10 @@
 # Silo Apple streamlining program — session handoff
 
 **Read this first when picking the program up in a new session.** It is the single entry point; every other
-document it names is supporting evidence. Last updated 2026-08-18: owner answered P1/P2/P5 (§7 — loopback
-stays, Stage 3/Option B and Stage 5/Option C are off the table); round 5 landed (`4f5a3a6`).
+document it names is supporting evidence. Last updated 2026-08-18 (evening): owner answered P1/P2/P5 (§7 —
+loopback stays, Stage 3/Option B and Stage 5/Option C are off the table); the suite is genuinely green
+(1520 / 0 failures — the 14-failure era is over, §2); the round-5 deferred tail landed (`e893967`); the P11
+control-plane key is open as silo-server PR #673.
 
 ---
 
@@ -26,9 +28,9 @@ stays, Stage 3/Option B and Stage 5/Option C are off the table); round 5 landed 
 
 | Item | State |
 |---|---|
-| Branch / PR | `player/architecture-remediation` @ `4f5a3a6`, pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN`, CodeRabbit green |
-| Size vs `main` | ~115 commits, ~510 files, roughly +23k / −28k raw |
-| Suite (iOS `SiloTests`, only test target) | `Executed 1522 tests, 3 skipped, 14 failures (0 unexpected)` — the 14 are the documented simulator-environment failures (§5); the 3 skips are keychain-migration tests when the sim host cannot write the keychain |
+| Branch / PR | `player/architecture-remediation` @ `e893967` (+ docs commits after it), pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN`, CodeRabbit green |
+| Size vs `main` | ~120 commits, ~510 files, roughly +23k / −29k raw |
+| Suite (iOS `SiloTests`, only test target) | `Executed 1520 tests, with 3 tests skipped and 0 failures (0 unexpected)` — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
 | Builds | `Silo` (iOS), `SiloTV` (tvOS), `SiloMac` all green at the tip, `CODE_SIGNING_ALLOWED=NO` |
 | Hardware | HDR10 HEVC MKV loopback + display criteria validated on Apple TV 4K gen 3 (tvOS 26.6) on 08-17; DV rows pending; **one open anomaly** (§8) |
 | Sibling PRs to sequence after #172 | #171 (release launch paths / deep links), #169 + #107 (subtitles) — they overlap touched files |
@@ -53,6 +55,13 @@ stays, Stage 3/Option B and Stage 5/Option C are off the table); round 5 landed 
    implementers + independent Opus reviewers, all approved; 104 files, +1,148 / −2,231. Full item list in the
    backlog §0 round-5 row; reviewer-confirmed benign behaviour deltas are listed in the PR body under
    "Behaviour changes to be aware of".
+7. **Env baseline + round-5 tail** (2026-08-18, two hand-briefed packages, orchestrator-reviewed): the 14
+   "environment" test failures fixed for real — `KeychainBackend` seam on `SharedKeychain` (nil in the app) +
+   in-memory test fake for the unsigned-host `errSecMissingEntitlement` class, stale pre-#132 tab-projection
+   expectations updated, two orphaned tests deleted with the two dead `TokenStore` overloads — suite now
+   **1520 / 0 failures / 3 skipped**; plus the round-5 deferred tail (`displayCapabilities:` plumbing,
+   `VideoTrack.colorSpace/.colorPrimaries`, `RangeOriginStub` fake merge, spill-reason rename; net −385).
+   Premise corrections recorded in backlog §0.
 
 ## 3. How the cleanup loop runs (the machinery)
 
@@ -110,10 +119,9 @@ Full suite on an isolated simulator (parallel runs on one device collide):
 ```bash
 SIM=$(xcrun simctl create verify-run "iPhone 17 Pro") && xcodebuild test -project Silo.xcodeproj -scheme Silo -destination "id=$SIM" CODE_SIGNING_ALLOWED=NO 2>&1 | grep -E 'Executed|\*\* TEST|error:|failed' | tail -30; xcrun simctl shutdown "$SIM"; xcrun simctl delete "$SIM"
 ```
-- Green = every failure is inside `ProfileLaunchIdentityTests`, `ProfileLaunchMigrationTests`,
-  `SettingValuesAPITests`, `UICustomizationPreferencesTests` (14 assertion failures / 7 methods on this host; some
-  hosts see 2). Any failure outside those, or a total-count change you cannot explain by tests added/removed, is a
-  regression.
+- Green = **0 failures**: `Executed 1520 tests, with 3 tests skipped and 0 failures (0 unexpected)` on this
+  host. The old 14-failure environment baseline was fixed on 2026-08-18 — any failure at all, or a total-count
+  change you cannot explain by tests added/removed, is a regression.
 - Total-count baseline drifts by host (1526 vs 1528 seen for the same tree). Always take a same-host control at the
   base SHA before reading a delta.
 - `git diff --check <base>..HEAD` must be clean.
@@ -142,22 +150,19 @@ SIM=$(xcrun simctl create verify-run "iPhone 17 Pro") && xcodebuild test -projec
 
 ## 6. Open work — what is left, ranked
 
-### 6a. Small, unblocked (a follow-up cleanup package, ~−300 total)
-From round 5's deferred list (backlog §0 "Round-5 deferred"):
-- `displayCapabilities:` argument passed to `ApplePlaybackRoutePlanner` that the planner never consumes
-  (`PlayerViewModel` ↔ planner; deferred only for file collision).
-- `VideoTrack` write-only colour fields (deferred for collision with the bridge-residue package).
-- Two dead `TokenStore` refresh overloads kept alive **only** by `SettingValuesAPITests` (a red-baseline file).
-- `NWListener` range-origin fake written three times in tests (~−250, medium risk: the merged origin must adopt
-  Retarget's cursor/end recursion as the superset).
-- Backlog §1: 1.20 (`generatedHLSSpillPolicy` reason string), 1.21 (historical "Continuum" prose — harmless).
-- The **14 environment test failures** (backlog §4.6): fixing or marking them is what makes "green" trustworthy;
-  it also unblocks the `TokenStore` item above.
+### 6a. Small, unblocked
+The whole round-5 deferred list **and** the 14 environment failures landed on 2026-08-18 (backlog §0 row,
+§4.6). Still open, all small:
+- Re-cover the temporary-scope refresh guard with a direct unit test against the live
+  `TokenStore.saveRefreshedTokens(_:_:replacing:)` funnel — the only direct assertion was deleted with the
+  dead overload; end-to-end coverage remains (`testOrdinaryUnauthorizedResponseCannotCrossFromPersistentIntoTemporaryCredentials`).
+- Backlog 1.21 (historical "Continuum" prose) — intentionally left; rewriting would make it factually wrong.
+- `VideoTrack.bitDepth` is write-only but deliberately kept (HDR10-adjacent; see backlog §0 premise notes).
 
 ### 6b. Gated — the big levers (need an owner decision or a server change first)
 | Work | What it is | Gate |
 |---|---|---|
-| **Round 3 = Stage 2 control-plane extraction** (review §8/§9) | `PlaybackBackend` protocol, pure `PlaybackReducer` + `PlaybackSessionActor`, `PlaybackEngineSession`, one `RecoveryPolicy` replacing six backend ladders + VM outage ride-through, `TrackSelectionCoordinator` extraction from the VM's subtitle half. This is the real answer to `PlayerViewModel` ≈ 8k raw lines / `AVPlayerBackend` ≈ 4.6k. Ships behind `player.apple.control_plane: off|native_direct|loopback|all`. | Remote key (P11) **in progress 2026-08-18**: being added to silo-server `contracts/settings/v1/manifest.json` + `make settings-bindings` regeneration (precedent #670); Apple consumption pattern: `SettingKeys.generated.swift`, `PlayerSettings.swift`, `flusher.enqueue`. Also wants a control run on the HDR10 anomaly (§8) first. Run via `player-remediation-fix.js` with spec JSONs; roughly 5–7 implementers + reviewers. |
+| **Round 3 = Stage 2 control-plane extraction** (review §8/§9) | `PlaybackBackend` protocol, pure `PlaybackReducer` + `PlaybackSessionActor`, `PlaybackEngineSession`, one `RecoveryPolicy` replacing six backend ladders + VM outage ride-through, `TrackSelectionCoordinator` extraction from the VM's subtitle half. This is the real answer to `PlayerViewModel` ≈ 8k raw lines / `AVPlayerBackend` ≈ 4.6k. Ships behind `player.apple.control_plane: off|native_direct|loopback|all`. | Remote key (P11): **silo-server PR #673 open** (contract rev 8, default `off`, `profile_device` scope; owner merge = sign-off, and the PR body flags one naming-convention exception). After merge: regenerate `SettingKeys.generated.swift` here; consumption pattern: `PlayerSettings.swift`, `flusher.enqueue`. Also wants a control run on the HDR10 anomaly (§8) first. Run via `player-remediation-fix.js` with spec JSONs; roughly 5–7 implementers + reviewers. |
 | ~~Stage 3 = narrow the local matrix (Option B deletions)~~ **Cancelled 2026-08-18** | P1 = yes, P2 = no, P5 = no (§7): the encoder ladders, the EVENT fallback and common-container local playback all stay. Only the server-authoritative tightening items (planner limited to execution detail, `local_mutations` populated, `ApplePlaybackRouteCapabilities` premium claims → `plan.claims`) remain candidates — as Stage 2 territory. | Decided — closed. |
 | Stage 4 | Default the new control plane on; one release later delete the old VM core + ladders. (The former Stage 5 / Option C is dead: P1 = yes.) | Stage 2 first. |
 | Review items still open | #10 server audio pick on native-direct/HLS (needs server audio-index semantics; largely moot now that non-default audio → loopback); #11 combined-index translation for embedded tracks (needs the version inventory plumbed from the VM); six online-unreachable error rungs (PVM `1524-1553` at review time); `cmpLog` vs `os_log` unification; macOS scene-phase divergence; audiobook engine as a second V3 client. | Mostly Stage 2 territory; small ones could go in a follow-up package. |
@@ -173,8 +178,10 @@ Full list: review §10. The gating ones were answered by the owner on **2026-08-
 - **P2 = no** — common H.264/HEVC MKV/TS playback stays on the local path; no move to server remux.
 - **P5 = no** — unknown-duration / untrusted-keyframe sources keep the local growing-playlist EVENT
   fallback; backlog §2.5 is closed as intentionally kept (backlog §3).
-- **P11** — in progress: `player.apple.control_plane` (`off|native_direct|loopback|all`, default `off`)
-  being added to silo-server `contracts/settings/v1/manifest.json` (precedent silo-server #670).
+- **P11** — **silo-server PR #673 open**: `player.apple.control_plane` (`off|native_direct|loopback|all`,
+  default `off`, `profile_device` scope, contract rev 8). The owner's merge is the sign-off. One flagged
+  decision in the PR body: the key name encodes a platform against the manifest's naming convention
+  (deliberate, rationale in the key's `notes`; alternative `player.control_plane` is a one-liner pre-merge).
 
 **Consequences:** Stage 3 (Option B local-matrix narrowing) and Stage 5 (Option C) are cancelled. The
 remaining big lever is Stage 2 (Round 3 control-plane extraction), then Stage 4.
@@ -205,15 +212,19 @@ do not reach the player.
 | tvOS focus rules | `docs/tvos-focus.md` |
 | PR | https://github.com/Silo-Server/silo-apple/pull/172 (body carries the layer summary, behaviour changes, validation) |
 | Server counterpart | silo-server PR #670 (`client_audio_track_selection_v1`), merged; deployed to shared dev |
+| Server control-plane key (P11) | silo-server PR #673 (`player.apple.control_plane`, settings contract rev 8) — **open** |
 | Assistant memory (cross-session) | `player-architecture-remediation`, `app-cleanup-workflows`, `one-player-consolidation`, `apple-tv-device-workflow`, `ios-sim-metal-cache-dir` |
 
 ## 10. Suggested first 15 minutes of the next session
 
 1. `git fetch origin && git status && git log --oneline -5` on `player/architecture-remediation`; confirm PR #172
    is still `MERGEABLE` and whether `main` moved (`git log --oneline HEAD..origin/main`); merge `origin/main` in
-   if it did and re-run the verification recipe.
-2. Ask the owner which of the three next options they want: (a) unblock **Round 3** by adding the
-   `player.apple.control_plane` key in silo-server, (b) answer **P1/P2/P5** to open Stage 3, (c) spend another
-   survey→fix cycle on the small tail (§6a) — or the 14 env test failures first.
-3. If a workflow round: refresh the slice notes in `app-cleanup-survey-v2.js`, take the full tip SHA, run survey,
-   review packages, run fix, merge, verify, update backlog §0 + PR body + this file's §2.
+   if it did and re-run the verification recipe (§4 — green now means **0 failures**).
+2. Check **silo-server PR #673**. Merged → regenerate the Apple bindings (`make settings-bindings` from a
+   silo-server checkout with silo-apple adjacent; commit the regenerated `SettingKeys.generated.swift` here) and
+   Round 3 loses its key gate. Still open → remind the owner: their merge is the P11 sign-off, including the
+   flagged key-naming exception.
+3. Round 3 (Stage 2)'s remaining gate after the key: the §8 HDR10 control run (different day / TV input / AVR
+   path — owner hardware time). When both clear, run Round 3 via `player-remediation-fix.js` with spec JSONs
+   (roughly 5–7 implementers + reviewers; workflows still need an explicit per-request opt-in).
+4. Small items while gated: the temporary-scope guard unit test (§6a).
