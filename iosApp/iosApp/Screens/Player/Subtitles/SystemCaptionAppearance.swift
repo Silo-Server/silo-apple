@@ -54,93 +54,72 @@ enum SystemCaptionAppearance {
 
     static func snapshot() -> Snapshot {
         var result = Snapshot()
-        var behavior = MACaptionAppearanceBehavior.useValue
+        var overrides: SystemCaptionContentOverrides = []
 
-        let foreground = MACaptionAppearanceCopyForegroundColor(.user, &behavior).takeRetainedValue()
-        if let foregroundHex = hexString(from: foreground) {
-            result.foregroundColorHex = valueForMatchingDeviceSettings(
-                foregroundHex,
-                behavior: behavior
-            )
+        let foreground = read(.foregroundColor, into: &overrides) {
+            MACaptionAppearanceCopyForegroundColor(.user, &$0).takeRetainedValue()
         }
-        if behavior == .useValue { result.contentOverrides.insert(.foregroundColor) }
+        result.foregroundColorHex = foreground.flatMap { hexString(from: $0) }
 
-        behavior = .useValue
-        let foregroundOpacity = MACaptionAppearanceGetForegroundOpacity(.user, &behavior)
-        result.foregroundOpacity = valueForMatchingDeviceSettings(
-            Double(foregroundOpacity),
-            behavior: behavior
-        )
-        if behavior == .useValue { result.contentOverrides.insert(.foregroundOpacity) }
-
-        behavior = .useValue
-        let background = MACaptionAppearanceCopyBackgroundColor(.user, &behavior).takeRetainedValue()
-        if let backgroundHex = hexString(from: background) {
-            result.backgroundColorHex = valueForMatchingDeviceSettings(
-                backgroundHex,
-                behavior: behavior
-            )
+        result.foregroundOpacity = read(.foregroundOpacity, into: &overrides) {
+            Double(MACaptionAppearanceGetForegroundOpacity(.user, &$0))
         }
-        if behavior == .useValue { result.contentOverrides.insert(.backgroundColor) }
 
-        behavior = .useValue
-        let backgroundOpacity = MACaptionAppearanceGetBackgroundOpacity(.user, &behavior)
-        result.backgroundOpacity = valueForMatchingDeviceSettings(
-            Double(backgroundOpacity),
-            behavior: behavior
-        )
-        if behavior == .useValue { result.contentOverrides.insert(.backgroundOpacity) }
-
-        behavior = .useValue
-        let window = MACaptionAppearanceCopyWindowColor(.user, &behavior).takeRetainedValue()
-        if let windowHex = hexString(from: window) {
-            result.windowColorHex = valueForMatchingDeviceSettings(
-                windowHex,
-                behavior: behavior
-            )
+        let background = read(.backgroundColor, into: &overrides) {
+            MACaptionAppearanceCopyBackgroundColor(.user, &$0).takeRetainedValue()
         }
-        if behavior == .useValue { result.contentOverrides.insert(.windowColor) }
+        result.backgroundColorHex = background.flatMap { hexString(from: $0) }
 
-        behavior = .useValue
-        let windowOpacity = MACaptionAppearanceGetWindowOpacity(.user, &behavior)
-        result.windowOpacity = valueForMatchingDeviceSettings(
-            Double(windowOpacity),
-            behavior: behavior
-        )
-        if behavior == .useValue { result.contentOverrides.insert(.windowOpacity) }
+        result.backgroundOpacity = read(.backgroundOpacity, into: &overrides) {
+            Double(MACaptionAppearanceGetBackgroundOpacity(.user, &$0))
+        }
 
-        behavior = .useValue
-        let windowCornerRadius = MACaptionAppearanceGetWindowRoundedCornerRadius(.user, &behavior)
-        result.windowCornerRadius = valueForMatchingDeviceSettings(
-            Double(windowCornerRadius),
-            behavior: behavior
-        )
-        if behavior == .useValue { result.contentOverrides.insert(.windowCornerRadius) }
+        let window = read(.windowColor, into: &overrides) {
+            MACaptionAppearanceCopyWindowColor(.user, &$0).takeRetainedValue()
+        }
+        result.windowColorHex = window.flatMap { hexString(from: $0) }
 
-        behavior = .useValue
-        let edge = MACaptionAppearanceGetTextEdgeStyle(.user, &behavior)
-        result.edgeStyle = valueForMatchingDeviceSettings(edge, behavior: behavior)
-        if behavior == .useValue { result.contentOverrides.insert(.edge) }
+        result.windowOpacity = read(.windowOpacity, into: &overrides) {
+            Double(MACaptionAppearanceGetWindowOpacity(.user, &$0))
+        }
 
-        behavior = .useValue
-        let size = MACaptionAppearanceGetRelativeCharacterSize(.user, &behavior)
-        result.relativeCharacterSize = valueForMatchingDeviceSettings(
-            Double(size),
-            behavior: behavior
-        )
-        if behavior == .useValue { result.contentOverrides.insert(.size) }
+        result.windowCornerRadius = read(.windowCornerRadius, into: &overrides) {
+            Double(MACaptionAppearanceGetWindowRoundedCornerRadius(.user, &$0))
+        }
 
-        behavior = .useValue
-        let descriptor = MACaptionAppearanceCopyFontDescriptorForStyle(
-            .user, &behavior, .default
-        ).takeRetainedValue()
-        if let family = CTFontDescriptorCopyAttribute(descriptor, kCTFontFamilyNameAttribute) as? String,
+        result.edgeStyle = read(.edge, into: &overrides) {
+            MACaptionAppearanceGetTextEdgeStyle(.user, &$0)
+        }
+
+        result.relativeCharacterSize = read(.size, into: &overrides) {
+            Double(MACaptionAppearanceGetRelativeCharacterSize(.user, &$0))
+        }
+
+        let descriptor = read(.font, into: &overrides) {
+            MACaptionAppearanceCopyFontDescriptorForStyle(.user, &$0, .default).takeRetainedValue()
+        }
+        if let descriptor,
+           let family = CTFontDescriptorCopyAttribute(descriptor, kCTFontFamilyNameAttribute) as? String,
            !family.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            result.fontFamilyName = valueForMatchingDeviceSettings(family, behavior: behavior)
+            result.fontFamilyName = family
         }
-        if behavior == .useValue { result.contentOverrides.insert(.font) }
 
+        result.contentOverrides = overrides
         return result
+    }
+
+    /// One MediaAccessibility read: reset the behavior byte, call the getter,
+    /// record the "user overrode this" bit, then apply the device-settings
+    /// filter to the returned value.
+    private static func read<Value>(
+        _ override: SystemCaptionContentOverrides,
+        into overrides: inout SystemCaptionContentOverrides,
+        _ body: (inout MACaptionAppearanceBehavior) -> Value
+    ) -> Value? {
+        var behavior = MACaptionAppearanceBehavior.useValue
+        let value = body(&behavior)
+        if behavior == .useValue { overrides.insert(override) }
+        return valueForMatchingDeviceSettings(value, behavior: behavior)
     }
 
     /// Resolve a value for Silo's explicit "Use Device Settings" mode.

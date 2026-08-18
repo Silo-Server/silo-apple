@@ -69,9 +69,6 @@ final class SubtitleSession {
     private struct InstalledConvertedSidecar {
         let urlIndex: Int
         let format: SubtitleFormat
-        /// Whether the installed document actually carries `ArabicFallback`
-        /// Dialogue lines (drives the renderer's `FONT_NAME` suppression).
-        let usedArabicFallbackStyle: Bool
         /// Whether the track has Arabic cues at all. Only these need
         /// regenerating on a font-family change: a Latin-only track tracks
         /// the new family through the live `FONT_NAME` override, while an
@@ -120,6 +117,14 @@ final class SubtitleSession {
     private func clearInstalledSidecarLocked(_ slot: SubtitleSlot) {
         installedConvertedSidecars.removeValue(forKey: slot)
         bumpInstalledGenerationLocked(slot)
+    }
+
+    /// Forget everything occupying the slot — live flag, bitmap cue store
+    /// and converted sidecar. Caller holds `lock`.
+    private func clearSlotOccupancyLocked(_ slot: SubtitleSlot) {
+        _ = liveSlots.remove(slot)
+        bitmapCueStores.removeValue(forKey: slot)
+        clearInstalledSidecarLocked(slot)
     }
 
     /// Sidecar descriptors keyed by their server-assigned URL index.
@@ -291,11 +296,7 @@ final class SubtitleSession {
         extradataSize: Int
     ) {
         cancelFetchTask(for: slot)
-        withLock {
-            _ = liveSlots.remove(slot)
-            bitmapCueStores.removeValue(forKey: slot)
-            clearInstalledSidecarLocked(slot)
-        }
+        withLock { clearSlotOccupancyLocked(slot) }
         if isNativeASS {
             renderer.createTrack(
                 slot: slot,
@@ -308,19 +309,26 @@ final class SubtitleSession {
             // with codec-specific PlayRes/font defaults. Feed the same
             // controlled header used by external text sidecars so appearance
             // does not change when switching subtitle source types.
-            let params = withLock { stylingParams }
-            let header = SubtitleStylingOverride.syntheticHeader(
-                params: params,
-                slot: slot
+            openSyntheticStyledTrack(slot: slot)
+        }
+    }
+
+    /// Create a non-native libass track in the slot from Silo's controlled
+    /// synthetic ASS header. The styling snapshot is taken under `lock`,
+    /// which is released before the renderer call.
+    private func openSyntheticStyledTrack(slot: SubtitleSlot) {
+        let params = withLock { stylingParams }
+        let header = SubtitleStylingOverride.syntheticHeader(
+            params: params,
+            slot: slot
+        )
+        Data(header.utf8).withUnsafeBytes { raw in
+            renderer.createTrack(
+                slot: slot,
+                isNativeASS: false,
+                extradata: raw.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                extradataSize: raw.count
             )
-            Data(header.utf8).withUnsafeBytes { raw in
-                renderer.createTrack(
-                    slot: slot,
-                    isNativeASS: false,
-                    extradata: raw.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                    extradataSize: raw.count
-                )
-            }
         }
     }
 
@@ -338,11 +346,7 @@ final class SubtitleSession {
         }
 
         cancelFetchTask(for: slot)
-        withLock {
-            _ = liveSlots.remove(slot)
-            bitmapCueStores.removeValue(forKey: slot)
-            clearInstalledSidecarLocked(slot)
-        }
+        withLock { clearSlotOccupancyLocked(slot) }
 
         // The server/CDN subtitle endpoint can buffer text responses long
         // enough that URLSession.AsyncBytes never yields a first cue before
@@ -423,11 +427,7 @@ final class SubtitleSession {
     /// in-flight fetch.
     func closeSlot(_ slot: SubtitleSlot) {
         cancelFetchTask(for: slot)
-        withLock {
-            _ = liveSlots.remove(slot)
-            bitmapCueStores.removeValue(forKey: slot)
-            clearInstalledSidecarLocked(slot)
-        }
+        withLock { clearSlotOccupancyLocked(slot) }
         renderer.dropTrack(slot: slot)
     }
 
@@ -484,8 +484,7 @@ final class SubtitleSession {
     ) {
         cancelFetchTask(for: slot)
         withLock {
-            _ = liveSlots.remove(slot)
-            clearInstalledSidecarLocked(slot)
+            clearSlotOccupancyLocked(slot)
             bitmapCueStores[slot] = BitmapSubtitleCueStore(
                 retentionSeconds: retentionSeconds,
                 maxCueCount: maxCueCount
@@ -578,19 +577,7 @@ final class SubtitleSession {
             bitmapCueStores.removeValue(forKey: slot)
             clearInstalledSidecarLocked(slot)
         }
-        let params = withLock { stylingParams }
-        let header = SubtitleStylingOverride.syntheticHeader(
-            params: params,
-            slot: slot
-        )
-        Data(header.utf8).withUnsafeBytes { raw in
-            renderer.createTrack(
-                slot: slot,
-                isNativeASS: false,
-                extradata: raw.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                extradataSize: raw.count
-            )
-        }
+        openSyntheticStyledTrack(slot: slot)
         withLock { _ = liveSlots.insert(slot) }
         Self.logger.info(
             "[CMP-SUB] opened live AI track slot=\(slot.rawValue, privacy: .public) label=\(label ?? "nil", privacy: .public) lang=\(language ?? "nil", privacy: .public)"
@@ -766,7 +753,6 @@ final class SubtitleSession {
                     installedConvertedSidecars[slot] = InstalledConvertedSidecar(
                         urlIndex: urlIndex,
                         format: format,
-                        usedArabicFallbackStyle: preservesScriptSpecificFonts,
                         containsArabicCues: containsArabicCues,
                         generation: bumpInstalledGenerationLocked(slot)
                     )
