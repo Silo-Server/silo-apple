@@ -137,29 +137,11 @@ struct TVEpisodeCard: View {
     }
 
     private var accessibilityDescription: String {
-        episodeRailAccessibilityLabel(
-            seasonNumber: episode.seasonNumber,
-            episodeNumber: episode.episodeNumber,
-            title: episode.title,
-            metadata: episodeMetadataLine,
+        EpisodeRailFormatting.accessibilityDescription(
+            for: episode,
             isCurrent: isCurrent,
             isPlayed: isPlayed
         )
-    }
-
-    private var episodeMetadataLine: String? {
-        var parts: [String] = []
-        if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
-            parts.append(airDate)
-        }
-        if let runtime = episode.runtime, runtime > 0 {
-            if runtime >= 60 {
-                parts.append("\(runtime / 60)h \(runtime % 60)m")
-            } else {
-                parts.append("\(runtime)m")
-            }
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
 
     @ViewBuilder
@@ -217,7 +199,7 @@ private struct EpisodeCardLabel: View {
             if captionStyle.showsTitle {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 10) {
-                            Text(episodeNumberLabel)
+                            Text(EpisodeRailFormatting.cardNumberLabel(for: episode))
                                 .font(.system(size: 18, weight: .bold))
                                 .tracking(2.0)
                                 .foregroundStyle(Color.siloOnSurface.opacity(0.55))
@@ -226,7 +208,7 @@ private struct EpisodeCardLabel: View {
                         }
                     }
 
-                    Text(episode.title ?? "Episode \(episode.episodeNumber)")
+                    Text(EpisodeRailFormatting.title(for: episode))
                         .font(.system(size: 26, weight: .semibold))
                         .foregroundStyle(titleColor)
                         // Allow up to two lines for long titles, but don't reserve
@@ -236,7 +218,7 @@ private struct EpisodeCardLabel: View {
                         .lineLimit(2)
 
                     if captionStyle.showsMetadata {
-                        if let metadataLine = episodeMetadataLine {
+                        if let metadataLine = EpisodeRailFormatting.metadataLine(for: episode) {
                             Text(metadataLine)
                                 .font(.system(size: 20, weight: .medium))
                                 .foregroundStyle(Color.siloSecondaryText)
@@ -272,21 +254,6 @@ private struct EpisodeCardLabel: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(Capsule().fill(Color.white))
-    }
-
-    private var episodeNumberLabel: String {
-        "EPISODE \(episode.episodeNumber)"
-    }
-
-    private var episodeMetadataLine: String? {
-        var parts: [String] = []
-        if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
-            parts.append(airDate)
-        }
-        if let runtime = episode.runtime, runtime > 0 {
-            parts.append(DetailFacts.episodeRuntime(minutes: runtime))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
 
     private var still: some View {
@@ -375,12 +342,7 @@ private struct EpisodeCardLabel: View {
     }
 
     private var progressFraction: Double? {
-        guard let userData = episode.userData,
-              let pos = userData.positionSeconds,
-              let dur = userData.durationSeconds,
-              dur > 0, pos > 0, pos < dur
-        else { return nil }
-        return pos / dur
+        EpisodeRailFormatting.progressFraction(for: episode)
     }
 }
 

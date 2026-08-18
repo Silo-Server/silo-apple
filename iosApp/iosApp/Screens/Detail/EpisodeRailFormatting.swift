@@ -1,10 +1,9 @@
-#if !os(tvOS)
 import Foundation
 
-/// Shared display formatting for the compact episode rail and expanded iPad
-/// rows. Keeping these labels in one seam prevents the two adaptive layouts
-/// from drifting as metadata rules evolve.
-enum PhoneEpisodeFormatting {
+/// Shared display formatting for episode rails and expanded rows across Apple
+/// platforms. Keeping labels and progress rules in one seam prevents the phone,
+/// tablet, and tvOS presentations from drifting.
+enum EpisodeRailFormatting {
     static func title(for episode: EpisodeListItem) -> String {
         episode.title ?? "Episode \(episode.episodeNumber)"
     }
@@ -41,7 +40,8 @@ enum PhoneEpisodeFormatting {
 
     static func accessibilityDescription(
         for episode: EpisodeListItem,
-        isCurrent: Bool
+        isCurrent: Bool,
+        isPlayed: Bool? = nil
     ) -> String {
         episodeRailAccessibilityLabel(
             seasonNumber: episode.seasonNumber,
@@ -49,8 +49,7 @@ enum PhoneEpisodeFormatting {
             title: episode.title,
             metadata: metadataLine(for: episode),
             isCurrent: isCurrent,
-            isPlayed: episode.userData?.played == true
+            isPlayed: isPlayed ?? (episode.userData?.played == true)
         )
     }
 }
-#endif

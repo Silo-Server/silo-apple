@@ -71,7 +71,7 @@ private struct PhoneEpisodeCard: View {
                 if captionStyle.showsTitle {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
-                            Text(PhoneEpisodeFormatting.cardNumberLabel(for: episode))
+                            Text(EpisodeRailFormatting.cardNumberLabel(for: episode))
                                 .font(.system(size: 10, weight: .bold))
                                 .tracking(1.0)
                                 .foregroundStyle(Color.siloOnSurface.opacity(0.55))
@@ -80,14 +80,14 @@ private struct PhoneEpisodeCard: View {
                             }
                         }
 
-                        Text(PhoneEpisodeFormatting.title(for: episode))
+                        Text(EpisodeRailFormatting.title(for: episode))
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(titleColor)
                             .lineLimit(1)
                             .multilineTextAlignment(.leading)
 
                         if captionStyle.showsMetadata {
-                            if let metadataLine = PhoneEpisodeFormatting.metadataLine(for: episode) {
+                            if let metadataLine = EpisodeRailFormatting.metadataLine(for: episode) {
                                 Text(metadataLine)
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(Color.siloSecondaryText)
@@ -131,7 +131,7 @@ private struct PhoneEpisodeCard: View {
     }
 
     private var accessibilityDescription: String {
-        PhoneEpisodeFormatting.accessibilityDescription(for: episode, isCurrent: isCurrent)
+        EpisodeRailFormatting.accessibilityDescription(for: episode, isCurrent: isCurrent)
     }
 
     private var still: some View {
@@ -207,7 +207,7 @@ private struct PhoneEpisodeCard: View {
     }
 
     private var progressFraction: Double? {
-        PhoneEpisodeFormatting.progressFraction(for: episode)
+        EpisodeRailFormatting.progressFraction(for: episode)
     }
 }
 #endif

@@ -100,55 +100,11 @@ struct TVSimilarRail: View {
         items = []
 
         do {
-            let scored = try await SiloAPI.shared.recommendationsSimilar(
-                contentId: contentId,
-                limit: 12
-            )
-            // Resolve detail pages in parallel — preserve the engine's
-            // ranking by zipping the resolved details back to their
-            // original index. Failed resolutions are dropped silently.
-            let resolved = await withTaskGroup(of: (Int, ItemDetail?).self) { group in
-                for (index, ref) in scored.enumerated() {
-                    group.addTask {
-                        let detail = try? await SiloAPI.shared.itemDetail(
-                            contentId: ref.mediaItemId
-                        )
-                        return (index, detail)
-                    }
-                }
-                var pairs: [(Int, ItemDetail)] = []
-                for await (index, detail) in group {
-                    if let detail { pairs.append((index, detail)) }
-                }
-                return pairs.sorted(by: { $0.0 < $1.0 }).map(\.1)
-            }
-            items = resolved.map(SimilarPosterItem.init(detail:))
+            items = try await SimilarRecommendationsLoader.load(contentId: contentId)
         } catch {
             items = []
         }
         isLoading = false
-    }
-}
-
-// MARK: - Card model
-
-/// View-side projection of an `ItemDetail` containing only what the
-/// poster card needs. Decoupled so the card never re-renders when
-/// unrelated detail fields change.
-struct SimilarPosterItem: Identifiable, Hashable {
-    let contentId: String
-    let title: String
-    let posterUrl: String?
-    let posterThumbhash: String?
-    let year: Int?
-    var id: String { contentId }
-
-    init(detail: ItemDetail) {
-        self.contentId = detail.contentId
-        self.title = detail.title
-        self.posterUrl = detail.posterUrl
-        self.posterThumbhash = detail.posterThumbhash
-        self.year = detail.year
     }
 }
 #endif
