@@ -24,21 +24,17 @@ with `silo_dv_profile_owned_by_dv_policy` for the same reason.
 | 7, with `preferProfile7HDR10Fallback` on | `.passthroughHEVC` | The Settings → Player toggle. When `DolbyVisionPolicy.resolution(forProfile:snapshot:)` returns `.profile7HDR10Fallback`, the loopback carries the HDR10-compatible base layer with DV signaling omitted. |
 | 8 | `.passthroughProfile8(baseLayer)` | Base layer from `transferKind(for:)`: PQ → 8.1 (`db1p`), SDR → 8.2 (`db2g`), HLG → 8.4 (`db4h`). |
 | 8, with Dolby Vision disabled | `.passthroughHEVC` | `dolby_vision_disabled_base_layer_loopback`. |
-| 10 (AV1 DV) | none | Not a live claim. `DolbyVisionFormat` recognizes AV1 DV metadata, but AV1 never reaches a DV `VideoMode`: the planner's DV arm only builds specs for profiles 5/7/8, and `loopbackVideoOutputMode` blocks any non-copyable codec with `video_not_copyable`. |
+| 10 (AV1 DV) | none | Not a live claim. `DolbyVisionFormat` recognizes AV1 DV metadata, but AV1 never reaches a DV `VideoMode`: the planner's DV arm only builds specs for profiles 5/7/8, and the Silo assessment blocks any non-copyable codec with `video_not_copyable`. |
 
 ## 2. Dolby Vision is never re-encoded
 
 Since the on-device video bridge was retired (2026-08-17, see
 [09](09-video-bridge.md)) this holds structurally rather than by a dedicated
-gate: `ApplePlaybackRoutePlanner.loopbackVideoOutputMode(for:)` has only one
-answer, and it is `.copy`.
+gate: the writer only ever remuxes, so `ApplePlaybackRoutePlanner.assessSiloRoute`
+just checks the codec against `siloVideoCopyCodecs`.
 
-```swift
-siloVideoCopyCodecs.contains(videoCodec) ? (.copy, nil) : (.copy, "video_not_copyable")
-```
-
-- DV on `h264` / `hevc` → `.copy`. The bitstream, RPU, and enhancement layer
-  are remuxed byte-for-byte.
+- DV on `h264` / `hevc` → remuxed. The bitstream, RPU, and enhancement layer
+  ride through byte-for-byte.
 - DV on anything else → blocked with `video_not_copyable`, which routes the
   session to `avPlayerHLS`.
 
@@ -46,10 +42,6 @@ The original reason still stands: an RPU and enhancement layer cannot survive
 decode → re-encode, and Profile 5's IPT-PQ-c2 base has no viewable fallback if
 the DV metadata is stripped. There is no longer a local re-encode tier that
 could get this wrong.
-
-The planner reinforces it at the call site: `directVideoOutputMode` is forced
-to `.copy` whenever `directDolbyVisionProfile != nil`, so even if the Silo
-assessment had produced a bridged mode it cannot claim a DV session.
 
 ## 3. tvOS display matching
 
@@ -128,8 +120,8 @@ The writer file is explicit about the design:
 The goal has always been to get Dolby Vision through AVPlayer's own
 DV-capable pipeline. What changed with the one-player consolidation is that this
 is no longer a *special* path for DV: it is the primary direct-play path for
-almost everything, with DV as one `VideoMode` among several and the
-[video bridge](09-video-bridge.md) as an orthogonal `VideoOutputMode`.
+almost everything, with DV as one `VideoMode` among several (the orthogonal
+`VideoOutputMode` axis went away with the [video bridge](09-video-bridge.md)).
 
 ## 6. Loopback server and ATS
 
