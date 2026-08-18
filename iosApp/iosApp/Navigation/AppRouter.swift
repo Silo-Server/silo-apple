@@ -1,3 +1,4 @@
+import OSLog
 import SwiftUI
 
 extension Notification.Name {
@@ -23,6 +24,14 @@ extension Notification.Name {
 @Observable
 class AppRouter {
 
+    /// Outcomes on the post-erasure sign-out paths can only go here: the
+    /// diagnostics binding is purged before control returns, so a breadcrumb
+    /// would be dropped. See `signOutAndReset`.
+    @ObservationIgnored private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
+        category: "AppRouter"
+    )
+
     // MARK: - Auth State Machine
 
     enum AuthState: Equatable {
@@ -36,9 +45,46 @@ class AppRouter {
         case needsProfile
         /// Fully authenticated with an active profile.
         case authenticated
+
+        /// Stable diagnostics token. Spelled out rather than derived from
+        /// `String(describing:)` so a future case rename can't silently break
+        /// comparisons against previously collected reports. Carries no
+        /// account, profile, or server identity — only which screen tree the
+        /// app is showing.
+        var diagnosticsState: String {
+            switch self {
+            case .loading: return "loading"
+            case .needsServerSetup: return "needsServerSetup"
+            case .needsLogin: return "needsLogin"
+            case .needsProfile: return "needsProfile"
+            case .authenticated: return "authenticated"
+            }
+        }
     }
 
-    var authState: AuthState = .loading
+    /// Every auth-state transition funnels through this one property, whether
+    /// it originates here or in a screen that assigns it directly (cold-launch
+    /// resolution in `ContentView`, the server list, the tvOS tab bar). The
+    /// observer is therefore the complete session timeline — the single most
+    /// useful artifact for "I got logged out" and "it won't let me in", which
+    /// are otherwise unreproducible. Transitions that leave the state
+    /// unchanged are dropped so a re-entrant reset can't pad the timeline.
+    var authState: AuthState = .loading {
+        didSet {
+            // Consume the cause unconditionally: a no-op assignment must not
+            // leave a stale reason to be misattributed to the next transition.
+            let reason = pendingAuthStateReason ?? "external"
+            pendingAuthStateReason = nil
+            guard oldValue != authState else { return }
+            recordAuthStateBreadcrumb(from: oldValue, to: authState, reason: reason)
+        }
+    }
+
+    /// Why the next `authState` assignment is happening, staged by the router
+    /// action about to perform it and consumed by the observer above. Assigns
+    /// made from outside this type leave it nil and are recorded as
+    /// `external`; the destination state still tells the story.
+    @ObservationIgnored private var pendingAuthStateReason: String?
 
     // MARK: - Navigation Stack
 
@@ -226,7 +272,7 @@ class AppRouter {
         recordScreenBreadcrumb(target: "login", action: "reset")
         path = NavigationPath()
         profileJourneyLabels = nil
-        authState = .needsLogin
+        setAuthState(.needsLogin, reason: "resetToLogin")
     }
 
     /// Transition to profile selection after successful login.
@@ -234,14 +280,19 @@ class AppRouter {
         recordScreenBreadcrumb(target: "profileSelection", action: "reset")
         path = NavigationPath()
         profileJourneyLabels = journeyLabels
-        authState = .needsProfile
+        setAuthState(.needsProfile, reason: "showProfileSelection")
     }
 
     /// User-initiated profile switching has one persistence and cache
     /// boundary regardless of which menu or settings surface initiated it.
     func switchProfile() {
         Task {
-            guard await completeRequestedProfileSwitch() else { return }
+            guard await completeRequestedProfileSwitch() else {
+                // A refusal here leaves the user on the current screen with no
+                // visible change, which reads as "the app ignored me".
+                Self.recordAuthActionBreadcrumb(reason: "switchProfile", outcome: "refused")
+                return
+            }
             await MainActor.run {
                 self.showProfileSelection()
             }
@@ -253,7 +304,7 @@ class AppRouter {
         recordScreenBreadcrumb(target: "home", action: "reset")
         path = NavigationPath()
         profileJourneyLabels = nil
-        authState = .authenticated
+        setAuthState(.authenticated, reason: "resetToHome")
     }
 
     /// Return to server setup (e.g., to change servers).
@@ -261,16 +312,43 @@ class AppRouter {
         recordScreenBreadcrumb(target: "serverSetup", action: "reset")
         path = NavigationPath()
         profileJourneyLabels = nil
-        authState = .needsServerSetup
+        setAuthState(.needsServerSetup, reason: "resetToServerSetup")
     }
 
     /// Sign out of the active server and land at the next sensible step:
     /// the login screen if a server entry still remembers its URL,
     /// otherwise the server-setup screen. Fire-and-forget wrapper so
     /// buttons and error-screen callbacks don't spell out a `Task`.
+    ///
+    /// Only the refusal is breadcrumbed, and that is not an oversight.
+    ///
+    /// A successful `completeRequestedSignOut()` has already run
+    /// `AuthService.signOut()`, which purges the current diagnostics binding
+    /// and then every binding for the signed-out server. That purge drops the
+    /// live breadcrumb consent context *and* the last-known status snapshot it
+    /// would otherwise fall back to, so no context resolves and capture is off
+    /// by the time control returns here. A `succeeded` line would be offered to
+    /// a disabled journal — whose directory the same purge just deleted — and
+    /// dropped. The auth-state transition that `resetToLogin()` /
+    /// `resetToServerSetup()` record below is in the same position and equally
+    /// silent; both wait on the next account's first status refresh to reopen
+    /// the gate, which is exactly the erasure working as intended.
+    ///
+    /// Re-emitting either one afterwards is not an option worth taking. This is
+    /// a post-erasure path: the user asked to be signed out, and reviving a
+    /// journal after the account's diagnostics were deleted — even with a
+    /// line carrying no identifiers — would put the signed-out session's tail
+    /// in front of whoever signs in next.
+    ///
+    /// The refusal keeps its line because a refusal purges nothing: the
+    /// authorization check fails before any diagnostics work, so the gate is
+    /// still open and "it won't let me sign out" stays answerable.
     func signOutAndReset() {
         Task {
-            guard await completeRequestedSignOut() else { return }
+            guard await completeRequestedSignOut() else {
+                Self.recordAuthActionBreadcrumb(reason: "signOut", outcome: "refused")
+                return
+            }
             await MainActor.run {
                 if ServerRegistry.shared.hasActiveServer {
                     self.resetToLogin()
@@ -284,16 +362,32 @@ class AppRouter {
     /// Sign out and forget the active server entirely. If another saved
     /// server becomes active, re-enter its existing auth state; otherwise
     /// return to server setup.
+    ///
+    /// Breadcrumbed exactly like `signOutAndReset`, for the same reason and
+    /// with one addition. Past the sign-out guard the binding purge has already
+    /// run, so neither the `removeFailed` half-state nor the success can be
+    /// recorded. The removal that follows then crosses an identity boundary of
+    /// its own — `ServerRegistry.remove` closes the capture gate for an active
+    /// server and reopens it only asynchronously — so a line here would be
+    /// blocked twice over even if the purge had not already erased the context.
     func signOutRemoveServerAndReset() {
         Task {
             let serverId = ServerRegistry.shared.activeServerId
-            guard await completeRequestedSignOut() else { return }
+            guard await completeRequestedSignOut() else {
+                Self.recordAuthActionBreadcrumb(reason: "signOutRemoveServer", outcome: "refused")
+                return
+            }
             if let serverId {
                 let removed = await ServerRegistry.shared.remove(
                     serverId: serverId,
                     resolveFallbackProfile: true
                 )
                 guard removed else {
+                    // Signed out but the entry survived: the user lands back at
+                    // login for a server they asked to forget. The two halves
+                    // disagreeing is the actual bug, and it is visible only in
+                    // OSLog — see this function's doc comment.
+                    Self.logger.error("signOutRemoveServer signed out but the entry survived")
                     await MainActor.run { self.resetToLogin() }
                     return
                 }
@@ -352,10 +446,10 @@ class AppRouter {
         path = NavigationPath()
         if ServerRegistry.shared.hasActiveServer {
             recordScreenBreadcrumb(target: "login", action: "sessionExpired")
-            authState = .needsLogin
+            setAuthState(.needsLogin, reason: "sessionExpired")
         } else {
             recordScreenBreadcrumb(target: "serverSetup", action: "sessionExpired")
-            authState = .needsServerSetup
+            setAuthState(.needsServerSetup, reason: "sessionExpiredNoServer")
         }
     }
 
@@ -368,6 +462,66 @@ class AppRouter {
             attrs: [
                 "target": .string(target),
                 "action": .string(action),
+            ]
+        )
+        #endif
+    }
+
+    /// The auth-state timeline. Essential tier: without these lines a session
+    /// report can show that the user ended up at the login screen but never
+    /// why. Only the two state tokens and the router action that caused the
+    /// move are recorded — no account, profile, server, or credential detail
+    /// is available at this layer, and none is looked up.
+    ///
+    /// `state` carries the state the app is in *now*, and nothing else. The
+    /// origin state goes in the free-text message rather than `phase`: the
+    /// registry defines `phase` as a startup/lifecycle phase identifier
+    /// (`launch`, `prefetch`, …), so filing a previous auth state under it
+    /// would make `phase` mean two different things depending on which
+    /// subsystem emitted the line, and a query grouping lifecycle lines by
+    /// phase would silently mix them. There is no registered key for "previous
+    /// state" and inventing one rejects the whole bundle, so the transition is
+    /// spelled out in `msg`, where both tokens stay legible and neither is
+    /// account, profile, or server identity.
+    private func recordAuthStateBreadcrumb(from: AuthState, to: AuthState, reason: String) {
+        #if os(iOS) || os(tvOS)
+        DiagTrace.breadcrumb(
+            .essential,
+            category: .lifecycle,
+            tag: "Auth",
+            message: "auth state changed \(from.diagnosticsState) -> \(to.diagnosticsState)",
+            attrs: [
+                "state": .string(to.diagnosticsState),
+                "reason": .string(reason),
+            ]
+        )
+        #endif
+    }
+
+    /// Stage the cause of the `authState` assignment on the next line. Kept as
+    /// a helper (rather than an inline assignment) so the pairing with the
+    /// `didSet` observer stays greppable and every router action reads the
+    /// same way.
+    private func setAuthState(_ state: AuthState, reason: String) {
+        pendingAuthStateReason = reason
+        authState = state
+    }
+
+    /// Report the outcome of an async router action that can refuse before it
+    /// ever reaches an `authState` assignment — a refused sign-out or profile
+    /// switch is exactly the "it won't let me in" case with no other trace.
+    /// Static because its call sites are inside detached `Task`s, where an
+    /// instance method would mean capturing the router just to log.
+    private static func recordAuthActionBreadcrumb(reason: String, outcome: String) {
+        #if os(iOS) || os(tvOS)
+        DiagTrace.breadcrumb(
+            .essential,
+            category: .lifecycle,
+            tag: "Auth",
+            message: "auth action completed",
+            attrs: [
+                "reason": .string(reason),
+                "outcome": .string(outcome),
             ]
         )
         #endif

@@ -273,7 +273,12 @@ final class AuthService: @unchecked Sendable {
             let committed = await TokenStore.shared.deactivateProfile(
                 expectedAccount: expectedAccount
             )
-            if committed { await clearPerProfileCaches() }
+            if committed {
+                // A cold trailer return may require the profile picker. Keep
+                // the record until the selected identity can validate it;
+                // explicit in-app profile changes clear it before this path.
+                await clearPerProfileCaches(preservingTrailerReturn: true)
+            }
             return false
 
         case .restore(let remembered):
@@ -291,7 +296,10 @@ final class AuthService: @unchecked Sendable {
                     await clearPerProfileCaches()
                     return false
                 }
-                await clearPerProfileCaches()
+                // This is launch restoration of the same remembered identity,
+                // not a profile boundary. Keep a matching trailer handoff
+                // alive until ContentView can consume it after authentication.
+                await clearPerProfileCaches(preservingTrailerReturn: true)
                 return true
             } else {
                 _ = await TokenStore.shared.deactivateProfile(
@@ -419,7 +427,11 @@ final class AuthService: @unchecked Sendable {
                 throw ProfileTransitionError.accountEpochUnavailable
             }
         }
-        await clearPerProfileCaches()
+        // Preserve a cold trailer return through the picker. Once the router
+        // becomes authenticated, ContentView consumes it and the identity
+        // policy either restores the matching page or rejects the record.
+        // Explicit profile switches already clear it during deactivation.
+        await clearPerProfileCaches(preservingTrailerReturn: true)
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
@@ -487,11 +499,11 @@ final class AuthService: @unchecked Sendable {
         }
     }
 
-    /// Drop every cached response that's profile-scoped. Called on
-    /// profile switch and sign-out so userData (watched, favorites,
+    /// Drop every cached response that's profile-scoped. Called while
+    /// restoring or changing profile identity so userData (watched, favorites,
     /// watchlist, home recommendations) doesn't leak between accounts.
     @MainActor
-    private func clearPerProfileCaches() {
+    private func clearPerProfileCaches(preservingTrailerReturn: Bool = false) {
         StartupContentPrefetcher.resetProfileScopedPrefetches()
         for prefix in CacheKey.perProfilePrefixes {
             ResponseCache.shared.removeAll(withPrefix: prefix)
@@ -517,6 +529,12 @@ final class AuthService: @unchecked Sendable {
         RequestsEventBus.shared.reset()
         #if os(tvOS)
         ItemDetailCache.shared.clearAll()
+        if !preservingTrailerReturn {
+            // The identity check in TrailerReturnPolicy already refuses a record
+            // across identities; deleting here keeps the outgoing identity's
+            // browsing out of plaintext defaults on a shared device.
+            TVTrailerReturnStore.shared.clear()
+        }
         #endif
     }
 
@@ -679,6 +697,10 @@ final class AuthService: @unchecked Sendable {
         RequestsEventBus.shared.reset()
         #if os(tvOS)
         ItemDetailCache.shared.clearAll()
+        // The identity check in TrailerReturnPolicy already refuses a record
+        // across identities; deleting here keeps the outgoing identity's
+        // browsing out of plaintext defaults on a shared device.
+        TVTrailerReturnStore.shared.clear()
         #endif
     }
 

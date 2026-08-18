@@ -169,6 +169,10 @@ final class TrailerRailModelTests: XCTestCase {
             TrailerRail.youtubeDeepLinkURL(siteKey: key)?.absoluteString,
             "youtube://www.youtube.com/watch?v=tFMo3UJ4B4g"
         )
+        XCTAssertEqual(
+            TrailerRail.youtubeWatchURL(siteKey: key)?.absoluteString,
+            "https://www.youtube.com/watch?v=tFMo3UJ4B4g"
+        )
     }
 
     func testKeysWithUnderscoresAndHyphensSurviveURLConstruction() {
@@ -181,6 +185,10 @@ final class TrailerRailModelTests: XCTestCase {
         XCTAssertEqual(
             TrailerRail.thumbnailURL(siteKey: key)?.absoluteString,
             "https://i.ytimg.com/vi/a-B_c1D2e3F/hqdefault.jpg"
+        )
+        XCTAssertEqual(
+            TrailerRail.youtubeWatchURL(siteKey: key)?.absoluteString,
+            "https://www.youtube.com/watch?v=a-B_c1D2e3F"
         )
     }
 }

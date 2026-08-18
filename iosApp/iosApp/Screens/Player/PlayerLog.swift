@@ -29,22 +29,29 @@ func cmpLog(_ message: @autoclosure () -> String, verbose: Bool = false) {
     // Logging. Errors and lifecycle lines are always kept so crash bundles
     // retain the essential player context regardless of the toggle. stdout
     // always receives the line for live `devicectl --console` troubleshooting.
-    if shouldCaptureCMPLog(
-        verbose: verbose,
-        debugLoggingEnabled: DiagnosticsConsentStore.shared.debugLoggingEnabled,
-        captureEnabled: DiagnosticsCoordinator.isDiagnosticsCaptureEnabled
-    ) {
-        DiagLog.i(.playback, "CMP", rendered)
-    }
+    DiagTrace.log(
+        verbose ? .verbose : .essential,
+        level: .info,
+        category: .playback,
+        tag: "CMP",
+        message: rendered
+    )
     #endif
 }
 
 #if os(iOS) || os(tvOS)
+/// Retained as the player-facing spelling of the shared tiering predicate; the
+/// logic lives in `DiagTrace` so playback, focus, network, and lifecycle
+/// instrumentation all make the same decision.
 func shouldCaptureCMPLog(
     verbose: Bool,
     debugLoggingEnabled: Bool,
     captureEnabled: Bool
 ) -> Bool {
-    captureEnabled && (!verbose || debugLoggingEnabled)
+    DiagTrace.shouldCapture(
+        verbose ? .verbose : .essential,
+        debugLoggingEnabled: debugLoggingEnabled,
+        captureEnabled: captureEnabled
+    )
 }
 #endif

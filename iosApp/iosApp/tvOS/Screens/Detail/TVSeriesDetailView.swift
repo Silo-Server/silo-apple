@@ -30,7 +30,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// whether remote cards exist at all). Empty hides the rail.
     let trailerEntries: [TrailerRailEntry]
     let onSelectTrailer: (TrailerRailEntry) -> Void
-    /// Whether the manual "Find Trailers" action applies to this item.
+    /// Whether the manual "Find Trailers" action can be offered. The caller
+    /// also requires the YouTube app because tvOS has no browser fallback.
     let supportsTrailerFetch: Bool
     let onFindTrailers: () -> Void
     /// Copy from the fetch coordinator; nil while idle.

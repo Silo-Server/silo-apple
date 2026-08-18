@@ -105,6 +105,20 @@ final class BreadcrumbJournal {
         lock.lock()
         defer { lock.unlock() }
 
+        // A refused write clears the whole trail, not just this line: the gate
+        // closing is how a "Never" choice, a sign-out, and a profile switch
+        // reach the journal, and each of them requires the on-disk history to
+        // be gone rather than merely frozen.
+        //
+        // That makes offering a line to this journal a destructive act while
+        // the gate is closed, so callers must not use it to *ask* whether
+        // capture is allowed. In particular, the directory at cold launch holds
+        // the previous run's breadcrumbs — the tvOS abnormal-exit report's only
+        // content — and this launch's capture decision does not exist until
+        // after authentication. `DiagnosticsCoordinator.recordBreadcrumb` owns
+        // that distinction: it stages pre-decision lines in `EarlyBootBuffer`
+        // and only reaches this method once the launch's decision is in effect,
+        // at which point a closed gate really is a denial.
         guard isEnabled() else {
             purgeLocked()
             return false

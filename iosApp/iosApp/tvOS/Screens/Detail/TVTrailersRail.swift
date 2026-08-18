@@ -305,8 +305,8 @@ struct TVTrailerStatusPill: View {
 // MARK: - YouTube app bridge
 
 /// Deep-link bridge to the installed YouTube app — the only remote-trailer
-/// playback path on tvOS, which has no in-app web view to fall back on
-/// (iOS uses a `WKWebView` sheet instead).
+/// playback path on tvOS, which has no browser to fall back on (iOS falls
+/// back to the public watch page in the default browser).
 ///
 /// Plain (non-isolated) statics, matching `PlatformScreen` and
 /// `TVFocusDebugOverlay`'s `UIApplication` accessors; every call site is a
@@ -323,11 +323,16 @@ enum TVTrailerLaunch {
         return UIApplication.shared.canOpenURL(probe)
     }
 
-    /// Hand a video off to the YouTube app. Only ever called for cards that
-    /// exist, i.e. after ``isYouTubeAppInstalled()`` returned true.
-    static func open(siteKey: String) {
-        guard let url = TrailerRail.youtubeDeepLinkURL(siteKey: siteKey) else { return }
-        UIApplication.shared.open(url, options: [:], completionHandler: nil)
+    /// Hand a video off to the YouTube app and report whether the system
+    /// accepted the launch. Only ever called for cards that exist, i.e. after
+    /// ``isYouTubeAppInstalled()`` returned true, but the app can disappear
+    /// or reject the URL between that probe and this request.
+    static func open(siteKey: String, completion: @escaping (Bool) -> Void) {
+        guard let url = TrailerRail.youtubeDeepLinkURL(siteKey: siteKey) else {
+            completion(false)
+            return
+        }
+        UIApplication.shared.open(url, options: [:], completionHandler: completion)
     }
 }
 #endif

@@ -1,6 +1,6 @@
 #if os(iOS) || os(tvOS)
 import Foundation
-import os.lock
+import os
 
 struct LogRingSnapshot: Equatable {
     let lines: [String]
@@ -15,7 +15,11 @@ final class LogRing {
     private var nextIndex = 0
     private var count = 0
     private var droppedCount = 0
-    private var lock = os_unfair_lock_s()
+    /// `OSAllocatedUnfairLock` owns stable allocated storage. A stored
+    /// `os_unfair_lock_s` locked through `&lock` would not: the inout access may
+    /// be satisfied with a temporary copy, so two threads can lock different
+    /// memory and lose mutual exclusion entirely.
+    private let lock = OSAllocatedUnfairLock()
 
     init(capacity: Int = LogRing.defaultCapacity) {
         precondition(capacity > 0, "LogRing capacity must be positive")
@@ -24,7 +28,7 @@ final class LogRing {
     }
 
     func append(_ line: String) {
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         lines[nextIndex] = line
         nextIndex = (nextIndex + 1) % capacity
         if count == capacity {
@@ -32,17 +36,17 @@ final class LogRing {
         } else {
             count += 1
         }
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
     }
 
     func snapshot() -> LogRingSnapshot {
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         let start = count == capacity ? nextIndex : 0
         let snapshotLines = (0..<count).compactMap { offset in
             lines[(start + offset) % capacity]
         }
         let dropped = droppedCount
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
         return LogRingSnapshot(lines: snapshotLines, droppedCount: dropped)
     }
 
@@ -50,14 +54,14 @@ final class LogRing {
     /// the active diagnostics binding changes so a new binding's manual report
     /// or crash snapshot cannot include the previous binding's log lines.
     func clear() {
-        os_unfair_lock_lock(&lock)
+        lock.lock()
         for index in lines.indices {
             lines[index] = nil
         }
         nextIndex = 0
         count = 0
         droppedCount = 0
-        os_unfair_lock_unlock(&lock)
+        lock.unlock()
     }
 }
 #endif

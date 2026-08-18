@@ -23,11 +23,13 @@ struct TVItemDetailView: View {
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
     /// Whether the YouTube app is installed, probed once per page appearance.
-    /// Remote trailer cards are hidden entirely when it isn't — tvOS has no
-    /// in-app web fallback, so a card that cannot open must not exist.
-    /// Always false on the simulator, which has no YouTube app.
+    /// Remote trailer cards and the "Find Trailers" action are hidden when it
+    /// isn't — tvOS has no in-app web fallback, so content that cannot open
+    /// must not be offered. Always false on the simulator, which has no
+    /// YouTube app.
     @State private var allowRemoteTrailers = false
     @Environment(AppRouter.self) private var router
+    @Environment(\.scenePhase) private var scenePhase
     private static let focusLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TVFocus"
@@ -74,6 +76,25 @@ struct TVItemDetailView: View {
             // otherwise keep running (and retaining the view model) after
             // this route pops.
             viewModel.stopTrailerFetch()
+            // A pop proves the user is navigating in-app, so any handoff
+            // record is dead: if the YouTube launch had actually taken over
+            // the screen, this page could not be popping. Without this, a
+            // failed `open` (app deleted after the probe) leaves a live
+            // record that would ghost-navigate a later cold launch. The
+            // jetsam case this store exists for never pops, so it is
+            // unaffected.
+            TVTrailerReturnStore.shared.clear()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            // A warm return from the YouTube app lands here with the page
+            // still alive — nothing to restore, so the handoff record must
+            // not survive to be replayed on some later cold launch. Re-probe
+            // YouTube as well because its installation can change while Silo
+            // is suspended.
+            if newPhase == .active {
+                allowRemoteTrailers = TVTrailerLaunch.isYouTubeAppInstalled()
+                TVTrailerReturnStore.shared.clear()
+            }
         }
         .task(id: contentId) {
             didClearSubtitleOverride = false
@@ -138,7 +159,16 @@ struct TVItemDetailView: View {
     private func playTrailer(_ entry: TrailerRailEntry) {
         switch entry {
         case .remote(let video):
-            TVTrailerLaunch.open(siteKey: video.siteKey)
+            // Recorded before the deep link so a jetsam during the trailer
+            // can restore this page on the next cold launch (see
+            // `TVTrailerReturnStore`). tvOS cannot bring the user back from
+            // YouTube; this is the fallback for when suspension doesn't
+            // preserve the page either.
+            TVTrailerReturnStore.shared.saveHandoff(contentId: contentId)
+            TVTrailerLaunch.open(siteKey: video.siteKey) { didOpen in
+                guard !didOpen else { return }
+                TVTrailerReturnStore.shared.clear()
+            }
         case .local(let extra):
             router.navigate(
                 to: .player(
@@ -297,7 +327,7 @@ struct TVItemDetailView: View {
                 nextUpSubtitleOverrideCleared: didClearNextUpSubtitleOverride,
                 trailerEntries: trailerEntries(for: detail),
                 onSelectTrailer: playTrailer,
-                supportsTrailerFetch: viewModel.supportsTrailerFetch,
+                supportsTrailerFetch: viewModel.supportsTrailerFetch && allowRemoteTrailers,
                 onFindTrailers: {
                     // Without the YouTube app the rail hides remote cards, so
                     // new remote videos must not be reported as a find.
@@ -422,7 +452,7 @@ struct TVItemDetailView: View {
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 trailerEntries: trailerEntries(for: detail),
                 onSelectTrailer: playTrailer,
-                supportsTrailerFetch: viewModel.supportsTrailerFetch,
+                supportsTrailerFetch: viewModel.supportsTrailerFetch && allowRemoteTrailers,
                 onFindTrailers: {
                     // Without the YouTube app the rail hides remote cards, so
                     // new remote videos must not be reported as a find.

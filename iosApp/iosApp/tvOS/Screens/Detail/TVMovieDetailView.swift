@@ -29,8 +29,8 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     /// whether remote cards exist at all). Empty hides the rail.
     let trailerEntries: [TrailerRailEntry]
     let onSelectTrailer: (TrailerRailEntry) -> Void
-    /// Whether the manual "Find Trailers" action applies to this item —
-    /// false on episode pages, which never carry videos.
+    /// Whether the manual "Find Trailers" action can be offered — false on
+    /// episode pages and when the YouTube app is unavailable.
     let supportsTrailerFetch: Bool
     let onFindTrailers: () -> Void
     /// Copy from the fetch coordinator; nil while idle.

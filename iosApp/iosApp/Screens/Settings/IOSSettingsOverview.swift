@@ -251,6 +251,18 @@ struct IOSSettingsOverview: View {
                 value: versionString,
                 showsChevron: false
             )
+
+            SettingsOverviewDivider()
+
+            Link(destination: SiloLegalLinks.privacyPolicy) {
+                SettingsOverviewRow(
+                    title: "Privacy Policy",
+                    subtitle: "Learn how Silo handles your information",
+                    systemImage: "hand.raised.fill",
+                    tint: .teal
+                )
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -358,7 +370,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesAboutSection: Bool {
-        matches("about", "version", versionString)
+        matches("about", "version", versionString, "privacy", "policy", "information")
     }
 
     private var matchesSignOut: Bool {

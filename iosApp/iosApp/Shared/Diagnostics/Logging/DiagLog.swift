@@ -103,8 +103,12 @@ enum DiagLog {
     }
 }
 
-private enum DiagLogAttributeRegistry {
-    enum ValueType {
+// Internal rather than private so DiagnosticsAttributeRegistryParityTests can
+// compare this table against the vendored canonical attr-registry.json fixture.
+// The registry is the emission-side contract with the collectors; a drifting
+// copy is exactly the failure this visibility exists to catch.
+enum DiagLogAttributeRegistry {
+    enum ValueType: Equatable {
         case string
         case integer
         case number
@@ -126,7 +130,10 @@ private enum DiagLogAttributeRegistry {
         }
     }
 
-    private static let registry: [DiagnosticsLogCategory: [String: ValueType]] = [
+    // Mirrors silo-server docs/design/schemas/client-diagnostics/v1/attr-registry.json,
+    // vendored at Tests/Fixtures/DiagnosticsContract/attr-registry.json. Re-vendor the
+    // fixture and update this table together; never edit one alone.
+    static let registry: [DiagnosticsLogCategory: [String: ValueType]] = [
         .playback: [
             "sink": .string,
             "fmt": .string,
@@ -139,8 +146,8 @@ private enum DiagLogAttributeRegistry {
             "audio_underruns": .integer,
             "session_id": .string,
             "play_method": .string,
-            "position_seconds": .number,
             "reason": .string,
+            "position_ms": .integer,
         ],
         .focus: [
             "target": .string,
@@ -151,9 +158,17 @@ private enum DiagLogAttributeRegistry {
             "path": .string,
             "status": .integer,
             "duration_ms": .integer,
+            "outcome": .string,
+            "error_code": .string,
+            "attempt": .integer,
         ],
         .lifecycle: [
             "state": .string,
+            "phase": .string,
+            "duration_ms": .integer,
+            "outcome": .string,
+            "reason": .string,
+            "launch_type": .string,
         ],
         .crash: [
             "fingerprint": .string,

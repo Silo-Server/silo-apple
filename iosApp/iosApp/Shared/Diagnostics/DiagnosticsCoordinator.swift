@@ -1,8 +1,143 @@
 #if os(iOS) || os(tvOS)
 import Foundation
+import os
 #if canImport(UIKit)
 import UIKit
 #endif
+
+/// Memo for the synchronous capture gate (`breadcrumbCaptureEnabled()`).
+///
+/// The gate is the predicate every `DiagTrace.log` call evaluates *before*
+/// deciding to drop a line, so at a few hundred HTTP responses a minute it was
+/// running a full `UserDefaults` read plus a `JSONDecoder` pass over the whole
+/// consent-record dictionary, under a lock shared with the main actor, for
+/// lines that were then suppressed anyway.
+///
+/// This is a memo, not a second source of truth: the authoritative gate is
+/// still computed, just not per call. Every input it reads is folded into
+/// `Key`, so a cache hit is only possible when nothing the decision depends on
+/// has moved. It fails closed in both directions:
+///
+/// * A miss recomputes authoritatively rather than assuming anything.
+/// * A publish that races an invalidation is discarded and answers `false`, so
+///   a consent revocation or a switch into a child profile mid-computation can
+///   never leave capture latched on. Losing one line at a consent boundary is
+///   the correct trade.
+/// * A memoized `true` additionally expires on a short timer, so even a
+///   hypothetical unmodelled input (consent records live in the App Group
+///   suite, which another process could in principle write) cannot keep capture
+///   on indefinitely. A memoized `false` never expires — leaving capture off
+///   too long is the safe direction, and the boundary hooks reopen it.
+final class DiagnosticsCaptureGateCache: @unchecked Sendable {
+    /// Ceiling on how long a positive decision may be reused without being
+    /// re-derived. Short enough that no realistic unmodelled change stays
+    /// invisible; long enough that a burst of requests costs one evaluation.
+    static let positiveLifetime: TimeInterval = 2
+
+    /// Everything the authoritative gate reads. `epoch` covers the coordinator's
+    /// own breadcrumb context, destination-transition latch, and profile
+    /// eligibility; `consentGeneration` covers stored consent; the server id and
+    /// destination cover the last-known-status fallback the gate resolves
+    /// through when no live context exists yet.
+    struct Key: Equatable {
+        let epoch: UInt64
+        let consentGeneration: UInt64
+        let serverRegistryID: String?
+        let destination: DiagnosticsDestinationChoice
+    }
+
+    private let now: () -> TimeInterval
+    /// `OSAllocatedUnfairLock` owns stable allocated storage, which a stored
+    /// `os_unfair_lock_s` does not: locking that through `&lock` is an inout
+    /// access the compiler may satisfy with a temporary copy, so the threads
+    /// that reach the gate — URLSession callbacks, the `HTTPClient` actor, the
+    /// main actor — could each lock a different word and lose mutual exclusion
+    /// over the memo. That would break the fail-closed epoch check below, which
+    /// is the only thing keeping a consent revocation from latching capture on.
+    private let lock = OSAllocatedUnfairLock()
+    private var epoch: UInt64 = 0
+    private var cachedKey: Key?
+    private var cachedValue = false
+    private var cachedExpiry: TimeInterval = 0
+    #if DEBUG
+    private var authoritativeEvaluations = 0
+    #endif
+
+    init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.now = now
+    }
+
+    var currentEpoch: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return epoch
+    }
+
+    /// Drop the memo and move the epoch so an in-flight computation started
+    /// before this boundary can no longer publish. Called from every mutation
+    /// of the coordinator state the gate reads.
+    func invalidate() {
+        lock.lock()
+        epoch &+= 1
+        cachedKey = nil
+        cachedValue = false
+        cachedExpiry = 0
+        lock.unlock()
+    }
+
+    /// `nil` means "not resolved for this exact state" — the caller must
+    /// recompute. There is no default-on branch here by construction.
+    func value(for key: Key) -> Bool? {
+        let timestamp = now()
+        lock.lock()
+        defer { lock.unlock() }
+        guard let cachedKey, cachedKey == key else { return nil }
+        // Only a positive decision carries an expiry; a cached `false` is
+        // reusable forever because the failure direction is the safe one.
+        guard !cachedValue || timestamp < cachedExpiry else { return nil }
+        return cachedValue
+    }
+
+    /// Publish `value` only if the state it was computed from is still the
+    /// current state. `current` is re-read by the caller after the computation;
+    /// if it moved, some boundary was crossed while we were deciding, so the
+    /// result is discarded and the answer is `false`.
+    func store(_ value: Bool, for key: Key, still current: Key) -> Bool {
+        let timestamp = now()
+        lock.lock()
+        defer { lock.unlock() }
+        #if DEBUG
+        authoritativeEvaluations += 1
+        #endif
+        guard key == current, key.epoch == epoch else {
+            return false
+        }
+        cachedKey = key
+        cachedValue = value
+        cachedExpiry = timestamp + Self.positiveLifetime
+        return value
+    }
+
+    #if DEBUG
+    /// Number of authoritative (cache-missing) evaluations since the last
+    /// reset. Tests use it to prove the hot path is memoized.
+    var authoritativeEvaluationCountForTests: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return authoritativeEvaluations
+    }
+
+    func resetForTests() {
+        lock.lock()
+        epoch &+= 1
+        cachedKey = nil
+        cachedValue = false
+        cachedExpiry = 0
+        authoritativeEvaluations = 0
+        lock.unlock()
+    }
+    #endif
+}
 
 struct DiagnosticsStatusSnapshot: Equatable, Codable {
     let status: DiagnosticsStatusResponse
@@ -143,8 +278,68 @@ actor DiagnosticsCoordinator {
     nonisolated private static let breadcrumbJournal = BreadcrumbJournal(isEnabled: {
         DiagnosticsCoordinator.breadcrumbCaptureEnabled()
     })
+    /// Pre-consent startup breadcrumbs, held in memory only. See
+    /// `EarlyBootBuffer` and `applyEarlyBootStaging(...)`.
+    nonisolated private static let earlyBootBuffer = EarlyBootBuffer.shared
     nonisolated private static let breadcrumbContextLock = NSLock()
     nonisolated(unsafe) private static var breadcrumbConsentContext: BreadcrumbConsentContext?
+    /// The binding whose first-establish consent check passed but whose live
+    /// capture gate (`breadcrumbCaptureEnabled()`) has not opened yet, because
+    /// child-profile eligibility resolves asynchronously. The staged lines wait
+    /// until it opens; any boundary event clears this and drops them. Guarded by
+    /// `breadcrumbContextLock`.
+    nonisolated(unsafe) private static var earlyBootFlushArmedBinding: DiagnosticsBinding?
+    /// Whether this launch's breadcrumb capture decision is *in effect* yet.
+    ///
+    /// A closed capture gate means two very different things, and the journal
+    /// cannot tell them apart on its own: it purges its entire directory on
+    /// every refused write (`BreadcrumbJournal.appendRenderedLine`). That purge
+    /// is required for a decided refusal — a user who chose "Never" must be
+    /// left with no on-disk trail — and destructive before any decision exists,
+    /// because the only thing on disk then is the *previous* run's trail, which
+    /// is the evidence the tvOS abnormal-exit report is built from.
+    ///
+    /// Latched the first time this launch observes its decision actually take
+    /// effect, which is exactly one of:
+    ///
+    /// * the first establish refused capture (`applyEarlyBootStaging` produced
+    ///   `.discard`) — a real denial, so every refusal from here on must purge;
+    /// * a breadcrumb reached the journal, which proves the live gate opened.
+    ///
+    /// A `.flush` decision deliberately does *not* latch it. Consent said yes,
+    /// but child-profile eligibility resolves asynchronously and still holds
+    /// the live gate closed, and on the tvOS relaunch path that window contains
+    /// `captureAbnormalExit`'s read of the previous run's breadcrumbs — the
+    /// exact lines a purge there would destroy.
+    ///
+    /// Guarded by `breadcrumbContextLock`. Never cleared within a launch: a
+    /// later boundary closes the gate, it does not return the launch to its
+    /// undecided state.
+    nonisolated(unsafe) private static var breadcrumbDecisionInEffect = false
+    /// Whether this launch has already spent its one profile-*restoration* pass.
+    ///
+    /// `activeProfileWillChange` is an account boundary for the staging buffer:
+    /// the profile arriving may be a child that must capture nothing at all, so
+    /// the launch's pre-consent lines cannot be left available to it. But every
+    /// launch with a restored session reaches that same function *before*
+    /// authentication resolves — `ContentView.checkInitialState` calls
+    /// `AuthService.resolveActiveProfileForSession`, which opens with the
+    /// boundary — and no profile is arriving there. Both sides of that call are
+    /// the identity this launch is still resolving, so discarding emptied and
+    /// sealed the buffer on every authenticated cold launch, which is precisely
+    /// the case it exists for.
+    ///
+    /// Latched by the first `activeProfileWillChange` of the process, so exactly
+    /// one call per launch reads as restoration and every later one is a real
+    /// switch that still discards. A launch that restores nothing spends the
+    /// latch on the user's first sign-in profile selection instead, which is the
+    /// same situation by a different route: those staged lines also predate any
+    /// account, and `applyEarlyBootStaging`'s first-establish consent check —
+    /// not this latch — is what decides whether they may be attributed at all.
+    ///
+    /// Guarded by `breadcrumbContextLock`. Never cleared within a launch: the
+    /// allowance is per launch, not per boundary.
+    nonisolated(unsafe) private static var launchProfileRestorationPassSpent = false
     /// Blocks last-known consent fallback between a destination selection and
     /// the first successful status refresh for that destination.
     nonisolated(unsafe) private static var destinationTransitionInProgress = false
@@ -161,6 +356,10 @@ actor DiagnosticsCoordinator {
     /// change can start a new `/profiles` request before the old one completes;
     /// only the newest generation may publish into the synchronous capture gate.
     nonisolated(unsafe) private static var activeProfileEligibilityGeneration: UInt64 = 0
+    /// Memo of the synchronous capture gate. Not a second source of truth: see
+    /// `breadcrumbCaptureEnabled()`. Invalidated by every mutation of the state
+    /// above, so it never survives a consent, destination, or profile boundary.
+    nonisolated private static let captureGateCache = DiagnosticsCaptureGateCache()
 
     private let api: DiagnosticsAPI
     private let hostedAPI: HostedDiagnosticsAPI
@@ -406,6 +605,9 @@ actor DiagnosticsCoordinator {
     ) {
         guard let serverRegistryID else { return }
         Self.LastKnownStatusStore.record(snapshot, for: serverRegistryID, destination: destination)
+        // The capture gate falls back to this store before the first live
+        // context of a launch resolves, so a new snapshot is a gate input.
+        Self.invalidateCaptureGateCache()
     }
 
     enum ProfileLookupResult: Equatable {
@@ -575,6 +777,9 @@ actor DiagnosticsCoordinator {
             }
         }
         RecentSessionTracker.shared.purge(binding: binding)
+        // Also drops the pre-consent staging buffer: it is evidence for this
+        // binding that has not been written yet, and flushing it after an
+        // erasure would undo the erasure.
         Self.purgeBreadcrumbJournal()
         DiagLog.ring.clear()
         #if os(tvOS)
@@ -1689,6 +1894,24 @@ actor DiagnosticsCoordinator {
     }
     #endif
 
+    /// Returns whether the breadcrumb reached the journal. A `false` result
+    /// before the launch's consent context resolves means the line was staged
+    /// in memory instead (see `EarlyBootBuffer`); it reaches disk only if the
+    /// first consent establish of this launch permits it.
+    ///
+    /// The journal is deliberately not consulted before that decision is in
+    /// effect. Its refusal path is destructive — `appendRenderedLine` purges
+    /// the whole breadcrumb directory when `isEnabled()` is false — and on a
+    /// cold launch the only thing in that directory is the *previous* run's
+    /// trail, which is what the tvOS abnormal-exit report is made of. Asking it
+    /// "may I write?" during the pre-consent window therefore destroys the
+    /// evidence before anyone reads it, and the launch breadcrumbs this
+    /// subsystem emits from `SiloApp.init` onward hit that window on every
+    /// cold launch. So the routing decision is made here instead:
+    ///
+    /// * decision not in effect -> stage in memory, leave the journal alone
+    /// * decision in effect, allow -> journal writes
+    /// * decision in effect, deny -> journal refuses *and purges*, as intended
     @discardableResult
     nonisolated static func recordBreadcrumb(
         level: DiagnosticsLogLevel = .info,
@@ -1698,7 +1921,40 @@ actor DiagnosticsCoordinator {
         attrs: [String: DiagLogAttributeValue] = [:],
         timestamp: Date = Date()
     ) -> Bool {
-        breadcrumbJournal.append(
+        // Hoisted ahead of the routing below. The journal asserts on a
+        // non-breadcrumb category, and that contract check must not become
+        // conditional on the launch's consent state: a miscategorized call site
+        // would otherwise trip the assertion only on launches that happened to
+        // get far enough to address the journal.
+        guard category == .lifecycle || category == .playback || category == .focus else {
+            #if DEBUG
+            assertionFailure("Breadcrumb category must be lifecycle, playback, or focus")
+            #endif
+            return false
+        }
+        if !breadcrumbDecisionIsInEffect {
+            guard breadcrumbCaptureEnabled() else {
+                // Pre-decision and the gate is closed: the expected pre-auth
+                // state, not a denial. `EarlyBootBuffer` seals itself the
+                // moment the launch's decision is made, so a line arriving
+                // after that is dropped here rather than re-staged.
+                earlyBootBuffer.record(
+                    level: level,
+                    category: category,
+                    tag: tag,
+                    message: message,
+                    attrs: attrs,
+                    timestamp: timestamp
+                )
+                return false
+            }
+            // The live gate is open, so this launch's decision is allow and is
+            // now observable. Latch it: the append below writes rather than
+            // purges, and any later refusal is a real revocation whose purge
+            // is the point.
+            markBreadcrumbDecisionInEffect()
+        }
+        return breadcrumbJournal.append(
             level: level,
             category: category,
             tag: tag,
@@ -1708,8 +1964,200 @@ actor DiagnosticsCoordinator {
         )
     }
 
+    /// See `breadcrumbDecisionInEffect`. Read on every breadcrumb, so it is a
+    /// bare flag read under the existing lock rather than anything derived.
+    nonisolated private static var breadcrumbDecisionIsInEffect: Bool {
+        breadcrumbContextLock.lock()
+        defer { breadcrumbContextLock.unlock() }
+        return breadcrumbDecisionInEffect
+    }
+
+    /// Latch the launch's capture decision as observable. Never call while
+    /// holding `breadcrumbContextLock` — it is a plain `NSLock`.
+    nonisolated private static func markBreadcrumbDecisionInEffect() {
+        breadcrumbContextLock.lock()
+        breadcrumbDecisionInEffect = true
+        breadcrumbContextLock.unlock()
+    }
+
+    /// Claim this launch's single profile-restoration allowance, returning
+    /// whether this caller got it. Read-and-latch in one locked section: two
+    /// profile boundaries racing must not both come away believing they are the
+    /// restoration pass, because the second one is a real switch.
+    ///
+    /// See `launchProfileRestorationPassSpent`. Never call while holding
+    /// `breadcrumbContextLock` — it is a plain `NSLock`.
+    nonisolated private static func claimLaunchProfileRestorationPass() -> Bool {
+        breadcrumbContextLock.lock()
+        let claimed = !launchProfileRestorationPassSpent
+        launchProfileRestorationPassSpent = true
+        breadcrumbContextLock.unlock()
+        return claimed
+    }
+
+    /// What the pre-consent staging buffer's lines are worth once the
+    /// diagnostics consent context moves.
+    enum EarlyBootStagingDecision: Equatable {
+        /// First establish of this launch and consent permits capture: the
+        /// staged lines may be written for this binding.
+        case flush
+        /// Consent refuses, or an account/server boundary was crossed: drop
+        /// the staged lines without ever writing them.
+        case discard
+        /// Nothing to decide (a plain refresh of the same binding). The buffer
+        /// sealed on the first establish, so it already holds nothing.
+        case ignore
+    }
+
+    /// Pure decision shared by the live path and tests.
+    ///
+    /// - `previousBinding == nil`: the first establish of this launch. The
+    ///   staged lines were emitted before any account existed, so this is the
+    ///   only moment they can legitimately be attributed — and only if the same
+    ///   consent check the journal enforces passes for the resolved context.
+    /// - `previousBinding != nil && != binding`: an account/server switch
+    ///   mid-launch. The staged lines belong to the launch, not to the account
+    ///   arriving now; this path already purges the journal and clears the ring
+    ///   for exactly that reason.
+    nonisolated static func earlyBootStagingDecision(
+        previousBinding: DiagnosticsBinding?,
+        binding: DiagnosticsBinding,
+        noticeVersion: Int,
+        statusAvailable: Bool,
+        consentStore: DiagnosticsConsentStore = .shared
+    ) -> EarlyBootStagingDecision {
+        guard previousBinding == nil else {
+            return previousBinding == binding ? .ignore : .discard
+        }
+        let allowed = breadcrumbCaptureEnabled(
+            for: BreadcrumbConsentContext(
+                binding: binding,
+                noticeVersion: noticeVersion,
+                isAvailable: statusAvailable
+            ),
+            consentStore: consentStore
+        )
+        return allowed ? .flush : .discard
+    }
+
+    /// Apply the decision to the process-wide buffer.
+    ///
+    /// A `.flush` only *arms* the flush rather than writing immediately: the
+    /// live gate also depends on child-profile eligibility, which resolves
+    /// asynchronously and is still closed here on a cold launch. The armed
+    /// flush is attempted now and again when eligibility publishes, and always
+    /// goes through `breadcrumbJournal.append`, so the enabled-gate is enforced
+    /// at write time rather than duplicated.
+    nonisolated private static func applyEarlyBootStaging(
+        previousBinding: DiagnosticsBinding?,
+        binding: DiagnosticsBinding,
+        noticeVersion: Int,
+        statusAvailable: Bool
+    ) {
+        switch earlyBootStagingDecision(
+            previousBinding: previousBinding,
+            binding: binding,
+            noticeVersion: noticeVersion,
+            statusAvailable: statusAvailable
+        ) {
+        case .ignore:
+            return
+        case .discard:
+            // The launch's decision is "no capture" — a Never account, an
+            // unavailable server, or an account boundary — so the on-disk trail
+            // goes with the staged lines.
+            //
+            // This purge is not new behavior, it is the same clearing relocated
+            // to the decision. It used to happen incidentally: the next
+            // breadcrumb of the launch would be offered to the journal, refused,
+            // and `appendRenderedLine` would purge as a side effect.
+            // `recordBreadcrumb` no longer routes pre-decision lines through
+            // that path (it would destroy the previous run's evidence on every
+            // cold launch), so the clearing is stated here instead of depending
+            // on a later breadcrumb arriving at all.
+            //
+            // Latch before purging: a breadcrumb racing this must address the
+            // journal — be refused, and purge — rather than quietly re-stage in
+            // memory behind the decision that just refused it.
+            markBreadcrumbDecisionInEffect()
+            purgeBreadcrumbJournal()
+        case .flush:
+            breadcrumbContextLock.lock()
+            earlyBootFlushArmedBinding = binding
+            breadcrumbContextLock.unlock()
+            flushEarlyBootBufferIfArmed()
+        }
+    }
+
+    /// Write the staged lines once the live capture gate is actually open for
+    /// the binding the flush was armed for. Called on the first establish and
+    /// again whenever profile eligibility publishes; a no-op until both agree.
+    nonisolated static func flushEarlyBootBufferIfArmed() {
+        breadcrumbContextLock.lock()
+        let armedBinding = earlyBootFlushArmedBinding
+        breadcrumbContextLock.unlock()
+        // Take no lock across these calls: both resolve the consent context and
+        // the eligibility flag, which use `breadcrumbContextLock` themselves.
+        guard let armedBinding,
+              armedBinding == currentBreadcrumbBinding(),
+              breadcrumbCaptureEnabled() else {
+            return
+        }
+        breadcrumbContextLock.lock()
+        earlyBootFlushArmedBinding = nil
+        breadcrumbContextLock.unlock()
+        // The gate was observed open for the armed binding, so this launch's
+        // decision is allow and is now in effect: later breadcrumbs address the
+        // journal directly, and a refusal from here on is a genuine revocation
+        // whose purge is intended.
+        markBreadcrumbDecisionInEffect()
+        flushEarlyBootBuffer(earlyBootBuffer, into: breadcrumbJournal)
+    }
+
+    /// Drain `buffer` into `journal`, returning how many lines the journal
+    /// accepted. Exposed with explicit collaborators so tests can exercise the
+    /// flush against a temp-directory journal instead of the process one.
+    ///
+    /// Nothing here decides whether the write is allowed: every line goes
+    /// through `BreadcrumbJournal.append`, which re-checks `isEnabled()` under
+    /// its own lock. A consent change landing between the arming check and this
+    /// call still wins, and a journal whose gate is closed writes nothing and
+    /// purges instead.
+    @discardableResult
+    nonisolated static func flushEarlyBootBuffer(
+        _ buffer: EarlyBootBuffer,
+        into journal: BreadcrumbJournal
+    ) -> Int {
+        let decoder = DiagnosticsJSONCoding.makeDecoder()
+        var written = 0
+        for rendered in buffer.drain() {
+            guard let line = try? decoder.decode(DiagnosticsLogLine.self, from: Data(rendered.utf8)) else {
+                continue
+            }
+            if journal.append(line) {
+                written += 1
+            }
+        }
+        return written
+    }
+
+    /// Drop the staged pre-consent lines and disarm any pending flush. Called
+    /// from every path that purges the journal for account isolation.
+    nonisolated static func discardEarlyBootBuffer() {
+        breadcrumbContextLock.lock()
+        earlyBootFlushArmedBinding = nil
+        breadcrumbContextLock.unlock()
+        earlyBootBuffer.discard()
+    }
+
+    /// Rotate away the on-disk breadcrumb trail. Every caller does this for
+    /// account isolation or user-requested erasure, so the pre-consent staging
+    /// buffer — unwritten evidence of the same launch — is dropped alongside
+    /// it. Folding the discard in here rather than at each call site also
+    /// covers the "Never" path, which reaches this from the consent store.
     nonisolated static func purgeBreadcrumbJournal() {
         breadcrumbJournal.purge()
+        discardEarlyBootBuffer()
     }
 
     nonisolated func breadcrumbsData() -> Data {
@@ -1971,6 +2419,9 @@ actor DiagnosticsCoordinator {
             isAvailable: statusAvailable
         )
         Self.breadcrumbContextLock.unlock()
+        // The gate's context input just changed (binding, notice version, or
+        // availability). Drop the memo before anything below can read it.
+        Self.invalidateCaptureGateCache()
         // A server/account switch mid-run leaves the previous binding's trail in
         // the on-disk breadcrumb journal AND in the process-wide log ring.
         // MetricKit (and the tvOS abnormal-exit path) can later bundle either
@@ -1986,6 +2437,16 @@ actor DiagnosticsCoordinator {
             Self.purgeBreadcrumbJournal()
             DiagLog.ring.clear()
         }
+        // Decide the fate of the pre-consent staging buffer with the same
+        // previous/current binding comparison the purge above uses. Must run
+        // after the context is published: the flush re-checks the live capture
+        // gate, which reads that context.
+        Self.applyEarlyBootStaging(
+            previousBinding: previousBinding,
+            binding: binding,
+            noticeVersion: noticeVersion,
+            statusAvailable: statusAvailable
+        )
         #if os(tvOS)
         ExitSentinel.shared.setCaptureEnabled {
             DiagnosticsCoordinator.breadcrumbCaptureEnabled()
@@ -2045,6 +2506,10 @@ actor DiagnosticsCoordinator {
             breadcrumbConsentContext = nil
         }
         breadcrumbContextLock.unlock()
+        // Unconditional: even when the binding did not match, the purge that
+        // brought us here removed persisted state (`LastKnownStatusStore`,
+        // profile eligibility) that the gate's fallback resolution reads.
+        invalidateCaptureGateCache()
     }
 
     /// The binding for the server/account currently in view, captured at the
@@ -2086,10 +2551,29 @@ actor DiagnosticsCoordinator {
         activeProfileBreadcrumbEligible = false
         activeProfileEligibilityGeneration &+= 1
         breadcrumbContextLock.unlock()
+        invalidateCaptureGateCache()
 
         if let previousBinding {
             RecentSessionTracker.shared.purge(binding: previousBinding)
         }
+        // The locked block above already closed the gate (context cleared,
+        // eligibility invalidated, generation bumped), so this function is
+        // ordered the same way `activeProfileWillChange` is: invalidate, then
+        // purge. Keep the purge after it — an in-flight early-boot flush must
+        // not be able to append into a journal this has already emptied.
+        //
+        // Also drops the pre-consent staging buffer, for the same reason the
+        // journal and ring are purged: those lines must not follow the user
+        // into the new destination's account.
+        //
+        // Both stay unconditional here, unlike `activeProfileWillChange`, which
+        // has to tell a real boundary from a launch's profile restoration. This
+        // function has no such ambiguity: its only caller is
+        // `DiagnosticsViewModel.setDestination`, which returns early unless the
+        // choice actually differs and is reachable only from the diagnostics
+        // settings screen of an authenticated session. There is no path that
+        // runs it during pre-consent startup, so every call is a genuine
+        // destination change.
         purgeBreadcrumbJournal()
         DiagLog.ring.clear()
         #if os(tvOS)
@@ -2105,6 +2589,98 @@ actor DiagnosticsCoordinator {
         breadcrumbConsentContext = context
         destinationTransitionInProgress = false
         breadcrumbContextLock.unlock()
+        invalidateCaptureGateCache()
+    }
+
+    nonisolated static func installActiveProfileBreadcrumbEligibilityForTests(_ eligible: Bool) {
+        breadcrumbContextLock.lock()
+        activeProfileEligibilityGeneration &+= 1
+        activeProfileBreadcrumbEligible = eligible
+        breadcrumbContextLock.unlock()
+        invalidateCaptureGateCache()
+    }
+
+    /// The latch is process-wide and one-way within a launch, so a test that
+    /// reproduces a cold boot must put it back to its launch value — and a test
+    /// that reproduces a post-decision state must be able to set it without
+    /// driving a whole status refresh.
+    nonisolated static func installBreadcrumbDecisionInEffectForTests(_ inEffect: Bool) {
+        breadcrumbContextLock.lock()
+        breadcrumbDecisionInEffect = inEffect
+        breadcrumbContextLock.unlock()
+    }
+
+    nonisolated static var breadcrumbDecisionInEffectForTests: Bool {
+        breadcrumbDecisionIsInEffect
+    }
+
+    /// The restoration allowance is process-wide and one-way within a launch,
+    /// so a test reproducing a cold boot must hand it back, and a test
+    /// reproducing a post-launch switch must be able to spend it without
+    /// driving `ContentView.checkInitialState`.
+    nonisolated static func installLaunchProfileRestorationPassSpentForTests(_ spent: Bool) {
+        breadcrumbContextLock.lock()
+        launchProfileRestorationPassSpent = spent
+        breadcrumbContextLock.unlock()
+    }
+
+    nonisolated static var launchProfileRestorationPassSpentForTests: Bool {
+        breadcrumbContextLock.lock()
+        defer { breadcrumbContextLock.unlock() }
+        return launchProfileRestorationPassSpent
+    }
+
+    /// Drive the real staging decision against the process-wide state, so a
+    /// test can assert what a first establish does to the journal without
+    /// reaching into `applyEarlyBootStaging`'s private call chain.
+    nonisolated static func applyEarlyBootStagingForTests(
+        previousBinding: DiagnosticsBinding?,
+        binding: DiagnosticsBinding,
+        noticeVersion: Int,
+        statusAvailable: Bool
+    ) {
+        applyEarlyBootStaging(
+            previousBinding: previousBinding,
+            binding: binding,
+            noticeVersion: noticeVersion,
+            statusAvailable: statusAvailable
+        )
+    }
+
+    /// Number of times the authoritative gate actually ran. Tests assert the
+    /// hot path is memoized without reaching into the cache's internals.
+    nonisolated static var captureGateAuthoritativeEvaluationCountForTests: Int {
+        captureGateCache.authoritativeEvaluationCountForTests
+    }
+
+    /// The gate with the memo bypassed. Tests compare the two so "the memo is
+    /// a memo" is asserted against the real decision rather than a hardcoded
+    /// expectation that could drift from the gating logic.
+    nonisolated static var uncachedCaptureEnabledForTests: Bool {
+        breadcrumbCaptureEnabledUncached()
+    }
+
+    nonisolated static func resetCaptureGateCacheForTests() {
+        captureGateCache.resetForTests()
+    }
+
+    /// Empty the last-known-status fallback the capture gate resolves through
+    /// when no live context exists, returning the previous contents so the
+    /// caller can restore them. Without this a test cannot express "nothing
+    /// resolves": the store is App-Group-persistent, so a simulator that has
+    /// run the app before still answers with a real snapshot.
+    nonisolated static func takeLastKnownStatusIndexForTests()
+        -> [String: DiagnosticsStatusSnapshot] {
+        let index = LastKnownStatusStore.takeIndexForTests()
+        invalidateCaptureGateCache()
+        return index
+    }
+
+    nonisolated static func restoreLastKnownStatusIndexForTests(
+        _ index: [String: DiagnosticsStatusSnapshot]
+    ) {
+        LastKnownStatusStore.restoreIndexForTests(index)
+        invalidateCaptureGateCache()
     }
     #endif
 
@@ -2118,9 +2694,78 @@ actor DiagnosticsCoordinator {
         if let binding = currentDiagnosticsBinding {
             RecentSessionTracker.shared.purge(binding: binding)
         }
-        purgeBreadcrumbJournal()
-        DiagLog.ring.clear()
+        // Invalidate *before* purging, never after. These boundary functions
+        // run synchronously on the caller's thread while
+        // `flushEarlyBootBufferIfArmed` can be draining the staging buffer on
+        // the actor's executor. That flush checks the gate once and then
+        // appends its lines one at a time, so a purge landing mid-drain would
+        // be followed by further appends that still pass the journal's own
+        // `isEnabled()` — staged launch lines written back into a journal that
+        // was just emptied for the profile arriving now. Closing the gate
+        // first makes every remaining append fail that check under the
+        // journal's lock, so the purge is the last write of the boundary.
         _ = beginActiveProfileEligibilityResolution(invalidateCurrent: true)
+        // Every launch with a restored session reaches this function *before*
+        // authentication resolves: `ContentView.checkInitialState` calls
+        // `AuthService.resolveActiveProfileForSession`, which opens with this
+        // boundary. No profile is arriving there — both sides of that call are
+        // the identity this launch is still resolving — so it is a restoration
+        // pass, not a switch. The two things this function isolates each answer
+        // that separately below.
+        let isLaunchProfileRestoration = claimLaunchProfileRestorationPass()
+        // A real profile switch is an account boundary for the staging buffer:
+        // its pre-consent lines cannot be flushed into the profile arriving
+        // now, which may be a child that must capture nothing at all. Discarding
+        // seals the buffer permanently, so doing it on the restoration pass
+        // emptied it on every authenticated cold launch — deleting `process_start`,
+        // `root_view`, and `initial_state` before any consent context existed to
+        // decide their fate, which is the exact case the buffer was added for.
+        //
+        // The signal is the launch's one-shot restoration allowance rather than
+        // `breadcrumbDecisionIsInEffect` (which the journal purge below uses).
+        // The decision latch is too weak here: it is set by a refusal or by the
+        // first breadcrumb the journal accepts, and on a first-ever launch —
+        // no `LastKnownStatusStore` snapshot to resolve a context from — neither
+        // has happened by the time a user restores one profile and then switches
+        // to another. Both boundaries would read as pre-decision and the second
+        // one would keep the first profile's staged lines. Spending a single
+        // per-launch allowance instead means every boundary after the first is
+        // unconditionally a switch.
+        //
+        // Keeping the lines is not attributing them. The restoration pass just
+        // closed the eligibility gate above, and the staged lines still reach
+        // disk only through `applyEarlyBootStaging` (first establish, consent
+        // permits) and then `flushEarlyBootBufferIfArmed`, which re-checks the
+        // live gate — so a restored *child* profile never resolves eligible,
+        // never flushes, and the staging window expires the lines instead.
+        if !isLaunchProfileRestoration {
+            discardEarlyBootBuffer()
+        }
+        // The on-disk trail is a different question, and the answer turns on
+        // whether this launch's capture decision is in effect yet.
+        //
+        // Nothing this launch wrote can be in the journal before that decision —
+        // the gate has never been open — so its entire contents are the previous
+        // run's, which on tvOS is exactly the evidence `captureAbnormalExit`
+        // reads once authentication lands. Purging there isolates nothing; it
+        // empties the crash report before anyone opens it. Two neighbours
+        // already take that position for the same reason:
+        // `authenticationStateBecameUnavailable` refuses to treat the cold
+        // launch's `.loading` state as a boundary, and
+        // `updateBreadcrumbConsentContext` keeps the prior run's lines on a
+        // first establish.
+        //
+        // Once the decision is in effect, the trail can hold this launch's own
+        // lines for the outgoing profile, so the purge is the isolation it was
+        // written to be. A refused launch latches the decision at the refusal,
+        // so a "Never" account still clears here. The restoration allowance is
+        // deliberately not consulted: a decision already in effect means this
+        // launch reached an established account, and a purge is right for it
+        // whether or not it is the launch's first profile boundary.
+        if breadcrumbDecisionIsInEffect {
+            purgeBreadcrumbJournal()
+        }
+        DiagLog.ring.clear()
     }
 
     nonisolated static func activeProfileDidChange() {
@@ -2182,6 +2827,11 @@ actor DiagnosticsCoordinator {
         }
         let generation = activeProfileEligibilityGeneration
         breadcrumbContextLock.unlock()
+        // Unconditional even when `invalidateCurrent` is false: a routine
+        // revalidation keeps the last resolved flag, but bumping the memo's
+        // epoch here is what makes the publish below able to detect that a
+        // newer boundary raced it.
+        invalidateCaptureGateCache()
         #if os(tvOS)
         if invalidateCurrent {
             // The marker may belong to the prior adult profile. Remove this
@@ -2219,10 +2869,64 @@ actor DiagnosticsCoordinator {
         }
         activeProfileBreadcrumbEligible = eligible
         breadcrumbContextLock.unlock()
+        // The gate's profile-eligibility input just changed. Invalidate before
+        // the flush below, which re-reads the live gate.
+        invalidateCaptureGateCache()
+        if eligible {
+            // The first establish of a launch can arm the early-boot flush
+            // while this async child-profile check is still pending, which
+            // keeps the live gate closed. Retry now that it has opened. A
+            // no-op when nothing is armed; still gated by the journal.
+            flushEarlyBootBufferIfArmed()
+        }
         return true
     }
 
+    /// The live capture gate, evaluated on every `DiagTrace.log` call including
+    /// the ones it then suppresses. The authoritative computation is
+    /// `breadcrumbCaptureEnabledUncached()`; this wrapper only avoids running it
+    /// per call, because it ends in a `UserDefaults` read plus a full
+    /// `JSONDecoder` pass over the consent records under a shared lock.
+    ///
+    /// The memo is keyed on every input the authoritative path reads, so a hit
+    /// is only possible when none of them moved. On a miss it recomputes
+    /// authoritatively, then publishes only if the key is *still* current — a
+    /// consent revocation, destination change, or profile switch landing during
+    /// the computation discards the result and answers `false`. There is no
+    /// path here that produces `true` without the authoritative gate having
+    /// said so for exactly this state.
     nonisolated private static func breadcrumbCaptureEnabled() -> Bool {
+        let key = captureGateKey()
+        if let cached = captureGateCache.value(for: key) {
+            return cached
+        }
+        let value = breadcrumbCaptureEnabledUncached()
+        // Re-read the state after the computation. `store` publishes only when
+        // it matches and the epoch has not moved; otherwise it returns false.
+        return captureGateCache.store(value, for: key, still: captureGateKey())
+    }
+
+    /// Snapshot of every input the authoritative gate depends on. Anything added
+    /// to `breadcrumbCaptureEnabledUncached` must be represented here (directly,
+    /// or via a call to `invalidateCaptureGateCache()` when it changes) or the
+    /// memo can outlive a boundary.
+    nonisolated private static func captureGateKey() -> DiagnosticsCaptureGateCache.Key {
+        DiagnosticsCaptureGateCache.Key(
+            epoch: captureGateCache.currentEpoch,
+            consentGeneration: DiagnosticsConsentStore.shared.mutationGeneration,
+            serverRegistryID: ServerRegistry.activeServerIDSnapshot,
+            destination: DiagnosticsDestinationStore.shared.selectedDestination
+        )
+    }
+
+    /// Drop the memoized capture decision. Called from every mutation of the
+    /// breadcrumb consent context, the destination-transition latch, and the
+    /// profile-eligibility flag, so a stale `true` cannot outlive a boundary.
+    nonisolated private static func invalidateCaptureGateCache() {
+        captureGateCache.invalidate()
+    }
+
+    nonisolated private static func breadcrumbCaptureEnabledUncached() -> Bool {
         // A child profile can't manage diagnostics, so breadcrumb capture (and
         // the tvOS exit sentinel that shares this gate) must disarm the moment
         // one becomes active — even though the server/account binding and its
@@ -2356,6 +3060,27 @@ actor DiagnosticsCoordinator {
             }
             lock.unlock()
         }
+
+        #if DEBUG
+        /// Take the whole index and leave the store empty, returning what was
+        /// there so a test can put it back. The store is App-Group-persistent,
+        /// so a simulator that has ever run the app carries a real snapshot for
+        /// the active server; a test asserting "no context resolves" has to
+        /// clear this fallback too, not just the live context.
+        static func takeIndexForTests() -> [String: DiagnosticsStatusSnapshot] {
+            lock.lock()
+            defer { lock.unlock() }
+            let index = load()
+            save([:])
+            return index
+        }
+
+        static func restoreIndexForTests(_ index: [String: DiagnosticsStatusSnapshot]) {
+            lock.lock()
+            save(index)
+            lock.unlock()
+        }
+        #endif
 
         private static func load() -> [String: DiagnosticsStatusSnapshot] {
             guard let data = SharedDefaults.shared.data(forKey: key),

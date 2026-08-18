@@ -55,7 +55,8 @@ struct PhoneTrailersRail: View {
 ///
 /// Both phone detail screens embed this instead of `PhoneTrailersRail`
 /// directly: a remote trailer is handed to the YouTube app with the same
-/// deep link used on tvOS, and that branch would otherwise be copied into
+/// deep link used on tvOS, then falls back to the public watch page when no
+/// app accepts it. That branch would otherwise be copied into
 /// `MovieDetailContent` and `SeriesDetailContent` verbatim. Local extras are
 /// ordinary playback targets, so those taps continue up to the detail view
 /// that owns the player presentation.
@@ -74,9 +75,19 @@ struct PhoneTrailersSection: View {
         case .local(let extra):
             onPlayExtra(extra.contentId)
         case .remote(let video):
-            if let url = TrailerRail.youtubeDeepLinkURL(siteKey: video.siteKey) {
-                openURL(url)
-            }
+            openRemoteTrailer(siteKey: video.siteKey)
+        }
+    }
+
+    private func openRemoteTrailer(siteKey: String) {
+        guard let appURL = TrailerRail.youtubeDeepLinkURL(siteKey: siteKey),
+              let webURL = TrailerRail.youtubeWatchURL(siteKey: siteKey) else {
+            return
+        }
+
+        openURL(appURL) { accepted in
+            guard !accepted else { return }
+            openURL(webURL)
         }
     }
 }
