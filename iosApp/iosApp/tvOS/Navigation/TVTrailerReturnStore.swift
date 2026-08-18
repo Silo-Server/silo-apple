@@ -8,8 +8,9 @@ import Foundation
 ///
 /// Lifecycle is deliberately narrow:
 /// - Written at handoff, just before the deep link opens.
+/// - Cleared immediately if the system rejects that launch.
 /// - Consumed (read + deleted) exactly once per process, at the cold-launch
-///   authenticated landing in `TVMainTabView` — whether or not the restore
+///   authenticated landing in `ContentView` — whether or not the restore
 ///   happens, so a stale record can never linger across sittings.
 /// - Cleared on any warm return to the detail page (`scenePhase` → active
 ///   while the page is alive): the page survived suspension, so there is

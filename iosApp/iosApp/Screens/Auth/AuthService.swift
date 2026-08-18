@@ -273,7 +273,12 @@ final class AuthService: @unchecked Sendable {
             let committed = await TokenStore.shared.deactivateProfile(
                 expectedAccount: expectedAccount
             )
-            if committed { await clearPerProfileCaches() }
+            if committed {
+                // A cold trailer return may require the profile picker. Keep
+                // the record until the selected identity can validate it;
+                // explicit in-app profile changes clear it before this path.
+                await clearPerProfileCaches(preservingTrailerReturn: true)
+            }
             return false
 
         case .restore(let remembered):
@@ -422,7 +427,11 @@ final class AuthService: @unchecked Sendable {
                 throw ProfileTransitionError.accountEpochUnavailable
             }
         }
-        await clearPerProfileCaches()
+        // Preserve a cold trailer return through the picker. Once the router
+        // becomes authenticated, ContentView consumes it and the identity
+        // policy either restores the matching page or rejects the record.
+        // Explicit profile switches already clear it during deactivation.
+        await clearPerProfileCaches(preservingTrailerReturn: true)
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()

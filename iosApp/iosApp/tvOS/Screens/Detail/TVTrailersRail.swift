@@ -341,11 +341,16 @@ enum TVTrailerLaunch {
         return UIApplication.shared.canOpenURL(probe)
     }
 
-    /// Hand a video off to the YouTube app. Only ever called for cards that
-    /// exist, i.e. after ``isYouTubeAppInstalled()`` returned true.
-    static func open(siteKey: String) {
-        guard let url = TrailerRail.youtubeDeepLinkURL(siteKey: siteKey) else { return }
-        UIApplication.shared.open(url, options: [:], completionHandler: nil)
+    /// Hand a video off to the YouTube app and report whether the system
+    /// accepted the launch. Only ever called for cards that exist, i.e. after
+    /// ``isYouTubeAppInstalled()`` returned true, but the app can disappear
+    /// or reject the URL between that probe and this request.
+    static func open(siteKey: String, completion: @escaping (Bool) -> Void) {
+        guard let url = TrailerRail.youtubeDeepLinkURL(siteKey: siteKey) else {
+            completion(false)
+            return
+        }
+        UIApplication.shared.open(url, options: [:], completionHandler: completion)
     }
 }
 #endif

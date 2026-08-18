@@ -165,7 +165,10 @@ struct TVItemDetailView: View {
             // YouTube; this is the fallback for when suspension doesn't
             // preserve the page either.
             TVTrailerReturnStore.shared.saveHandoff(contentId: contentId)
-            TVTrailerLaunch.open(siteKey: video.siteKey)
+            TVTrailerLaunch.open(siteKey: video.siteKey) { didOpen in
+                guard !didOpen else { return }
+                TVTrailerReturnStore.shared.clear()
+            }
         case .local(let extra):
             router.navigate(
                 to: .player(
