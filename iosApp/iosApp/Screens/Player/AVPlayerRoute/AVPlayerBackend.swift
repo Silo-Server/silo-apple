@@ -508,9 +508,12 @@ final class AVPlayerBackend {
     /// fetchable. This mirrors AetherEngine's proven loopback-HLS policy.
     static let loopbackSteadyStateForwardBufferTarget = loopbackStartupForwardBuffer
 
+    /// The `reason` is a log token only (`LoopbackSegmentStore` prints it at
+    /// construction and nothing else reads it) — it names why the disk cache
+    /// is on, not which playlist shape is being served.
     private static func generatedHLSSpillPolicy(for spec: LoopbackSessionSpec) -> LoopbackSegmentStore.SpillPolicy {
         .enabled(
-            reason: spec.sourceBitrateBps == nil ? "source_bitrate_unknown" : "local_hls_event_playlist",
+            reason: spec.sourceBitrateBps == nil ? "source_bitrate_unknown" : "local_hls_vod_cache",
             maxBytes: generatedHLSSpillBudgetBytes
         )
     }

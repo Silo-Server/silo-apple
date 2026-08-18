@@ -83,8 +83,6 @@ final class OfflinePlaybackMappingTests: XCTestCase {
             level: 153,
             bitDepth: 10,
             colorRange: "tv",
-            colorSpace: "bt2020nc",
-            colorPrimaries: "bt2020",
             colorTransfer: colorTransfer,
             videoRange: nil,
             dolbyVision: dolbyVisionProfile.map(String.init),

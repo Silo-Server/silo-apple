@@ -916,8 +916,6 @@ struct VideoTrack: Codable, Identifiable, Hashable {
     let level: Int?
     let bitDepth: Int?
     let colorRange: String?
-    let colorSpace: String?
-    let colorPrimaries: String?
     let colorTransfer: String?
     let videoRange: String?
     let dolbyVision: String?

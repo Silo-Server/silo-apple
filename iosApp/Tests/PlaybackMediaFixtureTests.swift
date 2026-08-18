@@ -201,8 +201,8 @@ final class PlaybackMediaFixtureTests: XCTestCase {
                 VideoTrack(
                     index: 0, codec: "hevc", width: 3840, height: 2160,
                     frameRate: "60.000", bitrate: 40_000, profile: "Main 10",
-                    level: 153, bitDepth: 10, colorRange: "pc", colorSpace: nil,
-                    colorPrimaries: nil, colorTransfer: nil,
+                    level: 153, bitDepth: 10, colorRange: "pc",
+                    colorTransfer: nil,
                     videoRange: "DolbyVision", dolbyVision: "Profile 5",
                     title: nil, language: nil
                 )
