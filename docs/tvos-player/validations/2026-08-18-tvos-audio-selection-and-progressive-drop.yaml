@@ -1,0 +1,45 @@
+# Validation record — server planner fix (client_audio_track_selection_v1) + Apple progressive-delivery drop, and an
+# unresolved HDR10 loopback -17223 failure at anchor+21 s seen on the bedroom Apple TV on 2026-08-18.
+date: 2026-08-18
+platform: tvOS 26.6
+device: Apple TV 4K (3rd generation) — AppleTV14,1 ("bedroom TV"), signed into PRODUCTION
+app_build: SiloTV Debug from silo-apple player/architecture-remediation @ 22259bc (+ bisect variants, see below)
+server_fix_under_test: silo-server fix/v3-dv-original-http @ bc52478e, deployed to SHARED DEV (make dev-deploy; central node healthy)
+
+part_1_server_planner_on_dev:  # API replay of the captured Apple V3 start request, Sonnet validator, 9/9 as expected
+  - {file: 741 (DV P5), original_http_feature: true,  result: "original_http / validated_original_playback, audio idx 1"}
+  - {file: 741,          original_http_feature: false, result: "server_remux_progressive / container_normalization"}
+  - {file: 741,          original_http_feature: false, progressive_unsupported: true, result: "server_remux_hls / hls_packaging_required"}
+  - {file: 223792 (DV P8), original_http_feature: true,  result: "original_http / validated_original_playback, audio idx 1"}
+  - {file: 223792,       original_http_feature: false, result: "server_remux_progressive / container_normalization"}
+  - {file: 223792,       original_http_feature: false, progressive_unsupported: true, result: "server_remux_hls / hls_packaging_required"}
+  - {file: 223805 (HDR10), any: "original_http / validated_original_playback, audio idx 0 (no English track; profile pref falls back to default)"}
+  root_cause_recap: "profile audio preference 'en' selects a non-default track on the DV titles; the direct branch required the container default (plan_v3.go:341). Not Dolby-Vision related."
+  side_finding: "dev distributed nodes silo-dev-ns12/ns17 transcode+proxy are enabled=false/healthy=false, last health check 2026-08-16 23:5xZ (pre-existing); only the integrated node serves."
+
+part_2_client_on_bedroom_tv_prod:  # Sonnet validator, build 22259bc
+  - run: DV P8 4K MKV movie-tmdb-1117126
+    result: "first and only plan wireDelivery=server_remux_hls (progressive rung GONE, no -11850/-12939); item ready HEVC 3840x1600 HDR10 (DV stripped by prod — server fix not on prod)"
+  - run: DV P5 1080p MKV movie-tmdb-513347
+    result: "first and only plan server_remux_hls; no progressive rung; no -12939; earlier HTTP 502 did NOT recur; item ready H.264/HEVC 1080p"
+  - run: HDR10 4K 24fps MKV movie-tmdb-852590 (loopback)
+    result: "loopback + PQ/24.000 applied + item ready HDR10, THEN at playhead 21.0 s: item failedToEnd -11868/-17223, reload fails identically, replan → server_remux_hls plays HDR10"
+  - run: HDR10 4K 29.97fps MKV movie-tmdb-974663 (loopback)
+    result: "same as above at 20.8 s"
+
+part_3_bisect_of_the_21s_failure:  # all on the bedroom TV, prod, title movie-tmdb-852590 unless noted
+  - {build: "ed761e3 (yesterday's good build)", result: "cannot log in today — brand migration is one-way (old keys gone) → needsServerSetup; UNTESTABLE without re-login"}
+  - {build: "71df75b (R2 + brand migration)", result: "BAD at 21.0 s"}
+  - {build: "22259bc with bridge-delete merge reverted", result: "BAD at anchor+21.0 s (resumed at 336.8 → failed 357.8)"}
+  - {build: "22259bc with typed-failure merge reverted (title 974663)", result: "BAD at 20.8 s"}
+  - {build: "ed761e3 + url-scheme + brand-migration only", result: "BAD at anchor+21.0 s (336.8 → 357.8)"}
+  - {experiment: "22259bc-era build with player.apple.hdr_display_criteria_enabled=<false/> via argument domain", result: "loopback item fails IMMEDIATELY with the same -11868/-17223 before any segment GET (matches HDRDisplayCriteriaPolicy's documented hardware note) → -17223 here is the 'content not playable on the current display mode' signal"}
+  - {static_trace: "Opus reviewer: every loopback producer/serve/backend path is behaviourally identical between ed761e3 and 71df75b for the copy route; typed-failure is downstream and byte-identical on the wire; bridge deletion inert on copy; disk-budget sweep cannot fire mid-session"}
+  - {evidence: "segment sizes, VOD plan (1203 segs, trusted), store=0.0MiB (disk spill) and retention budget are identical to yesterday's good logs; no app-side event precedes the failure; the failure is at a fixed offset (anchor+21.0 s) regardless of position/title; server-HLS HDR10 4K then plays"}
+  status: UNRESOLVED
+  leading_hypothesis: "environmental — the display path (TV/AVR HDMI mode / tvOS display matching) drops the mode ~21 s after the loopback item is created; the app-authored AVDisplayCriteria route is exposed where AVPlayer's automatic matching on the server-HLS route is not"
+  alternative: "the brand-migration commit (b770f5d) via some non-obvious path — cannot be separated from 'environment' until a pristine pre-migration build (ed761e3) can run again on this device"
+  next_discriminators:
+    - "sign the bedroom TV back in (allows running pristine ed761e3 as the control) — and/or into DEV for the DV loopback rows"
+    - "check what changed on the bedroom TV/AVR/HDMI since 2026-08-17 evening (input, cable, Match Dynamic Range / frame rate, AVR power)"
+    - "run the same title on the Living Room Apple TV (paired to the Mini, but asleep and not companion-paired for pyatv wake)"
