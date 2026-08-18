@@ -342,14 +342,10 @@ struct ProfileSelectionView: View {
     @ViewBuilder
     private var profileOverlay: some View {
         if showSignOutConfirm {
-            TVSettingsConfirmationOverlay(
-                title: "Sign Out",
-                message: "Choose whether to keep or remove this server from this Apple TV.",
-                confirmTitle: "Sign Out",
-                additionalDestructiveTitle: "Sign Out & Remove Server",
+            TVSettingsConfirmationOverlay.signOut(
                 cancel: dismissSignOutConfirmation,
                 confirm: router.signOutAndReset,
-                additionalDestructiveAction: router.signOutRemoveServerAndReset
+                removeServer: router.signOutRemoveServerAndReset
             )
             .transition(.opacity)
             .zIndex(10)

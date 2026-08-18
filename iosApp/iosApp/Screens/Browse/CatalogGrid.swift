@@ -46,7 +46,7 @@ struct CatalogGrid: View {
                     userState: item.userState,
                     overlayData: OverlayData.from(item),
                     action: { onItemTap(item.contentId) },
-                    playAction: playAction(for: item),
+                    playAction: router.playAction(for: item),
                     contentId: item.contentId,
                     aspect: item.isAudiobook ? .square : .poster
                 )
@@ -68,20 +68,5 @@ struct CatalogGrid: View {
                 Spacer()
             }
         }
-    }
-
-    private func playAction(for item: BrowseItem) -> (() -> Void)? {
-        #if os(tvOS)
-        guard SiloMediaType.isDirectlyPlayable(item.type) else { return nil }
-        return {
-            router.presentPlayer(
-                contentId: item.contentId,
-                posterURL: item.posterUrl,
-                backdropURL: item.backdropUrl
-            )
-        }
-        #else
-        return nil
-        #endif
     }
 }

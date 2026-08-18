@@ -4,8 +4,9 @@ import Foundation
 /// is expensive — share instances instead of building them per render.
 enum DateFormatters {
     /// "yyyy-MM-dd" in the device's current timezone. Used for calendar API
-    /// request params and for matching server `local_air_date` strings,
-    /// which the server computes in the same timezone the client sends.
+    /// request params, for matching server `local_air_date` strings (which the
+    /// server computes in the same timezone the client sends), and for parsing
+    /// plain `yyyy-MM-dd` metadata dates such as person birth/death dates.
     static let isoDate: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"

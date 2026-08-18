@@ -1659,6 +1659,17 @@ struct MainTabLibraryAuthority: Hashable {
         self.serverId = serverId
         self.profileId = profileId
     }
+
+    /// The authority currently in force — the active server + profile, or
+    /// `nil` while either is missing.
+    @MainActor
+    static var current: MainTabLibraryAuthority? {
+        let registry = ServerRegistry.shared
+        return MainTabLibraryAuthority(
+            serverId: registry.activeServerId,
+            profileId: registry.activeProfileId
+        )
+    }
 }
 
 struct MainTabLibrarySnapshot: Equatable {
@@ -1674,11 +1685,7 @@ struct MainTabLibrarySnapshot: Equatable {
 
     @MainActor
     static func cachedForCurrentAuthority() -> Self {
-        let registry = ServerRegistry.shared
-        let authority = MainTabLibraryAuthority(
-            serverId: registry.activeServerId,
-            profileId: registry.activeProfileId
-        )
+        let authority = MainTabLibraryAuthority.current
         let libraries = ResponseCache.shared.get(
             CacheKey.userLibraries,
             as: LibrariesResponse.self
@@ -1860,10 +1867,7 @@ struct MainTabView: View {
     }
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {
-        MainTabLibraryAuthority(
-            serverId: serverRegistry.activeServerId,
-            profileId: serverRegistry.activeProfileId
-        )
+        MainTabLibraryAuthority.current
     }
 
     private func loadVisibleLibraries(for authority: MainTabLibraryAuthority?) async {

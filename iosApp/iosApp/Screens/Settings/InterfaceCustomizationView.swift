@@ -359,10 +359,7 @@ struct InterfaceCustomizationView: View {
     private static let customPresetId = "custom"
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {
-        MainTabLibraryAuthority(
-            serverId: registry.activeServerId,
-            profileId: registry.activeProfileId
-        )
+        MainTabLibraryAuthority.current
     }
 
     private var libraries: [Library] {
@@ -513,22 +510,11 @@ struct InterfaceCustomizationView: View {
     }
 
     private func persistVisibleDestinations(_ destinations: [PrimaryMenuItem]) {
-        let currentlyVisibleIds = Set(visibleDestinations.map(\.id))
-        var replacements = destinations.makeIterator()
-        var result: [PrimaryMenuItem] = []
-
-        for item in preferences.resolvedPrimaryMenuItems() {
-            if currentlyVisibleIds.contains(item.id) {
-                if let replacement = replacements.next() {
-                    result.append(replacement)
-                }
-            } else {
-                result.append(item)
-            }
-        }
-        while let remaining = replacements.next() {
-            result.append(remaining)
-        }
+        let result = mergePrimaryMenuVisibleItems(
+            resolved: preferences.resolvedPrimaryMenuItems(),
+            currentlyVisibleIds: Set(visibleDestinations.map(\.id)),
+            replacements: destinations
+        )
         preferences.setPrimaryMenuItems(result)
     }
 

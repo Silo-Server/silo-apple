@@ -176,6 +176,14 @@ final class AuthService: @unchecked Sendable {
         try await SiloAPI.shared.listProfiles()
     }
 
+    /// The currently-selected profile, or `nil` when none is selected or the
+    /// listing fails. Non-fatal by design — top bars fall back to a generic
+    /// icon rather than surfacing an error for an avatar.
+    func activeProfile() async -> UserProfile? {
+        guard let profileId else { return nil }
+        return try? await getProfiles().first(where: { $0.id == profileId })
+    }
+
     func selectProfile(
         profileId: String,
         pin: String? = nil,

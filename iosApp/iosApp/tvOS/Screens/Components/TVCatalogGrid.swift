@@ -72,7 +72,7 @@ struct TVCatalogGrid: View {
                             userState: item.userState,
                             overlayData: OverlayData.from(item),
                             action: { onItemTap(item.contentId) },
-                            playAction: playAction(for: item),
+                            playAction: router.playAction(for: item),
                             cardWidth: cardWidth,
                             aspect: item.isAudiobook ? .square : .poster,
                             prefersDefaultFocus: prefersDefaultFocusOnFirstItem
@@ -127,17 +127,6 @@ struct TVCatalogGrid: View {
         let threshold = items.count - (prefetchRowsRemaining * resolvedColumnCount)
         if index >= threshold {
             onNearEnd(index)
-        }
-    }
-
-    private func playAction(for item: BrowseItem) -> (() -> Void)? {
-        guard SiloMediaType.isDirectlyPlayable(item.type) else { return nil }
-        return {
-            router.presentPlayer(
-                contentId: item.contentId,
-                posterURL: item.posterUrl,
-                backdropURL: item.backdropUrl
-            )
         }
     }
 

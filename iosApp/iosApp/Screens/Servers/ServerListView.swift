@@ -245,7 +245,7 @@ struct ServerListView: View {
 
     private func switchTo(_ entry: ServerEntry) {
         guard entry.id != registry.activeServerId else {
-            refreshAuthState()
+            router.refreshAuthState()
             return
         }
         Task {
@@ -253,7 +253,7 @@ struct ServerListView: View {
                 serverId: entry.id,
                 resolveDestinationProfile: true
             ) else { return }
-            await MainActor.run { refreshAuthState() }
+            await MainActor.run { router.refreshAuthState() }
         }
     }
 
@@ -266,24 +266,8 @@ struct ServerListView: View {
             ) else { return }
             await MainActor.run {
                 removeTarget = nil
-                if wasActive { refreshAuthState() }
+                if wasActive { router.refreshAuthState() }
             }
-        }
-    }
-
-    /// Recompute auth state for the (possibly new) active server and
-    /// drop any in-tab navigation that belonged to the previous server.
-    private func refreshAuthState() {
-        router.popToRoot()
-        let auth = AuthService.shared
-        if !auth.hasServer {
-            router.authState = .needsServerSetup
-        } else if !auth.isLoggedIn {
-            router.authState = .needsLogin
-        } else if !auth.hasProfile {
-            router.authState = .needsProfile
-        } else {
-            router.authState = .authenticated
         }
     }
 }

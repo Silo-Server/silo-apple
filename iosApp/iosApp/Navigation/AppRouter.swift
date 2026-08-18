@@ -307,6 +307,39 @@ class AppRouter {
         setAuthState(.authenticated, reason: "resetToHome")
     }
 
+    /// Play action for a browse card. tvOS cards carry a dedicated play
+    /// affordance; iOS/macOS have none, so this is `nil` there.
+    func playAction(for item: BrowseItem) -> (() -> Void)? {
+        #if os(tvOS)
+        guard SiloMediaType.isDirectlyPlayable(item.type) else { return nil }
+        return {
+            self.presentPlayer(
+                contentId: item.contentId,
+                posterURL: item.posterUrl,
+                backdropURL: item.backdropUrl
+            )
+        }
+        #else
+        return nil
+        #endif
+    }
+
+    /// Recompute auth state for the (possibly new) active server and
+    /// drop any in-tab navigation that belonged to the previous server.
+    func refreshAuthState() {
+        popToRoot()
+        let auth = AuthService.shared
+        if !auth.hasServer {
+            authState = .needsServerSetup
+        } else if !auth.isLoggedIn {
+            authState = .needsLogin
+        } else if !auth.hasProfile {
+            authState = .needsProfile
+        } else {
+            authState = .authenticated
+        }
+    }
+
     /// Return to server setup (e.g., to change servers).
     func resetToServerSetup() {
         recordScreenBreadcrumb(target: "serverSetup", action: "reset")

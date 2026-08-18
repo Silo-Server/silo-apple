@@ -42,7 +42,7 @@ struct TVMainTabView: View {
     /// Local, per-profile tab-visibility prefs (e.g. whether the Audiobooks
     /// tab is opted in). Observed so the bar re-derives `visibleRoots` the
     /// instant a toggle flips in Settings.
-    @State private var navPrefs = TVNavPreferences.shared
+    @State private var navPrefs = AppNavPreferences.shared
     @State private var uiCustomization = UICustomizationPreferences.shared
     /// Visible libraries for the active profile; drives which type tabs
     /// exist and which library each type tab scopes to. Seeded from the
@@ -51,13 +51,7 @@ struct TVMainTabView: View {
     /// splash lifted.
     @State private var libraries: [Library] =
         ResponseCache.shared.get(CacheKey.userLibraries, as: LibrariesResponse.self)?.libraries ?? []
-    @State private var loadedLibraryAuthority: MainTabLibraryAuthority? = {
-        let registry = ServerRegistry.shared
-        return MainTabLibraryAuthority(
-            serverId: registry.activeServerId,
-            profileId: registry.activeProfileId
-        )
-    }()
+    @State private var loadedLibraryAuthority: MainTabLibraryAuthority? = .current
     /// Per-type pill selection, session-only (§8): it survives tab
     /// switches but cold start always lands on Recommended.
     @State private var pillSelections: [TVLibraryTabType: TVLibraryPill] = [:]
@@ -154,14 +148,10 @@ struct TVMainTabView: View {
         .allowsHitTesting(!showSignOutConfirm)
         .overlay {
             if showSignOutConfirm {
-                TVSettingsConfirmationOverlay(
-                    title: "Sign Out",
-                    message: "Choose whether to keep or remove this server from this Apple TV.",
-                    confirmTitle: "Sign Out",
-                    additionalDestructiveTitle: "Sign Out & Remove Server",
+                TVSettingsConfirmationOverlay.signOut(
                     cancel: dismissSignOutConfirmation,
                     confirm: router.signOutAndReset,
-                    additionalDestructiveAction: router.signOutRemoveServerAndReset
+                    removeServer: router.signOutRemoveServerAndReset
                 )
                 .transition(.opacity)
             }
@@ -836,7 +826,7 @@ struct TVMainTabView: View {
     /// the user rearranges content tabs.
     private var visibleRoots: [TVRootDestination] {
         var roots: [TVRootDestination] = []
-        for item in uiCustomization.resolvedPrimaryMenuItems(availableLibraries: libraries) {
+        for item in uiCustomization.resolvedPrimaryMenuItems() {
             let root: TVRootDestination?
             switch item {
             case .builtin(.home): root = .home
@@ -914,10 +904,7 @@ struct TVMainTabView: View {
     }
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {
-        MainTabLibraryAuthority(
-            serverId: registry.activeServerId,
-            profileId: registry.activeProfileId
-        )
+        MainTabLibraryAuthority.current
     }
 
     private func loadLibraries(for authority: MainTabLibraryAuthority?) async {
@@ -1142,27 +1129,13 @@ struct TVMainTabView: View {
                 // shell, so `.task` (the only other caller of refresh) won't
                 // re-run and the cached mirror would otherwise stay stale.
                 navPrefs.refresh()
-                refreshAuthState()
+                router.refreshAuthState()
             }
             if AuthService.shared.hasProfile {
                 async let profileTask: Void = loadCurrentProfile()
                 async let librariesTask: Void = loadLibraries(for: currentLibraryAuthority)
                 _ = await (profileTask, librariesTask)
             }
-        }
-    }
-
-    private func refreshAuthState() {
-        router.popToRoot()
-        let auth = AuthService.shared
-        if !auth.hasServer {
-            router.authState = .needsServerSetup
-        } else if !auth.isLoggedIn {
-            router.authState = .needsLogin
-        } else if !auth.hasProfile {
-            router.authState = .needsProfile
-        } else {
-            router.authState = .authenticated
         }
     }
 
