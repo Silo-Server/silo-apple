@@ -209,4 +209,50 @@ enum TrackSelectionPersistence {
             }
         }
     }
+
+    // MARK: - Detail-page selector persistence
+
+    /// Persist an audio pick made in a detail-page selector. A nil
+    /// `requested` is "Auto" and clears the override; a pick the version
+    /// cannot satisfy (`requested != sanitized`) is not written.
+    static func persistAudio(
+        prefKey: String?,
+        version: FileVersion?,
+        requested: Int?,
+        sanitized: Int?
+    ) {
+        guard let prefKey else { return }
+        guard let requested else {
+            clearAudio(prefKey: prefKey)
+            return
+        }
+        guard requested == sanitized,
+              let version,
+              let request = audioRequest(version: version, ordinal: requested)
+        else { return }
+        saveAudio(prefKey: prefKey, request: request)
+    }
+
+    /// Subtitle analogue of `persistAudio(prefKey:version:requested:sanitized:)`.
+    static func persistSubtitle(
+        prefKey: String?,
+        version: FileVersion?,
+        requested: Int?,
+        sanitized: Int?,
+        showForced: Bool?
+    ) {
+        guard let prefKey else { return }
+        guard let requested else {
+            clearSubtitle(prefKey: prefKey)
+            return
+        }
+        guard requested == sanitized, let version,
+              let request = subtitleRequest(
+                  version: version,
+                  ffIndex: requested,
+                  showForced: showForced
+              )
+        else { return }
+        saveSubtitle(prefKey: prefKey, request: request)
+    }
 }

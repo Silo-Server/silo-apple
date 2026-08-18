@@ -206,13 +206,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// progress, then the first unwatched in the selected season,
     /// then fall back to the first episode we have.
     private var nextUpEpisode: EpisodeListItem? {
-        if let inProgress = episodes.first(where: { $0.userData?.isInProgress == true }) {
-            return inProgress
-        }
-        if let unwatched = episodes.first(where: { !($0.userData?.played ?? false) }) {
-            return unwatched
-        }
-        return episodes.first
+        EpisodeRailFormatting.nextUp(in: episodes)
     }
 
     /// Show "Play S2·E5" — the user can decide resume vs. restart in
@@ -227,11 +221,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     }
 
     private var nextUpResumePositionSeconds: Double? {
-        guard let pos = nextUpEpisode?.userData?.positionSeconds, pos > 30 else { return nil }
-        if let dur = nextUpEpisode?.userData?.durationSeconds, dur > 0, pos >= dur - 5 {
-            return nil
-        }
-        return pos
+        DetailPlaybackFormatting.playableResumePosition(
+            position: nextUpEpisode?.userData?.positionSeconds,
+            duration: nextUpEpisode?.userData?.durationSeconds
+        )
     }
 
     private func selectedFileId(for episode: EpisodeListItem) -> Int? {
@@ -266,7 +259,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         VStack(alignment: .leading, spacing: 36) {
             episodesSection
             if let cast = detail.cast, !cast.isEmpty {
-                castSection(cast: cast)
+                PhoneCastSection(cast: cast, onTap: onPersonTap)
             }
             trailersSection
             detailsSection
@@ -332,17 +325,6 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     private var episodeCountSubtitle: String? {
         guard let count = selectedSeason?.episodeCount, count > 0 else { return nil }
         return "\(count) episode\(count == 1 ? "" : "s")"
-    }
-
-    // MARK: - Cast
-
-    @ViewBuilder
-    private func castSection(cast: [CastMember]) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Cast & Crew")
-                .padding(.horizontal, SiloTheme.safePadding)
-            PhoneCastRail(cast: cast, onTap: onPersonTap)
-        }
     }
 
     // MARK: - Details

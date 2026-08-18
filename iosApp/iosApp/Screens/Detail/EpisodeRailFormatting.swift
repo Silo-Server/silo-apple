@@ -27,6 +27,18 @@ enum EpisodeRailFormatting {
         return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
 
+    /// Best "Play" target in an episode list: one in progress if there is
+    /// one, otherwise the first unwatched, else the first episode loaded.
+    static func nextUp(in episodes: [EpisodeListItem]) -> EpisodeListItem? {
+        if let inProgress = episodes.first(where: { $0.userData?.isInProgress == true }) {
+            return inProgress
+        }
+        if let unwatched = episodes.first(where: { !($0.userData?.played ?? false) }) {
+            return unwatched
+        }
+        return episodes.first
+    }
+
     static func progressFraction(for episode: EpisodeListItem) -> Double? {
         guard let userData = episode.userData,
               let position = userData.positionSeconds,

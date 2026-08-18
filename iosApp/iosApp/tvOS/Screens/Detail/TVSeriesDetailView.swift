@@ -86,7 +86,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                         episodeSection
                             .id(episodeSectionScrollId)
                         if let cast = detail.cast, !cast.isEmpty {
-                            castSection(cast: cast)
+                            TVDetailCastRail(cast: cast, onTap: onPersonTap)
                         }
                         trailersSection
                         detailsSection
@@ -273,13 +273,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// is one, otherwise the first unwatched in the selected season, else
     /// the first episode we loaded.
     private var nextUpEpisode: EpisodeListItem? {
-        if let inProgress = episodes.first(where: { $0.userData?.isInProgress == true }) {
-            return inProgress
-        }
-        if let unwatched = episodes.first(where: { !($0.userData?.played ?? false) }) {
-            return unwatched
-        }
-        return episodes.first
+        EpisodeRailFormatting.nextUp(in: episodes)
     }
 
     private func playButtonLabel(for episode: EpisodeListItem) -> String {
@@ -401,16 +395,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         // Header lives inside the rail so it disappears with the cards when
         // the item has neither remote videos nor local extras.
         TVTrailersRail(entries: trailerEntries, onSelect: onSelectTrailer)
-    }
-
-    // MARK: - Cast
-
-    @ViewBuilder
-    private func castSection(cast: [CastMember]) -> some View {
-        VStack(alignment: .leading, spacing: 28) {
-            TVSectionHeader(title: "Cast & Crew")
-            TVDetailCastRail(cast: cast, onTap: onPersonTap)
-        }
     }
 
     // MARK: - Details
