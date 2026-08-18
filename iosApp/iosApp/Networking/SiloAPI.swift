@@ -77,10 +77,6 @@ actor SiloAPI {
         try await http.putVoid("/api/v1/settings/\(key)", body: SetSettingBody(value: value))
     }
 
-    func deleteSetting(key: String) async throws {
-        try await http.delete("/api/v1/settings/\(key)")
-    }
-
     /// Read a user-scoped setting (the `setting_user.user_id` partition,
     /// distinct from `/settings/device/{key}` which is device-scoped).
     /// The server returns 404 when the key is unset — callers that want
@@ -396,26 +392,6 @@ actor SiloAPI {
         } else {
             try await http.delete("/api/v1/watched/\(contentId)")
         }
-    }
-
-    // --- Collection groups (personal) ---
-
-    func createCollectionGroup(name: String) async throws -> CollectionGroup {
-        try await http.post(
-            "/api/v1/collections/groups",
-            body: CreateCollectionGroupRequest(name: name, slug: nil)
-        )
-    }
-
-    func renameCollectionGroup(id: String, name: String) async throws -> CollectionGroup {
-        try await http.put(
-            "/api/v1/collections/groups/\(id)",
-            body: UpdateCollectionGroupRequest(name: name)
-        )
-    }
-
-    func deleteCollectionGroup(id: String) async throws {
-        try await http.delete("/api/v1/collections/groups/\(id)")
     }
 
     // --- Profiles ---

@@ -1202,18 +1202,6 @@ struct WatchDetail: Codable {
     }
 }
 
-// MARK: - Collections
-
-/// A user-defined grouping bucket for personal collections. Matches the
-/// server's `/api/v1/collections` `groups[*]` shape.
-struct CollectionGroup: Codable, Identifiable, Hashable {
-    let id: String
-    let name: String
-    let slug: String?
-    let defaultSortMode: String?
-    let sortOrder: Int?
-}
-
 // MARK: - Search (uses CatalogResponse)
 
 // MARK: - Libraries
@@ -1432,17 +1420,6 @@ struct UserInfo: Codable {
     let id: String?
     let username: String
     let isAdmin: Bool?
-}
-
-// MARK: - Collection group requests
-
-struct CreateCollectionGroupRequest: Codable {
-    let name: String
-    let slug: String?
-}
-
-struct UpdateCollectionGroupRequest: Codable {
-    let name: String?
 }
 
 // MARK: - Settings (generic key/value)

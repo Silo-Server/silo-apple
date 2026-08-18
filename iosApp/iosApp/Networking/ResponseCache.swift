@@ -107,7 +107,6 @@ enum CacheKey {
         "tvlibrary:\(libraryId):\(filterKey)"
     }
     static func collectionItems(_ collectionId: String) -> String { "collection:\(collectionId):items" }
-    static func similar(_ contentId: String) -> String { "item:\(contentId):similar" }
     static func calendarWeek(_ weekStart: String, filter: String) -> String {
         "calendar:\(weekStart):\(filter)"
     }
