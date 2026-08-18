@@ -72,7 +72,8 @@ struct PlayerCallbacks {
     var onTimeChange: ((Double) -> Void)?
     var onDurationChange: ((Double) -> Void)?
     var onPauseChange: ((Bool) -> Void)?
-    var onFileLoaded: (() -> Void)?
+    /// Carries the initial-video-display gate's release reason.
+    var onFileLoaded: ((String) -> Void)?
     var onFirstFrame: ((Int) -> Void)?
     var onError: ((PlaybackFailure) -> Void)?
     var onEndOfFile: (() -> Void)?
@@ -187,6 +188,20 @@ class PlayerViewModel {
     var title: String = ""
     var isLoading = true
     var isBuffering = false
+    /// Startup owns exactly one spinner: the loading overlay. The transport's
+    /// buffering chip mounts the instant `!isLoading` and stays up until the
+    /// item reports `likelyToKeepUp`, which lags visible motion by a second or
+    /// two — so without this window a start hands the overlay off to a second
+    /// wheel sitting on top of already-moving video. Held centrally rather
+    /// than per-platform: all three transports read `isBuffering`, and leaving
+    /// their view bodies alone keeps the tvOS focus graph untouched. Closes at
+    /// the first post-dismissal `likelyToKeepUp`, or on a short grace after
+    /// dismissal, whichever comes first, and reopens for the next fresh start
+    /// (including a next-episode hand-off). Mid-session buffering — recovery,
+    /// replan, seek — is unaffected either way.
+    private var isStartupBufferingWindowOpen = true
+    private var startupBufferingWindowTask: Task<Void, Never>?
+    private static let startupBufferingWindowGraceSeconds: Double = 3.0
     var error: String?
     var showControls = false
     var activeNotice: PlayerNotice?
@@ -1274,14 +1289,14 @@ class PlayerViewModel {
                 isPlaying: !paused
             )
         }
-        cb.onFileLoaded = { [weak self] in
+        cb.onFileLoaded = { [weak self] reason in
             guard let self,
                   !self.isDisposed,
                   Self.isCurrentStreamCallback(
                       callbackGeneration,
                       currentGeneration: self.streamLoadGeneration
                   ) else { return }
-            self.handleFileLoaded()
+            self.handleFileLoaded(reason: reason)
         }
         cb.onFirstFrame = { [weak self] milliseconds in
             guard let self,
@@ -1326,12 +1341,24 @@ class PlayerViewModel {
                       callbackGeneration,
                       currentGeneration: self.streamLoadGeneration
                   ) else { return }
-            self.isBuffering = buffering
+            // Outage bookkeeping is recovery logic, not UI: it runs whether or
+            // not the chip is allowed to render.
             if buffering {
                 Task { @MainActor [weak self] in
                     self?.noteBufferingDuringSourceOutage()
                 }
             }
+            if buffering, self.isStartupBufferingWindowOpen {
+                cmpLog("[CMP] playback buffering suppressed cause=startup_window")
+                return
+            }
+            if !buffering, self.isStartupBufferingWindowOpen, !self.isLoading {
+                self.closeStartupBufferingWindow(reason: "likely_to_keep_up")
+            }
+            self.setBuffering(
+                buffering,
+                cause: buffering ? "buffer_empty" : "likely_to_keep_up"
+            )
         }
         cb.onBufferedAheadChange = { [weak self] seconds in
             guard let self,
@@ -1451,9 +1478,52 @@ class PlayerViewModel {
         isLoading = false
         guard wasLoading else { return }
         cmpLog("[CMP] playback loading overlay dismissed reason=\(reason)")
+        startStartupBufferingWindowGraceIfNeeded()
     }
 
-    private func handleFileLoaded() {
+    /// The overlay is down, so the startup window is now the only thing
+    /// keeping the chip off screen. `likelyToKeepUp` normally closes it within
+    /// a second or two; this grace bounds the case where it never arrives.
+    /// Closing does not resample the item, so a stall that began inside the
+    /// window stays hidden until the next buffering edge — the startup
+    /// watchdog, not the chip, is what covers a start that never recovers.
+    private func startStartupBufferingWindowGraceIfNeeded() {
+        guard isStartupBufferingWindowOpen, startupBufferingWindowTask == nil else { return }
+        cmpLog(
+            "[CMP] startup buffering window grace started ms=\(Int(Self.startupBufferingWindowGraceSeconds * 1000))"
+        )
+        startupBufferingWindowTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.startupBufferingWindowGraceSeconds))
+            guard !Task.isCancelled else { return }
+            self?.closeStartupBufferingWindow(reason: "grace_elapsed")
+        }
+    }
+
+    /// Single exit point for the buffering chip, so every flip names its
+    /// cause on the console the way the overlay's dismissal does.
+    private func setBuffering(_ buffering: Bool, cause: String) {
+        guard isBuffering != buffering else { return }
+        isBuffering = buffering
+        cmpLog("[CMP] playback buffering=\(buffering ? 1 : 0) cause=\(cause)")
+    }
+
+    private func reopenStartupBufferingWindow(reason: String) {
+        startupBufferingWindowTask?.cancel()
+        startupBufferingWindowTask = nil
+        guard !isStartupBufferingWindowOpen else { return }
+        isStartupBufferingWindowOpen = true
+        cmpLog("[CMP] startup buffering window opened reason=\(reason)")
+    }
+
+    private func closeStartupBufferingWindow(reason: String) {
+        guard isStartupBufferingWindowOpen else { return }
+        isStartupBufferingWindowOpen = false
+        startupBufferingWindowTask?.cancel()
+        startupBufferingWindowTask = nil
+        cmpLog("[CMP] startup buffering window closed reason=\(reason)")
+    }
+
+    private func handleFileLoaded(reason: String) {
         hasReachedEndOfFile = false
         error = nil
         clearServerOutageRecoveryState()
@@ -1461,7 +1531,7 @@ class PlayerViewModel {
             observedTime: currentTime,
             requiresForwardProgress: false
         )
-        clearLoadingOverlay(reason: "first_frame")
+        clearLoadingOverlay(reason: reason)
         isPlaying = true
         applySettingsToPlayer()
         Self.logger.info(
@@ -1561,7 +1631,7 @@ class PlayerViewModel {
         let selectedSubtitleSnapshot = selectedSubtitleId
         progressTask?.cancel()
         isLoading = true
-        isBuffering = false
+        setBuffering(false, cause: "replan")
         // Hold every backend in-route recovery ladder for the whole replan
         // round trip: the view model owns the route decision now, and a
         // watchdog reanchor/reload/rebuild racing the server negotiation was
@@ -2526,7 +2596,7 @@ class PlayerViewModel {
             staleSessionRecoverySessionId = nil
             if restart.isQualitySwitch {
                 isLoading = true
-                isBuffering = false
+                setBuffering(false, cause: "quality_switch")
                 avPlayerBackend?.dispose()
             }
         }
@@ -3362,7 +3432,7 @@ class PlayerViewModel {
             currentTime = duration
         }
         clearLoadingOverlay(reason: "end_of_file")
-        isBuffering = false
+        setBuffering(false, cause: "end_of_file")
         isPlaying = false
         showControls = true
         nowPlaying.update(
@@ -3633,6 +3703,13 @@ class PlayerViewModel {
         }
         clearSuspendedPlaybackState()
         attachNowPlayingIfNeeded()
+        // A next-episode hand-off is a start like any other — same full
+        // overlay, same gate — so it gets the startup window back. Recovery
+        // reloads do not: they are mid-session, and their chip behavior is
+        // deliberately left as it was.
+        if origin != .recovery {
+            reopenStartupBufferingWindow(reason: origin == .autoplay ? "autoplay" : "user_initiated")
+        }
         resetPublishedLoadState(
             preferredAudioTrackIndex: request.preferredAudioTrackIndex,
             preferredSubtitleTrackIndex: request.preferredSubtitleTrackIndex,
@@ -5011,7 +5088,7 @@ class PlayerViewModel {
         scrubPreviewTime = target
         isScrubbing = false
         isLoading = true
-        isBuffering = false
+        setBuffering(false, cause: "restart")
         showControls = true
         hideControlsTask?.cancel()
     }
@@ -5228,7 +5305,7 @@ class PlayerViewModel {
                     self.activeQualityId = previousQualityId
                     self.qualitySwitchError = "Couldn't switch quality."
                     self.clearLoadingOverlay(reason: "quality_switch_failure")
-                    self.isBuffering = false
+                    self.setBuffering(false, cause: "quality_switch_failure")
                 } else {
                     self.finalizeTerminalPlaybackError(String(describing: error))
                 }
@@ -6256,6 +6333,8 @@ class PlayerViewModel {
         PictureInPictureCoordinator.shared.endSession(owner: self)
         isSceneBackgrounded = false
         #endif
+        startupBufferingWindowTask?.cancel()
+        startupBufferingWindowTask = nil
         activeExecutionPlan = nil
         hasAttemptedNativeDirectRouteRecovery = false
         hasAttemptedSiloRouteHLSFallback = false
@@ -7598,7 +7677,7 @@ class PlayerViewModel {
 
         activeNotice = nil
         isHUDPresented = false
-        isBuffering = false
+        setBuffering(false, cause: "background_suspend")
         clearLoadingOverlay(reason: "background_suspend")
         isPlaying = false
         showControls = true
