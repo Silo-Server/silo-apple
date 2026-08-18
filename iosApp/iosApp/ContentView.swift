@@ -15,9 +15,11 @@ struct ContentView: View {
     @State private var siloControl = SiloControlClient()
     @State private var pictureInPicture = PictureInPictureCoordinator.shared
     #endif
+    #if DEBUG
     @State private var debugPlayContentId: String?
     @State private var didAttemptDebugAutoPlay = false
     @State private var didAttemptDebugDiagnostics = false
+    #endif
     @State private var didStartInitialStateCheck = false
     @State private var didFinishStartupSplash = false
     @State private var pendingInitialAuthState: AppRouter.AuthState?
@@ -64,10 +66,12 @@ struct ContentView: View {
             authState: router.authState
         )
         #endif
+        #if DEBUG
         .modifier(DebugPlayerPresentationModifier(
             contentId: debugPlayContentId,
             isPresented: debugPlayerPresentation
         ))
+        #endif
         #if os(iOS) || os(tvOS)
         .modifier(DiagnosticsPromptPresentationModifier(
             model: diagnosticsModel,
@@ -163,6 +167,7 @@ struct ContentView: View {
             markProfileAwayStartForTermination()
         }
         #endif
+        #if DEBUG
         .task {
             // Debug: auto-play from launch argument -debugPlay <contentId>
             if let idx = CommandLine.arguments.firstIndex(of: "-debugPlay"),
@@ -172,7 +177,6 @@ struct ContentView: View {
                 debugPlayContentId = contentId
             }
         }
-        #if DEBUG
         .task {
             await maybeDebugAutoLogin()
         }
@@ -190,7 +194,9 @@ struct ContentView: View {
                 diagnosticsModel.reset()
             }
             #endif
+            #if DEBUG
             await maybeAutoPlayForDebug()
+            #endif
             if router.authState == .authenticated {
                 let hasPendingDeepLink = pendingDeepLink != nil
                 if let pending = pendingDeepLink {
@@ -575,12 +581,14 @@ struct ContentView: View {
         }
     }
 
+    #if DEBUG
     private var debugPlayerPresentation: Binding<Bool> {
         Binding(
             get: { debugPlayContentId != nil },
             set: { if !$0 { debugPlayContentId = nil } }
         )
     }
+    #endif
 
     /// Resolves a `continuum://` URL to a navigation action. Supported
     /// shapes:
@@ -763,6 +771,7 @@ struct ContentView: View {
     }
     #endif
 
+    #if DEBUG
     private func maybeAutoPlayForDebug() async {
         guard router.authState == .authenticated else { return }
         guard !didAttemptDebugAutoPlay else { return }
@@ -802,7 +811,6 @@ struct ContentView: View {
         return CommandLine.arguments[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    #if DEBUG
     private func debugLaunchArgValue(_ name: String) -> String? {
         guard let index = CommandLine.arguments.firstIndex(of: name),
               index + 1 < CommandLine.arguments.count else {
@@ -874,8 +882,6 @@ struct ContentView: View {
             print("[DebugAutoLogin] failed: \(error)")
         }
     }
-    #endif
-
     private func resolveDebugSearchContentId(query: String) async throws -> String {
         let response = try await ContinuumAPI.shared.catalog(query: [
             "source": "query",
@@ -922,6 +928,7 @@ struct ContentView: View {
         print("[DebugPlaySearch] Resolved '\(query)' to \(preferredItem.type) contentId=\(preferredItem.contentId)")
         return preferredItem.contentId
     }
+    #endif
 
     @ViewBuilder
     private func destinationView(for route: Route) -> some View {
@@ -1417,6 +1424,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
 }
 #endif
 
+#if DEBUG
 private struct DebugPlayerPresentationModifier: ViewModifier {
     let contentId: String?
     @Binding var isPresented: Bool
@@ -1454,6 +1462,7 @@ private enum DebugAutoPlayError: LocalizedError {
         }
     }
 }
+#endif
 
 // MARK: - Zoom transition namespace
 
