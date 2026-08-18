@@ -120,11 +120,6 @@ final class PlaybackSourceCache {
         let diskBytesWritten: Int64
     }
 
-    struct Gap {
-        let start: Int64
-        let end: Int64
-    }
-
     private struct Span {
         var start: Int64
         var data: Data
@@ -350,27 +345,6 @@ final class PlaybackSourceCache {
         defer { lock.unlock() }
         if spans.contains(where: { $0.start <= offset && $0.end >= offset }) { return true }
         return diskSpans.contains(where: { $0.start <= offset && $0.end >= offset })
-    }
-
-    func missingGap(start: Int64, desiredLength: Int, totalLimit: Int64?) -> Gap? {
-        guard desiredLength > 0 else { return nil }
-        let requestedEnd = min(
-            start + Int64(desiredLength) - 1,
-            (totalLimit ?? Int64.max) - 1
-        )
-        guard requestedEnd >= start else { return nil }
-        lock.lock()
-        defer { lock.unlock() }
-        var cursor = start
-        for range in cachedRangesLocked() {
-            if range.upperBound < cursor { continue }
-            if range.lowerBound > cursor {
-                return Gap(start: cursor, end: min(range.lowerBound - 1, requestedEnd))
-            }
-            cursor = max(cursor, range.upperBound + 1)
-            if cursor > requestedEnd { return nil }
-        }
-        return Gap(start: cursor, end: requestedEnd)
     }
 
     func store(start: Int64, data: Data, totalLength: Int64?) {
@@ -630,15 +604,6 @@ private struct PlaybackSourceRangeRequest {
             return start
         case .suffix:
             return 0
-        }
-    }
-
-    var finiteEnd: Int64? {
-        switch kind {
-        case .full, .openEnded, .suffix:
-            return nil
-        case .exact(let range):
-            return range.upperBound
         }
     }
 

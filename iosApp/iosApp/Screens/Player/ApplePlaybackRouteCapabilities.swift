@@ -21,10 +21,6 @@ enum ApplePlaybackCapabilityState: String, Equatable {
             return "Unclaimed"
         }
     }
-
-    var isAvailableNow: Bool {
-        self == .repoVerified
-    }
 }
 
 struct ApplePlaybackCapabilityEntry: Equatable {
