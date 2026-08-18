@@ -1441,6 +1441,18 @@ class PlayerViewModel {
         #endif
     }
 
+    /// Single exit point for the playback loading overlay. Every dismissal
+    /// reports why, so a console capture can read the ordering against the
+    /// backend's `[CMP-AVP] initial video display gate released` line. User
+    /// exit is the one path with no reason of its own: it tears the whole
+    /// view down, taking the overlay with it.
+    private func clearLoadingOverlay(reason: String) {
+        let wasLoading = isLoading
+        isLoading = false
+        guard wasLoading else { return }
+        cmpLog("[CMP] playback loading overlay dismissed reason=\(reason)")
+    }
+
     private func handleFileLoaded() {
         hasReachedEndOfFile = false
         error = nil
@@ -1449,7 +1461,7 @@ class PlayerViewModel {
             observedTime: currentTime,
             requiresForwardProgress: false
         )
-        isLoading = false
+        clearLoadingOverlay(reason: "first_frame")
         isPlaying = true
         applySettingsToPlayer()
         Self.logger.info(
@@ -3349,7 +3361,7 @@ class PlayerViewModel {
         if duration.isFinite, duration > 0 {
             currentTime = duration
         }
-        isLoading = false
+        clearLoadingOverlay(reason: "end_of_file")
         isBuffering = false
         isPlaying = false
         showControls = true
@@ -3866,7 +3878,7 @@ class PlayerViewModel {
             // `viewModel.error` — we want a recoverable surface, not a wall.
             sourceProxy?.stop()
             sourceProxy = nil
-            isLoading = false
+            clearLoadingOverlay(reason: "autoplay_failure")
             isPlaying = false
             // Restore the postroll surface so the user can choose what to
             // do next. Drop the candidate episode so the panel renders the
@@ -3891,7 +3903,7 @@ class PlayerViewModel {
             clearServerOutageRecoveryState()
             sourceProxy?.stop()
             sourceProxy = nil
-            isLoading = false
+            clearLoadingOverlay(reason: "recovery_failure")
             isPlaying = false
             showNotice(
                 title: "Playback recovery failed",
@@ -3922,7 +3934,7 @@ class PlayerViewModel {
         interruptionRecoveryTask?.cancel()
         interruptionRecoveryTask = nil
         error = nil
-        isLoading = false
+        clearLoadingOverlay(reason: "interruption_recovered")
     }
 
     private func shouldAutoRecoverFromInterruption() -> Bool {
@@ -3997,7 +4009,7 @@ class PlayerViewModel {
         activePreparedProtocolV3 = nil
         activeExecutionPlan = nil
         error = message
-        isLoading = false
+        clearLoadingOverlay(reason: "failure")
         isPlaying = false
     }
 
@@ -4364,7 +4376,7 @@ class PlayerViewModel {
         sourceProxy?.stop()
         sourceProxy = nil
         avPlayerBackend?.dispose()
-        isLoading = false
+        clearLoadingOverlay(reason: "server_outage")
         isPlaying = false
         error = nil
         showNotice(
@@ -5215,7 +5227,7 @@ class PlayerViewModel {
                 if source == "quality" {
                     self.activeQualityId = previousQualityId
                     self.qualitySwitchError = "Couldn't switch quality."
-                    self.isLoading = false
+                    self.clearLoadingOverlay(reason: "quality_switch_failure")
                     self.isBuffering = false
                 } else {
                     self.finalizeTerminalPlaybackError(String(describing: error))
@@ -7587,7 +7599,7 @@ class PlayerViewModel {
         activeNotice = nil
         isHUDPresented = false
         isBuffering = false
-        isLoading = false
+        clearLoadingOverlay(reason: "background_suspend")
         isPlaying = false
         showControls = true
         holdSeekRate = 0

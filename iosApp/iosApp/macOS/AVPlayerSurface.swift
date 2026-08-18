@@ -23,6 +23,7 @@ struct AVPlayerSurface: NSViewRepresentable {
 final class SiloMacPlayerView: AVPlayerView {
     let subtitleOverlay = SubtitleOverlayView()
     private weak var backend: AVPlayerBackend?
+    private var readyForDisplayObservation: NSKeyValueObservation?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -44,6 +45,7 @@ final class SiloMacPlayerView: AVPlayerView {
         if self.backend !== backend {
             self.backend?.detachSubtitleOverlay(owner: self)
             self.backend = backend
+            observeReadyForDisplay()
         }
         if player !== backend.avPlayer {
             player = backend.avPlayer
@@ -54,6 +56,20 @@ final class SiloMacPlayerView: AVPlayerView {
 
     func detachSubtitleOverlay() {
         backend?.detachSubtitleOverlay(owner: self)
+    }
+
+    /// `AVPlayerView` owns its own layer, so the first-frame signal comes off
+    /// the view rather than off an `AVPlayerLayer` the way it does on
+    /// iOS/tvOS. Same contract either way: the backend's initial video display
+    /// gate holds the loading overlay until this fires.
+    private func observeReadyForDisplay() {
+        readyForDisplayObservation?.invalidate()
+        readyForDisplayObservation = observe(\.isReadyForDisplay, options: [.new, .initial]) { [weak self] view, _ in
+            guard view.isReadyForDisplay else { return }
+            DispatchQueue.main.async {
+                self?.backend?.videoSurfaceBecameReadyForDisplay()
+            }
+        }
     }
 
     private func addSubtitleOverlay() {

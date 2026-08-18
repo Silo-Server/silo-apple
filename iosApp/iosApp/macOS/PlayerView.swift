@@ -47,7 +47,7 @@ struct PlayerView: View {
             } else {
                 playerSurface
 
-                if viewModel.isLoading, viewModel.avPlayerBackend == nil {
+                if viewModel.isLoading {
                     ProgressView()
                         .tint(.white)
                         .scaleEffect(1.5)
