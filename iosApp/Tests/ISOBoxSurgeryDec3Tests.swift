@@ -6,45 +6,17 @@ import XCTest
 /// the ETSI TS 103 420 extension AVFoundation keys on for Atmos).
 final class ISOBoxSurgeryDec3Tests: XCTestCase {
 
-    // MARK: - Synthetic box-tree builder
-
-    private func box(_ type: String, _ payload: Data) -> Data {
-        var out = Data()
-        let size = UInt32(8 + payload.count)
-        out.append(contentsOf: [
-            UInt8((size >> 24) & 0xFF), UInt8((size >> 16) & 0xFF),
-            UInt8((size >> 8) & 0xFF), UInt8(size & 0xFF),
-        ])
-        out.append(type.data(using: .ascii)!)
-        out.append(payload)
-        return out
-    }
-
-    private func hdlr(_ handler: String) -> Data {
-        var payload = Data(count: 8)  // FullBox version/flags + pre_defined
-        payload.append(handler.data(using: .ascii)!)
-        payload.append(0)  // empty name
-        return box("hdlr", payload)
-    }
-
-    private func trak(handler: String, stblChildren: Data) -> Data {
-        let stbl = box("stbl", stblChildren)
-        let minf = box("minf", stbl)
-        let mdia = box("mdia", hdlr(handler) + minf)
-        return box("trak", mdia)
-    }
-
     /// An `ec-3` AudioSampleEntry: 28 bytes of entry fields, then children.
     private func ec3Entry(dec3Payload: Data) -> Data {
-        box("ec-3", Data(count: 28) + box("dec3", dec3Payload))
+        ISOBoxTestTree.box("ec-3", Data(count: 28) + ISOBoxTestTree.box("dec3", dec3Payload))
     }
 
     private func initSegment(dec3Payload: Data, videoTrakFirst: Bool = true) -> Data {
         let stsdPayload = Data(count: 8) + ec3Entry(dec3Payload: dec3Payload)  // FullBox + entry_count
-        let audioTrak = trak(handler: "soun", stblChildren: box("stsd", stsdPayload))
-        let videoTrak = trak(handler: "vide", stblChildren: Data())
-        let moov = box("moov", videoTrakFirst ? videoTrak + audioTrak : audioTrak + videoTrak)
-        return box("ftyp", Data(count: 8)) + moov
+        let audioTrak = ISOBoxTestTree.trak(handler: "soun", stblChildren: ISOBoxTestTree.box("stsd", stsdPayload))
+        let videoTrak = ISOBoxTestTree.trak(handler: "vide", stblChildren: Data())
+        let moov = ISOBoxTestTree.box("moov", videoTrakFirst ? videoTrak + audioTrak : audioTrak + videoTrak)
+        return ISOBoxTestTree.box("ftyp", Data(count: 8)) + moov
     }
 
     // MARK: - Bit-exact vectors (hand-computed)
@@ -155,9 +127,9 @@ final class ISOBoxSurgeryDec3Tests: XCTestCase {
     }
 
     func testMissingDec3ReturnsNil() {
-        let stsdPayload = Data(count: 8) + box("ec-3", Data(count: 28))  // no dec3 child
-        let audioTrak = trak(handler: "soun", stblChildren: box("stsd", stsdPayload))
-        let input = box("moov", audioTrak)
+        let stsdPayload = Data(count: 8) + ISOBoxTestTree.box("ec-3", Data(count: 28))  // no dec3 child
+        let audioTrak = ISOBoxTestTree.trak(handler: "soun", stblChildren: ISOBoxTestTree.box("stsd", stsdPayload))
+        let input = ISOBoxTestTree.box("moov", audioTrak)
         XCTAssertNil(ISOBoxSurgery.appendDec3JOCExtension(into: input, complexityIndex: 16))
     }
 

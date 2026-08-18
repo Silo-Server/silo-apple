@@ -3154,7 +3154,7 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
         }
-        let body = Self.requestBody(of: request)
+        let body = request.drainedHTTPBody
         Self.lock.withLock {
             Self.captured.append(CapturedRequest(
                 method: request.httpMethod ?? "",
@@ -3276,43 +3276,6 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
             return (404, #"{"error":"not_found"}"#)
         }
     }
-
-    private static func requestBody(of request: URLRequest) -> Data {
-        if let body = request.httpBody {
-            return body
-        }
-        guard let stream = request.httpBodyStream else {
-            return Data()
-        }
-        stream.open()
-        defer { stream.close() }
-        var data = Data()
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-        while stream.hasBytesAvailable {
-            let read = stream.read(&buffer, maxLength: buffer.count)
-            guard read > 0 else { break }
-            data.append(buffer, count: read)
-        }
-        return data
-    }
-
-    private func respond(statusCode: Int, body: String) {
-        guard let url = request.url,
-              let response = HTTPURLResponse(
-                url: url,
-                statusCode: statusCode,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
-              ) else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
-            return
-        }
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if !body.isEmpty {
-            client?.urlProtocol(self, didLoad: Data(body.utf8))
-        }
-        client?.urlProtocolDidFinishLoading(self)
-    }
 }
 
 private final class SelfHostedDiagnosticsStubProtocol: URLProtocol {
@@ -3380,8 +3343,10 @@ private final class SelfHostedDiagnosticsStubProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
 
-    private func respond(statusCode: Int, body: String) {
+private extension URLProtocol {
+    func respond(statusCode: Int, body: String) {
         guard let url = request.url,
               let response = HTTPURLResponse(
                 url: url,
@@ -3393,7 +3358,9 @@ private final class SelfHostedDiagnosticsStubProtocol: URLProtocol {
             return
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        if !body.isEmpty {
+            client?.urlProtocol(self, didLoad: Data(body.utf8))
+        }
         client?.urlProtocolDidFinishLoading(self)
     }
 }
