@@ -1118,6 +1118,7 @@ private extension ApplePlaybackRoutePlanner {
                 title: track.title,
                 lang: track.lang,
                 codec: track.codec,
+                audioProfile: track.audioProfile,
                 audioChannelsLayout: track.audioChannelsLayout,
                 audioChannelCount: track.audioChannelCount,
                 bitrate: track.bitrate,
@@ -1181,8 +1182,7 @@ private extension ApplePlaybackRoutePlanner {
         guard normalizedToken(track.codec)?.replacingOccurrences(of: "-", with: "") == "eac3" else {
             return false
         }
-        let titleToken = normalizedToken(track.title)
-        return titleToken?.contains("atmos") == true || titleToken?.contains("joc") == true
+        return track.hasAtmosHint
     }
 
     static func loopbackSourceFrameRate(for version: FileVersion) -> Float? {
@@ -1247,6 +1247,7 @@ private extension PlayerTrack {
             title: audioTrack.title,
             lang: audioTrack.language,
             codec: audioTrack.codec,
+            audioProfile: audioTrack.profile,
             audioChannelsLayout: audioTrack.channelLayout,
             audioChannelCount: audioTrack.channels,
             bitrate: audioTrack.bitrate.map(Int64.init),

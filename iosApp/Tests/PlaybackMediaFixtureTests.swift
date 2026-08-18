@@ -132,6 +132,7 @@ final class PlaybackMediaFixtureTests: XCTestCase {
                 audioTracks: [AudioTrack(
                     index: 0,
                     codec: "aac",
+                    profile: nil,
                     channels: 2,
                     channelLayout: "stereo",
                     bitrate: 96_000,
@@ -205,7 +206,8 @@ final class PlaybackMediaFixtureTests: XCTestCase {
                     frameRate: "60.000", bitrate: 40_000, profile: "Main 10",
                     level: 153, bitDepth: 10, colorRange: "pc", colorSpace: nil,
                     colorPrimaries: nil, colorTransfer: nil,
-                    videoRange: "DolbyVision", dolbyVision: "Profile 5",
+                    videoRange: "DolbyVision", videoRangeType: nil,
+                    dolbyVision: "Profile 5", dvProfile: 5,
                     title: nil, language: nil
                 )
             ],

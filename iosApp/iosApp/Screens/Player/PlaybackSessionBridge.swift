@@ -54,16 +54,24 @@ struct PreparedPlayback {
         }()
 
         var badges: [String] = []
-        if let resolution = selectedVersion.resolution, !resolution.isEmpty {
-            badges.append(PlayerMetadata.badgeLabel(forResolution: resolution))
-        }
-        if selectedVersion.hdr == true {
-            badges.append("HDR")
+        if let video = DetailPlaybackFormatting.heroVideoBadgeLabel(selectedVersion) {
+            badges.append(video)
         }
         if let codec = selectedVersion.codecVideo?.uppercased(), !codec.isEmpty {
             badges.append(codec)
         }
-        if let layout = primaryAudioLayout?.uppercased(), !layout.isEmpty {
+        let audioTrack: AudioTrack? = {
+            guard let ordinal = DetailPlaybackFormatting.resolvedAudioOrdinal(
+                version: selectedVersion,
+                selectedAudioTrackIndex: session.audioTrackIndex
+            ), let tracks = selectedVersion.audioTracks,
+               tracks.indices.contains(ordinal) else { return nil }
+            return tracks[ordinal]
+        }()
+        if let audioTrack,
+           let atmos = DetailPlaybackFormatting.atmosBadgeLabel(audioTrack) {
+            badges.append(atmos)
+        } else if let layout = primaryAudioLayout?.uppercased(), !layout.isEmpty {
             badges.append(layout)
         } else if let audioCodec = selectedVersion.codecAudio?.uppercased(), !audioCodec.isEmpty {
             badges.append(audioCodec)
@@ -112,7 +120,7 @@ struct PlayerMetadata: Equatable {
     /// Short plot description. Surfaced as secondary text below the title.
     var overview: String?
     /// Tagged media attributes rendered as pills in the hero strip:
-    /// "4K" / "HDR" / "DV" / "HEVC" / "5.1" etc.
+    /// "4K Dolby Vision" / "HEVC" / "DD+ Atmos" / "5.1" etc.
     var badges: [String]
 
     static let empty = PlayerMetadata(
@@ -123,18 +131,6 @@ struct PlayerMetadata: Equatable {
         overview: nil,
         badges: []
     )
-
-    /// Map raw resolution strings ("1920x1080", "1080p", "2160p") to the
-    /// short marketing label shown in the overlay ("4K" / "FHD" / "HD" / "SD").
-    static func badgeLabel(forResolution raw: String) -> String {
-        let lower = raw.lowercased()
-        if lower.contains("2160") || lower.contains("4k") { return "4K" }
-        if lower.contains("1440") { return "QHD" }
-        if lower.contains("1080") { return "FHD" }
-        if lower.contains("720") { return "HD" }
-        if lower.contains("480") { return "SD" }
-        return raw.uppercased()
-    }
 }
 
 enum PlaybackDeliveryStrategy {

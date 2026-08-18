@@ -928,7 +928,9 @@ struct VideoTrack: Codable, Identifiable, Hashable {
     let colorPrimaries: String?
     let colorTransfer: String?
     let videoRange: String?
+    let videoRangeType: String?
     let dolbyVision: String?
+    let dvProfile: Int?
     let title: String?
     let language: String?
     var id: Int { index ?? 0 }
@@ -937,6 +939,7 @@ struct VideoTrack: Codable, Identifiable, Hashable {
 struct AudioTrack: Codable, Identifiable, Hashable {
     let index: Int?
     let codec: String?
+    let profile: String?
     let channels: Int?
     /// Server field is `layout`, not `channel_layout`.
     let channelLayout: String?
@@ -955,6 +958,7 @@ struct AudioTrack: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case index
         case codec
+        case profile
         case channels
         case channelLayout = "layout"
         case bitrate

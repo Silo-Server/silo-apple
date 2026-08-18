@@ -23,7 +23,7 @@ struct TVMarqueeContent: Equatable {
     /// Optional server logo art that may replace the text title once
     /// cached — the title always renders as text first.
     let logoUrl: String?
-    /// Codec/HDR + content-rating chips (`4K · DOLBY VISION · ATMOS · TV-MA`).
+    /// Quality + content-rating chips (`4K DOLBY VISION · DD+ ATMOS · TV-MA`).
     let badges: [String]
     /// Dot-joined meta tokens after the badges: year · genre · runtime,
     /// or `S2 E7 · episode title · 45 min · 23 min left` for episodes.
@@ -113,33 +113,21 @@ extension TVMarqueeContent {
 
     // MARK: Formatting
 
-    /// Badge chips from the section payload's `OverlaySummary` — the
-    /// marquee shows the headline trio (resolution, dynamic range,
-    /// audio), uppercased to the §4.1 badge style.
+    /// Badge chips from the section payload's `OverlaySummary` — video
+    /// quality is combined into one label and audio preserves its carrier.
     private static func badges(from summary: OverlaySummary?) -> [String] {
         guard let summary else { return [] }
         var badges: [String] = []
-        if let resolution = prettyResolution(summary.resolution) {
-            badges.append(resolution)
-        }
-        if let hdr = nonEmpty(summary.hdr) {
-            badges.append(hdr.localizedCaseInsensitiveContains("dv") || hdr.localizedCaseInsensitiveContains("dolby")
-                ? "DOLBY VISION"
-                : hdr.uppercased())
+        if let video = DetailPlaybackFormatting.heroVideoBadgeLabel(
+            resolution: summary.resolution,
+            dynamicRange: summary.hdr
+        ) {
+            badges.append(video.uppercased())
         }
         if let audio = nonEmpty(summary.audio) {
-            badges.append(audio.localizedCaseInsensitiveContains("atmos") ? "ATMOS" : audio.uppercased())
+            badges.append(audio.uppercased())
         }
         return badges
-    }
-
-    private static func prettyResolution(_ value: String?) -> String? {
-        guard let value = nonEmpty(value) else { return nil }
-        switch value.lowercased() {
-        case "2160p", "4k", "uhd": return "4K"
-        case "4320p", "8k": return "8K"
-        default: return value.uppercased()
-        }
     }
 
     private static func episodeToken(season: Int?, episode: Int?) -> String? {

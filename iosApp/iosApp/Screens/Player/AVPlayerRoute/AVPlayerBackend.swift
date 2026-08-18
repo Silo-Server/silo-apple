@@ -1404,6 +1404,7 @@ final class AVPlayerBackend {
                     title: track.title,
                     lang: track.lang,
                     codec: track.codec,
+                    audioProfile: track.audioProfile,
                     audioChannelsLayout: track.audioChannelsLayout,
                     audioChannelCount: track.audioChannelCount,
                     bitrate: track.bitrate,
@@ -4700,10 +4701,7 @@ final class AVPlayerBackend {
 
     private static func loopbackPreservesAtmos(for track: PlayerTrack) -> Bool {
         guard normalizedCodecToken(track.codec) == "eac3" else { return false }
-        let title = track.title?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        return title?.contains("atmos") == true || title?.contains("joc") == true
+        return track.hasAtmosHint
     }
 
     private static func normalizedCodecToken(_ raw: String?) -> String? {

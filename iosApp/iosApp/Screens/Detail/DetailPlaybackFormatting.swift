@@ -24,7 +24,7 @@ enum DetailPlaybackFormatting {
         let tokens = [
             nonEmpty(version.resolution),
             nonEmpty(normalizedVideoCodec(version.codecVideo)),
-            dynamicRangeLabel(version),
+            dynamicRangeBadgeLabel(version),
             nonEmpty(normalizedAudioCodec(version.codecAudio)),
         ].compactMap { $0 }
         return tokens.isEmpty ? "Auto" : tokens.joined(separator: " · ")
@@ -43,7 +43,7 @@ enum DetailPlaybackFormatting {
         let tokens = [
             nonEmpty(version.resolution),
             nonEmpty(normalizedVideoCodec(version.codecVideo)),
-            dynamicRangeLabel(version),
+            dynamicRangeBadgeLabel(version),
             nonEmpty(normalizedAudioCodec(version.codecAudio)),
         ].compactMap { $0 }
         if !tokens.isEmpty {
@@ -197,11 +197,15 @@ enum DetailPlaybackFormatting {
         if let title = usefulAudioTitle(track), title != audioTitle(track, ordinal: ordinal) {
             tokens.append(title)
         }
-        if let codec = normalizedAudioCodec(track.codec) {
-            tokens.append(codec)
-        }
-        if let layout = compactAudioLayout(track) {
-            tokens.append(layout)
+        if let atmos = atmosBadgeLabel(track) {
+            tokens.append(atmos)
+        } else {
+            if let codec = normalizedAudioCodec(track.codec) {
+                tokens.append(codec)
+            }
+            if let layout = compactAudioLayout(track) {
+                tokens.append(layout)
+            }
         }
         if track.isDefault == true {
             tokens.append("Default")
@@ -213,11 +217,15 @@ enum DetailPlaybackFormatting {
     }
 
     private static func audioSummary(_ track: AudioTrack, ordinal: Int) -> String {
-        let tokens = [
-            languageDisplayName(track.language),
-            nonEmpty(normalizedAudioCodec(track.codec)),
-            compactAudioLayout(track),
-        ].compactMap { $0 }
+        var tokens = [languageDisplayName(track.language)].compactMap { $0 }
+        if let atmos = atmosBadgeLabel(track) {
+            tokens.append(atmos)
+        } else {
+            tokens += [
+                nonEmpty(normalizedAudioCodec(track.codec)),
+                compactAudioLayout(track),
+            ].compactMap { $0 }
+        }
         return tokens.isEmpty ? audioTitle(track, ordinal: ordinal) : tokens.joined(separator: " · ")
     }
 
@@ -535,11 +543,49 @@ enum DetailPlaybackFormatting {
         return codec.uppercased()
     }
 
-    private static func dynamicRangeLabel(_ version: FileVersion) -> String? {
-        if (version.videoTracks ?? []).contains(where: { nonEmpty($0.dolbyVision) != nil }) {
+    static func videoTrackIsDolbyVision(_ track: VideoTrack) -> Bool {
+        if nonEmpty(track.dolbyVision) != nil || (track.dvProfile ?? 0) > 0 {
+            return true
+        }
+        return [track.videoRange, track.videoRangeType].compactMap(nonEmpty).contains { value in
+            let normalized = value.lowercased()
+            return normalized.contains("dolbyvision") || normalized.contains("dovi")
+        }
+    }
+
+    static func dynamicRangeBadgeLabel(_ version: FileVersion) -> String? {
+        if (version.videoTracks ?? []).contains(where: videoTrackIsDolbyVision) {
             return "DV"
         }
         return version.hdr == true ? "HDR" : nil
+    }
+
+    static func heroVideoBadgeLabel(_ version: FileVersion) -> String? {
+        heroVideoBadgeLabel(
+            resolution: version.resolution,
+            dynamicRange: dynamicRangeBadgeLabel(version)
+        )
+    }
+
+    static func heroVideoBadgeLabel(resolution: String?, dynamicRange: String?) -> String? {
+        let normalizedResolution: String? = {
+            guard let raw = resolution?.lowercased() else { return nil }
+            if raw.contains("4320") || raw.contains("8k") { return "8K" }
+            if raw.contains("2160") || raw.contains("4k") || raw.contains("uhd") { return "4K" }
+            if raw.contains("1080") || raw.contains("720") { return "HD" }
+            if raw.contains("480") { return "SD" }
+            return nil
+        }()
+        let normalizedDynamicRange: String? = {
+            guard let value = nonEmpty(dynamicRange) else { return nil }
+            let lowered = value.lowercased()
+            if lowered.contains("dolby vision") || lowered.contains("dovi") || lowered.contains("dv") {
+                return "Dolby Vision"
+            }
+            return value
+        }()
+        let parts = [normalizedResolution, normalizedDynamicRange].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 
     static func normalizedAudioCodec(_ codec: String?) -> String? {
@@ -554,6 +600,26 @@ enum DetailPlaybackFormatting {
         if codec.contains("dts") { return "DTS" }
         if codec.contains("flac") { return "FLAC" }
         return codec.uppercased()
+    }
+
+    /// True when the track carries Dolby Atmos. The server frequently omits it
+    /// from `channelLayout` (5.1 bed only), so also check the human title and
+    /// the embedded stream title for "atmos"/"joc".
+    static func audioTrackIsAtmos(_ track: AudioTrack) -> Bool {
+        [track.profile, track.channelLayout, track.title, track.embeddedTitle].contains { value in
+            guard let lowered = value?.lowercased() else { return false }
+            return lowered.contains("atmos") || lowered.contains("joc")
+        }
+    }
+
+    static func atmosBadgeLabel(_ track: AudioTrack) -> String? {
+        guard audioTrackIsAtmos(track) else { return nil }
+
+        switch normalizedAudioCodec(track.codec) {
+        case "EAC3": return "DD+ Atmos"
+        case "TrueHD": return "TrueHD Atmos"
+        default: return "Atmos"
+        }
     }
 
     static func normalizedSubtitleCodec(_ codec: String?) -> String? {
@@ -578,6 +644,7 @@ enum DetailPlaybackFormatting {
     }
 
     private static func compactAudioLayout(_ track: AudioTrack) -> String? {
+        if audioTrackIsAtmos(track) { return "Atmos" }
         if let layout = nonEmpty(track.channelLayout) {
             let lowered = layout.lowercased()
             if lowered.contains("atmos") { return "Atmos" }

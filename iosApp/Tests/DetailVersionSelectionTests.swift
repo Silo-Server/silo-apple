@@ -113,6 +113,12 @@ final class DetailVersionSelectionTests: XCTestCase {
         return try! decoder.decode([FileVersion].self, from: Data(json.utf8))
     }
 
+    private func decodedWatchDetail(_ json: String) throws -> WatchDetail {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(WatchDetail.self, from: Data(json.utf8))
+    }
+
     func testEditionsGroupVersionsByEditionLabel() {
         let versions = decodedVersions("""
         [
@@ -278,6 +284,217 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertTrue(options[0].ordinal == 0)
         XCTAssertTrue(options[1].ordinal == 1)
         XCTAssertTrue(options[1].isSelected)
+    }
+
+    func testAudioProfileCanMarkAtmosWithoutTitleHint() throws {
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "audio_tracks": [
+              {
+                "codec": "eac3",
+                "profile": "Dolby Digital Plus + Dolby Atmos",
+                "layout": "5.1",
+                "channels": 6,
+                "default": true
+              }
+            ]
+          }
+        ]
+        """)
+
+        let track = try XCTUnwrap(versions[0].audioTracks?.first)
+        XCTAssertEqual(track.profile, "Dolby Digital Plus + Dolby Atmos")
+        XCTAssertTrue(DetailPlaybackFormatting.audioTrackIsAtmos(track))
+        XCTAssertEqual(
+            DetailPlaybackFormatting.audioValueLabel(version: versions[0], selectedAudioTrackIndex: nil),
+            "DD+ Atmos"
+        )
+    }
+
+    func testAtmosLabelsDistinguishCodecFamily() throws {
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "audio_tracks": [
+              { "codec": "eac3", "profile": "Dolby Digital Plus + Dolby Atmos", "language": "eng" },
+              { "codec": "truehd", "profile": "Dolby TrueHD + Dolby Atmos" },
+              { "codec": "opus", "title": "English Atmos" },
+              { "codec": "eac3", "profile": "Dolby Digital Plus" }
+            ]
+          }
+        ]
+        """)
+        let tracks = try XCTUnwrap(versions[0].audioTracks)
+
+        XCTAssertEqual(DetailPlaybackFormatting.atmosBadgeLabel(tracks[0]), "DD+ Atmos")
+        XCTAssertEqual(DetailPlaybackFormatting.atmosBadgeLabel(tracks[1]), "TrueHD Atmos")
+        XCTAssertEqual(DetailPlaybackFormatting.atmosBadgeLabel(tracks[2]), "Atmos")
+        XCTAssertNil(DetailPlaybackFormatting.atmosBadgeLabel(tracks[3]))
+        XCTAssertEqual(DetailPlaybackFormatting.audioTitle(tracks[0], ordinal: 0), "English")
+        XCTAssertEqual(
+            DetailPlaybackFormatting.audioDetail(tracks[0], ordinal: 0, version: versions[0]),
+            "DD+ Atmos"
+        )
+    }
+
+    func testDynamicRangeLabelsPreferDolbyVisionEvidence() {
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "resolution": "2160p",
+            "hdr": true,
+            "video_tracks": [
+              { "codec": "hevc", "dv_profile": 8, "video_range_type": "DOVIWithHDR10" }
+            ]
+          },
+          {
+            "file_id": 2,
+            "resolution": "2160p",
+            "hdr": true,
+            "video_tracks": [
+              { "codec": "hevc", "video_range_type": "HDR10" }
+            ]
+          },
+          {
+            "file_id": 3,
+            "resolution": "2160p",
+            "hdr": false,
+            "video_tracks": [
+              { "codec": "hevc", "dolby_vision": "Profile 5" }
+            ]
+          }
+        ]
+        """)
+
+        XCTAssertEqual(DetailPlaybackFormatting.dynamicRangeBadgeLabel(versions[0]), "DV")
+        XCTAssertEqual(DetailPlaybackFormatting.versionShortLabel(versions[0]), "2160p · DV")
+        XCTAssertEqual(DetailPlaybackFormatting.dynamicRangeBadgeLabel(versions[1]), "HDR")
+        XCTAssertEqual(DetailPlaybackFormatting.dynamicRangeBadgeLabel(versions[2]), "DV")
+    }
+
+    func testHeroVideoBadgeCombinesResolutionAndDynamicRange() {
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "resolution": "2160p",
+            "hdr": true,
+            "video_tracks": [
+              { "codec": "hevc", "dv_profile": 8 }
+            ]
+          },
+          {
+            "file_id": 2,
+            "resolution": "2160p",
+            "hdr": true
+          },
+          {
+            "file_id": 3,
+            "resolution": "1080p"
+          },
+          {
+            "file_id": 4,
+            "hdr": true
+          },
+          {
+            "file_id": 5
+          }
+        ]
+        """)
+
+        XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[0]), "4K Dolby Vision")
+        XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[1]), "4K HDR")
+        XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[2]), "HD")
+        XCTAssertEqual(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[3]), "HDR")
+        XCTAssertNil(DetailPlaybackFormatting.heroVideoBadgeLabel(versions[4]))
+    }
+
+    func testPlayerMetadataUsesCombinedVideoAndSelectedAtmosCarrier() throws {
+        let detail = try decodedWatchDetail("""
+        {
+          "content_id": "episode-1",
+          "type": "episode",
+          "title": "The Episode",
+          "versions": [
+            {
+              "file_id": 1,
+              "resolution": "2160p",
+              "codec_video": "hevc",
+              "hdr": true,
+              "effective_audio_track_index": 0,
+              "video_tracks": [
+                { "codec": "hevc", "dv_profile": 8 }
+              ],
+              "audio_tracks": [
+                { "codec": "eac3", "profile": "Dolby Digital Plus + Dolby Atmos" },
+                { "codec": "truehd", "profile": "Dolby TrueHD + Dolby Atmos" }
+              ]
+            }
+          ]
+        }
+        """)
+        let session = PlaybackSessionResponse(
+            sessionId: "test-session",
+            userId: nil,
+            profileId: nil,
+            mediaFileId: 1,
+            playMethod: "direct",
+            position: 0,
+            isPaused: false,
+            streamUrl: "https://example.invalid/stream",
+            audioTrackIndex: 1,
+            durationSeconds: 60,
+            subtitleUrls: nil,
+            playbackInfo: nil
+        )
+        let prepared = PreparedPlayback(
+            watchDetail: detail,
+            selectedVersion: try XCTUnwrap(detail.versions.first),
+            session: session
+        )
+
+        XCTAssertEqual(
+            prepared.playerMetadata().badges,
+            ["4K Dolby Vision", "HEVC", "TrueHD Atmos"]
+        )
+    }
+
+    func testHomeVideoBadgesCombineWhenTheyShareACorner() throws {
+        let prefs = OverlaySchema.buildDefaults()
+        let ids = OverlayRegistry.enabled(at: .topLeft, in: prefs).map(\.id)
+
+        XCTAssertTrue(ids.contains(.resolutionHdr))
+        XCTAssertFalse(ids.contains(.resolution))
+        XCTAssertFalse(ids.contains(.hdr))
+
+        let combined = try XCTUnwrap(OverlayRegistry.def(for: .resolutionHdr))
+        var data = OverlayData()
+        data.resolution = "2160p"
+        data.hdr = "DV HDR10"
+        XCTAssertEqual(combined.getValue(data), "4K DV")
+        data.resolution = nil
+        XCTAssertEqual(combined.getValue(data), "DV")
+        data.resolution = "2160p"
+        data.hdr = nil
+        XCTAssertEqual(combined.getValue(data), "4K")
+        data.hdr = "HLG"
+        XCTAssertEqual(combined.getValue(data), "4K HLG")
+    }
+
+    func testHomeVideoBadgesStaySeparateInDifferentCorners() {
+        var prefs = OverlaySchema.buildDefaults()
+        prefs.items[.hdr]?.position = .topRight
+
+        let topLeft = OverlayRegistry.enabled(at: .topLeft, in: prefs).map(\.id)
+        let topRight = OverlayRegistry.enabled(at: .topRight, in: prefs).map(\.id)
+        XCTAssertTrue(topLeft.contains(.resolution))
+        XCTAssertTrue(topRight.contains(.hdr))
+        XCTAssertFalse(topLeft.contains(.resolutionHdr))
+        XCTAssertFalse(topRight.contains(.resolutionHdr))
     }
 
     func testEffectiveAudioLabelPrefersServerEffectiveTrack() {

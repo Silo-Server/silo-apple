@@ -81,10 +81,12 @@ enum LocalMediaProbe {
                 // `color_transfer` is missing — which it is not here. Deriving
                 // our own would risk disagreeing with the server's vocabulary.
                 videoRange: nil,
+                videoRangeType: nil,
                 // A bare profile number: `dolbyVisionProfile(from:)` parses
                 // that first, and leaving it nil when no configuration record
                 // is present is what keeps `versionHasDolbyVision` honest.
                 dolbyVision: dolbyVision.map { String($0.profile) },
+                dvProfile: dolbyVision.map { Int($0.profile) },
                 title: nil,
                 language: nil
             ))

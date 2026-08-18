@@ -3,7 +3,7 @@ import Foundation
 
 /// A token in the hero's facts row. `.text` items get a middle-dot
 /// separator between them; `.rating` renders a green check + maturity
-/// label; `.chip` renders an outlined uppercase pill (4K / HDR / ATMOS / CC).
+/// label; `.chip` renders an outlined pill (4K Dolby Vision / DD+ Atmos / CC).
 enum PhoneHeroFactToken: Hashable {
     case text(String)
     case rating(String)
@@ -168,9 +168,8 @@ enum PhoneHeroMetadata {
     private static func qualityTokens(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [PhoneHeroFactToken] {
         guard let version = selectedVersion ?? preferredVersion(from: detail) else { return [] }
         var tokens: [PhoneHeroFactToken] = []
-        if let res = resolutionLabel(version.resolution) { tokens.append(.chip(res)) }
-        if version.hdr == true {
-            tokens.append(.chip(dolbyVisionLabel(version: version) ?? "HDR"))
+        if let video = DetailPlaybackFormatting.heroVideoBadgeLabel(version) {
+            tokens.append(.chip(video))
         }
         if let audio = primaryAudioLabel(version: version) { tokens.append(.chip(audio)) }
         if hasSubtitles(version: version) { tokens.append(.chip("CC")) }
@@ -186,30 +185,13 @@ enum PhoneHeroMetadata {
         return versions.first
     }
 
-    private static func resolutionLabel(_ raw: String?) -> String? {
-        guard let raw = raw?.lowercased() else { return nil }
-        if raw.contains("2160") || raw.contains("4k") { return "4K" }
-        if raw.contains("1080") { return "HD" }
-        if raw.contains("720") { return "HD" }
-        if raw.contains("480") { return "SD" }
-        return nil
-    }
-
-    private static func dolbyVisionLabel(version: FileVersion) -> String? {
-        let videoTracks = version.videoTracks ?? []
-        if videoTracks.contains(where: { ($0.dolbyVision ?? "").isEmpty == false }) {
-            return "DOLBY VISION"
-        }
-        return nil
-    }
-
     private static func primaryAudioLabel(version: FileVersion) -> String? {
         let tracks = version.audioTracks ?? []
         let defaultTrack = tracks.first(where: { $0.isDefault == true }) ?? tracks.first
         guard let track = defaultTrack else { return nil }
 
+        if let atmos = DetailPlaybackFormatting.atmosBadgeLabel(track) { return atmos }
         if let layout = track.channelLayout?.lowercased() {
-            if layout.contains("atmos") { return "ATMOS" }
             if layout.contains("7.1") { return "7.1" }
             if layout.contains("5.1") { return "5.1" }
             if layout.contains("stereo") || layout == "2.0" { return nil }
