@@ -828,12 +828,6 @@ final class LoopbackSegmentStore {
         return result
     }
 
-    /// Test seam: runs between a spill's disk write and the store re-locking
-    /// to finalize it — the window where a concurrent prune (running on a
-    /// server request thread via `declareVODTarget`) can claim the in-flight
-    /// segment. Nil outside tests.
-    var spillWriteInterludeForTesting: (() -> Void)?
-
     private var lastSegmentServeWall: CFAbsoluteTime = 0
 
     /// Wall seconds since the last successful segment serve, or nil before
@@ -938,7 +932,6 @@ final class LoopbackSegmentStore {
 
             lock.unlock()
             let spilled = spillSegmentToDisk(segment, to: spillURL)
-            spillWriteInterludeForTesting?()
             lock.lock()
             finishSpillLocked(segment, url: spillURL, spilled: spilled, evicted: &evicted)
             lock.broadcast()

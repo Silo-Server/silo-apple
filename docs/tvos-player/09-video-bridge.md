@@ -234,18 +234,20 @@ equivalent:
   skipped for the same reason — the plan's openers are random-access by
   construction.
 - **Parameter-set carry-forward across VOD restarts.** AVPlayer fetches
-  `EXT-X-MAP` once per item, so a restarted producer must install the **first**
-  session's `hvcC`/`avcC` rather than whatever its own fresh encoder
-  synthesizes. The first producer publishes them through
-  `onBridgedVideoParameterSetsResolved`; `AVPlayerBackend` pins them onto the
+  `EXT-X-MAP` once per item, so a restarted producer had to install the
+  **first** session's `hvcC`/`avcC` rather than whatever its own fresh encoder
+  synthesized. The first producer published them through
+  `onBridgedVideoParameterSetsResolved`; `AVPlayerBackend` pinned them onto the
   strategy's spec with
   `LoopbackSessionSpec.carryingBridgedVideoParameterSets(_:)`, and
-  `reanchored(at:)` carries the field into every restart. On restart,
-  `installBridgedVideoParameterSets(on:)` installs the carried record **and
-  asserts the fresh encoder produced identical bytes** — a mismatch throws
+  `reanchored(at:)` carried the field into every restart. On restart,
+  `installBridgedVideoParameterSets(on:)` installed the carried record **and
+  asserted the fresh encoder produced identical bytes** — a mismatch threw
   `videoTranscodeSetup("bridged video parameter sets drifted across producer
-  restart")` rather than publishing segments the item's `init.mp4` cannot
-  decode.
+  restart")` rather than publishing segments the item's `init.mp4` could not
+  decode. The callback, the spec fields (`bridgedVideoParameterSets`,
+  `sourceVideoWidth`/`sourceVideoHeight`) and the copy helper were deleted with
+  the rest of the tier's residue.
 - **Restart pre-roll.** A bridged restart cannot gate on the *source* keyframe:
   the decoder needs the source keyframe preceding the boundary to produce
   anything at all. So `vodShouldDropPacket` lets everything through, the
@@ -402,5 +404,6 @@ Not implemented. Do not read these as current behavior.
   `avcodec_receive_packet`.
 - verified: `watchdogMinimumWallSeconds = 10` and
   `watchdogMinimumRealtimeRatio = 1.1` in `LoopbackVideoBridge`.
-- verified: `bridgedVideoParameterSets` survives `reanchored(at:)` and is
-  asserted for byte equality on restart.
+- verified (while the tier existed): `bridgedVideoParameterSets` survived
+  `reanchored(at:)` and was asserted for byte equality on restart. The field
+  itself is gone.

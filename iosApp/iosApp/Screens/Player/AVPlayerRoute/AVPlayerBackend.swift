@@ -467,15 +467,8 @@ final class AVPlayerBackend {
     private static let playheadWatchdogStarvationEscalateSeconds: Double = 30.0
     private static let playheadWatchdogStarvationServeQuietSeconds: Double = 15.0
     private static let generatedHLSSpillBudgetBytes: Int64 = 4 * 1024 * 1024 * 1024
-    private static var isConstrainedMemoryDevice: Bool {
-        #if os(tvOS)
-        return ProcessInfo.processInfo.physicalMemory <= 3_500_000_000
-        #else
-        return false
-        #endif
-    }
     private static var loopbackSegmentStoreMemoryBudgetBytes: Int {
-        isConstrainedMemoryDevice ? 96 * 1024 * 1024 : 128 * 1024 * 1024
+        PlaybackSourceCache.isConstrainedMemoryDevice ? 96 * 1024 * 1024 : 128 * 1024 * 1024
     }
 
     /// Temporary [CMP-MEM] instrumentation: resident footprint as jetsam
@@ -516,10 +509,7 @@ final class AVPlayerBackend {
     static let loopbackSteadyStateForwardBufferTarget = loopbackStartupForwardBuffer
 
     private static func generatedHLSSpillPolicy(for spec: LoopbackSessionSpec) -> LoopbackSegmentStore.SpillPolicy {
-        if ProcessInfo.processInfo.environment["SILO_ENABLE_HLS_DISK_SPILL"] == "1" {
-            return .enabled(reason: "env", maxBytes: generatedHLSSpillBudgetBytes)
-        }
-        return .enabled(
+        .enabled(
             reason: spec.sourceBitrateBps == nil ? "source_bitrate_unknown" : "local_hls_event_playlist",
             maxBytes: generatedHLSSpillBudgetBytes
         )
@@ -1371,36 +1361,13 @@ final class AVPlayerBackend {
             let startTime = playerSeconds.isFinite
                 ? mediaTime(for: max(0, playerSeconds))
                 : pendingStartTime
-            let updatedTracks = spec.availableAudioTracks.map { track in
-                PlayerTrack(
-                    trackId: track.trackId,
-                    kind: track.kind,
-                    title: track.title,
-                    lang: track.lang,
-                    codec: track.codec,
-                    audioChannelsLayout: track.audioChannelsLayout,
-                    audioChannelCount: track.audioChannelCount,
-                    bitrate: track.bitrate,
-                    isDefault: track.isDefault,
-                    isForced: track.isForced,
-                    isHearingImpaired: track.isHearingImpaired,
-                    isVisualImpaired: track.isVisualImpaired,
-                    isExternal: track.isExternal,
-                    isSelected: track.trackId == trackId,
-                    ffIndex: track.ffIndex,
-                    srcId: track.srcId
-                )
-            }
+            let updatedTracks = spec.availableAudioTracks.map { $0.selecting($0.trackId == trackId) }
             let updatedSpec = LoopbackSessionSpec(
                 sourceURL: spec.sourceURL,
                 headers: spec.headers,
                 sourceStartTimeSeconds: startTime,
                 sourceBitrateBps: spec.sourceBitrateBps,
                 videoMode: spec.videoMode,
-                videoOutputMode: spec.videoOutputMode,
-                sourceVideoWidth: spec.sourceVideoWidth,
-                sourceVideoHeight: spec.sourceVideoHeight,
-                bridgedVideoParameterSets: spec.bridgedVideoParameterSets,
                 sourceVideoFrameRate: spec.sourceVideoFrameRate,
                 selectedAudio: LoopbackSessionSpec.SelectedAudio(
                     trackIndex: selectedTrackIndex,
@@ -2083,22 +2050,6 @@ final class AVPlayerBackend {
                 self.activeVODWriterHeadIndex = max(
                     self.activeVODWriterHeadIndex ?? segmentIndex,
                     segmentIndex
-                )
-            }
-        }
-        writer.onBridgedVideoParameterSetsResolved = { [weak self] parameterSets in
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isDisposed else { return }
-                guard self.activeLoopbackSessionID == sessionID else { return }
-                // AVPlayer fetches EXT-X-MAP once per item, so every restarted
-                // producer must install THIS session's parameter sets rather
-                // than whatever its own fresh encoder synthesizes. Pinning them
-                // on the strategy's spec is enough: `reanchored(at:)` carries
-                // the field into the restart.
-                guard case .some(.siloLoopback(let current)) = self.currentSourceStrategy,
-                      current.bridgedVideoParameterSets == nil else { return }
-                self.currentSourceStrategy = .siloLoopback(
-                    spec: current.carryingBridgedVideoParameterSets(parameterSets)
                 )
             }
         }
@@ -4587,24 +4538,7 @@ final class AVPlayerBackend {
                 return audioTracks
             }
             return audioTracks.enumerated().map { index, track in
-                PlayerTrack(
-                    trackId: track.trackId,
-                    kind: track.kind,
-                    title: track.title,
-                    lang: track.lang,
-                    codec: track.codec,
-                    audioChannelsLayout: track.audioChannelsLayout,
-                    audioChannelCount: track.audioChannelCount,
-                    bitrate: track.bitrate,
-                    isDefault: track.isDefault,
-                    isForced: track.isForced,
-                    isHearingImpaired: track.isHearingImpaired,
-                    isVisualImpaired: track.isVisualImpaired,
-                    isExternal: track.isExternal,
-                    isSelected: index == 0,
-                    ffIndex: track.ffIndex,
-                    srcId: track.srcId
-                )
+                track.selecting(index == 0)
             }
         case .remoteHLS, .remoteDirect:
             return []

@@ -380,14 +380,14 @@ enum ApplePlaybackV3Capabilities {
                 // Apple hardware decodes HEVC Main and Main10; H.264 High 10
                 // has no hardware path on any supported device.
                 bitDepths: codec == "hevc" ? [8, 10] : [8],
-                maxWidth: maxDecodeHeight >= 2_160 ? 3_840 : 1_920,
-                maxHeight: maxDecodeHeight,
+                maxWidth: AppleDecodeCapabilities.maxDecodeHeight >= 2_160 ? 3_840 : 1_920,
+                maxHeight: AppleDecodeCapabilities.maxDecodeHeight,
                 // Every device that reaches the minimum OS decodes 4K60. Higher
                 // frame rates are only guaranteed below 4K, and the contract has
                 // no way to express a rate that depends on resolution, so the
                 // lower of the two is the bound we can stand behind.
                 maxFrameRate: 60,
-                maxBitrateKbps: maxDecodeHeight >= 2_160 ? 120_000 : 25_000,
+                maxBitrateKbps: AppleDecodeCapabilities.maxDecodeHeight >= 2_160 ? 120_000 : 25_000,
                 hardware: true
             )
         }
@@ -404,15 +404,6 @@ enum ApplePlaybackV3Capabilities {
         return codecType == kCMVideoCodecType_H264
         #else
         return VTIsHardwareDecodeSupported(codecType)
-        #endif
-    }
-
-    /// The tallest frame this build's decoders are guaranteed to accept.
-    private static var maxDecodeHeight: Int {
-        #if targetEnvironment(simulator)
-        1_080
-        #else
-        2_160
         #endif
     }
 

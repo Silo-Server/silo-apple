@@ -24,21 +24,17 @@ with `silo_dv_profile_owned_by_dv_policy` for the same reason.
 | 7, with `preferProfile7HDR10Fallback` on | `.passthroughHEVC` | The Settings → Player toggle. When `DolbyVisionPolicy.resolution(forProfile:snapshot:)` returns `.profile7HDR10Fallback`, the loopback carries the HDR10-compatible base layer with DV signaling omitted. |
 | 8 | `.passthroughProfile8(baseLayer)` | Base layer from `transferKind(for:)`: PQ → 8.1 (`db1p`), SDR → 8.2 (`db2g`), HLG → 8.4 (`db4h`). |
 | 8, with Dolby Vision disabled | `.passthroughHEVC` | `dolby_vision_disabled_base_layer_loopback`. |
-| 10 (AV1 DV) | none | Not a live claim. `DolbyVisionFormat` recognizes AV1 DV metadata, but AV1 never reaches a DV `VideoMode`: the planner's DV arm only builds specs for profiles 5/7/8, and `loopbackVideoOutputMode` blocks any non-copyable codec with `video_not_copyable`. |
+| 10 (AV1 DV) | none | Not a live claim. `DolbyVisionFormat` recognizes AV1 DV metadata, but AV1 never reaches a DV `VideoMode`: the planner's DV arm only builds specs for profiles 5/7/8, and the Silo assessment blocks any non-copyable codec with `video_not_copyable`. |
 
 ## 2. Dolby Vision is never re-encoded
 
 Since the on-device video bridge was retired (2026-08-17, see
 [09](09-video-bridge.md)) this holds structurally rather than by a dedicated
-gate: `ApplePlaybackRoutePlanner.loopbackVideoOutputMode(for:)` has only one
-answer, and it is `.copy`.
+gate: the writer only ever remuxes, so `ApplePlaybackRoutePlanner.assessSiloRoute`
+just checks the codec against `siloVideoCopyCodecs`.
 
-```swift
-siloVideoCopyCodecs.contains(videoCodec) ? (.copy, nil) : (.copy, "video_not_copyable")
-```
-
-- DV on `h264` / `hevc` → `.copy`. The bitstream, RPU, and enhancement layer
-  are remuxed byte-for-byte.
+- DV on `h264` / `hevc` → remuxed. The bitstream, RPU, and enhancement layer
+  ride through byte-for-byte.
 - DV on anything else → blocked with `video_not_copyable`, which routes the
   session to `avPlayerHLS`.
 
@@ -46,10 +42,6 @@ The original reason still stands: an RPU and enhancement layer cannot survive
 decode → re-encode, and Profile 5's IPT-PQ-c2 base has no viewable fallback if
 the DV metadata is stripped. There is no longer a local re-encode tier that
 could get this wrong.
-
-The planner reinforces it at the call site: `directVideoOutputMode` is forced
-to `.copy` whenever `directDolbyVisionProfile != nil`, so even if the Silo
-assessment had produced a bridged mode it cannot claim a DV session.
 
 ## 3. tvOS display matching
 
@@ -128,8 +120,8 @@ The writer file is explicit about the design:
 The goal has always been to get Dolby Vision through AVPlayer's own
 DV-capable pipeline. What changed with the one-player consolidation is that this
 is no longer a *special* path for DV: it is the primary direct-play path for
-almost everything, with DV as one `VideoMode` among several and the
-[video bridge](09-video-bridge.md) as an orthogonal `VideoOutputMode`.
+almost everything, with DV as one `VideoMode` among several (the orthogonal
+`VideoOutputMode` axis went away with the [video bridge](09-video-bridge.md)).
 
 ## 6. Loopback server and ATS
 
@@ -157,9 +149,6 @@ Loopback-specific callbacks worth knowing:
 - `onSegmentPlanResolved` publishes the `LoopbackSegmentPlan` (the VOD
   timeline).
 - `onSegmentAppended` advances the writer head index for the consumer window.
-- `onBridgedVideoParameterSetsResolved` pins the first bridged producer's
-  `hvcC`/`avcC` onto the session spec so a restart reproduces it — see
-  [09](09-video-bridge.md#4-writer-integration).
 
 ## 8. Current limitations
 
@@ -192,8 +181,10 @@ from FFmpeg and AVPlayer-facing clients.
 (96 MB on constrained-memory devices — `AVPlayerBackend.loopbackSegmentStoreMemoryBudgetBytes`).
 Bounded session-scoped temp spill is now enabled for **every** loopback session
 with a 4 GB budget (`generatedHLSSpillBudgetBytes`), reported as
-`local_hls_event_playlist` or `source_bitrate_unknown`;
-`SILO_ENABLE_HLS_DISK_SPILL=1` forces it with reason `env`.
+`local_hls_event_playlist` or `source_bitrate_unknown`. The
+`SILO_ENABLE_HLS_DISK_SPILL=1` override went away with the conditional spill
+policy — both arms enabled spill with the same budget, so the variable is no
+longer read anywhere and setting it has no effect.
 
 Temp spill is not debug mirroring:
 
@@ -225,10 +216,12 @@ For the loopback route (`ApplePlaybackRoutePlanner.loopbackAudioOutputMode`):
 - verified: Dolby Vision profiles 5/7/8 claim `siloPlayerLoopback` ahead of the
   native-direct assessment in `makeExecutionPlan`, and `assessSiloRoute` returns
   early with `silo_dv_profile_owned_by_dv_policy` for any DV source.
-- corrected 2026-08-17: `loopbackVideoOutputMode` now returns
+- corrected 2026-08-17, superseded: `loopbackVideoOutputMode` returned
   `video_not_copyable` for any non-copy codec (the DV-specific
-  `dv_not_bridgeable` arm went with the bridge tier), and the planner
-  independently forces `.copy` for DV sessions.
+  `dv_not_bridgeable` arm went with the bridge tier). That function and the
+  whole `VideoOutputMode` axis have since been deleted; `assessSiloRoute` now
+  tests `siloVideoCopyCodecs` directly and appends the same
+  `video_not_copyable` blocker.
 - verified: the Profile 7 → 8.1 base-layer conversion, its `db1p` brand, and the
   `preferProfile7HDR10Fallback` escape hatch are unchanged by the one-player
   consolidation.

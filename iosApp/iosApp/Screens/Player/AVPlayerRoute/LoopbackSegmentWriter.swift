@@ -387,10 +387,6 @@ final class LoopbackSegmentWriter {
     let segmentStore: LoopbackSegmentStore?
     let selectedAudioTrackIndex: Int
     let videoMode: LoopbackSessionSpec.VideoMode
-    /// Whether the video track is copied or re-encoded. Captured once, like
-    /// `selectedAudioOutputMode`; every downstream branch is
-    /// `videoOutputMode == .copy` vs not.
-    let videoOutputMode: LoopbackSessionSpec.VideoOutputMode
     let selectedAudioOutputMode: LoopbackSessionSpec.AudioOutputMode
     let manifestMetadata: LoopbackSessionSpec.ManifestMetadata
     /// Target fragment duration in seconds. Used to emit EXT-X-TARGETDURATION
@@ -769,12 +765,6 @@ final class LoopbackSegmentWriter {
     /// `eac3_extension_type_a`). Drives the dec3 JOC surgery in
     /// `writeInitSegment`.
     private var selectedAudioIsAtmosJOC = false
-    /// DORMANT: fired once on the session that first resolved a re-encoded
-    /// video track's parameter sets. The on-device video bridge was retired
-    /// on 2026-08-17, so nothing sets this any more; the property survives
-    /// only because `AVPlayerBackend` still installs a handler on it. Remove
-    /// with that handler.
-    var onBridgedVideoParameterSetsResolved: ((Data) -> Void)?
     private var audioDecoderCtx: UnsafeMutablePointer<AVCodecContext>?
     private var audioEncoderCtx: UnsafeMutablePointer<AVCodecContext>?
     /// Reused across every decoded audio frame (receive_frame unrefs it);
@@ -878,6 +868,23 @@ final class LoopbackSegmentWriter {
         }
     }
     private var throughputTiming = ThroughputTiming()
+    /// Runs `body`, charging its wall time and one call to the named
+    /// `ThroughputTiming` counters when the probe is on. Accumulation happens
+    /// only after `body` returns normally, so a throwing call records nothing
+    /// — the behavior of the hand-written timed/untimed pairs this replaces.
+    @inline(__always)
+    private func measure<T>(
+        _ ms: WritableKeyPath<ThroughputTiming, Double>,
+        _ count: WritableKeyPath<ThroughputTiming, Int>,
+        _ body: () throws -> T
+    ) rethrows -> T {
+        guard Self.traceThroughput else { return try body() }
+        let started = CFAbsoluteTimeGetCurrent()
+        let result = try body()
+        throughputTiming[keyPath: ms] += (CFAbsoluteTimeGetCurrent() - started) * 1000
+        throughputTiming[keyPath: count] += 1
+        return result
+    }
     /// Threshold tuned to tolerate the brief reorder bursts the fmp4 muxer
     /// occasionally emits during keyframe boundary realignment without
     /// missing a genuinely broken stream.
@@ -919,7 +926,6 @@ final class LoopbackSegmentWriter {
         self.segmentStore = segmentStore
         self.selectedAudioTrackIndex = sessionSpec.selectedAudio.trackIndex
         self.videoMode = sessionSpec.videoMode
-        self.videoOutputMode = sessionSpec.videoOutputMode
         self.selectedAudioOutputMode = sessionSpec.selectedAudio.outputMode
         self.manifestMetadata = sessionSpec.manifestMetadata
         self.targetSegmentDuration = targetSegmentDuration
@@ -1899,14 +1905,8 @@ final class LoopbackSegmentWriter {
 
             let avNoPTS = Int64.min  // AV_NOPTS_VALUE
             while !isCancelled {
-                let rc: Int32
-                if LoopbackSegmentWriter.traceThroughput {
-                    let started = CFAbsoluteTimeGetCurrent()
-                    rc = deadlineBoundedReadFrame(inputCtx, packet)
-                    throughputTiming.readMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
-                    throughputTiming.readCalls += 1
-                } else {
-                    rc = deadlineBoundedReadFrame(inputCtx, packet)
+                let rc = measure(\.readMs, \.readCalls) {
+                    deadlineBoundedReadFrame(inputCtx, packet)
                 }
                 if isCancelled {
                     break
@@ -1974,12 +1974,7 @@ final class LoopbackSegmentWriter {
                 }
 
                 if inputIdx == selectedAudioStreamIndex, selectedAudioOutputMode != .copy {
-                    if Self.traceThroughput {
-                        let started = CFAbsoluteTimeGetCurrent()
-                        try transcodeAudioPacket(pkt)
-                        throughputTiming.audioMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
-                        throughputTiming.audioPackets += 1
-                    } else {
+                    try measure(\.audioMs, \.audioPackets) {
                         try transcodeAudioPacket(pkt)
                     }
                     continue
@@ -1989,12 +1984,7 @@ final class LoopbackSegmentWriter {
                     if isCancelled {
                         continue
                     }
-                    if Self.traceThroughput {
-                        let started = CFAbsoluteTimeGetCurrent()
-                        try transformVideoPacketIfNeeded(pkt)
-                        throughputTiming.videoMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
-                        throughputTiming.videoPackets += 1
-                    } else {
+                    try measure(\.videoMs, \.videoPackets) {
                         try transformVideoPacketIfNeeded(pkt)
                     }
                 }
@@ -2270,8 +2260,7 @@ final class LoopbackSegmentWriter {
             do {
                 videoInputStreamIndex = try Self.resolveSelectedVideoStreamIndex(
                     in: recycled.context,
-                    videoMode: videoMode,
-                    videoOutputMode: videoOutputMode
+                    videoMode: videoMode
                 )
                 Self.discardUnusedStreamsForMux(
                     in: recycled.context,
@@ -2356,8 +2345,7 @@ final class LoopbackSegmentWriter {
         // straight to the floor.
         videoInputStreamIndex = try Self.resolveSelectedVideoStreamIndex(
             in: openedContext,
-            videoMode: videoMode,
-            videoOutputMode: videoOutputMode
+            videoMode: videoMode
         )
 
         Self.discardUnusedStreamsForMux(
@@ -2920,21 +2908,16 @@ final class LoopbackSegmentWriter {
 
     private static func resolveSelectedVideoStreamIndex(
         in ctx: UnsafeMutablePointer<AVFormatContext>,
-        videoMode: LoopbackSessionSpec.VideoMode,
-        videoOutputMode: LoopbackSessionSpec.VideoOutputMode
+        videoMode: LoopbackSessionSpec.VideoMode
     ) throws -> Int {
         // The copy path keeps its historical two-codec allowlist: only HEVC
         // and H.264 bitstreams are known to remux cleanly into the fMP4
         // AVPlayer consumes.
-        let preferredCodec: AVCodecID? = switch videoOutputMode {
-        case .copy:
-            switch videoMode {
-            case .passthroughH264: AV_CODEC_ID_H264
-            case .convertProfile7To81, .passthroughProfile8, .passthroughProfile5, .passthroughHEVC:
-                AV_CODEC_ID_HEVC
-            }
+        let preferredCodec: AVCodecID = switch videoMode {
+        case .passthroughH264: AV_CODEC_ID_H264
+        case .convertProfile7To81, .passthroughProfile8, .passthroughProfile5, .passthroughHEVC:
+            AV_CODEC_ID_HEVC
         }
-        let restrictToCopyCodecs = videoOutputMode == .copy
 
         let nb = Int(ctx.pointee.nb_streams)
         var fallbackIndex: Int?
@@ -2948,13 +2931,11 @@ final class LoopbackSegmentWriter {
                 // produce a one-frame movie.
                 guard (stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC) == 0 else { continue }
                 let codecID = codecpar.pointee.codec_id
-                if restrictToCopyCodecs {
-                    guard codecID == AV_CODEC_ID_HEVC || codecID == AV_CODEC_ID_H264 else { continue }
-                }
+                guard codecID == AV_CODEC_ID_HEVC || codecID == AV_CODEC_ID_H264 else { continue }
                 if fallbackIndex == nil {
                     fallbackIndex = i
                 }
-                if let preferredCodec, codecID == preferredCodec {
+                if codecID == preferredCodec {
                     selectedLog = Self.videoStreamLog(index: i, stream: stream)
                     cmpLog("[CMP-AVP] selected video stream \(selectedLog) preferred=1")
                     return i
@@ -3040,12 +3021,7 @@ final class LoopbackSegmentWriter {
                 guard let opaque, let bufPtr else { return 0 }
                 let writer = Unmanaged<LoopbackSegmentWriter>.fromOpaque(opaque).takeUnretainedValue()
                 let slice = UnsafeBufferPointer(start: bufPtr, count: Int(bufSize))
-                if LoopbackSegmentWriter.traceThroughput {
-                    let started = CFAbsoluteTimeGetCurrent()
-                    writer.ingestMuxerBytes(slice)
-                    writer.throughputTiming.muxIOMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
-                    writer.throughputTiming.muxIOCalls += 1
-                } else {
+                writer.measure(\.muxIOMs, \.muxIOCalls) {
                     writer.ingestMuxerBytes(slice)
                 }
                 return bufSize
@@ -3341,14 +3317,8 @@ final class LoopbackSegmentWriter {
         performPostWriteActions: Bool = true
     ) throws {
         guard let outputCtx else { return }
-        let wr: Int32
-        if Self.traceThroughput {
-            let started = CFAbsoluteTimeGetCurrent()
-            wr = av_interleaved_write_frame(outputCtx, pkt)
-            throughputTiming.muxMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
-            throughputTiming.muxPackets += 1
-        } else {
-            wr = av_interleaved_write_frame(outputCtx, pkt)
+        let wr = measure(\.muxMs, \.muxPackets) {
+            av_interleaved_write_frame(outputCtx, pkt)
         }
         try evaluateMuxWriteResult(wr)
         if performPostWriteActions {
@@ -4967,10 +4937,7 @@ final class LoopbackSegmentWriter {
     private func shouldDropCorruptHEVCVideoPacket(
         _ pkt: UnsafeMutablePointer<AVPacket>
     ) -> Bool {
-        // Bridged sources are not HEVC — walking their packets as
-        // length-prefixed HEVC would reject every one of them.
-        guard videoOutputMode == .copy,
-              videoMode != .passthroughH264,
+        guard videoMode != .passthroughH264,
               let data = pkt.pointee.data,
               pkt.pointee.size > 0 else { return false }
         let packetBytes = UnsafeBufferPointer(
@@ -5206,7 +5173,6 @@ final class LoopbackSegmentWriter {
         // payloads: the original whole-packet sweep on every video packet of
         // a plain-HDR10 film was the ~12 Mbps producer ceiling.
         if inputStreamIndex == videoInputStreamIndex,
-           videoOutputMode == .copy,
            onHDR10PlusMetadataDetected != nil,
            hdr10PlusSEIDetector.isActive,
            let packetData = pkt.pointee.data,
@@ -5702,12 +5668,7 @@ final class LoopbackSegmentWriter {
             }
         }
         do {
-            if Self.traceThroughput {
-                let started = CFAbsoluteTimeGetCurrent()
-                try writeArtifact(bytes, name: "init.mp4")
-                throughputTiming.segmentWriteMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
-                throughputTiming.segmentWrites += 1
-            } else {
+            try measure(\.segmentWriteMs, \.segmentWrites) {
                 try writeArtifact(bytes, name: "init.mp4")
             }
             initSegmentWritten = true
@@ -5759,13 +5720,9 @@ final class LoopbackSegmentWriter {
     /// `generatedAheadThrottleSeconds` detects) get a third of that.
     private static let progressivePublishCeilingConstrainedBytes = 32 * 1024 * 1024
     private var progressivePublishCeilingBytes: Int {
-        #if os(tvOS)
-        return ProcessInfo.processInfo.physicalMemory <= 3_500_000_000
+        PlaybackSourceCache.isConstrainedMemoryDevice
             ? Self.progressivePublishCeilingConstrainedBytes
             : Self.progressivePublishCeilingBytes
-        #else
-        return Self.progressivePublishCeilingBytes
-        #endif
     }
     /// Once per open segment, so a long capped segment logs once, not per
     /// fragment.
@@ -5979,12 +5936,7 @@ final class LoopbackSegmentWriter {
             return
         }
         do {
-            if Self.traceThroughput {
-                let started = CFAbsoluteTimeGetCurrent()
-                try writeMediaSegment(pendingSegmentBytes, name: name, duration: duration)
-                throughputTiming.segmentWriteMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
-                throughputTiming.segmentWrites += 1
-            } else {
+            try measure(\.segmentWriteMs, \.segmentWrites) {
                 try writeMediaSegment(pendingSegmentBytes, name: name, duration: duration)
             }
         } catch {
@@ -6072,14 +6024,9 @@ final class LoopbackSegmentWriter {
     }
 
     private var generatedAheadThrottleSeconds: Double {
-        #if os(tvOS)
-        let constrained = ProcessInfo.processInfo.physicalMemory <= 3_500_000_000
-        return constrained
+        PlaybackSourceCache.isConstrainedMemoryDevice
             ? Self.generatedAheadThrottleConstrainedSeconds
             : Self.generatedAheadThrottleDefaultSeconds
-        #else
-        return Self.generatedAheadThrottleDefaultSeconds
-        #endif
     }
 
     private func waitForGeneratedAheadIfNeeded() {
@@ -6426,12 +6373,7 @@ final class LoopbackSegmentWriter {
         }
         let body = lines.joined(separator: "\n") + "\n"
         do {
-            if Self.traceThroughput {
-                let started = CFAbsoluteTimeGetCurrent()
-                try writePlaylistArtifact(body, name: "playlist.m3u8")
-                throughputTiming.playlistWriteMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
-                throughputTiming.playlistWrites += 1
-            } else {
+            try measure(\.playlistWriteMs, \.playlistWrites) {
                 try writePlaylistArtifact(body, name: "playlist.m3u8")
             }
         } catch {
@@ -6564,12 +6506,7 @@ final class LoopbackSegmentWriter {
             ""
         ].joined(separator: "\n")
         do {
-            if Self.traceThroughput {
-                let started = CFAbsoluteTimeGetCurrent()
-                try writePlaylistArtifact(body, name: "master.m3u8")
-                throughputTiming.playlistWriteMs += (CFAbsoluteTimeGetCurrent() - started) * 1000
-                throughputTiming.playlistWrites += 1
-            } else {
+            try measure(\.playlistWriteMs, \.playlistWrites) {
                 try writePlaylistArtifact(body, name: "master.m3u8")
             }
         } catch {
