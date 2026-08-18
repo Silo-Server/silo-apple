@@ -28,8 +28,18 @@ struct ContentView: View {
     @State private var diagnosticsModel = DiagnosticsViewModel()
     #endif
     /// Deep link URL received before the auth state was ready. Content links
-    /// drain on the next `.authenticated` transition.
+    /// drain on the next `.authenticated` transition. There is intentionally
+    /// only one deferred intent: a newer external URL supersedes an older one.
     @State private var pendingDeepLink: URL?
+    /// Monotonically identifies the newest accepted external navigation
+    /// intent. Async play lookups must still own this revision before they can
+    /// present anything.
+    @State private var deepLinkRevision: UInt = 0
+    @State private var playDeepLinkTask: Task<Void, Never>?
+    /// `downloadsEnabled == false` is ambiguous until the current scope's
+    /// capability refresh finishes. Keep Downloads links queued during that
+    /// window instead of treating the initial false value as authoritative.
+    @State private var isDownloadCapabilityHydrated = false
     /// Shared with every screen that renders cards. Hydrates lazily on
     /// the first .authenticated transition so cards stay visible during
     /// the brief window between sign-in and the overlay-config fetch.
@@ -81,6 +91,10 @@ struct ContentView: View {
         #endif
         .onChange(of: deepLinkCoordinator.pendingURL) { _, _ in
             drainIncomingDeepLink()
+        }
+        .onChange(of: currentDeepLinkIdentity) { _, _ in
+            playDeepLinkTask?.cancel()
+            playDeepLinkTask = nil
         }
         .onAppear {
             drainIncomingDeepLink()
@@ -175,6 +189,11 @@ struct ContentView: View {
         }
         #endif
         .task(id: router.authState) {
+            if router.authState != .authenticated {
+                playDeepLinkTask?.cancel()
+                playDeepLinkTask = nil
+                isDownloadCapabilityHydrated = false
+            }
             #if os(iOS) || os(tvOS)
             if router.authState != .authenticated {
                 // The initial `.loading` state is not an identity boundary.
@@ -192,12 +211,8 @@ struct ContentView: View {
             #endif
             if router.authState == .authenticated {
                 let hasPendingDeepLink = pendingDeepLink != nil
-                let waitsForDownloadCapability = pendingDeepLink.map(
-                    shouldWaitForDownloadCapability
-                ) ?? false
-                if !waitsForDownloadCapability {
-                    drainPendingDeepLink()
-                }
+                isDownloadCapabilityHydrated = false
+                drainPendingDeepLinkIfReady()
                 #if os(tvOS)
                 restoreTrailerReturnIfNeeded(hasPriorityLaunchIntent: hasPendingDeepLink)
                 await ExitSentinel.shared.captureLeftoverIfNeeded()
@@ -220,9 +235,10 @@ struct ContentView: View {
                 #endif
                 #if !os(tvOS)
                 await DownloadManager.shared.onAppActive()
-                if waitsForDownloadCapability {
-                    drainPendingDeepLink()
-                }
+                guard !Task.isCancelled,
+                      router.authState == .authenticated else { return }
+                isDownloadCapabilityHydrated = true
+                drainPendingDeepLinkIfReady()
                 #endif
             }
         }
@@ -600,24 +616,37 @@ struct ContentView: View {
     /// `pendingDeepLink` until startup commits its initial route.
     private func drainIncomingDeepLink() {
         guard let url = deepLinkCoordinator.consumePendingURL() else { return }
-        handleDeepLink(url)
+        acceptDeepLink(url)
     }
 
-    private func drainPendingDeepLink() {
+    private func drainPendingDeepLinkIfReady() {
         guard let url = pendingDeepLink else { return }
+        guard !shouldWaitForDownloadCapability(url) else { return }
         pendingDeepLink = nil
-        handleDeepLink(url)
+        handleDeepLink(url, revision: deepLinkRevision)
     }
 
     private func shouldWaitForDownloadCapability(_ url: URL) -> Bool {
         #if os(tvOS)
         false
         #else
-        url.host?.lowercased() == "downloads"
+        url.host?.lowercased() == "downloads" && !isDownloadCapabilityHydrated
         #endif
     }
 
-    private func handleDeepLink(_ url: URL) {
+    /// Accept a newly delivered external navigation intent. Navigation is
+    /// deliberately last-write-wins: replacing an older deferred URL and
+    /// cancelling its async play lookup prevents stale startup work from
+    /// overriding the user's newest tap.
+    private func acceptDeepLink(_ url: URL) {
+        deepLinkRevision &+= 1
+        pendingDeepLink = nil
+        playDeepLinkTask?.cancel()
+        playDeepLinkTask = nil
+        handleDeepLink(url, revision: deepLinkRevision)
+    }
+
+    private func handleDeepLink(_ url: URL, revision: UInt) {
         guard url.scheme?.lowercased() == "continuum",
               let host = url.host?.lowercased() else { return }
 
@@ -631,6 +660,10 @@ struct ContentView: View {
 
         if host == "downloads" {
             guard router.authState == .authenticated else {
+                pendingDeepLink = url
+                return
+            }
+            guard !shouldWaitForDownloadCapability(url) else {
                 pendingDeepLink = url
                 return
             }
@@ -662,7 +695,17 @@ struct ContentView: View {
         case "item":
             router.navigate(to: .itemDetail(contentId: contentId))
         case "play":
-            Task { await routePlayDeepLink(contentId: contentId) }
+            let identity = currentDeepLinkIdentity
+            playDeepLinkTask = Task { @MainActor in
+                await routePlayDeepLink(
+                    contentId: contentId,
+                    revision: revision,
+                    identity: identity
+                )
+                if deepLinkRevision == revision {
+                    playDeepLinkTask = nil
+                }
+            }
         default:
             break
         }
@@ -683,10 +726,39 @@ struct ContentView: View {
     }
     #endif
 
+    private struct DeepLinkIdentity: Equatable {
+        let serverId: String?
+        let profileId: String?
+    }
+
+    private var currentDeepLinkIdentity: DeepLinkIdentity {
+        DeepLinkIdentity(
+            serverId: serverRegistry.activeServerId,
+            profileId: serverRegistry.activeProfileId
+        )
+    }
+
+    private func canCompletePlayDeepLink(
+        revision: UInt,
+        identity: DeepLinkIdentity
+    ) -> Bool {
+        !Task.isCancelled
+            && revision == deepLinkRevision
+            && router.authState == .authenticated
+            && identity == currentDeepLinkIdentity
+    }
+
     @MainActor
-    private func routePlayDeepLink(contentId: String) async {
+    private func routePlayDeepLink(
+        contentId: String,
+        revision: UInt,
+        identity: DeepLinkIdentity
+    ) async {
         do {
             let detail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+            guard canCompletePlayDeepLink(revision: revision, identity: identity) else {
+                return
+            }
             if detail.isAudiobook {
                 audioStore.play(contentId: contentId)
                 return
@@ -695,6 +767,9 @@ struct ContentView: View {
             // Fall through to the existing video route when the type cannot be resolved.
         }
 
+        guard canCompletePlayDeepLink(revision: revision, identity: identity) else {
+            return
+        }
         router.presentPlayer(
             contentId: contentId,
             startFromBeginning: false,

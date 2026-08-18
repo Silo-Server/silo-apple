@@ -14,7 +14,7 @@ settings:
       # Required for `@testable import Silo` in SiloTests; Xcode's Debug
       # template sets these defaults but XcodeGen does not.
       ENABLE_TESTABILITY: "YES"
-      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG"
   base:
     SWIFT_VERSION: "5"
     ENABLE_USER_SCRIPT_SANDBOXING: false

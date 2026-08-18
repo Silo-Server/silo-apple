@@ -5,7 +5,9 @@ import Foundation
 /// SwiftUI may deliver `.onOpenURL` before `ContentView` has installed its
 /// lifecycle handlers during a cold launch. Holding the URL in observable
 /// state lets the root view consume it regardless of which side becomes ready
-/// first. Authentication and route validation remain owned by `ContentView`.
+/// first. This is intentionally a last-write-wins navigation intent, not an
+/// event queue: a newer external URL supersedes an older unconsumed one.
+/// Authentication and route validation remain owned by `ContentView`.
 @MainActor
 @Observable
 final class ContinuumDeepLinkCoordinator {
