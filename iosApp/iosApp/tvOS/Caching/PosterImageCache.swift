@@ -43,9 +43,16 @@ enum PosterImageCache {
             config.imageCache = memoryCache
 
             // On-disk cache for raw image data.
-            if let dataCache = try? DataCache(name: "com.continuum.app.apple.posters") {
+            if let dataCache = try? DataCache(name: "org.siloserver.silo.posters") {
                 dataCache.sizeLimit = 1_024 * 1024 * 1024  // 1 GB
                 config.dataCache = dataCache
+                // The cache directory is named after the cache, so the rename
+                // orphaned the old tree (up to 1 GB, mostly on Apple TV). Drop
+                // it once, resolved as a sibling so Nuke keeps owning layout.
+                let retired = dataCache.path
+                    .deletingLastPathComponent()
+                    .appendingPathComponent(LegacyBrandKeys.posterDataCacheName, isDirectory: true)
+                try? FileManager.default.removeItem(at: retired)
             }
 
             // Decode on a background queue — never block the main thread.

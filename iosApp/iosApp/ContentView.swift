@@ -515,8 +515,8 @@ struct ContentView: View {
     /// - `silo://downloads` — select the Downloads tab (local
     ///   download notifications)
     ///
-    /// The legacy `continuum://` scheme is still accepted for the same
-    /// shapes (see `SiloDeepLink`) while old senders are migrated.
+    /// `silo` is the only accepted scheme (see `SiloDeepLink`); anything else
+    /// is ignored here.
     ///
     /// If the auth state isn't ready yet, the link is queued in
     /// `pendingDeepLink` until startup commits its initial route.

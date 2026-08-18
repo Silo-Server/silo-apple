@@ -40,9 +40,24 @@ enum PlaybackDiskBudget {
         let staleBefore = Date().addingTimeInterval(-60 * 60)
         var parents: [URL] = []
         if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
-            parents.append(caches.appendingPathComponent("continuum-source-cache", isDirectory: true))
+            parents.append(caches.appendingPathComponent("silo-source-cache", isDirectory: true))
         }
-        parents.append(fm.temporaryDirectory.appendingPathComponent("continuum-dv-hls", isDirectory: true))
+        parents.append(fm.temporaryDirectory.appendingPathComponent("silo-dv-hls", isDirectory: true))
+        // The spill/debug directories were renamed with the app. Nothing in
+        // this build writes the old trees, so they are dead weight (whole GBs
+        // on tvOS) and go wholesale, without the age guard the live names need.
+        var retired: [URL] = []
+        if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            retired.append(caches.appendingPathComponent(
+                LegacyBrandKeys.sourceCacheDirectoryName, isDirectory: true
+            ))
+        }
+        retired.append(fm.temporaryDirectory.appendingPathComponent(
+            LegacyBrandKeys.loopbackSpillDirectoryName, isDirectory: true
+        ))
+        retired.append(fm.temporaryDirectory.appendingPathComponent(
+            LegacyBrandKeys.loopbackDebugDirectoryName, isDirectory: true
+        ))
         let orphans = parents.flatMap { parent in
             let urls = (try? fm.contentsOfDirectory(
                 at: parent,
@@ -56,9 +71,10 @@ enum PlaybackDiskBudget {
                 return timestamp.map { $0 < staleBefore } ?? false
             }
         }
-        guard !orphans.isEmpty else { return }
+        let doomed = orphans + retired.filter { fm.fileExists(atPath: $0.path) }
+        guard !doomed.isEmpty else { return }
         DispatchQueue.global(qos: .utility).async {
-            for orphan in orphans {
+            for orphan in doomed {
                 try? FileManager.default.removeItem(at: orphan)
             }
         }

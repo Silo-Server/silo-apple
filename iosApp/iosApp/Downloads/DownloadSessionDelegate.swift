@@ -22,7 +22,11 @@ enum DownloadSessionEvent: Sendable {
 /// resumes via HTTP Range, so this is an `NSObject` delegate (background
 /// sessions cannot use the async `URLSession` data API).
 final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    static let sessionIdentifier = "com.continuum.play.downloads"
+    static let sessionIdentifier = "org.siloserver.silo.downloads"
+
+    /// Set once the pre-rename background session has been retired, so the
+    /// teardown below runs exactly once per install.
+    private static let legacySessionRetiredKey = "downloads.legacySessionRetired.v1"
 
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -41,7 +45,29 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         self.events = stream
         self.continuation = continuation
         super.init()
+        Self.retireLegacySessionIfNeeded()
         _ = session   // force lazy creation so the delegate is registered
+    }
+
+    /// The background session identifier changed with the Silo rename. Tasks
+    /// left in the old session cannot be adopted into this one: task
+    /// identifiers are unique only within a single `URLSession`, and every
+    /// event here is keyed by that integer alone, so merging two live sessions
+    /// would let one record's transfer be attributed to another. Instead the
+    /// old session is opened once, cancelled, and invalidated — its records
+    /// have persisted task identifiers that no longer match any live task, so
+    /// `DownloadManager.reconnectActiveTasks` re-queues them and the transfers
+    /// restart under the new session.
+    private static func retireLegacySessionIfNeeded() {
+        let defaults = SharedDefaults.shared
+        guard !defaults.bool(forKey: legacySessionRetiredKey) else { return }
+        defaults.set(true, forKey: legacySessionRetiredKey)
+        let config = URLSessionConfiguration.background(
+            withIdentifier: LegacyBrandKeys.downloadsSessionIdentifier
+        )
+        let legacySession = URLSession(configuration: config, delegate: nil, delegateQueue: nil)
+        legacySession.invalidateAndCancel()
+        logger.info("Retired the pre-rename downloads background session.")
     }
 
     private(set) lazy var session: URLSession = {

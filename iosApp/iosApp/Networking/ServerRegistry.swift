@@ -118,12 +118,12 @@ private final class ActiveServerIDSnapshot: @unchecked Sendable {
 /// active. Singleton via `.shared`; observed by SwiftUI via `@Observable`.
 ///
 /// Per-server persistence splits across two stores:
-/// - **UserDefaults** (`continuumServerRegistry.v1`): the server list and
+/// - **UserDefaults** (`siloServerRegistry.v1`): the server list and
 ///   active ID on iOS/macOS. tvOS stores the shared list in the
 ///   user-independent Keychain and the active ID in current-user defaults.
-/// - **Keychain** (`SharedKeychain` service `com.continuum.app`, account
-///   `com.continuum.<id>.{accessToken,refreshToken,profileToken}`): per-
-///   server tokens, activated by `TokenStore.switchActiveServer`.
+/// - **Keychain** (`SharedKeychain` service `SharedStorage.keychainService`,
+///   account `org.siloserver.silo.<id>.{accessToken,refreshToken,profileToken}`):
+///   per-server tokens, activated by `TokenStore.switchActiveServer`.
 ///
 /// The registry is the single source of truth for URL + name.
 /// TokenStore is the single source of truth for tokens. They coordinate
@@ -143,9 +143,9 @@ final class ServerRegistry {
         shared.activeServerSnapshot.read()
     }
 
-    private static let defaultsKey = "continuumServerRegistry.v1"
-    private static let migratedKey = "continuumServerRegistry.migrated.v1"
-    private static let sharedTVRegistryAccount = "com.continuum.serverRegistry.v2"
+    private static let defaultsKey = "siloServerRegistry.v1"
+    private static let migratedKey = "siloServerRegistry.migrated.v1"
+    private static let sharedTVRegistryAccount = "\(SharedStorage.keychainAccountPrefix)serverRegistry.v2"
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ServerRegistry"
@@ -175,6 +175,7 @@ final class ServerRegistry {
         self.keychain = keychain
         self.launchPreferences = launchPreferences
         self.persistenceOverride = persistenceOverride
+        migrateBrandedDefaultsIfNeeded()
         load()
         migrateLegacyIfNeeded()
         migrateLegacyProfileMappingsIfNeeded()
@@ -738,14 +739,39 @@ final class ServerRegistry {
         }
     }
 
+    // MARK: - Migration from the pre-rename brand
+
+    /// One-shot, before `load()`: adopt the registry state an older build
+    /// wrote under the pre-rename UserDefaults keys. The old key is only
+    /// dropped once the copy reads back, so an interrupted migration retries
+    /// on the next launch instead of losing the server list.
+    private func migrateBrandedDefaultsIfNeeded() {
+        if defaults.data(forKey: Self.defaultsKey) == nil,
+           let legacy = defaults.data(forKey: LegacyBrandKeys.serverRegistryDefaultsKey) {
+            defaults.set(legacy, forKey: Self.defaultsKey)
+            guard defaults.data(forKey: Self.defaultsKey) == legacy else { return }
+        }
+        defaults.removeObject(forKey: LegacyBrandKeys.serverRegistryDefaultsKey)
+
+        // Carry the "single-server migration already ran" flag forward too,
+        // otherwise `migrateLegacyIfNeeded` would run a second time against a
+        // lingering `serverUrl`.
+        if !defaults.bool(forKey: Self.migratedKey),
+           defaults.bool(forKey: LegacyBrandKeys.serverRegistryMigratedDefaultsKey) {
+            defaults.set(true, forKey: Self.migratedKey)
+            guard defaults.bool(forKey: Self.migratedKey) else { return }
+        }
+        defaults.removeObject(forKey: LegacyBrandKeys.serverRegistryMigratedDefaultsKey)
+    }
+
     // MARK: - Migration from legacy single-server state
 
     /// One-shot migration at first launch after upgrading to multi-server.
     /// Reads the legacy `serverUrl` UserDefaults key and the three
-    /// fixed-name Keychain entries (`com.continuum.app.{access,refresh,
-    /// profile}Token`), creates a ServerEntry for them, re-keys the
-    /// Keychain entries under the new per-server scheme, and deletes the
-    /// legacy Keychain accounts. Legacy UserDefaults keys
+    /// fixed-name Keychain entries (`LegacyBrandKeys.singleServer*Account`,
+    /// which live under the pre-rename service), creates a ServerEntry for
+    /// them, re-keys the Keychain entries under the new per-server scheme,
+    /// and deletes the legacy Keychain accounts. Legacy UserDefaults keys
     /// (`serverUrl`, `profileId`) are intentionally left in place — they
     /// act as the active-server mirror read by sync callers.
     private func migrateLegacyIfNeeded() {
@@ -765,14 +791,19 @@ final class ServerRegistry {
         let normalized = Self.normalize(url: raw)
         let id = Self.serverId(for: normalized)
 
+        // These three accounts were written under the pre-rename service, so
+        // they must be read through that service — the current one has never
+        // held them. A test-injected keychain has no pre-rename counterpart
+        // and keeps using its own service.
+        let legacySource = keychain.legacyBrandSource ?? keychain
         let legacyToNew: [(legacy: String, new: String, audience: KeychainAudience)] = [
-            ("com.continuum.app.accessToken", TokenStore.accessTokenKey(for: id), .userIndependent),
-            ("com.continuum.app.refreshToken", TokenStore.refreshTokenKey(for: id), .userIndependent),
-            ("com.continuum.app.profileToken", TokenStore.profileTokenKey(for: id), .currentUser),
+            (LegacyBrandKeys.singleServerAccessTokenAccount, TokenStore.accessTokenKey(for: id), .userIndependent),
+            (LegacyBrandKeys.singleServerRefreshTokenAccount, TokenStore.refreshTokenKey(for: id), .userIndependent),
+            (LegacyBrandKeys.singleServerProfileTokenAccount, TokenStore.profileTokenKey(for: id), .currentUser),
         ]
         var copiedLegacyAccounts: [String] = []
         for (legacy, new, audience) in legacyToNew {
-            if let v = keychain.get(legacy) {
+            if let v = legacySource.get(legacy) {
                 let destination = keychain.withAudience(audience)
                 guard destination.set(v, for: new), destination.get(new) == v else { return }
                 copiedLegacyAccounts.append(legacy)
@@ -802,7 +833,7 @@ final class ServerRegistry {
             return
         }
         for legacy in copiedLegacyAccounts {
-            guard keychain.delete(legacy) else { return }
+            guard legacySource.delete(legacy) else { return }
         }
         defaults.set(true, forKey: Self.migratedKey)
         Self.logger.info("Migrated legacy single-server state to registry id=\(id, privacy: .public)")

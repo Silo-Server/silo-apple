@@ -24,26 +24,31 @@ enum SharedStorage {
     static let keychainAccessGroup = RuntimeConfiguration.sharedKeychainAccessGroup
 
     /// Shared Keychain service name. Same on both sides.
-    static let keychainService = "com.continuum.app"
+    static let keychainService = "org.siloserver.silo"
+
+    /// Prefix every shared Keychain account name carries. `SharedKeychain`
+    /// swaps it for `LegacyBrandKeys.accountPrefix` when it has to look an
+    /// item up in its pre-rename location.
+    static let keychainAccountPrefix = "org.siloserver.silo."
 
     /// Stable account names for the mirrored active-server tokens.
-    static let mirroredAccessTokenAccount = "com.continuum.topshelf.accessToken"
-    static let mirroredProfileTokenAccount = "com.continuum.topshelf.profileToken"
+    static let mirroredAccessTokenAccount = "\(keychainAccountPrefix)topshelf.accessToken"
+    static let mirroredProfileTokenAccount = "\(keychainAccountPrefix)topshelf.profileToken"
 
     static func accessTokenAccount(for serverID: String) -> String {
-        "com.continuum.\(serverID).accessToken"
+        "\(keychainAccountPrefix)\(serverID).accessToken"
     }
 
     static func refreshTokenAccount(for serverID: String) -> String {
-        "com.continuum.\(serverID).refreshToken"
+        "\(keychainAccountPrefix)\(serverID).refreshToken"
     }
 
     static func profileTokenAccount(for serverID: String) -> String {
-        "com.continuum.\(serverID).profileToken"
+        "\(keychainAccountPrefix)\(serverID).profileToken"
     }
 
     static func accountEpochAccount(for serverID: String) -> String {
-        "com.continuum.\(serverID).accountEpoch"
+        "\(keychainAccountPrefix)\(serverID).accountEpoch"
     }
 
     /// UserDefaults keys shared between the app and the Top Shelf
@@ -67,6 +72,45 @@ enum SharedStorage {
     static var suite: UserDefaults {
         UserDefaults(suiteName: appGroup) ?? .standard
     }
+}
+
+/// The names the Apple clients persisted, registered with the OS, or wrote to
+/// disk before the app was renamed to Silo.
+///
+/// **Read-only migration sources.** Nothing may write a new item under any of
+/// these names: each one exists so exactly one upgrade path can find the value
+/// an older build left behind, copy it to its Silo-branded home, and delete the
+/// original. This is the only place in the Apple clients where the pre-rename
+/// brand still appears.
+enum LegacyBrandKeys {
+    /// Pre-rename `SharedKeychain` service. Counterpart of
+    /// `SharedStorage.keychainService`.
+    static let keychainService = "com.continuum.app"
+
+    /// Pre-rename account prefix. Counterpart of
+    /// `SharedStorage.keychainAccountPrefix`: every shared Keychain account
+    /// migrates by swapping one prefix for the other.
+    static let accountPrefix = "com.continuum."
+
+    /// Fixed-name token accounts written by the pre-multi-server builds.
+    /// `ServerRegistry.migrateLegacyIfNeeded` re-keys them per server.
+    static let singleServerAccessTokenAccount = "com.continuum.app.accessToken"
+    static let singleServerRefreshTokenAccount = "com.continuum.app.refreshToken"
+    static let singleServerProfileTokenAccount = "com.continuum.app.profileToken"
+
+    /// Pre-rename `ServerRegistry` UserDefaults keys.
+    static let serverRegistryDefaultsKey = "continuumServerRegistry.v1"
+    static let serverRegistryMigratedDefaultsKey = "continuumServerRegistry.migrated.v1"
+
+    /// Pre-rename OS-registered identifiers.
+    static let downloadsRefreshTaskIdentifier = "com.continuum.play.downloads-refresh"
+    static let downloadsSessionIdentifier = "com.continuum.play.downloads"
+
+    /// Pre-rename on-disk cache names, deleted once by their new owners.
+    static let sourceCacheDirectoryName = "continuum-source-cache"
+    static let loopbackSpillDirectoryName = "continuum-dv-hls"
+    static let loopbackDebugDirectoryName = "continuum-dv-hls-debug"
+    static let posterDataCacheName = "com.continuum.app.apple.posters"
 }
 
 private enum RuntimeConfiguration {
@@ -190,15 +234,29 @@ struct SharedKeychain {
     let accessGroup: String?
     let audience: KeychainAudience
     let usesUserIndependentKeychain: Bool
+    /// Service name items were stored under before the Silo rename, consulted
+    /// on read-miss (see `legacyBrandSource`). Defaults to the pre-rename
+    /// shared service when this instance uses the real shared service, and to
+    /// nothing for custom services (tests) unless one is injected explicitly.
+    let legacyService: String?
 
     init(service: String = SharedStorage.keychainService,
          accessGroup: String? = SharedStorage.keychainAccessGroup,
          audience: KeychainAudience = .currentUser,
-         usesUserIndependentKeychain: Bool = RuntimeConfiguration.usesUserIndependentKeychain) {
+         usesUserIndependentKeychain: Bool = RuntimeConfiguration.usesUserIndependentKeychain,
+         legacyService: String?? = nil) {
         self.service = service
         self.accessGroup = accessGroup
         self.audience = audience
         self.usesUserIndependentKeychain = usesUserIndependentKeychain
+        switch legacyService {
+        case .some(let explicit):
+            self.legacyService = explicit
+        case .none:
+            self.legacyService = service == SharedStorage.keychainService
+                ? LegacyBrandKeys.keychainService
+                : nil
+        }
     }
 
     func withAudience(_ audience: KeychainAudience) -> SharedKeychain {
@@ -206,7 +264,8 @@ struct SharedKeychain {
             service: service,
             accessGroup: accessGroup,
             audience: audience,
-            usesUserIndependentKeychain: usesUserIndependentKeychain
+            usesUserIndependentKeychain: usesUserIndependentKeychain,
+            legacyService: .some(legacyService)
         )
     }
 
@@ -263,17 +322,57 @@ struct SharedKeychain {
         // with no `kSecAttrAccessGroup` does *not* always unify across
         // the default group and the entitlement groups on tvOS, so we
         // have to try each candidate access group explicitly.
-        guard accessGroup != nil else { return nil }
-        for candidate in Self.legacyFallbackAccessGroups() {
-            guard let legacy = read(account: account, accessGroup: candidate) else { continue }
-            // Only retire the legacy entry once the shared-access-group
-            // write confirms. If the write fails, leave legacy in place.
-            if set(legacy, for: account) {
-                deleteLegacy(account: account, accessGroup: candidate)
+        if accessGroup != nil {
+            for candidate in Self.legacyFallbackAccessGroups() {
+                guard let legacy = read(account: account, accessGroup: candidate) else { continue }
+                // Only retire the legacy entry once the shared-access-group
+                // write confirms. If the write fails, leave legacy in place.
+                if set(legacy, for: account) {
+                    deleteLegacy(account: account, accessGroup: candidate)
+                }
+                return legacy
             }
-            return legacy
         }
-        return nil
+        return migrateFromLegacyBrand(account: account)
+    }
+
+    /// The same store addressed under the pre-rename service name, or `nil`
+    /// when this instance uses a custom service (tests) and therefore has no
+    /// pre-rename counterpart to migrate from.
+    ///
+    /// Audience, access group and user-independent flag are carried over so a
+    /// migrated item lands with the accessibility it had before.
+    var legacyBrandSource: SharedKeychain? {
+        guard let legacyService, legacyService != service else { return nil }
+        return SharedKeychain(
+            service: legacyService,
+            accessGroup: accessGroup,
+            audience: audience,
+            usesUserIndependentKeychain: usesUserIndependentKeychain,
+            legacyService: .some(nil)
+        )
+    }
+
+    /// Pre-rename account name for `account`, or `nil` when it carries no
+    /// Silo-branded prefix.
+    private static func legacyBrandAccount(for account: String) -> String? {
+        guard account.hasPrefix(SharedStorage.keychainAccountPrefix) else { return nil }
+        return LegacyBrandKeys.accountPrefix
+            + account.dropFirst(SharedStorage.keychainAccountPrefix.count)
+    }
+
+    /// Last read fallback: the item may still live under the pre-rename
+    /// service + account name. Copy it into its Silo-branded home and retire
+    /// the old copy — but only once the new write confirms, so an interrupted
+    /// migration is retried rather than losing the value.
+    private func migrateFromLegacyBrand(account: String) -> String? {
+        guard let source = legacyBrandSource,
+              let legacyAccount = Self.legacyBrandAccount(for: account),
+              let value = source.get(legacyAccount) else { return nil }
+        if set(value, for: account) {
+            source.delete(legacyAccount)
+        }
+        return value
     }
 
     /// Candidate access groups we may have stored items in before the
@@ -293,6 +392,12 @@ struct SharedKeychain {
 
     @discardableResult
     func delete(_ account: String) -> Bool {
+        // Drop any not-yet-migrated pre-rename copy in the same breath:
+        // otherwise a later `get` would resurrect the value this delete was
+        // meant to retire (sign-out leaving a stale token behind).
+        if let source = legacyBrandSource, let legacyAccount = Self.legacyBrandAccount(for: account) {
+            source.delete(legacyAccount)
+        }
         let query = baseQuery(account: account)
         let status = SecItemDelete(query as CFDictionary)
         if status == errSecSuccess || status == errSecItemNotFound { return true }

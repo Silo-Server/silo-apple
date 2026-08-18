@@ -145,12 +145,12 @@ final class ApplePushRegistrationTests: XCTestCase {
         )
         XCTAssertEqual(existingURL.absoluteString, "silo://play/episode-1")
 
-        // The legacy scheme is still forwarded untouched: notifications
-        // already delivered to a device carry `continuum://`.
-        let legacyURL = try XCTUnwrap(
+        // The pre-rename scheme is no longer an app scheme, so it is not
+        // forwarded: `continuum://play/episode-1` carries a single path
+        // component once its scheme+host are stripped, which is not a route.
+        XCTAssertNil(
             ApplePushDeepLinkCoordinator.deepLinkURL(fromDisplayURL: "continuum://play/episode-1")
         )
-        XCTAssertEqual(legacyURL.absoluteString, "continuum://play/episode-1")
 
         // Routes are forwarded without an allowlist — ContentView's
         // handleDeepLink owns validity and ignores unknown hosts — so new

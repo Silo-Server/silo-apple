@@ -140,8 +140,36 @@ changing them either breaks existing installs or needs the server/Android side:
 | On-disk names | `continuum-source-cache`, `continuum-dv-hls`, `continuum-dv-hls-debug`, Nuke `DataCache(name: "com.continuum.app.apple.posters")` | Renaming orphans existing caches (GBs on tvOS). Needs a one-time delete-old-dir. |
 | Wire values | realtime client names `continuum-ios` / `continuum-tvos` / `continuum-macos` (`X-Silo-Client` product names, `PlaybackRealtimeProtocol.swift`) | Server stores/keys on them — coordinate with silo-server before changing. |
 
-Decide per row; the keychain/defaults rows are the only ones with real user-visible downside if
-done wrong.
+**Resolved (R2b-brand-migration).** The owner decided the old brand must not exist anywhere in the
+Apple clients, so every row above was migrated rather than merely renamed. The table stays as the
+record of what the migrations read *from*; the only surviving occurrences in code are the
+`LegacyBrandKeys` constants in `iosApp/iosApp/Shared/SharedStorage.swift`, which are read-only
+migration sources. What landed:
+
+- **Keychain** — service is `org.siloserver.silo`, accounts are `org.siloserver.silo.<…>`.
+  `SharedKeychain.get` falls back on a read-miss to the pre-rename service + account (one prefix
+  swap), copies the item forward with the same audience/accessibility, and deletes the old copy
+  only after the new write confirms; `SharedKeychain.delete` drops both so sign-out cannot be
+  undone by a later migration. Top Shelf and the notification service compile the same file, so
+  they migrate the mirrored slots themselves if they run first. `ServerRegistry`'s pre-multi-server
+  migration keeps reading `com.continuum.app.{access,refresh,profile}Token` — through the
+  pre-rename service, which is where they actually live.
+- **UserDefaults** — `siloServerRegistry.v1` / `.migrated.v1`, with a one-shot copy-then-remove of
+  the pre-rename keys before the registry loads.
+- **OS-registered ids** — BGTask `org.siloserver.silo.downloads-refresh` (plist + code together,
+  plus a `cancel(taskRequestWithIdentifier:)` of the old id), background `URLSession`
+  `org.siloserver.silo.downloads`. The old session is opened once and `invalidateAndCancel`ed
+  rather than adopted: task identifiers are unique only within one `URLSession` and download events
+  are keyed by that integer alone, so two live sessions could misroute a transfer. Records whose
+  persisted task id no longer matches are re-queued by `reconnectActiveTasks`, i.e. an in-flight
+  transfer restarts instead of resuming.
+- **URL scheme** — `silo` only, in both plists and `SiloDeepLink`; the old scheme is rejected.
+- **On-disk names** — `silo-source-cache`, `silo-dv-hls`, `silo-dv-hls-debug`, Nuke
+  `org.siloserver.silo.posters`; the orphan sweep deletes the old trees wholesale and the poster
+  cache deletes its old sibling directory.
+- **Wire values** — `silo-{ios,tvos,macos}`. silo-server stores whatever the client announces and
+  only checks it is non-empty (no occurrence of the old names in its Go code), so no coordination
+  was needed.
 
 ## 3. Intentionally kept — don't re-flag without new information
 

@@ -617,9 +617,11 @@ final class ProfileLaunchMigrationTests: XCTestCase {
                 lastUsedAt: Date(timeIntervalSinceReferenceDate: 1)
             )]
         )
+        // Seeded under the pre-rename defaults key: the registry has to adopt
+        // it before it can migrate the profile mapping out of it.
         defaults.set(
             try JSONEncoder().encode(legacy),
-            forKey: "continuumServerRegistry.v1"
+            forKey: LegacyBrandKeys.serverRegistryDefaultsKey
         )
         XCTAssertTrue(keychain.set(
             "access",
@@ -641,7 +643,9 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         XCTAssertEqual(remembered.profileID, "profile-a")
         XCTAssertTrue(remembered.requiredPINAtSelection)
         XCTAssertNil(registry.entry(with: serverID)?.legacyProfileId)
-        let migrated = try XCTUnwrap(defaults.data(forKey: "continuumServerRegistry.v1"))
+        // The state moved to the Silo-branded key and the pre-rename key is gone.
+        XCTAssertNil(defaults.data(forKey: LegacyBrandKeys.serverRegistryDefaultsKey))
+        let migrated = try XCTUnwrap(defaults.data(forKey: "siloServerRegistry.v1"))
         XCTAssertFalse(String(decoding: migrated, as: UTF8.self).contains("profileId"))
     }
 }

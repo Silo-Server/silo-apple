@@ -3,7 +3,7 @@ import SwiftUI
 
 // MARK: - Field content classification (platform-neutral)
 
-/// Mirrors the small enum pattern in the old Continuum forms so the shared
+/// Mirrors the small enum pattern in the pre-rename forms so the shared
 /// component carries no UIKit types in its signature — macOS has no
 /// `UITextContentType`.
 enum AuroraFieldContentType { case username, password, email, oneTimeCode, url }

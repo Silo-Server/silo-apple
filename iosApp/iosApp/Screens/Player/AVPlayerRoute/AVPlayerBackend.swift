@@ -1916,7 +1916,7 @@ final class AVPlayerBackend {
         loopbackGeneration &+= 1
         let generation = loopbackGeneration
         let debugBaseDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("continuum-dv-hls-debug", isDirectory: true)
+            .appendingPathComponent("silo-dv-hls-debug", isDirectory: true)
         let sessionDir = debugBaseDir.appendingPathComponent(sessionID, isDirectory: true)
         sessionDirectory = sessionDir
         preserveSessionDirectory = Self.keepLoopbackArtifacts
