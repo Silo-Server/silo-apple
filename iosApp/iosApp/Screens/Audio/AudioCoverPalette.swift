@@ -33,10 +33,6 @@ struct AudioCoverPalette: Equatable {
 /// `HeroBackdropPalette`: Nuke downsamples during decode, then
 /// `CIAreaAverage` collapses each region to a single color.
 enum AudioCoverPaletteSampler {
-    private static let ciContext = CIContext(options: [
-        .workingColorSpace: NSNull(),
-    ])
-
     static func palette(for urlString: String?) async -> AudioCoverPalette? {
         guard let urlString, let url = URL(string: urlString) else { return nil }
         let request = ImageRequest(
@@ -84,38 +80,17 @@ enum AudioCoverPaletteSampler {
 
         var rawCorners: [RGB] = []
         for rect in quadrants {
-            guard let rgb = averageColor(of: ciImage, in: rect) else { return nil }
-            rawCorners.append(rgb)
+            guard let rgb = HeroBackdropPalette.averageRGB(of: ciImage, in: rect) else { return nil }
+            rawCorners.append(RGB(r: rgb.r, g: rgb.g, b: rgb.b))
         }
-        guard let rawCenter = averageColor(of: ciImage, in: extent) else { return nil }
+        guard let center = HeroBackdropPalette.averageRGB(of: ciImage, in: extent) else { return nil }
+        let rawCenter = RGB(r: center.r, g: center.g, b: center.b)
 
         let accentSource = rawCorners.max(by: { $0.vividness < $1.vividness }) ?? rawCenter
         return AudioCoverPalette(
             corners: rawCorners.map { $0.dimmedForBackdrop().color },
             center: rawCenter.dimmedForBackdrop().color,
             accent: accentSource.boostedForAccent().color
-        )
-    }
-
-    private static func averageColor(of image: CIImage, in rect: CGRect) -> RGB? {
-        let filter = CIFilter(name: "CIAreaAverage")
-        filter?.setValue(image, forKey: kCIInputImageKey)
-        filter?.setValue(CIVector(cgRect: rect), forKey: kCIInputExtentKey)
-        guard let output = filter?.outputImage else { return nil }
-
-        var bitmap = [UInt8](repeating: 0, count: 4)
-        ciContext.render(
-            output,
-            toBitmap: &bitmap,
-            rowBytes: 4,
-            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-            format: .RGBA8,
-            colorSpace: CGColorSpaceCreateDeviceRGB()
-        )
-        return RGB(
-            r: Double(bitmap[0]) / 255.0,
-            g: Double(bitmap[1]) / 255.0,
-            b: Double(bitmap[2]) / 255.0
         )
     }
 }

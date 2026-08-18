@@ -207,40 +207,33 @@ struct SubtitleTranslateMenu: View {
         onJobStarted()
     }
 
-    /// Languages offered, deduped, with the profile's preferred language and the
-    /// spoken/original language floated to the top.
-    private var orderedLanguages: [SubtitleLanguageChoice] {
-        var result: [SubtitleLanguageChoice] = []
-        var seen = Set<String>()
-        func add(_ code: String, hint: String?) {
-            let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            let key = trimmed.lowercased()
-            guard !seen.contains(key) else { return }
-            seen.insert(key)
-            result.append(.init(code: trimmed, label: SubtitleLanguageChoice.displayName(trimmed), hint: hint))
-        }
+    /// The profile's preferred language and the spoken/original language,
+    /// floated to the top of the offered list in that priority order.
+    private var hintedLanguages: [(code: String, hint: String)] {
+        var hinted: [(code: String, hint: String)] = []
         if let preferred = profilePrefs.preferredSubtitleLanguage {
-            add(preferred, hint: "Preferred")
+            hinted.append((preferred, "Preferred"))
         }
         if let spoken = spokenLanguageCode {
-            add(spoken, hint: "Original language")
+            hinted.append((spoken, "Original language"))
         }
-        for option in PlaybackLanguageOption.all {
-            add(option.code, hint: nil)
-        }
-        return result
+        return hinted
+    }
+
+    /// Languages offered, deduped, with the hinted languages floated to the top.
+    private var orderedLanguages: [SubtitleLanguageChoice] {
+        SubtitleLanguageChoice.ordered(hinted: hintedLanguages)
     }
 
     /// Preferred + original, kept in priority order (these are deliberately
     /// floated to the top, so they are not alphabetized).
-    private var suggestedLanguages: [SubtitleLanguageChoice] { orderedLanguages.filter { $0.hint != nil } }
+    private var suggestedLanguages: [SubtitleLanguageChoice] {
+        SubtitleLanguageChoice.sections(hinted: hintedLanguages).suggested
+    }
 
     /// The full language list, sorted alphabetically by display name.
     private var otherLanguages: [SubtitleLanguageChoice] {
-        orderedLanguages
-            .filter { $0.hint == nil }
-            .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+        SubtitleLanguageChoice.sections(hinted: hintedLanguages).other
     }
 
     /// Show the ASR quota gauge whenever at least one offered target would rely
@@ -366,10 +359,10 @@ struct SubtitleTranslateMenu: View {
             }
         }
         if !suggestedLanguages.isEmpty {
-            sectionHeader("Suggested")
+            SubtitleSheetSectionHeader(text: "Suggested")
             ForEach(suggestedLanguages) { tvLanguageRow($0) }
         }
-        sectionHeader(suggestedLanguages.isEmpty ? "Language" : "All Languages")
+        SubtitleSheetSectionHeader(text: suggestedLanguages.isEmpty ? "Language" : "All Languages")
         ForEach(otherLanguages) { tvLanguageRow($0) }
     }
 
@@ -545,21 +538,9 @@ struct SubtitleTranslateMenu: View {
         "You've used all your transcription credits for this period. Translating an existing subtitle track still works."
 }
 
-// MARK: - Section header (tvOS inline) + quota row
+// MARK: - Quota row
 
 private extension SubtitleTranslateMenu {
-    #if os(tvOS)
-    @ViewBuilder
-    func sectionHeader(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.system(size: 14, weight: .semibold))
-            .tracking(1.2)
-            .foregroundStyle(.white.opacity(0.45))
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-    }
-    #endif
-
     @ViewBuilder
     var quotaRow: some View {
         if let quotaText {

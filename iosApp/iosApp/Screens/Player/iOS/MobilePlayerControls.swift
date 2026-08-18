@@ -895,15 +895,7 @@ struct MobilePlayerControls: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 12, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .frame(height: 34)
+            menuPillLabel(systemImage: systemImage, title: title)
         }
         .buttonStyle(.glass)
         .buttonBorderShape(.capsule)
@@ -974,10 +966,7 @@ struct MobilePlayerControls: View {
 
     private func controlButton(systemName: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
+            menuPillLabel(systemImage: systemName, title: nil)
         }
         // `.circle` keeps each glass control a compact circle instead of the
         // default wider capsule so rows of controls stay dense.

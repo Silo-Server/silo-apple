@@ -113,33 +113,22 @@ struct SubtitleSearchMenu: View {
 
     // MARK: - Languages
 
-    /// Languages offered, deduped, preferred language floated to the top.
-    private var orderedLanguages: [SubtitleLanguageChoice] {
-        var result: [SubtitleLanguageChoice] = []
-        var seen = Set<String>()
-        func add(_ code: String, hint: String?) {
-            let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            let key = trimmed.lowercased()
-            guard !seen.contains(key) else { return }
-            seen.insert(key)
-            result.append(.init(code: trimmed, label: SubtitleLanguageChoice.displayName(trimmed), hint: hint))
-        }
-        if let preferred = profilePrefs.preferredSubtitleLanguage {
-            add(preferred, hint: "Preferred")
-        }
-        for option in PlaybackLanguageOption.all {
-            add(option.code, hint: nil)
-        }
-        return result
+    /// The preferred language, floated to the top of the offered list.
+    private var hintedLanguages: [(code: String, hint: String)] {
+        profilePrefs.preferredSubtitleLanguage.map { [($0, "Preferred")] } ?? []
     }
 
-    private var suggestedLanguages: [SubtitleLanguageChoice] { orderedLanguages.filter { $0.hint != nil } }
+    /// Languages offered, deduped, preferred language floated to the top.
+    private var orderedLanguages: [SubtitleLanguageChoice] {
+        SubtitleLanguageChoice.ordered(hinted: hintedLanguages)
+    }
+
+    private var suggestedLanguages: [SubtitleLanguageChoice] {
+        SubtitleLanguageChoice.sections(hinted: hintedLanguages).suggested
+    }
 
     private var otherLanguages: [SubtitleLanguageChoice] {
-        orderedLanguages
-            .filter { $0.hint == nil }
-            .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+        SubtitleLanguageChoice.sections(hinted: hintedLanguages).other
     }
 
     /// Seed the selection from the preferred language once hydrated.
@@ -399,10 +388,10 @@ struct SubtitleSearchMenu: View {
     @ViewBuilder
     private var tvLanguageRows: some View {
         if !suggestedLanguages.isEmpty {
-            sectionHeader("Suggested")
+            SubtitleSheetSectionHeader(text: "Suggested")
             ForEach(suggestedLanguages) { tvLanguageRow($0) }
         }
-        sectionHeader(suggestedLanguages.isEmpty ? "Language" : "All Languages")
+        SubtitleSheetSectionHeader(text: suggestedLanguages.isEmpty ? "Language" : "All Languages")
         ForEach(otherLanguages) { tvLanguageRow($0) }
     }
 
@@ -471,7 +460,9 @@ struct SubtitleSearchMenu: View {
             }
             .id("back-to-languages")
         } else {
-            sectionHeader(searchedLanguage.map { SubtitleLanguageChoice.displayName($0) } ?? "Results")
+            SubtitleSheetSectionHeader(
+                text: searchedLanguage.map { SubtitleLanguageChoice.displayName($0) } ?? "Results"
+            )
             ForEach(results, id: \.uniqueKey) { result in
                 tvResultRow(result)
             }
@@ -549,15 +540,6 @@ struct SubtitleSearchMenu: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
-    private func sectionHeader(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.system(size: 14, weight: .semibold))
-            .tracking(1.2)
-            .foregroundStyle(.white.opacity(0.45))
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-    }
     #endif
 
     // MARK: - iOS

@@ -156,20 +156,9 @@ struct ColorSwatch: View {
 
     var body: some View {
         Circle()
-            .fill(swiftUIColor(from: hex))
+            .fill(Color(hex: hex))
             .frame(width: 18, height: 18)
             .overlay(Circle().stroke(Color.white.opacity(0.45), lineWidth: 1))
-    }
-
-    private func swiftUIColor(from hex: String) -> Color {
-        let trimmed = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
-        guard trimmed.count == 6, let value = UInt32(trimmed, radix: 16) else {
-            return .white
-        }
-        let r = Double((value >> 16) & 0xFF) / 255.0
-        let g = Double((value >> 8) & 0xFF) / 255.0
-        let b = Double(value & 0xFF) / 255.0
-        return Color(red: r, green: g, blue: b)
     }
 }
 #endif

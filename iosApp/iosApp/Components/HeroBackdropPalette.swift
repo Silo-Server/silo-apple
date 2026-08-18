@@ -76,9 +76,16 @@ enum HeroBackdropPalette {
         let extent = ciImage.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
 
+        guard let average = averageRGB(of: ciImage, in: extent) else { return nil }
+        return normalize(r: average.r, g: average.g, b: average.b)
+    }
+
+    /// Collapse a region of a `CIImage` to its average color by rendering it
+    /// down to a single RGBA8 pixel. Shared with the audiobook cover sampler.
+    static func averageRGB(of image: CIImage, in rect: CGRect) -> (r: Double, g: Double, b: Double)? {
         let filter = CIFilter(name: "CIAreaAverage")
-        filter?.setValue(ciImage, forKey: kCIInputImageKey)
-        filter?.setValue(CIVector(cgRect: extent), forKey: kCIInputExtentKey)
+        filter?.setValue(image, forKey: kCIInputImageKey)
+        filter?.setValue(CIVector(cgRect: rect), forKey: kCIInputExtentKey)
 
         guard let output = filter?.outputImage else { return nil }
 
@@ -92,11 +99,11 @@ enum HeroBackdropPalette {
             colorSpace: CGColorSpaceCreateDeviceRGB()
         )
 
-        let r = Double(bitmap[0]) / 255.0
-        let g = Double(bitmap[1]) / 255.0
-        let b = Double(bitmap[2]) / 255.0
-
-        return normalize(r: r, g: g, b: b)
+        return (
+            r: Double(bitmap[0]) / 255.0,
+            g: Double(bitmap[1]) / 255.0,
+            b: Double(bitmap[2]) / 255.0
+        )
     }
 
     /// Clamp luminance so the resulting gradient sits comfortably on

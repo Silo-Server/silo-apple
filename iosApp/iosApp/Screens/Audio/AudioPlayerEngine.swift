@@ -6,7 +6,7 @@ final class AudioPlayerEngine {
     private let player = AVPlayer()
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
-    private(set) var playbackRate: Float = 1.0
+    private var playbackRate: Float = 1.0
 
     var onTime: ((Double) -> Void)?
     var onEnded: (() -> Void)?
@@ -54,10 +54,6 @@ final class AudioPlayerEngine {
         }
         player.replaceCurrentItem(with: item)
         seek(to: startSeconds)
-    }
-
-    func play() {
-        player.playImmediately(atRate: playbackRate)
     }
 
     func pause() {
