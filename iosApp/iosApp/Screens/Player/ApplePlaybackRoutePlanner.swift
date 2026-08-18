@@ -48,11 +48,10 @@ struct ApplePlaybackHDRAvailability: Equatable {
     }
 }
 
-/// Snapshot of the device's playback output capabilities at plan time.
-/// Plumbed into `ApplePlaybackPlannerInput` so the planner can stop
-/// over-promising HDR / Dolby Vision purely from source metadata. Today
-/// the planner consumes the snapshot for trace + degradation warnings;
-/// future iterations can use it to actually gate route eligibility.
+/// Snapshot of the device's playback output capabilities.
+/// Reported by `DiagnosticsCapabilityProbe`, which is its only consumer:
+/// route choice is decided by the server's protocol-v3 plan plus the
+/// container/codec tables below, not by this snapshot.
 ///
 /// The probe is conservative: any field defaults to `false` / `nil` when
 /// it cannot be determined. "Unknown" never reads as "supported".
@@ -71,16 +70,6 @@ struct ApplePlaybackDisplayCapabilities: Equatable {
         case fullHD
         case uhd4K
     }
-
-    static let unknown = ApplePlaybackDisplayCapabilities(
-        hdrPlaybackEligible: false,
-        supportsDolbyVision: false,
-        supportsHDR10: false,
-        supportsHLG: false,
-        supportsAtmos: false,
-        maxResolution: nil,
-        supportsTenBit: false
-    )
 
     /// Best-effort capability snapshot from the host. AVAudioSession's
     /// current route gives us spatial-audio capability on iOS/tvOS;
@@ -118,37 +107,6 @@ struct ApplePlaybackPlannerInput {
     let selectedSecondarySubtitleTrackId: Int64?
     /// Snapshot of the user's Dolby Vision settings, captured at plan time.
     let dolbyVisionPolicy: DolbyVisionPolicy.Snapshot
-    /// Captured at plan-creation time so route choice and degradation
-    /// warnings can reflect the actual output, not just source metadata.
-    /// Defaults to `.unknown` (conservative no-knowledge state) so older
-    /// callers continue to compile while the probe wires in.
-    let displayCapabilities: ApplePlaybackDisplayCapabilities
-
-    init(
-        session: PlaybackSessionResponse,
-        selectedVersion: FileVersion,
-        streamRequest: StreamRequest,
-        routeRequirements: PlaybackRouteRequirements,
-        selectedAudioTrackId: Int64?,
-        pendingAudioFfIndex: Int?,
-        preferredAudioTrackIndex: Int?,
-        selectedPrimarySubtitleTrackId: Int64?,
-        selectedSecondarySubtitleTrackId: Int64?,
-        dolbyVisionPolicy: DolbyVisionPolicy.Snapshot,
-        displayCapabilities: ApplePlaybackDisplayCapabilities = .unknown
-    ) {
-        self.session = session
-        self.selectedVersion = selectedVersion
-        self.streamRequest = streamRequest
-        self.routeRequirements = routeRequirements
-        self.selectedAudioTrackId = selectedAudioTrackId
-        self.pendingAudioFfIndex = pendingAudioFfIndex
-        self.preferredAudioTrackIndex = preferredAudioTrackIndex
-        self.selectedPrimarySubtitleTrackId = selectedPrimarySubtitleTrackId
-        self.selectedSecondarySubtitleTrackId = selectedSecondarySubtitleTrackId
-        self.dolbyVisionPolicy = dolbyVisionPolicy
-        self.displayCapabilities = displayCapabilities
-    }
 }
 
 struct ApplePlaybackRoutePlanner {

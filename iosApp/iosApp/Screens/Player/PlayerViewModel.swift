@@ -2299,8 +2299,7 @@ class PlayerViewModel {
                 preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
                 selectedPrimarySubtitleTrackId: selectedSubtitleId,
                 selectedSecondarySubtitleTrackId: selectedSecondarySubtitleId,
-                dolbyVisionPolicy: settings.dolbyVisionPolicySnapshot,
-                displayCapabilities: ApplePlaybackDisplayCapabilities.probe()
+                dolbyVisionPolicy: settings.dolbyVisionPolicySnapshot
             )
         )
         guard let protocolV3 = prepared.protocolV3 else { return basePlan }

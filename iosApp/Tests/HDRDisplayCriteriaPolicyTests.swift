@@ -203,8 +203,8 @@ final class HDRDisplayCriteriaPolicyTests: XCTestCase {
                 VideoTrack(
                     index: 0, codec: "hevc", width: 3840, height: 2160,
                     frameRate: "23.976", bitrate: nil, profile: nil,
-                    level: nil, bitDepth: nil, colorRange: nil, colorSpace: nil,
-                    colorPrimaries: nil, colorTransfer: colorTransfer,
+                    level: nil, bitDepth: nil, colorRange: nil,
+                    colorTransfer: colorTransfer,
                     videoRange: videoRange, dolbyVision: nil, title: nil,
                     language: nil
                 )

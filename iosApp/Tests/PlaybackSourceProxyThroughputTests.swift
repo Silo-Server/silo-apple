@@ -1,5 +1,4 @@
 import XCTest
-import Network
 @testable import Silo
 
 /// Investigation harness for the ~12 Mbps producer ingest ceiling observed on
@@ -8,153 +7,6 @@ import Network
 /// sequential read through PlaybackSourceProxy. If the proxy path collapses
 /// here too, the ceiling is in the fill/serve path, not the network.
 final class PlaybackSourceProxyThroughputTests: XCTestCase {
-
-    // MARK: - Line-rate loopback origin
-
-    /// Minimal HTTP/1.1 origin on 127.0.0.1 serving `totalBytes` of zeros,
-    /// honoring `Range: bytes=N-` with 206 + Content-Range, one request per
-    /// connection (Connection: close semantics are fine for the origin
-    /// stream, which opens a fresh task per (re)target anyway).
-    private final class StubOrigin {
-        let listener: NWListener
-        let totalBytes: Int64
-        let responseDelay: TimeInterval
-        private(set) var port: UInt16 = 0
-        private let queue = DispatchQueue(label: "stub-origin")
-        private var connections: [ObjectIdentifier: NWConnection] = [:]
-        private let lock = NSLock()
-        /// Range request offsets observed, in arrival order.
-        private(set) var requestedOffsets: [Int64] = []
-        /// Raw byte-range specs (for example `0-4194303` or `8388608-`).
-        private var requestedRanges: [String] = []
-
-        init(totalBytes: Int64, responseDelay: TimeInterval = 0) throws {
-            self.totalBytes = totalBytes
-            self.responseDelay = responseDelay
-            let params = NWParameters.tcp
-            params.allowLocalEndpointReuse = true
-            params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
-            listener = try NWListener(using: params)
-        }
-
-        var url: URL { URL(string: "http://127.0.0.1:\(port)/file.bin")! }
-
-        func start() async throws {
-            listener.newConnectionHandler = { [weak self] connection in
-                self?.accept(connection)
-            }
-            port = try await withCheckedThrowingContinuation { continuation in
-                var resumed = false
-                listener.stateUpdateHandler = { state in
-                    switch state {
-                    case .ready:
-                        if !resumed, let port = self.listener.port {
-                            resumed = true
-                            continuation.resume(returning: port.rawValue)
-                        }
-                    case .failed(let error):
-                        if !resumed {
-                            resumed = true
-                            continuation.resume(throwing: error)
-                        }
-                    default:
-                        break
-                    }
-                }
-                self.listener.start(queue: self.queue)
-            }
-        }
-
-        func stop() {
-            listener.cancel()
-            lock.lock()
-            let open = connections.values
-            connections.removeAll()
-            lock.unlock()
-            open.forEach { $0.cancel() }
-        }
-
-        func observedRanges() -> [String] {
-            lock.lock()
-            defer { lock.unlock() }
-            return requestedRanges
-        }
-
-        private func accept(_ connection: NWConnection) {
-            lock.lock()
-            connections[ObjectIdentifier(connection)] = connection
-            lock.unlock()
-            connection.start(queue: queue)
-            receiveRequest(connection, buffered: Data())
-        }
-
-        private func receiveRequest(_ connection: NWConnection, buffered: Data) {
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, _, error in
-                guard let self, error == nil else { return }
-                var head = buffered
-                if let data { head.append(data) }
-                guard let headEnd = head.range(of: Data("\r\n\r\n".utf8)) else {
-                    if head.count < 64 * 1024 {
-                        self.receiveRequest(connection, buffered: head)
-                    }
-                    return
-                }
-                let request = String(data: head[..<headEnd.lowerBound], encoding: .utf8) ?? ""
-                self.respond(connection, request: request)
-            }
-        }
-
-        private func respond(_ connection: NWConnection, request: String) {
-            var offset: Int64 = 0
-            var end: Int64 = totalBytes - 1
-            var requestedRange = "0-"
-            for line in request.split(separator: "\r\n") {
-                let lower = line.lowercased()
-                if lower.hasPrefix("range:"), let eq = line.range(of: "bytes=") {
-                    let spec = line[eq.upperBound...]
-                    requestedRange = String(spec)
-                    let parts = spec.split(separator: "-", omittingEmptySubsequences: false)
-                    offset = parts.first.flatMap { Int64($0) } ?? 0
-                    if parts.count > 1, let bounded = Int64(parts[1]) {
-                        end = min(bounded, totalBytes - 1)
-                    }
-                }
-            }
-            lock.lock()
-            requestedOffsets.append(offset)
-            requestedRanges.append(requestedRange)
-            lock.unlock()
-            let remaining = end - offset + 1
-            let header = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(offset)-\(end)/\(totalBytes)\r\nContent-Length: \(remaining)\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
-            let sendResponse = { [weak self] in
-                connection.send(content: Data(header.utf8), completion: .contentProcessed { [weak self] error in
-                    guard error == nil else { return }
-                    self?.sendBody(connection, remaining: remaining)
-                })
-            }
-            if responseDelay > 0 {
-                queue.asyncAfter(deadline: .now() + responseDelay, execute: sendResponse)
-            } else {
-                sendResponse()
-            }
-        }
-
-        private static let bodyChunk = Data(count: 256 * 1024)
-
-        private func sendBody(_ connection: NWConnection, remaining: Int64) {
-            guard remaining > 0 else {
-                connection.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .idempotent)
-                return
-            }
-            let chunk = remaining >= Int64(Self.bodyChunk.count)
-                ? Self.bodyChunk
-                : Data(count: Int(remaining))
-            connection.send(content: chunk, completion: .contentProcessed { [weak self] error in
-                guard error == nil else { return }
-                self?.sendBody(connection, remaining: remaining - Int64(chunk.count))
-            })
-        }
-    }
 
     // MARK: - Measured sequential reader
 
@@ -223,7 +75,7 @@ final class PlaybackSourceProxyThroughputTests: XCTestCase {
     }
 
     func testOriginStubServesAtLineRate() async throws {
-        let origin = try StubOrigin(totalBytes: Self.fileSize)
+        let origin = RangeOriginStub(totalBytes: Self.fileSize, bodyChunkBytes: 256 * 1024)
         try await origin.start()
         defer { origin.stop() }
 
@@ -236,7 +88,7 @@ final class PlaybackSourceProxyThroughputTests: XCTestCase {
     }
 
     func testProxySequentialReadThroughput() async throws {
-        let origin = try StubOrigin(totalBytes: Self.fileSize)
+        let origin = RangeOriginStub(totalBytes: Self.fileSize, bodyChunkBytes: 256 * 1024)
         try await origin.start()
         defer { origin.stop() }
 
@@ -249,7 +101,7 @@ final class PlaybackSourceProxyThroughputTests: XCTestCase {
         let reader = ThroughputReader(target: Self.readTarget, deadline: Self.readDeadline)
         let (bytes, seconds) = reader.measure(url: localURL, testCase: self)
         let rate = mbps(bytes, seconds)
-        print("[THROUGHPUT] proxy sequential read bytes=\(bytes) seconds=\(String(format: "%.2f", seconds)) rate=\(String(format: "%.1f", rate))Mbps originRequests=\(origin.requestedOffsets)")
+        print("[THROUGHPUT] proxy sequential read bytes=\(bytes) seconds=\(String(format: "%.2f", seconds)) rate=\(String(format: "%.1f", rate))Mbps originRequests=\(origin.observedOffsets())")
         // 4K HDR peaks in the field hit ~20-30 Mbps; the proxy on a Mac over
         // loopback should clear that by an order of magnitude. This is a
         // diagnostic floor, not a performance target.
@@ -257,9 +109,10 @@ final class PlaybackSourceProxyThroughputTests: XCTestCase {
     }
 
     func testProxyKeepsStreamingAfter150MillisecondOriginDelay() async throws {
-        let origin = try StubOrigin(
+        let origin = RangeOriginStub(
             totalBytes: Self.fileSize,
-            responseDelay: 0.150
+            responseDelay: 0.150,
+            bodyChunkBytes: 256 * 1024
         )
         try await origin.start()
         defer { origin.stop() }
@@ -303,7 +156,7 @@ final class PlaybackSourceProxyThroughputTests: XCTestCase {
     /// re-pointed per probe (the pre-window pool did exactly that: a
     /// reconnect storm that pinned device ingest at ~12 Mbps).
     func testProbeReadsDoNotChurnTheSequentialWindow() async throws {
-        let origin = try StubOrigin(totalBytes: Self.fileSize)
+        let origin = RangeOriginStub(totalBytes: Self.fileSize, bodyChunkBytes: 256 * 1024)
         try await origin.start()
         defer { origin.stop() }
 
@@ -335,7 +188,7 @@ final class PlaybackSourceProxyThroughputTests: XCTestCase {
 
         // Origin request budget: the window's connect(s) plus roughly one
         // 4 MB chunk per probe. The old pool produced dozens of retargets.
-        let originRequests = origin.requestedOffsets
+        let originRequests = origin.observedOffsets()
         print("[THROUGHPUT] window+probes rate=\(String(format: "%.1f", rate))Mbps originRequests=\(originRequests)")
         XCTAssertLessThanOrEqual(
             originRequests.count, 3 + probeOffsets.count * 2,

@@ -77,8 +77,6 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             level: 153,
             bitDepth: 10,
             colorRange: "tv",
-            colorSpace: nil,
-            colorPrimaries: nil,
             colorTransfer: colorTransfer,
             videoRange: videoRange,
             dolbyVision: dolbyVision,
