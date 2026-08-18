@@ -20,6 +20,7 @@ recommended a control-plane rewrite + narrowed loopback ("Option D"). Rounds so 
 | R2b (brand) | full `continuum` → `silo` migration of every persisted / OS-registered / on-disk / wire literal with one-time migrations (§2.6 below); only `LegacyBrandKeys` still names the old brand | 1414 / 14 / 3 skipped |
 | Server pairing | silo-server PR #670 `client_audio_track_selection_v1`; Apple advertises it, routes non-default audio to loopback, marks `progressive` unsupported on device (AVPlayer −12939) | 1419 / 14 / 3 skipped |
 | Cleanup tail | dead client API/cache/legacy-quality surface; shared phone/tvOS similar-item loading and episode formatting; documentation truth pass | net −275 raw lines; local iOS/tvOS/macOS builds; focused 76 / 0; suite 1,524 / 2; shared-dev iOS/tvOS smoke |
+| Round 5 (DRY/KISS/YAGNI survey, `0064fc8` → merge of eight `cleanup/*` branches) | second-generation survey (`.claude/workflows/app-cleanup-survey-v2.js`: Sonnet mechanical inventory → Opus finders → Opus skeptics → packager; 25 agents, 72 findings, 67 survived, 8 file-disjoint packages) then `app-cleanup-fix` (Opus implementer + independent Opus reviewer per package). Landed: video-bridge deletion residue (spec fields, writer callback, backend pinning) and the one-case `VideoOutputMode` enum; `PlayerTrack.selecting` (×4 rebuilds), throughput-probe `measure` helper (×9), constrained-device predicate (×4), `PlayerOnDeckItem` trimmed to what the view reads, seek-reanchor preamble (×3) and ETag validation (×2) shared; caption-appearance snapshot collapse (×10), renderer lock accessors (×6), session open/clear dedupe; subtitle-sheet language list, palette sampler, audio VM/engine dupes; phone/tvOS detail track/resume/next-up helpers hoisted onto `DetailPlaybackFormatting`/`DetailVersionSelection`/`TrackSelectionPersistence` (rules that were written out ×6), cast sections, tvOS 16 `#available` fallbacks; `loadCurrentProfile` (×4), `playAction` (×3), `refreshAuthState` → `AppRouter`, sign-out overlay (×3), `TVNavPreferences` alias file + no-op `#if` fork, write-only `AccentStrategy`; `HTTPClient` refresh tail (×2), `HostedDiagnosticsAPI` perform (×3), decode-only model fields, `PairingDeviceAPI` decoder reuse, `TVControlReceiver` idle-state/session-wipe (×2 each), `includeTechnical` knob, single-element `acceptedSchemes`; test plumbing (`TestPolling`, `TestHTTPStubSupport`, `ISOBoxTestTree`, tautological `LoopbackBufferPolicyTests`, test-only `activeQualityId`). Skipped by the implementers with evidence: `card-title-episode-badge-dupes` (`HomeFeedMeta` is `#if !os(tvOS)`), and `PlayerOnDeckItem.artworkUrl/Thumbhash` (read by `PlayerView.backgroundArtwork`). | 104 files, +1,148 / −2,231 raw (net −1,083); every package built Silo/SiloTV/SiloMac and ran the suite on a cloned sim at 1,525–1,526 / 14 env / 3 skipped |
 
 Hardware records: `docs/tvos-player/validations/2026-08-17-*.yaml`, `2026-08-18-*.yaml` (HDR10 loopback + display
 criteria validated on 08-17; DV rows blocked until PR #670 reaches the server the TV is on; **open**: an HDR10 loopback
@@ -29,6 +30,18 @@ points at the TV/HDMI environment, unresolved). Still open from the review: Roun
 setting), #10 (needs the audio-index semantics on native-direct/HLS), #11 combined-index plumbing, macOS scene-phase
 divergence, log-channel unification, six online-unreachable error rungs, and product decisions P1/P2 before Stage 3.
 Skipped by design in R1: #10; the review's §12 lists rejected/narrowed claims.
+
+**Round-5 deferred / refuted (for the next survey pass).** Deferred: `displayCapabilities:` planner argument the
+planner never consumes (PVM ↔ `ApplePlaybackRoutePlanner`, file collision this round); two dead `TokenStore`
+refresh overloads kept alive only by `SettingValuesAPITests` (a red-baseline file, §4.6); `VideoTrack` write-only
+colour fields (collision with the bridge-residue package); the `NWListener` range-origin fake written three times in
+tests (~−250, medium risk — needs the Retarget cursor/end recursion as the merged superset). Refuted and not to be
+re-flagged: `ApplePlaybackRouteCapabilities` "unread" entries (it is the executable capability table, docs/05); the
+×16 callback-generation guard (Stage 2 replaces it); the subtitle renderer primary/secondary twin (review §8 says do
+not rewrite the renderer); `DiagnosticsJSONValue` vs `SettingJSONValue` (identical, but a merge crosses the
+diagnostics/settings wire boundary — owner decision). Every finder reported zero orphan **types** in its slice after
+a whole-repo identifier scan; what remains is repetition, not junk, and the big levers left are the gated ones
+(review §9 Stage 2/3, §10 P1/P2).
 
 
 Four rounds so far (survey → verify → file-disjoint packages, each implemented and independently
