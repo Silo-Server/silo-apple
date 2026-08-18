@@ -638,11 +638,37 @@ extension ApplePlaybackRoutePlanner {
             trace.append("embedded_subtitles_\(unsupportedSubtitleCodecs.joined(separator: "_"))")
         }
 
+        // Native-direct AVPlayer plays the container's default audio track;
+        // it has no way to apply a catalog audio index (AVMediaSelection
+        // ordinals are not the catalog's). The `original_http` capability
+        // advertises `client_audio_track_selection_v1`, so when the plan
+        // selects a non-default track the loopback — whose writer maps exactly
+        // the selected track — must take the route instead.
+        if selectsNonDefaultAudioTrack(selectedVersion: selectedVersion, session: session) {
+            blockers.append("audio_selection_requires_loopback")
+            trace.append("audio_selection_non_default")
+        }
+
         return NativeDirectAssessment(
             isEligible: blockers.isEmpty,
             blockers: blockers,
             trace: trace
         )
+    }
+
+    /// True when the plan (server `selected_tracks.audio.index`, mirrored on
+    /// `session.audioTrackIndex`) names an audio track other than the
+    /// container default. Index semantics: an ordinal into
+    /// `FileVersion.audioTracks`, the same space the loopback resolves.
+    static func selectsNonDefaultAudioTrack(
+        selectedVersion: FileVersion,
+        session: PlaybackSessionResponse
+    ) -> Bool {
+        guard let requested = session.audioTrackIndex else { return false }
+        let tracks = selectedVersion.audioTracks ?? []
+        guard tracks.count > 1, tracks.indices.contains(requested) else { return false }
+        let defaultIndex = tracks.firstIndex(where: { $0.isDefault == true }) ?? 0
+        return requested != defaultIndex
     }
 
     static func assessSiloRoute(
@@ -675,7 +701,8 @@ extension ApplePlaybackRoutePlanner {
         guard nativeAssessment.blockers.contains("container_not_allowlisted")
                 || nativeAssessment.blockers.contains("video_codec_not_allowlisted")
                 || nativeAssessment.blockers.contains("audio_codec_not_allowlisted")
-                || nativeAssessment.blockers.contains("embedded_subtitles_require_hls") else {
+                || nativeAssessment.blockers.contains("embedded_subtitles_require_hls")
+                || nativeAssessment.blockers.contains("audio_selection_requires_loopback") else {
             return SiloRouteAssessment(
                 isEligible: false,
                 videoMode: nil,

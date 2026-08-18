@@ -187,15 +187,29 @@ enum ApplePlaybackV3Capabilities {
                 maxChannels: 8,
                 hdrDetails: output.hdrDetails,
                 subtitles: loopbackSubtitles,
-                features: ["apple_native_direct", "apple_local_loopback", "apple_playercore"],
+                // `client_audio_track_selection_v1`: the executor selects the
+                // plan's audio track itself, so the server may hand us an
+                // original with a non-default selection instead of forcing a
+                // remux (which costs the source's container and Dolby Vision).
+                // Truthful because ApplePlaybackRoutePlanner routes any
+                // non-default audio selection to the loopback, whose writer
+                // maps exactly the selected track; native-direct AVPlayer
+                // cannot apply a catalog index and is blocked for that case.
+                features: ["apple_native_direct", "apple_local_loopback", "apple_playercore", "client_audio_track_selection_v1"],
                 authHeaderRefresh: true,
                 validatedClaims: commonClaims + ["client_subtitle_overlay"],
                 transformations: clientTransformations
             ),
+            // The server's progressive remux is a live fragmented-MP4 pipe with
+            // no Content-Length and no byte-range support; AVPlayer refuses it
+            // on every attempt (AVFoundationErrorDomain -11850 /
+            // NSOSStatusErrorDomain -12939, bedroom Apple TV 2026-08-17). Declare
+            // it unsupported so the planner falls straight to the HLS remux the
+            // device can play, instead of burning a doomed rung + replan.
             PlaybackProtocolV3.DeliveryClass.progressive: PlaybackV3DeliveryCapability(
                 enabled: true,
-                supportedOnDevice: true,
-                failureReason: nil,
+                supportedOnDevice: false,
+                failureReason: "avplayer_requires_seekable_source",
                 containers: ["mp4", "mov", "m4v"],
                 videoCodecs: AppleDecodeCapabilities.videoCodecs,
                 audioDecodeCodecs: ["aac", "ac3", "eac3", "alac", "mp3"],
