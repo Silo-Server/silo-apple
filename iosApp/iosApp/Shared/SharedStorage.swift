@@ -219,6 +219,30 @@ struct SharedDefaults: @unchecked Sendable {
     }
 }
 
+/// Storage `SharedKeychain` addresses instead of `SecItem*`.
+///
+/// The app never supplies one — every instance it builds leaves
+/// `SharedKeychain.backend` nil and talks to the system Keychain. It exists
+/// so tests can inject a process-local store: the simulator test host is
+/// unsigned (`CODE_SIGNING_ALLOWED=NO`), carries no `application-identifier`
+/// entitlement, and therefore fails *every* `SecItem*` call with
+/// `errSecMissingEntitlement (-34018)`. Tests whose subject sits above the
+/// Keychain (credential commits, registry migrations) would otherwise assert
+/// against a uniformly dead store rather than the behaviour they name.
+///
+/// Accounts are addressed by service + access group, matching how
+/// `SharedKeychain.baseQuery` builds an iOS query.
+protocol KeychainBackend: AnyObject, Sendable {
+    func value(service: String, accessGroup: String?, account: String) -> String?
+    func setValue(
+        _ value: String,
+        service: String,
+        accessGroup: String?,
+        account: String
+    ) -> Bool
+    func removeValue(service: String, accessGroup: String?, account: String) -> Bool
+}
+
 /// Minimal Keychain reader/writer targeted at the shared access group.
 /// Used by both the main app (via `TokenStore`) and the Top Shelf
 /// extension. Items are stored as generic passwords with accessibility
@@ -239,16 +263,20 @@ struct SharedKeychain {
     /// shared service when this instance uses the real shared service, and to
     /// nothing for custom services (tests) unless one is injected explicitly.
     let legacyService: String?
+    /// Nil in the app: reads and writes go to `SecItem*`. See `KeychainBackend`.
+    let backend: KeychainBackend?
 
     init(service: String = SharedStorage.keychainService,
          accessGroup: String? = SharedStorage.keychainAccessGroup,
          audience: KeychainAudience = .currentUser,
          usesUserIndependentKeychain: Bool = RuntimeConfiguration.usesUserIndependentKeychain,
-         legacyService: String?? = nil) {
+         legacyService: String?? = nil,
+         backend: KeychainBackend? = nil) {
         self.service = service
         self.accessGroup = accessGroup
         self.audience = audience
         self.usesUserIndependentKeychain = usesUserIndependentKeychain
+        self.backend = backend
         switch legacyService {
         case .some(let explicit):
             self.legacyService = explicit
@@ -265,7 +293,8 @@ struct SharedKeychain {
             accessGroup: accessGroup,
             audience: audience,
             usesUserIndependentKeychain: usesUserIndependentKeychain,
-            legacyService: .some(legacyService)
+            legacyService: .some(legacyService),
+            backend: backend
         )
     }
 
@@ -277,6 +306,14 @@ struct SharedKeychain {
         guard let data = value.data(using: .utf8) else {
             Self.logger.error("Failed to encode keychain value for account \(account, privacy: .public).")
             return false
+        }
+        if let backend {
+            return backend.setValue(
+                value,
+                service: service,
+                accessGroup: accessGroup,
+                account: account
+            )
         }
         var query = baseQuery(account: account)
         let attributes: [String: Any] = [
@@ -349,7 +386,8 @@ struct SharedKeychain {
             accessGroup: accessGroup,
             audience: audience,
             usesUserIndependentKeychain: usesUserIndependentKeychain,
-            legacyService: .some(nil)
+            legacyService: .some(nil),
+            backend: backend
         )
     }
 
@@ -398,6 +436,13 @@ struct SharedKeychain {
         if let source = legacyBrandSource, let legacyAccount = Self.legacyBrandAccount(for: account) {
             source.delete(legacyAccount)
         }
+        if let backend {
+            return backend.removeValue(
+                service: service,
+                accessGroup: accessGroup,
+                account: account
+            )
+        }
         let query = baseQuery(account: account)
         let status = SecItemDelete(query as CFDictionary)
         if status == errSecSuccess || status == errSecItemNotFound { return true }
@@ -408,6 +453,13 @@ struct SharedKeychain {
     // MARK: - Private
 
     private func read(account: String, accessGroup: String?) -> String? {
+        if let backend {
+            return backend.value(
+                service: service,
+                accessGroup: accessGroup,
+                account: account
+            )
+        }
         var query = baseQuery(account: account, accessGroup: accessGroup)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne

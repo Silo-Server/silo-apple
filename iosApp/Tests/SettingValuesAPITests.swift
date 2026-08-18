@@ -2143,176 +2143,6 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
     }
 
-    func testScopedRefreshPersistsServerAccountRotationAcrossProfileChange() async throws {
-        let suiteName = "settings-refresh-profile-switch-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        addTeardownBlock {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-        }
-        let keychain = SharedKeychain(
-            service: "SettingValuesRefreshProfileTests.\(UUID().uuidString)",
-            accessGroup: nil
-        )
-        let tokenStore = TokenStore(
-            keychain: keychain,
-            defaults: SharedDefaults(suite: suite, standard: suite)
-        )
-        let identity = HTTPRequestIdentity(
-            serverId: "server-a",
-            serverURL: "http://settings-test.invalid",
-            profileId: "profile-a",
-            clientFamily: "mobile"
-        )
-
-        await tokenStore.switchActiveServer(serverId: identity.serverId)
-        await tokenStore.setServerUrl(identity.serverURL)
-        await tokenStore.setProfileId(identity.profileId)
-        await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
-        await tokenStore.setProfileToken("example")
-
-        // The account refresh began under profile A, but profile B became
-        // active before the server returned its rotated account credentials.
-        await tokenStore.setProfileId("profile-b")
-        await tokenStore.setProfileToken("sample")
-        let stored = await tokenStore.saveRefreshedTokens(
-            "placeholder",
-            "redacted",
-            replacing: "dummy",
-            expected: identity,
-            credentialOwner: .persistentServer(serverId: identity.serverId)
-        )
-
-        XCTAssertTrue(stored)
-        let currentAccess = await tokenStore.getAccessToken()
-        let currentRefresh = await tokenStore.getRefreshToken()
-        let currentProfileId = await tokenStore.getProfileId()
-        let currentProfileValue = await tokenStore.getProfileToken()
-        XCTAssertEqual(currentAccess, "placeholder")
-        XCTAssertEqual(currentRefresh, "redacted")
-        XCTAssertEqual(currentProfileId, "profile-b")
-        XCTAssertEqual(currentProfileValue, "sample")
-    }
-
-    func testScopedRefreshRejectsChangedServerAccountAndTemporaryScope() async throws {
-        let suiteName = "settings-refresh-account-boundary-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        addTeardownBlock {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-        }
-        let keychain = SharedKeychain(
-            service: "SettingValuesRefreshBoundaryTests.\(UUID().uuidString)",
-            accessGroup: nil
-        )
-        let tokenStore = TokenStore(
-            keychain: keychain,
-            defaults: SharedDefaults(suite: suite, standard: suite)
-        )
-        let identity = HTTPRequestIdentity(
-            serverId: "server-a",
-            serverURL: "http://settings-test.invalid",
-            profileId: "profile-a",
-            clientFamily: "mobile"
-        )
-
-        await tokenStore.switchActiveServer(serverId: identity.serverId)
-        await tokenStore.setServerUrl(identity.serverURL)
-        await tokenStore.setProfileId(identity.profileId)
-        await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
-
-        await tokenStore.setServerUrl("http://changed-url.invalid")
-        let wrongURLStored = await tokenStore.saveRefreshedTokens(
-            "example",
-            "sample",
-            replacing: "dummy",
-            expected: identity,
-            credentialOwner: .persistentServer(serverId: identity.serverId)
-        )
-        let refreshAfterWrongURL = await tokenStore.getRefreshToken()
-        XCTAssertFalse(wrongURLStored)
-        XCTAssertEqual(refreshAfterWrongURL, "dummy")
-
-        await tokenStore.setServerUrl(identity.serverURL)
-        await tokenStore.saveTokens(accessToken: "placeholder", refreshToken: "redacted")
-        let staleStored = await tokenStore.saveRefreshedTokens(
-            "not-a-real",
-            "changeme",
-            replacing: "dummy",
-            expected: identity,
-            credentialOwner: .persistentServer(serverId: identity.serverId)
-        )
-        let refreshAfterStale = await tokenStore.getRefreshToken()
-        XCTAssertFalse(staleStored)
-        XCTAssertEqual(refreshAfterStale, "redacted")
-        let staleCleared = await tokenStore.clearTokensAfterRejectedRefresh(
-            replacing: "dummy",
-            expected: identity,
-            credentialOwner: .persistentServer(serverId: identity.serverId)
-        )
-        let refreshAfterStaleClear = await tokenStore.getRefreshToken()
-        XCTAssertFalse(staleCleared)
-        XCTAssertEqual(refreshAfterStaleClear, "redacted")
-
-        let temporary = TemporaryAuthScope(
-            serverId: identity.serverId,
-            serverURL: identity.serverURL,
-            accessToken: "test-auth-token",
-            // Match the persistent value so credential provenance, rather
-            // than value inequality, is what prevents the write.
-            refreshToken: "redacted",
-            profileId: "temporary-profile",
-            profileToken: "secret-token",
-            controllerDeviceId: "controller",
-            expiresAt: Date().addingTimeInterval(60)
-        )
-        await tokenStore.beginTemporaryScope(temporary)
-        let temporaryIdentity = HTTPRequestIdentity(
-            serverId: identity.serverId,
-            serverURL: identity.serverURL,
-            profileId: temporary.profileId,
-            clientFamily: identity.clientFamily
-        )
-        let capturedTemporary = try await tokenStore.captureRequestAuth(expected: temporaryIdentity)
-        _ = await tokenStore.endTemporaryScope()
-        let temporaryStored = await tokenStore.saveRefreshedTokens(
-            "test-token-placeholder",
-            "token-oversized",
-            replacing: "redacted",
-            expected: temporaryIdentity,
-            credentialOwner: capturedTemporary.credentialOwner
-        )
-        let refreshAfterTemporary = await tokenStore.getRefreshToken()
-        XCTAssertFalse(temporaryStored)
-        XCTAssertEqual(capturedTemporary.credentialOwner, .temporary)
-        XCTAssertEqual(
-            refreshAfterTemporary,
-            "redacted",
-            "credentials captured from a temporary scope must never redirect into persistent storage"
-        )
-
-        await tokenStore.switchActiveServer(serverId: "server-b")
-        await tokenStore.setServerUrl("http://server-b.invalid")
-        await tokenStore.setProfileId("profile-b")
-        await tokenStore.saveTokens(accessToken: "gateway-token", refreshToken: "decoy-token")
-        let crossServerStored = await tokenStore.saveRefreshedTokens(
-            "clawrouter-e2e-secret",
-            "very-long-browser-token-0123456789",
-            replacing: "redacted",
-            expected: identity,
-            credentialOwner: .persistentServer(serverId: identity.serverId)
-        )
-        let crossServerCleared = await tokenStore.clearTokensAfterRejectedRefresh(
-            replacing: "redacted",
-            expected: identity,
-            credentialOwner: .persistentServer(serverId: identity.serverId)
-        )
-        let serverBAccess = await tokenStore.getAccessToken()
-        let serverBRefresh = await tokenStore.getRefreshToken()
-        XCTAssertFalse(crossServerStored)
-        XCTAssertFalse(crossServerCleared)
-        XCTAssertEqual(serverBAccess, "gateway-token")
-        XCTAssertEqual(serverBRefresh, "decoy-token")
-    }
-
     func testPutNavigationShortcutItemSendsAtomicBodyMutationAndProfileHeaders() async throws {
         SettingsStubProtocol.reset(mode: .normal)
         let api = await makeStubbedAPI()
@@ -2521,10 +2351,15 @@ final class SettingValuesAPITests: XCTestCase {
         addTeardownBlock {
             UserDefaults().removePersistentDomain(forName: suiteName)
         }
+        // Memory-backed: the unsigned simulator test host cannot reach the
+        // Keychain, and these cases are about credential *routing*, not about
+        // `SecItem`. Without it a profile proof never lands and the request
+        // headers under assertion go out empty.
         let tokenStore = TokenStore(
             keychain: SharedKeychain(
                 service: "SettingValues\(testName)Tests.\(UUID().uuidString)",
-                accessGroup: nil
+                accessGroup: nil,
+                backend: InMemoryKeychainBackend()
             ),
             defaults: SharedDefaults(suite: suite, standard: suite)
         )

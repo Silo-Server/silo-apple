@@ -543,9 +543,14 @@ final class ProfileLaunchIdentityTests: XCTestCase {
     private func makeTokenHarness() throws -> TokenHarness {
         let suiteName = "ProfileLaunchIdentityTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        // The Keychain is plumbing here, not the subject: these cases pin how
+        // `TokenStore` commits account epochs and profile proofs. The unsigned
+        // simulator test host fails every `SecItem*` call, so back the store
+        // with memory and let the commit logic actually run.
         let keychain = SharedKeychain(
             service: "ProfileLaunchIdentityTests.\(UUID().uuidString)",
-            accessGroup: nil
+            accessGroup: nil,
+            backend: InMemoryKeychainBackend()
         )
         let store = TokenStore(
             keychain: keychain,
@@ -590,9 +595,12 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         let suiteName = "ProfileLaunchMigrationTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         let defaults = SharedDefaults(suite: suite, standard: suite)
+        // Subject is the registry migration, not `SecItem`; see the note in
+        // `ProfileLaunchIdentityTests.makeTokenHarness`.
         let keychain = SharedKeychain(
             service: "ProfileLaunchMigrationTests.\(UUID().uuidString)",
-            accessGroup: nil
+            accessGroup: nil,
+            backend: InMemoryKeychainBackend()
         )
         let serverID = "server-a"
         defer {
