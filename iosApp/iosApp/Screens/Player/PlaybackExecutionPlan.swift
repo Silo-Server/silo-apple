@@ -63,15 +63,6 @@ struct LoopbackSessionSpec {
                 return "h264_passthrough"
             }
         }
-
-        var isDolbyVision: Bool {
-            switch self {
-            case .passthroughProfile5, .convertProfile7To81, .passthroughProfile8:
-                return true
-            case .passthroughHEVC, .passthroughH264:
-                return false
-            }
-        }
     }
 
     enum AudioOutputMode: Equatable {
@@ -103,19 +94,6 @@ struct LoopbackSessionSpec {
                 return "mp4a.40.2"
             }
         }
-    }
-
-    /// How the loopback writer produces the VIDEO track. The on-device
-    /// decode → VideoToolbox re-encode bridge (`.transcodeHEVC` /
-    /// `.transcodeH264`) and `.passthroughAV1` were retired on 2026-08-17:
-    /// no online plan could ever reach them (the V3 capability snapshot only
-    /// advertises h264/hevc, so the server never returns `original_http` for
-    /// a bridge codec) and `DownloadCaps` blocked them offline for the same
-    /// reason. Copy is the only remaining answer; the enum is kept so the
-    /// spec field, and the sites that carry it, stay unchanged.
-    enum VideoOutputMode: Equatable {
-        /// Remux. The only value for Dolby Vision, HEVC, and H.264.
-        case copy
     }
 
     struct SelectedAudio: Equatable {
@@ -157,21 +135,6 @@ struct LoopbackSessionSpec {
     let sourceStartTimeSeconds: Double
     let sourceBitrateBps: Double?
     let videoMode: VideoMode
-    /// How the writer produces the video track. Single-valued since the
-    /// bridge tier was retired.
-    let videoOutputMode: VideoOutputMode
-    /// Source video dimensions when the planner knows them. DORMANT: their
-    /// only consumer was the retired bridge's bitrate ladder. Kept so the
-    /// spec's copy helpers and the backend's spec rebuilds stay untouched;
-    /// remove with the next edit of `AVPlayerBackend`/`ApplePlaybackV3PlanAdapter`.
-    let sourceVideoWidth: Int?
-    let sourceVideoHeight: Int?
-    /// DORMANT: the `hvcC` / `avcC` record the first bridged producer of a
-    /// player item published. Nothing resolves it any more (the writer no
-    /// longer re-encodes video), so it is always nil in practice; retained
-    /// only because `AVPlayerBackend` still carries the pinning block that
-    /// would set it. Remove together with that block.
-    let bridgedVideoParameterSets: Data?
     let sourceVideoFrameRate: Float?
     let selectedAudio: SelectedAudio
     let availableAudioTracks: [PlayerTrack]
@@ -183,10 +146,6 @@ struct LoopbackSessionSpec {
         sourceStartTimeSeconds: Double = 0,
         sourceBitrateBps: Double? = nil,
         videoMode: VideoMode,
-        videoOutputMode: VideoOutputMode = .copy,
-        sourceVideoWidth: Int? = nil,
-        sourceVideoHeight: Int? = nil,
-        bridgedVideoParameterSets: Data? = nil,
         sourceVideoFrameRate: Float?,
         selectedAudio: SelectedAudio,
         availableAudioTracks: [PlayerTrack],
@@ -199,10 +158,6 @@ struct LoopbackSessionSpec {
             : 0
         self.sourceBitrateBps = sourceBitrateBps
         self.videoMode = videoMode
-        self.videoOutputMode = videoOutputMode
-        self.sourceVideoWidth = sourceVideoWidth
-        self.sourceVideoHeight = sourceVideoHeight
-        self.bridgedVideoParameterSets = bridgedVideoParameterSets
         self.sourceVideoFrameRate = sourceVideoFrameRate
         self.selectedAudio = selectedAudio
         self.availableAudioTracks = Self.markSelectedAudioTrack(
@@ -233,28 +188,7 @@ struct LoopbackSessionSpec {
             }
         guard let selectedTrack else { return tracks }
 
-        return tracks.map { track in
-            let isSelected = track.trackId == selectedTrack.trackId
-            guard track.isSelected != isSelected else { return track }
-            return PlayerTrack(
-                trackId: track.trackId,
-                kind: track.kind,
-                title: track.title,
-                lang: track.lang,
-                codec: track.codec,
-                audioChannelsLayout: track.audioChannelsLayout,
-                audioChannelCount: track.audioChannelCount,
-                bitrate: track.bitrate,
-                isDefault: track.isDefault,
-                isForced: track.isForced,
-                isHearingImpaired: track.isHearingImpaired,
-                isVisualImpaired: track.isVisualImpaired,
-                isExternal: track.isExternal,
-                isSelected: isSelected,
-                ffIndex: track.ffIndex,
-                srcId: track.srcId
-            )
-        }
+        return tracks.map { $0.selecting($0.trackId == selectedTrack.trackId) }
     }
 
     func reanchored(at mediaSeconds: Double) -> LoopbackSessionSpec {
@@ -264,10 +198,6 @@ struct LoopbackSessionSpec {
             sourceStartTimeSeconds: mediaSeconds,
             sourceBitrateBps: sourceBitrateBps,
             videoMode: videoMode,
-            videoOutputMode: videoOutputMode,
-            sourceVideoWidth: sourceVideoWidth,
-            sourceVideoHeight: sourceVideoHeight,
-            bridgedVideoParameterSets: bridgedVideoParameterSets,
             sourceVideoFrameRate: sourceVideoFrameRate,
             selectedAudio: selectedAudio,
             availableAudioTracks: availableAudioTracks,
@@ -278,9 +208,9 @@ struct LoopbackSessionSpec {
     /// Re-points the spec at a replacement source (the local source-proxy URL
     /// and its header set) while preserving every execution decision the
     /// planner made. Rebuilding the spec by hand at that seam silently dropped
-    /// `videoOutputMode`, the source dimensions and the bridged parameter
-    /// sets. Routing through the designated initializer means the start-time
-    /// clamp and the selected-audio marking re-run, which is idempotent here.
+    /// carried fields. Routing through the designated initializer means the
+    /// start-time clamp and the selected-audio marking re-run, which is
+    /// idempotent here.
     func withSource(url: URL, headers: [String: String]) -> LoopbackSessionSpec {
         LoopbackSessionSpec(
             sourceURL: url,
@@ -288,31 +218,6 @@ struct LoopbackSessionSpec {
             sourceStartTimeSeconds: sourceStartTimeSeconds,
             sourceBitrateBps: sourceBitrateBps,
             videoMode: videoMode,
-            videoOutputMode: videoOutputMode,
-            sourceVideoWidth: sourceVideoWidth,
-            sourceVideoHeight: sourceVideoHeight,
-            bridgedVideoParameterSets: bridgedVideoParameterSets,
-            sourceVideoFrameRate: sourceVideoFrameRate,
-            selectedAudio: selectedAudio,
-            availableAudioTracks: availableAudioTracks,
-            manifestMetadata: manifestMetadata
-        )
-    }
-
-    /// DORMANT: pinned the parameter sets a restarted bridged producer had to
-    /// reproduce. The writer no longer resolves any, so the backend handler
-    /// that calls this never fires. Remove with `bridgedVideoParameterSets`.
-    func carryingBridgedVideoParameterSets(_ data: Data) -> LoopbackSessionSpec {
-        LoopbackSessionSpec(
-            sourceURL: sourceURL,
-            headers: headers,
-            sourceStartTimeSeconds: sourceStartTimeSeconds,
-            sourceBitrateBps: sourceBitrateBps,
-            videoMode: videoMode,
-            videoOutputMode: videoOutputMode,
-            sourceVideoWidth: sourceVideoWidth,
-            sourceVideoHeight: sourceVideoHeight,
-            bridgedVideoParameterSets: data,
             sourceVideoFrameRate: sourceVideoFrameRate,
             selectedAudio: selectedAudio,
             availableAudioTracks: availableAudioTracks,

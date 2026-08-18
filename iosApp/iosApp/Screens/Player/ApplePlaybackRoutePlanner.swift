@@ -241,7 +241,6 @@ struct ApplePlaybackRoutePlanner {
             if directLoopbackVideoMode == nil, let mode = siloAssessment.videoMode {
                 directLoopbackVideoMode = mode
             }
-            let directVideoOutputMode: LoopbackSessionSpec.VideoOutputMode = .copy
             directLoopbackSession = directLoopbackVideoMode.flatMap { videoMode in
                 Self.makeLoopbackSessionSpec(
                     for: selectedVersion,
@@ -251,7 +250,6 @@ struct ApplePlaybackRoutePlanner {
                     preferredAudioTrackIndex: input.preferredAudioTrackIndex,
                     streamRequest: input.streamRequest,
                     videoMode: videoMode,
-                    videoOutputMode: directVideoOutputMode,
                     videoRange: Self.videoRange(for: videoMode, source: selectedVersion),
                     sourceStartTimeSeconds: session.position
                 )
@@ -405,7 +403,6 @@ struct ApplePlaybackRoutePlanner {
         preferredAudioTrackIndex: Int?,
         streamRequest: StreamRequest,
         videoMode: LoopbackSessionSpec.VideoMode,
-        videoOutputMode: LoopbackSessionSpec.VideoOutputMode = .copy,
         videoRange: String = "PQ",
         sourceStartTimeSeconds: Double = 0
     ) -> LoopbackSessionSpec? {
@@ -475,9 +472,6 @@ struct ApplePlaybackRoutePlanner {
                 : 0,
             sourceBitrateBps: version.bitrate.map { Double($0) * 1_000 },
             videoMode: videoMode,
-            videoOutputMode: videoOutputMode,
-            sourceVideoWidth: (version.videoTracks ?? []).first?.width,
-            sourceVideoHeight: (version.videoTracks ?? []).first?.height,
             sourceVideoFrameRate: loopbackSourceFrameRate(for: version),
             selectedAudio: selectedAudio,
             availableAudioTracks: tracks,
@@ -500,7 +494,6 @@ struct NativeDirectAssessment {
 struct SiloRouteAssessment {
     let isEligible: Bool
     let videoMode: LoopbackSessionSpec.VideoMode?
-    let videoOutputMode: LoopbackSessionSpec.VideoOutputMode
     let blockers: [String]
     let trace: [String]
     let degradations: [String]
@@ -508,20 +501,6 @@ struct SiloRouteAssessment {
 }
 
 extension ApplePlaybackRoutePlanner {
-    /// The single place the loopback's video normalization is decided. Pure,
-    /// so the truth table is unit-testable without touching VideoToolbox.
-    ///
-    /// Since the on-device bridge tier was retired the answer is always
-    /// `.copy`: either the writer remuxes the bitstream untouched, or the
-    /// route is blocked and the server transcodes. The blocker vocabulary
-    /// mirrors the existing `video_not_copyable` shape so `assessSiloRoute`
-    /// can append it unchanged.
-    static func loopbackVideoOutputMode(
-        for videoCodec: String
-    ) -> (mode: LoopbackSessionSpec.VideoOutputMode, blocker: String?) {
-        siloVideoCopyCodecs.contains(videoCodec) ? (.copy, nil) : (.copy, "video_not_copyable")
-    }
-
     /// Whether the loopback writer will open this container. A copied
     /// bitstream out of anything wider than these two lists has never been
     /// validated against AVPlayer's fMP4 expectations.
@@ -683,7 +662,6 @@ extension ApplePlaybackRoutePlanner {
             return SiloRouteAssessment(
                 isEligible: true,
                 videoMode: nil,
-                videoOutputMode: .copy,
                 blockers: [],
                 trace: trace + ["silo_dv_profile_owned_by_dv_policy"],
                 degradations: [],
@@ -699,7 +677,6 @@ extension ApplePlaybackRoutePlanner {
             return SiloRouteAssessment(
                 isEligible: false,
                 videoMode: nil,
-                videoOutputMode: .copy,
                 blockers: ["no_normalization_needed"],
                 trace: trace + ["silo_not_needed"],
                 degradations: [],
@@ -718,12 +695,12 @@ extension ApplePlaybackRoutePlanner {
             return blockedSilo(blockers: blockers, trace: trace, degradations: degradations)
         }
         trace.append("silo_video_\(videoCodec)")
-        let videoDecision = loopbackVideoOutputMode(for: videoCodec)
-        if let blocker = videoDecision.blocker {
-            blockers.append(blocker)
+        // Either the writer remuxes the bitstream untouched, or the route is
+        // blocked here and the server transcodes.
+        if !siloVideoCopyCodecs.contains(videoCodec) {
+            blockers.append("video_not_copyable")
             return blockedSilo(blockers: blockers, trace: trace, degradations: degradations)
         }
-        let videoOutputMode = videoDecision.mode
         if !siloContainerIsNormalizable(container) {
             blockers.append("container_not_normalizable")
         }
@@ -776,10 +753,9 @@ extension ApplePlaybackRoutePlanner {
 
         // The sample entry the writer must emit; the `hvc1` / `avc1` fourcc
         // has to describe what actually lands in the fMP4.
-        let mode: LoopbackSessionSpec.VideoMode = switch videoOutputMode {
-        case .copy:
-            videoCodec == "hevc" ? .passthroughHEVC : .passthroughH264
-        }
+        let mode: LoopbackSessionSpec.VideoMode = videoCodec == "hevc"
+            ? .passthroughHEVC
+            : .passthroughH264
         let reason: String
         if nativeAssessment.blockers.contains("audio_codec_not_allowlisted") {
             reason = "\(videoCodec)_audio_normalization_loopback"
@@ -792,7 +768,6 @@ extension ApplePlaybackRoutePlanner {
         return SiloRouteAssessment(
             isEligible: true,
             videoMode: mode,
-            videoOutputMode: videoOutputMode,
             blockers: [],
             trace: trace + ["silo_eligible", "silo_reason_\(reason)"],
             degradations: degradations,
@@ -808,7 +783,6 @@ extension ApplePlaybackRoutePlanner {
         SiloRouteAssessment(
             isEligible: false,
             videoMode: nil,
-            videoOutputMode: .copy,
             blockers: blockers,
             trace: trace + blockers.map { "silo_blocker_\($0)" },
             degradations: degradations,
@@ -1115,26 +1089,7 @@ extension ApplePlaybackRoutePlanner {
             pendingAudioFfIndex: pendingAudioFfIndex,
             preferredAudioTrackIndex: preferredAudioTrackIndex
         )?.ffIndex
-        return sourceTracks.map { track in
-            PlayerTrack(
-                trackId: track.trackId,
-                kind: track.kind,
-                title: track.title,
-                lang: track.lang,
-                codec: track.codec,
-                audioChannelsLayout: track.audioChannelsLayout,
-                audioChannelCount: track.audioChannelCount,
-                bitrate: track.bitrate,
-                isDefault: track.isDefault,
-                isForced: track.isForced,
-                isHearingImpaired: track.isHearingImpaired,
-                isVisualImpaired: track.isVisualImpaired,
-                isExternal: track.isExternal,
-                isSelected: track.ffIndex == selectedFfIndex,
-                ffIndex: track.ffIndex,
-                srcId: track.srcId
-            )
-        }
+        return sourceTracks.map { $0.selecting($0.ffIndex == selectedFfIndex) }
     }
 
     static func resolveLoopbackSelectedAudioTrack(

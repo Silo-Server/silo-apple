@@ -5,12 +5,12 @@ import XCTest
 /// Stage-0 characterization: the `LoopbackSessionSpec` copy helpers must
 /// preserve every field they do not deliberately change.
 ///
-/// The spec has fourteen stored properties and no `Equatable` conformance, so
-/// nothing today catches a copy helper that quietly drops one. This matters
-/// because the review found exactly that failure mode elsewhere: the source
-/// proxy rebuilds a spec field-by-field and loses `videoOutputMode`, the
-/// source dimensions and the bridged parameter sets. These assertions pin the
-/// two helpers that get it right, so a third one has a contract to match.
+/// The spec has no `Equatable` conformance, so nothing today catches a copy
+/// helper that quietly drops a stored property. This matters because the
+/// review found exactly that failure mode elsewhere: the source proxy rebuilt
+/// a spec field-by-field and lost carried execution decisions. These
+/// assertions pin the helper that gets it right, so a second one has a
+/// contract to match.
 final class LoopbackSessionSpecCopyHelperTests: XCTestCase {
 
     private static let sourceURL = URL(string: "https://example.invalid/movie.mkv")!
@@ -38,20 +38,13 @@ final class LoopbackSessionSpecCopyHelperTests: XCTestCase {
 
     /// Deliberately populates every optional so a dropped field shows up as a
     /// nil rather than as an equal default.
-    private func makeSpec(
-        videoOutputMode: LoopbackSessionSpec.VideoOutputMode = .copy,
-        bridgedVideoParameterSets: Data? = Data([0x01, 0x02, 0x03])
-    ) -> LoopbackSessionSpec {
+    private func makeSpec() -> LoopbackSessionSpec {
         LoopbackSessionSpec(
             sourceURL: Self.sourceURL,
             headers: ["Authorization": "Bearer spec", "Range": "bytes=0-"],
             sourceStartTimeSeconds: 42.5,
             sourceBitrateBps: 18_000_000,
             videoMode: .passthroughProfile8(.hlg),
-            videoOutputMode: videoOutputMode,
-            sourceVideoWidth: 3840,
-            sourceVideoHeight: 2160,
-            bridgedVideoParameterSets: bridgedVideoParameterSets,
             sourceVideoFrameRate: 23.976,
             selectedAudio: LoopbackSessionSpec.SelectedAudio(
                 trackIndex: 1,
@@ -80,7 +73,6 @@ final class LoopbackSessionSpecCopyHelperTests: XCTestCase {
         _ copy: LoopbackSessionSpec,
         from original: LoopbackSessionSpec,
         exceptStartTime: Bool = false,
-        exceptParameterSets: Bool = false,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
@@ -98,24 +90,6 @@ final class LoopbackSessionSpecCopyHelperTests: XCTestCase {
             "sourceBitrateBps", file: file, line: line
         )
         XCTAssertEqual(copy.videoMode, original.videoMode, "videoMode", file: file, line: line)
-        XCTAssertEqual(
-            copy.videoOutputMode, original.videoOutputMode,
-            "videoOutputMode", file: file, line: line
-        )
-        XCTAssertEqual(
-            copy.sourceVideoWidth, original.sourceVideoWidth,
-            "sourceVideoWidth", file: file, line: line
-        )
-        XCTAssertEqual(
-            copy.sourceVideoHeight, original.sourceVideoHeight,
-            "sourceVideoHeight", file: file, line: line
-        )
-        if !exceptParameterSets {
-            XCTAssertEqual(
-                copy.bridgedVideoParameterSets, original.bridgedVideoParameterSets,
-                "bridgedVideoParameterSets", file: file, line: line
-            )
-        }
         XCTAssertEqual(
             copy.sourceVideoFrameRate, original.sourceVideoFrameRate,
             "sourceVideoFrameRate", file: file, line: line
@@ -153,10 +127,6 @@ final class LoopbackSessionSpecCopyHelperTests: XCTestCase {
             "sourceStartTimeSeconds",
             "sourceBitrateBps",
             "videoMode",
-            "videoOutputMode",
-            "sourceVideoWidth",
-            "sourceVideoHeight",
-            "bridgedVideoParameterSets",
             "sourceVideoFrameRate",
             "selectedAudio",
             "availableAudioTracks",
@@ -194,45 +164,4 @@ final class LoopbackSessionSpecCopyHelperTests: XCTestCase {
         assertCarriesEverything(twice, from: original, exceptStartTime: true)
     }
 
-    // MARK: - carryingBridgedVideoParameterSets(_:)
-
-    func testCarryingParameterSetsChangesOnlyTheParameterSets() {
-        let original = makeSpec(bridgedVideoParameterSets: nil)
-        let resolved = Data([0xAA, 0xBB, 0xCC, 0xDD])
-        let copy = original.carryingBridgedVideoParameterSets(resolved)
-
-        XCTAssertEqual(copy.bridgedVideoParameterSets, resolved)
-        XCTAssertNil(original.bridgedVideoParameterSets, "the original must not mutate")
-        assertCarriesEverything(copy, from: original, exceptParameterSets: true)
-    }
-
-    /// The video output mode and source dimensions ride through the helper.
-    /// (The video bridge that made these load-bearing was retired 2026-08-17;
-    /// the fields are dormant but still carried, so the contract is pinned.)
-    func testCarryingParameterSetsKeepsTheVideoOutputModeAndDimensions() {
-        let copy = makeSpec(videoOutputMode: .copy)
-            .carryingBridgedVideoParameterSets(Data([0x01]))
-        XCTAssertEqual(copy.videoOutputMode, .copy)
-        XCTAssertEqual(copy.sourceVideoWidth, 3840)
-        XCTAssertEqual(copy.sourceVideoHeight, 2160)
-    }
-
-    /// The two helpers compose in either order without losing the other's
-    /// contribution.
-    func testTheTwoHelpersCompose() {
-        let original = makeSpec(bridgedVideoParameterSets: nil)
-        let resolved = Data([0x11, 0x22])
-
-        let forward = original.carryingBridgedVideoParameterSets(resolved).reanchored(at: 600)
-        let backward = original.reanchored(at: 600).carryingBridgedVideoParameterSets(resolved)
-
-        for copy in [forward, backward] {
-            XCTAssertEqual(copy.sourceStartTimeSeconds, 600)
-            XCTAssertEqual(copy.bridgedVideoParameterSets, resolved)
-            assertCarriesEverything(
-                copy, from: original,
-                exceptStartTime: true, exceptParameterSets: true
-            )
-        }
-    }
 }

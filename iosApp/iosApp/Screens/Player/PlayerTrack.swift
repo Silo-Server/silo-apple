@@ -36,6 +36,31 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
 
     var id: String { "\(kind.rawValue)-\(trackId)" }
 
+    /// The same track with its selection flag set. Returns `self` unchanged
+    /// when the flag already matches, so callers that re-mark an inventory
+    /// keep identity for the untouched entries.
+    func selecting(_ isSelected: Bool) -> PlayerTrack {
+        guard self.isSelected != isSelected else { return self }
+        return PlayerTrack(
+            trackId: trackId,
+            kind: kind,
+            title: title,
+            lang: lang,
+            codec: codec,
+            audioChannelsLayout: audioChannelsLayout,
+            audioChannelCount: audioChannelCount,
+            bitrate: bitrate,
+            isDefault: isDefault,
+            isForced: isForced,
+            isHearingImpaired: isHearingImpaired,
+            isVisualImpaired: isVisualImpaired,
+            isExternal: isExternal,
+            isSelected: isSelected,
+            ffIndex: ffIndex,
+            srcId: srcId
+        )
+    }
+
     var normalizedTitle: String? {
         Self.normalizedText(title)
     }

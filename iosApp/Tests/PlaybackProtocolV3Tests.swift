@@ -361,11 +361,10 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     }
 
     /// The source-proxy seam re-points a loopback spec at the local proxy URL.
-    /// Rebuilding it field by field there silently dropped `videoOutputMode`,
-    /// the source dimensions and the bridged parameter sets, so the copy has
-    /// to preserve every execution decision except the source itself.
+    /// Rebuilding it field by field there silently dropped carried execution
+    /// decisions, so the copy has to preserve every one of them except the
+    /// source itself.
     func testLoopbackSessionRepointedAtProxyKeepsEveryExecutionDecision() {
-        let parameterSets = Data([0x01, 0x02, 0x03])
         let tracks = [
             makePlayerAudioTrack(trackId: 10_000, sourceIndex: 0, ffIndex: 1, isSelected: false),
             makePlayerAudioTrack(trackId: 10_001, sourceIndex: 1, ffIndex: 2, isSelected: false),
@@ -376,10 +375,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             sourceStartTimeSeconds: 42.5,
             sourceBitrateBps: 18_000_000,
             videoMode: .convertProfile7To81,
-            videoOutputMode: .copy,
-            sourceVideoWidth: 3840,
-            sourceVideoHeight: 2160,
-            bridgedVideoParameterSets: parameterSets,
             sourceVideoFrameRate: 23.976,
             selectedAudio: LoopbackSessionSpec.SelectedAudio(
                 trackIndex: 1,
@@ -407,10 +402,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(repointed.sourceStartTimeSeconds, original.sourceStartTimeSeconds)
         XCTAssertEqual(repointed.sourceBitrateBps, original.sourceBitrateBps)
         XCTAssertEqual(repointed.videoMode, original.videoMode)
-        XCTAssertEqual(repointed.videoOutputMode, original.videoOutputMode)
-        XCTAssertEqual(repointed.sourceVideoWidth, original.sourceVideoWidth)
-        XCTAssertEqual(repointed.sourceVideoHeight, original.sourceVideoHeight)
-        XCTAssertEqual(repointed.bridgedVideoParameterSets, parameterSets)
         XCTAssertEqual(repointed.sourceVideoFrameRate, original.sourceVideoFrameRate)
         XCTAssertEqual(repointed.selectedAudio, original.selectedAudio)
         XCTAssertEqual(repointed.availableAudioTracks, original.availableAudioTracks)

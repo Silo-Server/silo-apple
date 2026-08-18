@@ -157,9 +157,6 @@ Loopback-specific callbacks worth knowing:
 - `onSegmentPlanResolved` publishes the `LoopbackSegmentPlan` (the VOD
   timeline).
 - `onSegmentAppended` advances the writer head index for the consumer window.
-- `onBridgedVideoParameterSetsResolved` pins the first bridged producer's
-  `hvcC`/`avcC` onto the session spec so a restart reproduces it — see
-  [09](09-video-bridge.md#4-writer-integration).
 
 ## 8. Current limitations
 
