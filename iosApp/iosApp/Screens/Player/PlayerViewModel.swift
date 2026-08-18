@@ -123,50 +123,10 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
 struct PlayerOnDeckItem: Identifiable, Hashable {
     let sectionItem: SectionItem
     let contentId: String
-    let title: String
-    let seriesTitle: String?
-    let seasonNumber: Int?
-    let episodeNumber: Int?
-    let positionSeconds: Double?
-    let durationSeconds: Double?
     let artworkUrl: String?
     let artworkThumbhash: String?
 
     var id: String { contentId }
-
-    var primaryTitle: String {
-        if let seriesTitle, !seriesTitle.isEmpty {
-            return seriesTitle
-        }
-        return title
-    }
-
-    var secondaryTitle: String? {
-        guard let seasonNumber, let episodeNumber else { return nil }
-        let episodeLabel = "S\(seasonNumber):E\(episodeNumber)"
-        if seriesTitle?.isEmpty == false, !title.isEmpty {
-            return "\(episodeLabel) · \(title)"
-        }
-        return episodeLabel
-    }
-
-    var progressFraction: Double {
-        guard let positionSeconds,
-              let durationSeconds,
-              durationSeconds > 0 else {
-            return 0
-        }
-        return min(max(positionSeconds / durationSeconds, 0), 1)
-    }
-
-    var minutesRemaining: Int? {
-        guard let positionSeconds,
-              let durationSeconds,
-              durationSeconds > positionSeconds else {
-            return nil
-        }
-        return max(1, Int(((durationSeconds - positionSeconds) / 60).rounded()))
-    }
 
     init(
         item: SectionItem,
@@ -175,12 +135,6 @@ struct PlayerOnDeckItem: Identifiable, Hashable {
     ) {
         sectionItem = item
         contentId = item.contentId
-        title = item.title
-        seriesTitle = item.seriesTitle
-        seasonNumber = item.seasonNumber
-        episodeNumber = item.episodeNumber
-        positionSeconds = item.positionSeconds
-        durationSeconds = item.durationSeconds
         artworkUrl = preferredArtworkUrl ?? item.backdropUrl
         artworkThumbhash = preferredArtworkThumbhash ?? item.backdropThumbhash
     }
@@ -973,7 +927,6 @@ class PlayerViewModel {
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let introAutoSkipCountdownDefaultSeconds = 5
-    static var nextUpCountdownTotal: Int { nextUpCountdownDefaultSeconds }
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
     /// How much media may still sit ahead of the playhead for a near-end
     /// failure to still read as the stream draining. A real drain leaves the
@@ -5037,6 +4990,21 @@ class PlayerViewModel {
         return false
     }
 
+    private func beginReanchorSeekUI(origin: Double, target: Double) {
+        hasReachedEndOfFile = false
+        seekOriginTime = origin
+        seekTargetTime = target
+        seekFilterTimeoutTask?.cancel()
+        seekFilterTimeoutTask = nil
+        currentTime = target
+        scrubPreviewTime = target
+        isScrubbing = false
+        isLoading = true
+        isBuffering = false
+        showControls = true
+        hideControlsTask?.cancel()
+    }
+
     private func reloadServerBackedHLSForSeek(to target: Double) -> Bool {
         if reloadLocalLoopbackForSeekBeforeAnchor(to: target) {
             return true
@@ -5061,20 +5029,10 @@ class PlayerViewModel {
             return false
         }
 
+        beginReanchorSeekUI(origin: origin, target: clampedTarget)
+
         if let protocolV3 = activePreparedProtocolV3,
            protocolV3.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature) {
-            hasReachedEndOfFile = false
-            seekOriginTime = origin
-            seekTargetTime = clampedTarget
-            seekFilterTimeoutTask?.cancel()
-            seekFilterTimeoutTask = nil
-            currentTime = clampedTarget
-            scrubPreviewTime = clampedTarget
-            isScrubbing = false
-            isLoading = true
-            isBuffering = false
-            showControls = true
-            hideControlsTask?.cancel()
             attemptProtocolV3Replan(
                 position: clampedTarget,
                 classification: "seek_reanchor",
@@ -5084,18 +5042,6 @@ class PlayerViewModel {
             return true
         }
 
-        hasReachedEndOfFile = false
-        seekOriginTime = origin
-        seekTargetTime = clampedTarget
-        seekFilterTimeoutTask?.cancel()
-        seekFilterTimeoutTask = nil
-        currentTime = clampedTarget
-        scrubPreviewTime = clampedTarget
-        isScrubbing = false
-        isLoading = true
-        isBuffering = false
-        showControls = true
-        hideControlsTask?.cancel()
         Self.logger.info(
             "[CMP-SEEK] server-backed HLS reload seek delivery=\(plan.delivery.name, privacy: .public) target=\(clampedTarget, privacy: .public) origin=\(origin, privacy: .public) offset=\(self.playbackTimelineOffset, privacy: .public)"
         )
@@ -5150,18 +5096,7 @@ class PlayerViewModel {
             validationClaims: plan.validationClaims
         )
 
-        hasReachedEndOfFile = false
-        seekOriginTime = origin
-        seekTargetTime = clampedTarget
-        seekFilterTimeoutTask?.cancel()
-        seekFilterTimeoutTask = nil
-        currentTime = clampedTarget
-        scrubPreviewTime = clampedTarget
-        isScrubbing = false
-        isLoading = true
-        isBuffering = false
-        showControls = true
-        hideControlsTask?.cancel()
+        beginReanchorSeekUI(origin: origin, target: clampedTarget)
         playbackTimelineOffset = clampedTarget
 
         Self.logger.info(
