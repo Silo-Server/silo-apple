@@ -24,12 +24,14 @@ recommended a control-plane rewrite + narrowed loopback ("Option D"). Rounds so 
 | Env baseline + round-5 tail (2026-08-18, two hand-briefed Opus packages, `cleanup/env-test-baseline` + `cleanup/round5-tail`) | **The 14 "environment" failures are gone — the suite is genuinely green.** Root cause was two unrelated problems: 11 assertions were `errSecMissingEntitlement (-34018)` (the unsigned `CODE_SIGNING_ALLOWED=NO` test host fails every `SecItem*` call) — fixed by a `KeychainBackend` seam on `SharedKeychain` (nil in the app, injected `InMemoryKeychainBackend` in tests; `BrandMigrationTests` keeps its probe-and-skip cases because there the Keychain *is* the subject); 3 were stale pre-#132 `projectedMainTabDestinations` expectations (never environmental — the "some hosts see 2" mystery), updated to the shipped fallback; 2 orphaned scoped-refresh tests deleted together with the two dead `TokenStore` overloads (follow-up noted: re-cover the `.temporary`-scope guard against the live funnel). Tail: unused `displayCapabilities:` planner input dropped (capability probe no longer runs per plan — side-effect-free); `VideoTrack.colorSpace`/`.colorPrimaries` deleted after a premise correction (`colorRange`, `colorTransfer`, `videoRange`, `dolbyVision` are all read by the planner/HDR decision/detail UI and stay; write-only `bitDepth` kept deliberately — HDR10-adjacent); the three `NWListener` origin fakes merged into `Tests/RangeOriginStub.swift` with Retarget's cursor/end recursion as the superset (`CountingReader`s and the StreamResume entity-matrix stub deliberately not merged); spill reason token `local_hls_event_playlist` → `local_hls_vod_cache` (log-only, verified unparsed). | 20 files, +378 / −763 raw (net −385); **suite 1520 / 0 failures / 3 skipped, `** TEST SUCCEEDED **`**; Silo/SiloTV/SiloMac green |
 
 Hardware records: `docs/tvos-player/validations/2026-08-17-*.yaml`, `2026-08-18-*.yaml` (HDR10 loopback + display
-criteria validated on 08-17; DV rows blocked until PR #670 reaches the server the TV is on; **open**: an HDR10 loopback
-`-11868/-17223` failure at anchor+21 s seen on 08-18 across all builds incl. a pre-R2 variant — display-path evidence
-points at the TV/HDMI environment, unresolved). Still open from the review: Round 3 (Stage 2 control-plane extraction —
-`PlaybackBackend` protocol, reducer/session actor, one `RecoveryPolicy` — behind a remote key that needs a silo-server
-setting), #10 (needs the audio-index semantics on native-direct/HLS), #11 combined-index plumbing, macOS scene-phase
-divergence, log-channel unification, six online-unreachable error rungs, and product decisions P1/P2 before Stage 3.
+criteria validated on 08-17 bedroom gen-3 and 08-18 Living Room gen-2; the 08-18 `-11868/-17223` anchor+21 s
+anomaly is **closed as environmental** — the Living Room control run cleared both anchor windows on the identical
+plan, see `2026-08-18-…-control-run-living-room.yaml`; the DV rows are validated in the same capture: DV P8.1
+passthrough ×2 and DV P7→8.1 + TrueHD→FLAC 7.1, loopback on production). Still open from the review: Round 3
+(Stage 2 control-plane extraction — `PlaybackBackend` protocol, reducer/session actor, one `RecoveryPolicy` —
+**ungated** since 2026-08-18, ships as a hard cutover per P11), #10 (needs the audio-index semantics on
+native-direct/HLS), #11 combined-index plumbing, macOS scene-phase divergence, log-channel unification, six
+online-unreachable error rungs. P1/P2/P5/P11 are all decided (HANDOFF §7).
 Skipped by design in R1: #10; the review's §12 lists rejected/narrowed claims.
 
 **Round-5 deferred / refuted.** All four deferred items landed 2026-08-18 (row above): `displayCapabilities:`

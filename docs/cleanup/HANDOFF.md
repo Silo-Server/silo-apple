@@ -32,7 +32,7 @@ cutover**, no remote kill-switch, silo-server PR #673 closed unmerged); the suit
 | Size vs `main` | ~120 commits, ~510 files, roughly +23k / −29k raw |
 | Suite (iOS `SiloTests`, only test target) | `Executed 1520 tests, with 3 tests skipped and 0 failures (0 unexpected)` — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
 | Builds | `Silo` (iOS), `SiloTV` (tvOS), `SiloMac` all green at the tip, `CODE_SIGNING_ALLOWED=NO` |
-| Hardware | HDR10 HEVC MKV loopback + display criteria validated on Apple TV 4K gen 3 (tvOS 26.6) on 08-17; DV rows pending; **one open anomaly** (§8) |
+| Hardware | HDR10 loopback + display criteria validated (bedroom gen-3 08-17, Living Room gen-2 08-18); DV rows validated 08-18 on Living Room (P8.1 passthrough, P7→8.1 + TrueHD→FLAC); §8 anomaly **closed as environmental** |
 | Sibling PRs to sequence after #172 | #171 (release launch paths / deep links), #169 + #107 (subtitles) — they overlap touched files |
 
 ### What is on the branch, in layers (details: PR #172 body and `app-cleanup-backlog.md` §0 round table)
@@ -162,7 +162,7 @@ The whole round-5 deferred list **and** the 14 environment failures landed on 20
 ### 6b. Gated — the big levers (need an owner decision or a server change first)
 | Work | What it is | Gate |
 |---|---|---|
-| **Round 3 = Stage 2 control-plane extraction** (review §8/§9) | `PlaybackBackend` protocol, pure `PlaybackReducer` + `PlaybackSessionActor`, `PlaybackEngineSession`, one `RecoveryPolicy` replacing six backend ladders + VM outage ride-through, `TrackSelectionCoordinator` extraction from the VM's subtitle half. This is the real answer to `PlayerViewModel` ≈ 8k raw lines / `AVPlayerBackend` ≈ 4.6k. Ships as a **hard cutover** — owner decision 2026-08-18 (P11 = no runtime flag): the legacy VM core + ladders are deleted in the same effort once the new plane is verified; the 73+ characterization tests are the safety net, and rollback of a bad build is a new TestFlight/App Store build. | **P11 decided — no gate from the key** (silo-server PR #673, which implemented it end-to-end, closed unmerged and recoverable if ever wanted). Remaining gate: a control run on the HDR10 anomaly (§8) first. Run via `player-remediation-fix.js` with spec JSONs; roughly 5–7 implementers + reviewers. |
+| **Round 3 = Stage 2 control-plane extraction** (review §8/§9) | `PlaybackBackend` protocol, pure `PlaybackReducer` + `PlaybackSessionActor`, `PlaybackEngineSession`, one `RecoveryPolicy` replacing six backend ladders + VM outage ride-through, `TrackSelectionCoordinator` extraction from the VM's subtitle half. This is the real answer to `PlayerViewModel` ≈ 8k raw lines / `AVPlayerBackend` ≈ 4.6k. Ships as a **hard cutover** — owner decision 2026-08-18 (P11 = no runtime flag): the legacy VM core + ladders are deleted in the same effort once the new plane is verified; the 73+ characterization tests are the safety net, and rollback of a bad build is a new TestFlight/App Store build. | **UNGATED as of 2026-08-18**: P11 decided (no key — hard cutover; PR #673 closed unmerged, recoverable) and the §8 control run passed (anomaly environmental). Ready to run whenever the owner wants the cycle. Run via `player-remediation-fix.js` with spec JSONs; roughly 5–7 implementers + reviewers. |
 | ~~Stage 3 = narrow the local matrix (Option B deletions)~~ **Cancelled 2026-08-18** | P1 = yes, P2 = no, P5 = no (§7): the encoder ladders, the EVENT fallback and common-container local playback all stay. Only the server-authoritative tightening items (planner limited to execution detail, `local_mutations` populated, `ApplePlaybackRouteCapabilities` premium claims → `plan.claims`) remain candidates — as Stage 2 territory. | Decided — closed. |
 | ~~Stage 4~~ Folded into Stage 2 | With no runtime flag (P11 = no key) there is no separate "default it on" release: Stage 2 lands with the old VM core + ladders already deleted. (The former Stage 5 / Option C is dead: P1 = yes.) | — |
 | Review items still open | #10 server audio pick on native-direct/HLS (needs server audio-index semantics; largely moot now that non-default audio → loopback); #11 combined-index translation for embedded tracks (needs the version inventory plumbed from the VM); six online-unreachable error rungs (PVM `1524-1553` at review time); `cmpLog` vs `os_log` unification; macOS scene-phase divergence; audiobook engine as a second V3 client. | Mostly Stage 2 territory; small ones could go in a follow-up package. |
@@ -190,16 +190,20 @@ Stage 4 folds into Stage 2 (hard cutover). The remaining big lever is Stage 2 / 
 Still open: the rest of P1–P13 (review §10), and backlog 1.18 — three divergent runtime-format styles
 across the app: unify only if one output format is chosen.
 
-## 8. Open validation item (does not block landing, does need closing)
+## 8. HDR10 loopback anomaly — **CLOSED 2026-08-18 (environmental)**
 
-On 2026-08-18 an HDR10 HEVC MKV loopback item on the bedroom Apple TV died at anchor+21 s with `-11868/-17223`
-on **every** build tested (including a pre-round-2 variant), while identical bytes/plan played 2.5 h on 08-17;
-disabling the display-criteria write fails immediately with the same code → the evidence points at the TV/HDMI
-display path, not the writer. Recorded with the bisect in `docs/tvos-player/validations/2026-08-18-*.yaml`.
-**Needs one control run** (different day / TV input / AVR path) before it is closed as environmental. Also still
-pending on hardware: the Dolby Vision rows once the TV's server carries silo-server #670. Deep-link
-`silo://play/<contentId>` via `devicectl … --payload-url` is how to start playback on the TV; `pyatv` key presses
-do not reach the player.
+The 08-18 bedroom-TV failure (HDR10 HEVC MKV loopback dying at anchor+21 s with `-11868/-17223` on every build)
+was closed by a control run the same evening on the **Living Room Apple TV** (4K 2nd gen, HDR10-capable HDMI
+path): same title `movie-tmdb-852590`, byte-identical 1203-segment plan, same PQ @ 24.000 criteria applied —
+cleared the +21 s window on both the initial anchor and a post-seek anchor (1056.6 → sampled +66 s), ~22 min
+clean, zero failure markers. With build, bytes/plan, date and criteria-outcome all controlled, the remaining
+variable is the bedroom TV/AVR/HDMI path. Record:
+`docs/tvos-player/validations/2026-08-18-tvos-siloPlayerLoopback-hdr10-control-run-living-room.yaml`.
+**Bonus in the same capture:** the pending DV rows validated on hardware — DV P8.1 passthrough (×2 titles) and
+DV P7→8.1 conversion + TrueHD→FLAC 7.1 (both P1 commitments), all loopback on production.
+Residual (non-blocking): check the bedroom input/cable/AVR settings at leisure and re-run the deep link there.
+Workflow reminders: deep-link `silo://play/<contentId>` via `devicectl … --payload-url`; `pyatv` key presses do
+not reach the player.
 
 ## 9. Documents and where things live
 
@@ -221,9 +225,8 @@ do not reach the player.
 1. `git fetch origin && git status && git log --oneline -5` on `player/architecture-remediation`; confirm PR #172
    is still `MERGEABLE` and whether `main` moved (`git log --oneline HEAD..origin/main`); merge `origin/main` in
    if it did and re-run the verification recipe (§4 — green now means **0 failures**).
-2. Round 3 (Stage 2)'s only remaining gate is the §8 HDR10 control run (different day / TV input / AVR path —
-   owner hardware time). It ships as a **hard cutover** (P11 = no key, §7): write the specs so the legacy VM
-   core + ladders are deleted in the same effort, with the characterization suite as the safety net. Run via
-   `player-remediation-fix.js` with spec JSONs (roughly 5–7 implementers + reviewers; workflows still need an
-   explicit per-request opt-in).
-3. Small items while gated: the temporary-scope guard unit test (§6a).
+2. Round 3 (Stage 2) is **ungated** (§6b): P11 decided, §8 closed. It ships as a **hard cutover** (§7): write
+   the specs so the legacy VM core + ladders are deleted in the same effort, with the characterization suite as
+   the safety net. Run via `player-remediation-fix.js` with spec JSONs (roughly 5–7 implementers + reviewers;
+   workflows still need an explicit per-request opt-in).
+3. Small items: the temporary-scope guard unit test (§6a — may already be done by the spun-off task).
