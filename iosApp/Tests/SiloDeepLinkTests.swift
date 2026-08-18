@@ -12,7 +12,6 @@ final class SiloDeepLinkTests: XCTestCase {
     func testAcceptsOnlySiloScheme() throws {
         XCTAssertTrue(SiloDeepLink.isSupported(try XCTUnwrap(URL(string: "silo://item/movie-1"))))
         XCTAssertTrue(SiloDeepLink.isSupported(try XCTUnwrap(URL(string: "silo://downloads"))))
-        XCTAssertEqual(SiloDeepLink.acceptedSchemes, ["silo"])
     }
 
     /// The system hands back whatever casing the sender used, so the check

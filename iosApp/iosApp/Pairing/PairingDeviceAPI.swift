@@ -27,32 +27,8 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.dateEncodingStrategy = .iso8601
         self.encoder = encoder
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        decoder.dateDecodingStrategy = .custom { decoder in
-            let container = try decoder.singleValueContainer()
-            let str = try container.decode(String.self)
-            if let date = Self.isoFractional.date(from: str) { return date }
-            if let date = Self.isoWhole.date(from: str) { return date }
-            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unparseable ISO-8601 date: \(str)")
-        }
-        self.decoder = decoder
+        self.decoder = HTTPClient.makeJSONDecoder()
     }
-
-    /// Parser for the fractional-second ISO-8601 timestamps the Silo
-    /// server emits (e.g. `2026-04-13T04:46:42.211273Z`). The default
-    /// `.iso8601` decoder strategy rejects fractional seconds outright.
-    private static let isoFractional: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
-    private static let isoWhole: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
 
     // MARK: Receiver (unauthenticated)
 
