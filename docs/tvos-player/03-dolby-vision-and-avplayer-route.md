@@ -181,8 +181,10 @@ from FFmpeg and AVPlayer-facing clients.
 (96 MB on constrained-memory devices — `AVPlayerBackend.loopbackSegmentStoreMemoryBudgetBytes`).
 Bounded session-scoped temp spill is now enabled for **every** loopback session
 with a 4 GB budget (`generatedHLSSpillBudgetBytes`), reported as
-`local_hls_event_playlist` or `source_bitrate_unknown`;
-`SILO_ENABLE_HLS_DISK_SPILL=1` forces it with reason `env`.
+`local_hls_event_playlist` or `source_bitrate_unknown`. The
+`SILO_ENABLE_HLS_DISK_SPILL=1` override went away with the conditional spill
+policy — both arms enabled spill with the same budget, so the variable is no
+longer read anywhere and setting it has no effect.
 
 Temp spill is not debug mirroring:
 
@@ -214,10 +216,12 @@ For the loopback route (`ApplePlaybackRoutePlanner.loopbackAudioOutputMode`):
 - verified: Dolby Vision profiles 5/7/8 claim `siloPlayerLoopback` ahead of the
   native-direct assessment in `makeExecutionPlan`, and `assessSiloRoute` returns
   early with `silo_dv_profile_owned_by_dv_policy` for any DV source.
-- corrected 2026-08-17: `loopbackVideoOutputMode` now returns
+- corrected 2026-08-17, superseded: `loopbackVideoOutputMode` returned
   `video_not_copyable` for any non-copy codec (the DV-specific
-  `dv_not_bridgeable` arm went with the bridge tier), and the planner
-  independently forces `.copy` for DV sessions.
+  `dv_not_bridgeable` arm went with the bridge tier). That function and the
+  whole `VideoOutputMode` axis have since been deleted; `assessSiloRoute` now
+  tests `siloVideoCopyCodecs` directly and appends the same
+  `video_not_copyable` blocker.
 - verified: the Profile 7 → 8.1 base-layer conversion, its `db1p` brand, and the
   `preferProfile7HDR10Fallback` escape hatch are unchanged by the one-player
   consolidation.
