@@ -28,6 +28,43 @@ struct SubtitleLanguageChoice: Identifiable {
         return Locale(identifier: "en").localizedString(forLanguageCode: code)?.capitalized
             ?? code.uppercased()
     }
+
+    /// The full offered language list: the given hinted codes floated to the
+    /// top in the order supplied, then every ``PlaybackLanguageOption``, all
+    /// deduped case-insensitively.
+    static func ordered(hinted: [(code: String, hint: String)]) -> [SubtitleLanguageChoice] {
+        var result: [SubtitleLanguageChoice] = []
+        var seen = Set<String>()
+        func add(_ code: String, hint: String?) {
+            let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            let key = trimmed.lowercased()
+            guard !seen.contains(key) else { return }
+            seen.insert(key)
+            result.append(.init(code: trimmed, label: displayName(trimmed), hint: hint))
+        }
+        for entry in hinted {
+            add(entry.code, hint: entry.hint)
+        }
+        for option in PlaybackLanguageOption.all {
+            add(option.code, hint: nil)
+        }
+        return result
+    }
+
+    /// ``ordered(hinted:)`` split into the floated suggestions (kept in
+    /// priority order) and the alphabetized remainder.
+    static func sections(
+        hinted: [(code: String, hint: String)]
+    ) -> (suggested: [SubtitleLanguageChoice], other: [SubtitleLanguageChoice]) {
+        let all = ordered(hinted: hinted)
+        return (
+            suggested: all.filter { $0.hint != nil },
+            other: all
+                .filter { $0.hint == nil }
+                .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+        )
+    }
 }
 
 // MARK: - tvOS focus row
@@ -64,6 +101,21 @@ struct SubtitleSheetTVRow<Content: View>: View {
         .opacity(isDisabled ? 0.35 : 1.0)
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
         .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// Inline section header for the tvOS subtitle panels. Shared by
+/// ``SubtitleSearchMenu`` and ``SubtitleTranslateMenu``.
+struct SubtitleSheetSectionHeader: View {
+    let text: String
+
+    var body: some View {
+        Text(text.uppercased())
+            .font(.system(size: 14, weight: .semibold))
+            .tracking(1.2)
+            .foregroundStyle(.white.opacity(0.45))
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
     }
 }
 #endif

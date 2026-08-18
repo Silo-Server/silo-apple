@@ -103,7 +103,7 @@ final class AudioPlayerViewModel {
             currentTime = clampGlobal(startPosition ?? (restart ? 0 : context.resumePositionSeconds))
             attachNowPlaying()
             loadPalette(posterUrl: context.posterUrl)
-            if let artwork = await resolvedURL(context.posterUrl) {
+            if let artwork = await resolvedURL(context.posterUrl, apiRelative: false) {
                 nowPlaying.setArtworkURL(artwork)
             }
             try await loadTrack(at: currentTime, autoplay: true)
@@ -230,7 +230,7 @@ final class AudioPlayerViewModel {
                 Task { try? await SiloAPI.shared.stopPlayback(sessionId: started.session.sessionId) }
                 return
             }
-            guard let url = await resolvedStreamURL(started.session.streamUrl) else {
+            guard let url = await resolvedURL(started.session.streamUrl, apiRelative: true) else {
                 Task { try? await SiloAPI.shared.stopPlayback(sessionId: started.session.sessionId) }
                 throw APIError.unsupportedMedia("No playable audio track is available.")
             }
@@ -497,19 +497,7 @@ final class AudioPlayerViewModel {
     /// The playback session API emits stream paths relative to `/api/v1`
     /// (e.g. `/stream/{session_id}`), unlike poster URLs which are already
     /// fully prefixed. Mirrors `PlayerViewModel.resolveServerUrl`.
-    private func resolvedStreamURL(_ raw: String) async -> URL? {
-        guard !raw.isEmpty else { return nil }
-        if raw.hasPrefix("http://") || raw.hasPrefix("https://") {
-            return URL(string: raw)
-        }
-        let serverUrl = await SiloAPI.shared.currentServerUrl()
-        guard !serverUrl.isEmpty else { return nil }
-        let base = serverUrl.hasSuffix("/") ? String(serverUrl.dropLast()) : serverUrl
-        let path = raw.hasPrefix("/") ? raw : "/\(raw)"
-        return URL(string: path.hasPrefix("/api/") ? base + path : base + "/api/v1" + path)
-    }
-
-    private func resolvedURL(_ raw: String?) async -> URL? {
+    private func resolvedURL(_ raw: String?, apiRelative: Bool) async -> URL? {
         guard let raw, !raw.isEmpty else { return nil }
         if raw.hasPrefix("http://") || raw.hasPrefix("https://") {
             return URL(string: raw)
@@ -518,7 +506,11 @@ final class AudioPlayerViewModel {
         guard !serverUrl.isEmpty else { return nil }
         let base = serverUrl.hasSuffix("/") ? String(serverUrl.dropLast()) : serverUrl
         let path = raw.hasPrefix("/") ? raw : "/\(raw)"
-        return URL(string: base + path)
+        return URL(
+            string: apiRelative
+                ? (path.hasPrefix("/api/") ? base + path : base + "/api/v1" + path)
+                : base + path
+        )
     }
 
     private func clampGlobal(_ value: Double) -> Double {

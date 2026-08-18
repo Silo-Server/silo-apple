@@ -439,13 +439,13 @@ private struct VideoPane: View {
                         }
                         .focused($focusedField, equals: .quality)
 
-                        HUDSettingRow(label: "Speed", value: speedLabel(viewModel.settings.playbackSpeed)) {
+                        HUDSettingRow(label: "Speed", value: Self.speedLabel(viewModel.settings.playbackSpeed)) {
                             presentPicker(
                                 for: .speed,
                                 HUDPickerPresentation(
                                     title: "Playback Speed",
                                     options: Self.speedOptions,
-                                    selection: speedID(viewModel.settings.playbackSpeed),
+                                    selection: Self.speedID(viewModel.settings.playbackSpeed),
                                     onSelect: { value in
                                         if let speed = Double(value) {
                                             viewModel.setPlaybackSpeed(speed)
@@ -559,21 +559,19 @@ private struct VideoPane: View {
         }
     }
 
-    private func speedID(_ value: Double) -> String {
+    private static func speedID(_ value: Double) -> String {
         String(format: "%.2f", value)
     }
 
-    private func speedLabel(_ value: Double) -> String {
+    private static func speedLabel(_ value: Double) -> String {
         value == 1.0 ? "1.0×" : String(format: "%.2f×", value)
     }
 
-    private static let speedOptions: [HUDDropdownOption] = [0.75, 1.0, 1.25, 1.5, 2.0]
-        .map { value in
-            HUDDropdownOption(
-                id: String(format: "%.2f", value),
-                label: value == 1.0 ? "1.0×" : String(format: "%.2f×", value)
-            )
-        }
+    private static let speedValues: [Double] = [0.75, 1.0, 1.25, 1.5, 2.0]
+
+    private static let speedOptions: [HUDDropdownOption] = speedValues.map { value in
+        HUDDropdownOption(id: speedID(value), label: speedLabel(value))
+    }
 
     private static let aspectOptions: [HUDDropdownOption] =
         VideoGravity.allCases.map { .init(id: $0.rawValue, label: $0.label) }
