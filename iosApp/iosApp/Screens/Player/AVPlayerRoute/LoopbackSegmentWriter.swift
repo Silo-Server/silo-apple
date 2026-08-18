@@ -986,6 +986,13 @@ final class LoopbackSegmentWriter {
     /// base. The backend must seed the consumer window and its coverage
     /// bookkeeping from this before production begins.
     var onVODProducerAnchored: ((Int) -> Void)?
+    /// Fired (on the mux thread) once the bridged-audio encoder clock is
+    /// seeded, carrying the session-axis second its first samples are stamped
+    /// at. The produced stream is silent before that point, so the backend's
+    /// initial-video-display gate uses it to keep a start from showing video
+    /// ahead of audio. Never fires on copy-mode routes — they have no
+    /// synthesized clock to anchor.
+    var onBridgedAudioAnchored: ((Double) -> Void)?
     /// The session's true anchor: `vodBaseIndex` for explicit restarts,
     /// resume-derived for a first session starting mid-title.
     private var vodEffectiveBaseIndex = 0
@@ -4349,7 +4356,10 @@ final class LoopbackSegmentWriter {
         }
         let seed = max(0, av_rescale_q(framePts - anchor, inTB, encoderTB))
         vodSeededBridgedAudioPTS = true
-        guard seed > 0 else { return }
+        guard seed > 0 else {
+            onBridgedAudioAnchored?(0)
+            return
+        }
         var anchored = seed
         // Align to the run's own plan boundary: the previous contiguous
         // run's stored audio ends there, and the video track of this run
@@ -4381,6 +4391,7 @@ final class LoopbackSegmentWriter {
             anchored, seconds
         )
         cmpLog(logLine)
+        onBridgedAudioAnchored?(seconds)
     }
 
     /// Temporary [CMP-ADRIFT] diagnostic: after seeding, the bridged-audio

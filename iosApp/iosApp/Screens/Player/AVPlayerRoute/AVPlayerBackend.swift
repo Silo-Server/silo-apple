@@ -443,14 +443,42 @@ final class AVPlayerBackend {
     private static let seekCompletionDeadlineSeconds: TimeInterval = 15.0
 
     /// Initial video display gate. The gate holds `onFileLoaded` (and with it
-    /// the app's loading overlay) until the render surface reports the first
-    /// frame, so a start reads as one continuous loader instead of dismissing
-    /// onto a black panel and handing off to the transport's buffering chip.
-    /// The fallback bounds a surface that never reports readiness; the backstop
-    /// bounds the fallback's own re-arm during an HDMI mode switch, so a
-    /// display manager wedged mid-switch can never strand the overlay.
+    /// the app's loading overlay) until the picture is genuinely on screen, so
+    /// a start reads as one continuous loader instead of dismissing onto a
+    /// black panel and handing off to the transport's buffering chip.
+    ///
+    /// Layer readiness alone was measured insufficient on device: an Apple TV
+    /// DV start reports `isReadyForDisplay` as soon as a frame is decoded and
+    /// enqueued, seconds before the HDMI/DV pipeline actually presents it. So
+    /// the startup release requires readiness AND that the playhead has run —
+    /// a decoded frame proves the decoder opened, a running clock proves the
+    /// renderer is consuming — with no mode switch underway at the moment of
+    /// release.
+    ///
+    /// How much clock is demanded depends on how far the surface's readiness
+    /// can be trusted. A start that wrote HDMI display criteria hands the
+    /// panel a renegotiation whose tail is invisible to us, so it must show
+    /// `initialVideoDisplaySustainedAdvanceSeconds` of motion. Everywhere else
+    /// — iOS, macOS, a tvOS start that changed no mode — readiness lands on
+    /// the same surface the viewer is looking at, so one tick of motion
+    /// (`initialVideoDisplayMinimumAdvanceSeconds`) is proof enough and the
+    /// overlay does not linger over running video.
+    ///
+    /// `initialVideoDisplayFallbackSeconds` is the re-check tick, not a flat
+    /// timeout: waiting on the sustained signal re-arms it, so the constant
+    /// now bounds "nothing has reported readiness at all" rather than the
+    /// whole gate. The absolute backstop is the only hard ceiling — a wedged
+    /// display manager, a surface that never reports, or a renderer that never
+    /// advances all land there instead of stranding the overlay.
     private static let initialVideoDisplayFallbackSeconds: TimeInterval = 3.0
     private static let initialVideoDisplayAbsoluteBackstopSeconds: TimeInterval = 15.0
+    private static let initialVideoDisplaySustainedAdvanceSeconds: Double = 0.5
+    private static let initialVideoDisplayMinimumAdvanceSeconds: Double = 0.05
+    /// Bridged-audio routes re-encode onto the session axis, so the produced
+    /// stream has no audio before the encoder's anchor. Releasing the gate
+    /// (and with it the startup unmute) before the playhead reaches that
+    /// anchor is what showed as video-without-audio on a resume.
+    private static let initialVideoDisplayAudioAnchorLeadSeconds: Double = 0.05
 
     /// Local DV loopback playhead watchdog. Driven by an independent wall-clock
     /// timer (AVPlayer's periodic time observer stops firing when the playhead
@@ -531,7 +559,8 @@ final class AVPlayerBackend {
     var onTimeChange: ((Double) -> Void)?
     var onDurationChange: ((Double) -> Void)?
     var onPauseChange: ((Bool) -> Void)?
-    var onFileLoaded: (() -> Void)?
+    /// Carries the initial-video-display gate's release reason.
+    var onFileLoaded: ((String) -> Void)?
     var onFirstFrame: ((Int) -> Void)?
     var onError: ((PlaybackFailure) -> Void)?
     var onEndOfFile: (() -> Void)?
@@ -746,6 +775,20 @@ final class AVPlayerBackend {
     /// clock-advance release rather than risking a seek that sits on the
     /// overlay waiting for a readiness edge that may not come a second time.
     private var didCompleteInitialVideoDisplayGate = false
+    /// Latched, not sampled: the render surface publishes readiness once per
+    /// item and the gate may evaluate long after that edge.
+    private var didObserveVideoSurfaceReadyForDisplay = false
+    /// Wall clock of the last HDMI criteria settle (or of the apply itself
+    /// when no negotiation was needed). Reported as `sinceSettleMs` on the
+    /// release line so a device capture can measure how far behind the
+    /// manager's "settled" the panel's real presentation runs.
+    private var tvDisplaySettleCompletedAt: Date?
+    /// Whether this start wrote HDMI display criteria. Only such a start has
+    /// a panel renegotiation running behind the surface's readiness signal.
+    private var didApplyTVDisplayCriteriaForStart = false
+    /// Session-axis second at which the bridged-audio encoder anchored, as
+    /// reported by the segment writer. Nil on copy-mode routes.
+    private var loopbackBridgedAudioAnchorSeconds: Double?
     private var initialVideoDisplayFallback: DispatchWorkItem?
     private var loopbackStartupWatchdog: Timer?
     private var loopbackStartupWatchdogStartedAt: Date?
@@ -1070,9 +1113,14 @@ final class AVPlayerBackend {
     }
 
     func videoSurfaceBecameReadyForDisplay() {
-        guard let item = currentItem, !isDisposed else { return }
-        guard isWaitingForInitialVideoDisplay else { return }
-        finishInitialVideoDisplayGate(for: item, reason: "ready_for_display")
+        guard !isDisposed else { return }
+        // Latch first: the surface publishes this edge once per item, and the
+        // startup gate may still be waiting on the clock when it lands.
+        if !didObserveVideoSurfaceReadyForDisplay {
+            didObserveVideoSurfaceReadyForDisplay = true
+            cmpLog("[CMP-AVP] video surface ready for display")
+        }
+        evaluateInitialVideoDisplayGate(trigger: "ready_for_display")
     }
 
     func setMediaTimelineOffset(_ offset: Double) {
@@ -1100,6 +1148,7 @@ final class AVPlayerBackend {
 
         let time = CMTime(seconds: playerSeconds, preferredTimescale: 600)
         isSeekPending = true
+        rebaseInitialVideoDisplayGateStartTime(to: playerSeconds, context: "user_seek")
         let seekItem = currentItem
         let seekID = beginSeekDeadline(
             kind: .interactive(mediaTarget: mediaSeconds),
@@ -2145,6 +2194,22 @@ final class AVPlayerBackend {
                 }
             }
         }
+        writer.onBridgedAudioAnchored = { [weak self] seconds in
+            DispatchQueue.main.async {
+                guard let self, !self.isDisposed else { return }
+                guard self.activeLoopbackSessionID == sessionID else { return }
+                guard seconds.isFinite else { return }
+                // The encoder anchors while segment 0 is written, so this
+                // lands before the gate is even prepared — scope it to the
+                // load rather than to the gate's own window. A producer that
+                // restarts before the load finishes re-anchors later, and the
+                // gate wants that newer value.
+                guard !self.didFireFileLoaded else { return }
+                self.loopbackBridgedAudioAnchorSeconds = seconds
+                cmpLog("[CMP-AVP] initial video display gate audio anchor=\(seconds)")
+                self.evaluateInitialVideoDisplayGate(trigger: "audio_anchor")
+            }
+        }
         // HDR10+ badge: install the one-shot SEI scan only for plain HEVC PQ
         // sessions whose label currently reads "HDR10" and has not flipped.
         // DV Profile 8 sources keep their validated labels (scan not installed).
@@ -2198,6 +2263,12 @@ final class AVPlayerBackend {
             context: "before_prepare_\(playlistName)"
         )
         guard needsModeSettleWait else {
+            // Criteria written with no negotiation to wait out (a reload that
+            // preserved them): the panel is already in this start's mode, so
+            // that is the settle reference point.
+            if didApplyTVDisplayCriteriaForStart {
+                tvDisplaySettleCompletedAt = Date()
+            }
             attachLoopbackItem(url: url)
             return
         }
@@ -2216,6 +2287,7 @@ final class AVPlayerBackend {
             // SDR; AetherEngine ships the same master shape to such panels
             // in production, so the attach proceeds either way.
             cmpLog("[CMP-AVP] tv display settle hdrHosted=\(hosted ? 1 : 0)")
+            self.tvDisplaySettleCompletedAt = Date()
             self.attachLoopbackItem(url: url)
         }
         #else
@@ -2248,6 +2320,7 @@ final class AVPlayerBackend {
             toleranceBefore: .zero,
             toleranceAfter: .zero
         )
+        rebaseInitialVideoDisplayGateStartTime(to: target, context: "vod_pre_seek_\(context)")
         cmpLog("[CMP-AVP] vod resume pre-seek player=\(target) mediaSeconds=\(pendingStartTime) context=\(context)")
     }
 
@@ -2471,7 +2544,7 @@ final class AVPlayerBackend {
             if case .siloLoopback = self.currentSourceStrategy {
                 self.setLoopbackPlaybackClock(time.seconds)
             }
-            self.releaseInitialVideoDisplayGateIfPlaybackAdvanced(currentTime: time.seconds)
+            self.evaluateInitialVideoDisplayGate(trigger: "time")
             self.ttffEmitIfNeeded(currentTime: time.seconds)
             self.onTimeChange?(time.seconds)
             self.emitBufferedAhead(referenceTime: time.seconds)
@@ -3184,6 +3257,9 @@ final class AVPlayerBackend {
             DispatchQueue.main.async { [weak self] in
                 guard let self, !self.isDisposed else { return }
                 self.onPauseChange?(self.isUserPaused)
+                // A pause under an armed gate stops the periodic clock, so
+                // this is the only wake the gate would otherwise get.
+                self.evaluateInitialVideoDisplayGate(trigger: "rate")
             }
         }
 
@@ -3660,8 +3736,11 @@ final class AVPlayerBackend {
         avPlayer.play()
         if isWaitingForInitialVideoDisplay {
             scheduleInitialVideoDisplayFallback(for: item)
+            // The surface may have reported readiness before `play()`; nothing
+            // else will re-deliver that edge, so evaluate once here.
+            evaluateInitialVideoDisplayGate(trigger: "start_playback")
         } else {
-            finishInitialLoadIfNeeded(for: item)
+            finishInitialLoadIfNeeded(for: item, reason: "not_needed")
         }
     }
 
@@ -3773,6 +3852,7 @@ final class AVPlayerBackend {
             target = avPlayer.currentTime()
         }
         avPlayer.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        rebaseInitialVideoDisplayGateStartTime(to: target.seconds, context: "startup_nudge")
     }
 
     /// Swap in a fresh AVPlayerItem for the same loopback URL. The producer,
@@ -3824,11 +3904,13 @@ final class AVPlayerBackend {
         isInitialVideoDisplayGatePrepared = true
         isWaitingForInitialVideoDisplay = false
         initialVideoDisplayGateArmedAt = nil
+        didObserveVideoSurfaceReadyForDisplay = false
         didTemporarilyMuteForInitialVideoDisplay = !avPlayer.isMuted
         if didTemporarilyMuteForInitialVideoDisplay {
             avPlayer.isMuted = true
         }
         Self.logger.info("[CMP-AVP] prepared initial video frame gate before startup audio")
+        cmpLog("[CMP-AVP] initial video display gate prepared muted=\(didTemporarilyMuteForInitialVideoDisplay ? 1 : 0)")
     }
 
     private func armInitialVideoDisplayGateIfNeeded() {
@@ -3838,21 +3920,79 @@ final class AVPlayerBackend {
         initialVideoDisplayGateStartTime = avPlayer.currentTime().seconds
         initialVideoDisplayGateArmedAt = Date()
         Self.logger.info("[CMP-AVP] waiting for initial video frame before unmuting startup audio")
+        cmpLog(
+            "[CMP-AVP] initial video display gate armed startTime=\(initialVideoDisplayGateStartTime ?? .nan) startup=\(didCompleteInitialVideoDisplayGate ? 0 : 1) airplay=\(avPlayer.isExternalPlaybackActive ? 1 : 0) audioAnchor=\(loopbackBridgedAudioAnchorSeconds.map { String($0) } ?? "-")"
+        )
     }
 
-    /// On the startup gate this release is reserved for the one surface that
-    /// can never report layer readiness: AirPlay renders on the receiver, so
-    /// `videoSurfaceBecameReadyForDisplay()` never fires for it. A local start
-    /// waits for the real first frame (or the fallback below) — the loopback
-    /// route disables `automaticallyWaitsToMinimizeStalling`, so its clock
-    /// starts on `play()` and would otherwise clear the gate a tenth of a
-    /// second in, well before anything is on screen.
-    private func releaseInitialVideoDisplayGateIfPlaybackAdvanced(currentTime: Double) {
+    /// A seek issued under an armed gate moves the playhead without any of it
+    /// being watched picture, so the sustained-advance baseline has to follow
+    /// it — otherwise the jump either releases the gate instantly (forward) or
+    /// pins it open until the backstop (backward).
+    private func rebaseInitialVideoDisplayGateStartTime(to playerSeconds: Double, context: String) {
+        guard isWaitingForInitialVideoDisplay || isInitialVideoDisplayGatePrepared else { return }
+        guard playerSeconds.isFinite else { return }
+        initialVideoDisplayGateStartTime = playerSeconds
+        cmpLog("[CMP-AVP] initial video display gate rebased startTime=\(playerSeconds) context=\(context)")
+    }
+
+    /// Every gate release funnels through this evaluation, whatever woke it
+    /// (surface readiness, the periodic clock, a rate change). Two rules:
+    ///
+    /// * Permissive — a reanchor gate, or AirPlay. AirPlay renders on the
+    ///   receiver, so `videoSurfaceBecameReadyForDisplay()` can never fire for
+    ///   it; a reanchor re-arms against a layer that has already displayed
+    ///   this player once. Both keep the original clock-advance release.
+    /// * Startup — readiness plus sustained clock, no mode switch underway,
+    ///   and (on bridged-audio routes) a playhead that has reached the audio
+    ///   anchor. See the constants above for why readiness alone is not
+    ///   enough on a tvOS display-criteria start.
+    private func evaluateInitialVideoDisplayGate(trigger: String) {
         guard isWaitingForInitialVideoDisplay, let item = currentItem else { return }
-        guard didCompleteInitialVideoDisplayGate || avPlayer.isExternalPlaybackActive else { return }
-        let startTime = initialVideoDisplayGateStartTime ?? currentTime
-        guard currentTime.isFinite, startTime.isFinite, currentTime - startTime >= 0.05 else { return }
-        finishInitialVideoDisplayGate(for: item, reason: "playback_clock_advanced")
+        let current = avPlayer.currentTime().seconds
+        guard current.isFinite else { return }
+        let startTime = initialVideoDisplayGateStartTime ?? current
+
+        guard !didCompleteInitialVideoDisplayGate, !avPlayer.isExternalPlaybackActive else {
+            guard startTime.isFinite, current - startTime >= 0.05 else { return }
+            finishInitialVideoDisplayGate(for: item, reason: "clock_advance", trigger: trigger)
+            return
+        }
+
+        // A user who pauses under the gate freezes the clock; the sustained
+        // signal can never arrive, so stop waiting for it rather than holding
+        // a spinner over their deliberate pause until the backstop.
+        if isUserPaused {
+            finishInitialVideoDisplayGate(for: item, reason: "user_paused", trigger: trigger)
+            return
+        }
+
+        guard initialVideoDisplayGateBlocker(current: current, startTime: startTime) == nil else { return }
+        finishInitialVideoDisplayGate(for: item, reason: "ready_for_display_sustained", trigger: trigger)
+    }
+
+    /// The one condition still holding the startup gate, or nil when it is
+    /// clear to release. Shared by the release path and the re-check tick so
+    /// the console reports blockers in the same vocabulary either way.
+    private func initialVideoDisplayGateBlocker(current: Double, startTime: Double) -> String? {
+        if !didObserveVideoSurfaceReadyForDisplay { return "ready_for_display" }
+        if isTVDisplayModeSwitchInProgress() { return "mode_switch" }
+        if let anchor = loopbackBridgedAudioAnchorSeconds,
+           anchor.isFinite,
+           current < anchor + Self.initialVideoDisplayAudioAnchorLeadSeconds {
+            return "audio_anchor"
+        }
+        guard startTime.isFinite,
+              current - startTime >= initialVideoDisplayRequiredAdvanceSeconds else {
+            return "clock_advance"
+        }
+        return nil
+    }
+
+    private var initialVideoDisplayRequiredAdvanceSeconds: Double {
+        didApplyTVDisplayCriteriaForStart
+            ? Self.initialVideoDisplaySustainedAdvanceSeconds
+            : Self.initialVideoDisplayMinimumAdvanceSeconds
     }
 
     private func scheduleInitialVideoDisplayFallback(for item: AVPlayerItem) {
@@ -3872,19 +4012,7 @@ final class AVPlayerBackend {
                 }
                 return
             }
-            // The panel is blacked out for the whole HDMI negotiation, so
-            // nothing can have been displayed yet — wait it out instead of
-            // dismissing the loading overlay onto the blackout. Same
-            // reset-don't-penalize rule the loopback startup watchdog applies.
-            let armedAt = self.initialVideoDisplayGateArmedAt ?? Date()
-            let elapsed = Date().timeIntervalSince(armedAt)
-            if !self.didCompleteInitialVideoDisplayGate,
-               self.isTVDisplayModeSwitchInProgress(),
-               elapsed < Self.initialVideoDisplayAbsoluteBackstopSeconds {
-                self.scheduleInitialVideoDisplayFallback(for: item)
-                return
-            }
-            self.finishInitialVideoDisplayGate(for: item, reason: "ready_for_display_timeout")
+            self.handleInitialVideoDisplayFallbackTick(for: item)
         }
         initialVideoDisplayFallback = work
         DispatchQueue.main.asyncAfter(
@@ -3893,25 +4021,77 @@ final class AVPlayerBackend {
         )
     }
 
-    private func finishInitialVideoDisplayGate(for item: AVPlayerItem, reason: String) {
-        guard item === currentItem, !isDisposed else { return }
-        guard isWaitingForInitialVideoDisplay else {
-            finishInitialLoadIfNeeded(for: item)
+    /// Re-check tick. A start that is visibly progressing toward the real
+    /// first frame re-arms; anything else lands on a bounded release, so the
+    /// overlay can never strand.
+    private func handleInitialVideoDisplayFallbackTick(for item: AVPlayerItem) {
+        let armedAt = initialVideoDisplayGateArmedAt ?? Date()
+        let elapsed = Date().timeIntervalSince(armedAt)
+        // A reanchor gate keeps the flat timeout it has always had.
+        guard !didCompleteInitialVideoDisplayGate, !avPlayer.isExternalPlaybackActive else {
+            finishInitialVideoDisplayGate(for: item, reason: "ready_for_display_timeout", trigger: "fallback")
             return
         }
+        guard elapsed < Self.initialVideoDisplayAbsoluteBackstopSeconds else {
+            finishInitialVideoDisplayGate(for: item, reason: "absolute_backstop", trigger: "fallback")
+            return
+        }
+        let current = avPlayer.currentTime().seconds
+        let startTime = initialVideoDisplayGateStartTime ?? current
+        let blocker = initialVideoDisplayGateBlocker(current: current, startTime: startTime)
+        // No readiness at all by now means no surface will report one: an
+        // audio-only item, or a host that cannot publish the signal. That is
+        // the case this timeout has always covered, so keep covering it
+        // instead of holding the overlay to the backstop.
+        guard blocker != "ready_for_display" else {
+            finishInitialVideoDisplayGate(for: item, reason: "ready_for_display_timeout", trigger: "fallback")
+            return
+        }
+        // A blocker that cleared between the last wake and this tick still
+        // needs releasing — nothing else is scheduled to notice.
+        guard let blocker else {
+            finishInitialVideoDisplayGate(for: item, reason: "ready_for_display_sustained", trigger: "fallback")
+            return
+        }
+        cmpLog(
+            "[CMP-AVP] initial video display gate waiting blocked=\(blocker) elapsedMs=\(Int(elapsed * 1000)) clockDelta=\(current - startTime)"
+        )
+        scheduleInitialVideoDisplayFallback(for: item)
+    }
+
+    private func finishInitialVideoDisplayGate(
+        for item: AVPlayerItem,
+        reason: String,
+        trigger: String = "-"
+    ) {
+        guard item === currentItem, !isDisposed else { return }
+        guard isWaitingForInitialVideoDisplay else {
+            finishInitialLoadIfNeeded(for: item, reason: "not_needed")
+            return
+        }
+        let armedAt = initialVideoDisplayGateArmedAt
+        let startTime = initialVideoDisplayGateStartTime
+        let current = avPlayer.currentTime().seconds
         isWaitingForInitialVideoDisplay = false
         didCompleteInitialVideoDisplayGate = true
         initialVideoDisplayGateStartTime = nil
         initialVideoDisplayGateArmedAt = nil
         initialVideoDisplayFallback?.cancel()
         initialVideoDisplayFallback = nil
-        finishInitialLoadIfNeeded(for: item)
+        finishInitialLoadIfNeeded(for: item, reason: reason)
         if didTemporarilyMuteForInitialVideoDisplay {
             avPlayer.isMuted = false
             didTemporarilyMuteForInitialVideoDisplay = false
         }
         rampLoopbackBufferToSteadyStateIfNeeded(for: item)
         Self.logger.info("[CMP-AVP] initial video display gate released reason=\(reason, privacy: .public)")
+        let elapsedMs = armedAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? -1
+        let clockDelta = startTime.map { current - $0 } ?? .nan
+        let sinceSettleMs = tvDisplaySettleCompletedAt
+            .map { Int(Date().timeIntervalSince($0) * 1000) } ?? -1
+        cmpLog(
+            "[CMP-AVP] initial video display gate released reason=\(reason) trigger=\(trigger) elapsedMs=\(elapsedMs) clockDelta=\(clockDelta) advanceTarget=\(initialVideoDisplayRequiredAdvanceSeconds) current=\(current) readyForDisplay=\(didObserveVideoSurfaceReadyForDisplay ? 1 : 0) keepUp=\(item.isPlaybackLikelyToKeepUp ? 1 : 0) criteriaApplied=\(didApplyTVDisplayCriteriaForStart ? 1 : 0) switchInProgress=\(isTVDisplayModeSwitchInProgress() ? 1 : 0) sinceSettleMs=\(sinceSettleMs) audioAnchor=\(loopbackBridgedAudioAnchorSeconds.map { String($0) } ?? "-")"
+        )
     }
 
     /// Once the first frame is on screen, apply the steady-state target and
@@ -3968,11 +4148,14 @@ final class AVPlayerBackend {
         return abs(landed - target) <= 1.0
     }
 
-    private func finishInitialLoadIfNeeded(for item: AVPlayerItem) {
+    /// `reason` is the gate's real release reason, forwarded so the view
+    /// model's overlay-dismissal line names it instead of a blanket
+    /// `first_frame`. `not_needed` means no gate was ever armed for this load.
+    private func finishInitialLoadIfNeeded(for item: AVPlayerItem, reason: String) {
         guard !didFireFileLoaded else { return }
         cancelLoopbackStartupWatchdog()
         didFireFileLoaded = true
-        onFileLoaded?()
+        onFileLoaded?(reason)
         loadMediaSelections(for: item)
         onChaptersChange?(serverChapters)
         emitPlaybackStats(referenceTime: currentTime(), force: true)
@@ -4323,6 +4506,10 @@ final class AVPlayerBackend {
         isWaitingForInitialVideoDisplay = false
         initialVideoDisplayGateStartTime = nil
         initialVideoDisplayGateArmedAt = nil
+        didObserveVideoSurfaceReadyForDisplay = false
+        loopbackBridgedAudioAnchorSeconds = nil
+        tvDisplaySettleCompletedAt = nil
+        didApplyTVDisplayCriteriaForStart = false
         initialVideoDisplayFallback?.cancel()
         initialVideoDisplayFallback = nil
         cancelLoopbackStartupWatchdog()
@@ -4351,6 +4538,7 @@ final class AVPlayerBackend {
         writer?.onSourceDownloadStats = nil
         writer?.onGeneratedMediaStats = nil
         writer?.onHDR10PlusMetadataDetected = nil
+        writer?.onBridgedAudioAnchored = nil
         writer?.onFinished = nil
         segmentServer?.stop()
         segmentServer = nil
@@ -4472,6 +4660,7 @@ final class AVPlayerBackend {
             case .matchingDisabled:
                 cmpLog("[CMP-AVP] tv display apply context=\(context) matching=0 skipped=matching_disabled")
             case .applied:
+                didApplyTVDisplayCriteriaForStart = true
                 cmpLog(String(format: "[CMP-AVP] tv display apply context=%@ fps=%.3f format=dolbyVision(%@) matching=1 preservedReload=%d", context, Double(refreshRate), baseLayer == .hlg ? "hlg" : "hdr10", preservedForReload ? 1 : 0))
                 // A reload that preserved criteria left the panel in the
                 // right mode already; only a fresh apply can start an HDMI
@@ -4492,6 +4681,7 @@ final class AVPlayerBackend {
                     refreshRate: refreshRate
                 )
             }
+            if outcome.didWrite { didApplyTVDisplayCriteriaForStart = true }
             cmpLog(String(format: "[CMP-AVP] tv display apply hdr context=%@ range=%@ fps=%.3f outcome=%@ preservedReload=%d", context, range, Double(refreshRate), String(describing: outcome), preservedForReload ? 1 : 0))
             // A reload that preserved criteria left the panel in the right
             // mode already; rewriting identical criteria triggers no new
