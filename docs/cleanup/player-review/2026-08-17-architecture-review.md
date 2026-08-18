@@ -6,6 +6,8 @@
 **Date:** 2026-08-17
 **Method:** six independent read-only slice reviews (VM orchestration; AVPlayerBackend/recovery; loopback writer/store/server/proxy; Protocol V3 across Apple/server/Android; track identity/selection; tests/observability/migration) followed by an adversarial pass instructed to flip verdicts in both directions, then synthesis. Every line reference below was re-derived at `36393b4` (docs' numbers were not trusted). File aliases: `PVM` = `iosApp/iosApp/Screens/Player/PlayerViewModel.swift`; `backend` = `…/AVPlayerRoute/AVPlayerBackend.swift`; `writer` = `…/AVPlayerRoute/LoopbackSegmentWriter.swift`; `bridge` = `…/PlaybackSessionBridge.swift`; `planner` = `…/ApplePlaybackRoutePlanner.swift`; `adapter` = `…/ProtocolV3/ApplePlaybackV3PlanAdapter.swift`.
 
+**Status (2026-08-18):** Rounds 1, 2, 2b and the server pairing (silo-server PR #670) have landed on `player/architecture-remediation`; see `docs/cleanup/app-cleanup-backlog.md` §0 for the round table, what remains (Round 3+, #10, #11, P1/P2), and the open hardware finding. This document is the review as written; §3 rows are not edited retroactively.
+
 **Evidence labels used throughout:** **[static]** = proven by reading control flow at HEAD; **[plausible]** = mechanism proven, runtime frequency/impact not reproduced; **[historical]** = git history or docs, not current-checkout behaviour. **No runtime reproduction was performed anywhere in this review.**
 
 ---

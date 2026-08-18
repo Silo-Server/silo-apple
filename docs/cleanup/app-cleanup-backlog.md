@@ -8,6 +8,28 @@ against `1768542`; re-grep before acting on any of them.
 
 ## 0. Where we are
 
+**Update 2026-08-18 — player architecture remediation (branch `player/architecture-remediation`, on top of
+`player/one-player-cleanup` @ `36393b4`).** An independent architecture review
+(`docs/cleanup/player-review/2026-08-17-architecture-review.md`, slice evidence alongside) ranked 16 defects and
+recommended a control-plane rewrite + narrowed loopback ("Option D"). Rounds so far:
+
+| Round | Landed | Result |
+|---|---|---|
+| R1 (Stage 0/1 point fixes) | review §3 #1–#9, #11, #13–#16 + 73 characterization tests | suite 1346→1419 tests, 14 env failures unchanged |
+| R2 (Stage 1 seams) | typed `PlaybackFailure` channel (VM string classifiers retired, oracle tests); V3 fixtures re-vendored from server `5fdb5d73` + `output_change` op; `silo://` scheme; dormant video-bridge tier + `.passthroughAV1` deleted (−2,185) | 1407 / 14 |
+| R2b (brand) | full `continuum` → `silo` migration of every persisted / OS-registered / on-disk / wire literal with one-time migrations (§2.6 below); only `LegacyBrandKeys` still names the old brand | 1414 / 14 / 3 skipped |
+| Server pairing | silo-server PR #670 `client_audio_track_selection_v1`; Apple advertises it, routes non-default audio to loopback, marks `progressive` unsupported on device (AVPlayer −12939) | 1419 / 14 / 3 skipped |
+
+Hardware records: `docs/tvos-player/validations/2026-08-17-*.yaml`, `2026-08-18-*.yaml` (HDR10 loopback + display
+criteria validated on 08-17; DV rows blocked until PR #670 reaches the server the TV is on; **open**: an HDR10 loopback
+`-11868/-17223` failure at anchor+21 s seen on 08-18 across all builds incl. a pre-R2 variant — display-path evidence
+points at the TV/HDMI environment, unresolved). Still open from the review: Round 3 (Stage 2 control-plane extraction —
+`PlaybackBackend` protocol, reducer/session actor, one `RecoveryPolicy` — behind a remote key that needs a silo-server
+setting), #10 (needs the audio-index semantics on native-direct/HLS), #11 combined-index plumbing, macOS scene-phase
+divergence, log-channel unification, six online-unreachable error rungs, and product decisions P1/P2 before Stage 3.
+Skipped by design in R1: #10; the review's §12 lists rejected/narrowed claims.
+
+
 Four rounds so far (survey → verify → file-disjoint packages, each implemented and independently
 reviewed by Opus agents in isolated worktrees). Round 4 was the Continuum→Silo identifier rename
 (303 files, net −47, no persisted/OS/wire string touched) plus 1.19. cloc, comments/blanks excluded:
