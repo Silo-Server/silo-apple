@@ -80,15 +80,14 @@ struct AppleQualityAxes: Equatable {
     /// below 8 Mbps; that is a fact about this client's table, not the user's
     /// authored resolution.
     ///
-    /// The cap is not discarded. It is applied where it is actually
-    /// expressible: ``ApplePlaybackQuality/targetBitrateKbps(for:selectedVersion:capKbps:)``
-    /// and ``ApplePlaybackQuality/shouldForceTranscode(preferredQualityId:selectedVersion:capKbps:)``
-    /// clamp the legacy `/transcode/start` encode target to it, so a stored
-    /// 6 Mbps cap transcodes 1080p at 6 Mbps rather than at the rung's 8.
+    /// The cap is not discarded. It remains an independent setting sent to the
+    /// V3 planner alongside the resolution, and
+    /// ``ApplePlaybackQuality/shouldForceTranscode(preferredQualityId:selectedVersion:capKbps:)``
+    /// decides whether the selected source exceeds either axis.
     ///
-    /// `original` remains the uncapped source-resolution intent; when paired
-    /// with a numeric bandwidth cap, the legacy planner still re-encodes to
-    /// honour that independent axis. The contract's 2160p member is preserved
+    /// `original` remains the uncapped source-resolution intent; a numeric
+    /// bandwidth cap beside it remains independently authoritative. The
+    /// contract's 2160p member is preserved
     /// as an opaque resolution-only id even though Apple's local transcode
     /// ladder has no fabricated 4K bitrate rung. A member added by a newer
     /// server still falls back to `auto` until this client knows it.
