@@ -6,7 +6,7 @@ import SwiftUI
 /// user jump directly to a title prefix.
 ///
 /// The server supports `name_prefix` as a LIKE-pattern match on `sort_title`
-/// (see `Continuum/internal/catalog/browse.go`). "#" jumps to titles whose
+/// (see `silo-server/internal/catalog/browse.go`). "#" jumps to titles whose
 /// sort-title begins with a non-alpha character (numeric titles, punctuation).
 /// The server has no letter-count endpoint, so the rail renders every letter
 /// unconditionally — empty letters just yield empty result pages.

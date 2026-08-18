@@ -114,7 +114,7 @@ enum TemporaryAuthScopeEndResult: Equatable, Sendable {
 /// ProfileAvatarView, AuthService).
 ///
 /// Multi-server note: tokens are Keychain-scoped per server. The account
-/// keys (`com.continuum.<serverId>.{access,refresh,profile}Token`) are
+/// keys (`org.siloserver.silo.<serverId>.{access,refresh,profile}Token`) are
 /// computed from `activeServerId`. `switchActiveServer(serverId:)`
 /// retargets the slot by flushing the cache — the next read re-populates
 /// from the new server's Keychain accounts.

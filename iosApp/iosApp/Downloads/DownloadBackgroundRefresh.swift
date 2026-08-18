@@ -13,7 +13,7 @@ enum DownloadBackgroundRefresh {
     /// Must stay listed in `BGTaskSchedulerPermittedIdentifiers`
     /// (iosApp/Info.plist); the scheduler rejects submissions for
     /// identifiers outside that allowlist.
-    static let taskIdentifier = "com.continuum.play.downloads-refresh"
+    static let taskIdentifier = "org.siloserver.silo.downloads-refresh"
 
     /// A floor, not a promise — iOS picks the real cadence from usage
     /// patterns. Hours-scale matches the monitoring feature: new episodes
@@ -28,6 +28,12 @@ enum DownloadBackgroundRefresh {
     /// Must run before `didFinishLaunching` returns — the system traps if a
     /// task it launched the app for has no registered handler.
     static func register() {
+        // The identifier changed with the Silo rename. A request submitted by
+        // the previous build is still pending under the old id and can never
+        // be serviced (it is no longer in the plist allowlist), so drop it.
+        BGTaskScheduler.shared.cancel(
+            taskRequestWithIdentifier: LegacyBrandKeys.downloadsRefreshTaskIdentifier
+        )
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: taskIdentifier,
             using: nil

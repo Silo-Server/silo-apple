@@ -215,7 +215,7 @@ final class PlaybackSourceCache {
         _ = PlaybackDiskBudget.sweepOrphanedSpillDirectories
         if self.diskSpillEnabled {
             let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-                .appendingPathComponent("continuum-source-cache", isDirectory: true)
+                .appendingPathComponent("silo-source-cache", isDirectory: true)
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
             if let dir {
                 try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

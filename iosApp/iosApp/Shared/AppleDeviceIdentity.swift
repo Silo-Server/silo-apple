@@ -63,7 +63,7 @@ struct AppleDeviceIdentity: Sendable {
         channel: AppleDeviceIdentity.buildChannel
     )
 
-    private static let keychainAccount = "com.continuum.device.identity"
+    private static let keychainAccount = "\(SharedStorage.keychainAccountPrefix)device.identity"
 
     private static func loadOrCreateID() -> String {
         let keychain = SharedKeychain(audience: .userIndependent)

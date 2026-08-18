@@ -38,8 +38,9 @@ final class ApplePushDeepLinkCoordinator {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        // An app-scheme link arrives ready to route: forward it untouched so a
-        // sender still on the legacy `continuum://` scheme keeps working.
+        // An app-scheme link arrives ready to route: forward it untouched.
+        // Any other scheme falls through to the path parsing below, which
+        // rebuilds it as `silo://`.
         if let url = URL(string: trimmed), SiloDeepLink.isSupported(url) {
             return url
         }

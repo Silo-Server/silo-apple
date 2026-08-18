@@ -59,8 +59,10 @@ protocol HostedDiagnosticsCredentialStoring: Sendable {
 }
 
 struct HostedDiagnosticsKeychainCredentialStore: HostedDiagnosticsCredentialStoring, @unchecked Sendable {
-    private static let installationIDAccount = "com.continuum.diagnostics.hosted.installationID"
-    private static let installationTokenAccount = "com.continuum.diagnostics.hosted.installationToken"
+    private static let installationIDAccount =
+        "\(SharedStorage.keychainAccountPrefix)diagnostics.hosted.installationID"
+    private static let installationTokenAccount =
+        "\(SharedStorage.keychainAccountPrefix)diagnostics.hosted.installationToken"
 
     private let keychain: SharedKeychain
 

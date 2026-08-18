@@ -4,7 +4,7 @@
 <dict>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.continuum.play.downloads-refresh</string>
+		<string>org.siloserver.silo.downloads-refresh</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
@@ -38,7 +38,6 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>silo</string>
-				<string>continuum</string>
 			</array>
 		</dict>
 	</array>

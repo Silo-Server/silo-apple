@@ -186,7 +186,7 @@ final class LoopbackSegmentStore {
         var resolvedSpillDirectory: URL?
         if spillPolicy.isEnabled {
             let dir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("continuum-dv-hls", isDirectory: true)
+                .appendingPathComponent("silo-dv-hls", isDirectory: true)
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
             do {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
