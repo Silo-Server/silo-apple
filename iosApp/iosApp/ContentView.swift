@@ -695,12 +695,10 @@ struct ContentView: View {
             // Fall through to the existing video route when the type cannot be resolved.
         }
 
-        router.navigate(
-            to: .player(
-                contentId: contentId,
-                startFromBeginning: false,
-                resumePosition: nil
-            )
+        router.presentPlayer(
+            contentId: contentId,
+            startFromBeginning: false,
+            resumePosition: nil
         )
     }
 
