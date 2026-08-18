@@ -1,10 +1,10 @@
 # Silo Apple streamlining program — session handoff
 
 **Read this first when picking the program up in a new session.** It is the single entry point; every other
-document it names is supporting evidence. Last updated 2026-08-18 (evening): owner answered P1/P2/P5 (§7 —
-loopback stays, Stage 3/Option B and Stage 5/Option C are off the table); the suite is genuinely green
-(1520 / 0 failures — the 14-failure era is over, §2); the round-5 deferred tail landed (`e893967`); the P11
-control-plane key is open as silo-server PR #673.
+document it names is supporting evidence. Last updated 2026-08-18 (evening): owner answered P1/P2/P5 and P11
+(§7 — loopback stays; Stage 3/Option B and Stage 5/Option C are off the table; Stage 2 ships as a **hard
+cutover**, no remote kill-switch, silo-server PR #673 closed unmerged); the suite is genuinely green
+(1520 / 0 failures — the 14-failure era is over, §2); the round-5 deferred tail landed (`e893967`).
 
 ---
 
@@ -162,9 +162,9 @@ The whole round-5 deferred list **and** the 14 environment failures landed on 20
 ### 6b. Gated — the big levers (need an owner decision or a server change first)
 | Work | What it is | Gate |
 |---|---|---|
-| **Round 3 = Stage 2 control-plane extraction** (review §8/§9) | `PlaybackBackend` protocol, pure `PlaybackReducer` + `PlaybackSessionActor`, `PlaybackEngineSession`, one `RecoveryPolicy` replacing six backend ladders + VM outage ride-through, `TrackSelectionCoordinator` extraction from the VM's subtitle half. This is the real answer to `PlayerViewModel` ≈ 8k raw lines / `AVPlayerBackend` ≈ 4.6k. Ships behind `player.apple.control_plane: off|native_direct|loopback|all`. | Remote key (P11): **silo-server PR #673 open** (contract rev 8, default `off`, `profile_device` scope; owner merge = sign-off, and the PR body flags one naming-convention exception). After merge: regenerate `SettingKeys.generated.swift` here; consumption pattern: `PlayerSettings.swift`, `flusher.enqueue`. Also wants a control run on the HDR10 anomaly (§8) first. Run via `player-remediation-fix.js` with spec JSONs; roughly 5–7 implementers + reviewers. |
+| **Round 3 = Stage 2 control-plane extraction** (review §8/§9) | `PlaybackBackend` protocol, pure `PlaybackReducer` + `PlaybackSessionActor`, `PlaybackEngineSession`, one `RecoveryPolicy` replacing six backend ladders + VM outage ride-through, `TrackSelectionCoordinator` extraction from the VM's subtitle half. This is the real answer to `PlayerViewModel` ≈ 8k raw lines / `AVPlayerBackend` ≈ 4.6k. Ships as a **hard cutover** — owner decision 2026-08-18 (P11 = no runtime flag): the legacy VM core + ladders are deleted in the same effort once the new plane is verified; the 73+ characterization tests are the safety net, and rollback of a bad build is a new TestFlight/App Store build. | **P11 decided — no gate from the key** (silo-server PR #673, which implemented it end-to-end, closed unmerged and recoverable if ever wanted). Remaining gate: a control run on the HDR10 anomaly (§8) first. Run via `player-remediation-fix.js` with spec JSONs; roughly 5–7 implementers + reviewers. |
 | ~~Stage 3 = narrow the local matrix (Option B deletions)~~ **Cancelled 2026-08-18** | P1 = yes, P2 = no, P5 = no (§7): the encoder ladders, the EVENT fallback and common-container local playback all stay. Only the server-authoritative tightening items (planner limited to execution detail, `local_mutations` populated, `ApplePlaybackRouteCapabilities` premium claims → `plan.claims`) remain candidates — as Stage 2 territory. | Decided — closed. |
-| Stage 4 | Default the new control plane on; one release later delete the old VM core + ladders. (The former Stage 5 / Option C is dead: P1 = yes.) | Stage 2 first. |
+| ~~Stage 4~~ Folded into Stage 2 | With no runtime flag (P11 = no key) there is no separate "default it on" release: Stage 2 lands with the old VM core + ladders already deleted. (The former Stage 5 / Option C is dead: P1 = yes.) | — |
 | Review items still open | #10 server audio pick on native-direct/HLS (needs server audio-index semantics; largely moot now that non-default audio → loopback); #11 combined-index translation for embedded tracks (needs the version inventory plumbed from the VM); six online-unreachable error rungs (PVM `1524-1553` at review time); `cmpLog` vs `os_log` unification; macOS scene-phase divergence; audiobook engine as a second V3 client. | Mostly Stage 2 territory; small ones could go in a follow-up package. |
 | Another DRY survey pass | Round 5's finders each ran a whole-repo identifier scan and found **zero orphan types**; remaining yield is repetition. Expect a diminishing tail unless Stage 2/3 reshape the code first. | Owner's call on spend; say "use a workflow". |
 
@@ -178,13 +178,14 @@ Full list: review §10. The gating ones were answered by the owner on **2026-08-
 - **P2 = no** — common H.264/HEVC MKV/TS playback stays on the local path; no move to server remux.
 - **P5 = no** — unknown-duration / untrusted-keyframe sources keep the local growing-playlist EVENT
   fallback; backlog §2.5 is closed as intentionally kept (backlog §3).
-- **P11** — **silo-server PR #673 open**: `player.apple.control_plane` (`off|native_direct|loopback|all`,
-  default `off`, `profile_device` scope, contract rev 8). The owner's merge is the sign-off. One flagged
-  decision in the PR body: the key name encodes a platform against the manifest's naming convention
-  (deliberate, rationale in the key's `notes`; alternative `player.control_plane` is a one-liner pre-merge).
+- **P11 = no remote key** — the owner decided Stage 2 ships as a **hard cutover**: no
+  `player.apple.control_plane` setting, no staged per-device rollout; rollback of a bad build is a new
+  TestFlight/App Store build. The owner was shown (and declined) the insurance argument — the key was
+  rollback/rollout risk control, not compatibility. silo-server PR #673, which implemented the key
+  end-to-end (contract rev 8), was closed unmerged the same day and can be reopened if this ever changes.
 
-**Consequences:** Stage 3 (Option B local-matrix narrowing) and Stage 5 (Option C) are cancelled. The
-remaining big lever is Stage 2 (Round 3 control-plane extraction), then Stage 4.
+**Consequences:** Stage 3 (Option B local-matrix narrowing) and Stage 5 (Option C) are cancelled, and
+Stage 4 folds into Stage 2 (hard cutover). The remaining big lever is Stage 2 / Round 3 alone.
 
 Still open: the rest of P1–P13 (review §10), and backlog 1.18 — three divergent runtime-format styles
 across the app: unify only if one output format is chosen.
@@ -212,7 +213,7 @@ do not reach the player.
 | tvOS focus rules | `docs/tvos-focus.md` |
 | PR | https://github.com/Silo-Server/silo-apple/pull/172 (body carries the layer summary, behaviour changes, validation) |
 | Server counterpart | silo-server PR #670 (`client_audio_track_selection_v1`), merged; deployed to shared dev |
-| Server control-plane key (P11) | silo-server PR #673 (`player.apple.control_plane`, settings contract rev 8) — **open** |
+| Server control-plane key (P11) | silo-server PR #673 — **closed unmerged 2026-08-18** (owner: hard cutover, no remote key; branch recoverable from the PR) |
 | Assistant memory (cross-session) | `player-architecture-remediation`, `app-cleanup-workflows`, `one-player-consolidation`, `apple-tv-device-workflow`, `ios-sim-metal-cache-dir` |
 
 ## 10. Suggested first 15 minutes of the next session
@@ -220,11 +221,9 @@ do not reach the player.
 1. `git fetch origin && git status && git log --oneline -5` on `player/architecture-remediation`; confirm PR #172
    is still `MERGEABLE` and whether `main` moved (`git log --oneline HEAD..origin/main`); merge `origin/main` in
    if it did and re-run the verification recipe (§4 — green now means **0 failures**).
-2. Check **silo-server PR #673**. Merged → regenerate the Apple bindings (`make settings-bindings` from a
-   silo-server checkout with silo-apple adjacent; commit the regenerated `SettingKeys.generated.swift` here) and
-   Round 3 loses its key gate. Still open → remind the owner: their merge is the P11 sign-off, including the
-   flagged key-naming exception.
-3. Round 3 (Stage 2)'s remaining gate after the key: the §8 HDR10 control run (different day / TV input / AVR
-   path — owner hardware time). When both clear, run Round 3 via `player-remediation-fix.js` with spec JSONs
-   (roughly 5–7 implementers + reviewers; workflows still need an explicit per-request opt-in).
-4. Small items while gated: the temporary-scope guard unit test (§6a).
+2. Round 3 (Stage 2)'s only remaining gate is the §8 HDR10 control run (different day / TV input / AVR path —
+   owner hardware time). It ships as a **hard cutover** (P11 = no key, §7): write the specs so the legacy VM
+   core + ladders are deleted in the same effort, with the characterization suite as the safety net. Run via
+   `player-remediation-fix.js` with spec JSONs (roughly 5–7 implementers + reviewers; workflows still need an
+   explicit per-request opt-in).
+3. Small items while gated: the temporary-scope guard unit test (§6a).
