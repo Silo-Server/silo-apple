@@ -1,4 +1,4 @@
-Repo snapshot date: 2026-08-16 (branch `player/one-player-cleanup`, HEAD `6818819`)
+Last verified against the code: 2026-08-18
 
 # tvOS Video Player Documentation
 
@@ -14,9 +14,11 @@ The player used to be a hybrid of a hand-rolled FFmpeg/VideoToolbox decode core
 (`PlayerCore` / "CompatibilityPlayer") and an AVPlayer stack. That is over.
 `PlayerCore` was deleted; **every** playback route is now `AVPlayer` behind
 [`AVPlayerBackend.swift`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/AVPlayerBackend.swift),
-and `ActivePlayer` in
+and
 [`PlayerViewModel.swift`](../../iosApp/iosApp/Screens/Player/PlayerViewModel.swift)
-has exactly two cases, `.none` and `.avPlayer`.
+holds it as a single optional `avPlayerBackend`, installed per route by
+`installBackend(for:)` (the old `ActivePlayer`/`PlaybackCoordinator`
+abstraction was collapsed in `e458784`).
 
 What varies is *what AVPlayer is pointed at*.
 [`PlaybackEngineKind`](../../iosApp/iosApp/Screens/Player/PlaybackExecutionPlan.swift)
@@ -85,9 +87,10 @@ to point it at is the server.
 - **How is Dolby Vision handled?**
   DV profiles 5 / 7 / 8 route to `siloPlayerLoopback`. Profile 7 is converted
   to a Profile 8.1 base layer (`convertProfile7To81`), 5 and 8 pass through.
-  Dolby Vision is always a pure copy: `loopbackVideoOutputMode` returns `.copy`
-  for DV on a copyable codec, and there is no re-encode tier to lose an
-  RPU/enhancement layer to.
+  Dolby Vision is always a pure copy: `LoopbackSessionSpec.VideoMode` has only
+  passthrough/convert cases (`passthroughProfile5`, `convertProfile7To81`,
+  `passthroughProfile8`, `passthroughHEVC`, `passthroughH264`), and there is no
+  re-encode tier to lose an RPU/enhancement layer to.
 - **What was the video bridge?**
   A software-decode → VideoToolbox-encode tier inside the loopback writer,
   retired 2026-08-17 because nothing could route to it. The loopback only
@@ -112,7 +115,7 @@ to point it at is the server.
 
 ## Scope and conventions
 
-- These docs describe the **current implementation** in this checkout.
+- These docs describe the **current implementation** in this repository.
 - "Current limitation" means the behavior is explicitly true in code today,
   not just planned or suspected.
 - Phase-2 / planned work is labelled as such and is never written as current
@@ -131,9 +134,9 @@ to point it at is the server.
   `TVDisplayCriteria`, `VideoColorMetadata`, `DolbyVisionFormat`, and
   `FFmpegLogFilter` were relocated to
   [`Screens/Player/Shared/`](../../iosApp/iosApp/Screens/Player/Shared).
-- verified: `ActivePlayer` has exactly two cases (`.none`, `.avPlayer`) in
-  `PlayerViewModel.swift`; `PlaybackCoordinator.installEngine(for:)` only ever
-  builds an `AVFoundationPlayerEngine`.
+- corrected (2026-08-18): the `ActivePlayer` enum and `PlaybackCoordinator`
+  were collapsed in `e458784`; `PlayerViewModel` now holds an optional
+  `AVPlayerBackend` directly (`installBackend(for:)` / `prepareBackend(for:)`).
 - verified: `PlaybackEngineKind` is `{avPlayerHLS, avPlayerNativeDirect,
   siloPlayerLoopback}` and `PlaybackRouteFamily` is `{nativePlayer,
   siloPlayer}`.

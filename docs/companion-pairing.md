@@ -17,11 +17,13 @@ the source of truth.
 - Messages are a flat JSON envelope `{ type, v, ...fields }` framed over the
   socket (`PairingProtocol.swift`, `PairingSession.swift`): `hello`,
   `pushServer`, `deviceStarted`, `serverResult`, `done`, `cancel`. Version
-  negotiation happens on `hello.supportedVersions`; on an empty intersection
-  the phone offers the QR fallback.
-- Server side is the standard device-login flow (`/auth/device/start`,
-  `/auth/device/poll`, `/auth/device/approve`, lookup via
-  `GET /auth/device?code=`); pairing adds no server endpoints.
+  negotiation happens on `hello.supportedVersions`; an unsupported version
+  ends the session with an "update Silo on both devices" error (the TV's
+  standing QR/manual sign-in remains the fallback path).
+- Server side is the standard device-login flow
+  (`/api/v1/auth/device/start`, `/api/v1/auth/device/poll`,
+  `/api/v1/auth/device/approve`, lookup via `GET /api/v1/auth/device?code=`
+  — see `PairingDeviceAPI.swift`); pairing adds no server endpoints.
 
 ## Security model
 

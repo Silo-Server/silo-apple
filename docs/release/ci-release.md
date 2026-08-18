@@ -36,7 +36,12 @@ CI runs `match` read-only and cannot create certs/profiles. When a cert expires,
 a device is added, or entitlements / App IDs change (e.g. the keychain-group or
 bundle-namespace change), regenerate locally and push to the certs repo:
 
-    bundle exec fastlane match appstore --platform ios  --readonly false
-    bundle exec fastlane match appstore --platform tvos --readonly false
+    bundle exec fastlane sync_signing
+
+(The `sync_signing` lane scopes the bundle IDs per platform — iOS app +
+NotificationService + DownloadsActivity, tvOS app + Top Shelf. Bare
+`fastlane match --platform ...` CLI calls would instead use the Matchfile's
+flat identifier list and request profiles for the other platform's
+extension IDs.)
 
 Then re-run the release. If CI fails with a missing-profile error, this is the fix.

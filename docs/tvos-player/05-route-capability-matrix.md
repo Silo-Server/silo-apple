@@ -1,7 +1,6 @@
 # Apple Route Capability Matrix
 
-Snapshot date: 2026-08-16 (one-player consolidation, branch
-`player/one-player-cleanup`, HEAD `6818819`).
+Last verified against the code: 2026-08-18 (one-player consolidation).
 Prior snapshots: 2026-07-24 (SiloPlayer AirPlay hardware validation),
 2026-07-03 (SiloPlayer loopback-primary Stages 0–4).
 
@@ -34,7 +33,7 @@ was deleted on 2026-08-16 (see
 | Implementation route | Route family | Display label | Current role |
 | --- | --- | --- | --- |
 | `avPlayerNativeDirect` | NativePlayer | Native Player Direct | Narrow native-direct path for allowlisted `mp4` / `mov` / `m4v` assets whose video, audio, and embedded subtitle codecs all match the Apple allowlist |
-| `siloPlayerLoopback` | SiloPlayer | Direct Stream | **Primary** direct playback. Remuxes H.264/HEVC/Dolby Vision and nothing else — the on-device video bridge that once covered the non-copyable codec tail was retired 2026-08-17 (see the Video output mode sub-rows). Static VOD is the primary serving path. The explicit EVENT mode and its `player.apple.siloplayer_primary_enabled` kill switch were retired, while an internal growing-playlist fallback remains for sources without a safe VOD plan (cleanup backlog §2.5). Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
+| `siloPlayerLoopback` | SiloPlayer | Direct Stream | **Primary** direct playback. Remuxes H.264/HEVC/Dolby Vision and nothing else — the on-device video bridge that once covered the non-copyable codec tail was retired 2026-08-17 (see the Video output mode sub-rows). Static VOD is the primary serving path. The explicit EVENT mode and its `player.apple.siloplayer_primary_enabled` kill switch were retired, while an internal growing-playlist fallback remains for sources without a safe VOD plan. Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
 | `avPlayerHLS` | NativePlayer | Native Player HLS | Server-produced HLS for `remux` / `transcode` deliveries, and the **terminal fallback rung** for anything the loopback cannot normalize. No longer feature-flag gated |
 
 ## Matrix

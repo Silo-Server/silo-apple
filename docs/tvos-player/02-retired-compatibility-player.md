@@ -1,4 +1,4 @@
-Repo snapshot date: 2026-08-16 (branch `player/one-player-cleanup`, HEAD `6818819`)
+Last verified against the code: 2026-08-18
 
 # Retired: CompatibilityPlayer (PlayerCore)
 
@@ -74,15 +74,11 @@ Retired along with it:
 
 | Source shape | Old route | Current route |
 | --- | --- | --- |
-| H.264 / HEVC in `mkv`, `ts`, `m2ts` | CompatibilityPlayer (or loopback when DV/HDR) | `siloPlayerLoopback`, `videoOutputMode = .copy` |
+| H.264 / HEVC in `mkv`, `ts`, `m2ts` | CompatibilityPlayer (or loopback when DV/HDR) | `siloPlayerLoopback` — the writer remuxes the bitstream untouched |
 | SDR HEVC, long-GOP H.264 | CompatibilityPlayer (loopback was blocked as startup-unreliable) | `siloPlayerLoopback` under the VOD serving mode; the old `h264_loopback_startup_unreliable` / `hevc_sdr_loopback_startup_unreliable` blockers were deleted with the EVENT serving mode on 2026-08-17 |
-| AV1, hardware-decode device | CompatibilityPlayer | `siloPlayerLoopback`, `videoOutputMode = .passthroughAV1` (remuxed with an `av01` sample entry) |
-| AV1 without hardware decode; VP9, VP8, MPEG-2, MPEG-4 Part 2, MSMPEG4v3, VC-1, WMV3 — SDR, ≤ 1080p | CompatibilityPlayer | `siloPlayerLoopback`, `videoOutputMode = .transcodeHEVC` (or `.transcodeH264` when no HEVC encoder opens) |
-| The same bridge codecs in `avi`, `wmv`, `asf`, `webm`, `flv`, `mpg`, `vob`, … | CompatibilityPlayer | `siloPlayerLoopback` — the bridge tier of `siloContainerIsNormalizable` opens these containers; the copy tier still does not |
-| Bridge codecs that are HDR (PQ/HLG) | CompatibilityPlayer | `avPlayerHLS`; blocker `video_hdr_bridge_unsupported` (phase-2 item) |
-| Bridge codecs above 1080p | CompatibilityPlayer | `avPlayerHLS`; blocker `video_bridge_resolution_unsupported` (phase-2 item) |
-| Dolby Vision on a non-copyable codec | CompatibilityPlayer | `avPlayerHLS`; blocker `dv_not_bridgeable`. DV is never re-encoded |
-| Anything else (e.g. Theora) | CompatibilityPlayer | `avPlayerHLS`; blocker `video_not_bridgeable`, so the server transcodes |
+| AV1, VP9, VP8, MPEG-2, MPEG-4 Part 2, MSMPEG4v3, VC-1, WMV3, Theora, … (any codec outside `h264`/`hevc`) | CompatibilityPlayer | `avPlayerHLS`; blocker `video_not_copyable` — the server transcodes. The on-device video-bridge tier that briefly served these was deleted on 2026-08-17 (see [09](09-video-bridge.md)) |
+| Those codecs in `avi`, `wmv`, `asf`, `webm`, `flv`, `mpg`, `vob`, … | CompatibilityPlayer | `avPlayerHLS` — `siloContainerIsNormalizable` accepts only the `mkv`/`ts` family and the native-direct containers |
+| Dolby Vision on a non-copyable codec | CompatibilityPlayer | `avPlayerHLS`; DV is never re-encoded |
 | H.264 after a VideoToolbox hardware-decode failure | `PlayerCore`'s per-load software fallback | Gone. There is no client-side H.264 software decode path; an AVPlayer failure walks the [fallback ladder](01-overview-and-entrypoints.md#6-the-fallback-ladder) |
 | Sample-buffer Picture in Picture | `PlayerCore` (plumbing existed but early-returned) | iOS AVPlayer PiP via [`PictureInPictureCoordinator`](../../iosApp/iosApp/Screens/Player/iOS/PictureInPictureCoordinator.swift); tvOS PiP remains unsupported |
 
@@ -100,8 +96,8 @@ Four helpers were genuinely shared and moved from `CoreMedia/` to
   (PQ for Profile 8.1, Rec.709 SDR for 8.2, HLG for 8.4).
 - [`DolbyVisionFormat.swift`](../../iosApp/iosApp/Screens/Player/Shared/DolbyVisionFormat.swift)
   — pure functions over the FFmpeg DOVI side data. Its doc comment already
-  anticipated this move: "there is no decode-core state captured here, so the
-  same decisions can be made by alternate demux pipelines."
+  anticipated this move: "there is no decode-core state captured here, so any
+  demux pipeline can read the config without going through a player instance."
 - [`FFmpegLogFilter.h`/`.m`](../../iosApp/iosApp/Screens/Player/Shared) plus the
   Objective-C bridging header
   [`SiloPlayerBridging.h`](../../iosApp/iosApp/Screens/Player/Shared/SiloPlayerBridging.h),
@@ -114,9 +110,12 @@ Four helpers were genuinely shared and moved from `CoreMedia/` to
   `PlayerCore` symbol remains anywhere under `iosApp/`.
 - verified: the four shared helpers are renames, not rewrites, in `f1b1bba`
   (`{CoreMedia => Shared}/...` in the diffstat).
-- verified: `ApplePlaybackRoutePlanner.loopbackVideoOutputMode(for:version:capabilities:)`
-  is the single place the copy / bridge / AV1-passthrough decision is made, and
-  its blocker vocabulary is what routes the remaining tail to `avPlayerHLS`.
+- corrected (2026-08-18): `loopbackVideoOutputMode` and the bridge/AV1 output
+  modes were deleted with the video-bridge tier (`91ebf35`, `c87dc6e`). The
+  routing decision is now a single check in
+  `ApplePlaybackRoutePlanner.assessSiloRoute`: a codec outside
+  `siloVideoCopyCodecs` (`h264`, `hevc`) appends blocker `video_not_copyable`
+  and the plan falls to `avPlayerHLS`.
 - corrected: the H.264 VideoToolbox → FFmpeg software-decode fallback this file
   used to document has no successor. It was a `PlayerCore`-only behavior.
 - corrected: the `<= 6ch` audio default-selection bias documented here was

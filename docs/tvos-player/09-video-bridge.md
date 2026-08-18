@@ -1,4 +1,4 @@
-Repo snapshot date: 2026-08-16 (branch `player/one-player-cleanup`, HEAD `6818819`)
+Last verified against the code: 2026-08-18
 
 # On-Device Video Bridge — RETIRED 2026-08-17
 

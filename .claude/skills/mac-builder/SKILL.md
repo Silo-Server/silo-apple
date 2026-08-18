@@ -36,7 +36,7 @@ A build result from a stale tree is worse than no build. Always sync, always ver
 
 ```bash
 rsync -az --delete --exclude 'DerivedData' --exclude 'build' \
-  /srv/dev/github/SiloServer/silo-apple/ mac-builder:~/silo-apple-deploy/
+  /path/to/silo-apple/ mac-builder:~/silo-apple-deploy/
 ```
 
 **Incremental sync** — the fast path while iterating (seconds, not tens of seconds). Diff against
