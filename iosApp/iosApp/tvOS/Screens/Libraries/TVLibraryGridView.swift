@@ -9,12 +9,6 @@ import SwiftUI
 struct TVLibraryGridView: View {
     let libraryId: Int
     let libraryType: String
-    /// The A–Z jump rail only makes sense for title-sorted browsing; the
-    /// Recently Added pill turns it off.
-    let showsAlphabetRail: Bool
-    /// Top inset before the first content. Pushed entries keep the compact
-    /// default; pill embeds pass the Skyline chrome clearance.
-    let topContentInset: CGFloat
     /// Focus hand-down token from the root shell. Embedded Browse tabs use this
     /// to land on the control row after the top menu hands focus to content.
     let focusRequest: Int
@@ -37,16 +31,12 @@ struct TVLibraryGridView: View {
     init(
         libraryId: Int,
         libraryType: String,
-        showsAlphabetRail: Bool = true,
-        topContentInset: CGFloat = SiloTheme.smallPadding,
-        focusRequest: Int = 0,
-        isTopMenuFocused: Bool = false,
-        onTopMenuFocusRequest: (() -> Void)? = nil
+        focusRequest: Int,
+        isTopMenuFocused: Bool,
+        onTopMenuFocusRequest: (() -> Void)?
     ) {
         self.libraryId = libraryId
         self.libraryType = libraryType
-        self.showsAlphabetRail = showsAlphabetRail
-        self.topContentInset = topContentInset
         self.focusRequest = focusRequest
         self.isTopMenuFocused = isTopMenuFocused
         self.onTopMenuFocusRequest = onTopMenuFocusRequest
@@ -63,12 +53,10 @@ struct TVLibraryGridView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .focusSection()
 
-                if showsAlphabetRail {
-                    TVAlphabetRail(selected: $selectedPrefix) { prefix in
-                        Task { await viewModel.jumpToPrefix(prefix) }
-                    }
-                    .padding(.trailing, 32)
+                TVAlphabetRail(selected: $selectedPrefix) { prefix in
+                    Task { await viewModel.jumpToPrefix(prefix) }
                 }
+                .padding(.trailing, 32)
             }
             // While a panel is open the grid is inert, so focus moves into the
             // panel and returns to the control row when it closes.
@@ -125,7 +113,7 @@ struct TVLibraryGridView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 32) {
                 Color.clear
-                    .frame(height: topContentInset)
+                    .frame(height: SiloTheme.Skyline.libraryContentTopInset)
 
                 TVBrowseControlRow(
                     sortLabel: viewModel.filter.sort.label,

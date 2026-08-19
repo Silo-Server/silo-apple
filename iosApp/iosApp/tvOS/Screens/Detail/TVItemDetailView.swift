@@ -237,72 +237,21 @@ struct TVItemDetailView: View {
                 onEpisodeTap: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 },
-                onSetEpisodeWatched: { id, played in
-                    await viewModel.setEpisodeWatched(contentId: id, played: played)
-                },
-                onSetEpisodeFavorite: { id, isFavorite in
-                    await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
-                },
+                onSetEpisodeWatched: setEpisodeWatched,
+                onSetEpisodeFavorite: setEpisodeFavorite,
                 onSelectSeason: { season in
                     guard season.id != detail.contentId else { return }
                     router.navigate(to: .itemDetail(contentId: season.contentId))
                 },
-                onSelectNextUpVersion: { fileId in
-                    preferredNextUpFileId = fileId
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpAudioTrackIndex
-                    )
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpSubtitleTrackIndex
-                    )
-                },
-                onSelectNextUpAudioTrack: { index in
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: preferredNextUpFileId,
-                        candidate: index
-                    )
-                    TrackSelectionPersistence.persistAudio(
-                        prefKey: prefKey(for: nextUpPlaybackDetail),
-                        version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
-                        requested: index,
-                        sanitized: preferredNextUpAudioTrackIndex
-                    )
-                },
-                onSelectNextUpSubtitleTrack: { index in
-                    didClearNextUpSubtitleOverride = (index == nil)
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: preferredNextUpFileId,
-                        candidate: index
-                    )
-                    TrackSelectionPersistence.persistSubtitle(
-                        prefKey: prefKey(for: nextUpPlaybackDetail),
-                        version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
-                        requested: index,
-                        sanitized: preferredNextUpSubtitleTrackIndex,
-                        showForced: nil
-                    )
-                },
+                onSelectNextUpVersion: selectNextUpVersion,
+                onSelectNextUpAudioTrack: selectNextUpAudioTrack,
+                onSelectNextUpSubtitleTrack: selectNextUpSubtitleTrack,
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
-                onPersonTap: { personId in
-                    if let pid = Int(personId) {
-                        router.navigate(to: .personDetail(personId: pid))
-                    }
-                },
-                onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
-                },
-                belowSynopsis: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
-                }
+                onPersonTap: personTap,
+                onNavigateToItem: navigateToItem,
+                belowSynopsis: { descriptionTranslation(for: detail.contentId) }
             )
             .task(id: nextUpEpisode(for: detail)?.contentId) {
                 await loadNextUpPlaybackDetail(for: detail)
@@ -369,68 +318,17 @@ struct TVItemDetailView: View {
                 onEpisodeTap: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 },
-                onSetEpisodeWatched: { id, played in
-                    await viewModel.setEpisodeWatched(contentId: id, played: played)
-                },
-                onSetEpisodeFavorite: { id, isFavorite in
-                    await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
-                },
-                onSelectNextUpVersion: { fileId in
-                    preferredNextUpFileId = fileId
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpAudioTrackIndex
-                    )
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpSubtitleTrackIndex
-                    )
-                },
-                onSelectNextUpAudioTrack: { index in
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: preferredNextUpFileId,
-                        candidate: index
-                    )
-                    TrackSelectionPersistence.persistAudio(
-                        prefKey: prefKey(for: nextUpPlaybackDetail),
-                        version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
-                        requested: index,
-                        sanitized: preferredNextUpAudioTrackIndex
-                    )
-                },
-                onSelectNextUpSubtitleTrack: { index in
-                    didClearNextUpSubtitleOverride = (index == nil)
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: preferredNextUpFileId,
-                        candidate: index
-                    )
-                    TrackSelectionPersistence.persistSubtitle(
-                        prefKey: prefKey(for: nextUpPlaybackDetail),
-                        version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
-                        requested: index,
-                        sanitized: preferredNextUpSubtitleTrackIndex,
-                        showForced: nil
-                    )
-                },
+                onSetEpisodeWatched: setEpisodeWatched,
+                onSetEpisodeFavorite: setEpisodeFavorite,
+                onSelectNextUpVersion: selectNextUpVersion,
+                onSelectNextUpAudioTrack: selectNextUpAudioTrack,
+                onSelectNextUpSubtitleTrack: selectNextUpSubtitleTrack,
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
-                onPersonTap: { personId in
-                    if let pid = Int(personId) {
-                        router.navigate(to: .personDetail(personId: pid))
-                    }
-                },
-                onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
-                },
-                belowSynopsis: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
-                }
+                onPersonTap: personTap,
+                onNavigateToItem: navigateToItem,
+                belowSynopsis: { descriptionTranslation(for: detail.contentId) }
             )
             .task(id: nextUpEpisode(for: detail)?.contentId) {
                 await loadNextUpPlaybackDetail(for: detail)
@@ -537,14 +435,8 @@ struct TVItemDetailView: View {
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
-                onPersonTap: { personId in
-                    if let pid = Int(personId) {
-                        router.navigate(to: .personDetail(personId: pid))
-                    }
-                },
-                onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
-                },
+                onPersonTap: personTap,
+                onNavigateToItem: navigateToItem,
                 onEpisodeTap: { id in
                     let episode = viewModel.episodes.first { $0.contentId == id }
                     let isCurrentEpisode = id == detail.contentId
@@ -567,18 +459,85 @@ struct TVItemDetailView: View {
                         returnToContentId: isCurrentEpisode ? nil : id
                     )
                 },
-                onSetEpisodeWatched: { id, played in
-                    await viewModel.setEpisodeWatched(contentId: id, played: played)
-                },
-                onSetEpisodeFavorite: { id, isFavorite in
-                    await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
-                },
-                belowSynopsis: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
-                }
+                onSetEpisodeWatched: setEpisodeWatched,
+                onSetEpisodeFavorite: setEpisodeFavorite,
+                belowSynopsis: { descriptionTranslation(for: detail.contentId) }
             )
         }
+    }
+
+    // MARK: - Shared detail-arm callbacks
+    //
+    // The season / series / movie arms above hand these to their layout
+    // views verbatim; they live here as methods so each arm passes a
+    // reference instead of repeating the body.
+
+    private func selectNextUpVersion(_ fileId: Int?) {
+        preferredNextUpFileId = fileId
+        preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
+            for: nextUpPlaybackDetail,
+            versionFileId: fileId,
+            candidate: preferredNextUpAudioTrackIndex
+        )
+        preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
+            for: nextUpPlaybackDetail,
+            versionFileId: fileId,
+            candidate: preferredNextUpSubtitleTrackIndex
+        )
+    }
+
+    private func selectNextUpAudioTrack(_ index: Int?) {
+        preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
+            for: nextUpPlaybackDetail,
+            versionFileId: preferredNextUpFileId,
+            candidate: index
+        )
+        TrackSelectionPersistence.persistAudio(
+            prefKey: prefKey(for: nextUpPlaybackDetail),
+            version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
+            requested: index,
+            sanitized: preferredNextUpAudioTrackIndex
+        )
+    }
+
+    private func selectNextUpSubtitleTrack(_ index: Int?) {
+        didClearNextUpSubtitleOverride = (index == nil)
+        preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
+            for: nextUpPlaybackDetail,
+            versionFileId: preferredNextUpFileId,
+            candidate: index
+        )
+        TrackSelectionPersistence.persistSubtitle(
+            prefKey: prefKey(for: nextUpPlaybackDetail),
+            version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
+            requested: index,
+            sanitized: preferredNextUpSubtitleTrackIndex,
+            showForced: nil
+        )
+    }
+
+    private func personTap(_ personId: String) {
+        if let pid = Int(personId) {
+            router.navigate(to: .personDetail(personId: pid))
+        }
+    }
+
+    private func navigateToItem(_ id: String) {
+        router.navigate(to: .itemDetail(contentId: id))
+    }
+
+    private func setEpisodeWatched(_ id: String, _ played: Bool) async -> Bool {
+        await viewModel.setEpisodeWatched(contentId: id, played: played)
+    }
+
+    private func setEpisodeFavorite(_ id: String, _ isFavorite: Bool) async -> Bool {
+        await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
+    }
+
+    @ViewBuilder
+    private func descriptionTranslation(for contentId: String) -> some View {
+        DescriptionTranslationView(viewModel: viewModel, contentId: contentId)
+            .id(contentId)
     }
 
     private func playbackFileId(for detail: ItemDetail) -> Int? {

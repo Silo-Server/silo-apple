@@ -89,7 +89,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                             TVDetailCastRail(cast: cast, onTap: onPersonTap)
                         }
                         trailersSection
-                        detailsSection
+                        TVDetailsSection(detail: detail)
                         similarSection
                     }
                     .padding(.horizontal, SiloTheme.safePadding)
@@ -395,15 +395,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         // Header lives inside the rail so it disappears with the cards when
         // the item has neither remote videos nor local extras.
         TVTrailersRail(entries: trailerEntries, onSelect: onSelectTrailer)
-    }
-
-    // MARK: - Details
-
-    private var detailsSection: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            TVSectionHeader(title: "Details")
-            TVDetailFactsSection(detail: detail)
-        }
     }
 
 }

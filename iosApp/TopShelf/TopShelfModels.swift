@@ -16,9 +16,7 @@ struct TopShelfSectionsResponse: Decodable {
 }
 
 struct TopShelfSection: Decodable {
-    let id: String
     let sectionType: String
-    let title: String
     let items: [TopShelfItem]
 }
 
