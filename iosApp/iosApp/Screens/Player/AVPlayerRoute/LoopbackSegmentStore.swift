@@ -164,14 +164,6 @@ final class LoopbackSegmentStore {
     private let spillDirectory: URL?
     private let spillPolicy: SpillPolicy
 
-    private enum ResourceLocation {
-        case memory(data: Data, mimeType: String)
-        case disk(url: URL, byteCount: Int, mimeType: String)
-        case progressive(name: String, mimeType: String)
-        case missing
-        case gone
-    }
-
     init(
         generation: UInt64,
         memoryBudgetBytes: Int = 128 * 1024 * 1024,
@@ -795,22 +787,8 @@ final class LoopbackSegmentStore {
             waitCount += 1
             _ = lock.wait(until: Date().addingTimeInterval(1.0))
         }
-        let location = resourceLocationLocked(path: normalized)
+        let result = resourceLocationLocked(path: normalized)
         lock.unlock()
-
-        let result: ResourceResult
-        switch location {
-        case .memory(let data, let mimeType):
-            result = .found(.memory(data: data, mimeType: mimeType))
-        case .disk(let url, let byteCount, let mimeType):
-            result = .found(.disk(url: url, byteCount: byteCount, mimeType: mimeType))
-        case .progressive(let name, let mimeType):
-            result = .found(.progressive(name: name, mimeType: mimeType))
-        case .missing:
-            result = .missing
-        case .gone:
-            result = .gone
-        }
 
         lock.lock()
         requestCount += 1
@@ -873,28 +851,28 @@ final class LoopbackSegmentStore {
         lock.unlock()
     }
 
-    private func resourceLocationLocked(path: String) -> ResourceLocation {
+    private func resourceLocationLocked(path: String) -> ResourceResult {
         switch path {
         case "init.mp4":
-            return initSegment.map { .memory(data: $0, mimeType: "video/mp4") } ?? .missing
+            return initSegment.map { .found(.memory(data: $0, mimeType: "video/mp4")) } ?? .missing
         case "playlist.m3u8":
-            return mediaPlaylist.map { .memory(data: $0, mimeType: "application/vnd.apple.mpegurl") } ?? .missing
+            return mediaPlaylist.map { .found(.memory(data: $0, mimeType: "application/vnd.apple.mpegurl")) } ?? .missing
         case "master.m3u8":
-            return masterPlaylist.map { .memory(data: $0, mimeType: "application/vnd.apple.mpegurl") } ?? .missing
+            return masterPlaylist.map { .found(.memory(data: $0, mimeType: "application/vnd.apple.mpegurl")) } ?? .missing
         default:
             if let segment = segments[path] {
-                return .memory(data: segment.data, mimeType: mimeType(for: path))
+                return .found(.memory(data: segment.data, mimeType: mimeType(for: path)))
             }
             if let segment = spillingSegments[path] {
-                return .memory(data: segment.data, mimeType: mimeType(for: path))
+                return .found(.memory(data: segment.data, mimeType: mimeType(for: path)))
             }
             if let url = spilledSegments[path] {
                 let byteCount = spilledSegmentSizes[path] ?? fileSize(at: url) ?? 0
                 guard byteCount > 0 else { return .missing }
-                return .disk(url: url, byteCount: byteCount, mimeType: mimeType(for: path))
+                return .found(.disk(url: url, byteCount: byteCount, mimeType: mimeType(for: path)))
             }
             if progressiveSegments[path] != nil {
-                return .progressive(name: path, mimeType: mimeType(for: path))
+                return .found(.progressive(name: path, mimeType: mimeType(for: path)))
             }
             return evictedResources.contains(path) ? .gone : .missing
         }

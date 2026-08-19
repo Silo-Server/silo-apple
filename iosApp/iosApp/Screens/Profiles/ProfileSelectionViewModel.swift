@@ -5,7 +5,6 @@ import Foundation
 class ProfileSelectionViewModel {
     var profiles: [UserProfile] = []
     var isLoading: Bool = false
-    var isRefreshing: Bool = false
     var error: ErrorState?
     private(set) var isUsingTemporaryManagementContext: Bool = false
     private(set) var isClearingTemporaryManagementContext: Bool = false
@@ -24,13 +23,10 @@ class ProfileSelectionViewModel {
     func loadProfiles() async {
         if profiles.isEmpty {
             isLoading = true
-        } else {
-            isRefreshing = true
         }
         error = nil
         defer {
             isLoading = false
-            isRefreshing = false
         }
 
         do {

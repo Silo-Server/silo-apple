@@ -98,7 +98,6 @@ final class PlaybackV3ExecutionPlanMatrixTests: XCTestCase {
             startMode: .absolutePosition(0),
             streamRequest: streamRequest(),
             loopbackSession: loopbackSession,
-            routeCapabilities: engine.routeCapabilities,
             requirements: .baseline,
             parityBlockers: [],
             decisionTrace: ["delivery_direct", "container_mkv"],

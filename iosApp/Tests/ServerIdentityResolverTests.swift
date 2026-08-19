@@ -131,13 +131,9 @@ final class ServerIdentityResolverTests: XCTestCase {
     }
 
     private func waitForRequest(path: String) async {
-        for _ in 0..<100 {
-            if ServerIdentityStubProtocol.requestedPaths().contains(path) {
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
+        guard await waitUntil(timeout: 2, { ServerIdentityStubProtocol.requestedPaths().contains(path) }) else {
+            return XCTFail("Timed out waiting for request: \(path)")
         }
-        XCTFail("Timed out waiting for request: \(path)")
     }
 }
 

@@ -152,19 +152,11 @@ final class PlaybackMediaFixtureTests: XCTestCase {
                 audioCodec: "aac"
             ))
             let stream = StreamRequest(url: url, headers: [:], serverUrl: "")
-            let plan = ApplePlaybackRoutePlanner().makeExecutionPlan(
-                input: ApplePlaybackPlannerInput(
-                    session: session,
-                    selectedVersion: version,
-                    streamRequest: stream,
-                    routeRequirements: .baseline,
-                    selectedAudioTrackId: nil,
-                    pendingAudioFfIndex: nil,
-                    preferredAudioTrackIndex: 0,
-                    selectedPrimarySubtitleTrackId: nil,
-                    selectedSecondarySubtitleTrackId: nil,
-                    dolbyVisionPolicy: .default
-                )
+            let plan = makeTestExecutionPlan(
+                session: session,
+                version: version,
+                streamRequest: stream,
+                preferredAudioTrackIndex: 0
             )
             XCTAssertEqual(plan.engine, expectedEngine, container)
         }
@@ -201,8 +193,8 @@ final class PlaybackMediaFixtureTests: XCTestCase {
                 VideoTrack(
                     index: 0, codec: "hevc", width: 3840, height: 2160,
                     frameRate: "60.000", bitrate: 40_000, profile: "Main 10",
-                    level: 153, bitDepth: 10, colorRange: "pc", colorSpace: nil,
-                    colorPrimaries: nil, colorTransfer: nil,
+                    level: 153, bitDepth: 10, colorRange: "pc",
+                    colorTransfer: nil,
                     videoRange: "DolbyVision", dolbyVision: "Profile 5",
                     title: nil, language: nil
                 )
@@ -213,19 +205,10 @@ final class PlaybackMediaFixtureTests: XCTestCase {
         )
         let stream = StreamRequest(url: streamURL, headers: [:], serverUrl: "")
 
-        let plan = ApplePlaybackRoutePlanner().makeExecutionPlan(
-            input: ApplePlaybackPlannerInput(
-                session: session,
-                selectedVersion: version,
-                streamRequest: stream,
-                routeRequirements: .baseline,
-                selectedAudioTrackId: nil,
-                pendingAudioFfIndex: nil,
-                preferredAudioTrackIndex: nil,
-                selectedPrimarySubtitleTrackId: nil,
-                selectedSecondarySubtitleTrackId: nil,
-                dolbyVisionPolicy: .default
-            )
+        let plan = makeTestExecutionPlan(
+            session: session,
+            version: version,
+            streamRequest: stream
         )
 
         XCTAssertEqual(plan.engine, .siloPlayerLoopback)

@@ -796,7 +796,8 @@ final class LoopbackSegmentWriter {
     private static let vodSeamTrimMaxSamples: Int64 = 12_000 // 250 ms @ 48 kHz
     private var audioDecodedFrameCount = 0
     private var audioDecodeErrorCount = 0
-    /// Temporary [CMP-ADRIFT] diagnostics (see noteBridgedAudioDriftIfNeeded).
+    /// State of the live [CMP-ADRIFT] lipsync corrector (see
+    /// noteBridgedAudioDriftIfNeeded).
     /// Cumulative decode failures for the bridged track — unlike
     /// `audioDecodeErrorCount` this never resets on a successful frame, so
     /// it measures total timeline loss, not burst length.
@@ -986,6 +987,13 @@ final class LoopbackSegmentWriter {
     /// base. The backend must seed the consumer window and its coverage
     /// bookkeeping from this before production begins.
     var onVODProducerAnchored: ((Int) -> Void)?
+    /// Fired (on the mux thread) once the bridged-audio encoder clock is
+    /// seeded, carrying the session-axis second its first samples are stamped
+    /// at. The produced stream is silent before that point, so the backend's
+    /// initial-video-display gate uses it to keep a start from showing video
+    /// ahead of audio. Never fires on copy-mode routes — they have no
+    /// synthesized clock to anchor.
+    var onBridgedAudioAnchored: ((Double) -> Void)?
     /// The session's true anchor: `vodBaseIndex` for explicit restarts,
     /// resume-derived for a first session starting mid-title.
     private var vodEffectiveBaseIndex = 0
@@ -2610,18 +2618,13 @@ final class LoopbackSegmentWriter {
         let basePtsSeconds = Double(pkt.pointee.pts)
             * Double(timeBase.num) / Double(timeBase.den)
         let startMs = Int64((basePtsSeconds + Double(sub.start_display_time) / 1000.0) * 1000.0)
-        let endMs: Int64 = {
-            if sub.end_display_time != UInt32.max,
-               sub.end_display_time > sub.start_display_time {
-                return Int64((basePtsSeconds + Double(sub.end_display_time) / 1000.0) * 1000.0)
-            }
-            if pkt.pointee.duration > 0 {
-                let durSeconds = Double(pkt.pointee.duration)
-                    * Double(timeBase.num) / Double(timeBase.den)
-                return startMs + Int64(durSeconds * 1000.0)
-            }
-            return startMs + 5000
-        }()
+        let endMs = BitmapSubtitleCue.subtitleEndMs(
+            sub: sub,
+            pkt: pkt,
+            timeBase: timeBase,
+            basePtsSeconds: basePtsSeconds,
+            startMs: startMs
+        )
         let durationMs = max(Int64(0), endMs - startMs)
 
         for i in 0..<Int(sub.num_rects) {
@@ -2730,20 +2733,14 @@ final class LoopbackSegmentWriter {
             // Some Matroska remuxes drop the PGS display-set END segment,
             // leaving the decoder accumulating with nothing emitted. Push a
             // minimal synthetic END segment at the same timestamps to flush
-            // the pending composition (mirrors the extractor's repair; only
-            // for substantial packets — tiny ones ARE end/control segments).
-            var payload = [UInt8](repeating: 0, count: 64)
-            payload[0] = 0x80
-            payload.withUnsafeMutableBufferPointer { buffer in
-                var synthetic = AVPacket()
-                synthetic.data = buffer.baseAddress
-                synthetic.size = 3
-                synthetic.pts = pkt.pointee.pts
-                synthetic.dts = pkt.pointee.dts
-                synthetic.duration = pkt.pointee.duration
-                synthetic.stream_index = pkt.pointee.stream_index
-                _ = avcodec_decode_subtitle2(codecCtx, &sub, &gotSubtitle, &synthetic)
-            }
+            // the pending composition (only for substantial packets — tiny
+            // ones ARE end/control segments).
+            BitmapSubtitleCue.flushPendingPGSComposition(
+                codecCtx: codecCtx,
+                timedLike: pkt,
+                into: &sub,
+                gotSubtitle: &gotSubtitle
+            )
         }
         guard rc >= 0, gotSubtitle != 0 else { return }
 
@@ -2752,21 +2749,13 @@ final class LoopbackSegmentWriter {
             : (pkt.pointee.dts != noPts ? pkt.pointee.dts : 0)
         let basePtsSeconds = Double(ptsRaw) * Double(timeBase.num) / Double(timeBase.den)
         let startMs = Int64((basePtsSeconds + Double(sub.start_display_time) / 1000.0) * 1000.0)
-        let endMs: Int64 = {
-            if sub.end_display_time != UInt32.max,
-               sub.end_display_time > sub.start_display_time {
-                return Int64((basePtsSeconds + Double(sub.end_display_time) / 1000.0) * 1000.0)
-            }
-            if pkt.pointee.duration > 0 {
-                let durSeconds = Double(pkt.pointee.duration)
-                    * Double(timeBase.num) / Double(timeBase.den)
-                return startMs + Int64(durSeconds * 1000.0)
-            }
-            // No explicit end anywhere. PGS relies on the next composition
-            // trimming this cue; 5 s is only the ceiling if the stream goes
-            // quiet.
-            return startMs + 5000
-        }()
+        let endMs = BitmapSubtitleCue.subtitleEndMs(
+            sub: sub,
+            pkt: pkt,
+            timeBase: timeBase,
+            basePtsSeconds: basePtsSeconds,
+            startMs: startMs
+        )
         let startSeconds = Double(startMs) / 1000.0
         let endSeconds = Double(max(startMs, endMs)) / 1000.0
 
@@ -2774,7 +2763,7 @@ final class LoopbackSegmentWriter {
         for i in 0..<Int(sub.num_rects) {
             guard let rect = sub.rects[i]?.pointee,
                   rect.type == SUBTITLE_BITMAP,
-                  let cue = Self.bitmapTapCue(
+                  let cue = BitmapSubtitleCue.bitmapCue(
                       from: rect,
                       codecCtx: codecCtx,
                       fallbackCanvas: bitmapTapFallbackCanvas,
@@ -2813,52 +2802,6 @@ final class LoopbackSegmentWriter {
         bitmapTapDecoders[inputIdx] = codecCtx
         cmpLog("[CMP-TAP] bitmap decoder opened stream=\(inputIdx)")
         return codecCtx
-    }
-
-    /// Convert one decoded bitmap rect into an overlay cue: paletted plane
-    /// → premultiplied RGBA (cropped to the opaque bounding box) → CGImage
-    /// positioned as a normalized rect against the subtitle canvas.
-    /// (Mirrors the extractor's conversion; the tap has no
-    /// OpenedSubtitleDecoder so canvas fallback is passed explicitly.)
-    private static func bitmapTapCue(
-        from rect: AVSubtitleRect,
-        codecCtx: UnsafeMutablePointer<AVCodecContext>,
-        fallbackCanvas: (width: Int32, height: Int32),
-        startSeconds: Double,
-        endSeconds: Double
-    ) -> BitmapSubtitleCue? {
-        guard rect.w > 0, rect.h > 0,
-              let indexPlane = rect.data.0,
-              let palette = rect.data.1
-        else { return nil }
-        guard let plane = BitmapSubtitlePalette.premultipliedRGBA(
-            indexPlane: indexPlane,
-            width: Int(rect.w),
-            height: Int(rect.h),
-            stride: Int(rect.linesize.0),
-            palette: palette
-        ), let image = BitmapSubtitlePalette.makeImage(from: plane) else { return nil }
-
-        let ctx = codecCtx.pointee
-        let canvasWidth = ctx.width > 0 ? ctx.width : fallbackCanvas.width
-        let canvasHeight = ctx.height > 0 ? ctx.height : fallbackCanvas.height
-        let normalizedFrame: CGRect
-        if canvasWidth > 0, canvasHeight > 0 {
-            normalizedFrame = CGRect(
-                x: Double(Int(rect.x) + plane.cropX) / Double(canvasWidth),
-                y: Double(Int(rect.y) + plane.cropY) / Double(canvasHeight),
-                width: Double(plane.cropWidth) / Double(canvasWidth),
-                height: Double(plane.cropHeight) / Double(canvasHeight)
-            )
-        } else {
-            normalizedFrame = CGRect(x: 0.2, y: 0.78, width: 0.6, height: 0.15)
-        }
-        return BitmapSubtitleCue(
-            startSeconds: startSeconds,
-            endSeconds: endSeconds,
-            image: image,
-            normalizedFrame: normalizedFrame
-        )
     }
 
     /// Input stream indices of bitmap subtitle codecs (PGS/DVD) the tap
@@ -4349,7 +4292,10 @@ final class LoopbackSegmentWriter {
         }
         let seed = max(0, av_rescale_q(framePts - anchor, inTB, encoderTB))
         vodSeededBridgedAudioPTS = true
-        guard seed > 0 else { return }
+        guard seed > 0 else {
+            onBridgedAudioAnchored?(0)
+            return
+        }
         var anchored = seed
         // Align to the run's own plan boundary: the previous contiguous
         // run's stored audio ends there, and the video track of this run
@@ -4381,15 +4327,17 @@ final class LoopbackSegmentWriter {
             anchored, seconds
         )
         cmpLog(logLine)
+        onBridgedAudioAnchored?(seconds)
     }
 
-    /// Temporary [CMP-ADRIFT] diagnostic: after seeding, the bridged-audio
-    /// clock free-runs on accumulated output samples, so any decode failure
-    /// (zero emitted samples) slides every later sample earlier on the
-    /// session axis with no correction until the next producer restart —
-    /// suspected cause of gradual lipsync drift on multi-hour TrueHD
-    /// watches. Projects where this frame's samples will be stamped
-    /// (counter + pending stitch + swr backlog + FIFO fill) against the
+    /// Live A/V lipsync corrector for the bridged-audio seam ([CMP-ADRIFT]),
+    /// gated by `bridgedDriftCorrectionEnabled` (default true): after
+    /// seeding, the bridged-audio clock free-runs on accumulated output
+    /// samples, so any decode failure (zero emitted samples) slides every
+    /// later sample earlier on the session axis with no correction until
+    /// the next producer restart — the cause of gradual lipsync drift on
+    /// multi-hour TrueHD watches. Projects where this frame's samples will
+    /// be stamped (counter + pending stitch + swr backlog + FIFO fill) against the
     /// frame's own source timestamp, using the seeder's exact rescale math.
     /// Logs when the gap crosses another 100 ms step and heartbeats every
     /// 30 s of media so a silent probe is distinguishable from a dead one.
@@ -5768,11 +5716,17 @@ final class LoopbackSegmentWriter {
             }
             return
         }
+        // Clamp the append itself, not just the entry check: an interim
+        // fragment that crosses the ceiling would otherwise overshoot the
+        // cap by its whole size. The store serves byte prefixes, so a
+        // partial fragment is a valid publication; the remainder waits
+        // for the cut like everything past the ceiling.
+        let publishEnd = min(pendingSegmentBytes.count, progressivePublishCeilingBytes)
         let delta = pendingSegmentBytes.subdata(
-            in: vodProgressivePublishedBytes..<pendingSegmentBytes.count
+            in: vodProgressivePublishedBytes..<publishEnd
         )
         store.appendProgressiveSegment(named: name, bytes: delta)
-        vodProgressivePublishedBytes = pendingSegmentBytes.count
+        vodProgressivePublishedBytes = publishEnd
     }
 
     /// Emits the fragment accumulated in the muxer so far WITHOUT closing
@@ -5798,15 +5752,7 @@ final class LoopbackSegmentWriter {
               vodMoovPrimeAttempts < 3,
               let outCtx = outputCtx else { return }
         vodMoovPrimeAttempts += 1
-        let drainRC = av_interleaved_write_frame(outCtx, nil)
-        guard drainRC >= 0 else { return }
-        _ = av_write_frame(outCtx, nil)
-        if !vodDidFlushFirstFragment {
-            vodDidFlushFirstFragment = true
-            // delay_moov can split ftyp+moov and the fragment across two
-            // flush calls — same second flush the cut path performs.
-            _ = av_write_frame(outCtx, nil)
-        }
+        guard flushOpenFragmentBestEffort(outCtx) else { return }
         try throwIfFatalIOError()
         if initSegmentWritten {
             cmpLog("[CMP-AVP] vod moov primed by first audio packet (attempt \(vodMoovPrimeAttempts))")
@@ -5821,8 +5767,19 @@ final class LoopbackSegmentWriter {
         // harmless: the interleaver window just grows until audio arrives
         // (prefeed/priming) or the first cut escalates.
         if vodAudioNeedsParsedPacketForMoov, !initSegmentWritten, !vodAudioPacketRouted { return }
+        flushOpenFragmentBestEffort(outCtx)
+    }
+
+    /// Drain the interleaver and flush whatever fragment the muxer holds,
+    /// ignoring the flush return codes. Returns false when the drain itself
+    /// failed, so callers can skip the work that only makes sense after a
+    /// successful flush. `performVODFragmentCut` deliberately keeps its own
+    /// copy of this sequence: it throws `muxWriteFailures` on each negative
+    /// rc instead of pressing on.
+    @discardableResult
+    private func flushOpenFragmentBestEffort(_ outCtx: UnsafeMutablePointer<AVFormatContext>) -> Bool {
         let drainRC = av_interleaved_write_frame(outCtx, nil)
-        guard drainRC >= 0 else { return }
+        guard drainRC >= 0 else { return false }
         _ = av_write_frame(outCtx, nil)
         if !vodDidFlushFirstFragment {
             vodDidFlushFirstFragment = true
@@ -5830,6 +5787,7 @@ final class LoopbackSegmentWriter {
             // flush calls — same second flush the cut path performs.
             _ = av_write_frame(outCtx, nil)
         }
+        return true
     }
 
     private func startNewSegment(firstBox: Data, hasMoof: Bool, hasVideo: Bool) {

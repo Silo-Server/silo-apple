@@ -75,8 +75,6 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             level: 153,
             bitDepth: 10,
             colorRange: "tv",
-            colorSpace: nil,
-            colorPrimaries: nil,
             colorTransfer: colorTransfer,
             videoRange: videoRange,
             dolbyVision: dolbyVision,
@@ -131,22 +129,13 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
         _ version: FileVersion,
         session: PlaybackSessionResponse? = nil
     ) -> PlaybackExecutionPlan {
-        ApplePlaybackRoutePlanner().makeExecutionPlan(
-            input: ApplePlaybackPlannerInput(
-                session: session ?? makeSession(),
-                selectedVersion: version,
-                streamRequest: StreamRequest(
-                    url: Self.streamURL,
-                    headers: ["Authorization": "Bearer trace"],
-                    serverUrl: "https://example.invalid"
-                ),
-                routeRequirements: .baseline,
-                selectedAudioTrackId: nil,
-                pendingAudioFfIndex: nil,
-                preferredAudioTrackIndex: nil,
-                selectedPrimarySubtitleTrackId: nil,
-                selectedSecondarySubtitleTrackId: nil,
-                dolbyVisionPolicy: .default
+        makeTestExecutionPlan(
+            session: session ?? makeSession(),
+            version: version,
+            streamRequest: StreamRequest(
+                url: Self.streamURL,
+                headers: ["Authorization": "Bearer trace"],
+                serverUrl: "https://example.invalid"
             )
         )
     }
@@ -575,7 +564,6 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
                 serverUrl: "https://example.invalid"
             ),
             loopbackSession: nil,
-            routeCapabilities: engine.routeCapabilities,
             requirements: .baseline,
             parityBlockers: [],
             decisionTrace: [],

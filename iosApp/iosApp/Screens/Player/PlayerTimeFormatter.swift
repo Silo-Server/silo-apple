@@ -36,6 +36,14 @@ enum PlayerTimeFormatter {
         return String(format: "%d:%02d", m, s)
     }
 
+    /// Signed millisecond label for the subtitle-delay controls: "0 ms",
+    /// "+250 ms", "-250 ms". Shared by the iOS settings sheet and the tvOS
+    /// HUD so both surfaces read the same value the same way.
+    static func formatSubtitleDelay(_ milliseconds: Int) -> String {
+        if milliseconds == 0 { return "0 ms" }
+        return (milliseconds > 0 ? "+" : "") + "\(milliseconds) ms"
+    }
+
     /// Locale-shortened wall-clock time ("9:41 PM" / "21:41"), used by the
     /// tvOS transport bar's now/finish-at row.
     static func formatClockTime(_ date: Date) -> String {

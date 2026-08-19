@@ -1,0 +1,39 @@
+{
+ "_status": "DRAFT \u2014 after wave 3",
+ "design_ref": [
+  "docs/cleanup/player-review/2026-08-19-stage2-design.md \u00a72.7 last paragraph (TrackSelection enum replaces the eight pending* fields), review \u00a78 'Track selection' paragraph",
+  "docs/cleanup/player-review/stage2/inventory-2-vm-track-half.md \u00a71b, \u00a72"
+ ],
+ "brief": "Replace the pending* optionals + hasExplicitSubtitleChoice + pendingRecovered* snapshots inside TrackSelectionCoordinator with `struct TrackSelection { audio: AudioSelection; primary: SubtitleSelection; secondary: SubtitleSelection; origin: SelectionOrigin }` per review \u00a78; `hasExplicitSubtitleChoice == (origin == .user)`; `srcId` disappears from the coordinator's decisions (each case names its index space); all decision sites keep their order and reason strings; TrackSelectionTests; rewrite the three pending*-shaped tests in PlaybackProtocolV3Tests (inventory-4 A.5 rows 4\u20136).",
+ "deliverables": [
+  {
+   "id": "TrackSelection model",
+   "where": "iosApp/iosApp/Screens/Player/Tracks/TrackSelection.swift"
+  },
+  {
+   "id": "coordinator on TrackSelection",
+   "where": "iosApp/iosApp/Screens/Player/Tracks/TrackSelectionCoordinator.swift"
+  },
+  {
+   "id": "TrackSelectionTests + 3 rewrites",
+   "where": "iosApp/Tests/"
+  }
+ ],
+ "invariants": [
+  "I1",
+  "decision order and reasons unchanged"
+ ],
+ "tests_required": [
+  "TrackSelectionTests"
+ ],
+ "deletions": [
+  {
+   "grep": "pendingAudioFfIndex|pendingSubtitleFfIndex|pendingSidecarSubtitleTrackId|pendingServerRenderedSubtitleTrackId|pendingRecoveredAudioSelection|pendingRecoveredSubtitleSelection|pendingRecoveredSecondarySubtitleId|ProtocolV3SidecarRestoreIntent",
+   "scope": "iosApp/iosApp",
+   "expected": "0 hits"
+  }
+ ],
+ "behavior_changes_allowed": [
+  "none"
+ ]
+}

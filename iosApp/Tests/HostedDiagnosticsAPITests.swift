@@ -58,11 +58,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             )
         )
         HostedDiagnosticsStubProtocol.configure(reportID: reportID, bundle: bundle)
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: credentialStore
-        )
+        let api = try makeHostedAPI(credentialStore: credentialStore)
 
         let response = try await api.upload(
             reportID: reportID,
@@ -118,11 +114,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             installationID: "install-delete-test",
             installationToken: "hosted-delete-token"
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(credential: credential)
-        )
+        let api = try makeHostedAPI(credentialStore: HostedTestCredentialStore(credential: credential))
 
         HostedDiagnosticsStubProtocol.configureDelete(reportID: reportID, statusCode: 204)
         try await api.deleteReport(reportID: reportID)
@@ -153,15 +145,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             reportID: reportID,
             bundle: bundle
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-status-fallback",
-                    installationToken: "status-fallback-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-status-fallback",
+            installationToken: "status-fallback-token"
         )
 
         let response = try await api.upload(
@@ -279,12 +265,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             type: .manual,
             capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
             crash: nil,
-            deviceSummary: DiagnosticsManifest.DeviceSummary(
-                manufacturer: "Apple",
-                model: "iPhone",
-                os: "26.0",
-                formFactor: "phone"
-            ),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIDs: ["server-playback-session"],
             captureSessionID: "capture-session",
             consentMode: .manual
@@ -315,11 +296,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let bundle = Data("new-installation-bundle".utf8)
         let credentialStore = HostedTestCredentialStore(credential: nil)
         HostedDiagnosticsStubProtocol.configure(reportID: reportID, bundle: bundle)
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: credentialStore
-        )
+        let api = try makeHostedAPI(credentialStore: credentialStore)
 
         _ = try await api.upload(
             reportID: reportID,
@@ -362,11 +339,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let unusedReportID = try XCTUnwrap(
             UUID(uuidString: "01234567-89ab-cdef-0123-456789abcdef")
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: credentialStore
-        )
+        let api = try makeHostedAPI(credentialStore: credentialStore)
         HostedDiagnosticsStubProtocol.configure(
             reportID: unusedReportID,
             bundle: Data()
@@ -399,11 +372,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             reportID: reportID,
             bundle: bundle
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: credentialStore
-        )
+        let api = try makeHostedAPI(credentialStore: credentialStore)
 
         let response = try await api.upload(
             reportID: reportID,
@@ -458,12 +427,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             type: .manual,
             capturedAt: capturedAt,
             crash: nil,
-            deviceSummary: DiagnosticsManifest.DeviceSummary(
-                manufacturer: "Apple",
-                model: "iPhone",
-                os: "26.0",
-                formFactor: "phone"
-            ),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIDs: [],
             consentMode: .manual
         )
@@ -511,15 +475,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(embedded.logSummary, bundle.manifest.logSummary)
 
         HostedDiagnosticsStubProtocol.configure(reportID: report.id, bundle: bundle.bundleData)
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-manifest-redaction",
-                    installationToken: "collector-credential"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-manifest-redaction",
+            installationToken: "collector-credential"
         )
         _ = try await api.upload(
             reportID: report.id,
@@ -613,12 +571,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 provenance: .postRestart,
                 occurredAt: occurredAt
             ),
-            deviceSummary: DiagnosticsManifest.DeviceSummary(
-                manufacturer: "Apple",
-                model: "Apple TV",
-                os: "26.0",
-                formFactor: "tv"
-            ),
+            deviceSummary: makeDeviceSummary(model: "Apple TV", formFactor: "tv"),
             playbackSessionIDs: [privateLogSessionID, privateBreadcrumbSessionID],
             captureSessionID: canonicalRunID
         )
@@ -667,15 +620,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(String(decoding: localDeviceData, as: UTF8.self).contains("uid_hash"))
         XCTAssertTrue(String(decoding: localDeviceData, as: UTF8.self).contains("route_hashes"))
         XCTAssertTrue(String(decoding: localDeviceData, as: UTF8.self).contains("server_url"))
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-attribute-privacy",
-                    installationToken: "collector-attribute-privacy-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-attribute-privacy",
+            installationToken: "collector-attribute-privacy-token"
         )
         let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: store)
 
@@ -1073,12 +1020,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             type: .manual,
             capturedAt: capturedAt,
             crash: nil,
-            deviceSummary: DiagnosticsManifest.DeviceSummary(
-                manufacturer: "Apple",
-                model: "iPhone",
-                os: "26.0",
-                formFactor: "phone"
-            ),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIDs: [],
             captureSessionID: "manual-frozen-run",
             consentMode: .manual
@@ -1103,15 +1045,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             deviceSnapshot: makeDeviceSnapshot(capturedAt: capturedAt),
             artifacts: [evidence.artifact]
         ))
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-manual-determinism",
-                    installationToken: "collector-manual-determinism-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-manual-determinism",
+            installationToken: "collector-manual-determinism-token"
         )
         let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: store)
 
@@ -1149,15 +1085,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
     func testHostedInstallationTokenIsIncludedInExactMatchBundleRedaction() async throws {
         let token = "hosted-token-that-must-never-leak"
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-redaction-test",
-                    installationToken: token
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-redaction-test",
+            installationToken: token
         )
 
         let redactionTokens = DiagnosticsCoordinator.mergeRedactionTokens(
@@ -1307,15 +1237,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let backup = root.appendingPathComponent("delete-crash-backup", isDirectory: true)
         try FileManager.default.copyItem(at: fixture.report.directoryURL, to: backup)
         defer { try? FileManager.default.removeItem(at: backup) }
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-delete-retry",
-                    installationToken: "delete-retry-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-delete-retry",
+            installationToken: "delete-retry-token"
         )
         let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
 
@@ -1380,15 +1304,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             reportID: reports[0].id,
             statusCode: 204
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-bounded-delete",
-                    installationToken: "bounded-delete-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-bounded-delete",
+            installationToken: "bounded-delete-token"
         )
         let coordinator = DiagnosticsCoordinator(
             hostedAPI: api,
@@ -1421,15 +1339,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             reportID: selected.id,
             statusCode: 204
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-selected-delete",
-                    installationToken: "selected-delete-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-selected-delete",
+            installationToken: "selected-delete-token"
         )
         let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
 
@@ -1457,15 +1369,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             reportID: fixture.report.id,
             statusCode: 503
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-turn-off",
-                    installationToken: "turn-off-delete-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-turn-off",
+            installationToken: "turn-off-delete-token"
         )
         let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
 
@@ -1481,15 +1387,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             reportID: fixture.report.id,
             statusCode: 204
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-create-delete-race",
-                    installationToken: "create-delete-race-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-create-delete-race",
+            installationToken: "create-delete-race-token"
         )
         let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
 
@@ -1513,15 +1413,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
     func testTurnOffErasesReadyHandoffAfterPendingDirectoryIsAlreadyGone() async throws {
         let fixture = try makePendingHostedReport(label: "turn-off-after-ready")
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-ready-turn-off-race",
-                    installationToken: "ready-turn-off-race-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-ready-turn-off-race",
+            installationToken: "ready-turn-off-race-token"
         )
         let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
 
@@ -1569,15 +1463,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             reportID: fixture.report.id,
             statusCode: 204
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-ready-restart",
-                    installationToken: "ready-restart-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-ready-restart",
+            installationToken: "ready-restart-token"
         )
         let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: restoredStore)
 
@@ -1643,15 +1531,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             reportID: fixture.report.id,
             statusCode: 204
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-blocked-delete",
-                    installationToken: "blocked-delete-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-blocked-delete",
+            installationToken: "blocked-delete-token"
         )
         let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
         let visible = await coordinator.pendingReports(for: fixture.report.binding.binding)
@@ -1956,15 +1838,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             defaults: SharedDefaults(suite: suite, standard: suite),
             onNeverSelected: { _ in }
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-ready-history",
-                    installationToken: "ready-history-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-ready-history",
+            installationToken: "ready-history-token"
         )
         let coordinator = DiagnosticsCoordinator(
             hostedAPI: api,
@@ -2005,15 +1881,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             defaults: SharedDefaults(suite: suite, standard: suite),
             onNeverSelected: { _ in }
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-ready-local-failure",
-                    installationToken: "ready-local-failure-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-ready-local-failure",
+            installationToken: "ready-local-failure-token"
         )
         let coordinator = DiagnosticsCoordinator(
             hostedAPI: api,
@@ -2053,15 +1923,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 state: state,
                 errorCode: state == .rejected ? "privacy_artifact_rejected" : nil
             )
-            let api = HostedDiagnosticsAPI(
-                baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-                session: makeSession(),
-                credentialStore: HostedTestCredentialStore(
-                    credential: HostedDiagnosticsCredential(
-                        installationID: "install-lifecycle-test",
-                        installationToken: "lifecycle-test-token"
-                    )
-                )
+            let api = try makeHostedAPI(
+                installationID: "install-lifecycle-test",
+                installationToken: "lifecycle-test-token"
             )
             let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
 
@@ -2104,11 +1968,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
     func testCapabilitiesArePublicAndMapCollectorIdentity() async throws {
         HostedDiagnosticsStubProtocol.configureCapabilities()
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(credential: nil)
-        )
+        let api = try makeHostedAPI(credentialStore: HostedTestCredentialStore(credential: nil))
 
         let capabilities = try await api.capabilities()
 
@@ -2130,11 +1990,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         HostedDiagnosticsStubProtocol.configureCapabilities(
             collectorID: "unexpected-collector"
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(credential: nil)
-        )
+        let api = try makeHostedAPI(credentialStore: HostedTestCredentialStore(credential: nil))
 
         do {
             _ = try await api.capabilities()
@@ -2146,11 +2002,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
     func testCapabilitiesRejectCollectorWithoutSchemaV1BeforeSend() async throws {
         HostedDiagnosticsStubProtocol.configureCapabilities(acceptedSchemaVersions: [2])
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(credential: nil)
-        )
+        let api = try makeHostedAPI(credentialStore: HostedTestCredentialStore(credential: nil))
 
         do {
             _ = try await api.capabilities()
@@ -2163,11 +2015,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
     func testCapabilitiesPreserveValidDisabledAndStorageUnavailableStatuses() async throws {
         for status in [DiagnosticsAvailabilityStatus.disabled, .storageUnavailable] {
             HostedDiagnosticsStubProtocol.configureCapabilities(status: status)
-            let api = HostedDiagnosticsAPI(
-                baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-                session: makeSession(),
-                credentialStore: HostedTestCredentialStore(credential: nil)
-            )
+            let api = try makeHostedAPI(credentialStore: HostedTestCredentialStore(credential: nil))
 
             let capabilities = try await api.capabilities()
 
@@ -2243,12 +2091,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             type: .nativeCrash,
             capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
             crash: nil,
-            deviceSummary: DiagnosticsManifest.DeviceSummary(
-                manufacturer: "Apple",
-                model: "iPhone",
-                os: "26.0",
-                formFactor: "phone"
-            ),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIDs: ["private-playback-session"]
         )
 
@@ -2452,15 +2295,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             state: .ready,
             errorCode: nil
         )
-        let api = HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-corrupt-ledger",
-                    installationToken: "corrupt-ledger-token"
-                )
-            )
+        let api = try makeHostedAPI(
+            installationID: "install-corrupt-ledger",
+            installationToken: "corrupt-ledger-token"
         )
         let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: restoredStore)
 
@@ -2541,12 +2378,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             type: .manual,
             capturedAt: capturedAt,
             crash: nil,
-            deviceSummary: DiagnosticsManifest.DeviceSummary(
-                manufacturer: "Apple",
-                model: "iPhone",
-                os: "26.0",
-                formFactor: "phone"
-            ),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIDs: [],
             consentMode: .manual
         )
@@ -2599,12 +2431,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             type: .manual,
             capturedAt: capturedAt,
             crash: nil,
-            deviceSummary: DiagnosticsManifest.DeviceSummary(
-                manufacturer: "Apple",
-                model: "iPhone",
-                os: "26.0",
-                formFactor: "phone"
-            ),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIDs: [],
             consentMode: .manual
         )
@@ -2667,12 +2494,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                     type: .manual,
                     capturedAt: capturedAt,
                     crash: nil,
-                    deviceSummary: DiagnosticsManifest.DeviceSummary(
-                        manufacturer: "Apple",
-                        model: "iPhone",
-                        os: "26.0",
-                        formFactor: "phone"
-                    ),
+                    deviceSummary: makeDeviceSummary(),
                     playbackSessionIDs: [],
                     consentMode: .manual
                 ),
@@ -2763,15 +2585,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
     }
 
     private func makeHostedUploadAPI() throws -> HostedDiagnosticsAPI {
-        HostedDiagnosticsAPI(
-            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
-            session: makeSession(),
-            credentialStore: HostedTestCredentialStore(
-                credential: HostedDiagnosticsCredential(
-                    installationID: "install-acknowledgement-test",
-                    installationToken: "acknowledgement-test-token"
-                )
-            )
+        try makeHostedAPI(
+            installationID: "install-acknowledgement-test",
+            installationToken: "acknowledgement-test-token"
         )
     }
 
@@ -2926,6 +2742,42 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         throw HostedDiagnosticsTestError.missingTarEntry(targetName)
     }
 
+    private func makeHostedAPI(
+        installationID: String,
+        installationToken: String
+    ) throws -> HostedDiagnosticsAPI {
+        try makeHostedAPI(
+            credentialStore: HostedTestCredentialStore(
+                credential: HostedDiagnosticsCredential(
+                    installationID: installationID,
+                    installationToken: installationToken
+                )
+            )
+        )
+    }
+
+    private func makeHostedAPI(
+        credentialStore: any HostedDiagnosticsCredentialStoring
+    ) throws -> HostedDiagnosticsAPI {
+        HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: credentialStore
+        )
+    }
+
+    private func makeDeviceSummary(
+        model: String = "iPhone",
+        formFactor: String = "phone"
+    ) -> DiagnosticsManifest.DeviceSummary {
+        DiagnosticsManifest.DeviceSummary(
+            manufacturer: "Apple",
+            model: model,
+            os: "26.0",
+            formFactor: formFactor
+        )
+    }
+
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [HostedDiagnosticsStubProtocol.self]
@@ -2953,12 +2805,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             ),
             consent: DiagnosticsManifest.Consent(mode: .manual, noticeVersion: 3),
             crash: nil,
-            deviceSummary: DiagnosticsManifest.DeviceSummary(
-                manufacturer: "Apple",
-                model: "iPhone",
-                os: "26.0",
-                formFactor: "phone"
-            ),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIds: [],
             logSummary: DiagnosticsManifest.LogSummary(
                 lines: 0,
@@ -3242,7 +3089,7 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
                 return (statusCode, #"{"error":"unavailable"}"#)
             }
         }
-        respond(statusCode: response.0, body: response.1)
+        respond(status: response.0, body: response.1)
     }
 
     override func stopLoading() {}
@@ -3339,28 +3186,8 @@ private final class SelfHostedDiagnosticsStubProtocol: URLProtocol {
                 return (404, #"{"error":"not_found"}"#)
             }
         }
-        respond(statusCode: response.0, body: response.1)
+        respond(status: response.0, body: response.1)
     }
 
     override func stopLoading() {}
-}
-
-private extension URLProtocol {
-    func respond(statusCode: Int, body: String) {
-        guard let url = request.url,
-              let response = HTTPURLResponse(
-                url: url,
-                statusCode: statusCode,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
-              ) else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
-            return
-        }
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if !body.isEmpty {
-            client?.urlProtocol(self, didLoad: Data(body.utf8))
-        }
-        client?.urlProtocolDidFinishLoading(self)
-    }
 }

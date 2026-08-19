@@ -341,9 +341,8 @@ private struct InfoPane: View {
     }
 
     private var currentChapterTitle: String? {
-        guard !viewModel.chapters.isEmpty,
-              let current = viewModel.chapters.last(where: { $0.time <= viewModel.currentTime })
-        else { return nil }
+        guard let index = viewModel.currentChapterIndex else { return nil }
+        let current = viewModel.chapters[index]
         return current.title ?? "Chapter \(current.index + 1)"
     }
 }
@@ -763,12 +762,6 @@ private struct SubtitlesPane: View {
         return "\(appearance.backgroundStyle.label), \(appearance.fontSize.label), \(appearance.position.label)"
     }
 
-    private func setAppearance(_ mutate: @escaping (inout SubtitleAppearance) -> Void) {
-        var next = viewModel.settings.subtitleAppearance
-        mutate(&next)
-        Task { await viewModel.setSubtitleAppearance(next) }
-    }
-
     private func presentPicker(for option: Option, _ presentation: HUDPickerPresentation) {
         pickerReturnField = option
         activePicker = presentation
@@ -951,7 +944,7 @@ private struct SubtitlesPane: View {
                             selection: viewModel.settings.subtitleAppearance.fontSize.rawValue,
                             onSelect: { value in
                                 if let size = SubtitleFontSizePreset(rawValue: value) {
-                                    setAppearance { $0.fontSize = size }
+                                    viewModel.mutateSubtitleAppearance { $0.fontSize = size }
                                 }
                             }
                         )
@@ -971,7 +964,7 @@ private struct SubtitlesPane: View {
                             selection: viewModel.settings.subtitleAppearance.position.rawValue,
                             onSelect: { value in
                                 if let position = SubtitlePositionPreset(rawValue: value) {
-                                    setAppearance { $0.position = position }
+                                    viewModel.mutateSubtitleAppearance { $0.position = position }
                                 }
                             }
                         )
@@ -1003,10 +996,6 @@ private struct ChaptersPane: View {
     let viewModel: PlayerViewModel
     let onSelect: () -> Void
 
-    private var currentIndex: Int? {
-        viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
-    }
-
     var body: some View {
         PaneColumn("Chapters") {
             ScrollView(showsIndicators: false) {
@@ -1016,7 +1005,7 @@ private struct ChaptersPane: View {
                             number: index + 1,
                             title: chapter.title ?? "Chapter \(index + 1)",
                             time: PlayerTimeFormatter.formatHMS(chapter.time),
-                            isCurrent: currentIndex == index
+                            isCurrent: viewModel.currentChapterIndex == index
                         ) {
                             viewModel.seekTo(seconds: chapter.time)
                             onSelect()

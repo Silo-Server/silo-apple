@@ -1,0 +1,45 @@
+{
+ "_status": "DRAFT \u2014 re-anchor after wave 2 merges",
+ "design_ref": [
+  "docs/cleanup/player-review/2026-08-19-stage2-design.md \u00a71, \u00a72.3, \u00a72.6, \u00a74 I2/I5/I9, \u00a75 wave 3, \u00a76 validation gate, \u00a77 items 4\u20136",
+  "docs/cleanup/player-review/stage2/inventory-1-vm-control-core.md \u00a71a (every field to delete), \u00a72 (pipelines to replace), \u00a74 (execution bodies that move into effects), \u00a75 (tasks \u2192 actor), \u00a76 (platform), \u00a78 (presentation vs control split \u2014 the presentation list is what stays on the VM)",
+  "docs/cleanup/player-review/stage2/inventory-4-tests-views-platform.md B.1/B.2 (the view surface that must keep compiling), C.2/C.7 (NowPlaying handlers and SiloControl go through intents)"
+ ],
+ "brief": "Wave 3 \u2014 one package, one implementer (effort max): PlaybackSessionActor runs PlaybackReducer; PlayerViewModel becomes the presentation model.\nSTEP 1. ControlPlane/PlaybackSessionActor.swift \u2014 `actor PlaybackSessionActor` with `state`, `send(_ intent: PlayerIntent)`, `ingest(_ event: PlayerEvent)`; runs Effects: startSession (bridge or OfflinePlaybackBuilder, emits .session events with the bridge's identity), stopSession(expected identity), loadEngine (PlaybackEngineSession with reuse), disposeEngine, seek, replan/renewSource (bridge), runRecovery (engine session perform), pollServerHealth/schedule/cancelTimer (owns PlayerTaskRegistry's control-plane keys), reportProgress/FirstFrame/PlanExecutionStarted, publish (\u2192 `@MainActor` presentation sink). Every effect carries LoadID/SessionIdentity and is dropped if stale when it completes. Engine events from the session's stream are stamped with its LoadID and ingested. RecoveryDriver output becomes `PlayerEvent.recovery(action, loadID)`.\nSTEP 2. Move LoadRequest/LoadOrigin out of PlayerViewModel into ControlPlane/LoadRequest.swift (retarget the 4 test sites).\nSTEP 3. PlayerViewModel: delete the control core (beginFreshLoad, runStartSession, disposeActivePlayerForFreshLoad/disposePlayerOffMain/OneShotContinuation, adoptPreparedPlayback + PlaybackAdoptionOrigin, loadStream, makeExecutionPlan (moves to the actor), attemptProtocolV3Replan/restartCurrentTranscodeHLS (\u2192 ReplanIntent), attemptBackgroundSessionRenewal/attemptStaleSessionRenewal/attemptServerOutageRecovery/waitForServerReady/handleOriginOutageChanged/probeServerHealthOnce bodies (\u2192 effects), finalizeTerminalPlaybackError (\u2192 .failed + publish), handleEndOfFile control parts, commitSeek/beginReanchorSeekUI/reloadServerBackedHLSForSeek/reloadLocalLoopbackForSeekBeforeAnchor (\u2192 .seek intent; reanchor-before-anchor becomes a ReplanIntent/loadEngine rule in the reducer), handleScenePhase (\u2192 .scenePhase intent), suspendForBackground/resumeSuspendedPlayback (\u2192 reducer), the identity fields (activePlaybackSessionId, staleSessionRecoverySessionId, backgroundRenewalSessionId, activeServerOutageRecoverySessionId, streamLoadGeneration, freshLoadGeneration, serverOutageRecoveryGeneration, hasAttempted*, hasReachedEndOfFile \u2192 `.ended`, playbackInterruption, suspendedPlayback, sourceOutageActive/NoticeShown, seek-filter triple, isDisposed \u2192 `.disposed`). Keep: every member in inventory-4 B.2 with the same name (as projections of Presentation or as intent forwarders), NowPlaying/Next-Up/markers/sleep timer/controls/scrub/hold-seek/notices/settings glue, the realtime client + SiloControl projection (makeSiloControlPlaybackState reads Presentation), the AVAudioSession route observer (forwards `.outputRouteChanged`), the track coordinator (ports now read actor state snapshots and send `.selectTrack`/replan intents).\nSTEP 4. NowPlaying handlers and SiloControl commands \u2192 intents (`.play/.pause/.seek`).\nSTEP 5. PlaybackSessionActorTests over FakePlaybackBackend + FakePlaybackTransport (fresh load; in-place replan reuse; stale event ignored; second replan dropped; background renewal; outage ride-through + kick; scene-phase tables; suspend/resume; dispose cancels timers; progress reporting cadence). Full suite. Hardware validation gate (\u00a76) recorded before merge.",
+ "deliverables": [
+  {
+   "id": "PlaybackSessionActor",
+   "where": "iosApp/iosApp/Screens/Player/ControlPlane/PlaybackSessionActor.swift"
+  },
+  {
+   "id": "LoadRequest/LoadOrigin moved",
+   "where": "iosApp/iosApp/Screens/Player/ControlPlane/LoadRequest.swift"
+  },
+  {
+   "id": "PlayerViewModel = presentation model (control core deleted)",
+   "where": "iosApp/iosApp/Screens/Player/PlayerViewModel.swift"
+  },
+  {
+   "id": "PlaybackSessionActorTests",
+   "where": "iosApp/Tests/PlaybackSessionActorTests.swift"
+  }
+ ],
+ "invariants": [
+  "I1\u2013I10",
+  "All 130 view-facing members in inventory-4 B.2 keep their names and semantics; no view file changes",
+  "HostedDiagnosticsAPITests:532 breadcrumb tags unchanged"
+ ],
+ "tests_required": [
+  "PlaybackSessionActorTests (\u226512)"
+ ],
+ "deletions": [
+  {
+   "grep": "streamLoadGeneration|freshLoadGeneration|serverOutageRecoveryGeneration|staleSessionRecoverySessionId|backgroundRenewalSessionId|activeServerOutageRecoverySessionId|hasAttemptedNativeDirectRouteRecovery|hasAttemptedSiloRouteHLSFallback|isCurrentStreamCallback",
+   "scope": "iosApp/iosApp",
+   "expected": "0 hits"
+  }
+ ],
+ "behavior_changes_allowed": [
+  "design \u00a77 items 4\u20136"
+ ]
+}

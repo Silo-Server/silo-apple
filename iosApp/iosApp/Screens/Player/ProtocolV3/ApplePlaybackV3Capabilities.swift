@@ -65,12 +65,6 @@ enum ApplePlaybackV3Capabilities {
     private static let audiobookOriginalContainers = ["mp4"] + AppleDecodeCapabilities.audioContainers
     private static let commonClaims = ["apple_execution_plan_v1", "authenticated_stream_headers"]
 
-    /// Video codecs the Apple playback stack decodes on a direct route. This
-    /// mirrors `ApplePlaybackRoutePlanner`'s native-direct and loopback
-    /// allowlists rather than the wider set FFmpeg can demux: a codec claimed
-    /// here is one the server may hand us untranscoded.
-    private static let directVideoCodecs = ["h264", "hevc"]
-
     /// Containers the `original_http` delivery may be handed, which is a
     /// narrower question than "what can this client demux".
     ///
@@ -364,12 +358,16 @@ enum ApplePlaybackV3Capabilities {
     /// treating the gap as a refusal, so fabricating plausible tuples would add
     /// risk and buy nothing. Every other bound here is a real platform fact.
     private static func videoDecodeAttestation() -> [PlaybackV3VideoDecodeCapability] {
+        // Video codecs the Apple playback stack decodes on a direct route. This
+        // mirrors `ApplePlaybackRoutePlanner`'s native-direct and loopback
+        // allowlists rather than the wider set FFmpeg can demux: a codec claimed
+        // here is one the server may hand us untranscoded.
         let codecTypes: [(String, CMVideoCodecType)] = [
             ("h264", kCMVideoCodecType_H264),
             ("hevc", kCMVideoCodecType_HEVC)
         ]
         let capabilities: [PlaybackV3VideoDecodeCapability] = codecTypes.compactMap { codec, codecType in
-            guard directVideoCodecs.contains(codec), hardwareDecodeSupported(codecType) else {
+            guard hardwareDecodeSupported(codecType) else {
                 return nil
             }
             return PlaybackV3VideoDecodeCapability(

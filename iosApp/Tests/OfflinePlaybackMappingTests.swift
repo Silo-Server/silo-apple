@@ -83,8 +83,6 @@ final class OfflinePlaybackMappingTests: XCTestCase {
             level: 153,
             bitDepth: 10,
             colorRange: "tv",
-            colorSpace: "bt2020nc",
-            colorPrimaries: "bt2020",
             colorTransfer: colorTransfer,
             videoRange: nil,
             dolbyVision: dolbyVisionProfile.map(String.init),
@@ -222,23 +220,15 @@ final class OfflinePlaybackMappingTests: XCTestCase {
             try manifest(audioTracksJSON: singleEAC3Track, selectedAudioTrackIndex: 0),
             videoTracks: videoTracks
         )
-        return ApplePlaybackRoutePlanner().makeExecutionPlan(
-            input: ApplePlaybackPlannerInput(
-                session: playback.session,
-                selectedVersion: playback.selectedVersion,
-                streamRequest: StreamRequest(
-                    url: URL(fileURLWithPath: "/tmp/media.mkv"),
-                    headers: [:],
-                    serverUrl: ""
-                ),
-                routeRequirements: .baseline,
-                selectedAudioTrackId: nil,
-                pendingAudioFfIndex: nil,
-                preferredAudioTrackIndex: 0,
-                selectedPrimarySubtitleTrackId: nil,
-                selectedSecondarySubtitleTrackId: nil,
-                dolbyVisionPolicy: .default
-            )
+        return makeTestExecutionPlan(
+            session: playback.session,
+            version: playback.selectedVersion,
+            streamRequest: StreamRequest(
+                url: URL(fileURLWithPath: "/tmp/media.mkv"),
+                headers: [:],
+                serverUrl: ""
+            ),
+            preferredAudioTrackIndex: 0
         )
     }
 

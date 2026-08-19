@@ -60,8 +60,6 @@ final class DeviceSnapshotBuilderTests: XCTestCase {
                 supportsDolbyVision: true,
                 supportsHDR10: true,
                 supportsHLG: false,
-                supportsAtmos: false,
-                maxResolution: nil,
                 supportsTenBit: true
             )
         )

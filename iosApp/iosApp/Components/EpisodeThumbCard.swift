@@ -81,9 +81,9 @@ struct EpisodeThumbCard: View {
         }
         #else
         Group {
-            if hasContextActions {
+            if contextMenuItems.hasAny {
                 iosButton.contextMenu {
-                    contextActions
+                    contextMenuItems
                 }
             } else {
                 iosButton
@@ -333,9 +333,9 @@ struct EpisodeThumbCard: View {
 
     @ViewBuilder
     private func thumbnailButtonWithContext<ButtonContent: View>(_ button: ButtonContent) -> some View {
-        if hasContextActions {
+        if contextMenuItems.hasAny {
             button.contextMenu {
-                contextActions
+                contextMenuItems
             }
         } else {
             button
@@ -343,36 +343,23 @@ struct EpisodeThumbCard: View {
     }
     #endif
 
-    private var hasContextActions: Bool {
-        onSetWatched != nil || onRemoveFromContinueWatching != nil
-    }
-
-    @ViewBuilder
-    private var contextActions: some View {
-        if let onSetWatched {
-            Button {
-                let played = !isPlayed
-                Task { @MainActor in
+    /// Episode thumbs carry no personal-list entries — just the watched
+    /// toggle and the Continue Watching removal.
+    private var contextMenuItems: CardContextMenuItems {
+        CardContextMenuItems(
+            isWatched: isPlayed,
+            onSetWatched: onSetWatched.map { handler in
+                { played in
                     playedOverride = played
-                    let succeeded = await onSetWatched(played)
+                    let succeeded = await handler(played)
                     if !succeeded {
                         playedOverride = nil
                     }
+                    return succeeded
                 }
-            } label: {
-                Label(
-                    isPlayed ? "Mark as Unwatched" : "Mark as Watched",
-                    systemImage: isPlayed ? "circle" : "checkmark.circle"
-                )
-            }
-        }
-
-        if let onRemoveFromContinueWatching {
-            Button(role: .destructive) {
-                onRemoveFromContinueWatching()
-            } label: {
-                Label("Remove from Continue Watching", systemImage: "xmark.circle")
-            }
-        }
+            },
+            personalItems: nil,
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching
+        )
     }
 }

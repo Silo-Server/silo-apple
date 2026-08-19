@@ -73,8 +73,6 @@ enum LocalMediaProbe {
                 level: codecpar.level > 0 ? Int(codecpar.level) : nil,
                 bitDepth: bitDepth(of: codecpar),
                 colorRange: VideoColorMetadata.colorRangeName(codecpar.color_range),
-                colorSpace: enumName(av_color_space_name(codecpar.color_space)),
-                colorPrimaries: enumName(av_color_primaries_name(codecpar.color_primaries)),
                 colorTransfer: enumName(av_color_transfer_name(codecpar.color_trc)),
                 // Deliberately nil. `video_range` is the server's higher-level
                 // roll-up, and `transferKind` only falls back to it when

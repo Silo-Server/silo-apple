@@ -86,9 +86,11 @@ away from the scrubber does not turn the current preview position into a seek.
 The scrubber also shows chapter ticks from `viewModel.chapters`, a floating time
 bubble while focused, and buffered-ahead fill.
 
-Current truth: `bufferedAheadSeconds` is published on **every** route now, so
-the buffered fill is always live. The old "empty on the default path" caveat
-was a `PlayerCore` limitation.
+Current truth: the buffered fill now draws `playbackRunwaySeconds` — the
+zero-network runway, published on **every** route, so the fill is always live.
+`bufferedAheadSeconds` still exists as the raw AVPlayer decode buffer, but it
+is diagnostics and stall-recovery only and no longer feeds any scrubber. The
+old "empty on the default path" caveat was a `PlayerCore` limitation.
 
 ## 5. Transport row
 
@@ -128,14 +130,21 @@ The diagnostics pane. It renders
 [`PlaybackStatsPanel`](../../iosApp/iosApp/Screens/Player/PlaybackStatsPanel.swift)
 over `viewModel.playbackStats` in a two-column TV layout, paging between the
 Source/Media, Buffer, Network, and Device sections. Loopback sessions surface
-their store, temp-spill, and playable-ahead counters here.
+their store, temp-spill, and playable-ahead counters here. The Buffer section
+is an ordered pipeline — `Buffer status`, `Runway`, `Downloaded ahead (est)`,
+`Generated ahead`, `Playable ahead`, `Rebuffer events` — so the numbers read
+top to bottom as one pipe from origin to decoder.
+
+macOS renders the same `PlaybackStatsPanel` in the single-column sectioned
+layout, under the options panel's `Stats` tab.
 
 The `PlayerRouteStatusRow` list `PlayerViewModel` builds from
 `ApplePlaybackRouteCapabilities` (Playback, Route, Subtitles, Audio delay,
 Subtitle styling, Now Playing, Picture in Picture) is **not** shown on tvOS —
 its only consumer is the macOS
-[`MacPlayerOptionsPanel`](../../iosApp/iosApp/macOS/MacPlayerOptionsPanel.swift).
-That is where the read-only `Audio delay: Unsupported` row appears.
+[`MacPlayerOptionsPanel`](../../iosApp/iosApp/macOS/MacPlayerOptionsPanel.swift),
+where it now sits under the `Stats` tab rather than `Playback`. That is where
+the read-only `Audio delay: Unsupported` row appears.
 
 ### Video
 
@@ -192,10 +201,6 @@ Current truth:
 - secondary subtitles are sidecar-only on all three routes
 - subtitle delay and styling apply to Silo-rendered tracks only
 
-Current truth: `bufferedAheadSeconds` is published on **every** route now, so
-the buffered fill is always live. The old "empty on the default path" caveat
-was a `PlayerCore` limitation.
-
 ### Chapters
 
 Chapter numbers, titles, timestamps, with the current chapter highlighted.
@@ -225,8 +230,11 @@ The shell no longer branches on backend identity:
   `avPlayerNativeDirect`, `siloPlayerLoopback`, and `macAVFoundation`; the only
   surviving surface is the read-only `Audio delay` status row in the macOS
   options panel, which tvOS never renders.
-- verified: `bufferedAheadSeconds` is published on every route, so the
-  scrubber's buffered fill is live everywhere.
+- corrected 2026-08-18: the scrubber's buffered fill draws
+  `playbackRunwaySeconds` (zero-network runway), which is published on every
+  route, so the fill is live everywhere. The earlier entry named
+  `bufferedAheadSeconds`; that property is now the raw AVPlayer decode buffer,
+  kept for diagnostics and stall recovery only.
 - verified: the HUD control kit lives in `tvOS/HUDKit/` and
   `SubtitleAppearanceDialog` in its own file (pure moves, no behavior change).
 - corrected: earlier revisions described route-specific Audio-pane behavior for

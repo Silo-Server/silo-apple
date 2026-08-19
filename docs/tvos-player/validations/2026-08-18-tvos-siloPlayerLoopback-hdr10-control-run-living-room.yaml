@@ -1,0 +1,55 @@
+# Validation record — control run for the 08-18 bedroom-TV HDR10 loopback failure (-11868/-17223 at anchor+21 s),
+# run on a DIFFERENT display path (Living Room Apple TV), same title / plan / server. VERDICT: the bedroom failure
+# is environmental (that TV/AVR/HDMI display path); the player code is cleared. Bonus: first hardware validation
+# of the Dolby Vision loopback rows (P8.1 passthrough, P7→8.1 conversion, TrueHD→FLAC lossless bridge).
+date: 2026-08-18
+platform: tvOS 26.6
+device: Apple TV 4K (2nd generation) — AppleTV11,1 ("Living Room TV", 57E8BE0C-3651-549F-B497-EBC654638B81)
+output_path: HDMI -> living-room HDR TV (CMP-OUTPUT hdrOutputEligible=true hdr10=true dolbyVision=true dvModes=5,8 sinkType=HDMIOutput)
+app_build: SiloTV Debug from silo-apple player/architecture-remediation @ e893967 (env-baseline + round-5 tail merged)
+server: production — same server and bytes as the failing bedroom runs
+method: devicectl install from the Mini; deep-link silo://play/movie-tmdb-852590 via --payload-url; console captured to log
+
+control_run:
+  title_ref: movie-tmdb-852590   # identical title to the 08-18 bedroom failure and the 08-17 bedroom pass
+  asset: { container: mkv, video: hevc Main 10 3840x2160, frame_rate: 24.000, range: HDR10, audio: eac3 5.1 }
+  plan_identity: "vod plan resolved segments=1203 keyframes=1892 trusted=true duration=6152.1s — byte-identical to both bedroom runs"
+  display_criteria: "tv display apply hdr context=before_prepare_master.m3u8 range=PQ fps=24.000 outcome=applied preservedReload=0; settle hdrHosted=1"
+  ttff: "first_segment_ms=1227 ready_ms=4630 first_frame_ms=5158; item ready HEVC 3840x2160 HDR10, E-AC-3 5.1"
+  discriminators:
+    - "initial anchor (0.0): played cleanly through the +21 s window (sampled at pos=48.98 tc=playing rate=1.0) — bedroom died at 21.0 s on every build"
+    - "post-seek anchor: owner seek to 1056.625 (rc=0); sampled at pos=1122.6 (= anchor+66 s) tc=playing rate=1.0 — bedroom died at anchor+21 s after every resume (336.8 → 357.8)"
+  soak: "max observed playhead 1301.6 s across ~22 min of viewing incl. the seek; owner ended the session normally"
+  failure_markers: "0 matches for failedToEnd | -11868 | -17223 | CMP-AVP ERROR | CMP-RECOVERY across the whole session"
+  verdict: >
+    ENVIRONMENTAL. With build (08-18 bisect: every variant failed on bedroom), bytes/plan (identical), date
+    (bedroom pass 08-17, bedroom fail 08-18, living-room pass 08-18) and display-criteria outcome (applied on
+    both) all controlled, the only remaining variable is the bedroom TV/AVR/HDMI display path. §8 of
+    docs/cleanup/HANDOFF.md is closed; the Round 3 gate is cleared.
+  residual: "non-blocking — check the bedroom input/cable/AVR/Match-Dynamic-Range settings at leisure; re-run the same deep link there afterwards if curious"
+
+bonus_dv_rows:  # owner-driven UI sessions in the same capture; these were the pending "DV rows"
+  - session: 96bb70be (owner-selected DV P8 title, resume at 93.69)
+    result: "loopback profile8_1_passthrough; item ready Dolby Vision HEVC 3840x1632, DV Profile 8 Level 6 (HDR10 compatible), FLAC 7.1"
+  - session: 4c187902 (second DV P8 title)
+    result: "as above from a cold start (start=0.0)"
+  - session: b293f080 ("A Minecraft Movie", DV P7 + TrueHD 7.1 MKV)
+    result: >
+      loopback reason=v3_client_dv7_to_dv81, videoMode=profile7_to81_base_layer (enhancement layer discarded,
+      degradation surfaced); audio transcode truehd→fLaC 8ch (requireFLAC bridge, session-anchored);
+      tv display apply fps=23.976 format=dolbyVision(hdr10) matching=1; TTFF first_segment=1852ms ready=5199ms
+      first_frame=5525ms; item ready DV Profile 8 Level 6, FLAC 7.1 48 kHz; no stalls (tc=playing from 0.58 s,
+      stationaryFor=0.0 throughout the observed window)
+  note: >
+    These validate both P1 commitments on hardware: DV presented as DV (P8 passthrough and P7→8.1 conversion)
+    and lossless multichannel audio (TrueHD→FLAC). All on production with default audio track index 0 — the
+    pre-#670 audio-selection constraint only affects titles where the profile language preference selects a
+    non-default track.
+
+observed_ux_note: >
+  Two sequential loading indicators at DV loopback start (owner-reported on the Minecraft title): indicator 1 is
+  the app's loading overlay during plan fetch + loopback session spin-up (FFmpeg open, 1514-segment VOD plan,
+  FLAC transcoder setup); it clears at player attach. Indicator 2 is AVPlayer's own buffering HUD between attach
+  and first frame, spanning the Dolby Vision HDMI mode switch (screen re-sync) — first frame at 5.5 s, no stall
+  after. Not a defect; a possible polish item is holding the app overlay until first frame so the handoff reads
+  as one continuous load.

@@ -79,9 +79,16 @@ enum SharedStorage {
 ///
 /// **Read-only migration sources.** Nothing may write a new item under any of
 /// these names: each one exists so exactly one upgrade path can find the value
-/// an older build left behind, copy it to its Silo-branded home, and delete the
-/// original. This is the only place in the Apple clients where the pre-rename
-/// brand still appears.
+/// an older build left behind and copy it to its Silo-branded home. This is
+/// the only place in the Apple clients where the pre-rename brand still
+/// appears.
+///
+/// Credentials and registry state are copied, not moved: the pre-rename copy
+/// stays in place for a TestFlight rollback window so the previous build can
+/// still find its server list and tokens (CLAUDE.md: preserve TestFlight
+/// continuity). Sign-out retires both copies (`SharedKeychain.delete`), and
+/// the OS-registered ids / on-disk caches are still retired outright because
+/// nothing rolls back to them.
 enum LegacyBrandKeys {
     /// Pre-rename `SharedKeychain` service. Counterpart of
     /// `SharedStorage.keychainService`.
@@ -219,6 +226,30 @@ struct SharedDefaults: @unchecked Sendable {
     }
 }
 
+/// Storage `SharedKeychain` addresses instead of `SecItem*`.
+///
+/// The app never supplies one — every instance it builds leaves
+/// `SharedKeychain.backend` nil and talks to the system Keychain. It exists
+/// so tests can inject a process-local store: the simulator test host is
+/// unsigned (`CODE_SIGNING_ALLOWED=NO`), carries no `application-identifier`
+/// entitlement, and therefore fails *every* `SecItem*` call with
+/// `errSecMissingEntitlement (-34018)`. Tests whose subject sits above the
+/// Keychain (credential commits, registry migrations) would otherwise assert
+/// against a uniformly dead store rather than the behaviour they name.
+///
+/// Accounts are addressed by service + access group, matching how
+/// `SharedKeychain.baseQuery` builds an iOS query.
+protocol KeychainBackend: AnyObject, Sendable {
+    func value(service: String, accessGroup: String?, account: String) -> String?
+    func setValue(
+        _ value: String,
+        service: String,
+        accessGroup: String?,
+        account: String
+    ) -> Bool
+    func removeValue(service: String, accessGroup: String?, account: String) -> Bool
+}
+
 /// Minimal Keychain reader/writer targeted at the shared access group.
 /// Used by both the main app (via `TokenStore`) and the Top Shelf
 /// extension. Items are stored as generic passwords with accessibility
@@ -239,16 +270,20 @@ struct SharedKeychain {
     /// shared service when this instance uses the real shared service, and to
     /// nothing for custom services (tests) unless one is injected explicitly.
     let legacyService: String?
+    /// Nil in the app: reads and writes go to `SecItem*`. See `KeychainBackend`.
+    let backend: KeychainBackend?
 
     init(service: String = SharedStorage.keychainService,
          accessGroup: String? = SharedStorage.keychainAccessGroup,
          audience: KeychainAudience = .currentUser,
          usesUserIndependentKeychain: Bool = RuntimeConfiguration.usesUserIndependentKeychain,
-         legacyService: String?? = nil) {
+         legacyService: String?? = nil,
+         backend: KeychainBackend? = nil) {
         self.service = service
         self.accessGroup = accessGroup
         self.audience = audience
         self.usesUserIndependentKeychain = usesUserIndependentKeychain
+        self.backend = backend
         switch legacyService {
         case .some(let explicit):
             self.legacyService = explicit
@@ -265,7 +300,8 @@ struct SharedKeychain {
             accessGroup: accessGroup,
             audience: audience,
             usesUserIndependentKeychain: usesUserIndependentKeychain,
-            legacyService: .some(legacyService)
+            legacyService: .some(legacyService),
+            backend: backend
         )
     }
 
@@ -277,6 +313,14 @@ struct SharedKeychain {
         guard let data = value.data(using: .utf8) else {
             Self.logger.error("Failed to encode keychain value for account \(account, privacy: .public).")
             return false
+        }
+        if let backend {
+            return backend.setValue(
+                value,
+                service: service,
+                accessGroup: accessGroup,
+                account: account
+            )
         }
         var query = baseQuery(account: account)
         let attributes: [String: Any] = [
@@ -349,7 +393,8 @@ struct SharedKeychain {
             accessGroup: accessGroup,
             audience: audience,
             usesUserIndependentKeychain: usesUserIndependentKeychain,
-            legacyService: .some(nil)
+            legacyService: .some(nil),
+            backend: backend
         )
     }
 
@@ -362,16 +407,17 @@ struct SharedKeychain {
     }
 
     /// Last read fallback: the item may still live under the pre-rename
-    /// service + account name. Copy it into its Silo-branded home and retire
-    /// the old copy — but only once the new write confirms, so an interrupted
-    /// migration is retried rather than losing the value.
+    /// service + account name. Copy it into its Silo-branded home. The old
+    /// copy is deliberately left in place: a TestFlight rollback to the
+    /// pre-rename build must still find its credentials, and once the
+    /// Silo-branded item exists it wins every later read, so the stale copy
+    /// is never consulted again. `delete` retires both, so sign-out cannot be
+    /// undone by this fallback. A failed write is retried on the next read.
     private func migrateFromLegacyBrand(account: String) -> String? {
         guard let source = legacyBrandSource,
               let legacyAccount = Self.legacyBrandAccount(for: account),
               let value = source.get(legacyAccount) else { return nil }
-        if set(value, for: account) {
-            source.delete(legacyAccount)
-        }
+        set(value, for: account)
         return value
     }
 
@@ -398,6 +444,13 @@ struct SharedKeychain {
         if let source = legacyBrandSource, let legacyAccount = Self.legacyBrandAccount(for: account) {
             source.delete(legacyAccount)
         }
+        if let backend {
+            return backend.removeValue(
+                service: service,
+                accessGroup: accessGroup,
+                account: account
+            )
+        }
         let query = baseQuery(account: account)
         let status = SecItemDelete(query as CFDictionary)
         if status == errSecSuccess || status == errSecItemNotFound { return true }
@@ -408,6 +461,13 @@ struct SharedKeychain {
     // MARK: - Private
 
     private func read(account: String, accessGroup: String?) -> String? {
+        if let backend {
+            return backend.value(
+                service: service,
+                accessGroup: accessGroup,
+                account: account
+            )
+        }
         var query = baseQuery(account: account, accessGroup: accessGroup)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne

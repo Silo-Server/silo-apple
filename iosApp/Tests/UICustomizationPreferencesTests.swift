@@ -407,9 +407,14 @@ final class UICustomizationPreferencesTests: XCTestCase {
             .builtin(.series),
             .builtin(.audiobooks),
         ])
+        // No library backs any authored category, so all three are filtered
+        // out and only Home survives — which is exactly the "menu came back
+        // empty" shape that PR #132's fallback answers with the Apple default
+        // roots (`testHomeOnlyMainTabProjectionRestoresAppleDefaults`). What
+        // this case pins is that no *category* root is among them.
         XCTAssertEqual(
             projectedMainTabDestinations(primaryMenu: menu).map(\.id),
-            [.app(.home)],
+            [.app(.home), .app(.recommendations), .app(.calendar)],
             "authored categories with no matching profile library must not render dead roots"
         )
 
@@ -508,11 +513,18 @@ final class UICustomizationPreferencesTests: XCTestCase {
             libraries: [library]
         )
 
+        // Library 7 is dropped because the snapshot belongs to the previous
+        // profile, leaving Home alone — so PR #132's fallback fills the rest
+        // with the Apple default roots. The point of the case is that
+        // `.library(7)` is not one of them.
         let staleProjection = projectedMainTabDestinations(
             primaryMenu: menu,
             availableLibraries: staleSnapshot.availableLibraries(for: secondProfile)
         )
-        XCTAssertEqual(staleProjection.map(\.id), [.app(.home)])
+        XCTAssertEqual(
+            staleProjection.map(\.id),
+            [.app(.home), .app(.recommendations), .app(.calendar)]
+        )
         XCTAssertEqual(
             resolvedVisibleMainTabDestination(
                 .library(library.id),
@@ -538,7 +550,10 @@ final class UICustomizationPreferencesTests: XCTestCase {
                 libraries: []
             ).availableLibraries(for: secondProfile)
         )
-        XCTAssertEqual(revokedProjection.map(\.id), [.app(.home)])
+        XCTAssertEqual(
+            revokedProjection.map(\.id),
+            [.app(.home), .app(.recommendations), .app(.calendar)]
+        )
         XCTAssertEqual(
             resolvedVisibleMainTabDestination(
                 .library(library.id),
@@ -1105,14 +1120,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testLegacyCollectionOutboxIdentityMigratesToStructuredIdentity() async throws {
-        let suiteName = "ui-customization-legacy-collection-id-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-legacy-collection-id-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("legacy-collection-id")
 
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let item: [String: Any] = [
@@ -1136,7 +1144,6 @@ final class UICustomizationPreferencesTests: XCTestCase {
                 ],
             ],
         ]
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         defaults.set(
             try JSONSerialization.data(withJSONObject: cache, options: [.sortedKeys]),
             forKey: cacheKey
@@ -1193,18 +1200,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testRapidEditsAreWrittenInOrderAndSavingCoversTheWholeQueue() async throws {
-        let suiteName = "ui-customization-writes-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-writes-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("writes")
 
         let transport = OrderedWriteProbe()
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { "silo.uiCustomization.server.profile.mobile" },
             requestIdentity: { testRequestIdentity(family: "mobile") },
@@ -1240,16 +1240,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testCardPresentationAndOutboxShareOneDurableCacheSnapshot() async throws {
-        let suiteName = "ui-customization-card-cache-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-card-cache-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("card-cache")
 
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let transport = OrderedWriteProbe()
         let preferences = UICustomizationPreferences(
@@ -1278,16 +1270,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testAcceptedPinDurablyTransitionsToMenuOutboxBeforeTransportCompletion() async throws {
-        let suiteName = "ui-customization-pin-crash-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-pin-crash-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("pin-crash")
 
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let transport = AcceptedMenuCrashProbe()
         let preferences = UICustomizationPreferences(
@@ -1340,18 +1324,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testSuccessfulMenuWriteDoesNotClearShortcutWriteFailure() async throws {
-        let suiteName = "ui-customization-partial-failure-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-partial-failure-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("partial-failure")
 
         let transport = SelectiveFailureWriteProbe(failingKey: .navShortcuts)
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { "silo.uiCustomization.server.profile.tv" },
             requestIdentity: { testRequestIdentity(family: "tv") },
@@ -1389,16 +1366,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testSuccessfulShortcutDoesNotClearDifferentPendingShortcutFailure() async throws {
-        let suiteName = "ui-customization-per-shortcut-error-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-per-shortcut-error-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("per-shortcut-error")
 
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let failedLibrary = Library(
             id: 7,
@@ -1453,21 +1422,14 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testOverlappingAcceptedPinsPersistOnlyAcceptedMenuSnapshots() async throws {
-        let suiteName = "ui-customization-overlap-success-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-overlap-success-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("overlap-success")
 
         let transport = ShortcutOrderingProbe(outcomes: [
             "library:7": [.success],
             "library:8": [.success],
         ])
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { "silo.uiCustomization.server.profile.tv" },
             requestIdentity: { testRequestIdentity(family: "tv") },
@@ -1502,14 +1464,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testLaterRejectedPinNeverEntersEarlierAcceptedPinMenuWrite() async throws {
-        let suiteName = "ui-customization-overlap-rejection-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-overlap-rejection-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("overlap-rejection")
 
         let transport = ShortcutOrderingProbe(outcomes: [
             "library:7": [.success],
@@ -1517,7 +1472,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         ])
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { cacheKey },
             requestIdentity: { testRequestIdentity(for: cacheKey) },
@@ -1555,14 +1510,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testDefinitiveRejectionRollsBackOnlyRejectedShortcutWhenRefreshFails() async throws {
-        let suiteName = "ui-customization-rejection-rollback-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-rejection-rollback-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("rejection-rollback")
 
         let transport = ShortcutOrderingProbe(
             outcomes: [
@@ -1573,7 +1521,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { cacheKey },
             requestIdentity: { testRequestIdentity(for: cacheKey) },
@@ -1607,7 +1555,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertNotNil(preferences.syncErrorMessage)
 
         let cachedData = try XCTUnwrap(
-            SharedDefaults(suite: suite, standard: standard).data(forKey: cacheKey)
+            defaults.data(forKey: cacheKey)
         )
         let cache = try XCTUnwrap(
             JSONSerialization.jsonObject(with: cachedData) as? [String: Any]
@@ -1616,14 +1564,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testEarlierTransientPinReplaysIntoItsAuthoredOrderAfterLaterSuccess() async throws {
-        let suiteName = "ui-customization-overlap-retry-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-overlap-retry-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("overlap-retry")
 
         let transport = ShortcutOrderingProbe(outcomes: [
             "library:7": [.transientFailure, .success],
@@ -1631,7 +1572,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         ])
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { cacheKey },
             requestIdentity: { testRequestIdentity(for: cacheKey) },
@@ -1676,18 +1617,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testNewerExplicitMenuSupersedesInFlightPinPlacement() async throws {
-        let suiteName = "ui-customization-explicit-inflight-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-explicit-inflight-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("explicit-inflight")
 
         let transport = BlockingShortcutProbe()
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { "silo.uiCustomization.server.profile.tv" },
             requestIdentity: { testRequestIdentity(family: "tv") },
@@ -1722,18 +1656,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testPendingPinCannotBeExplicitlyPlacedBeforeAcceptance() async throws {
-        let suiteName = "ui-customization-pending-placement-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-pending-placement-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("pending-placement")
 
         let transport = BlockingShortcutProbe()
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { "silo.uiCustomization.server.profile.tv" },
             requestIdentity: { testRequestIdentity(family: "tv") },
@@ -1765,18 +1692,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testPendingPinCannotBePlacedAfterAnEarlierExplicitSupersession() async throws {
-        let suiteName = "ui-customization-pending-resupersession-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-pending-resupersession-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("pending-resupersession")
 
         let transport = BlockingShortcutProbe()
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { "silo.uiCustomization.server.profile.tv" },
             requestIdentity: { testRequestIdentity(family: "tv") },
@@ -1815,16 +1735,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testPendingPlacementErrorTracksOnlyBlockedPinAcrossRestart() async throws {
-        let suiteName = "ui-customization-pending-blocked-id-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-pending-blocked-id-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("pending-blocked-id")
 
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let first = PrimaryMenuItem.library(libraryId: 7, label: "First")
         let second = PrimaryMenuItem.library(libraryId: 8, label: "Second")
@@ -1887,16 +1799,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testExplicitMenuSupersessionSurvivesPendingPinRestart() async throws {
-        let suiteName = "ui-customization-explicit-restart-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-explicit-restart-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("explicit-restart")
 
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let transport = RecoveringShortcutProbe()
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
@@ -1950,14 +1854,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testNewerExplicitMenuKeepsItemAfterPendingUnpinSucceeds() async throws {
-        let suiteName = "ui-customization-explicit-unpin-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-explicit-unpin-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("explicit-unpin")
 
         let item = PrimaryMenuItem.library(libraryId: 7, label: "Pinned")
         let initialMenu = PrimaryMenuPreference(items: [
@@ -1977,7 +1874,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { cacheKey },
             requestIdentity: { testRequestIdentity(for: cacheKey) },
@@ -2001,14 +1898,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testPendingRemovalKeepsLaterAcceptedPinAfterItsProjectedPredecessor() async throws {
-        let suiteName = "ui-customization-mixed-retry-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-mixed-retry-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("mixed-retry")
 
         let firstItem = PrimaryMenuItem.library(libraryId: 7, label: "First")
         let initialMenu = PrimaryMenuPreference(items: [
@@ -2026,7 +1916,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { cacheKey },
             requestIdentity: { testRequestIdentity(for: cacheKey) },
@@ -2068,14 +1958,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testRejectedRemovalPreservesSiblingAndLaterAcceptedPinOrdering() async throws {
-        let suiteName = "ui-customization-mixed-rejection-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-mixed-rejection-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("mixed-rejection")
 
         let firstItem = PrimaryMenuItem.library(libraryId: 7, label: "First")
         let initialMenu = PrimaryMenuPreference(items: [
@@ -2093,7 +1976,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { cacheKey },
             requestIdentity: { testRequestIdentity(for: cacheKey) },
@@ -2130,14 +2013,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testPinningBeyondShortcutLimitPreservesStateAndOutbox() throws {
-        let suiteName = "ui-customization-shortcut-limit-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-shortcut-limit-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("shortcut-limit")
 
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let shortcutItems: [[String: Any]] = (1...256).map { libraryId in
@@ -2156,7 +2032,6 @@ final class UICustomizationPreferencesTests: XCTestCase {
             "supportProjection": "supported",
         ]
         let cachedData = try JSONSerialization.data(withJSONObject: cache, options: [.sortedKeys])
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         defaults.set(cachedData, forKey: cacheKey)
         let transport = UICustomizationTransportStub(
             result: .success(.init(settings: [], revision: SettingKey.revision))
@@ -2190,14 +2065,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testRedundantPinRequestsAreNoOpsAndPreserveCatalogState() async throws {
-        let suiteName = "ui-customization-redundant-pin-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-redundant-pin-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("redundant-pin")
 
         let pinned = PrimaryMenuItem.library(libraryId: 7, label: "Pinned")
         let response = EffectiveSettingValuesResponse(
@@ -2215,7 +2083,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             effectiveResponse: response
         )
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { "silo.uiCustomization.server.profile.tv" },
             requestIdentity: { testRequestIdentity(family: "tv") },
@@ -2240,14 +2108,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testPinningIntoFullPrimaryMenuRejectsTheCompoundMutation() throws {
-        let suiteName = "ui-customization-menu-limit-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-menu-limit-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("menu-limit")
 
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let menuItems: [[String: Any]] = [
@@ -2269,7 +2130,6 @@ final class UICustomizationPreferencesTests: XCTestCase {
             "supportProjection": "supported",
         ]
         let cachedData = try JSONSerialization.data(withJSONObject: cache, options: [.sortedKeys])
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         defaults.set(cachedData, forKey: cacheKey)
         let preferences = UICustomizationPreferences(
             defaults: defaults,
@@ -2298,17 +2158,9 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testDefinitiveShortcutRejectionReconcilesWithoutReplayingTheOutbox() async throws {
-        let suiteName = "ui-customization-definitive-rejection-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-definitive-rejection-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("definitive-rejection")
 
         let cacheKey = "silo.uiCustomization.server.profile.tv"
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let transport = DefinitiveShortcutRejectionProbe()
         let preferences = UICustomizationPreferences(
             defaults: defaults,
@@ -2362,16 +2214,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testOfflineShortcutOperationIsDurablyReplayedWithTheSameMutationId() async throws {
-        let suiteName = "ui-customization-shortcut-outbox-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-shortcut-outbox-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("shortcut-outbox")
 
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let transport = RecoveringShortcutProbe()
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let library = Library(
@@ -2421,16 +2265,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testAuthenticationFailureKeepsShortcutIntentForReplay() async throws {
-        let suiteName = "ui-customization-shortcut-auth-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-shortcut-auth-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("shortcut-auth")
 
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let transport = RecoveringShortcutProbe(
             offlineFailure: .server(
                 status: 401,
@@ -2476,16 +2312,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testOfflineShortcutOperationsPreserveCrossIdentityOrderAfterRestart() async throws {
-        let suiteName = "ui-customization-shortcut-sequence-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-shortcut-sequence-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("shortcut-sequence")
 
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let transport = RecoveringShortcutProbe()
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let libraryB = Library(
@@ -2539,16 +2367,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testNewerOppositeShortcutIntentSurvivesOlderInFlightSuccess() async throws {
-        let suiteName = "ui-customization-shortcut-order-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-shortcut-order-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("shortcut-order")
 
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let transport = BlockingShortcutProbe()
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let library = Library(
@@ -2602,16 +2422,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testOfflineWriteIsDurablyReplayedBeforeEffectiveRefresh() async throws {
-        let suiteName = "ui-customization-outbox-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-outbox-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("outbox")
 
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let transport = RecoveringWriteProbe()
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let offline = UICustomizationPreferences(
@@ -2654,16 +2466,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testUnavailableOrOldCapabilitiesDoNotDrainRevisionFiveOutbox() async throws {
-        let suiteName = "ui-customization-capability-gate-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-capability-gate-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("capability-gate")
 
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let transport = CapabilityGateProbe(
             capabilities: .failed(.transport(description: "offline"))
@@ -2785,16 +2589,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testProfileClientCardResetIsDurableAndResolvesInheritedValueAfterRestart() async throws {
-        let suiteName = "ui-customization-card-reset-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-card-reset-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("card-reset")
 
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let transport = RecoveringDeleteProbe()
         let preferences = UICustomizationPreferences(
@@ -2830,19 +2626,12 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testQueuedWriteNeverFollowsAChangedServerProfileIdentity() async throws {
-        let suiteName = "ui-customization-identity-race-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-identity-race-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("identity-race")
 
         let identity = MutableRequestIdentity(testRequestIdentity(family: "mobile"))
         let transport = OrderedWriteProbe()
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { testCacheKey(for: identity.value) },
             requestIdentity: { identity.value },
@@ -2873,14 +2662,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testRefreshPreservesHigherPrecedenceDeviceOverrideSource() async throws {
-        let suiteName = "ui-customization-source-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-source-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("source")
 
         let menu = PrimaryMenuPreference(items: [.builtin(.home), .builtin(.movies)])
         let response = EffectiveSettingValuesResponse(
@@ -2905,7 +2687,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             revision: SettingKey.revision
         )
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: UICustomizationTransportStub(result: .success(response)),
             cacheKey: { "silo.uiCustomization.server.profile.tv" },
             requestIdentity: { testRequestIdentity(family: "tv") },
@@ -2920,17 +2702,9 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testSuccessfulDeviceDeleteReconcilesWhenSiblingFailsAndOnlyFailureReplays() async throws {
-        let suiteName = "ui-customization-partial-device-delete-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-partial-device-delete-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("partial-device-delete")
 
         let cacheKey = "silo.uiCustomization.server.profile.tv"
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let transport = DeviceOverrideDeleteProbe(deleteFailureKey: .navPrimaryMenu)
         let preferences = UICustomizationPreferences(
             defaults: defaults,
@@ -2981,17 +2755,9 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testDeviceDeleteReadFailureRemainsDurableUntilRestartReconcilesIt() async throws {
-        let suiteName = "ui-customization-device-delete-read-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-device-delete-read-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("device-delete-read")
 
         let cacheKey = "silo.uiCustomization.server.profile.tv"
-        let defaults = SharedDefaults(suite: suite, standard: standard)
         let transport = DeviceOverrideDeleteProbe(
             targetedReadFailureKey: .navPrimaryMenu
         )
@@ -3043,14 +2809,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testRefreshReconcilesValidKeysAndPreservesEachInvalidValueAndSource() async throws {
-        let suiteName = "ui-customization-independent-decode-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-independent-decode-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("independent-decode")
 
         let originalMenu = PrimaryMenuPreference(items: [
             .builtin(.home),
@@ -3096,7 +2855,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         let transport = MutableEffectiveValuesProbe(response: initialResponse)
         let cacheKey = "silo.uiCustomization.server.profile.mobile"
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { cacheKey },
             requestIdentity: { testRequestIdentity(for: cacheKey) },
@@ -3193,7 +2952,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertNotNil(preferences.syncErrorMessage)
 
         let cached = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { cacheKey },
             requestIdentity: { testRequestIdentity(for: cacheKey) },
@@ -3207,14 +2966,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testDeviceMenuOverrideDoesNotBlockProfileLibraryPin() async throws {
-        let suiteName = "ui-customization-device-menu-pin-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-device-menu-pin-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("device-menu-pin")
 
         let deviceMenu = PrimaryMenuPreference(items: [
             .builtin(.home),
@@ -3239,7 +2991,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         let cacheKey = "silo.uiCustomization.server.profile.tv"
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: transport,
             cacheKey: { cacheKey },
             requestIdentity: { testRequestIdentity(for: cacheKey) },
@@ -3269,14 +3021,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testPinnedLibraryStateTracksShortcutCatalogInsteadOfMenuPlacement() async throws {
-        let suiteName = "ui-customization-pinned-state-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-pinned-state-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("pinned-state")
 
         let shortcutOnly = PrimaryMenuItem.library(libraryId: 7, label: "Hidden Pin")
         let menuOnly = PrimaryMenuItem.library(libraryId: 9, label: "Menu Only")
@@ -3296,7 +3041,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             revision: SettingKey.revision
         )
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: UICustomizationTransportStub(result: .success(response)),
             cacheKey: { "silo.uiCustomization.server.profile.mobile" },
             requestIdentity: { testRequestIdentity(family: "mobile") },
@@ -3316,14 +3061,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testProfileShortcutDoesNotPopulateFamilyDefaultMenu() async throws {
-        let suiteName = "ui-customization-family-default-suite-\(UUID().uuidString)"
-        let standardName = "ui-customization-family-default-standard-\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
-        defer {
-            UserDefaults().removePersistentDomain(forName: suiteName)
-            UserDefaults().removePersistentDomain(forName: standardName)
-        }
+        let defaults = try makeIsolatedDefaults("family-default")
 
         let shortcut = PrimaryMenuItem.library(libraryId: 7, label: "Movies")
         let response = EffectiveSettingValuesResponse(
@@ -3337,7 +3075,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             revision: SettingKey.revision
         )
         let preferences = UICustomizationPreferences(
-            defaults: SharedDefaults(suite: suite, standard: standard),
+            defaults: defaults,
             transport: UICustomizationTransportStub(result: .success(response)),
             cacheKey: { "silo.uiCustomization.server.profile.tv" },
             requestIdentity: { testRequestIdentity(family: "tv") },
@@ -3414,6 +3152,16 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(offline.primaryMenu, menu, "a failed refresh must not erase the cached menu")
         XCTAssertEqual(offline.cardPresentation, cards)
         XCTAssertNotNil(offline.syncErrorMessage)
+    }
+
+    private func makeIsolatedDefaults(_ label: String) throws -> SharedDefaults {
+        let suiteName = "ui-customization-\(label)-suite-\(UUID().uuidString)"
+        let standardName = "ui-customization-\(label)-standard-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: suiteName) }
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: standardName) }
+        return SharedDefaults(suite: suite, standard: standard)
     }
 
     private func effective<T: Encodable>(

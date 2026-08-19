@@ -8,6 +8,7 @@ struct MacPlayerOptionsPanel: View {
         case subtitles = "Subtitles"
         case chapters = "Chapters"
         case playback = "Playback"
+        case stats = "Stats"
 
         var id: String { rawValue }
     }
@@ -109,7 +110,7 @@ struct MacPlayerOptionsPanel: View {
                         trackButton(
                             title: chapter.title ?? "Chapter \(chapter.index + 1)",
                             detail: PlayerTimeFormatter.formatHMS(chapter.time),
-                            selected: chapter.index == currentChapterIndex
+                            selected: chapter.index == viewModel.currentChapterIndex
                         ) {
                             viewModel.seekTo(seconds: chapter.time)
                         }
@@ -138,7 +139,15 @@ struct MacPlayerOptionsPanel: View {
                     }
                 }
                 .padding(.horizontal, 12)
-
+            }
+        case .stats:
+            optionList {
+                if viewModel.playbackStats.hasRows {
+                    PlaybackStatsPanel(stats: viewModel.playbackStats)
+                        .padding(.horizontal, 12)
+                } else {
+                    unavailable("Stats appear once playback starts.", systemImage: "chart.line.uptrend.xyaxis")
+                }
                 routeStatus
                     .padding(.top, 8)
             }
@@ -223,10 +232,6 @@ struct MacPlayerOptionsPanel: View {
             }
         }
         .padding(12)
-    }
-
-    private var currentChapterIndex: Int? {
-        viewModel.chapters.lastIndex { $0.time <= viewModel.currentTime }
     }
 
     private func subtitleDetail(for track: PlayerTrack) -> String? {

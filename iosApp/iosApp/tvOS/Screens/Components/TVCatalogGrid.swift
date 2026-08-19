@@ -63,7 +63,7 @@ struct TVCatalogGrid: View {
         LazyVStack(alignment: .leading, spacing: rowSpacing) {
             ForEach(rowStartIndices, id: \.self) { rowStart in
                 HStack(alignment: .top, spacing: columnSpacing) {
-                    ForEach(IndexedItems(rowItems(from: rowStart))) { indexed in
+                    ForEach(Array(rowItems(from: rowStart).enumerated()), id: \.element.id) { indexed in
                         let item = indexed.element
                         TVMediaCard(
                             title: item.title,
@@ -76,14 +76,14 @@ struct TVCatalogGrid: View {
                             cardWidth: cardWidth,
                             aspect: item.isAudiobook ? .square : .poster,
                             prefersDefaultFocus: prefersDefaultFocusOnFirstItem
-                                && rowStart == 0 && indexed.index == 0,
+                                && rowStart == 0 && indexed.offset == 0,
                             defaultFocusNamespace: gridFocusNamespace,
                             focusBinding: $focusedItemId,
                             focusContentId: item.contentId,
                             contentId: item.contentId
                         )
                         .frame(maxWidth: .infinity)
-                        .onAppear { onCellAppear(index: rowStart + indexed.index) }
+                        .onAppear { onCellAppear(index: rowStart + indexed.offset) }
                     }
                     // Keep ragged-row cards in their column positions by
                     // filling the empty slots with equally flexible spacers.
@@ -136,36 +136,5 @@ struct TVCatalogGrid: View {
         lastAppliedFocusRequest = request
         focusedItemId = firstItemId
     }
-}
-
-private struct IndexedItems<Base: RandomAccessCollection>: RandomAccessCollection
-where Base.Index == Int, Base.Element: Identifiable {
-    let base: Base
-
-    init(_ base: Base) {
-        self.base = base
-    }
-
-    var startIndex: Int { base.startIndex }
-    var endIndex: Int { base.endIndex }
-
-    func index(after i: Int) -> Int {
-        base.index(after: i)
-    }
-
-    func index(before i: Int) -> Int {
-        base.index(before: i)
-    }
-
-    subscript(position: Int) -> IndexedItem<Base.Element> {
-        IndexedItem(index: position, element: base[position])
-    }
-}
-
-private struct IndexedItem<Element: Identifiable>: Identifiable {
-    let index: Int
-    let element: Element
-
-    var id: Element.ID { element.id }
 }
 #endif

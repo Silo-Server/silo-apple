@@ -36,20 +36,9 @@ struct MacPlayerControls: View {
 
             Spacer()
 
-            if viewModel.isBuffering {
-                HStack(spacing: 7) {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.white)
-                    Text("Buffering")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.82))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Capsule().fill(.ultraThinMaterial))
-            }
-
+            // No buffering pill here: `PlayerBufferingCapsule` reports it from
+            // the shell, just below this bar, for the start and every rebuffer
+            // alike.
             iconButton("xmark", help: "Close", action: onDismiss)
         }
         .padding(.horizontal, 14)
@@ -113,7 +102,7 @@ struct MacPlayerControls: View {
                 }
 
                 iconButton("chart.line.uptrend.xyaxis", help: "Stats and route") {
-                    selectedOptionsTab = .playback
+                    selectedOptionsTab = .stats
                     isOptionsPresented.toggle()
                 }
 

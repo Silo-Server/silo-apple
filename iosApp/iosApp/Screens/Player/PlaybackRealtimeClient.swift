@@ -33,16 +33,12 @@ actor PlaybackRealtimeClient {
     private var seenCommandIds = Set<String>()
     private(set) var isRealtimeConnected = false
     private(set) var isRealtimeUnavailable = false
-    private struct ConnectivityObserver {
+    private struct BoolObserver {
         let id: UUID
         let handler: (@MainActor (Bool) -> Void)
     }
-    private struct UnavailabilityObserver {
-        let id: UUID
-        let handler: (@MainActor (Bool) -> Void)
-    }
-    private var connectivityListeners: [ConnectivityObserver] = []
-    private var unavailabilityListeners: [UnavailabilityObserver] = []
+    private var connectivityListeners: [BoolObserver] = []
+    private var unavailabilityListeners: [BoolObserver] = []
     /// Serializes notification delivery to listeners. Without this, rapid
     /// state flips can be observed out of order on the MainActor because
     /// independent `Task { @MainActor in }` hops have no FIFO guarantee.
@@ -152,7 +148,7 @@ actor PlaybackRealtimeClient {
     @discardableResult
     func observeUnavailability(_ handler: @escaping @MainActor (Bool) -> Void) async -> UUID {
         let id = UUID()
-        unavailabilityListeners.append(UnavailabilityObserver(id: id, handler: handler))
+        unavailabilityListeners.append(BoolObserver(id: id, handler: handler))
         let snapshot = isRealtimeUnavailable
         await MainActor.run { handler(snapshot) }
         return id
@@ -164,10 +160,10 @@ actor PlaybackRealtimeClient {
     @discardableResult
     func observeConnectivity(_ handler: @escaping @MainActor (Bool) -> Void) async -> UUID {
         let id = UUID()
-        let observer = ConnectivityObserver(id: id, handler: handler)
+        let observer = BoolObserver(id: id, handler: handler)
         connectivityListeners.append(observer)
         let snapshot = isRealtimeConnected
-        notifyConnectivity(snapshot, listeners: [observer])
+        notify(snapshot, to: [observer], replacing: &connectivityNotificationTask)
         return id
     }
 
@@ -182,12 +178,20 @@ actor PlaybackRealtimeClient {
     private func setRealtimeConnected(_ value: Bool) {
         guard isRealtimeConnected != value else { return }
         isRealtimeConnected = value
-        notifyConnectivity(value, listeners: connectivityListeners)
+        notify(value, to: connectivityListeners, replacing: &connectivityNotificationTask)
     }
 
-    private func notifyConnectivity(_ value: Bool, listeners: [ConnectivityObserver]) {
-        connectivityNotificationTask?.cancel()
-        connectivityNotificationTask = Task { @MainActor in
+    /// Serialized fan-out of one Bool to one concern's listeners. Replaces any
+    /// in-flight notification task for that concern — the new state supersedes
+    /// whatever the previous task was about to deliver, so listeners always see
+    /// the latest value last regardless of how fast the state churns.
+    private func notify(
+        _ value: Bool,
+        to listeners: [BoolObserver],
+        replacing task: inout Task<Void, Never>?
+    ) {
+        task?.cancel()
+        task = Task { @MainActor in
             for observer in listeners {
                 if Task.isCancelled { return }
                 observer.handler(value)
@@ -198,18 +202,7 @@ actor PlaybackRealtimeClient {
     private func setRealtimeUnavailable(_ value: Bool) {
         guard isRealtimeUnavailable != value else { return }
         isRealtimeUnavailable = value
-        let listeners = unavailabilityListeners
-        // Replace any in-flight notification task — the new state
-        // supersedes whatever the previous task was about to deliver, so
-        // listeners always see the latest value last regardless of how
-        // fast the state churns.
-        notificationTask?.cancel()
-        notificationTask = Task { @MainActor in
-            for observer in listeners {
-                if Task.isCancelled { return }
-                observer.handler(value)
-            }
-        }
+        notify(value, to: unavailabilityListeners, replacing: &notificationTask)
     }
 
     private func receiveLoop(

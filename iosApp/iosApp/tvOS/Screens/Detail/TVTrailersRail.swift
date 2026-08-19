@@ -82,7 +82,7 @@ private struct TVTrailerCard: View {
                 thumbCornerRadius: thumbCornerRadius
             )
         }
-        .buttonStyle(TrailerCardStyle())
+        .buttonStyle(TVRailCardFocusStyle())
     }
 }
 
@@ -199,39 +199,6 @@ private struct TrailerCardLabel: View {
                 .foregroundColor(.white)
         }
         .shadow(color: .black.opacity(0.35), radius: 8, y: 3)
-    }
-}
-
-/// Custom style so the system doesn't paint its default focus halo over
-/// the card. Scale + drop shadow only; the white ring on the thumbnail
-/// (driven by `isFocused` in the label) is the focus cue — matching
-/// `TVEpisodeCard`.
-private struct TrailerCardStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        TrailerCardStyleBody(configuration: configuration)
-    }
-}
-
-private struct TrailerCardStyleBody: View {
-    let configuration: ButtonStyleConfiguration
-
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        configuration.label
-            .scaleEffect(scale)
-            .shadow(
-                color: .black.opacity(isFocused ? 0.45 : 0.3),
-                radius: isFocused ? 18 : 8,
-                y: isFocused ? 8 : 4
-            )
-            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
-    }
-
-    private var scale: CGFloat {
-        let base: CGFloat = isFocused ? 1.04 : 1.0
-        return configuration.isPressed ? base * 0.97 : base
     }
 }
 

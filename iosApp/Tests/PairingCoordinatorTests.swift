@@ -100,12 +100,9 @@ private func expectEventually(
     line: UInt = #line,
     _ condition: () -> Bool
 ) async {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if condition() { return }
-        try? await Task.sleep(for: .milliseconds(10))
+    guard await waitUntil(timeout: timeout, { condition() }) else {
+        return XCTFail("timed out waiting for: \(label)", file: file, line: line)
     }
-    XCTFail("timed out waiting for: \(label)", file: file, line: line)
 }
 
 private func entry(_ id: String, name: String) -> ServerEntry {

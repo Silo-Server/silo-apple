@@ -49,6 +49,31 @@ build+test results / verdict per package. The orchestrator then merges the appro
 `cleanup/<id>` branches into the working branch (file-disjoint packages merge cleanly), runs a
 final all-scheme build + full test suite, and cleans up worktrees.
 
-Baseline note: on `player/one-player-cleanup` @ 20f5aff the iOS suite reports
-`Executed 1367 tests, with 14 failures` — profile/identity/keychain environment failures that
-predate the cleanup. The fix prompt tells agents this so they don't chase them.
+Baseline note: since 2026-08-18 the suite is genuinely green (`0 failures`, 3 keychain-migration skips);
+the historical "14 environment failures" allowance is retired — the fix prompt's REPO_CONTEXT carries the
+current count (1538 at round 6) and treats any failure as the implementer's to fix.
+
+## 3. `app-cleanup-review-continue.js` — finish an interrupted fix run
+
+Added in round 6 after a provider session limit killed `app-cleanup-fix.js` mid-run (7/8 fixers had
+committed, 2/8 reviews had finished). Workflow *resume* is same-session only, so this is the fix script's
+Review → Repair → re-review tail as a standalone script. Args:
+`{baseRef, scratchDir, packages: [{id, title, area, risk, files, build_scopes, effort, spec_path}], fixes: {<id>: <fix report>}}`
+where each fix report is the implementer's `FIX_RESULT_SCHEMA` object — recover them from the interrupted run's
+`journal.jsonl` (`type: "result"` lines whose result has a `branch`) or from `wf_*.json`'s `result.summary`.
+For a fixer that finished but died before committing, read its transcript, commit its worktree yourself and
+hand-write the report (say so in `notes` so the reviewer reads the diff with extra care). Output shape matches
+the fix script's `{approved, summary}` (plus `first_review_verdict` / `repair_status`), so the merge recipe is
+unchanged. Round 6 embedded the args inline (`const EMBEDDED_ARGS = {...}`) because the packages were too large
+for a tool argument — the mirrored copy reads `args` instead.
+
+## 4. `player-stage2-fix.js` — Stage 2 control-plane extraction, one wave per run
+
+Same implementer → independent reviewer → one repair round shape, with prompts for a design-driven structural
+extraction instead of point fixes: every package has `spec_path` → JSON `{design_ref, brief, deliverables,
+invariants, tests_required, deletions, behavior_changes_allowed}`; the implementer realises the named deliverables
+(names are binding), writes the named tests first where told, keeps every intermediate step compiling; the reviewer
+traces each invariant, runs each deletion grep, checks tests exist by name. Args `{wave, baseRef (full SHA), packages,
+scratchDir?, designDoc?}`; the script refuses a wave whose packages are not file-disjoint. Branches `stage2/<id>`.
+Design + specs: `docs/cleanup/player-review/2026-08-19-stage2-design.md`, `docs/cleanup/player-review/stage2/`.
+Waves are sequential: merge → verify → re-anchor the next wave's spec against the new tip → run.

@@ -430,7 +430,6 @@ final class DownloadManager {
         do {
             let capability = try await SiloAPI.shared.downloadCapability()
             file.capability = capability
-            file.capabilityFetchedAt = Date()
             persist()
         } catch {
             Self.logger.debug("capability refresh failed: \(String(describing: error), privacy: .public)")
@@ -758,7 +757,6 @@ final class DownloadManager {
         record.mediaFileId = manifest.mediaFileId
         record.container = manifest.container
         record.posterThumbhash = record.posterThumbhash ?? manifest.posterThumbhash
-        record.stableIdentity = manifest.stableIdentity
         if let seriesId = manifest.seriesId { record.seriesId = seriesId }
         record.seriesTitle = record.seriesTitle ?? manifest.seriesTitle
         record.seasonNumber = record.seasonNumber ?? manifest.seasonNumber
@@ -1487,7 +1485,6 @@ final class DownloadManager {
         record.subtitleFilenames = [:]
         record.resumeDataFilename = nil
         record.container = nil
-        record.stableIdentity = nil
         record.bytesDownloaded = 0
         record.localStatus = mapInitialStatus(status)
         record.downloadedAt = nil
@@ -1541,7 +1538,6 @@ final class DownloadManager {
             seriesId: nil,
             posterThumbhash: nil,
             container: nil,
-            stableIdentity: nil,
             registeredAt: row.createdAt ?? Date(),
             downloadedAt: row.completedAt,
             lastError: nil,

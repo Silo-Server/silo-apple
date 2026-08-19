@@ -144,16 +144,7 @@ struct MediaCard: View {
             itemId: contentId,
             isWatched: isPlayed,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-            onSetWatched: onSetWatched.map { handler in
-                { played in
-                    playedOverride = played
-                    let succeeded = await handler(played)
-                    if !succeeded {
-                        playedOverride = nil
-                    }
-                    return succeeded
-                }
-            },
+            onSetWatched: optimisticSetWatched,
             personalItems: hasPersonalActions ? personalMenuItems : nil
         ) {
             posterImage
@@ -165,9 +156,9 @@ struct MediaCard: View {
         }
         #else
         Group {
-            if hasIOSContextActions {
+            if contextMenuItems.hasAny {
                 iosCardButton.contextMenu {
-                    iosContextActions
+                    contextMenuItems
                 }
             } else {
                 iosCardButton
@@ -205,43 +196,13 @@ struct MediaCard: View {
         .accessibilityLabel(accessibilityDescription)
     }
 
-    private var hasIOSContextActions: Bool {
-        hasPersonalActions || onSetWatched != nil || onRemoveFromContinueWatching != nil
-    }
-
-    /// Same action set (and ordering) as the tvOS `FocusableMediaCard` menu:
-    /// watched toggle, favorite/watchlist, then the destructive remove.
-    @ViewBuilder
-    private var iosContextActions: some View {
-        if let onSetWatched {
-            Button {
-                let played = !isPlayed
-                Task { @MainActor in
-                    playedOverride = played
-                    let succeeded = await onSetWatched(played)
-                    if !succeeded {
-                        playedOverride = nil
-                    }
-                }
-            } label: {
-                Label(
-                    isPlayed ? "Mark as Unwatched" : "Mark as Watched",
-                    systemImage: isPlayed ? "circle" : "checkmark.circle"
-                )
-            }
-        }
-
-        if hasPersonalActions {
-            personalMenuItems
-        }
-
-        if let onRemoveFromContinueWatching {
-            Button(role: .destructive) {
-                onRemoveFromContinueWatching()
-            } label: {
-                Label("Remove from Continue Watching", systemImage: "xmark.circle")
-            }
-        }
+    private var contextMenuItems: CardContextMenuItems {
+        CardContextMenuItems(
+            isWatched: isPlayed,
+            onSetWatched: optimisticSetWatched,
+            personalItems: hasPersonalActions ? personalMenuItems : nil,
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching
+        )
     }
     #endif
 
@@ -260,6 +221,21 @@ struct MediaCard: View {
 
     private var isInWatchlist: Bool {
         watchlistOverride ?? (userState?.inWatchlist == true)
+    }
+
+    /// The caller's watched handler wrapped in the optimistic `playedOverride`
+    /// flip: set the override, await the server, clear it on failure.
+    private var optimisticSetWatched: ((Bool) async -> Bool)? {
+        onSetWatched.map { handler in
+            { played in
+                playedOverride = played
+                let succeeded = await handler(played)
+                if !succeeded {
+                    playedOverride = nil
+                }
+                return succeeded
+            }
+        }
     }
 
     private var personalMenuItems: PersonalListMenuItems {
@@ -569,17 +545,22 @@ private struct FocusableMediaCard<Content: View>: View {
 
     @ViewBuilder
     private func mediaButtonWithContext<ButtonContent: View>(_ button: ButtonContent) -> some View {
-        if hasContextActions {
+        if contextMenuItems.hasAny {
             button.contextMenu {
-                contextActions
+                contextMenuItems
             }
         } else {
             button
         }
     }
 
-    private var hasContextActions: Bool {
-        onSetWatched != nil || onRemoveFromContinueWatching != nil || personalItems != nil
+    private var contextMenuItems: CardContextMenuItems {
+        CardContextMenuItems(
+            isWatched: isWatched,
+            onSetWatched: onSetWatched,
+            personalItems: personalItems,
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching
+        )
     }
 
     private var accessibilityDescription: String {
@@ -589,34 +570,6 @@ private struct FocusableMediaCard<Content: View>: View {
             year: year,
             isWatched: isWatched
         )
-    }
-
-    @ViewBuilder
-    private var contextActions: some View {
-        if let onSetWatched {
-            Button {
-                Task { @MainActor in
-                    _ = await onSetWatched(!isWatched)
-                }
-            } label: {
-                Label(
-                    isWatched ? "Mark as Unwatched" : "Mark as Watched",
-                    systemImage: isWatched ? "circle" : "checkmark.circle"
-                )
-            }
-        }
-
-        if let personalItems {
-            personalItems
-        }
-
-        if let onRemoveFromContinueWatching {
-            Button(role: .destructive) {
-                onRemoveFromContinueWatching()
-            } label: {
-                Label("Remove from Continue Watching", systemImage: "xmark.circle")
-            }
-        }
     }
 }
 

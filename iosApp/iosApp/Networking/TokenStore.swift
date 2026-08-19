@@ -486,41 +486,6 @@ actor TokenStore {
         )
     }
 
-    /// Store a scoped refresh only if the same server account and refresh
-    /// value are still active. Access/refresh credentials belong to the
-    /// server account, not one selected profile, so a profile switch must not
-    /// discard a successful rotation and strand that server's slot.
-    func saveRefreshedTokens(
-        _ accessValue: String,
-        _ value: String,
-        replacing previousValue: String?,
-        expected: HTTPRequestIdentity,
-        credentialOwner: CapturedHTTPRequestCredentialOwner
-    ) -> Bool {
-        let expectedURL = ServerRegistry.normalize(url: expected.serverURL)
-        guard credentialOwner == .persistentServer(serverId: expected.serverId),
-              !expected.serverId.isEmpty,
-              !expectedURL.isEmpty,
-              let previousValue,
-              !previousValue.isEmpty else { return false }
-        guard let account = refreshAccountIdentity(),
-              account.serverId == expected.serverId,
-              account.serverURL == expectedURL else { return false }
-        return saveRefreshedTokens(
-            accessValue,
-            value,
-            replacing: CapturedRefreshCredential(
-                account: RefreshAccountIdentity(
-                    serverId: expected.serverId,
-                    serverURL: expectedURL,
-                    credentialGenerationID: account.credentialGenerationID
-                ),
-                refreshToken: previousValue,
-                owner: credentialOwner
-            )
-        )
-    }
-
     /// Store rotated credentials only if the exact account, credential owner,
     /// and refresh token captured before the network call are still current.
     func saveRefreshedTokens(
@@ -528,11 +493,11 @@ actor TokenStore {
         _ value: String,
         replacing captured: CapturedRefreshCredential
     ) -> Bool {
-        // Both `saveRefreshedTokens` overloads land here, so this is the one
-        // place a successful rotation is committed — and the only place the
-        // success/discard split needs to be recorded. A discarded rotation is
-        // benign on its own (a server switch raced the response) but shows up
-        // in reports as an unexplained re-login, so it is worth a line.
+        // The one place a successful rotation is committed — and so the only
+        // place the success/discard split needs to be recorded. A discarded
+        // rotation is benign on its own (a server switch raced the response)
+        // but shows up in reports as an unexplained re-login, so it is worth
+        // a line.
         guard refreshAccountIdentity() == captured.account else {
             recordSessionEvent(
                 phase: "tokenRefresh",
@@ -602,55 +567,6 @@ actor TokenStore {
             mirrorActiveAccessValueForExtension()
             return true
         }
-    }
-
-    /// Clear a rejected captured refresh only if it still belongs to the same
-    /// active server account and no newer refresh token has replaced it. This
-    /// is the failure-side counterpart to `saveRefreshedTokens`: a late scoped
-    /// response must never sign out a server selected while it was in flight.
-    func clearTokensAfterRejectedRefresh(
-        replacing previousValue: String?,
-        expected: HTTPRequestIdentity,
-        credentialOwner: CapturedHTTPRequestCredentialOwner
-    ) -> Bool {
-        let expectedURL = ServerRegistry.normalize(url: expected.serverURL)
-        guard credentialOwner == .persistentServer(serverId: expected.serverId),
-              !expected.serverId.isEmpty,
-              !expectedURL.isEmpty,
-              let previousValue,
-              !previousValue.isEmpty else {
-            // Refused before reaching the shared invalidation funnel, so the
-            // funnel's own line will not fire. Grouped under one token: these
-            // are malformed-caller shapes, not races.
-            recordSessionEvent(
-                phase: "sessionInvalidation",
-                outcome: "skipped",
-                reason: "unsupportedCredentialShape"
-            )
-            return false
-        }
-        guard let account = refreshAccountIdentity(),
-              account.serverId == expected.serverId,
-              account.serverURL == expectedURL else {
-            recordSessionEvent(
-                phase: "sessionInvalidation",
-                outcome: "skipped",
-                reason: "accountChanged"
-            )
-            return false
-        }
-        let disposition = invalidateRejectedRefresh(
-            CapturedRefreshCredential(
-                account: RefreshAccountIdentity(
-                    serverId: expected.serverId,
-                    serverURL: expectedURL,
-                    credentialGenerationID: account.credentialGenerationID
-                ),
-                refreshToken: previousValue,
-                owner: credentialOwner
-            )
-        )
-        return disposition == .persistentSessionCleared
     }
 
     /// Invalidate only the credential snapshot the server rejected. Temporary
@@ -936,15 +852,6 @@ actor TokenStore {
         let epoch = UUID().uuidString
         guard accountKeychain.set(epoch, for: epochKey) else { return nil }
         return epoch
-    }
-
-    func hasStoredProfileToken(for serverID: String) -> Bool {
-        guard !serverID.isEmpty else { return false }
-        if serverID == activeServerId {
-            ensureLoaded()
-            return cachedProfileToken != nil
-        }
-        return profileKeychain.get(Self.profileTokenKey(for: serverID)) != nil
     }
 
     /// Commits profile ID and verification proof in one actor turn after the

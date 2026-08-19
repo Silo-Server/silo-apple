@@ -916,8 +916,6 @@ struct VideoTrack: Codable, Identifiable, Hashable {
     let level: Int?
     let bitDepth: Int?
     let colorRange: String?
-    let colorSpace: String?
-    let colorPrimaries: String?
     let colorTransfer: String?
     let videoRange: String?
     let dolbyVision: String?
@@ -1211,6 +1209,10 @@ struct Library: Codable, Identifiable, Hashable {
 
     var selectedNavigationIcon: String {
         isMixedLibrary ? "square.stack.3d.up.fill" : "rectangle.stack.fill"
+    }
+
+    static func displayOrder(_ lhs: Library, _ rhs: Library) -> Bool {
+        (lhs.sortOrder ?? Int.max, lhs.id) < (rhs.sortOrder ?? Int.max, rhs.id)
     }
 }
 

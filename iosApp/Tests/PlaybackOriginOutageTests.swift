@@ -1,5 +1,4 @@
 import XCTest
-import Network
 @testable import Silo
 
 final class PlaybackOriginOutagePolicyTests: XCTestCase {
@@ -44,138 +43,6 @@ final class PlaybackOriginOutagePolicyTests: XCTestCase {
 /// callback fires, and when the origin returns on the same port the cadence
 /// probe resumes the read to completion.
 final class PlaybackSourceProxyOutageTests: XCTestCase {
-
-    /// Range origin serving zeros that can go down (listener + connections
-    /// killed → connection-refused) and come back on the same port.
-    private final class RestartableStubOrigin {
-        let totalBytes: Int64
-        private(set) var port: UInt16 = 0
-        private var listener: NWListener?
-        private let queue = DispatchQueue(label: "outage-stub-origin")
-        private var connections: [ObjectIdentifier: NWConnection] = [:]
-        private let lock = NSLock()
-
-        init(totalBytes: Int64) {
-            self.totalBytes = totalBytes
-        }
-
-        var url: URL { URL(string: "http://127.0.0.1:\(port)/file.bin")! }
-
-        func start() async throws {
-            let params = NWParameters.tcp
-            params.allowLocalEndpointReuse = true
-            let host = NWEndpoint.Host.ipv4(.loopback)
-            let endpointPort: NWEndpoint.Port = port == 0
-                ? .any
-                : NWEndpoint.Port(rawValue: port)!
-            params.requiredLocalEndpoint = NWEndpoint.hostPort(host: host, port: endpointPort)
-            let listener = try NWListener(using: params)
-            self.listener = listener
-            listener.newConnectionHandler = { [weak self] connection in
-                self?.accept(connection)
-            }
-            port = try await withCheckedThrowingContinuation { continuation in
-                var resumed = false
-                listener.stateUpdateHandler = { state in
-                    switch state {
-                    case .ready:
-                        if !resumed, let ready = listener.port {
-                            resumed = true
-                            continuation.resume(returning: ready.rawValue)
-                        }
-                    case .failed(let error):
-                        if !resumed {
-                            resumed = true
-                            continuation.resume(throwing: error)
-                        }
-                    default:
-                        break
-                    }
-                }
-                listener.start(queue: self.queue)
-            }
-        }
-
-        /// Kill the listener and every open connection: new requests get
-        /// connection-refused, in-flight bodies die mid-transfer.
-        func goDown() {
-            listener?.cancel()
-            listener = nil
-            lock.lock()
-            let open = connections.values
-            connections.removeAll()
-            lock.unlock()
-            open.forEach { $0.cancel() }
-        }
-
-        /// Restart on the same port.
-        func goUp() async throws {
-            try await start()
-        }
-
-        func stop() { goDown() }
-
-        private func accept(_ connection: NWConnection) {
-            lock.lock()
-            connections[ObjectIdentifier(connection)] = connection
-            lock.unlock()
-            connection.start(queue: queue)
-            receiveRequest(connection, buffered: Data())
-        }
-
-        private func receiveRequest(_ connection: NWConnection, buffered: Data) {
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, _, error in
-                guard let self, error == nil else { return }
-                var head = buffered
-                if let data { head.append(data) }
-                guard let headEnd = head.range(of: Data("\r\n\r\n".utf8)) else {
-                    if head.count < 64 * 1024 {
-                        self.receiveRequest(connection, buffered: head)
-                    }
-                    return
-                }
-                let request = String(data: head[..<headEnd.lowerBound], encoding: .utf8) ?? ""
-                self.respond(connection, request: request)
-            }
-        }
-
-        private func respond(_ connection: NWConnection, request: String) {
-            var offset: Int64 = 0
-            var end: Int64 = totalBytes - 1
-            for line in request.split(separator: "\r\n") {
-                let lower = line.lowercased()
-                if lower.hasPrefix("range:"), let eq = line.range(of: "bytes=") {
-                    let spec = line[eq.upperBound...]
-                    let parts = spec.split(separator: "-", omittingEmptySubsequences: false)
-                    offset = parts.first.flatMap { Int64($0) } ?? 0
-                    if parts.count > 1, let bounded = Int64(parts[1]) {
-                        end = min(bounded, totalBytes - 1)
-                    }
-                }
-            }
-            let remaining = end - offset + 1
-            let header = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(offset)-\(end)/\(totalBytes)\r\nContent-Length: \(remaining)\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
-            connection.send(content: Data(header.utf8), completion: .contentProcessed { [weak self] _ in
-                self?.sendBody(connection, remaining: remaining)
-            })
-        }
-
-        private static let bodyChunk = Data(count: 64 * 1024)
-
-        private func sendBody(_ connection: NWConnection, remaining: Int64) {
-            guard remaining > 0 else {
-                connection.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .idempotent)
-                return
-            }
-            let chunk = remaining >= Int64(Self.bodyChunk.count)
-                ? Self.bodyChunk
-                : Data(count: Int(remaining))
-            connection.send(content: chunk, completion: .contentProcessed { [weak self] error in
-                guard error == nil else { return }
-                self?.sendBody(connection, remaining: remaining - Int64(chunk.count))
-            })
-        }
-    }
 
     private final class CountingReader: NSObject, URLSessionDataDelegate {
         let completed = XCTestExpectation(description: "reader received the full body")
@@ -223,7 +90,7 @@ final class PlaybackSourceProxyOutageTests: XCTestCase {
     private static let fileSize: Int64 = 2 * 1024 * 1024
 
     func testOutageParksReaderAndRecoversWhenOriginReturns() async throws {
-        let origin = RestartableStubOrigin(totalBytes: Self.fileSize)
+        let origin = RangeOriginStub(totalBytes: Self.fileSize)
         try await origin.start()
         defer { origin.stop() }
 

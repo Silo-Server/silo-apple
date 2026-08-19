@@ -347,11 +347,3 @@ private final class OnboardingRequestStubProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
-
-private extension NSLock {
-    func withLock<T>(_ operation: () -> T) -> T {
-        lock()
-        defer { unlock() }
-        return operation()
-    }
-}

@@ -379,7 +379,6 @@ struct LibraryDetailView: View {
 private class LibraryRecommendedViewModel {
     var sections: [ResolvedSection] = []
     var isLoading = false
-    var isRefreshing = false
     var error: ErrorState?
 
     var regularSections: [ResolvedSection] {
@@ -394,8 +393,6 @@ private class LibraryRecommendedViewModel {
         }
         if sections.isEmpty {
             isLoading = true
-        } else {
-            isRefreshing = true
         }
         error = nil
 
@@ -409,7 +406,6 @@ private class LibraryRecommendedViewModel {
         }
 
         isLoading = false
-        isRefreshing = false
     }
 }
 
@@ -417,9 +413,7 @@ struct LibraryRecommendedView: View {
     let libraryId: Int
 
     @State private var viewModel = LibraryRecommendedViewModel()
-    @State private var isRefreshing = false
-    @State private var refreshStartedAt: Date?
-    @State private var refreshHideTask: Task<Void, Never>?
+    @State private var refreshStatus = RefreshStatusState()
     @Environment(AppRouter.self) private var router
 
     var body: some View {
@@ -440,7 +434,7 @@ struct LibraryRecommendedView: View {
                 }
             }
 
-            if isRefreshing {
+            if refreshStatus.isRefreshing {
                 RefreshStatusPill()
                     .padding(.top, refreshStatusTopPadding)
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -452,7 +446,7 @@ struct LibraryRecommendedView: View {
                     .zIndex(2)
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: isRefreshing)
+        .animation(.easeInOut(duration: 0.18), value: refreshStatus.isRefreshing)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
         .siloBackground()
         .task(id: libraryId) {
@@ -484,35 +478,13 @@ struct LibraryRecommendedView: View {
 
     private func refreshRecommendations() async {
         await MainActor.run {
-            showRefreshStatus()
+            refreshStatus.show()
         }
 
         await viewModel.loadSections(libraryId: libraryId)
 
         await MainActor.run {
-            scheduleRefreshStatusHide()
-        }
-    }
-
-    private func showRefreshStatus() {
-        refreshHideTask?.cancel()
-        refreshStartedAt = Date()
-        isRefreshing = true
-    }
-
-    private func scheduleRefreshStatusHide() {
-        let elapsed = Date().timeIntervalSince(refreshStartedAt ?? Date())
-        let remaining = RefreshStatusPill.minimumVisibleDuration - elapsed
-        refreshHideTask?.cancel()
-        refreshHideTask = Task { @MainActor in
-            if remaining > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
-            }
-            guard !Task.isCancelled else { return }
-
-            isRefreshing = false
-            refreshStartedAt = nil
-            refreshHideTask = nil
+            refreshStatus.scheduleHide()
         }
     }
 }

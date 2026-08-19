@@ -127,15 +127,7 @@ final class AVPlayerEmbeddedSubtitleExtractor {
     func configure(source newSource: AVPlayerSubtitleExtractionSource?, probe: Bool = true) {
         stateLock.lock()
         source = newSource
-        extractedTracks = []
-        activeSelections.removeAll()
-        probeGeneration &+= 1
-        slotGenerations[.primary, default: 0] &+= 1
-        slotGenerations[.secondary, default: 0] &+= 1
-        slotInterruptTokens[.primary]?.cancel()
-        slotInterruptTokens[.secondary]?.cancel()
-        slotInterruptTokens.removeAll()
-        probeInterruptToken?.cancel()
+        invalidateAllWorkLocked()
         let probeToken = ExtractorInterruptToken()
         probeInterruptToken = probeToken
         let generation = probeGeneration
@@ -234,17 +226,24 @@ final class AVPlayerEmbeddedSubtitleExtractor {
     func teardown() {
         stateLock.lock()
         source = nil
+        invalidateAllWorkLocked()
+        probeInterruptToken = nil
+        stateLock.unlock()
+    }
+
+    /// Supersede every in-flight probe and slot reader: drop the enumerated
+    /// tracks and selections, bump all generations, and cancel the live
+    /// interrupt tokens so readers parked in av_read_frame unwind. Callers
+    /// set `source` themselves and must hold stateLock.
+    private func invalidateAllWorkLocked() {
         extractedTracks = []
         activeSelections.removeAll()
         probeGeneration &+= 1
         slotGenerations[.primary, default: 0] &+= 1
         slotGenerations[.secondary, default: 0] &+= 1
-        slotInterruptTokens[.primary]?.cancel()
-        slotInterruptTokens[.secondary]?.cancel()
+        for token in slotInterruptTokens.values { token.cancel() }
         slotInterruptTokens.removeAll()
         probeInterruptToken?.cancel()
-        probeInterruptToken = nil
-        stateLock.unlock()
     }
 
     private func probe(
@@ -521,7 +520,7 @@ final class AVPlayerEmbeddedSubtitleExtractor {
             // emitted. Push a minimal synthetic END segment at the same
             // timestamps to flush the pending composition. Only attempted
             // for substantial packets — tiny ones ARE end/control segments.
-            flushPendingPGSComposition(
+            BitmapSubtitleCue.flushPendingPGSComposition(
                 codecCtx: codecCtx,
                 timedLike: pkt,
                 into: &sub,
@@ -533,20 +532,13 @@ final class AVPlayerEmbeddedSubtitleExtractor {
 
         let basePtsSeconds = packetStartSeconds(pkt, timeBase: timeBase)
         let startMs = Int64((basePtsSeconds + Double(sub.start_display_time) / 1000.0) * 1000.0)
-        let endMs: Int64 = {
-            if sub.end_display_time != UInt32.max,
-               sub.end_display_time > sub.start_display_time {
-                return Int64((basePtsSeconds + Double(sub.end_display_time) / 1000.0) * 1000.0)
-            }
-            if pkt.pointee.duration > 0 {
-                let durSeconds = Double(pkt.pointee.duration) * Double(timeBase.num) / Double(timeBase.den)
-                return startMs + Int64(durSeconds * 1000.0)
-            }
-            // No explicit end anywhere. PGS relies on the next composition
-            // trimming this cue (see `feedBitmapCues(trimActiveAt:)`); 5 s
-            // is only the ceiling if the stream goes quiet.
-            return startMs + 5000
-        }()
+        let endMs = BitmapSubtitleCue.subtitleEndMs(
+            sub: sub,
+            pkt: pkt,
+            timeBase: timeBase,
+            basePtsSeconds: basePtsSeconds,
+            startMs: startMs
+        )
         let durationMs = max(Int64(0), endMs - startMs)
         let startSeconds = Double(startMs) / 1000.0
         let endSeconds = Double(endMs) / 1000.0
@@ -556,9 +548,10 @@ final class AVPlayerEmbeddedSubtitleExtractor {
             guard isSlotGenerationCurrent(slot: slot, generation: generation),
                   let rect = sub.rects[i]?.pointee else { continue }
             if rect.type == SUBTITLE_BITMAP {
-                if let cue = bitmapCue(
+                if let cue = BitmapSubtitleCue.bitmapCue(
                     from: rect,
-                    decoder: decoder,
+                    codecCtx: decoder.codecCtx,
+                    fallbackCanvas: (decoder.fallbackCanvasWidth, decoder.fallbackCanvasHeight),
                     startSeconds: startSeconds,
                     endSeconds: endSeconds
                 ) {
@@ -597,77 +590,6 @@ final class AVPlayerEmbeddedSubtitleExtractor {
                 )
             }
         }
-    }
-
-    /// Feed a synthetic 3-byte PGS END segment (type 0x80, zero payload
-    /// length; zero-padded for decoder over-read safety) carrying the
-    /// original packet's timestamps, so an accumulated display set whose
-    /// END segment was lost in remuxing still emits.
-    private func flushPendingPGSComposition(
-        codecCtx: UnsafeMutablePointer<AVCodecContext>,
-        timedLike pkt: UnsafeMutablePointer<AVPacket>,
-        into sub: inout AVSubtitle,
-        gotSubtitle: inout Int32
-    ) {
-        var payload = [UInt8](repeating: 0, count: 64)
-        payload[0] = 0x80
-        payload.withUnsafeMutableBufferPointer { buffer in
-            var synthetic = AVPacket()
-            synthetic.data = buffer.baseAddress
-            synthetic.size = 3
-            synthetic.pts = pkt.pointee.pts
-            synthetic.dts = pkt.pointee.dts
-            synthetic.duration = pkt.pointee.duration
-            synthetic.stream_index = pkt.pointee.stream_index
-            _ = avcodec_decode_subtitle2(codecCtx, &sub, &gotSubtitle, &synthetic)
-        }
-    }
-
-    /// Convert one decoded bitmap rect into an overlay cue: paletted plane
-    /// → premultiplied RGBA (cropped to the opaque bounding box) → CGImage
-    /// positioned as a normalized rect against the subtitle canvas.
-    private func bitmapCue(
-        from rect: AVSubtitleRect,
-        decoder: OpenedSubtitleDecoder,
-        startSeconds: Double,
-        endSeconds: Double
-    ) -> BitmapSubtitleCue? {
-        guard rect.w > 0, rect.h > 0,
-              let indexPlane = rect.data.0,
-              let palette = rect.data.1
-        else { return nil }
-        guard let plane = BitmapSubtitlePalette.premultipliedRGBA(
-            indexPlane: indexPlane,
-            width: Int(rect.w),
-            height: Int(rect.h),
-            stride: Int(rect.linesize.0),
-            palette: palette
-        ), let image = BitmapSubtitlePalette.makeImage(from: plane) else { return nil }
-
-        // Canvas: PGS composition updates land in the codec context as
-        // decoding progresses; fall back to the container video dimensions
-        // seeded at open. If both are unknown, park the cue in a generic
-        // centered lower band rather than dropping it.
-        let ctx = decoder.codecCtx.pointee
-        let canvasWidth = ctx.width > 0 ? ctx.width : decoder.fallbackCanvasWidth
-        let canvasHeight = ctx.height > 0 ? ctx.height : decoder.fallbackCanvasHeight
-        let normalizedFrame: CGRect
-        if canvasWidth > 0, canvasHeight > 0 {
-            normalizedFrame = CGRect(
-                x: Double(Int(rect.x) + plane.cropX) / Double(canvasWidth),
-                y: Double(Int(rect.y) + plane.cropY) / Double(canvasHeight),
-                width: Double(plane.cropWidth) / Double(canvasWidth),
-                height: Double(plane.cropHeight) / Double(canvasHeight)
-            )
-        } else {
-            normalizedFrame = CGRect(x: 0.2, y: 0.78, width: 0.6, height: 0.15)
-        }
-        return BitmapSubtitleCue(
-            startSeconds: startSeconds,
-            endSeconds: endSeconds,
-            image: image,
-            normalizedFrame: normalizedFrame
-        )
     }
 
     private func subtitleTracks(in ctx: UnsafeMutablePointer<AVFormatContext>) -> [AVPlayerExtractedSubtitleTrack] {
@@ -853,10 +775,9 @@ final class AVPlayerEmbeddedSubtitleExtractor {
         }
     }
 
-    @discardableResult
     private static func discardNonRenderableSubtitleStreams(
         in ctx: UnsafeMutablePointer<AVFormatContext>
-    ) -> Int {
+    ) {
         let nb = Int(ctx.pointee.nb_streams)
         var keptRenderable = 0
         var discardedSubs = 0
@@ -881,7 +802,6 @@ final class AVPlayerEmbeddedSubtitleExtractor {
             }
         }
         cmpLog("[CMP-SUB] extractor probe filter total=\(nb) kept=\(keptRenderable) discardedSubs=\(discardedSubs) discardedOther=\(discardedOther)")
-        return discardedSubs
     }
 
     private func isProbeGenerationCurrent(_ generation: UInt64) -> Bool {

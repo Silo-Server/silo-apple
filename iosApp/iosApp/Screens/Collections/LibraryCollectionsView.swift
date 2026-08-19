@@ -19,7 +19,6 @@ private class LibraryCollectionsViewModel {
     /// a single anonymous section synthesized from a flat response.
     var sections: [LibraryCollectionSection] = []
     var isLoading = false
-    var isRefreshing = false
     var error: ErrorState?
 
     var isEmpty: Bool { sections.allSatisfy { $0.collections.isEmpty } }
@@ -32,8 +31,6 @@ private class LibraryCollectionsViewModel {
         }
         if sections.isEmpty {
             isLoading = true
-        } else {
-            isRefreshing = true
         }
         error = nil
 
@@ -49,7 +46,6 @@ private class LibraryCollectionsViewModel {
         }
 
         isLoading = false
-        isRefreshing = false
     }
 }
 
@@ -299,23 +295,24 @@ struct LibraryCollectionDetailView: View {
         guard !isLoading else { return }
         if reset {
             // Surface the cached page-1 snapshot instantly so the grid
-            // doesn't blank out while the network call runs.
+            // doesn't blank out while the network call runs. The cache is
+            // display state only: the refresh itself always starts from
+            // page zero with a fresh snapshot, otherwise a cached
+            // `hasMore == false` would skip the network entirely and a
+            // multi-page cache would fetch (and re-cache) page two as page one.
             if items.isEmpty,
                let cached: CatalogResponse = ResponseCache.shared.get(
                    CacheKey.collectionItems(collectionId)
                ) {
                 items = cached.items
-                hasMore = cached.hasMore ?? false
                 totalItems = cached.totalExact == false ? nil : cached.total
-                nextOffset = cached.items.count
-                snapshot = cached.snapshot
             } else {
                 items = []
-                hasMore = true
                 totalItems = nil
-                nextOffset = 0
-                snapshot = nil
             }
+            hasMore = true
+            nextOffset = 0
+            snapshot = nil
         }
         guard hasMore else { return }
 

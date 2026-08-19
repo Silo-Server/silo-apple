@@ -67,23 +67,12 @@ struct TVPlayerScrubber: View {
     /// focus state cannot resize the transport stack.
     private static let trackStackHeight: CGFloat = 56
 
-    /// Playhead fraction as rendered on the bar — reflects the scrub preview
-    /// while scrubbing so the white fill tracks the user's nudges instead of
-    /// the underlying playback position.
     private var progressFraction: Double {
-        guard viewModel.duration > 0 else { return 0 }
-        let t = viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
-        return min(max(t / viewModel.duration, 0), 1)
+        viewModel.progressFraction
     }
 
     private var bufferedFraction: Double {
-        guard viewModel.duration > 0 else { return 0 }
-        let end = viewModel.currentTime + viewModel.bufferedAheadSeconds
-        return min(max(end / viewModel.duration, 0), 1)
-    }
-
-    private var displayTime: Double {
-        viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
+        viewModel.bufferedFraction
     }
 
     var body: some View {
@@ -165,7 +154,7 @@ struct TVPlayerScrubber: View {
                 }
             }
             .accessibilityLabel("Scrubber")
-            .accessibilityValue(Text(PlayerTimeFormatter.formatHMS(displayTime)))
+            .accessibilityValue(Text(PlayerTimeFormatter.formatHMS(viewModel.scrubDisplayTime)))
     }
 
     // MARK: - Bar
@@ -191,7 +180,7 @@ struct TVPlayerScrubber: View {
                     .frame(width: width * progressFraction, height: trackHeight)
 
                 // Buffered-ahead sliver: only the region *between* the
-                // playhead and the end of the loaded range. Rendering from
+                // playhead and the end of the local runway. Rendering from
                 // x=0 would put it entirely under the played fill (invisible)
                 // and mis-represent the semantic — buffer is inherently a
                 // forward-looking indicator.

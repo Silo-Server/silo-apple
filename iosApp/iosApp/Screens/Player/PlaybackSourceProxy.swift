@@ -12,8 +12,13 @@ struct PlaybackSourceProxyStats: Equatable {
     let estimatedForwardCacheAheadSeconds: Double?
     let originBytesTransferred: Int64
     let currentOriginBitrateBps: Double?
-    let cacheHitBytes: Int64
-    let cacheMissBytes: Int64
+    /// Bytes handed to the consumer out of the cache. Commensurable with
+    /// `originBytesTransferred` (both are byte counts over the same stream),
+    /// so their quotient is a true reuse factor.
+    let bytesServedFromCache: Int64
+    /// Serve-loop iterations that had to stop and wait on the origin. An
+    /// event count, not bytes.
+    let originWaitCount: Int
     let activeOriginRequestCount: Int
     let diskSpillBytes: Int64
     let diskBudgetBytes: Int64
@@ -112,8 +117,8 @@ final class PlaybackSourceCache {
         let estimatedForwardCacheAheadSeconds: Double?
         let originBytesTransferred: Int64
         let currentOriginBitrateBps: Double?
-        let cacheHitBytes: Int64
-        let cacheMissBytes: Int64
+        let bytesServedFromCache: Int64
+        let originWaitCount: Int
         let activeOriginRequestCount: Int
         let diskSpillBytes: Int64
         let diskBudgetBytes: Int64
@@ -152,8 +157,14 @@ final class PlaybackSourceCache {
     private var totalLength: Int64?
     private var cachedBytes: Int = 0
     private var originBytesTransferred: Int64 = 0
-    private var cacheHitBytes: Int64 = 0
-    private var cacheMissBytes: Int64 = 0
+    /// Bytes handed to the consumer out of the cache, and the count of
+    /// serve-loop iterations that had to wait on the origin instead. Both
+    /// live on the *cache*, which survives proxy generations via the handoff
+    /// path (`PlaybackSourceProxy.cache` is deliberately retained past
+    /// `stop()`), so anything derived from them is per-cache-lifetime rather
+    /// than per-proxy.
+    private var bytesServedFromCache: Int64 = 0
+    private var originWaitCount: Int = 0
     private var activeOriginRequestCount = 0
     private var diskSpillBytes: Int64 = 0
     private var diskBytesWritten: Int64 = 0
@@ -222,7 +233,7 @@ final class PlaybackSourceCache {
     }
 
     deinit {
-        print("[CMP-LIFE] deinit PlaybackSourceCache")
+        Self.logger.debug("[CMP-LIFE] deinit PlaybackSourceCache")
         if let diskDirectory {
             try? FileManager.default.removeItem(at: diskDirectory)
         }
@@ -321,7 +332,7 @@ final class PlaybackSourceCache {
                 let length = min(maxLength, file.count - offset)
                 guard length > 0 else { return nil }
                 let data = file.subdata(in: offset..<(offset + length))
-                cacheHitBytes += Int64(data.count)
+                bytesServedFromCache += Int64(data.count)
                 lastReadEnd = max(lastReadEnd ?? 0, start + Int64(data.count) - 1)
                 lastReadPosition = start + Int64(data.count) - 1
                 return data
@@ -332,7 +343,7 @@ final class PlaybackSourceCache {
         let length = min(maxLength, span.data.count - offset)
         guard length > 0 else { return nil }
         let data = span.data.subdata(in: offset..<(offset + length))
-        cacheHitBytes += Int64(data.count)
+        bytesServedFromCache += Int64(data.count)
         lastReadEnd = max(lastReadEnd ?? 0, start + Int64(data.count) - 1)
         lastReadPosition = start + Int64(data.count) - 1
         return data
@@ -367,10 +378,13 @@ final class PlaybackSourceCache {
         lock.unlock()
     }
 
-    func recordCacheMiss(byteCount: Int64) {
-        guard byteCount > 0 else { return }
+    /// One serve-loop iteration could not be satisfied from the cache and had
+    /// to wait on the origin. Counted as an event: the old byte-shaped
+    /// spelling accumulated the *intended* serve-chunk size, which was never
+    /// commensurable with the bytes actually served.
+    func recordOriginWait() {
         lock.lock()
-        cacheMissBytes += byteCount
+        originWaitCount += 1
         lock.unlock()
     }
 
@@ -426,8 +440,8 @@ final class PlaybackSourceCache {
             estimatedForwardCacheAheadSeconds: ahead,
             originBytesTransferred: originBytesTransferred,
             currentOriginBitrateBps: bitrate,
-            cacheHitBytes: cacheHitBytes,
-            cacheMissBytes: cacheMissBytes,
+            bytesServedFromCache: bytesServedFromCache,
+            originWaitCount: originWaitCount,
             activeOriginRequestCount: activeOriginRequestCount,
             diskSpillBytes: diskSpillBytes,
             diskBudgetBytes: diskSpillEnabled ? diskBudgetBytes : 0,
@@ -517,7 +531,9 @@ final class PlaybackSourceCache {
         guard diskBytesWritten + Int64(span.data.count) <= diskWriteBudgetLocked() else {
             if !loggedWriteBudgetExhausted {
                 loggedWriteBudgetExhausted = true
-                print("[CMP-SOURCE-CACHE] spill write-budget exhausted written=\(diskBytesWritten) retained=\(diskSpillBytes) budget=\(diskWriteBudgetLocked())")
+                Self.logger.info(
+                    "[CMP-SOURCE-CACHE] spill write-budget exhausted written=\(self.diskBytesWritten, privacy: .public) retained=\(self.diskSpillBytes, privacy: .public) budget=\(self.diskWriteBudgetLocked(), privacy: .public)"
+                )
             }
             return
         }
@@ -754,7 +770,7 @@ private final class PlaybackSourceResource {
     }
 
     deinit {
-        print("[CMP-LIFE] deinit PlaybackSourceResource")
+        Self.logger.debug("[CMP-LIFE] deinit PlaybackSourceResource")
         stop()
     }
 
@@ -940,8 +956,8 @@ private final class PlaybackSourceResource {
             estimatedForwardCacheAheadSeconds: snapshot.estimatedForwardCacheAheadSeconds,
             originBytesTransferred: snapshot.originBytesTransferred,
             currentOriginBitrateBps: snapshot.currentOriginBitrateBps,
-            cacheHitBytes: snapshot.cacheHitBytes,
-            cacheMissBytes: snapshot.cacheMissBytes,
+            bytesServedFromCache: snapshot.bytesServedFromCache,
+            originWaitCount: snapshot.originWaitCount,
             activeOriginRequestCount: snapshot.activeOriginRequestCount,
             diskSpillBytes: snapshot.diskSpillBytes,
             diskBudgetBytes: snapshot.diskBudgetBytes,
@@ -1114,7 +1130,9 @@ private final class PlaybackSourceResource {
                 // reported a total: no valid 206 exists (Content-Range
                 // requires a last-byte-pos). Fail honestly instead of
                 // emitting a 206 the demuxer cannot size.
-                print("[CMP-SRV] get exit reason=no_total_for_range start=\(resolved.start)")
+                Self.logger.warning(
+                    "[CMP-SRV] get exit reason=no_total_for_range start=\(resolved.start, privacy: .public)"
+                )
                 let refusal = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 _ = await send(Data(refusal.utf8), on: connection, close: true)
                 return
@@ -1137,9 +1155,8 @@ private final class PlaybackSourceResource {
             header += "Content-Length: \(max(0, total - resolved.start))\r\n"
         }
         header += "Connection: close\r\n\r\n"
-        print("[CMP-SRV] get start=\(resolved.start) end=\(resolved.end.map(String.init) ?? "-")")
         guard await send(Data(header.utf8), on: connection, close: false) else {
-            print("[CMP-SRV] get exit reason=header_send_failed")
+            Self.logger.debug("[CMP-SRV] get exit reason=header_send_failed")
             return
         }
 
@@ -1152,14 +1169,16 @@ private final class PlaybackSourceResource {
             let sendLength = responseEnd.map { Int(min(Int64(256 * 1024), $0 - cursor + 1)) } ?? 256 * 1024
             if let cached = cache.read(start: cursor, maxLength: max(1, sendLength)) {
                 guard await send(cached, on: connection, close: false) else {
-                    print("[CMP-SRV] get exit reason=send_failed cursor=\(cursor)")
+                    Self.logger.debug(
+                        "[CMP-SRV] get exit reason=send_failed cursor=\(cursor, privacy: .public)"
+                    )
                     return
                 }
                 cursor += Int64(cached.count)
                 noteDemandHint(at: cursor)
                 continue
             }
-            cache.recordCacheMiss(byteCount: Int64(max(1, sendLength)))
+            cache.recordOriginWait()
             switch await awaitData(
                 at: cursor,
                 servedSequentialBytes: cursor - resolved.start,
@@ -1189,9 +1208,15 @@ private final class PlaybackSourceResource {
                 "[CMP-SOURCE-CACHE] premature eof offset=\(offset, privacy: .public) expectedEnd=\(expectedEnd, privacy: .public) total=\(totalLabel, privacy: .public)"
             )
             onPlaybackSourceInterrupted?(.prematureEOF(offset: offset, expectedEnd: expectedEnd))
+        } else {
+            // Once per response, off the per-chunk hot path. The end-cause
+            // token (satisfied vs client_closed) has been the definitive
+            // signal in past "direct play stops mid-file" investigations.
+            Self.logger.debug(
+                "[CMP-SRV] get end cause=\(String(describing: endCause), privacy: .public) cursor=\(cursor, privacy: .public)"
+            )
         }
         noteDemandHint(at: cursor)
-        print("[CMP-SRV] get exit reason=\(endCause) cursor=\(cursor)")
         _ = await send(nil, on: connection, close: true)
     }
 
@@ -2117,7 +2142,7 @@ final class PlaybackSourceProxy {
     }
 
     deinit {
-        print("[CMP-LIFE] deinit PlaybackSourceProxy")
+        Self.logger.debug("[CMP-LIFE] deinit PlaybackSourceProxy")
         stop()
     }
 
@@ -2127,7 +2152,7 @@ final class PlaybackSourceProxy {
         let open = connections
         connections.removeAll()
         lock.unlock()
-        print("[CMP-LIFE] PlaybackSourceProxy.stop openConnections=\(open.count)")
+        Self.logger.debug("[CMP-LIFE] PlaybackSourceProxy.stop openConnections=\(open.count, privacy: .public)")
         resource.stop()
         listener?.cancel()
         listener = nil

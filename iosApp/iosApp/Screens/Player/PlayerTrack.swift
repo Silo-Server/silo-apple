@@ -167,47 +167,6 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
         return parts
     }
 
-    /// Rich human-readable label for track pickers,
-    /// e.g. "English · 5.1 · EAC3 · default".
-    var displayLabel: String {
-        var parts: [String] = []
-
-        if let title = normalizedTitle {
-            parts.append(title)
-        }
-        if let lang = normalizedLanguageCode,
-           !(normalizedTitle?.localizedCaseInsensitiveContains(lang) ?? false) {
-            parts.append(languageDisplayName(lang))
-        }
-        if kind == .audio {
-            if let layout = Self.normalizedText(audioChannelsLayout) {
-                parts.append(layout)
-            } else if let count = audioChannelCount, count > 0 {
-                parts.append(formatChannelCount(count))
-            }
-        }
-        if let codec = Self.normalizedText(codec) {
-            parts.append(codec.uppercased())
-        }
-        if isDefault {
-            parts.append("default")
-        }
-        if isForced {
-            parts.append("forced")
-        }
-        if isHearingImpaired {
-            parts.append("SDH")
-        }
-        if isExternal {
-            parts.append("external")
-        }
-
-        if parts.isEmpty {
-            parts.append("Track \(trackId)")
-        }
-        return parts.joined(separator: " · ")
-    }
-
     private func formatChannelCount(_ count: Int) -> String {
         switch count {
         case 1: return "mono"

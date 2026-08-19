@@ -15,9 +15,8 @@ struct PlayerSettingsSheet: View {
     let sleepTimer: SleepTimer
     /// Visibility of the iOS stats annotation. A binding rather than a
     /// one-shot action because the overlay itself has no dismiss affordance
-    /// — this row is both the on and the off switch. Nil on platforms with
-    /// no such overlay, which hides the row.
-    var statsOverlayVisible: Binding<Bool>?
+    /// — this row is both the on and the off switch.
+    let statsOverlayVisible: Binding<Bool>
 
     @Environment(\.dismiss) private var dismiss
     /// Slider position while the user is dragging the background-opacity
@@ -147,7 +146,7 @@ struct PlayerSettingsSheet: View {
                         HStack {
                             Text("Subtitle Delay")
                             Spacer()
-                            Text(formatMs(viewModel.settings.subtitleSyncMs))
+                            Text(PlayerTimeFormatter.formatSubtitleDelay(viewModel.settings.subtitleSyncMs))
                                 .foregroundStyle(.secondary)
                                 .monospacedDigit()
                         }
@@ -218,16 +217,16 @@ struct PlayerSettingsSheet: View {
                     }
                 }
 
-                Picker("Font color", selection: appearanceStringBinding(\.fontColor)) {
+                Picker("Font color", selection: appearanceBinding(\.fontColor)) {
                     ForEach(SubtitleAppearance.fontColors, id: \.hex) { color in
                         Text(color.label).tag(color.hex)
                     }
                 }
 
-                Toggle("Text outline", isOn: appearanceBoolBinding(\.textOutline))
+                Toggle("Text outline", isOn: appearanceBinding(\.textOutline))
                     .tint(.siloAccent)
 
-                Picker("Outline color", selection: appearanceStringBinding(\.textOutlineColor)) {
+                Picker("Outline color", selection: appearanceBinding(\.textOutlineColor)) {
                     ForEach(SubtitleAppearance.outlineColors, id: \.hex) { color in
                         Text(color.label).tag(color.hex)
                     }
@@ -246,7 +245,7 @@ struct PlayerSettingsSheet: View {
                 appearanceOpacityRow
                     .disabled(viewModel.settings.subtitleAppearance.backgroundStyle != .box)
 
-                Picker("Color", selection: appearanceStringBinding(\.backgroundColor)) {
+                Picker("Color", selection: appearanceBinding(\.backgroundColor)) {
                     ForEach(SubtitleAppearance.backgroundColors, id: \.hex) { color in
                         Text(color.label).tag(color.hex)
                     }
@@ -335,17 +334,15 @@ struct PlayerSettingsSheet: View {
 
     private var advancedSection: some View {
         Section {
-            if let statsOverlayVisible {
-                Toggle(isOn: statsOverlayVisible) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Stats")
-                        Text("Live overlay on the player")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+            Toggle(isOn: statsOverlayVisible) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Stats")
+                    Text("Live overlay on the player")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .tint(.siloAccent)
             }
+            .tint(.siloAccent)
 
             NavigationLink {
                 advancedPage
@@ -420,8 +417,6 @@ struct PlayerSettingsSheet: View {
 
     // MARK: - Appearance bindings
 
-    /// Choosing Box with a fully transparent background would render
-    /// nothing; give it the default opacity so the choice takes effect.
     private var appearanceBackgroundStyleBinding: Binding<String> {
         Binding(
             get: { viewModel.settings.subtitleAppearance.backgroundStyle.rawValue },
@@ -429,27 +424,15 @@ struct PlayerSettingsSheet: View {
                 guard let style = SubtitleBackgroundStylePreset(rawValue: rawValue) else { return }
                 var next = viewModel.settings.subtitleAppearance
                 if next.backgroundStyle == style { return }
-                next.backgroundStyle = style
-                if style == .box && next.backgroundOpacity == 0 {
-                    next.backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
-                }
+                next.applyBackgroundStyle(style)
                 Task { await viewModel.setSubtitleAppearance(next) }
             }
         )
     }
 
-    private func appearanceStringBinding(_ keyPath: WritableKeyPath<SubtitleAppearance, String>) -> Binding<String> {
-        Binding(
-            get: { viewModel.settings.subtitleAppearance[keyPath: keyPath] },
-            set: { value in
-                var next = viewModel.settings.subtitleAppearance
-                next[keyPath: keyPath] = value
-                Task { await viewModel.setSubtitleAppearance(next) }
-            }
-        )
-    }
-
-    private func appearanceBoolBinding(_ keyPath: WritableKeyPath<SubtitleAppearance, Bool>) -> Binding<Bool> {
+    private func appearanceBinding<Value>(
+        _ keyPath: WritableKeyPath<SubtitleAppearance, Value>
+    ) -> Binding<Value> {
         Binding(
             get: { viewModel.settings.subtitleAppearance[keyPath: keyPath] },
             set: { value in
@@ -476,12 +459,6 @@ struct PlayerSettingsSheet: View {
     }
 
     // MARK: - Helpers
-
-    private func formatMs(_ ms: Int) -> String {
-        if ms == 0 { return "0 ms" }
-        let sign = ms > 0 ? "+" : ""
-        return "\(sign)\(ms) ms"
-    }
 
     /// Map the timer's remaining seconds back to the nearest whole-minute
     /// option tag for the picker. Picker values are the initial minute count,

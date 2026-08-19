@@ -247,27 +247,22 @@ struct MobilePlayerControls: View {
             Button {
                 viewModel.togglePlayPause()
             } label: {
-                Group {
-                    if viewModel.isBuffering {
-                        ProgressView()
-                            .tint(.black.opacity(0.8))
-                    } else {
-                        Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 26, weight: .semibold))
-                            .foregroundStyle(.black.opacity(0.85))
-                            // play.fill reads left-heavy inside a circle;
-                            // nudge it toward the optical center.
-                            .offset(x: viewModel.isPlaying ? 0 : 1.5)
-                    }
-                }
-                .frame(width: 64, height: 64)
+                // The glyph stays put through a rebuffer: buffering is
+                // reported by the shell's top-right capsule, and swapping a
+                // spinner in here made the transport's primary control read
+                // as unavailable while it was still perfectly usable.
+                Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(.black.opacity(0.85))
+                    // play.fill reads left-heavy inside a circle; nudge it
+                    // toward the optical center.
+                    .offset(x: viewModel.isPlaying ? 0 : 1.5)
+                    .frame(width: 64, height: 64)
             }
             .buttonStyle(.glassProminent)
             .buttonBorderShape(.circle)
             .tint(.white.opacity(0.9))
-            .accessibilityLabel(
-                viewModel.isBuffering ? "Buffering" : (viewModel.isPlaying ? "Pause" : "Play")
-            )
+            .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
 
             Button {
                 viewModel.skipForward(10)
@@ -296,7 +291,7 @@ struct MobilePlayerControls: View {
 
     private var timeRow: some View {
         HStack {
-            Text(PlayerTimeFormatter.formatHMS(displayTime))
+            Text(PlayerTimeFormatter.formatHMS(viewModel.scrubDisplayTime))
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.85))
                 .monospacedDigit()
@@ -328,7 +323,7 @@ struct MobilePlayerControls: View {
 
     private var trailingTimeText: String {
         if showsRemainingTime {
-            return "−" + PlayerTimeFormatter.formatHMS(max(viewModel.duration - displayTime, 0))
+            return "−" + PlayerTimeFormatter.formatHMS(max(viewModel.duration - viewModel.scrubDisplayTime, 0))
         }
         return PlayerTimeFormatter.formatHMS(viewModel.duration)
     }
@@ -348,18 +343,12 @@ struct MobilePlayerControls: View {
         .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
     }
 
-    private var displayTime: Double {
-        viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
-    }
-
     // MARK: - Scrubber
 
     private var progressSlider: some View {
         GeometryReader { geo in
             let width = geo.size.width
-            let progress = viewModel.duration > 0
-                ? min(max(displayTime / viewModel.duration, 0), 1)
-                : 0
+            let progress = viewModel.progressFraction
             let barHeight: CGFloat = viewModel.isScrubbing ? 12 : 6
 
             ZStack(alignment: .leading) {
@@ -429,7 +418,7 @@ struct MobilePlayerControls: View {
             .accessibilityElement()
             .accessibilityLabel("Playback Position")
             .accessibilityValue(
-                "\(PlayerTimeFormatter.formatHMS(displayTime)) of \(PlayerTimeFormatter.formatHMS(viewModel.duration))"
+                "\(PlayerTimeFormatter.formatHMS(viewModel.scrubDisplayTime)) of \(PlayerTimeFormatter.formatHMS(viewModel.duration))"
             )
             .accessibilityAdjustableAction { direction in
                 switch direction {
@@ -443,9 +432,8 @@ struct MobilePlayerControls: View {
     }
 
     private var bufferedFraction: Double? {
-        guard viewModel.duration > 0, viewModel.bufferedAheadSeconds > 0 else { return nil }
-        let end = (viewModel.currentTime + viewModel.bufferedAheadSeconds) / viewModel.duration
-        return min(max(end, 0), 1)
+        guard viewModel.playbackRunwaySeconds > 0 else { return nil }
+        return viewModel.bufferedFraction
     }
 
     /// Floating time + chapter readout pinned above the touch point while
@@ -803,10 +791,6 @@ struct MobilePlayerControls: View {
 
     // MARK: - Chapters menu
 
-    private var currentChapterIndex: Int? {
-        viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
-    }
-
     /// Native chapter picker: one row per chapter with the timestamp as the
     /// menu subtitle and a checkmark on the chapter currently playing.
     private func chaptersMenu(style: ActionRowStyle) -> some View {
@@ -815,7 +799,7 @@ struct MobilePlayerControls: View {
                 Button {
                     viewModel.seekTo(seconds: chapter.time)
                 } label: {
-                    if currentChapterIndex == chapter.index {
+                    if viewModel.currentChapterIndex == chapter.index {
                         Label {
                             Text(chapterMenuTitle(chapter))
                             Text(PlayerTimeFormatter.formatHMS(chapter.time))

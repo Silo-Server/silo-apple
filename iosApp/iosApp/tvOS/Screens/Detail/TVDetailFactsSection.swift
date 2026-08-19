@@ -1,6 +1,19 @@
 #if os(tvOS)
 import SwiftUI
 
+/// "Details" header + facts grid, as the movie / series / season detail
+/// screens render it below the fold.
+struct TVDetailsSection: View {
+    let detail: ItemDetail
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            TVSectionHeader(title: "Details")
+            TVDetailFactsSection(detail: detail)
+        }
+    }
+}
+
 /// "Details" block under the hero on tvOS — lists directors, writers,
 /// studios/networks, countries, and release date in a key/value grid.
 ///

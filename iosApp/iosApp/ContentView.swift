@@ -567,7 +567,6 @@ struct ContentView: View {
         case .authenticated:
             #if os(tvOS)
             TVMainTabView(router: router)
-                .onboardingTourGate(router: router)
             #else
             MainTabView(router: router)
                 .onboardingTourGate(router: router)

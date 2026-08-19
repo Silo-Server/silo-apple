@@ -261,14 +261,11 @@ struct TVPlayerControls: View {
     }
 
     private var progressFraction: Double {
-        guard viewModel.duration > 0 else { return 0 }
-        return min(max(scrubberDisplayTime / viewModel.duration, 0), 1)
+        viewModel.progressFraction
     }
 
     private var bufferedFraction: Double {
-        guard viewModel.duration > 0 else { return 0 }
-        let end = viewModel.currentTime + viewModel.bufferedAheadSeconds
-        return min(max(end / viewModel.duration, 0), 1)
+        viewModel.bufferedFraction
     }
 
     @ViewBuilder
@@ -276,7 +273,7 @@ struct TVPlayerControls: View {
         ZStack(alignment: .bottom) {
             bottomGradient.ignoresSafeArea()
             statusColumn
-                .padding(.top, 64)
+                .padding(.top, statusColumnTopPadding)
                 .padding(.horizontal, 80)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             transportStack
@@ -313,26 +310,22 @@ struct TVPlayerControls: View {
         }
     }
 
-    /// Buffering + sleep-timer chips float in the top-right when active.
-    /// Everything else that used to live in the hero strip (title, series,
-    /// badges, year, runtime, chapter) is now in the HUD's Info tab.
+    /// The shell's buffering capsule occupies this exact corner at a 64pt
+    /// drop, so the sleep chip steps below it while one is up rather than
+    /// sharing the spot. (This overlay only mounts once `isLoading` is false,
+    /// so `isBuffering` alone decides.)
+    private var statusColumnTopPadding: CGFloat {
+        viewModel.isBuffering ? 120 : 64
+    }
+
+    /// Sleep-timer chip, floating in the top-right when active. Everything
+    /// else that used to live in the hero strip (title, series, badges, year,
+    /// runtime, chapter) is now in the HUD's Info tab, and the buffering
+    /// capsule that used to head this column is now `PlayerBufferingCapsule`,
+    /// mounted by the shell so it also covers the start and the
+    /// controls-hidden rebuffer.
     private var statusColumn: some View {
         VStack(alignment: .trailing, spacing: 10) {
-            if viewModel.isBuffering {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .tint(.white)
-                        .progressViewStyle(.circular)
-                        .scaleEffect(0.9)
-                    Text("Buffering")
-                        .font(.siloSmall.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.8))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .siloPlayerGlass(in: Capsule())
-            }
-
             if viewModel.sleepTimer.isActive {
                 Label(PlayerTimeFormatter.formatCountdown(viewModel.sleepTimer.remainingSeconds),
                       systemImage: "moon.zzz.fill")
@@ -543,7 +536,7 @@ struct TVPlayerControls: View {
             }
         } else {
             HStack {
-                clockText(PlayerTimeFormatter.formatHMS(scrubberDisplayTime))
+                clockText(PlayerTimeFormatter.formatHMS(viewModel.scrubDisplayTime))
                 Spacer()
                 if viewModel.duration > 0 {
                     clockText("−\(PlayerTimeFormatter.formatHMS(remainingTime))")
@@ -559,12 +552,8 @@ struct TVPlayerControls: View {
             .monospacedDigit()
     }
 
-    private var scrubberDisplayTime: Double {
-        viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
-    }
-
     private var remainingTime: Double {
-        max(0, viewModel.duration - scrubberDisplayTime)
+        max(0, viewModel.duration - viewModel.scrubDisplayTime)
     }
 
     private func estimatedFinishDate(from now: Date) -> Date {

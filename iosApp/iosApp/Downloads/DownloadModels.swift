@@ -278,8 +278,6 @@ struct OfflineManifest: Codable, Hashable, Sendable {
     let preview: TimeRange?
 
     let subtitles: [OfflineSubtitle]?
-    let stableIdentity: StableIdentity?
-    let integrity: OfflineIntegrity?
 
     let manifestVersion: Int?
     let generatedAt: Date?
@@ -328,8 +326,6 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         case recap
         case preview
         case subtitles
-        case stableIdentity
-        case integrity
         case manifestVersion
         case generatedAt
     }
@@ -376,8 +372,6 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         recap = try keyed.decodeIfPresent(TimeRange.self, forKey: .recap)
         preview = try keyed.decodeIfPresent(TimeRange.self, forKey: .preview)
         subtitles = try keyed.decodeIfPresent([OfflineSubtitle].self, forKey: .subtitles)
-        stableIdentity = try keyed.decodeIfPresent(StableIdentity.self, forKey: .stableIdentity)
-        integrity = try keyed.decodeIfPresent(OfflineIntegrity.self, forKey: .integrity)
         manifestVersion = try keyed.decodeIfPresent(Int.self, forKey: .manifestVersion)
         generatedAt = try keyed.decodeIfPresent(Date.self, forKey: .generatedAt)
     }
@@ -422,8 +416,6 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         try keyed.encodeIfPresent(recap, forKey: .recap)
         try keyed.encodeIfPresent(preview, forKey: .preview)
         try keyed.encodeIfPresent(subtitles, forKey: .subtitles)
-        try keyed.encodeIfPresent(stableIdentity, forKey: .stableIdentity)
-        try keyed.encodeIfPresent(integrity, forKey: .integrity)
         try keyed.encodeIfPresent(manifestVersion, forKey: .manifestVersion)
         try keyed.encodeIfPresent(generatedAt, forKey: .generatedAt)
     }
@@ -483,21 +475,6 @@ struct OfflineSubtitle: Codable, Hashable, Sendable {
     let fileSize: Int64?
 }
 
-/// Rescan-stable identity mirroring the watch-state identity. Used to
-/// re-resolve a download whose `content_id` changed on the server.
-struct StableIdentity: Codable, Hashable, Sendable {
-    let stableType: String?
-    let providerIds: [String: String]?
-    let season: Int?
-    let episode: Int?
-}
-
-struct OfflineIntegrity: Codable, Hashable, Sendable {
-    let expectedBytes: Int64?
-    let mediaFileHash: String?
-    let metadataEtag: String?
-}
-
 // MARK: - Subscriptions (series monitoring)
 
 /// A series-monitoring subscription as returned by the server.
@@ -505,7 +482,6 @@ struct ServerSubscription: Codable, Hashable, Sendable {
     let id: String
     let seriesId: String
     let mode: String
-    let targetSeason: Int?
     let seasonNumbers: [Int]?
     let deleteWatched: Bool
     let maxStorageBytes: Int64
@@ -622,7 +598,7 @@ enum LocalDownloadStatus: String, Codable, Sendable {
 /// `DownloadFilePaths`.
 struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     let id: String                       // server download id
-    var contentId: String                // mutable: may be re-resolved via stableIdentity
+    var contentId: String
     let episodeId: String?
     let batchId: String?
     var mediaFileId: Int
@@ -665,7 +641,6 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var posterThumbhash: String?
     var container: String?               // media container, drives file ext + engine
 
-    var stableIdentity: StableIdentity?
     var registeredAt: Date
     var downloadedAt: Date?
     var lastError: String?
@@ -694,7 +669,6 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
     let seriesId: String
     var seriesTitle: String?
     var mode: String
-    var targetSeason: Int?
     var seasonNumbers: [Int]?
     var deleteWatched: Bool
     var maxStorageBytes: Int64
@@ -705,7 +679,6 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
         self.seriesId = server.seriesId
         self.seriesTitle = seriesTitle
         self.mode = server.mode
-        self.targetSeason = server.targetSeason
         self.seasonNumbers = server.seasonNumbers
         self.deleteWatched = server.deleteWatched
         self.maxStorageBytes = server.maxStorageBytes
@@ -740,7 +713,6 @@ struct DownloadStoreFile: Codable, Sendable {
     var records: [String: DownloadRecord]
     var subscriptions: [DownloadSubscription]
     var capability: DownloadCapability?
-    var capabilityFetchedAt: Date?
     var progressQueue: [QueuedProgress]
     var progressCursor: String?
     var localProgress: [String: LocalProgressEntry]
@@ -752,7 +724,6 @@ struct DownloadStoreFile: Codable, Sendable {
         records: [:],
         subscriptions: [],
         capability: nil,
-        capabilityFetchedAt: nil,
         progressQueue: [],
         progressCursor: nil,
         localProgress: [:]

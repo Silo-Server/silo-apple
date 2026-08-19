@@ -345,15 +345,8 @@ struct LibrariesTabView: View {
                     visibleLibraryCount: visibleLibraries.count
                 ),
                 profile: currentProfile,
-                onLibraryTap: { showPicker = true },
-                onSearch: { router.navigate(to: .search) },
-                onOpenSettings: { router.navigate(to: .settings) },
-                onOpenRequests: { router.navigate(to: .requestsHub) },
-                onSwitchProfile: {
-                    router.switchProfile()
-                },
-                onSwitchServer: { router.navigate(to: .serverList) },
-                onSignOut: { router.signOutAndReset() }
+                router: router,
+                onLibraryTap: { showPicker = true }
             )
             .padding(.horizontal, SiloTheme.padding)
             .padding(.top, SiloTheme.smallPadding)
@@ -489,13 +482,8 @@ private struct LibrariesTopBar: View {
     let activeLibrary: Library
     let canSwitch: Bool
     let profile: UserProfile?
+    let router: AppRouter
     let onLibraryTap: () -> Void
-    let onSearch: () -> Void
-    let onOpenSettings: () -> Void
-    let onOpenRequests: () -> Void
-    let onSwitchProfile: () -> Void
-    let onSwitchServer: () -> Void
-    let onSignOut: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -509,15 +497,7 @@ private struct LibrariesTopBar: View {
 
             Spacer(minLength: 8)
 
-            TabTopBarActions(
-                profile: profile,
-                onSearch: onSearch,
-                onOpenSettings: onOpenSettings,
-                onOpenRequests: onOpenRequests,
-                onSwitchProfile: onSwitchProfile,
-                onSwitchServer: onSwitchServer,
-                onSignOut: onSignOut
-            )
+            TabTopBarActions(profile: profile, router: router)
         }
     }
 }
