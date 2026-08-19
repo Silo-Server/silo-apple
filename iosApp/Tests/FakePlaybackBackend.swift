@@ -8,7 +8,6 @@ import Foundation
 /// `fire…` helpers invoke whatever closure the system under test installed.
 /// Tests assert on `calls` (order and arguments) and drive the control plane by
 /// firing callbacks.
-@MainActor
 final class FakePlaybackBackend: PlaybackBackend {
 
     /// Ordered log of every call made on this backend: `"name(arg,arg)"`.
@@ -84,18 +83,21 @@ final class FakePlaybackBackend: PlaybackBackend {
         calls.append("dispose()")
     }
 
-    // MARK: - Recovery handshake
+    // MARK: - Recovery
 
-    func setRecoverySuspended(_ suspended: Bool, reason: String) {
-        calls.append("setRecoverySuspended(\(suspended),\(reason))")
-    }
+    /// Live sample handed back to the recovery owner. `nil` by default, which
+    /// is what a backend with no item reports.
+    var recoveryPlayheadSampleValue: PlayheadSample?
+    var recoveryPlayheadSample: PlayheadSample? { recoveryPlayheadSampleValue }
 
-    func setExternalStallSuppression(_ active: Bool) {
-        calls.append("setExternalStallSuppression(\(active))")
-    }
+    var onRecoveryObservation: ((RecoveryObservation) -> Void)?
 
-    func kickPlaybackAfterExternalStallCleared() {
-        calls.append("kickPlaybackAfterExternalStallCleared()")
+    /// Every action the system under test performed, in order.
+    private(set) var performedRecoveryActions: [RecoveryAction] = []
+
+    func perform(_ action: RecoveryAction) {
+        performedRecoveryActions.append(action)
+        calls.append("perform(\(action))")
     }
 
     // MARK: - Tracks / subtitles / chapters
@@ -200,5 +202,9 @@ final class FakePlaybackBackend: PlaybackBackend {
     func fireExternalPlaybackUnavailable() { onExternalPlaybackUnavailable?() }
     func fireSidecarTracksRegistered(_ descriptors: [SidecarSubtitleDescriptor]) {
         onSidecarTracksRegistered?(descriptors)
+    }
+
+    func fireRecoveryObservation(_ observation: RecoveryObservation) {
+        onRecoveryObservation?(observation)
     }
 }

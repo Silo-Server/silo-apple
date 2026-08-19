@@ -642,9 +642,10 @@ enum PlaybackReducer {
         )
     }
 
-    /// `makeCallbacks().onTimeChange`'s seek filter: reports still closer to
-    /// the pre-seek position than to the target are stale drainage frames; the
-    /// first report past the midpoint means the seek landed.
+    /// The time-report seek filter the shell's engine-event loop applies:
+    /// reports still closer to the pre-seek position than to the target are
+    /// stale drainage frames; the first report past the midpoint means the seek
+    /// landed.
     static func seekHasLanded(_ request: SeekRequest, observedSeconds: Double) -> Bool {
         abs(observedSeconds - request.fromSeconds) >= abs(observedSeconds - request.targetSeconds)
     }
@@ -1046,6 +1047,13 @@ enum PlaybackReducer {
              .externalPlaybackAllowed, .externalPlaybackUnavailable:
             // Track, chapter, timeline and external-route projections belong
             // to the track coordinator and the presentation model.
+            return (state, [])
+
+        case .recoveryAction:
+            // Wave 2b's shell-executed recovery arm. The actor unwraps it into
+            // `PlayerEvent.recovery(action, loadID)` and re-enters through
+            // `recovery(_:action:loadID:)`, which is where the decision is
+            // turned into state — never here.
             return (state, [])
         }
     }
@@ -1626,8 +1634,8 @@ enum PlaybackReducer {
                     // ride-through poll would otherwise keep probing under a
                     // superseded sub-state.
                     //
-                    // `clearSourceOutageRideThroughState`'s
-                    // `setExternalStallSuppression(false)` needs no effect of
+                    // `clearSourceOutageRideThroughState`'s half of the retired
+                    // external-stall suppression handshake needs no effect of
                     // its own: the backend that holds the suppression is
                     // disposed two effects below.
                     .cancelTimer(.backgroundRenewal),
