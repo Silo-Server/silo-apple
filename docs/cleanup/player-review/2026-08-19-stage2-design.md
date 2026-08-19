@@ -517,9 +517,13 @@ final class LocalHLSHost {                                   // inv-3 §4.1–4.
   `RunLoop.main` timers, `PlayerViewModel`, the proxy's callbacks — is itself nonisolated, and every one of
   them already runs on the main queue. Annotating the classes would have forced a hop into each of those
   sites and deferred every in-route recovery decision by a run-loop turn, which is precisely the timing
-  invariant (I1, "same action, same order") this wave had to hold. The four `MainActor.assumeIsolated` sites
-  in `AVPlayerBackend.perform(_:)` are the seam where a `@MainActor` body is reached from that nonisolated
-  chain; each is fed only by main-queue producers. Wave 3's actor cutover is where isolation is re-decided.
+  invariant (I1, "same action, same order") this wave had to hold. The two `MainActor.assumeIsolated` sites
+  reached from `AVPlayerBackend.perform(_:)` — `.restartProducer`'s host call and the post-outage kick inside
+  `kickPlaybackAfterOutage` (via the `.endOutageRideThrough` arm) — are the seam where a `@MainActor` body is
+  reached from that nonisolated chain; each is fed only by main-queue producers. (The round-2 repair moved the
+  other two arms — the watchdog reanchor and the vod-stall reload — back onto `Task { @MainActor }` hops to
+  match legacy timing; the two `assumeIsolated` sites in the TV display-criteria path predate this wave.)
+  Wave 3's actor cutover is where isolation is re-decided.
 - `start(startSeconds:)` is non-throwing (the throw moved up into `ExecutablePlan.init`); `perform(_:)` is
   non-`async`; `dispose` gained `retainingTransport:` for the tvOS suspend (§2.3 as-built item 2's
   `.retainProxy`) and is joined by `disposeEngineOnly(reason:)`, which keeps the session alive as the load's
@@ -533,6 +537,14 @@ final class LocalHLSHost {                                   // inv-3 §4.1–4.
   to live on the reused `AVPlayerBackend` instance) and `context.outage` (the ride-through was view-model
   state, and it is the only thing able to release the `origin_outage` hold). A hold may only be adopted
   together with its releaser.
+- **Disclosed divergence (route change during an outage ride-through):** the carry fires only on genuine
+  backend reuse (an in-place replan). A route-change replan taken mid-ride-through drops the ride-through with
+  its retired backend instead of escalating at the original 90 s deadline, and a still-failing origin then
+  restarts the ride-through (fresh budget, fresh `origin_outage` hold) on the new session — legacy's
+  view-model-scoped `sourceOutageActive` made re-entry a no-op and kept the original deadline. Worst case is a
+  doubled ride-through (~180 s) before the visible recovery appears, on a path that needs the server to answer
+  a replan while the origin is down. Full legacy fidelity needs shell-scoped ride-through state — wave 3, same
+  bucket as the post-outage-reload suppression window (behavior_changes item 8).
 
 `AVPlayerBackend` after wave 2 keeps: observers, audio session, display criteria, initial-display gate, PiP/AirPlay
 policy, seek deadline, buffer policy, subtitle overlay pump, `attachLoopbackItem(url:)`,
