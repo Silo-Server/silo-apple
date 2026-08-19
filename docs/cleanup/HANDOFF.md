@@ -1,8 +1,9 @@
 # Silo Apple streamlining program — session handoff
 
 **Read this first when picking the program up in a new session.** It is the single entry point; every other
-document it names is supporting evidence. Last updated 2026-08-19 (early): **round 6** (second DRY/KISS/YAGNI
-sweep, 8 packages, all approved) merged @ `9b3e9f1` after a provider session limit cut the fix run in half (§3
+document it names is supporting evidence. Last updated 2026-08-19 (morning): **round 6** (second DRY/KISS/YAGNI
+sweep, 8 packages, all approved) merged @ `9b3e9f1`, its four-item deferred tail + the owner's temporary-scope
+guard test merged @ `20ba06b` after a provider session limit cut the fix run in half (§3
 notes how it was resumed); PR #172 review comments addressed (`034b4df`); playback telemetry/runway unification
 landed (`c0026d1`, PR body section). Earlier on 08-18: owner answered P1/P2/P5 and P11 (§7 — loopback stays;
 Stage 3/Option B and Stage 5/Option C are off the table; Stage 2 ships as a **hard cutover**, no remote
@@ -31,9 +32,9 @@ is over, §2).
 
 | Item | State |
 |---|---|
-| Branch / PR | `player/architecture-remediation` @ `9b3e9f1` (round 6 merged), pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN` |
+| Branch / PR | `player/architecture-remediation` @ `20ba06b` (round 6 + its tail merged), pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN` |
 | Size vs `main` | ~150 commits, ~530 files, roughly +20k / −32k raw |
-| Suite (iOS `SiloTests`, only test target) | `Executed 1538 tests, with 3 tests skipped and 0 failures (0 unexpected)` at `9b3e9f1` (1520 + 18 tests added by the PR-review and telemetry layers) — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
+| Suite (iOS `SiloTests`, only test target) | `Executed 1539 tests, with 3 tests skipped and 0 failures (0 unexpected)` at `20ba06b` (1520 + 18 tests added by the PR-review and telemetry layers + the temporary-scope guard test) — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
 | Builds | `Silo` (iOS), `SiloTV` (tvOS), `SiloMac` all green at the tip, `CODE_SIGNING_ALLOWED=NO` |
 | Hardware | HDR10 loopback + display criteria validated (bedroom gen-3 08-17, Living Room gen-2 08-18); DV rows validated 08-18 on Living Room (P8.1 passthrough, P7→8.1 + TrueHD→FLAC); §8 anomaly **closed as environmental** |
 | Sibling PRs to sequence after #172 | #171 (release launch paths / deep links), #169 + #107 (subtitles) — they overlap touched files |
@@ -86,7 +87,10 @@ is over, §2).
    survey-v2 → fix machinery, 25 + 16 agents, 66→63 findings, 8 file-disjoint packages, **all approved by
    independent Opus review, no repair round**; 105 files, +1,604 / −3,157 (net −1,553). Full item list in the
    backlog §0 round-6 row; deferred/refuted paragraph right below it. The fix run was interrupted by a provider
-   session limit and finished from a second session (§3, "interrupted runs").
+   session limit and finished from a second session (§3, "interrupted runs"). **Tail landed 2026-08-19** (`20ba06b`,
+   two hand-briefed packages, both approved): `ApplePlaybackV3PlanAdapter.resolvePlayablePlan` shared by the video
+   bridge and the audiobook engine, `PlayerViewModel.mutateSubtitleAppearance`, `Library.displayOrder`,
+   `makeTestExecutionPlan` test maker; plus the owner's temporary-scope guard test (`74c626f`). Round 6 is closed.
 
 ## 3. How the cleanup loop runs (the machinery)
 
@@ -191,11 +195,11 @@ The whole round-5 deferred list **and** the 14 environment failures landed on 20
 - Re-cover the temporary-scope refresh guard with a direct unit test against the live
   `TokenStore.saveRefreshedTokens(_:_:replacing:)` funnel — the only direct assertion was deleted with the
   dead overload; end-to-end coverage remains (`testOrdinaryUnauthorizedResponseCannotCrossFromPersistentIntoTemporaryCredentials`).
-  **In progress:** an owner-authored `testTemporaryScopedRefreshCommitNeverReachesPersistentKeychainStorage` sits
-  uncommitted in `iosApp/Tests/SettingValuesAPITests.swift` in the main checkout (it passes; commit it when the owner is done).
-- Round-6 deferred tail (backlog §0 "Round-6 deferred"): audiobook V3 start-response copy; player-side
-  `mutateSubtitleAppearance(_:)` collapse (~10 lines); library display-order comparator (×4, −6); planner-input
-  test fixture maker (×7). One small hand-briefed package, like the round-5 tail.
+  **Done 2026-08-19:** `testTemporaryScopedRefreshCommitNeverReachesPersistentKeychainStorage` (`74c626f`) drives the
+  live funnel with a `.temporary` capture — scope active → only the scope is written; scope ended → the commit is refused.
+- ~~Round-6 deferred tail~~ — **landed 2026-08-19** (`20ba06b`). Stage 2 note from its reviewer: move the V3 start
+  prologue (`resolvePlayablePlan`) into the session actor when the control plane is extracted; the adapter is no longer
+  side-effect-free.
 - Backlog §2.5 follow-up from the PR review: the backend cannot tell when the writer degraded to the plan-less
   EVENT fallback (seek reanchor / VOD retention / buffer floor run under VOD wiring) — needs a mode-aware signal
   plus a device pass; pre-existing on `main`, not a regression.
@@ -272,7 +276,7 @@ not reach the player.
    the specs so the legacy VM core + ladders are deleted in the same effort, with the characterization suite as
    the safety net. Run via `player-remediation-fix.js` with spec JSONs (roughly 5–7 implementers + reviewers;
    workflows still need an explicit per-request opt-in).
-3. Small items: commit the owner's temporary-scope guard test once it is final (§6a); the round-6 deferred tail
-   as one hand-briefed package (§6a).
+3. Small items left: backlog §2.5 EVENT-fallback signal (needs a device pass), backlog 1.18/1.21 — nothing else
+   small is queued; the round-6 tail and the temporary-scope guard test are done.
 4. Another full DRY survey is unlikely to pay: rounds 5 and 6 back-to-back found zero orphan types and the
    round-6 yield was already mostly repetition; Stage 2 is the lever now.
