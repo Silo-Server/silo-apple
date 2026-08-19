@@ -84,6 +84,46 @@ enum ApplePlaybackV3PlanAdapter {
         }
     }
 
+    /// Shared Protocol V3 start-response resolution used by the video bridge and the audiobook engine.
+    static func resolvePlayablePlan(
+        _ response: PlaybackV3DecisionResponse,
+        playbackAttemptId: String,
+        snapshot: ApplePlaybackV3CapabilitySnapshot
+    ) async throws -> (plan: PlaybackV3Plan, sessionId: String) {
+        switch response.validatedForApple() {
+        case .terminal(let terminal):
+            Task {
+                await PlaybackSessionBridge.reportTerminalStart(
+                    playbackAttemptId: playbackAttemptId,
+                    snapshot: snapshot,
+                    terminal: terminal
+                )
+            }
+            throw PlaybackV3TerminalFailure(
+                reason: terminal.reason,
+                message: terminal.message,
+                retryable: terminal.retryable
+            )
+        case .incompatible(let allocatedSessionId):
+            if let allocatedSessionId {
+                try? await SiloAPI.shared.stopPlayback(sessionId: allocatedSessionId)
+            }
+            throw PlaybackV3TerminalFailure(
+                reason: "invalid_playback_plan",
+                message: "The server returned an incompatible protocol V3 playback plan.",
+                retryable: false
+            )
+        case .playable(let plan, let sessionId):
+            do {
+                try validate(plan)
+            } catch {
+                try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
+                throw error
+            }
+            return (plan, sessionId)
+        }
+    }
+
     static func playbackSession(
         plan: PlaybackV3Plan,
         sessionId: String,

@@ -68,7 +68,7 @@ struct SubtitleAppearanceDialog: View {
                                     selection: viewModel.settings.subtitleAppearance.backgroundStyle.rawValue,
                                     onSelect: { value in
                                         if let style = SubtitleBackgroundStylePreset(rawValue: value) {
-                                            updateAppearance { $0.applyBackgroundStyle(style) }
+                                            viewModel.mutateSubtitleAppearance { $0.applyBackgroundStyle(style) }
                                         }
                                     }
                                 )
@@ -89,7 +89,7 @@ struct SubtitleAppearanceDialog: View {
                                     selection: viewModel.settings.subtitleAppearance.fontFamily.rawValue,
                                     onSelect: { value in
                                         if let font = SubtitleFontFamilyPreset(rawValue: value) {
-                                            updateAppearance { $0.fontFamily = font }
+                                            viewModel.mutateSubtitleAppearance { $0.fontFamily = font }
                                         }
                                     }
                                 )
@@ -110,7 +110,7 @@ struct SubtitleAppearanceDialog: View {
                                     selection: viewModel.settings.subtitleAppearance.fontSize.rawValue,
                                     onSelect: { value in
                                         if let size = SubtitleFontSizePreset(rawValue: value) {
-                                            updateAppearance { $0.fontSize = size }
+                                            viewModel.mutateSubtitleAppearance { $0.fontSize = size }
                                         }
                                     }
                                 )
@@ -131,7 +131,7 @@ struct SubtitleAppearanceDialog: View {
                                     options: Self.fontColorOptions,
                                     selection: viewModel.settings.subtitleAppearance.fontColor,
                                     onSelect: { value in
-                                        updateAppearance { $0.fontColor = value }
+                                        viewModel.mutateSubtitleAppearance { $0.fontColor = value }
                                     }
                                 )
                             )
@@ -143,7 +143,7 @@ struct SubtitleAppearanceDialog: View {
                             label: "Text outline",
                             isOn: viewModel.settings.subtitleAppearance.textOutline
                         ) { enabled in
-                            updateAppearance { $0.textOutline = enabled }
+                            viewModel.mutateSubtitleAppearance { $0.textOutline = enabled }
                         }
                         .focused($focusedField, equals: .outlineToggle)
                         .id(Field.outlineToggle)
@@ -165,7 +165,7 @@ struct SubtitleAppearanceDialog: View {
                                     selection: viewModel.settings.subtitleAppearance.textOutlineColor,
                                     onSelect: { value in
                                         // Picking a color turns the outline on.
-                                        updateAppearance { $0.applyTextOutlineColor(value) }
+                                        viewModel.mutateSubtitleAppearance { $0.applyTextOutlineColor(value) }
                                     }
                                 )
                             )
@@ -190,7 +190,7 @@ struct SubtitleAppearanceDialog: View {
                                     selection: viewModel.settings.subtitleAppearance.backgroundColor,
                                     onSelect: { value in
                                         // Picking a color switches the style to Box.
-                                        updateAppearance { $0.applyBackgroundColor(value) }
+                                        viewModel.mutateSubtitleAppearance { $0.applyBackgroundColor(value) }
                                     }
                                 )
                             )
@@ -207,7 +207,7 @@ struct SubtitleAppearanceDialog: View {
                                     selection: String(viewModel.settings.subtitleAppearance.backgroundOpacity),
                                     onSelect: { value in
                                         if let opacity = Int(value) {
-                                            updateAppearance { $0.applyBackgroundOpacity(opacity) }
+                                            viewModel.mutateSubtitleAppearance { $0.applyBackgroundOpacity(opacity) }
                                         }
                                     }
                                 )
@@ -228,7 +228,7 @@ struct SubtitleAppearanceDialog: View {
                                     selection: viewModel.settings.subtitleAppearance.position.rawValue,
                                     onSelect: { value in
                                         if let position = SubtitlePositionPreset(rawValue: value) {
-                                            updateAppearance { $0.position = position }
+                                            viewModel.mutateSubtitleAppearance { $0.position = position }
                                         }
                                     }
                                 )
@@ -292,12 +292,6 @@ struct SubtitleAppearanceDialog: View {
         if let field {
             focusedField = field
         }
-    }
-
-    private func updateAppearance(_ mutate: @escaping (inout SubtitleAppearance) -> Void) {
-        var next = viewModel.settings.subtitleAppearance
-        mutate(&next)
-        Task { await viewModel.setSubtitleAppearance(next) }
     }
 
     private var opacityLabel: String {
