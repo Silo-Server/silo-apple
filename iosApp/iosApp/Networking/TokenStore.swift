@@ -854,15 +854,6 @@ actor TokenStore {
         return epoch
     }
 
-    func hasStoredProfileToken(for serverID: String) -> Bool {
-        guard !serverID.isEmpty else { return false }
-        if serverID == activeServerId {
-            ensureLoaded()
-            return cachedProfileToken != nil
-        }
-        return profileKeychain.get(Self.profileTokenKey(for: serverID)) != nil
-    }
-
     /// Commits profile ID and verification proof in one actor turn after the
     /// caller has closed HTTP dispatch. Persistent mutations fail closed while
     /// a temporary remote-playback identity owns request authentication.

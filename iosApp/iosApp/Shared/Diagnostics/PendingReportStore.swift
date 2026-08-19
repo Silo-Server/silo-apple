@@ -1374,20 +1374,8 @@ enum DiagnosticsStoreError: Error, Equatable {
 }
 
 enum DiagnosticsDates {
-    private static let fractional: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-
-    private static let whole: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
-
     static func date(from value: String) -> Date? {
-        fractional.date(from: value) ?? whole.date(from: value)
+        DateFormatters.parseRFC3339(value)
     }
 }
 

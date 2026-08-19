@@ -21,26 +21,13 @@ enum DetailDateFormatting {
 
     private static func parsedDate(_ raw: String) -> Date? {
         fullDateParser.date(from: raw)
-            ?? rfc3339Parser.date(from: raw)
-            ?? rfc3339FractionalParser.date(from: raw)
+            ?? DateFormatters.parseRFC3339(raw)
             ?? fallbackDateParser.date(from: raw)
     }
 
     private static let fullDateParser: ISO8601DateFormatter = {
         let parser = ISO8601DateFormatter()
         parser.formatOptions = [.withFullDate]
-        return parser
-    }()
-
-    private static let rfc3339Parser: ISO8601DateFormatter = {
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withInternetDateTime]
-        return parser
-    }()
-
-    private static let rfc3339FractionalParser: ISO8601DateFormatter = {
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return parser
     }()
 
