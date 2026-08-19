@@ -1,0 +1,528 @@
+import Foundation
+import XCTest
+@testable import Silo
+
+/// First coverage for the player's track half (inventory-2 §6: nothing pinned
+/// `applyTrackList`, `appendSidecarTracks`, the `pending*` consumption order,
+/// `bestTrackMatch`'s threshold or the forced-sidecar auto-select before this).
+///
+/// The coordinator is driven through `TrackSelectionPorts` with a nil backend,
+/// so the assertions are on published ids plus the port calls the recorder
+/// captures. The "…and does not apply locally" halves of the sidecar cases need
+/// the backend double that lands with the `PlaybackBackend` package; what is
+/// observable without it is asserted here.
+@MainActor
+final class TrackSelectionCoordinatorTests: XCTestCase {
+
+    private var matchesSystemAppearanceBefore = false
+
+    override func setUp() {
+        super.setUp()
+        matchesSystemAppearanceBefore = PlayerSettings.shared.subtitleMatchesSystemAppearance
+        PlayerSettings.shared.subtitleMatchesSystemAppearance = false
+    }
+
+    override func tearDown() {
+        PlayerSettings.shared.subtitleMatchesSystemAppearance = matchesSystemAppearanceBefore
+        super.tearDown()
+    }
+
+    // MARK: - applyTrackList: pending indices
+
+    func testApplyTrackListAppliesPendingAudioIndexAndClearsIt() {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder)
+        coordinator.resetForLoad(
+            preferredAudioTrackIndex: 1,
+            preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: nil,
+            preferredProtocolV3SubtitleIndex: nil
+        )
+
+        coordinator.applyTrackList([
+            audioTrack(trackId: 10, srcId: 0),
+            audioTrack(trackId: 11, srcId: 1),
+        ])
+
+        XCTAssertEqual(coordinator.selectedAudioId, 11)
+        XCTAssertNil(coordinator.pendingAudioFfIndex, "the pending index is consumed once it matches")
+
+        // A second track list must not re-apply the (now consumed) intent.
+        coordinator.applyTrackList([
+            audioTrack(trackId: 10, srcId: 0, isSelected: true),
+            audioTrack(trackId: 11, srcId: 1),
+        ])
+        XCTAssertEqual(coordinator.selectedAudioId, 10, "AVFoundation's reported selection wins once nothing is pending")
+    }
+
+    func testApplyTrackListPendingSubtitleOffSentinelDisablesReportedSelection() {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder)
+        coordinator.resetForLoad(
+            preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: -1,
+            preferredSidecarSubtitleTrackId: nil,
+            preferredProtocolV3SubtitleIndex: nil
+        )
+
+        // The player reports a selected embedded track; the explicit "Off"
+        // sentinel is consumed *after* that adoption, so subtitles end up off.
+        coordinator.applyTrackList([
+            subtitleTrack(trackId: 20, ffIndex: 2, isSelected: true),
+        ])
+
+        XCTAssertNil(coordinator.selectedSubtitleId)
+    }
+
+    func testApplyTrackListAppliesPendingSubtitleIndexWhenItsTrackAppears() {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder)
+        coordinator.resetForLoad(
+            preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: 5,
+            preferredSidecarSubtitleTrackId: nil,
+            preferredProtocolV3SubtitleIndex: nil
+        )
+
+        // First list has no ffIndex 5 — the intent survives.
+        coordinator.applyTrackList([subtitleTrack(trackId: 20, ffIndex: 2)])
+        XCTAssertNil(coordinator.selectedSubtitleId)
+
+        coordinator.applyTrackList([
+            subtitleTrack(trackId: 20, ffIndex: 2),
+            subtitleTrack(trackId: 21, ffIndex: 5),
+        ])
+        XCTAssertEqual(coordinator.selectedSubtitleId, 21)
+    }
+
+    // MARK: - Fuzzy recovery match (TrackSelectionSnapshot threshold)
+
+    func testFuzzyRestoreAcceptsAScoreOfExactlyThree() {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder)
+        coordinator.restoreAfterRecovery(recoverySnapshot(audio: previousAudioTrack))
+
+        // Differs in title (4), language (3), codec (2) and layout (2);
+        // agrees only on forced + external + hearing-impaired = 3.
+        coordinator.applyTrackList([
+            audioTrack(
+                trackId: 30,
+                srcId: 0,
+                title: "Other",
+                lang: "fra",
+                codec: "aac",
+                layout: "stereo"
+            )
+        ])
+
+        XCTAssertEqual(coordinator.selectedAudioId, 30, "score 3 is the accepted floor")
+    }
+
+    func testFuzzyRestoreRejectsAScoreBelowThree() {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder)
+        coordinator.restoreAfterRecovery(recoverySnapshot(audio: previousAudioTrack))
+
+        // Same as above but the forced flag differs too, dropping the score to 2.
+        coordinator.applyTrackList([
+            audioTrack(
+                trackId: 30,
+                srcId: 0,
+                title: "Other",
+                lang: "fra",
+                codec: "aac",
+                layout: "stereo",
+                isForced: true
+            )
+        ])
+
+        XCTAssertNil(coordinator.selectedAudioId, "score 2 is below the threshold")
+    }
+
+    // MARK: - appendSidecarTracks
+
+    func testAppendSidecarTracksRestoresPendingSidecarSelection() {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder)
+        let sidecarId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 2)
+        coordinator.resetForLoad(
+            preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: sidecarId,
+            preferredProtocolV3SubtitleIndex: nil
+        )
+
+        coordinator.appendSidecarTracks([
+            descriptor(index: 1),
+            descriptor(index: 2),
+        ])
+
+        XCTAssertEqual(coordinator.selectedSubtitleId, sidecarId)
+        XCTAssertEqual(coordinator.subtitleTracks.map(\.trackId), [
+            SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 1),
+            sidecarId,
+        ])
+    }
+
+    func testServerRenderedRestoreIntentSelectsThePickerRowAfterRegistration() throws {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder)
+        let sidecarId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 2)
+
+        // A burn-in plan whose selected subtitle is combined index 2: the
+        // sidecar row stays selected in the picker even though the server
+        // renders it. (That it is *not* opened locally is the backend-double
+        // half of this case.)
+        let prepared = try preparedPlayback(subtitleMode: "burn_in", selectedSubtitleIndex: 2)
+        coordinator.adopt(
+            prepared: prepared,
+            origin: .protocolV3Replan(
+                PlayerViewModel.PlaybackAdoptionOrigin.Replan(selectedSubtitleSnapshot: sidecarId)
+            )
+        )
+
+        coordinator.appendSidecarTracks([descriptor(index: 2)])
+
+        XCTAssertEqual(coordinator.selectedSubtitleId, sidecarId)
+    }
+
+    func testForcedSidecarIsAutoSelectedWithoutAnExplicitChoice() {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder)
+        coordinator.resetForLoad(
+            preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: nil,
+            preferredProtocolV3SubtitleIndex: nil
+        )
+        XCTAssertFalse(coordinator.hasExplicitSubtitleChoice)
+
+        coordinator.appendSidecarTracks([
+            descriptor(index: 0),
+            descriptor(index: 1, forced: true),
+        ])
+
+        XCTAssertEqual(
+            coordinator.selectedSubtitleId,
+            SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 1)
+        )
+    }
+
+    func testForcedSidecarAutoSelectIsSuppressedByAnExplicitChoiceAndBySystemAppearanceMode() {
+        // (a) explicit caller-supplied subtitle intent latches the choice.
+        let explicit = makeCoordinator(PortRecorder())
+        explicit.resetForLoad(
+            preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: -1,
+            preferredSidecarSubtitleTrackId: nil,
+            preferredProtocolV3SubtitleIndex: nil
+        )
+        XCTAssertTrue(explicit.hasExplicitSubtitleChoice)
+        explicit.appendSidecarTracks([descriptor(index: 1, forced: true)])
+        XCTAssertNil(explicit.selectedSubtitleId, "an explicit choice outranks the forced sidecar")
+
+        // (b) device-settings mode routes every sidecar through Apple's policy.
+        PlayerSettings.shared.subtitleMatchesSystemAppearance = true
+        let systemMode = makeCoordinator(PortRecorder())
+        systemMode.resetForLoad(
+            preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: nil,
+            preferredProtocolV3SubtitleIndex: nil
+        )
+        systemMode.appendSidecarTracks([descriptor(index: 1, forced: true)])
+        XCTAssertNil(systemMode.selectedSubtitleId, "system appearance mode skips the forced auto-select")
+    }
+
+    // MARK: - Suspension gate + user commands
+
+    func testUserCommandsAreDroppedWhileBackgroundSuspended() {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder, isBackgroundSuspended: true)
+        coordinator.applyTrackList([
+            audioTrack(trackId: 10, srcId: 0),
+            subtitleTrack(trackId: 20, ffIndex: 2),
+        ])
+
+        coordinator.selectAudio(coordinator.audioTracks[0])
+        coordinator.selectSubtitle(coordinator.subtitleTracks[0])
+        coordinator.disableSubtitles()
+        coordinator.cycleAudioTrack()
+        coordinator.toggleSubtitles()
+
+        XCTAssertNil(coordinator.selectedAudioId)
+        XCTAssertNil(coordinator.selectedSubtitleId)
+        XCTAssertFalse(coordinator.hasExplicitSubtitleChoice)
+        XCTAssertEqual(recorder.hideControlsCount, 0)
+    }
+
+    func testUserAudioSelectionClearsThePendingIntentAndRevealsControls() {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder)
+        coordinator.resetForLoad(
+            preferredAudioTrackIndex: 1,
+            preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: nil,
+            preferredProtocolV3SubtitleIndex: nil
+        )
+        coordinator.applyTrackList([audioTrack(trackId: 10, srcId: 0)])
+        XCTAssertEqual(coordinator.pendingAudioFfIndex, 1, "no track matched, so the intent survives")
+
+        coordinator.selectAudio(coordinator.audioTracks[0])
+
+        XCTAssertEqual(coordinator.selectedAudioId, 10)
+        XCTAssertNil(coordinator.pendingAudioFfIndex, "a manual pick drops the server intent")
+        XCTAssertEqual(recorder.hideControlsCount, 1)
+        XCTAssertTrue(recorder.replans.isEmpty, "no V3 plan is active, so the switch is local")
+    }
+
+    // MARK: - resetForLoad
+
+    func testResetForLoadClearsPublishedStateAndSeedsTheRequestedIntents() {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder)
+        coordinator.applyTrackList([
+            audioTrack(trackId: 10, srcId: 0, isSelected: true),
+            subtitleTrack(trackId: 20, ffIndex: 2, isSelected: true),
+        ])
+        XCTAssertEqual(coordinator.selectedAudioId, 10)
+        XCTAssertEqual(coordinator.selectedSubtitleId, 20)
+
+        coordinator.resetForLoad(
+            preferredAudioTrackIndex: 3,
+            preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: nil,
+            preferredProtocolV3SubtitleIndex: nil
+        )
+
+        XCTAssertTrue(coordinator.audioTracks.isEmpty)
+        XCTAssertTrue(coordinator.subtitleTracks.isEmpty)
+        XCTAssertNil(coordinator.selectedAudioId)
+        XCTAssertNil(coordinator.selectedSubtitleId)
+        XCTAssertNil(coordinator.selectedSecondarySubtitleId)
+        XCTAssertEqual(coordinator.pendingAudioFfIndex, 3)
+        XCTAssertFalse(
+            coordinator.hasExplicitSubtitleChoice,
+            "an audio-only intent is not an explicit subtitle choice"
+        )
+
+        // Any of the three subtitle intents latches the explicit-choice flag.
+        coordinator.resetForLoad(
+            preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: nil,
+            preferredProtocolV3SubtitleIndex: 4
+        )
+        XCTAssertTrue(coordinator.hasExplicitSubtitleChoice)
+        XCTAssertNil(coordinator.pendingAudioFfIndex)
+    }
+
+    // MARK: - Doubles / builders
+
+    /// Records the port calls the assertions read back.
+    private final class PortRecorder {
+        var replans: [(classification: String, message: String, subtitleIndex: Int?)] = []
+        var hideControlsCount = 0
+        var lastLoadRequestSubtitleIndexWrites: [Int?] = []
+    }
+
+    private func makeCoordinator(
+        _ recorder: PortRecorder,
+        isBackgroundSuspended: Bool = false
+    ) -> TrackSelectionCoordinator {
+        var ports = TrackSelectionPorts(
+            backend: { nil },
+            context: {
+                TrackSelectionContext(
+                    activePreparedProtocolV3: nil,
+                    currentSelectedVersion: nil,
+                    currentWatchDetail: nil,
+                    activePlaybackSessionId: nil,
+                    resolvedServerUrl: "",
+                    activeRouteKind: .avPlayerNativeDirect,
+                    backendCapabilities: .avFoundation,
+                    offlinePlaybackContext: nil,
+                    currentTime: 0,
+                    isBackgroundSuspended: isBackgroundSuspended,
+                    isPlaying: false
+                )
+            },
+            requestReplan: { _, _, _ in },
+            isReplanInFlight: { false },
+            lastLoadRequest: { nil },
+            setLastLoadRequestProtocolV3SubtitleIndex: { _ in },
+            showNotice: { _, _, _, _ in },
+            activeNotice: { nil },
+            dismissNotice: {},
+            scheduleHideControls: {},
+            resolveServerUrl: { raw, _ in URL(string: raw) },
+            subtitleAILiveOverlayAvailable: { false },
+            deferredLiveSubtitleCloseTask: { nil },
+            setDeferredLiveSubtitleCloseTask: { _ in }
+        )
+        ports.requestReplan = { classification, message, index in
+            recorder.replans.append((classification, message, index))
+        }
+        ports.scheduleHideControls = { recorder.hideControlsCount += 1 }
+        ports.setLastLoadRequestProtocolV3SubtitleIndex = { index in
+            recorder.lastLoadRequestSubtitleIndexWrites.append(index)
+        }
+        return TrackSelectionCoordinator(ports: ports)
+    }
+
+    private var previousAudioTrack: PlayerTrack {
+        audioTrack(trackId: 99, srcId: 0, title: "Director", lang: "eng", codec: "ac3", layout: "5.1")
+    }
+
+    private func recoverySnapshot(
+        audio: PlayerTrack
+    ) -> TrackSelectionCoordinator.RecoverySnapshot {
+        TrackSelectionCoordinator.RecoverySnapshot(
+            prefs: nil,
+            externalSubtitles: [],
+            audioSelection: TrackSelectionCoordinator.TrackSelectionSnapshot(track: audio),
+            subtitleSelection: nil,
+            secondarySubtitleId: nil,
+            hasExplicitSubtitleChoice: false
+        )
+    }
+
+    private func audioTrack(
+        trackId: Int64,
+        srcId: Int?,
+        title: String? = "Director",
+        lang: String? = "eng",
+        codec: String? = "ac3",
+        layout: String? = "5.1",
+        isForced: Bool = false,
+        isSelected: Bool = false
+    ) -> PlayerTrack {
+        PlayerTrack(
+            trackId: trackId,
+            kind: .audio,
+            title: title,
+            lang: lang,
+            codec: codec,
+            audioChannelsLayout: layout,
+            audioChannelCount: nil,
+            bitrate: nil,
+            isDefault: false,
+            isForced: isForced,
+            isHearingImpaired: false,
+            isVisualImpaired: false,
+            isExternal: false,
+            isSelected: isSelected,
+            ffIndex: nil,
+            srcId: srcId
+        )
+    }
+
+    private func subtitleTrack(
+        trackId: Int64,
+        ffIndex: Int?,
+        isSelected: Bool = false
+    ) -> PlayerTrack {
+        PlayerTrack(
+            trackId: trackId,
+            kind: .sub,
+            title: "Sub \(trackId)",
+            lang: "eng",
+            codec: "subrip",
+            audioChannelsLayout: nil,
+            audioChannelCount: nil,
+            bitrate: nil,
+            isDefault: false,
+            isForced: false,
+            isHearingImpaired: false,
+            isVisualImpaired: false,
+            isExternal: false,
+            isSelected: isSelected,
+            ffIndex: ffIndex,
+            srcId: nil
+        )
+    }
+
+    private func descriptor(index: Int, forced: Bool = false) -> SidecarSubtitleDescriptor {
+        SidecarSubtitleDescriptor(
+            index: index,
+            language: "eng",
+            codec: "srt",
+            label: "Sidecar \(index)",
+            source: "external",
+            forced: forced,
+            isDefault: false,
+            isHearingImpaired: false,
+            fontBundleUrl: nil,
+            url: URL(string: "https://example.test/subs/\(index).vtt")!
+        )
+    }
+
+    /// A prepared playback whose V3 plan carries the requested subtitle mode
+    /// and selected combined index. Built from the vendored decision fixture so
+    /// the plan stays a real wire object.
+    private func preparedPlayback(
+        subtitleMode: String,
+        selectedSubtitleIndex: Int
+    ) throws -> PreparedPlayback {
+        let url = try PlaybackV3FixtureTestSupport.fixtureURL(
+            named: "decision_response",
+            bundleClass: Self.self
+        )
+        var root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        )
+        var plan = try XCTUnwrap(root["playback_plan"] as? [String: Any])
+        var selectedTracks = try XCTUnwrap(plan["selected_tracks"] as? [String: Any])
+        selectedTracks["subtitle"] = ["id": "file:42:subtitle:\(selectedSubtitleIndex)",
+                                      "index": selectedSubtitleIndex]
+        plan["selected_tracks"] = selectedTracks
+        var subtitle = try XCTUnwrap(plan["subtitle"] as? [String: Any])
+        subtitle["mode"] = subtitleMode
+        plan["subtitle"] = subtitle
+        root["playback_plan"] = plan
+
+        let decoded = try PlaybackV3FixtureTestSupport.decoder.decode(
+            PlaybackV3DecisionResponse.self,
+            from: JSONSerialization.data(withJSONObject: root)
+        )
+        let v3Plan = try XCTUnwrap(decoded.playbackPlan)
+
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let version = try decoder.decode(
+            FileVersion.self,
+            from: Data(#"{"file_id": 42, "path": "/media/movie.mkv"}"#.utf8)
+        )
+        let watchDetail = try decoder.decode(
+            WatchDetail.self,
+            from: Data(#"{"content_id": "movie:1", "type": "movie", "title": "Movie"}"#.utf8)
+        )
+        let session = PlaybackSessionResponse(
+            sessionId: "11111111-1111-4111-8111-111111111111",
+            userId: nil,
+            profileId: nil,
+            mediaFileId: 42,
+            playMethod: "direct",
+            position: 0,
+            isPaused: false,
+            streamUrl: "/stream/11111111-1111-4111-8111-111111111111",
+            audioTrackIndex: nil,
+            durationSeconds: 100,
+            subtitleUrls: nil,
+            playbackInfo: nil
+        )
+        return PreparedPlayback(
+            watchDetail: watchDetail,
+            selectedVersion: version,
+            session: session,
+            protocolV3: PreparedPlaybackV3(
+                playbackAttemptId: "apple:test",
+                planAttemptId: "apple-plan:test",
+                planAttemptKey: "key",
+                outputContextId: nil,
+                serverFeatures: [],
+                plan: v3Plan
+            )
+        )
+    }
+}
