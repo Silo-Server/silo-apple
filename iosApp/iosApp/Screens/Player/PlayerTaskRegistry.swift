@@ -39,6 +39,7 @@ final class PlayerTaskRegistry {
         case suspendStopSession
         case settingsRefresh
 
+        case engineEvents
         case freshLoad
         case protocolV3Replan
         case progress
@@ -80,6 +81,13 @@ final class PlayerTaskRegistry {
             // Awaited by `beginFreshLoad` instead of being reissued, so it
             // only dies with the view model.
             case .settingsRefresh:
+                return [.teardown]
+            // The engine session's event loop (wave 2b). It ends on its own
+            // when the session that owns the stream is disposed, which is what
+            // replaced the by-value generation guard on every callback — so no
+            // stream-scoped sweep may cancel it early and drop the events a
+            // dying load still owes (`.failed`, the terminal `.endOfFile`).
+            case .engineEvents:
                 return [.teardown]
 
             case .freshLoad, .protocolV3Replan, .progress,

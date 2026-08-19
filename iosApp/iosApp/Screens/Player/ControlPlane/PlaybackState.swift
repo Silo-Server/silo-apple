@@ -658,6 +658,13 @@ enum EngineEvent: Equatable {
     case externalPlaybackAllowed(Bool)
     case externalPlaybackUnavailable
     case sidecarTracksRegistered([SidecarSubtitleDescriptor])
+    /// A `RecoveryAction` the load's `RecoveryDriver` decided whose execution
+    /// belongs to the shell, not to the engine (wave 2b). The engine session
+    /// performs the in-route arms itself and forwards these on the same stream
+    /// so a superseded load's decision dies with its session — it is the reason
+    /// the shell no longer needs a generation guard around its ladders.
+    /// Wave 3 delivers it to the actor as `PlayerEvent.recovery` instead.
+    case recoveryAction(RecoveryAction)
 }
 
 /// `PlaybackSessionBridge` → control plane. The `ExecutablePlan` travels with

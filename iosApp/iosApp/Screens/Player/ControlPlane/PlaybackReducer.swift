@@ -1047,6 +1047,13 @@ enum PlaybackReducer {
             // Track, chapter, timeline and external-route projections belong
             // to the track coordinator and the presentation model.
             return (state, [])
+
+        case .recoveryAction:
+            // Wave 2b's shell-executed recovery arm. The actor unwraps it into
+            // `PlayerEvent.recovery(action, loadID)` and re-enters through
+            // `recovery(_:action:loadID:)`, which is where the decision is
+            // turned into state — never here.
+            return (state, [])
         }
     }
 

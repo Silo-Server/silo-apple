@@ -16,14 +16,13 @@ import Foundation
 /// `videoSurfaceBecameReadyForDisplay()`), which `AVPlayerSurface` reaches on
 /// the concrete `AVPlayerBackend`, and the pure static helpers.
 ///
-/// Isolation: `AVPlayerBackend` is a plain `final class` whose members are
-/// nonisolated except `kickPlaybackAfterExternalStallCleared()`, but every
-/// caller drives it from the main actor. Declaring the protocol `@MainActor`
-/// keeps that convention explicit for new code while leaving `AVPlayerBackend`
-/// untouched — a nonisolated member is a valid witness for a main-actor
-/// requirement, and the conformance is stated in an extension so no isolation
-/// is inferred onto the class itself.
-@MainActor
+/// Isolation: nonisolated, like `AVPlayerBackend` itself and like the
+/// `PlaybackEngineSession` that holds `any PlaybackBackend` from wave 2b
+/// (design §2.8 as-built, same reason `LocalHLSHost` is a plain class). Every
+/// caller still drives it from the main queue; making the protocol
+/// `@MainActor` would have forced a hop into the backend's own notification
+/// observers and `RunLoop.main` timers, which is exactly what the in-route
+/// recovery rungs must not gain.
 protocol PlaybackBackend: AnyObject {
 
     // MARK: - Load / transport (inventory-3 §1.2)
@@ -43,14 +42,22 @@ protocol PlaybackBackend: AnyObject {
     func setMediaTimelineOffset(_ offset: Double)
     func dispose()
 
-    // MARK: - Recovery handshake (inventory-3 §1.3)
+    // MARK: - Recovery (wave 2b)
     //
-    // Kept as-is in wave 1; deleted in wave 2 when the in-route ladders move
-    // behind `RecoveryPolicy`.
+    // The wave-1 two-owner recovery handshake is gone: suspension is
+    // `RecoveryContext.suspendedReasons`, held by the one `RecoveryDriver`, and
+    // the post-outage kick is `RecoveryAction.endOutageRideThrough(kick:)`
+    // performed below. The backend observes and executes; it never decides.
 
-    func setRecoverySuspended(_ suspended: Bool, reason: String)
-    func setExternalStallSuppression(_ active: Bool)
-    func kickPlaybackAfterExternalStallCleared()
+    /// Every in-route recovery signal, emitted where a ladder used to decide.
+    var onRecoveryObservation: ((RecoveryObservation) -> Void)? { get set }
+    /// A live transport sample, pulled by the recovery owner immediately before
+    /// each decision so the notification-driven rungs read what they read when
+    /// they lived inside the backend.
+    var recoveryPlayheadSample: PlayheadSample? { get }
+    /// Runs one engine-level `RecoveryAction`. Session- and transport-level
+    /// actions are the shell's and are ignored here.
+    func perform(_ action: RecoveryAction)
 
     // MARK: - Tracks / subtitles / chapters (inventory-3 §1.4)
 

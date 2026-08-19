@@ -32,11 +32,12 @@ struct AVPlayerSeekDeadlineState {
 
 /// Session-scoped budget for full Silo loopback session rebuilds.
 ///
-/// The starvation/exhaustion latch that guards a rebuild (`didEscalateLoopbackStall`)
-/// is cleared *by* the rebuild it guards, so on its own it bounds nothing
-/// across sessions: a title that wedges the same way every time rebuilds
-/// forever. The budget is the outer bound — once it is spent the backend
-/// reports the failure and the view model's ladder owns the decision.
+/// The starvation/exhaustion latch that guards a rebuild
+/// (`RecoveryContext.PlayheadState.didEscalateStarvation`) is cleared *by* the
+/// rebuild it guards, so on its own it bounds nothing across sessions: a title
+/// that wedges the same way every time rebuilds forever. The budget is the
+/// outer bound — once it is spent the recovery owner reports the failure and
+/// the failure ladder owns the decision.
 struct LoopbackRebuildBudget {
     static let maximumRebuildsPerLoad = 2
 
@@ -610,59 +611,60 @@ final class AVPlayerBackend {
     /// their blocking source reads can park through a flagged outage. Owned
     /// by PlayerViewModel like `proxyStatsProvider`.
     var sourceOutageStateProvider: (() -> Bool)?
-    /// Reasons an external owner has asked the backend to hold every in-route
-    /// recovery ladder. Reason-keyed because two owners can overlap: the
-    /// view model's origin-outage ride-through and a view-model-owned server
-    /// replan. While any reason is held the route isn't the thing that broke
-    /// — the view model owns the terminal decision — so the backend keeps
-    /// observing and logging but takes no recovery action.
-    private var recoverySuspensionReasons: Set<String> = []
-    /// Reason key for the view model's origin-outage ride-through.
-    static let originOutageRecoverySuspensionReason = "origin_outage"
-    /// Reason key for a view-model-owned server replan: the view model sets
-    /// this for the whole replan round trip so backend ladders cannot
-    /// reanchor, reload or rebuild the session mid-negotiation.
-    static let serverReplanRecoverySuspensionReason = "server_replan"
+    /// Every in-route recovery signal, emitted where the ladder used to decide.
+    /// `RecoveryDriver` turns these into `RecoveryAction`s through the one
+    /// `RecoveryPolicy`; nothing in this file decides any more.
+    var onRecoveryObservation: ((RecoveryObservation) -> Void)?
+    /// A new engine load started on this backend (`load(strategy:)`), including
+    /// the in-session reloads a reanchor / rebuild / deferred `play()` recovery
+    /// performs. The recovery owner resets exactly the per-load state that
+    /// function reset when it owned those fields.
+    var onEngineReloaded: (() -> Void)?
+    /// The loopback startup ladder was (re-)armed; the payload is the local HLS
+    /// server's served-request baseline. The recovery owner seeds
+    /// `RecoveryContext.StartupState` from it.
+    var onStartupLadderArmed: ((UInt64) -> Void)?
+    /// Diagnostic mirror of `RecoveryContext.suspendedReasons`, written by the
+    /// engine session whenever the driver's latch changes. It exists only so
+    /// the periodic `[CMP-AVP] loopback playhead state` line keeps printing its
+    /// `suspended=[…]` suffix; no code branches on it.
+    var suspendedRecoveryReasons: Set<String> = []
+    /// The recovery owner's `stationaryFor`, for the same telemetry line. The
+    /// advance tracker moved into `RecoveryContext.PlayheadState` with the rungs
+    /// that read it, and this line is the only thing left here that printed it.
+    var recoveryStationarySecondsProvider: (() -> Double)?
 
-    private var isRecoverySuspended: Bool { !recoverySuspensionReasons.isEmpty }
+    /// Reports an in-route recovery signal. Every ladder that used to decide
+    /// here calls this instead.
+    ///
+    /// Every emitter is a main-queue notification observer, a `RunLoop.main`
+    /// timer, a `DispatchQueue.main` KVO hop or a transport verb — the same
+    /// contexts the rungs ran their decisions in, and the recovery owner is
+    /// nonisolated for exactly that reason.
+    private func emitRecoveryObservation(_ observation: RecoveryObservation) {
+        onRecoveryObservation?(observation)
+    }
 
-    /// Suspends (or resumes) every in-route recovery ladder for one owner.
-    /// Suspension is reference-counted by `reason`, so one owner clearing its
-    /// reason does not release another owner's hold.
-    func setRecoverySuspended(_ suspended: Bool, reason: String) {
-        let changed = suspended
-            ? recoverySuspensionReasons.insert(reason).inserted
-            : (recoverySuspensionReasons.remove(reason) != nil)
-        guard changed else { return }
-        cmpLog(
-            "[CMP-OUTAGE] recovery suspension \(suspended ? "on" : "off") reason=\(reason) "
-            + "held=[\(recoverySuspensionReasons.sorted().joined(separator: ","))]"
+    /// A live transport sample for the notification-driven rungs, which read the
+    /// player at the moment their notification fires rather than off the 1 Hz
+    /// tick. `RecoveryDriver` pulls this immediately before each `decide`.
+    var recoveryPlayheadSample: PlayheadSample? {
+        guard !isDisposed, let item = currentItem else { return nil }
+        let position = currentTime()
+        let bufferedAhead = playableAheadSeconds(for: item, referenceTime: position)
+        let generatedEnd = latestLoopbackGeneratedStats?.playlistVisibleEndSeconds
+            ?? segmentStore?.stats().generatedMediaSeconds
+            ?? 0
+        return PlayheadSample(
+            position: position,
+            timeControl: Self.timeControl(for: avPlayer.timeControlStatus),
+            bufferedAhead: bufferedAhead,
+            generatedAhead: max(0, generatedEnd - position),
+            secondsSinceLastServe: segmentStore?.secondsSinceLastSegmentServe() ?? .infinity,
+            userPaused: isUserPaused,
+            playbackEstablished: didFireFileLoaded,
+            pendingSeekMediaTarget: vodPendingSeekMediaTarget
         )
-    }
-
-    /// The origin-outage ride-through's view of the same latch.
-    func setExternalStallSuppression(_ active: Bool) {
-        setRecoverySuspended(active, reason: Self.originOutageRecoverySuspensionReason)
-    }
-
-    /// Proactive recovery when the view model reports an origin outage has
-    /// ended. An item whose segment requests died during the outage does not
-    /// retry them on its own: the transport and producer recover, but the
-    /// playhead sits waiting on an empty buffer until the (no longer
-    /// suppressed) starvation watchdog degrades the route — even though
-    /// nothing is broken anymore (sim-validated 2026-07-07). Run the same
-    /// stall recovery the playhead watchdog would, immediately.
-    @MainActor
-    func kickPlaybackAfterExternalStallCleared() {
-        guard !isDisposed,
-              let item = currentItem,
-              case .some(.siloLoopback) = currentSourceStrategy,
-              !isUserPaused,
-              avPlayer.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
-        let bufferedAhead = playableAheadSeconds(for: item, referenceTime: currentTime())
-        guard bufferedAhead < 2.0 else { return }
-        cmpLog("[CMP-OUTAGE] post-outage playback kick pos=\(currentTime()) bufAhead=\(bufferedAhead)")
-        performVODStallRecovery(attempt: 1, frozenPosition: currentTime())
     }
 
     /// Injected so a test can hand the backend a player it controls; the
@@ -719,8 +721,6 @@ final class AVPlayerBackend {
     /// supersede/cancel paths must release `isInitialSeekInFlight` here —
     /// nothing else will, and `attemptInitialPlaybackStart` gates on it.
     private var activeSeekDeadlineKind: SeekDeadlineKind?
-    private var loopbackItemDeathRecoveryState = LoopbackItemDeathRecoveryState()
-    private var loopbackItemDeathConfirmationState = LoopbackItemDeathConfirmationState()
     private var isInitialSeekInFlight = false
     private var initialSeekRetryCount = 0
     private var subtitleSession: SubtitleSession?
@@ -776,13 +776,6 @@ final class AVPlayerBackend {
     private var loopbackHDR10PlusDetected = false
     private var loopbackSourceBytesRead: Int64?
     private var latestLoopbackGeneratedStats: LoopbackSegmentWriter.GeneratedMediaStats?
-    private struct LoopbackEdgeWatch {
-        var lastLoadedEnd: Double
-        var lastLoadedEndAdvancedAt: CFTimeInterval
-        var lastPlaylistEnd: Double
-        var lastPlaylistHash: UInt64
-    }
-    private var loopbackEdgeWatch: LoopbackEdgeWatch?
     private var isInitialVideoDisplayGatePrepared = false
     private var isWaitingForInitialVideoDisplay = false
     private var didTemporarilyMuteForInitialVideoDisplay = false
@@ -810,11 +803,6 @@ final class AVPlayerBackend {
     private var loopbackBridgedAudioAnchorSeconds: Double?
     private var initialVideoDisplayFallback: DispatchWorkItem?
     private var loopbackStartupWatchdog: Timer?
-    private var loopbackStartupWatchdogStartedAt: Date?
-    private var loopbackStartupLastProgressAt: Date = .distantPast
-    private var loopbackStartupLastRequestCount: UInt64 = 0
-    private enum LoopbackStartupRecoveryStage { case initial, nudged, reloaded }
-    private var loopbackStartupRecoveryStage: LoopbackStartupRecoveryStage = .initial
     /// In-flight HDMI mode-switch settle wait (gated non-DV HDR, plus any
     /// fresh DV criteria apply — the master playlist's VIDEO-RANGE is
     /// validated against the panel's current mode on tvOS 26.5). The
@@ -843,19 +831,17 @@ final class AVPlayerBackend {
     private var loopbackPlaybackUsesExternalURL = false
     private let loopbackPlaybackClockLock = NSLock()
     private var loopbackPlaybackClockSecondsValue: Double = 0
-    private var pendingLocalLoopbackRecoveryMediaTime: Double?
-    private var lastLocalLoopbackStallRecoveryAt: CFTimeInterval = 0
+    /// The media time a `playlist_unchanged` recovery latched while the user
+    /// was paused (`RecoveryAction.deferUntilPlay`), consumed by `play()`.
+    private var deferredRecoveryMediaTime: Double?
     private var loopbackPlayheadWatchdog: Timer?
-    private var watchdogLastPlayheadSeconds: Double = -1
-    private var watchdogLastAdvanceWall: CFTimeInterval = 0
     private var watchdogLastStateLogWall: CFTimeInterval = 0
-    private var watchdogReanchorCount = 0
-    private var watchdogReanchorWindowStartWall: CFTimeInterval = 0
-    private var didEscalateLoopbackStall = false
-    /// Outer bound on full loopback session rebuilds. Reset only when a new
-    /// playback is loaded from the outside — never by a rebuild or reanchor,
-    /// both of which run through the private `load(strategy:startTime:)`.
-    private var loopbackRebuildBudget = LoopbackRebuildBudget()
+    /// Which sampler produced the edge observation currently being decided, so
+    /// `perform(_:)` can name it on the `edge_watchdog` trigger line.
+    private var lastEdgeSampleTrigger = "-"
+    /// Which KVO produced the auto-resume observation currently being decided,
+    /// for the same reason.
+    private var lastAutoResumeTrigger = "-"
     private var isUserPaused = false
     /// Guards `reconcileSystemTransportIntent` against the `.initial` KVO
     /// delivery, which reports pre-roll state rather than a transport command.
@@ -959,7 +945,6 @@ final class AVPlayerBackend {
         startTime: Double,
     ) {
         isUserPaused = false
-        loopbackRebuildBudget.reset()
         load(
             strategy: .siloLoopback(spec: sessionSpec),
             startTime: startTime
@@ -968,7 +953,6 @@ final class AVPlayerBackend {
 
     func loadRemoteHLS(url: URL, headers: [String: String], startTime: Double) {
         isUserPaused = false
-        loopbackRebuildBudget.reset()
         load(
             strategy: .remoteHLS(url: url, headers: headers),
             startTime: startTime
@@ -977,7 +961,6 @@ final class AVPlayerBackend {
 
     func loadDirectFile(url: URL, headers: [String: String], startTime: Double) {
         isUserPaused = false
-        loopbackRebuildBudget.reset()
         load(
             strategy: .remoteDirect(url: url, headers: headers),
             startTime: startTime
@@ -988,8 +971,8 @@ final class AVPlayerBackend {
         isUserPaused = false
         onPauseChange?(false)
         if case .some(.siloLoopback(let spec)) = currentSourceStrategy,
-           let mediaSeconds = pendingLocalLoopbackRecoveryMediaTime {
-            pendingLocalLoopbackRecoveryMediaTime = nil
+           let mediaSeconds = deferredRecoveryMediaTime {
+            deferredRecoveryMediaTime = nil
             Self.logger.info(
                 "[CMP-AVP] local loopback deferred recovery reanchor media=\(mediaSeconds, privacy: .public)"
             )
@@ -1003,7 +986,6 @@ final class AVPlayerBackend {
 
     func pause() {
         isUserPaused = true
-        loopbackItemDeathConfirmationState.resetCandidate()
         onPauseChange?(true)
         avPlayer.pause()
     }
@@ -1302,22 +1284,11 @@ final class AVPlayerBackend {
             Self.logger.error(
                 "[CMP-SEEK] AVPlayer seek deadline mediaTarget=\(mediaTarget, privacy: .public) id=\(id, privacy: .public); re-enabling recovery"
             )
-            if case .some(.siloLoopback) = currentSourceStrategy {
-                Task { @MainActor [weak self] in
-                    guard let self, !self.isDisposed else { return }
-                    // Keep the target latched until the recovery helper
-                    // reads it; the frozen clock is still pre-seek.
-                    self.vodPendingSeekMediaTarget = mediaTarget
-                    self.performVODStallRecovery(
-                        attempt: 1,
-                        frozenPosition: self.playerTime(forMediaTime: mediaTarget)
-                    )
-                    self.vodPendingSeekMediaTarget = nil
-                }
-                return
-            } else if !isUserPaused {
-                avPlayer.play()
-            }
+            // Which recovery an expired interactive seek deserves — the
+            // loopback stall nudge anchored at the unlanded target, or a bare
+            // resume on the remote routes — is `RecoveryPolicy`'s
+            // `decideSeekDeadlineExpired`.
+            emitRecoveryObservation(.seekDeadlineExpired(kind: .interactive(mediaTarget: mediaTarget)))
             vodPendingSeekMediaTarget = nil
 
         case .recovery(let reason):
@@ -1766,17 +1737,15 @@ final class AVPlayerBackend {
         loopbackHDR10PlusDetected = false
         loopbackSourceBytesRead = nil
         latestLoopbackGeneratedStats = nil
-        loopbackEdgeWatch = nil
-        pendingLocalLoopbackRecoveryMediaTime = nil
+        deferredRecoveryMediaTime = nil
         vodPendingSeekMediaTarget = nil
-        lastLocalLoopbackStallRecoveryAt = 0
-        // Reset playhead advance-tracking for the new session so a reanchor's
+        watchdogLastStateLogWall = 0
+        // The recovery owner resets the edge watch, the reanchor cooldown and
+        // playhead advance-tracking for the new session so a reanchor's
         // pre-reanchor position does not read as instantly stationary. The
         // reanchor retry budget (count/window/escalation) deliberately survives
         // across reanchors and only resets on window expiry.
-        watchdogLastPlayheadSeconds = -1
-        watchdogLastAdvanceWall = 0
-        watchdogLastStateLogWall = 0
+        onEngineReloaded?()
         didFireFileLoaded = false
         hasSeekedToStart = false
         hasReachedItemEnd = false
@@ -1851,9 +1820,7 @@ final class AVPlayerBackend {
     /// exhausted watchdog rebuilds the loopback session at the rendered
     /// clock; recovery never switches playback engines.
     @MainActor
-    private func performVODStallRecovery(attempt: Int, frozenPosition: Double) {
-        let anchorPlayer = vodPendingSeekMediaTarget.map(playerTime(forMediaTime:))
-            ?? frozenPosition
+    private func performVODStallRecovery(anchorPlayerSeconds anchorPlayer: Double, attempt: Int) {
         if let plan = loopbackVODPlan {
             loopbackHost?.requestProducerRestart(
                 atSegmentIndex: plan.segmentIndex(forPlaylistSeconds: anchorPlayer),
@@ -2823,42 +2790,13 @@ final class AVPlayerBackend {
         let position = currentTime()
         guard position.isFinite else { return }
 
-        // Movement in EITHER direction counts as alive. Comparing with `>`
-        // alone left the high-water mark stale across backward in-item
-        // seeks: after a back-scrub the playhead sits below the pre-scrub
-        // mark for tens of seconds of healthy playback, `stationaryFor`
-        // climbs the whole time, and the watchdog "recovers" a route that
-        // was never wedged (nudge → item reloads that reset a full buffer →
-        // reanchor budget exhausted → spurious route fallback).
-        if watchdogLastPlayheadSeconds < 0 || abs(position - watchdogLastPlayheadSeconds) > 0.05 {
-            watchdogLastPlayheadSeconds = position
-            watchdogLastAdvanceWall = now
-        }
-        let stationaryFor = watchdogLastAdvanceWall > 0 ? now - watchdogLastAdvanceWall : 0
-
         let timeControlStatus = avPlayer.timeControlStatus
         let bufferedAhead = playableAheadSeconds(for: item, referenceTime: position)
         let generatedEnd = latestLoopbackGeneratedStats?.playlistVisibleEndSeconds
             ?? segmentStore?.stats().generatedMediaSeconds
             ?? 0
         let generatedAhead = max(0, generatedEnd - position)
-
-        let statusLabel: String
-        let transportState: LoopbackItemDeathConfirmationState.TransportState
-        switch timeControlStatus {
-        case .paused:
-            statusLabel = "paused"
-            transportState = .paused
-        case .waitingToPlayAtSpecifiedRate:
-            statusLabel = "waiting"
-            transportState = .waiting
-        case .playing:
-            statusLabel = "playing"
-            transportState = .playing
-        @unknown default:
-            statusLabel = "unknown"
-            transportState = .unknown
-        }
+        let statusLabel = Self.transportLabel(for: timeControlStatus)
 
         // Periodic transport-state telemetry so a captured stall can be
         // classified (pause vs. wedge) directly from the log.
@@ -2883,123 +2821,51 @@ final class AVPlayerBackend {
                     storeMiB, proxyMiB
                 )
             }
-            let suspendedSuffix = isRecoverySuspended
-                ? " suspended=[\(recoverySuspensionReasons.sorted().joined(separator: ","))]"
-                : ""
+            let suspendedSuffix = suspendedRecoveryReasons.isEmpty
+                ? ""
+                : " suspended=[\(suspendedRecoveryReasons.sorted().joined(separator: ","))]"
+            let stationaryFor = recoveryStationarySecondsProvider?() ?? 0
             cmpLog(
                 "[CMP-AVP] loopback playhead state pos=\(position) tc=\(statusLabel) rate=\(avPlayer.rate) paused=\(isUserPaused ? 1 : 0) bufAhead=\(bufferedAhead) generatedAhead=\(generatedAhead) stationaryFor=\(stationaryFor)\(memSuffix)\(suspendedSuffix)"
             )
         }
 
-        let itemDeathAction = loopbackItemDeathConfirmationState.evaluate(
-            now: now,
-            position: position,
-            playbackEstablished: didFireFileLoaded,
-            userPaused: isUserPaused,
-            transportState: transportState,
-            recoverySuppressed: isRecoverySuspended
-                || isWaitingForInitialVideoDisplay,
-            mediaAvailableAhead: bufferedAhead >= 0.5 || generatedAhead >= 2.0
+        // Every rung below this line was a decision; they all live in
+        // `RecoveryPolicy` now. The tick keeps its period, its guards and its
+        // telemetry and reports what it saw.
+        emitRecoveryObservation(
+            .playheadTick(
+                PlayheadSample(
+                    position: position,
+                    timeControl: Self.timeControl(for: timeControlStatus),
+                    bufferedAhead: bufferedAhead,
+                    generatedAhead: generatedAhead,
+                    secondsSinceLastServe: segmentStore?.secondsSinceLastSegmentServe() ?? .infinity,
+                    userPaused: isUserPaused,
+                    playbackEstablished: didFireFileLoaded,
+                    pendingSeekMediaTarget: vodPendingSeekMediaTarget
+                )
+            )
         )
-        switch itemDeathAction {
-        case .none:
-            break
-        case .reassertPlay:
-            cmpLog(
-                "[CMP-AVP] unexpected AVPlayer pause; reasserting play pos=\(position) bufAhead=\(bufferedAhead) generatedAhead=\(generatedAhead)"
-            )
-            avPlayer.play()
-        case .confirmed(let trigger):
-            let action = loopbackItemDeathRecoveryState.confirm(
-                position: position,
-                userPaused: isUserPaused
-            )
-            performLoopbackItemDeathRecoveryAction(
-                action,
-                item: item,
-                position: position,
-                trigger: trigger.rawValue,
-                statusCode: nil,
-                errorDescription: "confirmed terminal AVPlayer transport state"
-            )
-            return
+    }
+
+    private static func transportLabel(for status: AVPlayer.TimeControlStatus) -> String {
+        switch status {
+        case .paused: return "paused"
+        case .waitingToPlayAtSpecifiedRate: return "waiting"
+        case .playing: return "playing"
+        @unknown default: return "unknown"
         }
+    }
 
-        // Observation above (advance tracking, telemetry, item-death
-        // evidence) keeps running while an external owner holds the recovery
-        // latch, but no rung below may act: the route isn't what broke (the
-        // origin is down, or the view model is renegotiating the plan) and
-        // the view model owns the terminal decision.
-        if isRecoverySuspended { return }
-
-        // Producer-dead starvation: waiting on an empty buffer with no
-        // successful segment serves for a sustained stretch. Rebuild the
-        // Silo loopback session at the rendered clock; changing playback
-        // engines would hide the fault and lose SiloPlayer capabilities.
-        if !isUserPaused,
-           timeControlStatus == .waitingToPlayAtSpecifiedRate,
-           bufferedAhead < 2.0,
-           stationaryFor >= Self.playheadWatchdogStarvationEscalateSeconds,
-           (segmentStore?.secondsSinceLastSegmentServe() ?? .infinity)
-               >= Self.playheadWatchdogStarvationServeQuietSeconds,
-           !didEscalateLoopbackStall {
-            didEscalateLoopbackStall = true
-            cmpLog(
-                "[CMP-AVP] loopback starvation: playhead frozen \(Int(stationaryFor))s with empty buffer and no segment serves; rebuilding Silo loopback"
-            )
-            rebuildSiloLoopbackSession(at: position, reason: "loopback_starvation")
-            return
-        }
-
-        // Only a wedge qualifies: AVPlayer should be playing (not user-paused,
-        // not legitimately waiting on an empty buffer) yet the playhead is
-        // stationary while media is generated ahead of it.
-        let believesPlayable = timeControlStatus == .playing
-            || (timeControlStatus == .waitingToPlayAtSpecifiedRate && bufferedAhead >= 2.0)
-        guard !isUserPaused,
-              believesPlayable,
-              stationaryFor >= Self.playheadWatchdogStallSeconds,
-              generatedAhead >= Self.playheadWatchdogMinGeneratedAhead else {
-            return
-        }
-
-        // Bound lightweight reanchors within a rolling window. Once exhausted,
-        // rebuild the Silo loopback session (producer, cache, server, item) at
-        // the rendered clock instead of changing playback engines.
-        if watchdogReanchorWindowStartWall == 0
-            || now - watchdogReanchorWindowStartWall > Self.playheadWatchdogReanchorWindowSeconds {
-            watchdogReanchorWindowStartWall = now
-            watchdogReanchorCount = 0
-            didEscalateLoopbackStall = false
-        }
-
-        if watchdogReanchorCount >= Self.playheadWatchdogMaxReanchors {
-            guard !didEscalateLoopbackStall else { return }
-            didEscalateLoopbackStall = true
-            Self.logger.error(
-                "[CMP-AVP] local loopback playhead_watchdog exhausted reanchors=\(self.watchdogReanchorCount, privacy: .public) pos=\(position, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public); rebuilding Silo loopback"
-            )
-            rebuildSiloLoopbackSession(at: position, reason: "playhead_watchdog")
-            return
-        }
-
-        if case .some(.siloLoopback) = currentSourceStrategy,
-           let sinceServe = segmentStore?.secondsSinceLastSegmentServe(),
-           sinceServe < 4.0 {
-            // The consumer is actively pulling segments — a post-seek buffer
-            // fill, not a wedge (the fetch-high-water signal). Recovery here
-            // would kill the producer mid-march and reset AVPlayer's buffer,
-            // looping the fill forever (living-room bug 3).
-            return
-        }
-
-        watchdogReanchorCount += 1
-        Self.logger.error(
-            "[CMP-AVP] local loopback playhead_watchdog trigger attempt=\(self.watchdogReanchorCount, privacy: .public) pos=\(position, privacy: .public) tc=\(statusLabel, privacy: .public) bufAhead=\(bufferedAhead, privacy: .public) generatedAhead=\(generatedAhead, privacy: .public) stationaryFor=\(stationaryFor, privacy: .public)"
-        )
-        let attempt = watchdogReanchorCount
-        Task { @MainActor [weak self] in
-            self?.performVODStallRecovery(attempt: attempt, frozenPosition: position)
+    private static func timeControl(
+        for status: AVPlayer.TimeControlStatus
+    ) -> PlayheadSample.TimeControl {
+        switch status {
+        case .paused: return .paused
+        case .waitingToPlayAtSpecifiedRate: return .waiting
+        case .playing: return .playing
+        @unknown default: return .unknown
         }
     }
 
@@ -3013,46 +2879,42 @@ final class AVPlayerBackend {
               let generatedStats = latestLoopbackGeneratedStats else {
             return
         }
-        let now = CACurrentMediaTime()
         let loadedEnd = loadedRangeEnd(for: item, referenceTime: referenceTime) ?? referenceTime
-        if loopbackEdgeWatch == nil {
-            loopbackEdgeWatch = LoopbackEdgeWatch(
-                lastLoadedEnd: loadedEnd,
-                lastLoadedEndAdvancedAt: now,
-                lastPlaylistEnd: generatedStats.playlistVisibleEndSeconds,
-                lastPlaylistHash: generatedStats.playlistBodyHash
-            )
-            return
-        }
-
-        guard var watch = loopbackEdgeWatch else { return }
-        let loadedAdvanced = loadedEnd > watch.lastLoadedEnd + 0.25
-        if loadedAdvanced {
-            watch.lastLoadedEnd = loadedEnd
-            watch.lastLoadedEndAdvancedAt = now
-        }
-        let playlistAdvanced = generatedStats.playlistVisibleEndSeconds > watch.lastPlaylistEnd + 0.25
-            || generatedStats.playlistBodyHash != watch.lastPlaylistHash
-        watch.lastPlaylistEnd = max(watch.lastPlaylistEnd, generatedStats.playlistVisibleEndSeconds)
-        watch.lastPlaylistHash = generatedStats.playlistBodyHash
-        loopbackEdgeWatch = watch
-
         let targetDuration = max(1.0, Double(generatedStats.targetDuration))
-        let watchdogDelay = max(3.0, targetDuration * 2.0 + 1.0)
+        // Seeding, advance tracking and the five qualification tests are the
+        // edge ladder's decision; they live in `RecoveryPolicy` now. This is the
+        // sampler.
+        lastEdgeSampleTrigger = trigger
+        emitRecoveryObservation(
+            .edgeSample(
+                EdgeSample(
+                    referenceTime: referenceTime,
+                    loadedEnd: loadedEnd,
+                    playlistEnd: generatedStats.playlistVisibleEndSeconds,
+                    playlistHash: generatedStats.playlistBodyHash,
+                    loadedAhead: max(0, loadedEnd - referenceTime),
+                    visibleAhead: max(0, generatedStats.playlistVisibleEndSeconds - referenceTime),
+                    targetDuration: targetDuration,
+                    longestSegment: generatedStats.longestSegmentDuration
+                )
+            )
+        )
+    }
+
+    /// The edge watchdog's trigger line, printed by the rung that fires rather
+    /// than by the sampler. Every value is read from the same live state the
+    /// sampler read a moment earlier in the same run-loop turn.
+    private func logEdgeWatchdogTrigger() {
+        guard let item = currentItem,
+              let generatedStats = latestLoopbackGeneratedStats else { return }
+        let referenceTime = currentTime()
+        let loadedEnd = loadedRangeEnd(for: item, referenceTime: referenceTime) ?? referenceTime
         let loadedAhead = max(0, loadedEnd - referenceTime)
         let visibleAhead = max(0, generatedStats.playlistVisibleEndSeconds - referenceTime)
-        guard playlistAdvanced,
-              !loadedAdvanced,
-              loadedAhead <= 1.0,
-              visibleAhead >= max(6.0, targetDuration + generatedStats.longestSegmentDuration),
-              now - watch.lastLoadedEndAdvancedAt >= watchdogDelay else {
-            return
-        }
-
+        let trigger = lastEdgeSampleTrigger
         Self.logger.info(
             "[CMP-AVP] edge_watchdog trigger=\(trigger, privacy: .public) player=\(referenceTime, privacy: .public) loadedEnd=\(loadedEnd, privacy: .public) loadedAhead=\(loadedAhead, privacy: .public) playlistStart=\(generatedStats.playlistVisibleStartSeconds, privacy: .public) playlistEnd=\(generatedStats.playlistVisibleEndSeconds, privacy: .public) visibleAhead=\(visibleAhead, privacy: .public) mediaSeq=\(generatedStats.firstMediaSequence, privacy: .public)-\(generatedStats.lastMediaSequence, privacy: .public) targetDuration=\(generatedStats.targetDuration, privacy: .public) longestSegment=\(generatedStats.longestSegmentDuration, privacy: .public) playlistBytes=\(generatedStats.playlistBodyBytes, privacy: .public) playlistHash=\(generatedStats.playlistBodyHash, privacy: .public) forwardBuffer=\(item.preferredForwardBufferDuration, privacy: .public) loadedRanges=\(self.describeRanges(item.loadedTimeRanges), privacy: .public) seekableRanges=\(self.describeRanges(item.seekableTimeRanges), privacy: .public)"
         )
-        recoverLocalLoopbackStallIfNeeded(item: item, requireBufferedEdge: true, reason: "edge_watchdog")
     }
 
     private func positive(_ value: Double?) -> Double? {
@@ -3188,7 +3050,7 @@ final class AVPlayerBackend {
                 if item.isPlaybackLikelyToKeepUp {
                     self.onBufferingChange?(false)
                     self.emitPlaybackStats(referenceTime: self.currentTime(), force: true)
-                    self.resumeLocalLoopbackPlaybackIfNeeded(for: item, trigger: "likely_to_keep_up")
+                    self.sampleLoopbackAutoResume(for: item, trigger: "likely_to_keep_up")
                 }
             }
         }
@@ -3207,7 +3069,7 @@ final class AVPlayerBackend {
                 guard let self, !self.isDisposed else { return }
                 self.emitBufferedAhead(referenceTime: self.currentTime())
                 self.attemptInitialPlaybackStart(for: item, trigger: "loadedTimeRanges")
-                self.resumeLocalLoopbackPlaybackIfNeeded(for: item, trigger: "loaded_ranges")
+                self.sampleLoopbackAutoResume(for: item, trigger: "loaded_ranges")
             }
         }
 
@@ -3237,7 +3099,8 @@ final class AVPlayerBackend {
             Self.logger.info(
                 "[CMP-AVP] item playback stalled current=\(self.currentTime(), privacy: .public) loadedRanges=\(self.describeRanges(item.loadedTimeRanges), privacy: .public)"
             )
-            self.recoverLocalLoopbackStallIfNeeded(item: item)
+            guard item === self.currentItem else { return }
+            self.emitRecoveryObservation(.playbackStalled)
         }
 
         itemFailedToEndObserver = NotificationCenter.default.addObserver(
@@ -3255,14 +3118,14 @@ final class AVPlayerBackend {
             cmpLog(
                 "[CMP-AVP] item failedToEnd current=\(position) userPaused=\(self.isUserPaused ? 1 : 0) itemStatus=\(item.status.rawValue) error=\(String(describing: error))"
             )
+            self.emitRecoveryObservation(
+                .itemFailedToEnd(position: position, userPaused: self.isUserPaused)
+            )
+            // B:3453's early return: on an established loopback item the
+            // confirmation candidate is the whole response, and the tail below
+            // must not also run.
             if case .siloLoopback = self.currentSourceStrategy,
                self.didFireFileLoaded {
-                self.loopbackItemDeathConfirmationState.noteExplicitFailure(
-                    position: position,
-                    now: CACurrentMediaTime(),
-                    playbackEstablished: true,
-                    userPaused: self.isUserPaused
-                )
                 return
             }
             self.recoverLocalLoopbackFailureIfNeeded(item: item, error: error)
@@ -3286,25 +3149,18 @@ final class AVPlayerBackend {
             cmpLog(
                 "[CMP-AVP] item errorLog status=\(event.errorStatusCode) domain=\(event.errorDomain) uri=\(event.uri ?? "-") comment=\(event.errorComment ?? "-")"
             )
-            if self.didFireFileLoaded,
-               LoopbackItemDeathRecoveryState.isItemDeath(
+            // Classification, the established/pre-established split and the
+            // `-15628` loader-poison escalation are all `RecoveryPolicy`'s now
+            // (`decideItemDeathEvidence`); this observer reports the entry.
+            self.emitRecoveryObservation(
+                .itemDeathEvidence(
                     statusCode: event.errorStatusCode,
-                    errorDescription: event.errorComment ?? ""
-               ) {
-                self.handleLoopbackItemDeathEvidence(
-                    item: item,
-                    statusCode: event.errorStatusCode,
-                    errorDescription: event.errorComment ?? "",
-                    evidenceWeight: event.errorStatusCode == -15628 ? 2 : 1,
-                    trigger: "error_log"
+                    description: event.errorComment ?? "",
+                    weight: event.errorStatusCode == -15628 ? 2 : 1,
+                    position: self.currentTime(),
+                    userPaused: self.isUserPaused
                 )
-                return
-            }
-            if event.errorStatusCode == -15628,
-               !self.didFireFileLoaded,
-               case .siloLoopback = self.currentSourceStrategy {
-                self.escalateLoopbackStartupRecovery(trigger: "errorLog_-15628")
-            }
+            )
         }
     }
 
@@ -3338,6 +3194,11 @@ final class AVPlayerBackend {
         }
     }
 
+    /// The tail of a failed-to-end notification the item-death confirmation
+    /// arm did not consume. It demultiplexes the two mechanisms exactly as
+    /// B:3341 did — evidence that classifies as an item death goes to the
+    /// evidence counter, a "Playlist File unchanged" / `-12888` description
+    /// goes to the Y rung — and decides neither.
     private func recoverLocalLoopbackFailureIfNeeded(item: AVPlayerItem, error: Error?) {
         let description = String(describing: error)
         let statusCode = item.errorLog()?.events.last?.errorStatusCode
@@ -3346,117 +3207,168 @@ final class AVPlayerBackend {
                 statusCode: statusCode,
                 errorDescription: description
            ) {
-            handleLoopbackItemDeathEvidence(
-                item: item,
-                statusCode: statusCode,
-                errorDescription: description,
-                evidenceWeight: 2,
-                trigger: "failed_to_end"
+            emitRecoveryObservation(
+                .itemDeathEvidence(
+                    statusCode: statusCode,
+                    description: description,
+                    weight: 2,
+                    position: currentTime(),
+                    userPaused: isUserPaused
+                )
             )
             return
         }
         guard description.contains("Playlist File unchanged") || description.contains("-12888") else {
             return
         }
-        if isUserPaused {
-            let playerSeconds = currentTime()
-            guard playerSeconds.isFinite else { return }
-            let mediaSeconds = mediaTime(for: playerSeconds)
-            pendingLocalLoopbackRecoveryMediaTime = mediaSeconds
-            Self.logger.info(
-                "[CMP-AVP] local loopback playlist_unchanged recovery deferred until play media=\(mediaSeconds, privacy: .public) player=\(playerSeconds, privacy: .public)"
+        emitRecoveryObservation(.playlistUnchanged(userPaused: isUserPaused))
+    }
+
+    /// The auto-resume rung's two KVO triggers. The rung itself
+    /// (`resumeLocalLoopbackPlaybackIfNeeded`) is `RecoveryPolicy`'s
+    /// `.likelyToKeepUp` arm now.
+    private func sampleLoopbackAutoResume(for item: AVPlayerItem, trigger: String) {
+        guard case .siloLoopback = currentSourceStrategy,
+              item === currentItem else { return }
+        let playerSeconds = currentTime()
+        guard playerSeconds.isFinite else { return }
+        lastAutoResumeTrigger = trigger
+        emitRecoveryObservation(
+            .likelyToKeepUp(
+                rate: Double(avPlayer.rate),
+                bufferedAhead: playableAheadSeconds(for: item, referenceTime: playerSeconds),
+                reachedEnd: hasReachedItemEnd,
+                likely: item.isPlaybackLikelyToKeepUp
             )
-            return
-        }
-        recoverLocalLoopbackStallIfNeeded(item: item, requireBufferedEdge: false, reason: "playlist_unchanged")
-    }
-
-    private func handleLoopbackItemDeathEvidence(
-        item: AVPlayerItem,
-        statusCode: Int?,
-        errorDescription: String,
-        evidenceWeight: Int,
-        trigger: String
-    ) {
-        guard case .some(.siloLoopback) = currentSourceStrategy,
-              item === currentItem,
-              didFireFileLoaded,
-              !isRecoverySuspended else { return }
-        let position = currentTime()
-        let action = loopbackItemDeathRecoveryState.record(
-            position: position,
-            evidenceWeight: evidenceWeight,
-            userPaused: isUserPaused
-        )
-        performLoopbackItemDeathRecoveryAction(
-            action,
-            item: item,
-            position: position,
-            trigger: trigger,
-            statusCode: statusCode,
-            errorDescription: errorDescription
         )
     }
 
-    private func performLoopbackItemDeathRecoveryAction(
-        _ action: LoopbackItemDeathRecoveryState.Action,
-        item: AVPlayerItem,
-        position: Double,
-        trigger: String,
-        statusCode: Int?,
-        errorDescription: String
-    ) {
+    // MARK: - Executing recovery actions
+    //
+    // Every body below is the rung's legacy body, moved verbatim. The
+    // preconditions, ladders, cooldowns, budgets and latches that used to sit
+    // in front of them are `RecoveryPolicy`'s.
+
+    /// Runs one `RecoveryAction` on this engine. In-route actions only — the
+    /// session/transport arms are the shell's and are ignored here.
+    func perform(_ action: RecoveryAction) {
+        guard !isDisposed else { return }
         switch action {
-        case .waitForConfirmation:
-            cmpLog(
-                "[CMP-AVP] loopback item-death evidence waiting trigger=\(trigger) status=\(statusCode ?? 0) userPaused=\(isUserPaused ? 1 : 0) pos=\(position) error=\(errorDescription)"
-            )
-        case .reload(let attempt):
-            loopbackItemDeathConfirmationState.resetCandidate()
-            cmpLog(
-                "[CMP-AVP] loopback item-death confirmed; reloading item trigger=\(trigger) status=\(statusCode ?? 0) attempt=\(attempt) pos=\(position)"
-            )
-            Task { @MainActor [weak self, weak item] in
-                guard let self, let item, item === self.currentItem, !self.isDisposed else { return }
-                self.reloadEstablishedLoopbackItem(
-                    item,
-                    at: position,
-                    reason: "item_death_\(trigger)_\(attempt)"
+        case .reassertPlay:
+            // B:3106.
+            avPlayer.play()
+
+        case .nudgeStartup:
+            nudgeLoopbackStartupConsumer()
+
+        case .reloadStartupItem:
+            reloadLoopbackStartupItem()
+
+        case let .reanchor(atMediaSeconds, reason):
+            if reason == "vod_stall_nudge" {
+                let anchor = playerTime(forMediaTime: atMediaSeconds)
+                MainActor.assumeIsolated {
+                    performVODStallRecovery(anchorPlayerSeconds: anchor, attempt: 1)
+                }
+            } else {
+                performLoopbackReanchor(atMediaSeconds: atMediaSeconds, reason: reason)
+            }
+
+        case let .reloadItem(atMediaSeconds, reason):
+            let anchorPlayerSeconds = playerTime(forMediaTime: atMediaSeconds)
+            if reason == "vod_stall" {
+                MainActor.assumeIsolated {
+                    performVODStallRecovery(anchorPlayerSeconds: anchorPlayerSeconds, attempt: 2)
+                }
+            } else {
+                // B:3419's hop: the item-death reload was always deferred one
+                // main-actor turn past the notification that produced it, and
+                // dropped if the item changed in between.
+                Task { @MainActor [weak self, weak deferredItem = currentItem] in
+                    guard let self, let deferredItem, deferredItem === self.currentItem,
+                          !self.isDisposed else { return }
+                    self.reloadEstablishedLoopbackItem(
+                        deferredItem,
+                        at: anchorPlayerSeconds,
+                        reason: reason
+                    )
+                }
+            }
+
+        case let .restartProducer(atSegmentIndex, authoritative):
+            MainActor.assumeIsolated {
+                loopbackHost?.requestProducerRestart(
+                    atSegmentIndex: atSegmentIndex,
+                    authoritative: authoritative
                 )
             }
-        case .escalate:
-            loopbackItemDeathConfirmationState.resetCandidate()
-            cmpLog(
-                "[CMP-AVP] loopback item-death repeated at same position; rebuilding Silo loopback trigger=\(trigger) status=\(statusCode ?? 0) pos=\(position)"
+
+        case let .rebuildLocalSession(atMediaSeconds, reason):
+            rebuildSiloLoopbackSession(atMediaSeconds: atMediaSeconds, reason: reason)
+
+        case let .deferUntilPlay(mediaSeconds):
+            // B:3556-3565.
+            deferredRecoveryMediaTime = mediaSeconds
+            Self.logger.info(
+                "[CMP-AVP] local loopback playlist_unchanged recovery deferred until play media=\(mediaSeconds, privacy: .public) player=\(self.playerTime(forMediaTime: mediaSeconds), privacy: .public)"
             )
-            rebuildSiloLoopbackSession(at: position, reason: "loopback_item_death")
+
+        case .resumePlayback:
+            // B:3517 logged only on the loopback auto-resume rung; the
+            // non-loopback seek-deadline entry into the same action never did.
+            if case .some(.siloLoopback) = currentSourceStrategy, let item = currentItem {
+                let playerSeconds = currentTime()
+                let bufferedAhead = playableAheadSeconds(for: item, referenceTime: playerSeconds)
+                Self.logger.info(
+                    "[CMP-AVP] local loopback auto resume trigger=\(self.lastAutoResumeTrigger, privacy: .public) player=\(playerSeconds, privacy: .public) bufferedAhead=\(bufferedAhead, privacy: .public)"
+                )
+            }
+            avPlayer.play()
+
+        case let .endOutageRideThrough(kick):
+            guard kick else { return }
+            kickPlaybackAfterOutage()
+
+        case let .fail(failure):
+            // B:3672 / B:3703: the startup watchdog is cancelled before the
+            // report on every path that reports from a ladder.
+            cancelLoopbackStartupWatchdog()
+            reportFailure(failure)
+
+        case .treatAsNaturalEnd, .requestServerReplan, .switchRoute,
+             .renewSourceInBackground, .renewSessionFresh, .rideThroughOutage,
+             .recoverFromServerOutage, .waitForServerReady, .autoRecoverInterruption:
+            // Session- and transport-level actions: executed by the shell.
+            break
         }
+    }
+
+    /// B:3666's tail — flush the subtitle plane, move the extractor, and reload
+    /// the loopback session anchored at the rendered clock.
+    private func performLoopbackReanchor(atMediaSeconds mediaSeconds: Double, reason: String) {
+        guard case .some(.siloLoopback(let spec)) = currentSourceStrategy,
+              let item = currentItem else { return }
+        if reason == "edge_watchdog" { logEdgeWatchdogTrigger() }
+        let playerSeconds = playerTime(forMediaTime: mediaSeconds)
+        let bufferedAhead = playableAheadSeconds(for: item, referenceTime: playerSeconds)
+        let generatedEnd = latestLoopbackGeneratedStats?.playlistVisibleEndSeconds
+            ?? segmentStore?.stats().generatedMediaSeconds
+            ?? 0
+        Self.logger.info(
+            "[CMP-AVP] local loopback \(reason, privacy: .public) reanchor media=\(mediaSeconds, privacy: .public) player=\(playerSeconds, privacy: .public) generatedAhead=\(generatedEnd - playerSeconds, privacy: .public) bufferedAhead=\(bufferedAhead, privacy: .public)"
+        )
+        subtitleSession?.flushOnSeek()
+        embeddedSubtitleExtractor?.seek(to: mediaSeconds)
+        load(strategy: .siloLoopback(spec: spec.reanchored(at: mediaSeconds)), startTime: mediaSeconds)
     }
 
     /// Last-resort recovery for a poisoned AVPlayer item or dead producer.
     /// Recreate the complete local-HLS pipeline at the rendered media clock,
     /// but keep the selected route in SiloPlayer. The new UUID-backed cache
     /// cannot collide with cleanup from the retired session.
-    private func rebuildSiloLoopbackSession(at playerSeconds: Double, reason: String) {
-        guard case .some(.siloLoopback(let spec)) = currentSourceStrategy,
-              playerSeconds.isFinite,
-              !isUserPaused else { return }
-        guard loopbackRebuildBudget.consume() else {
-            // Every rebuild resets the latches that decided to rebuild, so
-            // without this bound the same wedge rebuilds forever. Hand the
-            // failure to the view model's ladder instead.
-            reportFailure(.loopbackRebuildBudgetExhausted(
-                reason: reason,
-                rebuilds: loopbackRebuildBudget.used
-            ))
-            return
-        }
-        let mediaSeconds = max(0, mediaTime(for: playerSeconds))
-        loopbackItemDeathRecoveryState.reset()
-        loopbackItemDeathConfirmationState.resetCandidate()
-        watchdogReanchorCount = 0
-        watchdogReanchorWindowStartWall = CACurrentMediaTime()
-        didEscalateLoopbackStall = false
+    private func rebuildSiloLoopbackSession(atMediaSeconds mediaSeconds: Double, reason: String) {
+        guard case .some(.siloLoopback(let spec)) = currentSourceStrategy else { return }
+        let playerSeconds = playerTime(forMediaTime: mediaSeconds)
         Self.logger.error(
             "[CMP-AVP] rebuilding Silo loopback reason=\(reason, privacy: .public) media=\(mediaSeconds, privacy: .public) player=\(playerSeconds, privacy: .public)"
         )
@@ -3468,56 +3380,26 @@ final class AVPlayerBackend {
         )
     }
 
-    private func recoverLocalLoopbackStallIfNeeded(
-        item: AVPlayerItem,
-        requireBufferedEdge: Bool = true,
-        reason: String = "stall"
-    ) {
-        guard case .some(.siloLoopback(let spec)) = currentSourceStrategy,
-              item === currentItem,
-              didFireFileLoaded,
+    /// Proactive recovery when the shell reports an origin outage has ended. An
+    /// item whose segment requests died during the outage does not retry them
+    /// on its own: the transport and producer recover, but the playhead sits
+    /// waiting on an empty buffer until the (no longer suppressed) starvation
+    /// rung degrades the route — even though nothing is broken anymore
+    /// (sim-validated 2026-07-07). Run the same stall recovery the playhead
+    /// watchdog would, immediately.
+    private func kickPlaybackAfterOutage() {
+        guard !isDisposed,
+              let item = currentItem,
+              case .some(.siloLoopback) = currentSourceStrategy,
               !isUserPaused,
-              !isRecoverySuspended else { return }
-        let now = CACurrentMediaTime()
-        guard now - lastLocalLoopbackStallRecoveryAt >= 10 else { return }
-        let playerSeconds = currentTime()
-        guard playerSeconds.isFinite else { return }
-        let bufferedAhead = playableAheadSeconds(for: item, referenceTime: playerSeconds)
-        guard !requireBufferedEdge || bufferedAhead <= 0.5 else { return }
-        let generatedEnd = latestLoopbackGeneratedStats?.playlistVisibleEndSeconds
-            ?? segmentStore?.stats().generatedMediaSeconds
-            ?? 0
-        let generatedAhead = generatedEnd - playerSeconds
-        let minimumGeneratedAhead = playerSeconds < 10 ? Self.loopbackStartupForwardBuffer : 10
-        guard generatedAhead > minimumGeneratedAhead else { return }
-        lastLocalLoopbackStallRecoveryAt = now
-        let mediaSeconds = mediaTime(for: playerSeconds)
-        Self.logger.info(
-            "[CMP-AVP] local loopback \(reason, privacy: .public) reanchor media=\(mediaSeconds, privacy: .public) player=\(playerSeconds, privacy: .public) generatedAhead=\(generatedAhead, privacy: .public) bufferedAhead=\(bufferedAhead, privacy: .public)"
-        )
-        subtitleSession?.flushOnSeek()
-        embeddedSubtitleExtractor?.seek(to: mediaSeconds)
-        load(strategy: .siloLoopback(spec: spec.reanchored(at: mediaSeconds)), startTime: mediaSeconds)
-    }
-
-    private func resumeLocalLoopbackPlaybackIfNeeded(for item: AVPlayerItem, trigger: String) {
-        guard case .siloLoopback = currentSourceStrategy,
-              item === currentItem,
-              didFireFileLoaded,
-              !isUserPaused,
-              // The item played to its end: a buffer KVO arriving afterwards
-              // must not restart transport behind the end-of-file handoff.
-              !hasReachedItemEnd,
-              !isRecoverySuspended,
-              avPlayer.rate == 0 else { return }
-        let playerSeconds = currentTime()
-        guard playerSeconds.isFinite else { return }
-        let bufferedAhead = playableAheadSeconds(for: item, referenceTime: playerSeconds)
-        guard item.isPlaybackLikelyToKeepUp || bufferedAhead > 0.5 else { return }
-        Self.logger.info(
-            "[CMP-AVP] local loopback auto resume trigger=\(trigger, privacy: .public) player=\(playerSeconds, privacy: .public) bufferedAhead=\(bufferedAhead, privacy: .public)"
-        )
-        avPlayer.play()
+              avPlayer.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
+        let bufferedAhead = playableAheadSeconds(for: item, referenceTime: currentTime())
+        guard bufferedAhead < 2.0 else { return }
+        cmpLog("[CMP-OUTAGE] post-outage playback kick pos=\(currentTime()) bufAhead=\(bufferedAhead)")
+        let anchor = currentTime()
+        MainActor.assumeIsolated {
+            performVODStallRecovery(anchorPlayerSeconds: anchor, attempt: 1)
+        }
     }
 
     private func attemptInitialPlaybackStart(for item: AVPlayerItem, trigger: String) {
@@ -3616,11 +3498,9 @@ final class AVPlayerBackend {
     private func armLoopbackStartupWatchdogIfNeeded() {
         guard case .siloLoopback = currentSourceStrategy else { return }
         cancelLoopbackStartupWatchdog()
-        let now = Date()
-        loopbackStartupWatchdogStartedAt = now
-        loopbackStartupLastProgressAt = now
-        loopbackStartupLastRequestCount = segmentServer?.servedRequestCount ?? 0
-        loopbackStartupRecoveryStage = .initial
+        // The ladder's stage, its backstop clock, its progress clock and its
+        // served-request baseline live in `RecoveryContext.StartupState` now.
+        onStartupLadderArmed?(segmentServer?.servedRequestCount ?? 0)
         let timer = Timer(
             timeInterval: Self.loopbackStartupWatchdogTickSeconds,
             repeats: true
@@ -3635,8 +3515,7 @@ final class AVPlayerBackend {
         guard !isDisposed,
               !didFireFileLoaded,
               case .siloLoopback = currentSourceStrategy,
-              let item = currentItem,
-              let startedAt = loopbackStartupWatchdogStartedAt else {
+              let item = currentItem else {
             cancelLoopbackStartupWatchdog()
             return
         }
@@ -3644,65 +3523,14 @@ final class AVPlayerBackend {
             cancelLoopbackStartupWatchdog()
             return
         }
-        let now = Date()
-        let served = segmentServer?.servedRequestCount ?? 0
-        if served != loopbackStartupLastRequestCount {
-            loopbackStartupLastRequestCount = served
-            loopbackStartupLastProgressAt = now
-        }
-        let displaySwitching = isTVDisplayModeSwitchInProgress()
-        if displaySwitching {
-            // Don't let the stall window expire the instant an HDMI mode
-            // switch completes — restart it from the switch's end.
-            loopbackStartupLastProgressAt = now
-        }
-        let verdict = LoopbackStartupRecoveryPolicy.verdict(
-            secondsSinceProgress: now.timeIntervalSince(loopbackStartupLastProgressAt),
-            secondsSinceStart: now.timeIntervalSince(startedAt),
-            displayModeSwitchInProgress: displaySwitching,
-            stallWindow: Self.loopbackStartupStallWindowSeconds,
-            absoluteBackstop: Self.loopbackStartupAbsoluteBackstopSeconds
+        // Progress rebasing, the stall verdict, the ladder's stage and the
+        // absolute backstop are all `RecoveryPolicy.decideStartupTick`'s.
+        emitRecoveryObservation(
+            .startupTick(
+                servedRequests: segmentServer?.servedRequestCount ?? 0,
+                displayModeSwitchInProgress: isTVDisplayModeSwitchInProgress()
+            )
         )
-        switch verdict {
-        case .wait:
-            return
-        case .escalate:
-            escalateLoopbackStartupRecovery(trigger: "fetches_frozen")
-        case .failBackstop:
-            cancelLoopbackStartupWatchdog()
-            reportFailure(.loopbackStartupBackstop(
-                seconds: Int(Self.loopbackStartupAbsoluteBackstopSeconds),
-                requestsServed: served,
-                stage: "\(loopbackStartupRecoveryStage)"
-            ))
-        }
-    }
-
-    /// Startup recovery ladder (AetherEngine consumer re-engage pattern):
-    /// stage 1 nudges AVFoundation's loader with a zero-tolerance seek,
-    /// stage 2 swaps in a fresh AVPlayerItem against the same loopback
-    /// session, stage 3 reports the error, which hands the decision to
-    /// `PlayerViewModel`'s ladder (`attemptSiloRouteHLSFallback` → server-HLS
-    /// replan). Also driven directly by the item errorLog observer on
-    /// loader-poison signatures.
-    private func escalateLoopbackStartupRecovery(trigger: String) {
-        guard !isDisposed, !didFireFileLoaded, currentItem != nil,
-              !isRecoverySuspended else { return }
-        switch loopbackStartupRecoveryStage {
-        case .initial:
-            loopbackStartupRecoveryStage = .nudged
-            loopbackStartupLastProgressAt = Date()
-            cmpLog("[CMP-AVP] startup watchdog stage=nudge trigger=\(trigger)")
-            nudgeLoopbackStartupConsumer()
-        case .nudged:
-            loopbackStartupRecoveryStage = .reloaded
-            loopbackStartupLastProgressAt = Date()
-            cmpLog("[CMP-AVP] startup watchdog stage=reload trigger=\(trigger)")
-            reloadLoopbackStartupItem()
-        case .reloaded:
-            cancelLoopbackStartupWatchdog()
-            reportFailure(.loopbackStartupStalled(trigger: trigger))
-        }
     }
 
     /// Forces AVFoundation to tear down and rebuild its item loader via a
@@ -3758,10 +3586,15 @@ final class AVPlayerBackend {
         #endif
     }
 
+    /// Stops the 1 Hz tick. It deliberately does **not** clear the ladder's
+    /// stage (`RecoveryContext.startup`): `status.readyToPlay` cancels the timer
+    /// while `didFireFileLoaded` is still false, and the item error log's
+    /// `-15628` loader-poison signature can still escalate the ladder in that
+    /// window — exactly as it could when the stage was a field here that this
+    /// function left alone.
     private func cancelLoopbackStartupWatchdog() {
         loopbackStartupWatchdog?.invalidate()
         loopbackStartupWatchdog = nil
-        loopbackStartupWatchdogStartedAt = nil
     }
 
     private func beginInitialVideoDisplayGate() {
@@ -4349,8 +4182,6 @@ final class AVPlayerBackend {
         deactivateAudioSession: Bool = true
     ) {
         cancelSeekDeadline()
-        loopbackItemDeathRecoveryState.reset()
-        loopbackItemDeathConfirmationState.reset()
         // Only `handleFirstSegmentReady` consumes this latch, so a session
         // whose writer never reported a first segment would hand it to the
         // next load and suppress that load's HDMI settle wait. `load()`
@@ -4420,7 +4251,6 @@ final class AVPlayerBackend {
         }
 
         latestLoopbackGeneratedStats = nil
-        loopbackEdgeWatch = nil
         // The producer, the server, the store and the session directory go
         // with the host. Its plan is source-keyed and outlives it: the next
         // session's writer has to be handed the same segment grid. Only a
