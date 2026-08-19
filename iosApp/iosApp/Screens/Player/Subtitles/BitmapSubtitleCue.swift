@@ -2,15 +2,19 @@
 //  BitmapSubtitleCue.swift
 //  Silo (Apple platforms)
 //
-//  Pure model + conversion helpers for embedded bitmap subtitles
-//  (PGS, DVD "VobSub"). The FFmpeg extractor hands over paletted index
-//  planes; everything in this file is plain Foundation/CoreGraphics so
-//  the premultiply and cue-timing logic stays unit-testable without a
-//  decoder in the loop.
+//  Model + conversion helpers for embedded bitmap subtitles (PGS, DVD
+//  "VobSub"). `BitmapSubtitlePalette` stays plain Foundation/CoreGraphics
+//  so the premultiply logic remains unit-testable without a decoder in the
+//  loop; the `BitmapSubtitleCue` statics are the decode-side helpers
+//  shared by the two call sites that own an FFmpeg subtitle decoder
+//  (AVPlayerEmbeddedSubtitleExtractor and the loopback writer's bitmap
+//  tap).
 //
 
 import CoreGraphics
 import Foundation
+import Libavcodec
+import Libavutil
 
 /// One decoded bitmap subtitle image plus its display window.
 ///
@@ -25,6 +29,108 @@ struct BitmapSubtitleCue {
     var endSeconds: Double
     let image: CGImage
     let normalizedFrame: CGRect
+}
+
+extension BitmapSubtitleCue {
+
+    /// Convert one decoded bitmap rect into an overlay cue: paletted plane
+    /// → premultiplied RGBA (cropped to the opaque bounding box) → CGImage
+    /// positioned as a normalized rect against the subtitle canvas.
+    ///
+    /// `fallbackCanvas` is the container's video dimensions, used when the
+    /// codec context has no canvas of its own yet (see below); each caller
+    /// derives it from whatever format context it already opened.
+    static func bitmapCue(
+        from rect: AVSubtitleRect,
+        codecCtx: UnsafeMutablePointer<AVCodecContext>,
+        fallbackCanvas: (width: Int32, height: Int32),
+        startSeconds: Double,
+        endSeconds: Double
+    ) -> BitmapSubtitleCue? {
+        guard rect.w > 0, rect.h > 0,
+              let indexPlane = rect.data.0,
+              let palette = rect.data.1
+        else { return nil }
+        guard let plane = BitmapSubtitlePalette.premultipliedRGBA(
+            indexPlane: indexPlane,
+            width: Int(rect.w),
+            height: Int(rect.h),
+            stride: Int(rect.linesize.0),
+            palette: palette
+        ), let image = BitmapSubtitlePalette.makeImage(from: plane) else { return nil }
+
+        // Canvas: PGS composition updates land in the codec context as
+        // decoding progresses; fall back to the container video dimensions
+        // seeded at open. If both are unknown, park the cue in a generic
+        // centered lower band rather than dropping it.
+        let ctx = codecCtx.pointee
+        let canvasWidth = ctx.width > 0 ? ctx.width : fallbackCanvas.width
+        let canvasHeight = ctx.height > 0 ? ctx.height : fallbackCanvas.height
+        let normalizedFrame: CGRect
+        if canvasWidth > 0, canvasHeight > 0 {
+            normalizedFrame = CGRect(
+                x: Double(Int(rect.x) + plane.cropX) / Double(canvasWidth),
+                y: Double(Int(rect.y) + plane.cropY) / Double(canvasHeight),
+                width: Double(plane.cropWidth) / Double(canvasWidth),
+                height: Double(plane.cropHeight) / Double(canvasHeight)
+            )
+        } else {
+            normalizedFrame = CGRect(x: 0.2, y: 0.78, width: 0.6, height: 0.15)
+        }
+        return BitmapSubtitleCue(
+            startSeconds: startSeconds,
+            endSeconds: endSeconds,
+            image: image,
+            normalizedFrame: normalizedFrame
+        )
+    }
+
+    /// Feed a synthetic 3-byte PGS END segment (type 0x80, zero payload
+    /// length; zero-padded for decoder over-read safety) carrying the
+    /// original packet's timestamps, so an accumulated display set whose
+    /// END segment was lost in remuxing still emits.
+    static func flushPendingPGSComposition(
+        codecCtx: UnsafeMutablePointer<AVCodecContext>,
+        timedLike pkt: UnsafeMutablePointer<AVPacket>,
+        into sub: inout AVSubtitle,
+        gotSubtitle: inout Int32
+    ) {
+        var payload = [UInt8](repeating: 0, count: 64)
+        payload[0] = 0x80
+        payload.withUnsafeMutableBufferPointer { buffer in
+            var synthetic = AVPacket()
+            synthetic.data = buffer.baseAddress
+            synthetic.size = 3
+            synthetic.pts = pkt.pointee.pts
+            synthetic.dts = pkt.pointee.dts
+            synthetic.duration = pkt.pointee.duration
+            synthetic.stream_index = pkt.pointee.stream_index
+            _ = avcodec_decode_subtitle2(codecCtx, &sub, &gotSubtitle, &synthetic)
+        }
+    }
+
+    /// End timestamp (ms on the media axis) of a decoded subtitle: the
+    /// decoder's own display window when it has one, else the packet
+    /// duration. With neither, PGS relies on the next composition trimming
+    /// this cue (see `BitmapSubtitleCueStore.apply(cues:trimActiveAt:)`);
+    /// 5 s is only the ceiling if the stream goes quiet.
+    static func subtitleEndMs(
+        sub: AVSubtitle,
+        pkt: UnsafeMutablePointer<AVPacket>,
+        timeBase: AVRational,
+        basePtsSeconds: Double,
+        startMs: Int64
+    ) -> Int64 {
+        if sub.end_display_time != UInt32.max,
+           sub.end_display_time > sub.start_display_time {
+            return Int64((basePtsSeconds + Double(sub.end_display_time) / 1000.0) * 1000.0)
+        }
+        if pkt.pointee.duration > 0 {
+            let durSeconds = Double(pkt.pointee.duration) * Double(timeBase.num) / Double(timeBase.den)
+            return startMs + Int64(durSeconds * 1000.0)
+        }
+        return startMs + 5000
+    }
 }
 
 /// PAL8 → premultiplied RGBA conversion for FFmpeg bitmap subtitle rects.

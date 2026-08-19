@@ -360,6 +360,9 @@ extension DownloadedSubtitle {
             label: label.isEmpty ? nil : label,
             source: "downloaded",
             forced: false,
+            isDefault: nil,
+            isHearingImpaired: nil,
+            fontBundleUrl: nil,
             url: url
         )
     }
