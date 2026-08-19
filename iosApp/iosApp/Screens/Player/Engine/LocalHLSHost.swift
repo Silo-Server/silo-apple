@@ -445,7 +445,7 @@ final class LocalHLSHost {
 
     private func handleFirstSegmentReady(playlistName: String) {
         guard !isTornDown, let server = segmentServer else { return }
-        guard canAttachFirstSegment?() ?? true else { return }
+        guard canAttachFirstSegment?() ?? false else { return }
         let decision = Self.playlistURLDecision(
             isExternalPlaybackActive: isExternalPlaybackActive?() ?? false,
             externalURL: { server.resourceURL(for: playlistName, reachableFromExternalDevice: true) },
