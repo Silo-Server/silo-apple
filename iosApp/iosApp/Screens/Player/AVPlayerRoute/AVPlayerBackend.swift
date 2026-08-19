@@ -852,7 +852,6 @@ final class AVPlayerBackend {
     /// True between `AVPlayerItemDidPlayToEndTime` and the next load or seek.
     /// The player parks at rate 0 there, which is not a receiver pause.
     private var hasReachedItemEnd = false
-    private var preserveSessionDirectory = false
     private var isPreservingTVDisplayCriteriaForReload = false
 
     private let audioSessionCoordinator: AVPlayerAudioSessionCoordinator = {
@@ -1989,9 +1988,8 @@ final class AVPlayerBackend {
             .appendingPathComponent("silo-dv-hls-debug", isDirectory: true)
         let sessionDir = debugBaseDir.appendingPathComponent(sessionID, isDirectory: true)
         sessionDirectory = sessionDir
-        preserveSessionDirectory = Self.keepLoopbackArtifacts
 
-        let debugDirectory = preserveSessionDirectory ? sessionDir : nil
+        let debugDirectory = Self.keepLoopbackArtifacts ? sessionDir : nil
         let store = LoopbackSegmentStore(
             generation: generation,
             memoryBudgetBytes: Self.loopbackSegmentStoreMemoryBudgetBytes,
@@ -2002,7 +2000,7 @@ final class AVPlayerBackend {
         cmpLog("[CMP-HLS-STORE] vod retention budgetBytes=\(retentionBudget)")
         store.configureVODRetention(budgetBytes: retentionBudget)
         segmentStore = store
-        if preserveSessionDirectory {
+        if Self.keepLoopbackArtifacts {
             cmpLog("[CMP-AVP] preserving local DV artifacts due to SILO_KEEP_DV_HLS=1 dir=\(sessionDir.path)")
         }
 
@@ -2979,18 +2977,8 @@ final class AVPlayerBackend {
         return end
     }
 
-    private func describeLoadedRanges(_ item: AVPlayerItem) -> String {
-        let ranges = item.loadedTimeRanges.map(\.timeRangeValue)
-        guard !ranges.isEmpty else { return "[]" }
-        return ranges.map { range in
-            let start = range.start.seconds
-            let end = (range.start + range.duration).seconds
-            return String(format: "%.2f-%.2f", start, end)
-        }.joined(separator: ",")
-    }
-
-    private func describeSeekableRanges(_ item: AVPlayerItem) -> String {
-        let ranges = item.seekableTimeRanges.map(\.timeRangeValue)
+    private func describeRanges(_ timeRanges: [NSValue]) -> String {
+        let ranges = timeRanges.map(\.timeRangeValue)
         guard !ranges.isEmpty else { return "[]" }
         return ranges.map { range in
             let start = range.start.seconds
@@ -3257,7 +3245,7 @@ final class AVPlayerBackend {
         }
 
         Self.logger.info(
-            "[CMP-AVP] edge_watchdog trigger=\(trigger, privacy: .public) player=\(referenceTime, privacy: .public) loadedEnd=\(loadedEnd, privacy: .public) loadedAhead=\(loadedAhead, privacy: .public) playlistStart=\(generatedStats.playlistVisibleStartSeconds, privacy: .public) playlistEnd=\(generatedStats.playlistVisibleEndSeconds, privacy: .public) visibleAhead=\(visibleAhead, privacy: .public) mediaSeq=\(generatedStats.firstMediaSequence, privacy: .public)-\(generatedStats.lastMediaSequence, privacy: .public) targetDuration=\(generatedStats.targetDuration, privacy: .public) longestSegment=\(generatedStats.longestSegmentDuration, privacy: .public) playlistBytes=\(generatedStats.playlistBodyBytes, privacy: .public) playlistHash=\(generatedStats.playlistBodyHash, privacy: .public) forwardBuffer=\(item.preferredForwardBufferDuration, privacy: .public) loadedRanges=\(self.describeLoadedRanges(item), privacy: .public) seekableRanges=\(self.describeSeekableRanges(item), privacy: .public)"
+            "[CMP-AVP] edge_watchdog trigger=\(trigger, privacy: .public) player=\(referenceTime, privacy: .public) loadedEnd=\(loadedEnd, privacy: .public) loadedAhead=\(loadedAhead, privacy: .public) playlistStart=\(generatedStats.playlistVisibleStartSeconds, privacy: .public) playlistEnd=\(generatedStats.playlistVisibleEndSeconds, privacy: .public) visibleAhead=\(visibleAhead, privacy: .public) mediaSeq=\(generatedStats.firstMediaSequence, privacy: .public)-\(generatedStats.lastMediaSequence, privacy: .public) targetDuration=\(generatedStats.targetDuration, privacy: .public) longestSegment=\(generatedStats.longestSegmentDuration, privacy: .public) playlistBytes=\(generatedStats.playlistBodyBytes, privacy: .public) playlistHash=\(generatedStats.playlistBodyHash, privacy: .public) forwardBuffer=\(item.preferredForwardBufferDuration, privacy: .public) loadedRanges=\(self.describeRanges(item.loadedTimeRanges), privacy: .public) seekableRanges=\(self.describeRanges(item.seekableTimeRanges), privacy: .public)"
         )
         recoverLocalLoopbackStallIfNeeded(item: item, requireBufferedEdge: true, reason: "edge_watchdog")
     }
@@ -3380,7 +3368,7 @@ final class AVPlayerBackend {
                     }
                     if case .siloLoopback = self.currentSourceStrategy {
                         Self.logger.info(
-                            "[CMP-AVP] item buffer empty current=\(self.currentTime(), privacy: .public) loadedRanges=\(self.describeLoadedRanges(item), privacy: .public)"
+                            "[CMP-AVP] item buffer empty current=\(self.currentTime(), privacy: .public) loadedRanges=\(self.describeRanges(item.loadedTimeRanges), privacy: .public)"
                         )
                     }
                     self.onBufferingChange?(true)
@@ -3442,7 +3430,7 @@ final class AVPlayerBackend {
         ) { [weak self] _ in
             guard let self, !self.isDisposed else { return }
             Self.logger.info(
-                "[CMP-AVP] item playback stalled current=\(self.currentTime(), privacy: .public) loadedRanges=\(self.describeLoadedRanges(item), privacy: .public)"
+                "[CMP-AVP] item playback stalled current=\(self.currentTime(), privacy: .public) loadedRanges=\(self.describeRanges(item.loadedTimeRanges), privacy: .public)"
             )
             self.recoverLocalLoopbackStallIfNeeded(item: item)
         }
@@ -4643,22 +4631,23 @@ final class AVPlayerBackend {
         loopbackEdgeWatch = nil
 
         let dir = sessionDirectory
-        let preserveDir = preserveSessionDirectory
+        let preserveDir = Self.keepLoopbackArtifacts
         sessionDirectory = nil
-        preserveSessionDirectory = false
-        writer?.stop {
-            if let dir, preserveDir {
-                cmpLog("[CMP-AVP] retained local DV artifacts dir=\(dir.path)")
-            } else if let dir {
-                try? FileManager.default.removeItem(at: dir)
-            }
-        }
-        if writer == nil, let dir {
+        // Deferred to `stop`'s completion when a writer exists so the mux
+        // thread has finished before the directory goes away; synchronous
+        // otherwise, because the optional-chained completion never runs.
+        let disposeSessionDirectory: () -> Void = {
+            guard let dir else { return }
             if preserveDir {
                 cmpLog("[CMP-AVP] retained local DV artifacts dir=\(dir.path)")
             } else {
                 try? FileManager.default.removeItem(at: dir)
             }
+        }
+        if let writer {
+            writer.stop(completion: disposeSessionDirectory)
+        } else {
+            disposeSessionDirectory()
         }
     }
 
@@ -4805,7 +4794,6 @@ final class AVPlayerBackend {
     }
 
     private func reportItemFailure(_ item: AVPlayerItem) {
-        preserveLoopbackArtifactsIfDebugEnabled(reason: "avplayer_item_failed")
         let nsError = item.error as NSError?
         let domain = nsError?.domain ?? "unknown"
         let code = nsError?.code ?? 0
@@ -4829,15 +4817,6 @@ final class AVPlayerBackend {
             underlying: underlying,
             errorLog: latestErrorLog
         )))
-    }
-
-    private func preserveLoopbackArtifactsIfDebugEnabled(reason: String) {
-        guard Self.keepLoopbackArtifacts else { return }
-        guard let dir = sessionDirectory else { return }
-        if !preserveSessionDirectory {
-            cmpLog("[CMP-AVP] preserving local DV artifacts after \(reason) dir=\(dir.path)")
-        }
-        preserveSessionDirectory = true
     }
 
     private static var keepLoopbackArtifacts: Bool {
