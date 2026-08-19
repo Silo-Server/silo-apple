@@ -225,17 +225,6 @@ struct PlayerView: View {
                     }
                     #endif
 
-                    // The player's single loading/buffering surface, for the
-                    // start (`isLoading`) and every rebuffer after it
-                    // (`isBuffering`) alike. Sits above the transports so a
-                    // rebuffer with the controls up still reports, and below
-                    // the notices so a notice keeps the corner when both want
-                    // it. Being inside this branch is what suppresses it over
-                    // Up Next and the error view.
-                    if viewModel.isLoading || viewModel.isBuffering {
-                        PlayerBufferingCapsule()
-                    }
-
                     #if os(tvOS)
                     if let identity = remoteIdentityNotice {
                         RemotePlaybackIdentityNotice(identity: identity)
@@ -248,6 +237,18 @@ struct PlayerView: View {
                         PlayerNoticeOverlay(notice: notice)
                     }
                     #endif
+                }
+
+                // The player's single loading/buffering surface, for the start
+                // (`isLoading`) and every rebuffer after it (`isBuffering`)
+                // alike. Deliberately outside the Up Next branch, matching
+                // Android, which lifts its chip above the Up Next scrim: video
+                // keeps playing in the mini-player behind that panel, and the
+                // panel has no loading state of its own, so a rebuffer there
+                // would otherwise go unreported. The error view is the one
+                // surface it stands down for — that's the enclosing branch.
+                if viewModel.isLoading || viewModel.isBuffering {
+                    PlayerBufferingCapsule()
                 }
             }
         }
