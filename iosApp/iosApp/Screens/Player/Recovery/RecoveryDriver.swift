@@ -102,6 +102,20 @@ final class RecoveryDriver {
         onSuspensionChanged?(context.suspendedReasons)
     }
 
+    /// Adopts another driver's live holds.
+    ///
+    /// The latch used to live on `AVPlayerBackend`, so it travelled with the
+    /// backend *instance*: a same-engine replan reuses that instance, and the
+    /// hold `attemptProtocolV3Replan` took before the round trip stayed on it
+    /// until the replan's `defer`. Making the latch load-scoped would otherwise
+    /// drop it the moment the replacement session adopts the backend, so the
+    /// replacement inherits it and the same `defer` releases it.
+    func adoptSuspensions(_ reasons: Set<String>) {
+        for reason in reasons.sorted() {
+            setSuspended(true, reason: reason)
+        }
+    }
+
     // MARK: - Live inputs the policy cannot read for itself
 
     func note(userPaused: Bool) {
@@ -215,6 +229,20 @@ final class RecoveryDriver {
         context.backgroundRenewalInFlight = false
         context.backgroundRenewalTransientFailures =
             RecoveryPolicy.backgroundRenewalTransientFailureLimit
+    }
+
+    // MARK: - Visible server-outage recovery
+
+    /// Drops the visible recovery's single-flight without deciding anything.
+    ///
+    /// The slot is the policy's form of `activeServerOutageRecoverySessionId`,
+    /// which the failure ladder and the end-of-file gate read and which
+    /// `clearServerOutageRecoveryState()` cleared alongside the task that owned
+    /// the wait. It is also what an executor that bails on a load-state gate
+    /// (end-of-file reached) has to give back, because legacy never latched it
+    /// on that path.
+    func clearServerOutageRecovery() {
+        context.serverOutageRecovery = nil
     }
 
     // MARK: - Decision telemetry

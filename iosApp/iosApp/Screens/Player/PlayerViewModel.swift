@@ -969,7 +969,9 @@ class PlayerViewModel {
     /// guards: the stream belongs to one `PlaybackEngineSession`, ends when that
     /// session is disposed, and every element is applied only while the session
     /// is still the current one — identity, not a captured counter (design §4
-    /// I2).
+    /// I2). `pendingLoadID` is the second half of that identity: a newer load
+    /// mints it (and cancels this loop) at the point the legacy code bumped the
+    /// generation, which is well before the replacement session is installed.
     private func consumeEngineEvents(of session: PlaybackEngineSession) {
         tasks[.engineEvents]?.cancel()
         tasks[.engineEvents] = Task { @MainActor [weak self] in
@@ -977,6 +979,7 @@ class PlayerViewModel {
                 guard let self,
                       !self.isDisposed,
                       self.engineSession === session,
+                      self.pendingLoadID == session.loadID,
                       !session.isDisposed else { return }
                 self.apply(event, from: session)
             }
@@ -1353,14 +1356,21 @@ class PlayerViewModel {
         // Hold every in-route recovery rung for the whole replan round trip:
         // the shell owns the route decision now, and a watchdog
         // reanchor/reload/rebuild racing the server negotiation was review §3
-        // #3. The same session is released in the defer — a same-engine replan
-        // reuses its backend under a fresh `LoadID`, and a route change builds a
-        // session whose driver never held the reason.
+        // #3. The hold travels with the backend instance, exactly as it did
+        // when the latch was a backend field: a same-engine replan's
+        // replacement session inherits it when it adopts the backend, a route
+        // change builds a session whose driver never held the reason. The defer
+        // releases both candidates because only one of them can be holding it,
+        // and releasing a reason a driver never took is a no-op.
         let replanSession = engineSession
         replanSession?.suspendRecovery(true, reason: RecoveryDriver.serverReplanSuspensionReason)
         protocolV3ReplanTask = Task { @MainActor [weak self] in
             defer {
                 replanSession?.suspendRecovery(
+                    false,
+                    reason: RecoveryDriver.serverReplanSuspensionReason
+                )
+                self?.engineSession?.suspendRecovery(
                     false,
                     reason: RecoveryDriver.serverReplanSuspensionReason
                 )
@@ -2406,6 +2416,14 @@ class PlayerViewModel {
         }
         let loadID = LoadID()
         pendingLoadID = loadID
+        // Supersede the outgoing load's event stream here, where the legacy
+        // code bumped `streamLoadGeneration` — before the pause below and
+        // before the V3 track intent is re-armed. Everything the outgoing
+        // backend reports from this point on belongs to a load that has already
+        // been replaced: its pause must not surface as a user-visible pause, and
+        // a late `.tracks` must not consume the intent re-armed two statements
+        // down. The replacement session installs its own loop.
+        tasks[.engineEvents]?.cancel()
         // Stop presentation while the replacement proxy is prepared, but
         // retain the backend. If the implementation route is unchanged, the
         // replacement session adopts that backend in place so tvOS can preserve
@@ -2572,7 +2590,10 @@ class PlayerViewModel {
                 Task { @MainActor [weak self] in
                     guard let self, !self.isDisposed, let session = self.engineSession else { return }
                     self.refreshRecoveryContext(session: session)
-                    session.reportOriginOutage(active)
+                    // The runway gate reads the shell's buffering flag, exactly
+                    // as `handleOriginOutageChanged(true)`'s `if isBuffering`
+                    // did (wave-1B obligation (c)).
+                    session.reportOriginOutage(active, isBuffering: self.isBuffering)
                 }
             }
         )
@@ -3713,7 +3734,7 @@ class PlayerViewModel {
                 guard let self, !Task.isCancelled, !self.isDisposed,
                       self.engineSession === session,
                       session.driver.context.outage != nil else { return }
-                let ok = await self.probeServerHealthOnce()
+                let ok = await self.probeServerHealthOnce().isReachable
                 guard !Task.isCancelled, !self.isDisposed,
                       self.engineSession === session else { return }
                 if ok {
@@ -3761,19 +3782,38 @@ class PlayerViewModel {
         sourceOutageRideThroughTask = nil
     }
 
-    /// One server health probe (auth statuses count as reachable — the
-    /// server is up even if this credential can't read /health).
-    private func probeServerHealthOnce() async -> Bool {
+    /// The outcome of one server health probe. Auth statuses count as
+    /// reachable — the server is up even if this credential can't read /health
+    /// — but the visible recovery's log line names them apart from a clean
+    /// 200, and its failure line carries the error, so the three outcomes stay
+    /// distinguishable at the call site.
+    private enum ServerHealthProbeOutcome {
+        case healthy
+        case authReached(Int)
+        case failed(Error)
+
+        var isReachable: Bool {
+            switch self {
+            case .healthy, .authReached:
+                return true
+            case .failed:
+                return false
+            }
+        }
+    }
+
+    /// One server health probe.
+    private func probeServerHealthOnce() async -> ServerHealthProbeOutcome {
         do {
             let _: HealthStatus = try await HTTPClient.shared.get("/api/v1/health")
-            return true
+            return .healthy
         } catch {
             if let httpError = error as? HTTPError,
                let statusCode = httpError.statusCode,
                statusCode == 401 || statusCode == 403 {
-                return true
+                return .authReached(statusCode)
             }
-            return false
+            return .failed(error)
         }
     }
 
@@ -3810,18 +3850,27 @@ class PlayerViewModel {
         observedPosition: Double,
         session: PlaybackEngineSession
     ) {
+        // The ride-through's in-route suppression is released before any
+        // load-state gate can turn this executor into a no-op: legacy released
+        // it at the escalation point (PVM:3980-3982 at 8649b1f) and only then
+        // called `attemptServerOutageRecovery`, whose `!hasReachedEndOfFile`
+        // guard could bail.
+        session.suspendRecovery(false, reason: RecoveryDriver.originOutageSuspensionReason)
         guard !isDisposed,
               !hasReachedEndOfFile,
               let lastLoadRequest else {
+            // Legacy never reached `activeServerOutageRecoverySessionId = …` on
+            // this path, so the policy's single-flight must not stay latched
+            // against a recovery that will never run.
+            session.driver.clearServerOutageRecovery()
             return
         }
 
         let interruptedSessionId = activePlaybackSessionId ?? "unknown"
         // Outage recovery tears the proxy down; cancel any in-flight silent
         // renewal so its retarget can't land mid-teardown, and end the
-        // ride-through (its watchdog suppression is released with the
-        // decision, its timer here).
-        session.suspendRecovery(false, reason: RecoveryDriver.originOutageSuspensionReason)
+        // ride-through (its watchdog suppression is released above, its timer
+        // here).
         backgroundRenewalTask?.cancel()
         backgroundRenewalTask = nil
         backgroundRenewalSessionId = nil
@@ -3883,14 +3932,29 @@ class PlayerViewModel {
                     )
                     return
                 }
-                let ok = await self.probeServerHealthOnce()
+                let outcome = await self.probeServerHealthOnce()
                 guard !Task.isCancelled, !self.isDisposed,
                       self.engineSession === session else { return }
-                if ok {
+                switch outcome {
+                case .healthy:
                     Self.logger.info("[CMP-RECOVERY] server health probe succeeded")
-                } else {
-                    Self.logger.warning("[CMP-RECOVERY] server health probe failed")
+                case let .authReached(statusCode):
+                    Self.logger.info(
+                        "[CMP-RECOVERY] server health probe reached auth status=\(statusCode, privacy: .public); treating server as ready"
+                    )
+                case let .failed(probeError):
+                    // The delay in force at *this* probe — `waitForServerReady`'s
+                    // `delay` local, which it logged before doubling it. The
+                    // policy hands the same number back as
+                    // `.waitForServerReady(probeAfter:)` unless the remaining
+                    // budget is shorter.
+                    let retryDelay = session.driver.context.serverOutageRecovery?.nextDelay
+                        ?? RecoveryPolicy.serverOutageRecoveryInitialDelay
+                    Self.logger.warning(
+                        "[CMP-RECOVERY] server health probe failed; retrying in \(retryDelay, privacy: .public)s error=\(String(describing: probeError), privacy: .public)"
+                    )
                 }
+                let ok = outcome.isReachable
                 self.refreshRecoveryContext(session: session)
                 switch session.driver.observe(.serverHealthProbe(ok: ok)) {
                 case let .waitForServerReady(next):
@@ -3922,6 +3986,12 @@ class PlayerViewModel {
     }
 
     private func clearServerOutageRecoveryState() {
+        // The policy's `serverOutageRecovery` slot is this function's other
+        // legacy half (`activeServerOutageRecoverySessionId = nil`), and it is
+        // what `handlePlaybackError` and `handleEndOfFile` gate on — so it has
+        // to be released with the task that owned the wait, not left latched
+        // against a wait nobody is running any more.
+        engineSession?.driver.clearServerOutageRecovery()
         serverOutageRecoveryTask?.cancel()
         serverOutageRecoveryTask = nil
     }

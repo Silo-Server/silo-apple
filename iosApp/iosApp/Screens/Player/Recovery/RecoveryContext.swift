@@ -62,8 +62,8 @@ struct RecoveryContext: Equatable {
         }
     }
 
-    /// Playhead watchdog state (`watchdogLast*`, `watchdogReanchor*`,
-    /// `didEscalateLoopbackStall`, `lastLocalLoopbackStallRecoveryAt`).
+    /// Playhead watchdog state (`watchdogLast*`, `watchdogReanchor*`, the
+    /// retired starvation-escalation latch, `lastLocalLoopbackStallRecoveryAt`).
     struct PlayheadState: Equatable {
         /// When the playhead was last observed to move by more than 0.05 s in
         /// either direction (`watchdogLastAdvanceWall`). `nil` until the first
@@ -74,13 +74,13 @@ struct RecoveryContext: Equatable {
         /// (`watchdogLastPlayheadSeconds`; the backend's `< 0` sentinel is `nil`
         /// here).
         var lastAdvancePosition: Double?
-        /// `watchdogReanchorCount`.
+        /// The backend's retired reanchor counter (`watchdogReanchor*`).
         var reanchorCount: Int
         /// `watchdogReanchorWindowStartWall`; `nil` is the backend's `== 0`
         /// "no window yet" sentinel.
         var windowStart: Date?
-        /// `didEscalateLoopbackStall` — one starvation/exhaustion escalation per
-        /// rolling window.
+        /// The retired starvation-escalation latch — one starvation/exhaustion
+        /// escalation per rolling window.
         var didEscalateStarvation: Bool
         /// `lastLocalLoopbackStallRecoveryAt` — the shared reanchor rung's 10 s
         /// cooldown clock.
@@ -265,9 +265,9 @@ struct RecoveryContext: Equatable {
     /// A foreground interruption is pending, not yet auto-recovered, and inside
     /// its 3 s deadline (`shouldAutoRecoverFromInterruption`).
     var canAutoRecoverInterruption: Bool
-    /// `PlayerViewModel.hasAttemptedNativeDirectRouteRecovery`, per load.
+    /// The view model's retired per-load native-direct fallback latch.
     var attemptedNativeDirectFallback: Bool
-    /// `PlayerViewModel.hasAttemptedSiloRouteHLSFallback`, per load.
+    /// The view model's retired per-load Silo-route HLS fallback latch.
     var attemptedLoopbackHLSFallback: Bool
     /// Whether a local loopback fallback plan can be built for the failed
     /// native-direct route (`makeLoopbackFallbackPlan` returns non-nil). When it

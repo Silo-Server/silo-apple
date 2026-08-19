@@ -173,6 +173,35 @@ final class PlaybackEngineSessionTests: XCTestCase {
         XCTAssertEqual(secondEvents, [.time(seconds: 9)])
     }
 
+    /// The in-route suspension latch was a backend field before this wave, so a
+    /// reused backend carried its holders across the replan.
+    /// `attemptProtocolV3Replan` takes the `server_replan` hold before the round
+    /// trip and releases it once in its `defer`, which by then lands on the
+    /// replacement session — so the hold has to travel with the backend, and a
+    /// route change's fresh session must not inherit one.
+    func testReuseCarriesTheSuspensionHoldsOntoTheReplacementSession() {
+        let backend = FakePlaybackBackend()
+        let first = makeSession(plan: localHLSPlan(), backend: backend)
+        first.suspendRecovery(true, reason: RecoveryDriver.serverReplanSuspensionReason)
+
+        let second = PlaybackEngineSession(
+            loadID: LoadID(),
+            plan: localHLSPlan(),
+            backendFactory: { FakePlaybackBackend() },
+            reusing: first,
+            transport: nil
+        )
+        XCTAssertEqual(
+            second.driver.context.suspendedReasons,
+            [RecoveryDriver.serverReplanSuspensionReason]
+        )
+        second.suspendRecovery(false, reason: RecoveryDriver.serverReplanSuspensionReason)
+        XCTAssertTrue(second.driver.context.suspendedReasons.isEmpty)
+
+        let routeChanged = makeSession(plan: localHLSPlan(), backend: FakePlaybackBackend())
+        XCTAssertTrue(routeChanged.driver.context.suspendedReasons.isEmpty)
+    }
+
     /// A session that never reuses builds its backend from the factory.
     func testWithoutReuseTheFactoryBuildsAFreshBackend() {
         let backend = FakePlaybackBackend()
@@ -337,9 +366,8 @@ final class PlaybackEngineSessionTests: XCTestCase {
         let backend = FakePlaybackBackend()
         let session = makeSession(plan: localHLSPlan(), backend: backend)
         backend.fireFileLoaded(reason: "first_frame")
-        backend.fireBuffering(true)
 
-        session.reportOriginOutage(true)
+        session.reportOriginOutage(true, isBuffering: true)
 
         XCTAssertEqual(
             session.driver.context.suspendedReasons,
@@ -354,6 +382,23 @@ final class PlaybackEngineSessionTests: XCTestCase {
         )
     }
 
+    /// The runway gate reads the *shell's* buffering flag, which is what
+    /// `handleOriginOutageChanged(true)` tested. The backend's own latch is not
+    /// a substitute: `setBuffering(_:cause:)` also writes the shell's flag for
+    /// causes the engine never raises ("replan", "quality_switch",
+    /// "background_suspend"), so the two diverge.
+    func testOriginOutageEntryLeavesTheRunwayGateArmedWhenTheShellIsNotBuffering() async {
+        let backend = FakePlaybackBackend()
+        let session = makeSession(plan: localHLSPlan(), backend: backend)
+        backend.fireFileLoaded(reason: "first_frame")
+        backend.fireBuffering(true)
+
+        session.reportOriginOutage(true, isBuffering: false)
+
+        XCTAssertEqual(session.driver.context.outage?.noticeShown, false)
+        _ = await drain(session)
+    }
+
     /// Exit releases the latch before the post-outage kick runs — the kick's
     /// own rung reads it — and still tells the shell, which owns the
     /// "Reconnected" notice.
@@ -361,10 +406,10 @@ final class PlaybackEngineSessionTests: XCTestCase {
         let backend = FakePlaybackBackend()
         let session = makeSession(plan: localHLSPlan(), backend: backend)
         backend.fireFileLoaded(reason: "first_frame")
-        session.reportOriginOutage(true)
+        session.reportOriginOutage(true, isBuffering: false)
         backend.clearCalls()
 
-        session.reportOriginOutage(false)
+        session.reportOriginOutage(false, isBuffering: false)
 
         XCTAssertTrue(session.driver.context.suspendedReasons.isEmpty)
         XCTAssertEqual(

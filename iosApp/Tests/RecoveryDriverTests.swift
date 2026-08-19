@@ -293,4 +293,30 @@ final class RecoveryDriverTests: XCTestCase {
         XCTAssertFalse(driver.context.freshRenewalInFlight)
         XCTAssertEqual(driver.context.backgroundRenewalTransientFailures, 0)
     }
+
+    // MARK: - Visible server-outage recovery
+
+    /// The visible recovery's single-flight is the policy's form of
+    /// `activeServerOutageRecoverySessionId`, which the failure ladder and the
+    /// end-of-file gate read and which `clearServerOutageRecoveryState()`
+    /// cleared with the task that owned the wait. Left latched it would swallow
+    /// every later error and re-entry for the rest of the load.
+    func testClearingTheServerOutageRecoveryReleasesTheSingleFlight() {
+        let driver = RecoveryDriver(route: .avPlayerNativeDirect)
+        XCTAssertEqual(
+            driver.observe(.sourceInterrupted(reason: .networkUnavailable)),
+            .recoverFromServerOutage(reason: "network_unavailable")
+        )
+        XCTAssertNotNil(driver.context.serverOutageRecovery)
+        // Single-flight while it is latched.
+        XCTAssertNil(driver.observe(.sourceInterrupted(reason: .networkUnavailable)))
+
+        driver.clearServerOutageRecovery()
+
+        XCTAssertNil(driver.context.serverOutageRecovery)
+        XCTAssertEqual(
+            driver.observe(.sourceInterrupted(reason: .networkUnavailable)),
+            .recoverFromServerOutage(reason: "network_unavailable")
+        )
+    }
 }

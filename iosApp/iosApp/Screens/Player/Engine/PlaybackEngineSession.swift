@@ -57,11 +57,6 @@ final class PlaybackEngineSession {
 
     private let continuation: AsyncStream<EngineEvent>.Continuation
     private(set) var isDisposed = false
-    /// Last buffering edge seen on this session, for the origin-outage runway
-    /// gate: `handleOriginOutageChanged(true)` called `noteBufferingDuringSourceOutage()`
-    /// when the player was *already* out of runway, because the buffering edge
-    /// will not fire again (wave-1B obligation (c)).
-    private var isBuffering = false
 
     // MARK: - Lifecycle
 
@@ -81,15 +76,19 @@ final class PlaybackEngineSession {
         self.plan = plan
         self.transport = transport
         self.driver = RecoveryDriver(route: plan.engine)
-        if let adopted = existing?.relinquishBackend() {
-            self.backend = adopted
-        } else {
-            self.backend = backendFactory()
-        }
+        let adopted = existing?.relinquishBackend()
+        self.backend = adopted ?? backendFactory()
         let stream = AsyncStream<EngineEvent>.makeStream(bufferingPolicy: .unbounded)
         self.events = stream.stream
         self.continuation = stream.continuation
         bindBackend()
+        if adopted != nil, let outgoing = existing {
+            // The suspension latch was a backend field before this wave, so a
+            // reused backend carried its holders across the replan; the load
+            // that took the hold releases it once, on whichever session owns
+            // the backend when its round trip ends.
+            driver.adoptSuspensions(outgoing.driver.context.suspendedReasons)
+        }
     }
 
     /// Hands this session's backend to its successor and closes this session
@@ -146,7 +145,18 @@ final class PlaybackEngineSession {
     ///   engine and deliberately leaves the source proxy — and its cache —
     ///   running for the resume (wave 1E `SourceCacheDisposition.retainProxy`).
     func dispose(reason: String, retainingTransport: Bool = false) {
-        guard !isDisposed else { return }
+        guard !isDisposed else {
+            // A `retainingTransport` dispose latches `isDisposed` while
+            // deliberately leaving the proxy running, so the teardown that
+            // follows the suspend (`cleanup()`, `deinit`,
+            // `finalizeTerminalPlaybackError`) still has to stop it — that is
+            // what legacy's unconditional `sourceProxy?.stop()` covered.
+            if !retainingTransport {
+                transport?.stop()
+                transport = nil
+            }
+            return
+        }
         isDisposed = true
         Self.logger.info(
             "[CMP-ENGINE] session disposed reason=\(reason, privacy: .public)"
@@ -281,7 +291,12 @@ final class PlaybackEngineSession {
     /// `noteBufferingDuringSourceOutage()` when the player was *already* out of
     /// runway, because the buffering edge will not fire again — so the
     /// once-per-outage gate is re-fed here at entry.
-    func reportOriginOutage(_ active: Bool) {
+    ///
+    /// - Parameter isBuffering: the *shell's* buffering flag, which is what
+    ///   legacy tested. `setBuffering(_:cause:)` also writes it for causes the
+    ///   engine never raises ("replan", "quality_switch", "background_suspend"),
+    ///   so the backend's own latch is not a substitute.
+    func reportOriginOutage(_ active: Bool, isBuffering: Bool) {
         observe(.originOutage(active: active))
         if active, isBuffering {
             observe(.bufferingChanged(true))
@@ -312,9 +327,7 @@ final class PlaybackEngineSession {
         backend.onError = { [weak self] failure in self?.emit(.failed(failure)) }
         backend.onEndOfFile = { [weak self] in self?.emit(.endOfFile) }
         backend.onBufferingChange = { [weak self] buffering in
-            guard let self else { return }
-            self.isBuffering = buffering
-            self.emit(.buffering(buffering))
+            self?.emit(.buffering(buffering))
         }
         backend.onBufferedAheadChange = { [weak self] ahead in self?.emit(.bufferedAhead(ahead)) }
         backend.onPlaybackStatsChange = { [weak self] stats in self?.emit(.stats(stats)) }

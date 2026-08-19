@@ -8,10 +8,10 @@
 //  watchdog, item-death evidence, edge watchdog, `.AVPlayerItemPlaybackStalled`,
 //  "Playlist File unchanged"), and three inside `PlayerViewModel`
 //  (`handlePlaybackError`, the origin-outage ride-through, the two session
-//  renewals) — coordinated by a two-owner handshake
-//  (`setRecoverySuspended` / `setExternalStallSuppression` /
-//  `kickPlaybackAfterExternalStallCleared`). Every constant, every latch and
-//  every precedence rule from those nine sites lives here now, unchanged.
+//  renewals) — coordinated by a two-owner handshake (the retired recovery
+//  suspension pair and the post-outage playback kick that went with them).
+//  Every constant, every latch and every precedence rule from those nine sites
+//  lives here now, unchanged.
 //
 //  `decide` is pure and total: no clock, no player, no I/O, one `switch` with
 //  no `default`. `now` is a parameter so a test can drive a 90 s rolling window

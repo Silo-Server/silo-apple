@@ -116,7 +116,7 @@ enum RecoveryAction: Equatable {
     /// t = 0, 1, 3, 7, 15, 23, ….
     case rideThroughOutage(probeAfter: Duration)
     /// `handleOriginOutageChanged(false)` — `clearSourceOutageRideThroughState()`
-    /// and, when `kick` is set, `kickPlaybackAfterExternalStallCleared()`.
+    /// and, when `kick` is set, the retired post-outage playback kick.
     case endOutageRideThrough(kick: Bool)
     /// `attemptServerOutageRecovery(reason:observedPosition:)` — the visible
     /// recovery: tear the proxy and backend down, show "Reconnecting", wait for
