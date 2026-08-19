@@ -70,7 +70,8 @@ final class RecoveryPolicyTests: XCTestCase {
         generatedAhead: Double = 20,
         secondsSinceLastServe: Double = 5,
         userPaused: Bool = false,
-        playbackEstablished: Bool = true
+        playbackEstablished: Bool = true,
+        pendingSeekMediaTarget: Double? = nil
     ) -> PlayheadSample {
         PlayheadSample(
             position: position,
@@ -79,7 +80,8 @@ final class RecoveryPolicyTests: XCTestCase {
             generatedAhead: generatedAhead,
             secondsSinceLastServe: secondsSinceLastServe,
             userPaused: userPaused,
-            playbackEstablished: playbackEstablished
+            playbackEstablished: playbackEstablished,
+            pendingSeekMediaTarget: pendingSeekMediaTarget
         )
     }
 
@@ -155,7 +157,6 @@ final class RecoveryPolicyTests: XCTestCase {
             (action, context) = RecoveryPolicy.decide(
                 .startupTick(
                     servedRequests: UInt64(tick),
-                    secondsSinceStart: Double(tick),
                     displayModeSwitchInProgress: false
                 ),
                 context: context,
@@ -170,14 +171,14 @@ final class RecoveryPolicyTests: XCTestCase {
         var context = startupContext()
         var action: RecoveryAction?
         (action, context) = RecoveryPolicy.decide(
-            .startupTick(servedRequests: 0, secondsSinceStart: 5.9, displayModeSwitchInProgress: false),
+            .startupTick(servedRequests: 0, displayModeSwitchInProgress: false),
             context: context,
             now: at(5.9)
         )
         XCTAssertNil(action, "5.9 s is inside the 6 s stall window")
 
         (action, context) = RecoveryPolicy.decide(
-            .startupTick(servedRequests: 0, secondsSinceStart: 6, displayModeSwitchInProgress: false),
+            .startupTick(servedRequests: 0, displayModeSwitchInProgress: false),
             context: context,
             now: at(6)
         )
@@ -189,7 +190,7 @@ final class RecoveryPolicyTests: XCTestCase {
     func testStartup_Nudged_EscalatesToItemReload() {
         var context = startupContext(stage: .nudged)
         let (action, next) = RecoveryPolicy.decide(
-            .startupTick(servedRequests: 0, secondsSinceStart: 12, displayModeSwitchInProgress: false),
+            .startupTick(servedRequests: 0, displayModeSwitchInProgress: false),
             context: context,
             now: at(12)
         )
@@ -202,7 +203,7 @@ final class RecoveryPolicyTests: XCTestCase {
     func testStartup_Reloaded_FailsWithStartupStalled() {
         let context = startupContext(stage: .reloaded)
         let (action, next) = RecoveryPolicy.decide(
-            .startupTick(servedRequests: 0, secondsSinceStart: 18, displayModeSwitchInProgress: false),
+            .startupTick(servedRequests: 0, displayModeSwitchInProgress: false),
             context: context,
             now: at(18)
         )
@@ -214,7 +215,7 @@ final class RecoveryPolicyTests: XCTestCase {
         // B:3884 — the ladder itself checks suspension.
         let context = startupContext(suspendedReasons: ["server_replan"])
         let (action, next) = RecoveryPolicy.decide(
-            .startupTick(servedRequests: 0, secondsSinceStart: 30, displayModeSwitchInProgress: false),
+            .startupTick(servedRequests: 0, displayModeSwitchInProgress: false),
             context: context,
             now: at(30)
         )
@@ -229,7 +230,7 @@ final class RecoveryPolicyTests: XCTestCase {
         // ride-through. Kept deliberately.
         let context = startupContext(suspendedReasons: ["server_replan", "origin_outage"])
         let (action, next) = RecoveryPolicy.decide(
-            .startupTick(servedRequests: 7, secondsSinceStart: 60, displayModeSwitchInProgress: false),
+            .startupTick(servedRequests: 7, displayModeSwitchInProgress: false),
             context: context,
             now: at(60)
         )
@@ -249,7 +250,7 @@ final class RecoveryPolicyTests: XCTestCase {
             (.reloaded, "reloaded")
         ] {
             let (action, _) = RecoveryPolicy.decide(
-                .startupTick(servedRequests: 3, secondsSinceStart: 120, displayModeSwitchInProgress: false),
+                .startupTick(servedRequests: 3, displayModeSwitchInProgress: false),
                 context: startupContext(stage: stage),
                 now: at(120)
             )
@@ -265,7 +266,7 @@ final class RecoveryPolicyTests: XCTestCase {
         // shared policy also returns `.wait` outright.
         let context = startupContext()
         let (action, next) = RecoveryPolicy.decide(
-            .startupTick(servedRequests: 0, secondsSinceStart: 30, displayModeSwitchInProgress: true),
+            .startupTick(servedRequests: 0, displayModeSwitchInProgress: true),
             context: context,
             now: at(30)
         )
@@ -521,6 +522,32 @@ final class RecoveryPolicyTests: XCTestCase {
             context: loopbackContext(mediaTimelineOffset: 640)
         )
         XCTAssertEqual(actions, [.reanchor(atMediaSeconds: 740, reason: "vod_stall_nudge")])
+    }
+
+    func testPlayhead_Wedge_PrefersTheUnlandedSeekTarget() {
+        // B:1918 — a wedged zero-tolerance seek leaves the frozen clock at the
+        // PRE-seek position (B:1160-1164), so the latched media target is the
+        // anchor and the user's seek is not discarded. Reachable between
+        // `handleSeekDeadline`'s `markSeekSettled()` (B:1268) and the `Task`
+        // that consumes the latch (B:1297-1304).
+        var context = loopbackContext(mediaTimelineOffset: 640)
+        let wedged = sample(pendingSeekMediaTarget: 1_500)
+        var action: RecoveryAction?
+        (action, context) = RecoveryPolicy.decide(.playheadTick(wedged), context: context, now: t0)
+        (action, context) = RecoveryPolicy.decide(
+            .playheadTick(wedged),
+            context: context,
+            now: at(10)
+        )
+        XCTAssertEqual(action, .reanchor(atMediaSeconds: 1_500, reason: "vod_stall_nudge"))
+
+        // Later attempts reload the item at the same anchor.
+        (action, _) = RecoveryPolicy.decide(
+            .playheadTick(wedged),
+            context: context,
+            now: at(20)
+        )
+        XCTAssertEqual(action, .reloadItem(atMediaSeconds: 1_500, reason: "vod_stall"))
     }
 
     func testPlayhead_Exhaustion_RebuildsAfterThreeReanchors() {
@@ -790,6 +817,117 @@ final class RecoveryPolicyTests: XCTestCase {
         )
         XCTAssertNil(action)
         XCTAssertEqual(next, context)
+    }
+
+    // MARK: - D — explicit failed-to-end (B:3438)
+
+    func testItemDeath_FailedToEnd_ConfirmsAfterTheWindowAndReloadsTheItem() {
+        // B:3453-3461 arms the confirmation candidate and returns; B:3089 +
+        // B:145 confirm it 3 s later while the playhead has not moved.
+        var context = loopbackContext()
+        var action: RecoveryAction?
+        (action, context) = RecoveryPolicy.decide(
+            .itemFailedToEnd(position: 100, userPaused: false),
+            context: context,
+            now: t0
+        )
+        XCTAssertNil(action, "the notification only arms a candidate")
+
+        // Inside the window nothing confirms yet.
+        (action, context) = RecoveryPolicy.decide(
+            .playheadTick(sample(position: 100, timeControl: .waiting, bufferedAhead: 0.1)),
+            context: context,
+            now: at(2.9)
+        )
+        XCTAssertNil(action)
+
+        // A dead item parked in `.waitingToPlayAtSpecifiedRate` — the state the
+        // `.unexpectedPause` trigger can never reach — confirms here.
+        (action, _) = RecoveryPolicy.decide(
+            .playheadTick(sample(position: 100.4, timeControl: .waiting, bufferedAhead: 0.1)),
+            context: context,
+            now: at(3)
+        )
+        XCTAssertEqual(
+            action,
+            .reloadItem(atMediaSeconds: 100.4, reason: "item_death_failed_to_end_1")
+        )
+    }
+
+    func testItemDeath_FailedToEnd_PositionDriftCancelsTheCandidate() {
+        // B:146 `progressCancellationThresholdSeconds = 0.5` — the item is
+        // still rendering, so the failure was not terminal.
+        var context = loopbackContext()
+        var action: RecoveryAction?
+        (action, context) = RecoveryPolicy.decide(
+            .itemFailedToEnd(position: 100, userPaused: false),
+            context: context,
+            now: t0
+        )
+        XCTAssertNil(action)
+
+        (action, context) = RecoveryPolicy.decide(
+            .playheadTick(sample(position: 100.6, timeControl: .waiting, bufferedAhead: 0.1)),
+            context: context,
+            now: at(3)
+        )
+        XCTAssertNil(action, "0.6 s of drift cancels the candidate")
+
+        // And the cancellation is permanent: a later tick at the same position
+        // has nothing left to confirm.
+        (action, _) = RecoveryPolicy.decide(
+            .playheadTick(sample(position: 100.6, timeControl: .waiting, bufferedAhead: 0.1)),
+            context: context,
+            now: at(6)
+        )
+        XCTAssertNil(action)
+    }
+
+    func testItemDeath_FailedToEnd_ArmsNothingOutsideAnEstablishedLoopback() {
+        // B:3453-3454 — anything else falls through to
+        // `recoverLocalLoopbackFailureIfNeeded`, which arrives classified as
+        // `.playlistUnchanged` instead.
+        var startup = startupContext()
+        var action: RecoveryAction?
+        (action, startup) = RecoveryPolicy.decide(
+            .itemFailedToEnd(position: 100, userPaused: false),
+            context: startup,
+            now: t0
+        )
+        XCTAssertNil(action)
+        XCTAssertEqual(startup, startupContext(), "no candidate before the file-loaded edge")
+
+        var hls = RecoveryContext.initial(route: .avPlayerHLS)
+        hls.playbackEstablished = true
+        let (offRoute, next) = RecoveryPolicy.decide(
+            .itemFailedToEnd(position: 100, userPaused: false),
+            context: hls,
+            now: t0
+        )
+        XCTAssertNil(offRoute)
+        XCTAssertEqual(next, hls)
+    }
+
+    func testItemDeath_FailedToEnd_IsNotItemDeathEvidence() {
+        // The two mechanisms must stay apart: `.itemDeathEvidence` gates on
+        // `isItemDeath(...)` (B:60) and confirms at weight 2, while the
+        // failed-to-end note (B:3455) classifies nothing and always opens the
+        // 3 s window. Feeding the same notification through both would reload
+        // immediately instead.
+        var context = loopbackContext()
+        var action: RecoveryAction?
+        (action, context) = RecoveryPolicy.decide(
+            .itemFailedToEnd(position: 100, userPaused: false),
+            context: context,
+            now: t0
+        )
+        XCTAssertNil(action)
+        (action, _) = RecoveryPolicy.decide(
+            .playheadTick(sample(position: 100, timeControl: .waiting, bufferedAhead: 0.1)),
+            context: context,
+            now: at(0.5)
+        )
+        XCTAssertNil(action, "no immediate reload — the window owns the decision")
     }
 
     // MARK: - E — edge watchdog (B:3201)
@@ -1108,6 +1246,10 @@ final class RecoveryPolicyTests: XCTestCase {
     private func offlineContext(route: PlaybackEngineKind) -> RecoveryContext {
         var context = RecoveryContext.initial(route: route)
         context.playbackEstablished = true
+        // PVM:2284 — `requestServerHLSRouteFallback` needs something to replan
+        // against. A load that reached `handlePlaybackError` normally has it;
+        // the two rungs that read it have their own negative tests below.
+        context.hasWatchDetail = true
         return context
     }
 
@@ -1349,6 +1491,48 @@ final class RecoveryPolicyTests: XCTestCase {
         let failure = PlaybackFailure.loopbackStartupStalled(trigger: "fetches_frozen")
         (action, _) = RecoveryPolicy.decide(.engineFailed(failure), context: context, now: at(1))
         XCTAssertEqual(action, .fail(failure))
+    }
+
+    func testEngineFailed_ServerHLS_RequiresAWatchDetail() {
+        // PVM:2284 — `requestServerHLSRouteFallback` returns false without one,
+        // so rung 9 returns false, rung 10 fails the same guard, and
+        // `finalizeTerminalPlaybackError` owns the failure (PVM:1589).
+        var nativeDirect = offlineContext(route: .avPlayerNativeDirect)
+        nativeDirect.hasWatchDetail = false
+        nativeDirect.canBuildLoopbackFallback = false
+        let failure = PlaybackFailure.unknown("boom")
+        var (action, next) = RecoveryPolicy.decide(
+            .engineFailed(failure),
+            context: nativeDirect,
+            now: t0
+        )
+        XCTAssertEqual(action, .fail(failure))
+        XCTAssertFalse(next.attemptedNativeDirectFallback, "an unaccepted replan claims no attempt")
+
+        var loopback = offlineContext(route: .siloPlayerLoopback)
+        loopback.hasWatchDetail = false
+        (action, next) = RecoveryPolicy.decide(
+            .engineFailed(failure),
+            context: loopback,
+            now: t0
+        )
+        XCTAssertEqual(action, .fail(failure))
+        XCTAssertFalse(next.attemptedLoopbackHLSFallback)
+    }
+
+    func testEngineFailed_NativeDirect_StillFallsBackLocallyWithoutAWatchDetail() {
+        // `makeLoopbackFallbackPlan` needs a resolved version (PVM:2307), not
+        // a watch detail, so the local rung is unaffected by PVM:2284.
+        var context = offlineContext(route: .avPlayerNativeDirect)
+        context.hasWatchDetail = false
+        context.canBuildLoopbackFallback = true
+        let (action, next) = RecoveryPolicy.decide(
+            .engineFailed(.unknown("boom")),
+            context: context,
+            now: t0
+        )
+        XCTAssertEqual(action, .switchRoute(.loopbackFallback))
+        XCTAssertTrue(next.attemptedNativeDirectFallback)
     }
 
     func testEngineFailed_Terminal_FailsWhenEveryRungIsSpent() {
@@ -1735,7 +1919,7 @@ final class RecoveryPolicyTests: XCTestCase {
             .playlistUnchanged(userPaused: false),
             .edgeSample(edgeSample()),
             .likelyToKeepUp(rate: 0, bufferedAhead: 10, reachedEnd: false, likely: true),
-            .startupTick(servedRequests: 0, secondsSinceStart: 90, displayModeSwitchInProgress: false)
+            .startupTick(servedRequests: 0, displayModeSwitchInProgress: false)
         ]
         for observation in observations {
             let (action, next) = RecoveryPolicy.decide(observation, context: context, now: at(30))

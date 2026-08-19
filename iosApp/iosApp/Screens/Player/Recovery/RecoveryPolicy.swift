@@ -140,10 +140,9 @@ enum RecoveryPolicy {
     ) -> (action: RecoveryAction?, context: RecoveryContext) {
         var context = context
         switch observation {
-        case let .startupTick(servedRequests, secondsSinceStart, displayModeSwitchInProgress):
+        case let .startupTick(servedRequests, displayModeSwitchInProgress):
             return decideStartupTick(
                 servedRequests: servedRequests,
-                secondsSinceStart: secondsSinceStart,
                 displayModeSwitchInProgress: displayModeSwitchInProgress,
                 context: &context,
                 now: now
@@ -172,6 +171,14 @@ enum RecoveryPolicy {
             return reanchorIfNeeded(
                 requireBufferedEdge: true,
                 reason: "stall",
+                context: &context,
+                now: now
+            )
+
+        case let .itemFailedToEnd(position, userPaused):
+            return decideItemFailedToEnd(
+                position: position,
+                userPaused: userPaused,
                 context: &context,
                 now: now
             )
@@ -229,7 +236,6 @@ enum RecoveryPolicy {
 
     private static func decideStartupTick(
         servedRequests: UInt64,
-        secondsSinceStart: Double,
         displayModeSwitchInProgress: Bool,
         context: inout RecoveryContext,
         now: Date
@@ -253,9 +259,14 @@ enum RecoveryPolicy {
         }
         context.startup = startup
 
+        // B:3856 `secondsSinceStart: now.timeIntervalSince(startedAt)`. The
+        // backstop's clock is `StartupState.startedAt`
+        // (`loopbackStartupWatchdogStartedAt`), which the tick never mutates,
+        // so it reads the same before and after the progress rebasing above —
+        // and the emitter owns none of the backstop decision.
         let verdict = LoopbackStartupRecoveryPolicy.verdict(
             secondsSinceProgress: now.timeIntervalSince(startup.lastProgressAt),
-            secondsSinceStart: secondsSinceStart,
+            secondsSinceStart: now.timeIntervalSince(startup.startedAt),
             displayModeSwitchInProgress: displayModeSwitchInProgress,
             stallWindow: loopbackStartupStallWindowSeconds,
             absoluteBackstop: loopbackStartupAbsoluteBackstopSeconds
@@ -455,8 +466,17 @@ enum RecoveryPolicy {
 
         // Rung 9 — reanchor attempt, B:3191-3199 → B:1917
         // `performVODStallRecovery(attempt:frozenPosition:)`.
+        //
+        // B:1918: `vodPendingSeekMediaTarget.map(playerTime(forMediaTime:)) ??
+        // frozenPosition` — an unlanded seek target wins, because a wedged
+        // zero-tolerance seek leaves the frozen clock at the PRE-seek position
+        // (B:1160-1164) and anchoring there would discard the user's seek. The
+        // latch is already media-timeline, which is the axis the action carries,
+        // so it needs no conversion; the engine converts back with the exact
+        // inverse the legacy sinks use.
         context.playhead.reanchorCount += 1
-        let anchor = context.mediaSeconds(forPlayerSeconds: sample.position)
+        let anchor = sample.pendingSeekMediaTarget
+            ?? context.mediaSeconds(forPlayerSeconds: sample.position)
         if context.playhead.reanchorCount <= 1 {
             return (.reanchor(atMediaSeconds: anchor, reason: "vod_stall_nudge"), context)
         }
@@ -605,8 +625,54 @@ enum RecoveryPolicy {
         )
     }
 
+    // MARK: - D — explicit item failure (B:3438 `itemFailedToEndObserver`)
+
+    /// B:3453-3461: every `.AVPlayerItemFailedToPlayToEndTime` on an
+    /// established loopback item arms the item-death confirmation candidate and
+    /// returns — no classification, no evidence counter, no immediate action.
+    /// The candidate then either confirms on the next tick that is ≥ 3 s old
+    /// and still parked within 0.5 s of the failure position (rung 2 of
+    /// `decidePlayheadTick`), or is cancelled by the playhead moving.
+    ///
+    /// This is the ONLY entry point of the confirmation state's `.failedToEnd`
+    /// trigger. It deliberately does not go through
+    /// `LoopbackItemDeathRecoveryState.record`: that mechanism gates on
+    /// `isItemDeath(statusCode:errorDescription:)` and, at weight 2, reloads at
+    /// once, which is a different (and much blunter) recovery than the 3 s
+    /// window this arm opens.
+    private static func decideItemFailedToEnd(
+        position: Double,
+        userPaused: Bool,
+        context: inout RecoveryContext,
+        now: Date
+    ) -> (RecoveryAction?, RecoveryContext) {
+        // B:3453-3454 — loopback only, and only after the file-loaded edge.
+        // Anything else falls through to `recoverLocalLoopbackFailureIfNeeded`
+        // (B:3536), whose only live tail arrives as `.playlistUnchanged`.
+        guard context.route == .siloPlayerLoopback, context.playbackEstablished else {
+            return (nil, context)
+        }
+        context.userPaused = userPaused
+        // B:3455-3460. `noteExplicitFailure` clears the candidate itself when
+        // the user is paused, which is why `userPaused` is passed rather than
+        // guarded on.
+        context.itemDeathConfirmation.noteExplicitFailure(
+            position: position,
+            now: now.timeIntervalSinceReferenceDate,
+            playbackEstablished: true,
+            userPaused: userPaused
+        )
+        return (nil, context)
+    }
+
     // MARK: - Y — "Playlist File unchanged" (B:3536 tail)
 
+    /// B:3553-3566. Reached only for a failed-to-end notification that
+    /// `decideItemFailedToEnd` did not consume — B:3453's early return means
+    /// this tail never runs on an established loopback item today, and the
+    /// rungs it calls carry that gate themselves (`reanchorIfNeeded` requires
+    /// exactly `route == .siloPlayerLoopback && playbackEstablished`), so the
+    /// precedence holds however the two observations are ordered.
     private static func decidePlaylistUnchanged(
         userPaused: Bool,
         context: inout RecoveryContext,
@@ -840,8 +906,11 @@ enum RecoveryPolicy {
             }
             // PVM:2192-2204: nothing local can remux this source, so the only
             // rung left is a server-produced HLS rendition — and the latch is
-            // set only if that replan was actually accepted.
-            if !context.isReplanInFlight {
+            // set only if that replan was actually accepted (PVM:2284 needs a
+            // watch detail to replan against and no replan already running;
+            // without one `attemptNativeDirectRouteRecovery` returns false and
+            // the ladder falls through to rung 10, which fails the same guard).
+            if context.hasWatchDetail, !context.isReplanInFlight {
                 context.attemptedNativeDirectFallback = true
                 return (
                     .switchRoute(.serverHLS(classification: "native_direct_avplayer_failed")),
@@ -850,9 +919,11 @@ enum RecoveryPolicy {
             }
         }
 
-        // Rung 10 — PVM:1586 `attemptSiloRouteHLSFallback` (PVM:2258).
+        // Rung 10 — PVM:1586 `attemptSiloRouteHLSFallback` (PVM:2258), which
+        // also goes through `requestServerHLSRouteFallback`'s PVM:2284 guard.
         if context.route == .siloPlayerLoopback,
            !context.attemptedLoopbackHLSFallback,
+           context.hasWatchDetail,
            !context.isReplanInFlight {
             context.attemptedLoopbackHLSFallback = true
             return (
@@ -891,14 +962,26 @@ enum RecoveryPolicy {
             // PVM:4094-4097: single-flight — an in-flight renewal counts as
             // handled and takes no new action.
             if context.backgroundRenewalInFlight { return (nil, context) }
-            // PVM:4177-4184 + PVM:4199 `failBackgroundRenewal`: once the
+            // PVM:4177-4193 + PVM:4199 `failBackgroundRenewal`: once the
             // transient budget is spent, escalate to the visible renewal with
-            // the `_bg_renewal_failed` suffix. The engine reports a failed
-            // silent renewal by clearing `backgroundRenewalInFlight` and either
-            // incrementing `backgroundRenewalTransientFailures` (a transient
-            // error) or setting it to the limit (a `DirectSessionRenewalError`,
-            // which escalates at once — PVM:4165), then re-emitting this
-            // observation.
+            // the `_bg_renewal_failed` suffix.
+            //
+            // How the engine reports a failed silent renewal matters, because
+            // the two failure classes behave differently today:
+            //  * transient (PVM:4176-4193, below the limit) — clear
+            //    `backgroundRenewalInFlight`, increment
+            //    `backgroundRenewalTransientFailures`, and do NOTHING else. The
+            //    legacy `catch` deliberately re-arms nothing 'so the next
+            //    trigger (progress heartbeat or stream 404) retries'; an engine
+            //    that re-emitted `.sessionMissing` here would turn a 10 s-paced
+            //    retry into a tight renewal loop against a server that is
+            //    already failing.
+            //  * escalating (PVM:4165 `DirectSessionRenewalError`, PVM:4134 an
+            //    unusable renewed stream URL, or the limit-th transient
+            //    failure) — `failBackgroundRenewal` escalates at once, so the
+            //    engine clears the in-flight flag, sets the counter to the
+            //    limit, and re-emits this observation, which lands on the
+            //    branch below.
             if context.backgroundRenewalTransientFailures >= backgroundRenewalTransientFailureLimit {
                 context.backgroundRenewalTransientFailures = 0
                 return renewSessionFresh(reason: "\(source.reason)_bg_renewal_failed", context: &context)

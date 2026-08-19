@@ -252,6 +252,16 @@ struct RecoveryContext: Equatable {
     /// (`protocolV3ReplanTask != nil`), which is what makes
     /// `requestServerHLSRouteFallback` return false.
     var isReplanInFlight: Bool
+    /// `PlayerViewModel.currentWatchDetail != nil` — the other half of
+    /// `requestServerHLSRouteFallback`'s guard (PVM:2284). Without a watch
+    /// detail there is nothing to replan against, so both offline server-HLS
+    /// rungs return false and the failure ladder runs on to its terminal rung.
+    ///
+    /// The online rung (`isProtocolV3Active`) deliberately does not read it:
+    /// PVM:1553-1555 calls `attemptProtocolV3Replan` and returns whether or not
+    /// the replan is accepted, so no lower rung runs either way and the engine
+    /// executing `.requestServerReplan` reproduces the no-op at PVM:1609.
+    var hasWatchDetail: Bool
     /// A foreground interruption is pending, not yet auto-recovered, and inside
     /// its 3 s deadline (`shouldAutoRecoverFromInterruption`).
     var canAutoRecoverInterruption: Bool
@@ -288,6 +298,7 @@ struct RecoveryContext: Equatable {
         canRenewSourceInBackground: Bool = false,
         isProtocolV3Active: Bool = false,
         isReplanInFlight: Bool = false,
+        hasWatchDetail: Bool = false,
         canAutoRecoverInterruption: Bool = false,
         attemptedNativeDirectFallback: Bool = false,
         attemptedLoopbackHLSFallback: Bool = false,
@@ -313,6 +324,7 @@ struct RecoveryContext: Equatable {
         self.canRenewSourceInBackground = canRenewSourceInBackground
         self.isProtocolV3Active = isProtocolV3Active
         self.isReplanInFlight = isReplanInFlight
+        self.hasWatchDetail = hasWatchDetail
         self.canAutoRecoverInterruption = canAutoRecoverInterruption
         self.attemptedNativeDirectFallback = attemptedNativeDirectFallback
         self.attemptedLoopbackHLSFallback = attemptedLoopbackHLSFallback
@@ -373,6 +385,7 @@ struct RecoveryContext: Equatable {
             && lhs.canRenewSourceInBackground == rhs.canRenewSourceInBackground
             && lhs.isProtocolV3Active == rhs.isProtocolV3Active
             && lhs.isReplanInFlight == rhs.isReplanInFlight
+            && lhs.hasWatchDetail == rhs.hasWatchDetail
             && lhs.canAutoRecoverInterruption == rhs.canAutoRecoverInterruption
             && lhs.attemptedNativeDirectFallback == rhs.attemptedNativeDirectFallback
             && lhs.attemptedLoopbackHLSFallback == rhs.attemptedLoopbackHLSFallback

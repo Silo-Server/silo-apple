@@ -55,6 +55,23 @@ struct PlayheadSample: Equatable {
     /// `didFireFileLoaded`. Startup rungs run while this is false, the playhead
     /// rungs only once it is true.
     var playbackEstablished: Bool
+    /// `AVPlayerBackend.vodPendingSeekMediaTarget` — the **media**-timeline
+    /// target of a loopback seek that has been issued but has not landed.
+    ///
+    /// The wedge rung anchors on it in preference to `position`
+    /// (B:1917-1918 `performVODStallRecovery`): a wedged zero-tolerance seek
+    /// leaves the frozen clock at the PRE-seek position (B:1160-1164), so
+    /// recovering at `position` would silently discard the user's seek. It is
+    /// usually nil at tick time — the tick's own `!isSeekPending` guard plus
+    /// the clear-sites at B:1196/B:1253/B:1310 see to that — but it is
+    /// reachable in the main-queue window between `handleSeekDeadline`'s
+    /// `markSeekSettled()` (B:1268) and the `Task` at B:1297-1304 that
+    /// re-latches and consumes it, which is exactly the case the preference
+    /// exists for.
+    ///
+    /// Only the wedge rung reads it. The shared reanchor rung deliberately
+    /// does not (B:3678 reads `currentTime()` alone).
+    var pendingSeekMediaTarget: Double?
 
     init(
         position: Double,
@@ -63,7 +80,8 @@ struct PlayheadSample: Equatable {
         generatedAhead: Double,
         secondsSinceLastServe: Double,
         userPaused: Bool,
-        playbackEstablished: Bool
+        playbackEstablished: Bool,
+        pendingSeekMediaTarget: Double? = nil
     ) {
         self.position = position
         self.timeControl = timeControl
@@ -72,6 +90,7 @@ struct PlayheadSample: Equatable {
         self.secondsSinceLastServe = secondsSinceLastServe
         self.userPaused = userPaused
         self.playbackEstablished = playbackEstablished
+        self.pendingSeekMediaTarget = pendingSeekMediaTarget
     }
 }
 
@@ -171,9 +190,14 @@ enum RecoveryObservation: Equatable {
     /// (`loopbackStartupWatchdogTick`). `servedRequests` is the local HLS
     /// server's cumulative served-request count; a change since the last tick
     /// is the only evidence of forward progress.
+    ///
+    /// There is deliberately no `secondsSinceStart` payload: the 60 s absolute
+    /// backstop is measured from `RecoveryContext.StartupState.startedAt`
+    /// (`loopbackStartupWatchdogStartedAt`) inside the policy, so the tick's
+    /// emitter cannot own half of the backstop decision and the two clocks
+    /// cannot disagree.
     case startupTick(
         servedRequests: UInt64,
-        secondsSinceStart: Double,
         displayModeSwitchInProgress: Bool
     )
     /// Playhead watchdog tick, 1 Hz, post-`didFireFileLoaded`
@@ -193,8 +217,28 @@ enum RecoveryObservation: Equatable {
     case edgeSample(EdgeSample)
     /// `.AVPlayerItemPlaybackStalled`.
     case playbackStalled
-    /// `.AVPlayerItemFailedToPlayToEndTime` whose description carries
-    /// "Playlist File unchanged" or "-12888".
+    /// `.AVPlayerItemFailedToPlayToEndTime` on the current item (B:3438).
+    ///
+    /// This is the **only** thing that arms the item-death confirmation
+    /// state's `.failedToEnd` candidate: B:3453-3461 calls
+    /// `LoopbackItemDeathConfirmationState.noteExplicitFailure` and returns for
+    /// every such notification on an established loopback item, whatever the
+    /// error says. `.itemDeathEvidence` is a different mechanism
+    /// (`LoopbackItemDeathRecoveryState.record`, gated on `isItemDeath(…)`,
+    /// which this note deliberately is not), so the emitter must not fold the
+    /// two together — doing so would replace a 3 s confirmation window with its
+    /// 0.5 s position-drift cancellation by an immediate item reload.
+    ///
+    /// Emitted for every failed-to-end notification. The policy consumes it on
+    /// an established loopback item and otherwise returns no action, because
+    /// the rest of that notification's legacy tail
+    /// (`recoverLocalLoopbackFailureIfNeeded`, B:3536) is reachable only when
+    /// this arm did **not** consume it and arrives classified as
+    /// `.playlistUnchanged`.
+    case itemFailedToEnd(position: Double, userPaused: Bool)
+    /// The tail of a `.AVPlayerItemFailedToPlayToEndTime` that the
+    /// `.itemFailedToEnd` arm did not consume, whose description carries
+    /// "Playlist File unchanged" or "-12888" (B:3553).
     case playlistUnchanged(userPaused: Bool)
     /// `isPlaybackLikelyToKeepUp` / `loadedTimeRanges` KVO — the auto-resume
     /// rung's trigger.
