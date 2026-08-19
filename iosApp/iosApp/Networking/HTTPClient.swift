@@ -182,12 +182,13 @@ actor HTTPClient {
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let str = try container.decode(String.self)
-            if let date = Self.isoFractional.date(from: str) { return date }
-            if let date = Self.isoWhole.date(from: str) { return date }
-            throw DecodingError.dataCorruptedError(
-                in: container,
-                debugDescription: "Unparseable ISO-8601 date: \(str)"
-            )
+            guard let date = DateFormatters.parseRFC3339(str) else {
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription: "Unparseable ISO-8601 date: \(str)"
+                )
+            }
+            return date
         }
         return decoder
     }
@@ -210,21 +211,6 @@ actor HTTPClient {
         config.timeoutIntervalForRequest = requestTimeout
         return URLSession(configuration: config)
     }
-
-    /// Parser for the fractional-second ISO-8601 timestamps the Silo
-    /// server emits (e.g. `2026-04-13T04:46:42.211273Z`). The default
-    /// `.iso8601` decoder strategy rejects fractional seconds outright.
-    private static let isoFractional: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
-    private static let isoWhole: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
 
     // MARK: - Public API
 
@@ -338,14 +324,6 @@ actor HTTPClient {
         timeout: HTTPTimeout = .extended
     ) async throws -> T {
         try await sendRawBody(method: "PUT", path: path, body: body, contentType: contentType, timeout: timeout)
-    }
-
-    func put<T: Decodable>(
-        _ path: String,
-        body: (any Encodable)? = nil,
-        query: [String: String] = [:]
-    ) async throws -> T {
-        try await send(method: "PUT", path: path, query: query, body: body)
     }
 
     func putVoid(

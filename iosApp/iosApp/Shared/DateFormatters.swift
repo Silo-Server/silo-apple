@@ -25,10 +25,17 @@ enum DateFormatters {
         return DateComponents(hour: parts[0], minute: parts[1])
     }
 
+    /// RFC3339 with or without fractional seconds — the two spellings the Silo
+    /// server emits. `ISO8601DateFormatter` accepts exactly one of them per
+    /// instance, so both are tried.
+    static func parseRFC3339(_ raw: String) -> Date? {
+        rfc3339Fractional.date(from: raw) ?? rfc3339.date(from: raw)
+    }
+
     /// Localized short time ("9:00 PM" / "21:00" per locale) from an
     /// RFC3339 instant string. Returns nil when parsing fails.
     static func localShortTime(fromRFC3339 raw: String) -> String? {
-        guard let date = rfc3339.date(from: raw) ?? rfc3339Fractional.date(from: raw) else {
+        guard let date = parseRFC3339(raw) else {
             return nil
         }
         return date.formatted(date: .omitted, time: .shortened)
