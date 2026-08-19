@@ -1102,6 +1102,19 @@ final class PlayerSettings {
         return defaults.integer(forKey: scopedKey)
     }
 
+    /// The "Show Next Up" ladder every settings surface offers: seconds
+    /// before the end of an episode, and the label for that choice. Kept
+    /// beside the clamp so the offered values and the accepted range stay
+    /// in one place; the phone/macOS picker and the tvOS option list both
+    /// derive from it.
+    static let nextUpPromptOptions: [(seconds: Int, label: String)] = [
+        (0, "At end"),
+        (10, "10 seconds before end"),
+        (30, "30 seconds before end"),
+        (60, "1 minute before end"),
+        (120, "2 minutes before end"),
+    ]
+
     private static func clampNextUpPromptSeconds(_ seconds: Int) -> Int {
         max(0, min(seconds, 120))
     }

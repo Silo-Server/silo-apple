@@ -33,12 +33,7 @@ struct GeneralSettingsView: View {
                         .tag(behavior)
                 }
             }
-            .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .siloSettingsPicker()
             .accessibilityValue(launchPreferences.behavior.title)
             .accessibilityHint(launchPreferences.behavior.standardDescription)
         } header: {

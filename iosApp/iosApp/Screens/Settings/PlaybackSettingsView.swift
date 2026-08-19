@@ -49,12 +49,7 @@ struct PlaybackSettingsView: View {
                     Text(preset.label).tag(preset.id)
                 }
             }
-            .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .siloSettingsPicker()
 
             Picker("Audio Language", selection: Binding(
                 get: { viewModel.preferredAudioLanguage },
@@ -71,12 +66,7 @@ struct PlaybackSettingsView: View {
                     Text(option.label).tag(option.code)
                 }
             }
-            .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .siloSettingsPicker()
 
             Toggle("Dolby Vision", isOn: Binding(
                 get: { viewModel.dolbyVisionEnabled },
@@ -155,16 +145,11 @@ struct PlaybackSettingsView: View {
                     Task { await viewModel.setNextUpPromptSeconds(newValue) }
                 }
             )) {
-                ForEach(nextUpPromptOptions, id: \.0) { seconds, label in
-                    Text(label).tag(seconds)
+                ForEach(PlayerSettings.nextUpPromptOptions, id: \.seconds) { option in
+                    Text(option.label).tag(option.seconds)
                 }
             }
-            .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .siloSettingsPicker()
 
             Toggle("Skip Intros", isOn: Binding(
                 get: { viewModel.skipIntros },
@@ -211,15 +196,5 @@ struct PlaybackSettingsView: View {
     /// Tag for the "stored pair matches no preset" entry. Not a preset id, so
     /// selecting it is a no-op rather than a write.
     private static let customPresetTag = "__custom__"
-
-    private var nextUpPromptOptions: [(Int, String)] {
-        [
-            (0, "At end"),
-            (10, "10 seconds before end"),
-            (30, "30 seconds before end"),
-            (60, "1 minute before end"),
-            (120, "2 minutes before end"),
-        ]
-    }
 }
 #endif

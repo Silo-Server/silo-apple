@@ -59,12 +59,7 @@ struct SubtitleSettingsView: View {
                     Text(option.label).tag(option.code)
                 }
             }
-            .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .siloSettingsPicker()
         } header: {
             Text("Metadata")
                 .foregroundStyle(Color.siloSecondaryText)
@@ -90,24 +85,14 @@ struct SubtitleSettingsView: View {
                     Text(option.label).tag(option.code)
                 }
             }
-            .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .siloSettingsPicker()
 
             Picker("Behavior", selection: $viewModel.editorSubtitleMode) {
                 ForEach(SubtitleMode.allCases, id: \.rawValue) { mode in
                     Text(mode.displayLabel).tag(mode.rawValue)
                 }
             }
-            .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .siloSettingsPicker()
 
             Toggle(
                 "Show Forced Subtitles",
@@ -218,24 +203,14 @@ struct SubtitleSettingsView: View {
                     Text(option.label).tag(option)
                 }
             }
-            .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .siloSettingsPicker()
 
             Picker("Font Family", selection: appearanceBinding(\.fontFamily)) {
                 ForEach(SubtitleFontFamilyPreset.allCases) { option in
                     Text(option.label).tag(option)
                 }
             }
-            .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .siloSettingsPicker()
 
             ColorChoicePicker(
                 title: "Font Color",
@@ -268,12 +243,7 @@ struct SubtitleSettingsView: View {
                     Text(option.label).tag(option)
                 }
             }
-            .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .siloSettingsPicker()
 
             opacityRow
                 .disabled(viewModel.subtitleAppearance.backgroundStyle != .box)
@@ -300,12 +270,7 @@ struct SubtitleSettingsView: View {
                     Text(option.label).tag(option)
                 }
             }
-            .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .siloSettingsPicker()
         } header: {
             Text("Layout")
                 .foregroundStyle(Color.siloSecondaryText)
@@ -315,18 +280,13 @@ struct SubtitleSettingsView: View {
         .opacity(manualEditingDisabled ? 0.45 : 1)
     }
 
-    /// Choosing Box with a fully transparent background would render
-    /// nothing; give it the default opacity so the choice takes effect.
     private var backgroundStyleBinding: Binding<SubtitleBackgroundStylePreset> {
         Binding(
             get: { viewModel.subtitleAppearance.backgroundStyle },
             set: { newValue in
                 var next = viewModel.subtitleAppearance
                 if next.backgroundStyle == newValue { return }
-                next.backgroundStyle = newValue
-                if newValue == .box && next.backgroundOpacity == 0 {
-                    next.backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
-                }
+                next.applyBackgroundStyle(newValue)
                 Task { await viewModel.setSubtitleAppearance(next) }
             }
         )
