@@ -104,7 +104,8 @@ final class PlaybackReducerTests: XCTestCase {
         timelineOffsetSeconds: Double = 0,
         durationSeconds: Double? = 1000,
         activeQualityId: String = ApplePlaybackQuality.autoId,
-        fileId: Int = 7
+        fileId: Int = 7,
+        protocolV3: PreparedPlaybackV3? = nil
     ) throws -> PreparedPlaybackRef {
         let json = Data("""
         {
@@ -135,8 +136,76 @@ final class PlaybackReducerTests: XCTestCase {
                 watchDetail: watchDetail,
                 selectedVersion: watchDetail.versions[0],
                 session: session,
-                activeQualityId: activeQualityId
+                activeQualityId: activeQualityId,
+                protocolV3: protocolV3
             )
+        )
+    }
+
+    /// A minimal but *real* `PreparedPlaybackV3`, decoded rather than
+    /// hand-built so the fixture cannot drift from the wire shape. The
+    /// selected subtitle is an external sidecar, which is the branch of
+    /// `LoadRequest.adoptingProtocolV3Intent` (PVM:885-918) that produces a
+    /// sidecar track id and no embedded FFmpeg index — no `FileVersion`
+    /// subtitle streams needed.
+    private func makePreparedV3(
+        effectiveMediaFileId: Int = 9,
+        audioIndex: Int = 5,
+        subtitleCombinedIndex: Int? = 3
+    ) throws -> PreparedPlaybackV3 {
+        var selectedSubtitle = ""
+        var inventory = ""
+        if let index = subtitleCombinedIndex {
+            selectedSubtitle = #", "subtitle": {"id": "file:9:subtitle:\#(index)", "index": \#(index)}"#
+            inventory = #"""
+            {"track_id": "file:9:subtitle:\#(index)", "combined_index": \#(index),
+             "source": "external", "forced": false, "default": false,
+             "hearing_impaired": false, "delivery": "sidecar",
+             "url": "https://example.invalid/subs.vtt"}
+            """#
+        }
+        let json = Data("""
+        {
+          "protocol_version": 3,
+          "plan_id": "plan:fixture",
+          "session_id": "session-v3",
+          "delivery": "original_http",
+          "plan_attempt_key": "v3:opaque-fixture",
+          "stream": {"url": "/stream/session-v3", "protocol": "http_progressive",
+                     "headers": {}, "header_refresh": "session"},
+          "timeline": {"source_start_seconds": 0, "stream_origin_seconds": 0,
+                       "player_start_seconds": 0, "timeline_offset_seconds": 0,
+                       "can_seek_anywhere": true, "seek_restoration": "player_position"},
+          "selected_tracks": {"audio": {"id": "file:9:audio:\(audioIndex)", "index": \(audioIndex)}\(selectedSubtitle)},
+          "effective_recipe": {},
+          "claims": {
+            "video": {"hdr10": false, "hdr10_plus": false, "hlg": false, "dolby_vision": false},
+            "audio": {"passthrough": false, "atmos_preserved": false},
+            "subtitles": {"ass_styling_preserved": false, "bitmap_overlay": false,
+                          "bitmap_sidecar": false}
+          },
+          "subtitle": {"mode": "external", "inventory": [\(inventory)]},
+          "transformations": [],
+          "applied_quirks": [],
+          "runtime_corrections": [],
+          "degradation_warnings": [],
+          "decision_reason": "validated_original_playback",
+          "requested_media_file_id": \(effectiveMediaFileId),
+          "effective_media_file_id": \(effectiveMediaFileId),
+          "source": {"media_file_id": \(effectiveMediaFileId), "hdr10_plus": false,
+                     "dv_enhancement_layer": "none"},
+          "subtitle_fidelity_policy": "allow_simplified_rendering",
+          "available_qualities": []
+        }
+        """.utf8)
+        let plan = try HTTPClient.makeJSONDecoder().decode(PlaybackV3Plan.self, from: json)
+        return PreparedPlaybackV3(
+            playbackAttemptId: "apple:attempt-1",
+            planAttemptId: "apple-plan:1",
+            planAttemptKey: plan.planAttemptKey,
+            outputContextId: "output-1",
+            serverFeatures: [PlaybackProtocolV3.planFeature],
+            plan: plan
         )
     }
 
@@ -150,6 +219,7 @@ final class PlaybackReducerTests: XCTestCase {
         sub: Sub = .steady,
         seek: SeekRequest? = nil,
         activeQualityId: String? = ApplePlaybackQuality.autoId,
+        hasProtocolV3: Bool = true,
         resumeSelections: TrackResumeSelections? = nil,
         interruption: Playing.Interruption? = nil
     ) -> PlaybackState {
@@ -165,6 +235,7 @@ final class PlaybackReducerTests: XCTestCase {
                 sub: sub,
                 seek: seek,
                 activeQualityId: activeQualityId,
+                hasProtocolV3: hasProtocolV3,
                 resumeSelections: resumeSelections ?? .seeded(from: request),
                 interruption: interruption
             )
@@ -180,6 +251,7 @@ final class PlaybackReducerTests: XCTestCase {
         plan: ExecutablePlan? = nil,
         transport: TransportState = TransportState(),
         activeQualityId: String? = ApplePlaybackQuality.autoId,
+        hasProtocolV3: Bool = true,
         resumeSelections: TrackResumeSelections? = nil,
         interruption: Playing.Interruption? = nil
     ) -> PlaybackState {
@@ -194,6 +266,7 @@ final class PlaybackReducerTests: XCTestCase {
                 plan: plan ?? makePlan(),
                 transport: transport,
                 activeQualityId: activeQualityId,
+                hasProtocolV3: hasProtocolV3,
                 resumeSelections: resumeSelections ?? .seeded(from: makeRequest()),
                 interruption: interruption
             )
@@ -232,7 +305,7 @@ final class PlaybackReducerTests: XCTestCase {
             .cancelTimer(.freshLoad),
             .cancelTimer(.protocolV3Replan),
             .reportProgress(identity, position: 100, isPaused: true),
-            .disposeEngine(previous),
+            .disposeEngine(previous, sourceCache: .stash),
             .startSession(request, options, loadID),
         ])
         guard case .preparing(let preparing) = next else { return XCTFail("expected preparing") }
@@ -646,7 +719,11 @@ final class PlaybackReducerTests: XCTestCase {
             intent: .seek(targetSeconds: 300, origin: .reanchor),
             now: now
         )
-        XCTAssertTrue(effects.isEmpty, "no engine seek and no filter timeout")
+        // `beginReanchorSeekUI` (PVM:5063-5076) issues no engine seek and arms
+        // no timeout — and *cancels* the one an earlier plain seek may have
+        // left running, because the re-anchor filter is released by the
+        // rebuild that follows, not by a clock.
+        XCTAssertEqual(effects, [.cancelTimer(.seekFilterTimeout)])
         guard let request = playing(next)?.seek else {
             return XCTFail("expected the filter to be armed")
         }
@@ -670,6 +747,34 @@ final class PlaybackReducerTests: XCTestCase {
             now: now
         )
         XCTAssertNil(playing(landed)?.seek)
+    }
+
+    /// The cancel is not decoration: a plain seek arms the 5 s safety valve,
+    /// and a re-anchor inside that window must take it back down — otherwise
+    /// it fires mid-rebuild and drops the filter early, letting the outgoing
+    /// item's drainage frames drag the scrubber off the anchor.
+    func testAReanchorCancelsAFilterTimeoutAnEarlierSeekLeftArmed() {
+        let (seeking, seekEffects) = PlaybackReducer.reduce(
+            makePlaying(),
+            intent: .seek(targetSeconds: 300, origin: .user),
+            now: now
+        )
+        XCTAssertTrue(
+            seekEffects.contains(
+                .schedule(
+                    .seekFilterTimeout,
+                    after: .seconds(PlaybackReducer.seekFilterTimeoutSeconds),
+                    playing(seeking)!.loadID
+                )
+            )
+        )
+
+        let (_, effects) = PlaybackReducer.reduce(
+            seeking,
+            intent: .seek(targetSeconds: 900, origin: .reanchor),
+            now: now.addingTimeInterval(1)
+        )
+        XCTAssertEqual(effects, [.cancelTimer(.seekFilterTimeout)])
     }
 
     /// The `onTimeChange` filter: reports still closer to the pre-seek
@@ -890,7 +995,10 @@ final class PlaybackReducerTests: XCTestCase {
 
     func testEndOfFileEntersTheEndedSubStateAndPauses() {
         let loadID = LoadID()
-        let state = makePlaying(loadID: loadID)
+        let state = makePlaying(
+            loadID: loadID,
+            transport: TransportState(positionSeconds: 100, durationSeconds: 1000, isBuffering: true)
+        )
         let (next, effects) = PlaybackReducer.reduce(
             state,
             event: .engine(.endOfFile, loadID),
@@ -903,6 +1011,16 @@ final class PlaybackReducerTests: XCTestCase {
             .cancelTimer(.serverOutageRecovery),
             .transport(.pause, loadID),
         ])
+        // `handleEndOfFile` clears all three published transport bits together
+        // (PVM:3422-3424). The engine is drained, so no further
+        // `.buffering(false)` can arrive to clear the capsule later.
+        XCTAssertEqual(playing(next)?.transport.isBuffering, false)
+        guard case .publish(let postroll) = effects.last else {
+            return XCTFail("expected a publish")
+        }
+        XCTAssertFalse(postroll.isBuffering)
+        XCTAssertFalse(postroll.isPlaying)
+        XCTAssertFalse(postroll.isLoading)
 
         // The EOF latch drops later time reports, as `onTimeChange` does.
         let (afterTime, timeEffects) = PlaybackReducer.reduce(
@@ -1020,7 +1138,7 @@ final class PlaybackReducerTests: XCTestCase {
         )
         XCTAssertEqual(request, makeRequest(), "retry replays the last request")
         XCTAssertEqual(position, 100, "finalizeTerminalPlaybackError keeps currentTime")
-        XCTAssertTrue(effects.contains(.disposeEngine(loadID)))
+        XCTAssertTrue(effects.contains(.disposeEngine(loadID, sourceCache: .discard)))
         XCTAssertFalse(
             effects.contains { if case .stopSession = $0 { return true } else { return false } },
             "the terminal path lets the session lapse; the stop belongs to teardown"
@@ -1221,6 +1339,24 @@ final class PlaybackReducerTests: XCTestCase {
             [.pollServerHealth(.serverOutageRecovery, after: .seconds(2), loadID)]
         )
         XCTAssertEqual(playing(waitForServer.0)?.sub, .recovering(.waitingForServerReady))
+
+        // The remaining single-shot actions. They are spelled out in the
+        // reducer's switch rather than caught by a `default:` — wave 2 owns
+        // `RecoveryAction`, and a case it adds must fail to compile until
+        // someone classifies it as single-shot or multi-step.
+        let startupReload = run(.reloadStartupItem)
+        XCTAssertEqual(startupReload.1, [.runRecovery(.reloadStartupItem, loadID)])
+        XCTAssertEqual(playing(startupReload.0)?.sub, .recovering(.reloadingItem))
+
+        for action: RecoveryAction in [
+            .restartProducer(atSegmentIndex: 12, authoritative: true),
+            .deferUntilPlay(mediaSeconds: 120),
+            .resumePlayback,
+        ] {
+            let single = run(action)
+            XCTAssertEqual(single.1, [.runRecovery(action, loadID)], "\(action)")
+            XCTAssertEqual(playing(single.0)?.sub, .steady, "\(action)")
+        }
     }
 
     /// `handleOriginOutageChanged(true)`: the load rides its buffered runway
@@ -1276,15 +1412,97 @@ final class PlaybackReducerTests: XCTestCase {
             now: now
         )
         XCTAssertEqual(playing(next)?.sub, .recovering(.recoveringFromServerOutage))
-        XCTAssertEqual(Array(effects.prefix(3)), [
+        // PVM:4405-4410 supersedes the silent renewal and ends the
+        // ride-through *before* the teardown: the actor performs
+        // `retargetOrigin` inside `.renewSource` without coming back through
+        // the reducer, so overwriting `Sub` is not enough to stop it, and the
+        // ride-through poll would otherwise keep probing under a superseded
+        // sub-state.
+        XCTAssertEqual(Array(effects.prefix(5)), [
+            .cancelTimer(.backgroundRenewal),
+            .cancelTimer(.sourceOutageRideThrough),
             .cancelTimer(.progress),
-            .disposeEngine(loadID),
+            .disposeEngine(loadID, sourceCache: .stash),
             .pollServerHealth(.serverOutageRecovery, after: .zero, loadID),
         ])
         guard case .publish(let presentation) = effects.last else {
             return XCTFail("expected a publish")
         }
         XCTAssertTrue(presentation.isReconnecting)
+        XCTAssertFalse(presentation.isPlaying, "PVM:4438 writes isPlaying = false by hand")
+    }
+
+    /// A `source_entity_changed` outage is the one reason whose cached prefix
+    /// is *known* to belong to the replaced entity (PVM:4429-4432), so it
+    /// must not be offered to the recovery plan. Every other reason stashes.
+    func testServerOutageRecoveryDiscardsTheCacheOnlyForAChangedSourceEntity() {
+        let loadID = LoadID()
+        let cases: [(String, SourceCacheDisposition)] = [
+            ("source_entity_changed", .discard),
+            ("network_unavailable", .stash),
+            ("server_unavailable_503", .stash),
+            ("premature_eof", .stash),
+        ]
+        for (reason, expected) in cases {
+            let (_, effects) = PlaybackReducer.reduce(
+                makePlaying(loadID: loadID),
+                event: .recovery(.recoverFromServerOutage(reason: reason), loadID),
+                now: now
+            )
+            XCTAssertTrue(
+                effects.contains(.disposeEngine(loadID, sourceCache: expected)),
+                "\(reason) must dispose with \(expected)"
+            )
+        }
+    }
+
+    /// The four teardown sites disagree about the outgoing source proxy's
+    /// cached prefix, and the effect has to carry the disagreement: a fresh
+    /// load hands it on (PVM:2759/3524), the terminal path and `cleanup()`
+    /// release it (PVM:4063/6386), and the tvOS suspend disposes only the
+    /// backend and leaves the proxy — and its cache — running (PVM:7627).
+    func testEveryDisposeSiteCarriesItsOwnSourceCacheDisposition() {
+        func disposition(in effects: [Effect]) -> SourceCacheDisposition? {
+            for effect in effects {
+                if case .disposeEngine(_, let sourceCache) = effect { return sourceCache }
+            }
+            return nil
+        }
+
+        let loadID = LoadID()
+        let state = makePlaying(loadID: loadID)
+
+        let (_, load) = PlaybackReducer.reduce(
+            state,
+            intent: .load(makeRequest(contentId: "content-2"), origin: .userInitiated, options: LoadOptions()),
+            now: now
+        )
+        XCTAssertEqual(disposition(in: load), .stash)
+
+        let (_, failed) = PlaybackReducer.reduce(
+            state,
+            event: .recovery(.fail(PlaybackFailure(legacyMessage: "boom")), loadID),
+            now: now
+        )
+        XCTAssertEqual(disposition(in: failed), .discard)
+
+        let (_, dismissed) = PlaybackReducer.reduce(state, intent: .dismiss, now: now)
+        XCTAssertEqual(disposition(in: dismissed), .discard)
+
+        let (_, suspended) = PlaybackReducer.scenePhase(
+            state,
+            phase: .background,
+            platform: .tvOS,
+            now: now
+        )
+        XCTAssertEqual(disposition(in: suspended), .retainProxy)
+
+        let (_, outage) = PlaybackReducer.reduce(
+            state,
+            event: .recovery(.recoverFromServerOutage(reason: "source_entity_changed"), loadID),
+            now: now
+        )
+        XCTAssertEqual(disposition(in: outage), .discard)
     }
 
     /// `attemptStaleSessionRenewal` (PVM:4225-4270): the visible renewal
@@ -1355,7 +1573,8 @@ final class PlaybackReducerTests: XCTestCase {
         // A recovery load keeps the outage timer and the interruption timer.
         XCTAssertFalse(effects.contains(.cancelTimer(.serverOutageRecovery)))
         XCTAssertFalse(effects.contains(.cancelTimer(.interruptionRecovery)))
-        XCTAssertTrue(effects.contains(.disposeEngine(loadID)))
+        // A visible renewal is a fresh load, so it stashes like one.
+        XCTAssertTrue(effects.contains(.disposeEngine(loadID, sourceCache: .stash)))
     }
 
     /// The one mutation that rewrites `Playing.identity` needs its own guard:
@@ -1535,6 +1754,190 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertFalse(effects.isEmpty)
     }
 
+    /// `adoptProtocolV3RenewalIntent` (PVM:2589/3596-3607): every adopt
+    /// rewrites `lastLoadRequest` from the plan the server just authorised.
+    /// The two fields that only live there — `preferredQualityOverride` and
+    /// the authoritative `preferredProtocolV3SubtitleIndex` — are carried by
+    /// `copyForRecovery` from its *receiver* (PVM:860-880), so a request
+    /// frozen at `.load` drops the user's mid-stream quality choice and the
+    /// server's subtitle ordinal out of every replay: tvOS suspend/resume,
+    /// visible renewal, outage recovery, interruption recovery and Retry. Both
+    /// are wire arguments to `startSession`
+    /// (PlaybackSessionBridge.swift:401-511).
+    func testAQualitySwitchIsReplayedAfterATvOSSuspendAndResume() throws {
+        let identity = makeIdentity()
+        let state = makePlaying(identity: identity)
+        XCTAssertNil(playing(state)?.request.preferredQualityOverride)
+
+        // 1. The user picks 720p mid-stream.
+        let (replanning, _) = PlaybackReducer.reduce(
+            state,
+            intent: .changeQuality("720p"),
+            now: now
+        )
+
+        // 2. The server answers with the authorised plan.
+        let prepared = try makePreparedRef(
+            activeQualityId: "720p",
+            fileId: 9,
+            protocolV3: makePreparedV3(effectiveMediaFileId: 9, audioIndex: 5, subtitleCombinedIndex: 3)
+        )
+        let (preparing, _) = PlaybackReducer.reduce(
+            replanning,
+            event: .session(.replanned(prepared, makePlan()), identity),
+            now: now
+        )
+        guard case .preparing(let adopting) = preparing else { return XCTFail("expected preparing") }
+        XCTAssertEqual(adopting.request.preferredQualityOverride, "720p")
+        XCTAssertEqual(adopting.request.preferredProtocolV3SubtitleIndex, 3)
+        XCTAssertEqual(adopting.request.preferredFileId, 9, "plan.effectiveMediaFileId")
+        XCTAssertEqual(adopting.request.preferredAudioTrackIndex, 5)
+        XCTAssertEqual(
+            adopting.request.preferredSidecarSubtitleTrackId,
+            SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3)
+        )
+        XCTAssertTrue(adopting.hasProtocolV3)
+
+        // 3. The replacement stream plays.
+        let (playingAgain, _) = PlaybackReducer.reduce(
+            preparing,
+            event: .engine(.fileLoaded(reason: "replan"), adopting.loadID),
+            now: now
+        )
+        XCTAssertEqual(playing(playingAgain)?.request.preferredQualityOverride, "720p")
+
+        // 4. The Apple TV backgrounds and is resumed. `copyForRecovery` keeps
+        //    both fields from the adopted request, so `startSession` asks the
+        //    server for the switched rung and the same subtitle ordinal again.
+        let (suspended, _) = PlaybackReducer.scenePhase(
+            playingAgain,
+            phase: .background,
+            platform: .tvOS,
+            now: now
+        )
+        guard case .suspended(let context) = suspended else { return XCTFail("expected suspended") }
+        XCTAssertEqual(context.request.preferredQualityOverride, "720p")
+        XCTAssertEqual(context.request.preferredProtocolV3SubtitleIndex, 3)
+
+        let (_, resumeEffects) = PlaybackReducer.reduce(suspended, intent: .resumeSuspended, now: now)
+        guard case .startSession(let replayed, _, _) = resumeEffects.last else {
+            return XCTFail("expected the replacement session start")
+        }
+        XCTAssertEqual(replayed.preferredQualityOverride, "720p")
+        XCTAssertEqual(replayed.preferredProtocolV3SubtitleIndex, 3)
+    }
+
+    /// The same adoption runs on a fresh prepare and on a silent renewal —
+    /// `adoptPreparedPlayback` calls it at PVM:2589 and
+    /// `attemptBackgroundSessionRenewal` at PVM:4146 — and it is skipped for
+    /// an offline load, whose request has no server plan to adopt
+    /// (PVM:3596-3600).
+    func testTheReplayRequestIsAdoptedOnPrepareAndOnRenewalButNotWhenOffline() throws {
+        let identity = makeIdentity()
+        let prepared = try makePreparedRef(
+            activeQualityId: "1080p",
+            fileId: 9,
+            protocolV3: makePreparedV3()
+        )
+
+        let loadID = LoadID()
+        let (prepareNext, _) = PlaybackReducer.reduce(
+            makePreparing(loadID: loadID, identity: nil, phase: .resolvingSession, plan: makePlan()),
+            event: .session(.prepared(prepared, makePlan(), for: loadID), identity),
+            now: now
+        )
+        guard case .preparing(let adopted) = prepareNext else { return XCTFail("expected preparing") }
+        XCTAssertEqual(adopted.request.preferredQualityOverride, "1080p")
+        XCTAssertEqual(adopted.request.preferredProtocolV3SubtitleIndex, 3)
+        XCTAssertTrue(adopted.hasProtocolV3)
+
+        // A silent renewal can land on a re-probed source, so it adopts too.
+        let renewing = makePlaying(identity: identity, sub: .renewingSource(
+            SourceRenewal(
+                reason: "progress",
+                observedPosition: 100,
+                startedAt: now,
+                issuedFor: identity
+            )
+        ))
+        let renewedIdentity = makeIdentity(session: "session-2")
+        let (renewed, _) = PlaybackReducer.reduce(
+            renewing,
+            event: .session(.renewed(prepared, replacing: identity), renewedIdentity),
+            now: now
+        )
+        XCTAssertEqual(playing(renewed)?.request.preferredQualityOverride, "1080p")
+        XCTAssertEqual(playing(renewed)?.request.preferredProtocolV3SubtitleIndex, 3)
+
+        // Offline: no server plan, so the request is left exactly as it was.
+        let offlineLoadID = LoadID()
+        let offlineRequest = makeRequest(offlineDownloadId: "download-1")
+        let (offlinePreparing, _) = PlaybackReducer.reduce(
+            .idle,
+            intent: .load(offlineRequest, origin: .userInitiated, options: LoadOptions()),
+            now: now
+        )
+        _ = offlineLoadID
+        guard let startedID = offlinePreparing.loadID else { return XCTFail("expected a LoadID") }
+        let (offlineAdopted, _) = PlaybackReducer.reduce(
+            offlinePreparing,
+            event: .session(
+                .prepared(prepared, makePlan(), for: startedID),
+                SessionIdentity.offline()
+            ),
+            now: now
+        )
+        guard case .preparing(let offline) = offlineAdopted else { return XCTFail("expected preparing") }
+        XCTAssertEqual(offline.request, offlineRequest, "an offline request adopts nothing")
+        XCTAssertTrue(offline.hasProtocolV3, "the prepare itself still carried a plan")
+    }
+
+    /// Both intents that mint a server replan need a *live* V3 plan:
+    /// `switchQuality` only takes the replan branch when
+    /// `activePreparedProtocolV3 != nil` (PVM:4600-4622) and the route
+    /// observer guards on the same field before it samples the snapshot
+    /// (PVM:1082-1086). `SessionIdentity.offline()` publishes
+    /// `outputContextId: ""`, which no real snapshot equals, so without the
+    /// bit an offline load would find every route notification "material".
+    func testAnOfflineLoadIgnoresTheQualityAndRouteIntents() {
+        let offline = makePlaying(
+            identity: SessionIdentity.offline(),
+            request: makeRequest(offlineDownloadId: "download-1"),
+            hasProtocolV3: false
+        )
+
+        let (afterQuality, qualityEffects) = PlaybackReducer.reduce(
+            offline,
+            intent: .changeQuality("720p"),
+            now: now
+        )
+        XCTAssertEqual(afterQuality, offline)
+        XCTAssertTrue(qualityEffects.isEmpty)
+
+        let snapshot = ApplePlaybackV3Capabilities.snapshot()
+        let (afterRoute, routeEffects) = PlaybackReducer.reduce(
+            offline,
+            intent: .outputRouteChanged(snapshot),
+            now: now
+        )
+        XCTAssertEqual(afterRoute, offline)
+        XCTAssertTrue(routeEffects.isEmpty)
+
+        // With a live V3 plan the same route change is material and replans.
+        let online = makePlaying(identity: makeIdentity(outputContext: "stale-output"))
+        let (_, onlineEffects) = PlaybackReducer.reduce(
+            online,
+            intent: .outputRouteChanged(snapshot),
+            now: now
+        )
+        XCTAssertTrue(onlineEffects.contains { effect in
+            if case .replan(let intent, _) = effect {
+                return intent.classification == "output_route_changed"
+            }
+            return false
+        })
+    }
+
     /// The two replan pipelines have different prologues.
     /// `attemptProtocolV3Replan` cancels the heartbeat and raises the overlay;
     /// `restartCurrentTranscodeHLS` takes the fresh-load slot instead and
@@ -1617,7 +2020,10 @@ final class PlaybackReducerTests: XCTestCase {
             now: now
         )
         XCTAssertEqual(iOSEffects, [.transport(.pause, loadID)])
-        XCTAssertEqual(playing(iOSNext)?.transport.isPaused, true)
+        // `pauseBackgroundPlaybackIfUnrouted` (PVM:4829-4835) issues the pause
+        // and leaves `isPlaying` to `onPauseChange`, like every other pause
+        // site — see `testPlayPauseIssuesTheCommandAndLetsPauseChangedBeTheSoleWriter`.
+        XCTAssertEqual(iOSNext, state, "no optimistic transport write")
 
         let airplay = makePlaying(
             loadID: loadID,
@@ -1653,7 +2059,7 @@ final class PlaybackReducerTests: XCTestCase {
             now: now
         )
         XCTAssertEqual(macEffects, [.transport(.pause, loadID)])
-        XCTAssertEqual(playing(macNext)?.transport.isPaused, true)
+        XCTAssertEqual(macNext, state, "no optimistic transport write")
         let (macAirplayNext, macAirplayEffects) = PlaybackReducer.scenePhase(
             airplay,
             phase: .background,
@@ -1661,7 +2067,7 @@ final class PlaybackReducerTests: XCTestCase {
             now: now
         )
         XCTAssertEqual(macAirplayEffects, [.transport(.pause, loadID)], "macOS has no exemptions")
-        XCTAssertEqual(playing(macAirplayNext)?.transport.isPaused, true)
+        XCTAssertEqual(macAirplayNext, airplay, "no optimistic transport write")
 
         // tvOS: suspend the load, dispose the engine, stop the session.
         let (tvNext, tvEffects) = PlaybackReducer.scenePhase(
@@ -1672,7 +2078,7 @@ final class PlaybackReducerTests: XCTestCase {
         )
         guard case .suspended(let context) = tvNext else { return XCTFail("expected suspended") }
         XCTAssertEqual(context.resumePosition, 100)
-        XCTAssertTrue(tvEffects.contains(.disposeEngine(loadID)))
+        XCTAssertTrue(tvEffects.contains(.disposeEngine(loadID, sourceCache: .retainProxy)))
         XCTAssertTrue(tvEffects.contains(.stopSession(identity, position: 100, isPaused: true)))
         for timer in [
             TimerID.interruptionRecovery, .sourceOutageRideThrough, .serverOutageRecovery,
@@ -1700,7 +2106,7 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertEqual(suspendPresentation.currentTime, 100)
         XCTAssertLessThan(
             publishIndex,
-            tvEffects.firstIndex(of: .disposeEngine(loadID))!,
+            tvEffects.firstIndex(of: .disposeEngine(loadID, sourceCache: .retainProxy))!,
             "published before the dispose, as suspendForBackground does"
         )
 
@@ -1769,7 +2175,9 @@ final class PlaybackReducerTests: XCTestCase {
         )
         XCTAssertEqual(playing(tvNext)?.interruption?.wasPlaying, true)
         XCTAssertEqual(playing(tvNext)?.interruption?.isPending, true)
-        XCTAssertEqual(playing(tvNext)?.transport.isPaused, true)
+        // `pauseForForegroundInterruptionIfNeeded` (PVM:7571-7589) records the
+        // interruption and calls `pause()`; `isPlaying` stays `onPauseChange`'s.
+        XCTAssertEqual(playing(tvNext)?.transport, playing(state)?.transport)
         XCTAssertEqual(tvEffects, [.cancelTimer(.interruptionRecovery), .transport(.pause, loadID)])
 
         // A paused player has nothing to interrupt.
@@ -1821,7 +2229,10 @@ final class PlaybackReducerTests: XCTestCase {
             platform: .tvOS,
             now: now
         )
-        XCTAssertEqual(playing(tvNext)?.transport.isPaused, false)
+        // The `.active` arm sets only `isLoading = true; error = nil`
+        // (PVM:4728-4730) before `play()`; the resulting `onPauseChange` is
+        // what republishes `isPlaying`.
+        XCTAssertEqual(playing(tvNext)?.transport, playing(interrupted)?.transport)
         XCTAssertEqual(
             playing(tvNext)?.interruption?.recoveryDeadline,
             now.addingTimeInterval(3),
@@ -2084,23 +2495,38 @@ final class PlaybackReducerTests: XCTestCase {
 
     // MARK: - Transport and dismissal
 
-    func testPlayPauseEmitsATransportCommandAndPublishes() {
+    /// `togglePlayPause` documents the rule this pins (PVM:4573-4576):
+    /// "`isPlaying` is driven by the backend's `onPauseChange` callback; let
+    /// that be the single writer so the UI can't drift out of sync with the
+    /// actual pipeline state on error paths." So the intent issues the command
+    /// and writes nothing — no optimistic `isPaused`, no publish — and
+    /// `.pauseChanged` is what moves the state and republishes.
+    func testPlayPauseIssuesTheCommandAndLetsPauseChangedBeTheSoleWriter() {
         let loadID = LoadID()
-        let (paused, pauseEffects) = PlaybackReducer.reduce(
-            makePlaying(loadID: loadID),
-            intent: .pause,
+        let state = makePlaying(loadID: loadID)
+        let (afterPause, pauseEffects) = PlaybackReducer.reduce(state, intent: .pause, now: now)
+        XCTAssertEqual(afterPause, state, "no optimistic transport write")
+        XCTAssertEqual(pauseEffects, [.transport(.pause, loadID)])
+
+        let (paused, pauseChanged) = PlaybackReducer.reduce(
+            afterPause,
+            event: .engine(.pauseChanged(true), loadID),
             now: now
         )
         XCTAssertEqual(playing(paused)?.transport.isPaused, true)
-        XCTAssertEqual(pauseEffects.first, .transport(.pause, loadID))
-        guard case .publish(let pausedPresentation) = pauseEffects.last else {
+        guard case .publish(let pausedPresentation) = pauseChanged.last else {
             return XCTFail("expected a publish")
         }
         XCTAssertFalse(pausedPresentation.isPlaying)
 
-        let (resumed, resumeEffects) = PlaybackReducer.reduce(paused, intent: .togglePlayPause, now: now)
-        XCTAssertEqual(playing(resumed)?.transport.isPaused, false)
-        XCTAssertEqual(resumeEffects.first, .transport(.play, loadID))
+        // The toggle reads the backend-driven flag, so it now asks to play.
+        let (afterToggle, resumeEffects) = PlaybackReducer.reduce(
+            paused,
+            intent: .togglePlayPause,
+            now: now
+        )
+        XCTAssertEqual(afterToggle, paused)
+        XCTAssertEqual(resumeEffects, [.transport(.play, loadID)])
     }
 
     func testDismissCancelsEveryTimerStopsTheSessionAndDisposes() {
@@ -2116,7 +2542,7 @@ final class PlaybackReducerTests: XCTestCase {
         for timer in TimerID.allCases {
             XCTAssertTrue(effects.contains(.cancelTimer(timer)), "\(timer) must be cancelled")
         }
-        XCTAssertTrue(effects.contains(.disposeEngine(loadID)))
+        XCTAssertTrue(effects.contains(.disposeEngine(loadID, sourceCache: .discard)))
         XCTAssertTrue(effects.contains(.stopSession(identity, position: 100, isPaused: true)))
 
         // A disposed player accepts nothing else.

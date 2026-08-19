@@ -164,14 +164,24 @@ autoSkipIntro) stay on the presentation model.
    `seekOriginTime`/`seekTargetTime` are independent of the replan/renewal slots today, so a seek during a
    quality switch is performed *and* the replan still lands; a `Sub` case dropped whichever arrived second. A
    new `LoadID` still drops the seek structurally (I5). `SeekRequest` gained `fromSeconds` (the pre-seek
-   position the filter compares against), and `SeekOrigin.reanchor` emits **no** `Effect.seek` and no filter
-   timeout — `beginReanchorSeekUI` (PVM:5063-5076) only arms the filter; the rebuild that follows anchors.
+   position the filter compares against), and `SeekOrigin.reanchor` emits **no** `Effect.seek` — only
+   `.cancelTimer(.seekFilterTimeout)`: `beginReanchorSeekUI` (PVM:5063-5076) arms the filter *and* takes down
+   the 5 s safety valve an earlier plain seek may have left running, because the re-anchor filter is released
+   by the rebuild that follows, not by a clock.
 2. **Two `Effect` cases added:** `transport(TransportCommand, LoadID)` (the view's play/pause) and
    `syncProgress(contentId:position:duration:forceOverwrite:LoadID)` (the visible renewal's content-scoped
    force-write, PVM:4262-4267 — the actor completes it *before* the `.startSession` after it). `startSession`
    and `PlayerIntent.load` carry `LoadOptions` (progressPosition, finalizeCurrentSession, resumePosition,
    allowNearEndResume, preserveInterruptionState). `PlayerIntent.selectTrack` is dropped: track intents go to
-   `TrackSelectionCoordinator` directly.
+   `TrackSelectionCoordinator` directly. **`disposeEngine` carries a `SourceCacheDisposition`** —
+   `disposeEngine(LoadID, sourceCache: .stash | .discard | .retainProxy)` — because the teardown sites
+   disagree and the effect must carry the disagreement, not average it: a fresh load (including the visible
+   renewal) stashes the outgoing proxy's cached prefix for a same-file successor (PVM:2759/3524), the terminal
+   path and `cleanup()` release it (PVM:4063/6386), a server-outage recovery stashes *unless* its reason is
+   `source_entity_changed` (PVM:4429-4434, where the validator proved the prefix belongs to the replaced
+   entity), and the tvOS background suspend disposes only the backend and deliberately leaves the proxy — and
+   its cache — running (PVM:7627), which is what `.retainProxy` pins for wave 2's `PlaybackEngineSession`
+   (it owns backend *and* proxy, so a blind `dispose()` would tear the proxy down on every Apple TV suspend).
 3. **`.failed(PlaybackFailure, LoadID?, identity: SessionIdentity?, request:, position:, selections:)`.** The
    terminal path still emits no `.stopSession` (it lets the session lapse), but the identity, playhead, replay
    request and live selections are carried, because `cleanup()` (PVM:6358/6404), `retry()` (PVM:4557-4566) and
@@ -181,8 +191,33 @@ autoSkipIntro) stay on the presentation model.
 4. **New value types:** `ScenePhasePlatform` (the scene-phase rule takes the platform as a *parameter*; `#if os`
    appears once, in `.current`, so the iOS-only test bundle exercises all three tables), `TrackResumeSelections`
    (the live `copyForRecovery` inputs — its resolvers read player track lists the reducer does not own),
-   `LoadOptions`, `PlaybackAdoption`, `ReplanIntent.Kind` and `PreparedPlaybackRef` (identity-keyed `Equatable`
-   box for the non-`Equatable` `PreparedPlayback`). `LoadRequest`/`LoadOrigin` stay nested on the view model.
+   `LoadOptions`, `PlaybackAdoption`, `ReplanIntent.Kind`, `SourceCacheDisposition` and `PreparedPlaybackRef`
+   (identity-keyed `Equatable` box for the non-`Equatable` `PreparedPlayback`). `LoadRequest`/`LoadOrigin` stay
+   nested on the view model.
+5. **The replay request is adopted, not frozen.** `Preparing.request` / `Playing.request` are `var` and are
+   rewritten at `.prepared`, `.replanned` and `.renewed` through
+   `LoadRequest.adoptingProtocolV3Intent(plan:selectedVersion:activeQualityId:)` under
+   `adoptProtocolV3RenewalIntent`'s own two preconditions (the prepare carries a V3 plan; the request is not an
+   offline download) — PVM:2589 / PVM:4146 / PVM:3596-3607. A replan additionally applies the pre-adopt quality
+   latch first (`attemptProtocolV3Replan` PVM:1652-1654, `restartCurrentTranscodeHLS` PVM:5264-5266). Without
+   this the user's mid-stream quality choice and the server's authoritative V3 subtitle ordinal are dropped
+   from every replay — `copyForRecovery` (PVM:860-880) carries `preferredQualityOverride` and
+   `preferredProtocolV3SubtitleIndex` from its *receiver*, and both are wire arguments to `startSession`
+   (PlaybackSessionBridge.swift:401-511).
+6. **`Preparing`/`Playing` carry `hasProtocolV3`** (`activePreparedProtocolV3 != nil`, PVM:2588/3515/4066).
+   It is the precondition of both intents that mint a server replan and neither is derivable from the rest of
+   the state: `switchQuality` only takes the replan branch when a live plan owns the load (PVM:4600-4622) and
+   the route observer guards on the same field before it samples the snapshot (PVM:1082-1086) —
+   `isMaterialOutputRouteChange` is a bare id inequality and `SessionIdentity.offline()` publishes
+   `outputContextId: ""`, so without the bit an offline load would treat every route notification as material.
+7. **Transport commands write nothing.** `.play` / `.pause` / `.togglePlayPause` and the four scene-phase pause
+   /resume arms emit `Effect.transport(command, LoadID)` and neither write `TransportState.isPaused` nor
+   publish: `isPlaying` has one writer, the backend's `onPauseChange` (PVM:4573-4576, and none of
+   `pauseForForegroundInterruptionIfNeeded` PVM:7571-7589, the tvOS `.active` arm PVM:4728-4735, the macOS
+   arm PVM:4753-4756 or `pauseBackgroundPlaybackIfUnrouted` PVM:4829-4835 touches it). The three sites that
+   *do* write it by hand are ported as such: `handleEndOfFile` (PVM:3424, which also clears the buffering
+   capsule at PVM:3423), `triggerAutomaticInterruptionRecovery` (PVM:4016) and `attemptServerOutageRecovery`
+   (PVM:4438).
 
 **Contract notes waves 2/3 must honour:** (a) `TransportState.isPictureInPictureEngaged` is
 `PictureInPictureCoordinator.isEngaged` (`isActive || isTransitioning`), *not* the backend's
@@ -197,7 +232,33 @@ straight through would regress seeking past the anchor; (f) `Presentation` is a 
 `playbackStats` only from transport), so wave 3 must **merge** a `.publish` onto the view model, not assign it;
 (g) the high-frequency transport arms (`.time`/`.duration`/`.buffering`/`.bufferedAhead`/`.stats`) emit no
 `.publish` — the actor owes one coalesced publish per tick, which carries the optimistic seek jump and the
-adopted position/duration/quality to the UI.
+adopted position/duration/quality to the UI; (h) `Effect.transport` is fire-and-forget — the actor must let the
+resulting `EngineEvent.pauseChanged` come back through the reducer, and must **not** synthesise one, or the
+single-writer rule in as-built item 7 is broken from the other side.
+
+**Wave-3 obligations from the reducer review** — reducer-visible gaps deliberately left for the wiring wave,
+each of which wave 3 must close explicitly rather than inherit silently:
+
+* `PlaybackReducer.swift` `beginSeek` (`.reanchor` arm) — `beginReanchorSeekUI` (PVM:5063-5076) also raises the
+  loading overlay, clears the buffering flag, reveals the controls and cancels the hide timer; the reducer
+  emits only the filter arm + `.cancelTimer(.seekFilterTimeout)`, because that arm is reachable **only** from
+  `commitSeek`'s unmodelled first branch (contract note (e)), which is the code wave 3 has to write anyway.
+* `PlaybackReducer.swift` `.changeQuality` — the pre-V3 branches of `switchQuality` (PVM:4623-4710: source
+  reselection, transcode → direct, `normalizeStoredId`, `qualitySwitchError` re-arming) stay in the shell,
+  which must issue the corresponding `.load` itself; the reducer refuses the intent when `hasProtocolV3` is
+  false rather than guessing.
+* `PlaybackReducer.swift` `.recoverFromServerOutage` — the reducer cancels the ride-through timer, but
+  `clearSourceOutageRideThroughState`'s `setExternalStallSuppression(false)` (PVM:4346) has no effect of its
+  own; it is subsumed by the `.disposeEngine` two effects later. If wave 2's engine session ever survives an
+  outage recovery, that release needs an explicit effect.
+* `PlaybackState.swift` `TrackResumeSelections` — still only the four `copyForRecovery` arguments. The adopted
+  request now carries `preferredProtocolV3SubtitleIndex`/`preferredQualityOverride`, so the shell owes only
+  the three live track resolvers (contract note (c)); it must re-arm them from the adopted plan at each adopt
+  (`armAdoptedProtocolV3TrackIntent`, PVM:3629-3641), which is where the resolvers' fallbacks read from while
+  the replacement stream's track lists are still empty.
+* `PlaybackState.swift` `Presentation` — `Playing.hasProtocolV3` is control-plane state, but the view's
+  quality menu also reads `qualityOptions` (PVM:2615-2618), which is not projected here; wave 3 keeps it on
+  the presentation model and must not re-derive "V3 is active" from it.
 
 ### 2.4 Recovery — `Recovery/RecoveryPolicy.swift` + `Recovery/RecoveryObservation.swift` (wave 1B)
 ```swift

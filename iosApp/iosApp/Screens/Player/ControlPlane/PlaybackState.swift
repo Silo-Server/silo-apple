@@ -111,7 +111,22 @@ struct Preparing: Equatable {
     /// Known once the session (or the offline stand-in) is prepared.
     var identity: SessionIdentity?
     var phase: Phase
-    let request: PlayerViewModel.LoadRequest
+    /// Today's `lastLoadRequest`, and **mutable for the same reason it is a
+    /// `var` there**: every adopt rewrites it from the plan the server just
+    /// authorised (`adoptProtocolV3RenewalIntent`, PVM:3596-3607 →
+    /// `LoadRequest.adoptingProtocolV3Intent`, PVM:885-918), and
+    /// `attemptProtocolV3Replan` latches the user's quality choice onto it
+    /// first (PVM:1652-1654), as does `restartCurrentTranscodeHLS`
+    /// (PVM:5264-5266). Modelling it as a `let` seeded once from the `.load`
+    /// intent dropped `preferredProtocolV3SubtitleIndex` and
+    /// `preferredQualityOverride` from every replay — `copyForRecovery`
+    /// (PVM:860-880) carries both from its *receiver*, and both are wire
+    /// arguments to `startSession` (PlaybackSessionBridge.swift:401-511:
+    /// `qualityOverride:`, `explicitCombinedIndex:`, `resolvedQualityPreference`)
+    /// — so a tvOS suspend/resume, a visible renewal, an outage recovery, an
+    /// interruption recovery or Retry after a mid-stream quality switch would
+    /// have replayed the *old* rung and the *old* subtitle ordinal.
+    var request: PlayerViewModel.LoadRequest
     let options: LoadOptions
     let adoption: PlaybackAdoption
     /// Known from `.startingEngine` onwards: the plan arrives *with* the
@@ -139,6 +154,11 @@ struct Preparing: Equatable {
     /// `prepared.activeQualityId` (PVM:2619) and it then persists for the
     /// whole load.
     var activeQualityId: String?
+    /// `activePreparedProtocolV3 != nil` — set at the adopt (PVM:2588) and
+    /// cleared by `resetPublishedLoadState` (PVM:3515) and
+    /// `finalizeTerminalPlaybackError` (PVM:4066). See `Playing.hasProtocolV3`
+    /// for why the control plane needs the bit.
+    var hasProtocolV3: Bool = false
     /// The inputs `copyForRecovery` needs when this load is suspended or
     /// renewed (see `TrackResumeSelections`).
     var resumeSelections: TrackResumeSelections
@@ -167,8 +187,10 @@ struct Playing: Equatable {
     var identity: SessionIdentity
     let plan: ExecutablePlan
     /// Today's `lastLoadRequest`: the replay intent every recovery path
-    /// rebuilds a fresh load from.
-    let request: PlayerViewModel.LoadRequest
+    /// rebuilds a fresh load from — and, like the view model's, re-adopted at
+    /// every server prepare/replan/renewal rather than frozen at `.load`. See
+    /// `Preparing.request`.
+    var request: PlayerViewModel.LoadRequest
     let adoption: PlaybackAdoption
     var transport: TransportState
     var sub: Sub
@@ -190,6 +212,24 @@ struct Playing: Equatable {
     /// (PVM:2619) and *not* re-derived per publish: a replan that is not a
     /// quality switch must not clear the label the user sees.
     var activeQualityId: String?
+    /// `activePreparedProtocolV3 != nil`: whether a *live server V3 plan* owns
+    /// this load. Set at the adopt from `prepared.protocolV3 != nil`
+    /// (PVM:2588) and false for offline/legacy loads.
+    ///
+    /// It is the precondition of both intents that mint a server replan, and
+    /// neither is expressible from the rest of the state:
+    ///   * `switchQuality` (PVM:4600-4622) only takes the replan branch when
+    ///     `activePreparedProtocolV3 != nil`; without V3 it resolves the id
+    ///     differently (`normalizeStoredId`) and runs source-reselection or
+    ///     transcode branches that need version and plan knowledge the control
+    ///     plane does not hold, so those stay with the shell.
+    ///   * the AVAudioSession route observer (PVM:1082-1086) guards on
+    ///     `activePreparedProtocolV3` before it even reads the snapshot.
+    /// `SessionIdentity.offline()` publishes `outputContextId: ""`, which no
+    /// real snapshot can equal, so without this bit an offline load would
+    /// treat every route notification as material and replan a session that
+    /// has no server behind it.
+    var hasProtocolV3: Bool = false
     /// The live inputs `copyForRecovery` needs (see `TrackResumeSelections`).
     var resumeSelections: TrackResumeSelections
     var interruption: Interruption?
@@ -678,7 +718,11 @@ enum Effect: Equatable {
     /// `reuseEngine == true` is today's `prepareBackend(for:)` path: the live
     /// `AVPlayerBackend` survives, its callbacks re-bind to the new `LoadID`.
     case loadEngine(ExecutablePlan, LoadID, reuseEngine: Bool)
-    case disposeEngine(LoadID)
+    /// Tear the load's engine down. `sourceCache` is what the outgoing source
+    /// proxy's cached prefix is worth to whatever comes next — the four
+    /// dispose sites disagree about it today and the effect has to carry the
+    /// disagreement, not average it (see `SourceCacheDisposition`).
+    case disposeEngine(LoadID, sourceCache: SourceCacheDisposition)
     case seek(SeekRequest, LoadID)
     /// `replanProtocolV3` → `.session(.replanned | .replanUnavailable | .terminal | .sessionMissing)`.
     case replan(ReplanIntent, SessionIdentity)
@@ -720,6 +764,33 @@ enum Effect: Equatable {
 enum TransportCommand: Equatable {
     case play
     case pause
+}
+
+/// What an engine teardown does with the outgoing `PlaybackSourceProxy`'s
+/// cached prefix (`SourceCacheHandoff`, PVM:2835-2892). The handoff lives for
+/// exactly one load attempt and `SourceCacheAdoptionPolicy` decides whether
+/// the next proxy may adopt it, so the *only* thing a dispose site chooses is
+/// whether to offer it at all — and the sites genuinely disagree.
+enum SourceCacheDisposition: Equatable {
+    /// `stashSourceCacheHandoff()` immediately before `sourceProxy.stop()`:
+    /// keep the prefix for a same-file successor. Both halves of a fresh load
+    /// (`resetPublishedLoadState` PVM:3524, `loadStream` PVM:2759) and every
+    /// server-outage recovery whose reason is *not* `source_entity_changed`
+    /// (PVM:4433).
+    case stash
+    /// `discardSourceCacheHandoff()`: the prefix must not be adopted.
+    /// `finalizeTerminalPlaybackError` (PVM:4063), `cleanup()` (PVM:6386), and
+    /// a `source_entity_changed` outage recovery (PVM:4429-4432), where the
+    /// validator proved the cached bytes belong to the *replaced* entity —
+    /// adopting them would serve the old file's prefix under the new one.
+    case discard
+    /// The engine goes, the proxy stays: `suspendForBackground` (PVM:7592-7638)
+    /// calls `avPlayerBackend?.dispose()` and deliberately never touches
+    /// `sourceProxy`, so the tvOS background suspend keeps the live proxy —
+    /// and its cache — and the resume's own `beginLoad` is what finally stashes
+    /// and stops it. Wave 3's `PlaybackEngineSession` owns both halves, so this
+    /// case is what stops it tearing the proxy down on every Apple TV suspend.
+    case retainProxy
 }
 
 // MARK: - Presentation
