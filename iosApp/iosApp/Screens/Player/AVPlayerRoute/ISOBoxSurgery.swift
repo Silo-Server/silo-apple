@@ -359,6 +359,18 @@ enum ISOBoxSurgery {
     /// use this to repair the keyframe flag before gating on it.
     static func firstIRAPNALType(packetBytes: UnsafeBufferPointer<UInt8>,
                                  nalLengthSize: Int) -> Int? {
+        firstNALType(packetBytes: packetBytes, nalLengthSize: nalLengthSize,
+                     minNALSize: 2, hevcLayout: true, accepted: 16...23)
+    }
+
+    /// Shared length-prefixed NAL walk behind the three `first*NALType`
+    /// entry points: returns the first NAL type inside `accepted`, or nil.
+    @inline(__always)
+    private static func firstNALType(packetBytes: UnsafeBufferPointer<UInt8>,
+                                     nalLengthSize: Int,
+                                     minNALSize: Int,
+                                     hevcLayout: Bool,
+                                     accepted: ClosedRange<Int>) -> Int? {
         guard nalLengthSize > 0 else { return nil }
         var offset = 0
         while offset + nalLengthSize <= packetBytes.count {
@@ -370,9 +382,10 @@ enum ISOBoxSurgery {
             if nalSize <= 0 || offset + nalSize > packetBytes.count { break }
             let nalStart = packetBytes.baseAddress!.advanced(by: offset)
             offset += nalSize
-            guard nalSize >= 2 else { continue }
-            let nalType = (Int(nalStart.pointee) >> 1) & 0x3F
-            if (16...23).contains(nalType) {
+            guard nalSize >= minNALSize else { continue }
+            let b = nalStart.pointee
+            let nalType = hevcLayout ? (Int(b) >> 1) & 0x3F : Int(b) & 0x1F
+            if accepted.contains(nalType) {
                 return nalType
             }
         }
@@ -385,24 +398,8 @@ enum ISOBoxSurgery {
     /// flag lying about a random-access point) from "nothing to judge".
     static func firstHEVCVCLNALType(packetBytes: UnsafeBufferPointer<UInt8>,
                                     nalLengthSize: Int) -> Int? {
-        guard nalLengthSize > 0 else { return nil }
-        var offset = 0
-        while offset + nalLengthSize <= packetBytes.count {
-            var nalSize = 0
-            for i in 0..<nalLengthSize {
-                nalSize = (nalSize << 8) | Int(packetBytes[offset + i])
-            }
-            offset += nalLengthSize
-            if nalSize <= 0 || offset + nalSize > packetBytes.count { break }
-            let nalStart = packetBytes.baseAddress!.advanced(by: offset)
-            offset += nalSize
-            guard nalSize >= 2 else { continue }
-            let nalType = (Int(nalStart.pointee) >> 1) & 0x3F
-            if (0...31).contains(nalType) {
-                return nalType
-            }
-        }
-        return nil
+        firstNALType(packetBytes: packetBytes, nalLengthSize: nalLengthSize,
+                     minNALSize: 2, hevcLayout: true, accepted: 0...31)
     }
 
     /// First VCL NAL type (1-5) in a length-prefixed AVC packet, or nil when
@@ -412,24 +409,8 @@ enum ISOBoxSurgery {
     /// inter-predicted blocks against missing references.
     static func firstAVCVCLNALType(packetBytes: UnsafeBufferPointer<UInt8>,
                                    nalLengthSize: Int) -> Int? {
-        guard nalLengthSize > 0 else { return nil }
-        var offset = 0
-        while offset + nalLengthSize <= packetBytes.count {
-            var nalSize = 0
-            for i in 0..<nalLengthSize {
-                nalSize = (nalSize << 8) | Int(packetBytes[offset + i])
-            }
-            offset += nalLengthSize
-            if nalSize <= 0 || offset + nalSize > packetBytes.count { break }
-            let nalStart = packetBytes.baseAddress!.advanced(by: offset)
-            offset += nalSize
-            guard nalSize >= 1 else { continue }
-            let nalType = Int(nalStart.pointee) & 0x1F
-            if (1...5).contains(nalType) {
-                return nalType
-            }
-        }
-        return nil
+        firstNALType(packetBytes: packetBytes, nalLengthSize: nalLengthSize,
+                     minNALSize: 1, hevcLayout: false, accepted: 1...5)
     }
 
     static func nalSummary(packetBytes: UnsafeBufferPointer<UInt8>,

@@ -523,7 +523,7 @@ final class LoopbackSegmentServer {
                         self.onEarlyVODResponseHeaders?(path)
                         self.respondWithProgressiveStream(
                             name: path,
-                            mime: self.mimeType(for: "m4s"),
+                            mime: "video/mp4",
                             requestPath: path,
                             method: method,
                             range: rangeHeader,
@@ -688,19 +688,15 @@ final class LoopbackSegmentServer {
         started: CFAbsoluteTime,
         on connection: NWConnection
     ) {
-        guard method == .get else {
-            logRequest(method: method, path: requestPath, status: 200, bytes: 0, range: rangeHeader, started: started)
-            var header = "HTTP/1.1 200 OK\r\n"
-            header += "Content-Type: \(mime)\r\n"
-            header += "Cache-Control: no-store\r\n"
-            header += "Connection: close\r\n\r\n"
-            send(Data(header.utf8), on: connection, andClose: true)
-            return
-        }
         var header = "HTTP/1.1 200 OK\r\n"
         header += "Content-Type: \(mime)\r\n"
         header += "Cache-Control: no-store\r\n"
         header += "Connection: close\r\n\r\n"
+        guard method == .get else {
+            logRequest(method: method, path: requestPath, status: 200, bytes: 0, range: rangeHeader, started: started)
+            send(Data(header.utf8), on: connection, andClose: true)
+            return
+        }
         logRequest(method: method, path: requestPath, status: 200, bytes: 0, range: rangeHeader, started: started)
         let store = segmentStore
         let overallDeadline = Date().addingTimeInterval(Self.progressiveStreamMaxSeconds)
@@ -792,12 +788,7 @@ final class LoopbackSegmentServer {
         let totalLength = data.count
 
         if method == .head {
-            var header = "HTTP/1.1 200 OK\r\n"
-            header += "Content-Type: \(mime)\r\n"
-            header += "Content-Length: \(totalLength)\r\n"
-            header += "Accept-Ranges: bytes\r\n"
-            header += "Cache-Control: no-store\r\n"
-            header += "Connection: close\r\n\r\n"
+            let header = Self.mediaHeader(status: 200, phrase: "OK", mime: mime, contentLength: totalLength)
             logRequest(method: method, path: requestPath, status: 200, bytes: totalLength, range: nil, started: started)
             send(Data(header.utf8), on: connection, andClose: true)
             return
@@ -807,33 +798,24 @@ final class LoopbackSegmentServer {
             switch parsed {
             case .satisfiable(let lower, let upper):
                 let slice = data.subdata(in: lower..<(upper + 1))
-                var header = "HTTP/1.1 206 Partial Content\r\n"
-                header += "Content-Type: \(mime)\r\n"
-                header += "Content-Length: \(slice.count)\r\n"
-                header += "Accept-Ranges: bytes\r\n"
-                header += "Content-Range: bytes \(lower)-\(upper)/\(totalLength)\r\n"
-                header += "Cache-Control: no-store\r\n"
-                header += "Connection: close\r\n\r\n"
+                let header = Self.mediaHeader(
+                    status: 206, phrase: "Partial Content", mime: mime,
+                    contentLength: slice.count,
+                    contentRange: "bytes \(lower)-\(upper)/\(totalLength)"
+                )
                 logRequest(method: method, path: requestPath, status: 206, bytes: slice.count, range: rangeHeader, started: started)
                 sendHeaderAndBody(header, body: slice, on: connection)
                 return
             case .notSatisfiable:
-                var header = "HTTP/1.1 416 Range Not Satisfiable\r\n"
-                header += "Content-Length: 0\r\n"
-                header += "Content-Range: bytes */\(totalLength)\r\n"
-                header += "Connection: close\r\n\r\n"
-                logRequest(method: method, path: requestPath, status: 416, bytes: 0, range: rangeHeader, started: started)
-                send(Data(header.utf8), on: connection, andClose: true)
+                respondRangeNotSatisfiable(
+                    totalLength: totalLength, requestPath: requestPath, method: method,
+                    range: rangeHeader, started: started, on: connection
+                )
                 return
             }
         }
 
-        var header = "HTTP/1.1 200 OK\r\n"
-        header += "Content-Type: \(mime)\r\n"
-        header += "Content-Length: \(totalLength)\r\n"
-        header += "Accept-Ranges: bytes\r\n"
-        header += "Cache-Control: no-store\r\n"
-        header += "Connection: close\r\n\r\n"
+        let header = Self.mediaHeader(status: 200, phrase: "OK", mime: mime, contentLength: totalLength)
         logRequest(method: method, path: requestPath, status: 200, bytes: totalLength, range: rangeHeader, started: started)
         sendHeaderAndBody(header, body: data, on: connection)
     }
@@ -857,12 +839,7 @@ final class LoopbackSegmentServer {
         }
 
         if method == .head {
-            var header = "HTTP/1.1 200 OK\r\n"
-            header += "Content-Type: \(mime)\r\n"
-            header += "Content-Length: \(totalLength)\r\n"
-            header += "Accept-Ranges: bytes\r\n"
-            header += "Cache-Control: no-store\r\n"
-            header += "Connection: close\r\n\r\n"
+            let header = Self.mediaHeader(status: 200, phrase: "OK", mime: mime, contentLength: totalLength)
             logRequest(method: method, path: requestPath, status: 200, bytes: totalLength, range: nil, started: started)
             send(Data(header.utf8), on: connection, andClose: true)
             return
@@ -878,12 +855,10 @@ final class LoopbackSegmentServer {
                 upper = parsedUpper
                 status = 206
             case .notSatisfiable:
-                var header = "HTTP/1.1 416 Range Not Satisfiable\r\n"
-                header += "Content-Length: 0\r\n"
-                header += "Content-Range: bytes */\(totalLength)\r\n"
-                header += "Connection: close\r\n\r\n"
-                logRequest(method: method, path: requestPath, status: 416, bytes: 0, range: rangeHeader, started: started)
-                send(Data(header.utf8), on: connection, andClose: true)
+                respondRangeNotSatisfiable(
+                    totalLength: totalLength, requestPath: requestPath, method: method,
+                    range: rangeHeader, started: started, on: connection
+                )
                 return
             }
         } else {
@@ -911,15 +886,13 @@ final class LoopbackSegmentServer {
         }
 
         let bodyBytes = upper - lower + 1
-        var header = "HTTP/1.1 \(status) \(status == 206 ? "Partial Content" : "OK")\r\n"
-        header += "Content-Type: \(mime)\r\n"
-        header += "Content-Length: \(bodyBytes)\r\n"
-        header += "Accept-Ranges: bytes\r\n"
-        if status == 206 {
-            header += "Content-Range: bytes \(lower)-\(upper)/\(totalLength)\r\n"
-        }
-        header += "Cache-Control: no-store\r\n"
-        header += "Connection: close\r\n\r\n"
+        let header = Self.mediaHeader(
+            status: status,
+            phrase: status == 206 ? "Partial Content" : "OK",
+            mime: mime,
+            contentLength: bodyBytes,
+            contentRange: status == 206 ? "bytes \(lower)-\(upper)/\(totalLength)" : nil
+        )
         logRequest(method: method, path: requestPath, status: status, bytes: bodyBytes, range: rangeHeader, started: started)
         send(Data(header.utf8), on: connection, andClose: false) { [weak self] in
             self?.sendFileChunks(handle: handle, remaining: bodyBytes, on: connection)
@@ -1029,6 +1002,46 @@ final class LoopbackSegmentServer {
         return .satisfiable(lower: lowerBound, upper: upperBound)
     }
 
+    /// The shared media-response header shape: status line, Content-Type,
+    /// Content-Length, `Accept-Ranges: bytes`, an optional Content-Range,
+    /// `Cache-Control: no-store` and `Connection: close`, in that field order.
+    private static func mediaHeader(
+        status: Int,
+        phrase: String,
+        mime: String,
+        contentLength: Int,
+        contentRange: String? = nil
+    ) -> String {
+        var header = "HTTP/1.1 \(status) \(phrase)\r\n"
+        header += "Content-Type: \(mime)\r\n"
+        header += "Content-Length: \(contentLength)\r\n"
+        header += "Accept-Ranges: bytes\r\n"
+        if let contentRange {
+            header += "Content-Range: \(contentRange)\r\n"
+        }
+        header += "Cache-Control: no-store\r\n"
+        header += "Connection: close\r\n\r\n"
+        return header
+    }
+
+    /// 416 has its own shape — no Content-Type, no Accept-Ranges, no
+    /// Cache-Control — so it deliberately does not go through `mediaHeader`.
+    private func respondRangeNotSatisfiable(
+        totalLength: Int,
+        requestPath: String,
+        method: HTTPMethod,
+        range rangeHeader: String?,
+        started: CFAbsoluteTime,
+        on connection: NWConnection
+    ) {
+        var header = "HTTP/1.1 416 Range Not Satisfiable\r\n"
+        header += "Content-Length: 0\r\n"
+        header += "Content-Range: bytes */\(totalLength)\r\n"
+        header += "Connection: close\r\n\r\n"
+        logRequest(method: method, path: requestPath, status: 416, bytes: 0, range: rangeHeader, started: started)
+        send(Data(header.utf8), on: connection, andClose: true)
+    }
+
     private func respondError(_ code: Int, _ phrase: String, on connection: NWConnection) {
         let body = "\(code) \(phrase)\n"
         var header = "HTTP/1.1 \(code) \(phrase)\r\n"
@@ -1088,15 +1101,6 @@ final class LoopbackSegmentServer {
             completion?()
             if close { connection.cancel() }
         })
-    }
-
-    private func mimeType(for ext: String) -> String {
-        switch ext {
-        case "m3u8": return "application/vnd.apple.mpegurl"
-        case "m4s", "mp4": return "video/mp4"
-        case "ts": return "video/mp2t"
-        default: return "application/octet-stream"
-        }
     }
 
 }
