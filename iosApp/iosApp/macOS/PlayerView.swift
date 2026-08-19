@@ -47,12 +47,6 @@ struct PlayerView: View {
             } else {
                 playerSurface
 
-                if viewModel.isLoading {
-                    ProgressView()
-                        .tint(.white)
-                        .scaleEffect(1.5)
-                }
-
                 if shouldShowControls {
                     MacPlayerControls(
                         viewModel: viewModel,
@@ -73,6 +67,14 @@ struct PlayerView: View {
                     .padding(.bottom, 116)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                }
+
+                // The player's single loading/buffering surface, for the start
+                // (`isLoading`) and every rebuffer after it (`isBuffering`)
+                // alike. Inside the non-error branch, so it can never float
+                // over the error view.
+                if viewModel.isLoading || viewModel.isBuffering {
+                    PlayerBufferingCapsule()
                 }
 
                 if let notice = viewModel.activeNotice ?? viewModel.suspendedNotice {

@@ -248,27 +248,22 @@ struct MobilePlayerControls: View {
             Button {
                 viewModel.togglePlayPause()
             } label: {
-                Group {
-                    if viewModel.isBuffering {
-                        ProgressView()
-                            .tint(.black.opacity(0.8))
-                    } else {
-                        Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 26, weight: .semibold))
-                            .foregroundStyle(.black.opacity(0.85))
-                            // play.fill reads left-heavy inside a circle;
-                            // nudge it toward the optical center.
-                            .offset(x: viewModel.isPlaying ? 0 : 1.5)
-                    }
-                }
-                .frame(width: 64, height: 64)
+                // The glyph stays put through a rebuffer: buffering is
+                // reported by the shell's top-right capsule, and swapping a
+                // spinner in here made the transport's primary control read
+                // as unavailable while it was still perfectly usable.
+                Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(.black.opacity(0.85))
+                    // play.fill reads left-heavy inside a circle; nudge it
+                    // toward the optical center.
+                    .offset(x: viewModel.isPlaying ? 0 : 1.5)
+                    .frame(width: 64, height: 64)
             }
             .buttonStyle(.glassProminent)
             .buttonBorderShape(.circle)
             .tint(.white.opacity(0.9))
-            .accessibilityLabel(
-                viewModel.isBuffering ? "Buffering" : (viewModel.isPlaying ? "Pause" : "Play")
-            )
+            .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
 
             Button {
                 viewModel.skipForward(10)
