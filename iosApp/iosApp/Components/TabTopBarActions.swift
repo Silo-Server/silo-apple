@@ -35,6 +35,23 @@ struct TabTopBarActions: View {
     }
 }
 
+extension TabTopBarActions {
+    /// Standard router wiring shared by every tab-root screen.
+    init(profile: UserProfile?, router: AppRouter) {
+        self.init(
+            profile: profile,
+            onSearch: { router.navigate(to: .search) },
+            onOpenSettings: { router.navigate(to: .settings) },
+            onOpenRequests: { router.navigate(to: .requestsHub) },
+            onSwitchProfile: {
+                router.switchProfile()
+            },
+            onSwitchServer: { router.navigate(to: .serverList) },
+            onSignOut: { router.signOutAndReset() }
+        )
+    }
+}
+
 /// Plain icon button used for utility actions (Search) in the top bar.
 /// The 44×44 frame keeps a comfortable tap target while the glyph itself
 /// stays small and chrome-free, matching Plex's top-right icons.

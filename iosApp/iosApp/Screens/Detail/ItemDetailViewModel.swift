@@ -6,9 +6,8 @@ class ItemDetailViewModel {
     var detail: ItemDetail?
     /// True only on a true cold load — no cached payload and no `detail`
     /// rendered yet. Subsequent refreshes paint the cached content and
-    /// flip `isRefreshing` instead.
+    /// reload silently underneath it.
     var isLoading = false
-    var isRefreshing = false
     var error: ErrorState?
 
     // Series-specific state
@@ -99,13 +98,10 @@ class ItemDetailViewModel {
 
         if detail == nil {
             isLoading = true
-        } else {
-            isRefreshing = true
         }
         error = nil
         defer {
             isLoading = false
-            isRefreshing = false
         }
 
         do {

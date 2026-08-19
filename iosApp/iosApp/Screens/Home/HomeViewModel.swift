@@ -12,12 +12,9 @@ class HomeViewModel {
 
     var sections: [ResolvedSection] = []
     /// True only on the very first load when no cached data exists.
-    /// Returning visits paint cached sections instantly and use
-    /// `isRefreshing` for the silent background fetch.
+    /// Returning visits paint cached sections instantly and refresh
+    /// silently in the background.
     var isLoading = false
-    /// In-flight refresh signal — drives the inline indicator while
-    /// painted content stays on screen.
-    var isRefreshing = false
     var error: ErrorState?
     private(set) var actionError: ErrorState?
     private var pendingContinueWatchingDismissals = Set<String>()
@@ -70,8 +67,6 @@ class HomeViewModel {
     func loadSections() async {
         if sections.isEmpty {
             isLoading = true
-        } else {
-            isRefreshing = true
         }
         error = nil
 
@@ -91,7 +86,6 @@ class HomeViewModel {
         }
 
         isLoading = false
-        isRefreshing = false
     }
 
     func dismissContinueWatchingItem(_ item: SectionItem) async {

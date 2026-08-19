@@ -80,7 +80,9 @@ struct SettingsView: View {
 
     private var accountSection: some View {
         Section {
-            Button(action: switchProfile) {
+            Button {
+                router.switchProfile()
+            } label: {
                 HStack(spacing: 14) {
                     ProfileAvatarView(
                         avatar: viewModel.activeProfile?.avatarEmoji,
@@ -91,12 +93,12 @@ struct SettingsView: View {
                     )
 
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(displayName)
+                        Text(viewModel.displayName)
                             .font(.title3.weight(.semibold))
                             .foregroundStyle(Color.siloOnSurface)
                             .lineLimit(1)
 
-                        Text(subtitleLine)
+                        Text(viewModel.subtitleLine)
                             .font(.footnote)
                             .foregroundStyle(Color.siloSecondaryText)
                             .lineLimit(1)
@@ -117,42 +119,6 @@ struct SettingsView: View {
                     .foregroundStyle(Color.siloSecondaryText)
             }
         }
-    }
-
-    private func switchProfile() {
-        router.switchProfile()
-    }
-
-    private var displayName: String {
-        if let name = viewModel.activeProfile?.name, !name.isEmpty {
-            return name
-        }
-        if let username = viewModel.userInfo?.username, !username.isEmpty {
-            return username
-        }
-        return "Switch Profile"
-    }
-
-    private var subtitleLine: String {
-        let host = serverHost
-        let username = viewModel.userInfo?.username
-        switch (username, host) {
-        case let (user?, host?) where !user.isEmpty && user != displayName:
-            return "\(user) · \(host)"
-        case let (_, host?):
-            return host
-        case let (user?, _) where !user.isEmpty && user != displayName:
-            return user
-        default:
-            return "Tap to switch profile"
-        }
-    }
-
-    private var serverHost: String? {
-        guard let url = URL(string: viewModel.serverUrl), let host = url.host else {
-            return viewModel.serverUrl.isEmpty ? nil : viewModel.serverUrl
-        }
-        return host
     }
 
     // MARK: - Preferences
@@ -199,7 +165,7 @@ struct SettingsView: View {
                     title: "Subtitles",
                     systemImage: "captions.bubble.fill",
                     color: .pink,
-                    value: subtitleLanguageName(viewModel.editorSubtitleLanguage)
+                    value: viewModel.subtitleLanguageName(viewModel.editorSubtitleLanguage)
                 )
             }
 
@@ -215,11 +181,6 @@ struct SettingsView: View {
                 }
             }
         }
-    }
-
-    private func subtitleLanguageName(_ tag: String) -> String {
-        if tag == PlaybackPrefSentinel.none || tag.isEmpty { return "None" }
-        return PlaybackLanguageOption.label(forCode: tag)
     }
 
     // MARK: - Connection
@@ -249,21 +210,13 @@ struct SettingsView: View {
     private var aboutSection: some View {
         Section("About") {
             LabeledContent {
-                Text(versionString)
+                Text(viewModel.versionString)
                     .foregroundStyle(Color.siloSecondaryText)
             } label: {
                 Text("Version")
                     .foregroundStyle(Color.siloOnSurface)
             }
         }
-    }
-
-    private var versionString: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        if let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String, build != short {
-            return "\(short) (\(build))"
-        }
-        return short
     }
 
     // MARK: - Sign Out

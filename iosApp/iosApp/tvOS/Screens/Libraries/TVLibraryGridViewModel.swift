@@ -22,7 +22,6 @@ final class TVLibraryGridViewModel {
 
     var items: [BrowseItem] = []
     var isLoading: Bool = false
-    var isRefreshing: Bool = false
     var error: ErrorState? = nil
     var hasMore: Bool = true
     private(set) var filter: CatalogFilterState
@@ -149,14 +148,11 @@ final class TVLibraryGridViewModel {
 
     private func fetchPage(reset: Bool) async {
         let myGeneration = generation
-        if reset, !items.isEmpty {
-            isRefreshing = true
-        } else {
+        if !reset || items.isEmpty {
             isLoading = true
         }
         defer {
             isLoading = false
-            isRefreshing = false
         }
 
         let requestOffset = reset ? 0 : nextOffset

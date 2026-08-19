@@ -534,7 +534,6 @@ final class UICustomizationPreferences {
     private var storedCardPresentation: CardPresentationPreference = .standard
     private var storedPrimaryMenuSource: SettingSource?
     private var storedCardPresentationSource: SettingSource?
-    private(set) var isRefreshing = false
     private(set) var isSaving = false
     private(set) var syncErrorMessage: String?
     private(set) var capabilityState: UICustomizationCapabilityState = .checking
@@ -750,12 +749,6 @@ final class UICustomizationPreferences {
         refreshSequence += 1
         let sequence = refreshSequence
         let mutationRevision = localMutationRevision
-        isRefreshing = true
-        defer {
-            if refreshSequence == sequence {
-                isRefreshing = false
-            }
-        }
 
         guard let identity = capturedIdentity(for: targetCacheKey) else {
             capabilityState = .unavailable

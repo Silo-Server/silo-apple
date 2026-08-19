@@ -5,7 +5,6 @@ import Foundation
 class RecommendationsViewModel {
     var sections: [ResolvedSection] = []
     var isLoading = false
-    var isRefreshing = false
     var error: ErrorState?
 
     /// Matches the Android behavior: the row whose label is "For You"
@@ -22,8 +21,6 @@ class RecommendationsViewModel {
     func loadRecommendations() async {
         if sections.isEmpty {
             isLoading = true
-        } else {
-            isRefreshing = true
         }
         error = nil
 
@@ -37,13 +34,11 @@ class RecommendationsViewModel {
         }
 
         isLoading = false
-        isRefreshing = false
     }
 
     /// Pull-to-refresh variant — keeps existing content on screen while the
     /// network call is in flight so the list doesn't jump back to a spinner.
     func refresh() async {
-        isRefreshing = true
         do {
             let response = try await StartupContentPrefetcher.fetchRecommendations()
             sections = sortedNonEmptySections(from: response.sections)
@@ -51,7 +46,6 @@ class RecommendationsViewModel {
         } catch let err {
             self.error = ErrorState(err)
         }
-        isRefreshing = false
     }
 
     private func sortedNonEmptySections(from raw: [ResolvedSection]) -> [ResolvedSection] {

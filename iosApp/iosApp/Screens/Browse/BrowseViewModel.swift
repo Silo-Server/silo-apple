@@ -5,7 +5,6 @@ import Foundation
 class BrowseViewModel {
     var items: [BrowseItem] = []
     var isLoading = false
-    var isRefreshing = false
     var error: ErrorState?
     var hasMore = true
 
@@ -57,13 +56,10 @@ class BrowseViewModel {
     func loadItems(reset: Bool = false) async {
         if reset {
             generation += 1
-            if !items.isEmpty {
-                isRefreshing = true
-            } else {
+            if items.isEmpty {
                 // Surface the cached page-1 snapshot instantly so the grid
                 // doesn't blank out while the network call runs.
                 hydratePage1FromCache()
-                isRefreshing = !items.isEmpty
             }
             currentPage = 0
             hasMore = true
@@ -194,7 +190,6 @@ class BrowseViewModel {
     private func finishLoading(for completedGeneration: Int) {
         guard completedGeneration == generation else { return }
         isLoading = false
-        isRefreshing = false
     }
 
     private func resolveMediaType(libraryId: Int?, libraryType: String?) async -> BrowseMediaType {

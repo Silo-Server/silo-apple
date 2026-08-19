@@ -19,7 +19,6 @@ private class LibraryCollectionsViewModel {
     /// a single anonymous section synthesized from a flat response.
     var sections: [LibraryCollectionSection] = []
     var isLoading = false
-    var isRefreshing = false
     var error: ErrorState?
 
     var isEmpty: Bool { sections.allSatisfy { $0.collections.isEmpty } }
@@ -32,8 +31,6 @@ private class LibraryCollectionsViewModel {
         }
         if sections.isEmpty {
             isLoading = true
-        } else {
-            isRefreshing = true
         }
         error = nil
 
@@ -49,7 +46,6 @@ private class LibraryCollectionsViewModel {
         }
 
         isLoading = false
-        isRefreshing = false
     }
 }
 

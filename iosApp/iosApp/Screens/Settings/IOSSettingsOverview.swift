@@ -25,10 +25,10 @@ struct IOSSettingsOverview: View {
 
                     SettingsAccountCard(
                         avatar: viewModel.activeProfile?.avatarEmoji,
-                        name: displayName,
-                        subtitle: subtitleLine,
+                        name: viewModel.displayName,
+                        subtitle: viewModel.subtitleLine,
                         isAdministrator: viewModel.userInfo?.isAdmin == true,
-                        action: switchProfile
+                        action: { router.switchProfile() }
                     )
 
                     SettingsSearchField(text: $searchText)
@@ -136,7 +136,7 @@ struct IOSSettingsOverview: View {
     private var playbackSection: some View {
         if matchesPlaybackSection {
             SettingsOverviewSection("Playback") {
-                if matches("playback", "quality", "audio", "dolby vision", "episodes", "skipping") {
+                if matchesPlayback {
                     NavigationLink {
                         PlaybackSettingsView(viewModel: viewModel)
                     } label: {
@@ -163,7 +163,7 @@ struct IOSSettingsOverview: View {
                             subtitle: "Language, behavior, and appearance",
                             systemImage: "captions.bubble.fill",
                             tint: .pink,
-                            value: subtitleLanguageName(viewModel.editorSubtitleLanguage)
+                            value: viewModel.subtitleLanguageName(viewModel.editorSubtitleLanguage)
                         )
                     }
                     .buttonStyle(.plain)
@@ -248,7 +248,7 @@ struct IOSSettingsOverview: View {
                 subtitle: "Installed Silo app version",
                 systemImage: "info.circle.fill",
                 tint: .gray,
-                value: versionString,
+                value: viewModel.versionString,
                 showsChevron: false
             )
 
@@ -282,58 +282,6 @@ struct IOSSettingsOverview: View {
             RoundedRectangle(cornerRadius: 16)
                 .strokeBorder(Color.red.opacity(0.18), lineWidth: 1)
         }
-    }
-
-    private var displayName: String {
-        if let name = viewModel.activeProfile?.name, !name.isEmpty {
-            return name
-        }
-        if let username = viewModel.userInfo?.username, !username.isEmpty {
-            return username
-        }
-        return "Switch Profile"
-    }
-
-    private var subtitleLine: String {
-        let host = serverHost
-        let username = viewModel.userInfo?.username
-        switch (username, host) {
-        case let (user?, host?) where !user.isEmpty && user != displayName:
-            return "\(user) · \(host)"
-        case let (_, host?):
-            return host
-        case let (user?, _) where !user.isEmpty && user != displayName:
-            return user
-        default:
-            return "Tap to switch profile"
-        }
-    }
-
-    private var serverHost: String? {
-        guard let url = URL(string: viewModel.serverUrl), let host = url.host else {
-            return viewModel.serverUrl.isEmpty ? nil : viewModel.serverUrl
-        }
-        return host
-    }
-
-    private func switchProfile() {
-        router.switchProfile()
-    }
-
-    private func subtitleLanguageName(_ tag: String) -> String {
-        if tag == PlaybackPrefSentinel.none || tag.isEmpty { return "None" }
-        return PlaybackLanguageOption.label(forCode: tag)
-    }
-
-    private var versionString: String {
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "1.0"
-        guard let build = info?["CFBundleVersion"] as? String,
-              !build.isEmpty,
-              build != version else {
-            return version
-        }
-        return "\(version) (\(build))"
     }
 
     private var matchesPlayback: Bool {
@@ -370,7 +318,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesAboutSection: Bool {
-        matches("about", "version", versionString, "privacy", "policy", "information")
+        matches("about", "version", viewModel.versionString, "privacy", "policy", "information")
     }
 
     private var matchesSignOut: Bool {

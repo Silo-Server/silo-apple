@@ -21,14 +21,7 @@ struct ServerUnreachablePill: View {
                 .fontWeight(.semibold)
                 .foregroundColor(.siloOnSurface)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay {
-            Capsule()
-                .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
-        }
-        .shadow(color: .black.opacity(0.28), radius: 14, x: 0, y: 8)
+        .siloStatusCapsule()
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Can't reach the server. Showing cached content.")
     }
