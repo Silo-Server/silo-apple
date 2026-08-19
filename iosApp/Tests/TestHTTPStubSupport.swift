@@ -24,6 +24,34 @@ extension URLRequest {
     }
 }
 
+extension URLProtocol {
+    /// Emit a complete stub HTTP response to the URLSession client.
+    func respond(
+        status: Int,
+        body: String,
+        contentType: String = "application/json",
+        headers: [String: String] = [:]
+    ) {
+        var allHeaders = headers
+        allHeaders["Content-Type"] = contentType
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                url: url,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: allHeaders
+              ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !body.isEmpty {
+            client?.urlProtocol(self, didLoad: Data(body.utf8))
+        }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
+
 /// XcodeGen may flatten the fixture tree into the bundle root, so try that
 /// first and fall back to the on-disk directory layout.
 func diagnosticsContractFixtureURL(

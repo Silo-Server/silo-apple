@@ -657,15 +657,7 @@ final class SettingValuesAPITests: XCTestCase {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [SettingsStubProtocol.self]
         let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
-        let sessionExpiredCount = LockedCounter()
-        let observer = NotificationCenter.default.addObserver(
-            forName: .siloSessionExpired,
-            object: nil,
-            queue: nil
-        ) { _ in
-            sessionExpiredCount.increment()
-        }
-        defer { NotificationCenter.default.removeObserver(observer) }
+        let sessionExpiredCount = observeSessionExpiry()
 
         async let scoped = http.requestData(
             method: "GET",
@@ -730,15 +722,7 @@ final class SettingValuesAPITests: XCTestCase {
                 }
             }
         )
-        let sessionExpiredCount = LockedCounter()
-        let observer = NotificationCenter.default.addObserver(
-            forName: .siloSessionExpired,
-            object: nil,
-            queue: nil
-        ) { _ in
-            sessionExpiredCount.increment()
-        }
-        defer { NotificationCenter.default.removeObserver(observer) }
+        let sessionExpiredCount = observeSessionExpiry()
 
         async let scoped: HTTPRawResponse = http.requestData(
             method: "GET",
@@ -753,7 +737,7 @@ final class SettingValuesAPITests: XCTestCase {
         )
 
         defer { SettingsStubProtocol.releaseMixedRefresh() }
-        guard await waitForCounter(ordinaryJoinCount, atLeast: 1) else {
+        guard await waitUntil({ ordinaryJoinCount.value >= 1 }) else {
             return XCTFail("the ordinary 401 never joined the scoped-owned refresh flight")
         }
         SettingsStubProtocol.releaseMixedRefresh()
@@ -783,15 +767,7 @@ final class SettingValuesAPITests: XCTestCase {
 
     func testTransientScopedRefreshFailurePreservesCredentialsWithoutExpiryAndCanRetry() async throws {
         let harness = try await makeRefreshHarness(testName: "TransientRefresh")
-        let sessionExpiredCount = LockedCounter()
-        let observer = NotificationCenter.default.addObserver(
-            forName: .siloSessionExpired,
-            object: nil,
-            queue: nil
-        ) { _ in
-            sessionExpiredCount.increment()
-        }
-        defer { NotificationCenter.default.removeObserver(observer) }
+        let sessionExpiredCount = observeSessionExpiry()
 
         for status in [429, 503] {
             SettingsStubProtocol.reset(mode: .mixedRefreshScopedTransientFailure(status: status))
@@ -850,15 +826,7 @@ final class SettingValuesAPITests: XCTestCase {
     func testMalformedSuccessfulScopedRefreshDoesNotMarkServerUnreachable() async throws {
         SettingsStubProtocol.reset(mode: .mixedRefreshScopedMalformedSuccess)
         let harness = try await makeRefreshHarness(testName: "MalformedRefresh")
-        let sessionExpiredCount = LockedCounter()
-        let observer = NotificationCenter.default.addObserver(
-            forName: .siloSessionExpired,
-            object: nil,
-            queue: nil
-        ) { _ in
-            sessionExpiredCount.increment()
-        }
-        defer { NotificationCenter.default.removeObserver(observer) }
+        let sessionExpiredCount = observeSessionExpiry()
         await MainActor.run {
             ConnectionMonitor.shared.noteServerResponded()
         }
@@ -927,7 +895,7 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v1/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryUnauthorized() else {
+        guard await waitUntil({ SettingsStubProtocol.hasPendingOrdinaryUnauthorized() }) else {
             SettingsStubProtocol.releaseOrdinaryUnauthorized()
             return XCTFail("ordinary request did not reach the delayed 401")
         }
@@ -968,7 +936,7 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v1/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryUnauthorized() else {
+        guard await waitUntil({ SettingsStubProtocol.hasPendingOrdinaryUnauthorized() }) else {
             SettingsStubProtocol.releaseOrdinaryUnauthorized()
             return XCTFail("ordinary request did not reach the delayed 401")
         }
@@ -1007,7 +975,7 @@ final class SettingValuesAPITests: XCTestCase {
                 requestIdentity: harness.identity
             )
         }
-        guard await waitForPendingOrdinaryUnauthorized() else {
+        guard await waitUntil({ SettingsStubProtocol.hasPendingOrdinaryUnauthorized() }) else {
             SettingsStubProtocol.releaseOrdinaryUnauthorized()
             return XCTFail("scoped request did not reach the delayed 401")
         }
@@ -1046,7 +1014,7 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v1/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryUnauthorized() else {
+        guard await waitUntil({ SettingsStubProtocol.hasPendingOrdinaryUnauthorized() }) else {
             SettingsStubProtocol.releaseOrdinaryUnauthorized()
             return XCTFail("ordinary request did not reach the delayed 401")
         }
@@ -1079,7 +1047,7 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v1/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryUnauthorized() else {
+        guard await waitUntil({ SettingsStubProtocol.hasPendingOrdinaryUnauthorized() }) else {
             SettingsStubProtocol.releaseOrdinaryUnauthorized()
             return XCTFail("persistent request did not reach the delayed 401")
         }
@@ -1134,7 +1102,7 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v1/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryUnauthorized() else {
+        guard await waitUntil({ SettingsStubProtocol.hasPendingOrdinaryUnauthorized() }) else {
             SettingsStubProtocol.releaseOrdinaryUnauthorized()
             return XCTFail("temporary request did not reach the delayed 401")
         }
@@ -1549,7 +1517,7 @@ final class SettingValuesAPITests: XCTestCase {
         // Model an old end already enumerating URLSession work when a
         // replacement activation begins its own cancellation pass.
         let oldEnd = Task { await http.cancelInFlightRequests() }
-        guard await waitForCancellationPass(barrier, count: 1) else {
+        guard await waitUntil({ await barrier.entryCount >= 1 }) else {
             return XCTFail("old-generation cancellation pass did not start")
         }
         let replacement = Task {
@@ -1575,7 +1543,7 @@ final class SettingValuesAPITests: XCTestCase {
 
         await barrier.release(pass: 1)
         await oldEnd.value
-        guard await waitForCancellationPass(barrier, count: 2) else {
+        guard await waitUntil({ await barrier.entryCount >= 2 }) else {
             return XCTFail("replacement cancellation pass did not start after the old pass")
         }
         XCTAssertEqual(
@@ -1612,7 +1580,7 @@ final class SettingValuesAPITests: XCTestCase {
                 requestIdentity: harness.identity
             )
         }
-        guard await waitForCancellationPass(barrier, count: 1) else {
+        guard await waitUntil({ await barrier.entryCount >= 1 }) else {
             return XCTFail("scoped request did not reach its post-refresh retry boundary")
         }
         await harness.tokenStore.clearTokens()
@@ -1675,7 +1643,7 @@ final class SettingValuesAPITests: XCTestCase {
             }
             return false
         }
-        guard await waitForCancellationPass(barrier, count: 1) else {
+        guard await waitUntil({ await barrier.entryCount >= 1 }) else {
             return XCTFail("replacement was not installed before cancellation")
         }
         activation.cancel()
@@ -1707,7 +1675,7 @@ final class SettingValuesAPITests: XCTestCase {
         )
 
         let cancellation = Task { await http.cancelInFlightRequests() }
-        guard await waitForCancellationPass(barrier, count: 1) else {
+        guard await waitUntil({ await barrier.entryCount >= 1 }) else {
             return XCTFail("cancellation did not pause between session snapshots")
         }
         do {
@@ -1745,7 +1713,7 @@ final class SettingValuesAPITests: XCTestCase {
         }
 
         let cancellation = Task { await http.cancelInFlightRequests() }
-        guard await waitForCancellationPass(cancellationBarrier, count: 1) else {
+        guard await waitUntil({ await cancellationBarrier.entryCount >= 1 }) else {
             await http.endIdentityTransition(lease)
             return XCTFail("cancellation pass did not reach its barrier")
         }
@@ -1761,7 +1729,7 @@ final class SettingValuesAPITests: XCTestCase {
             hydrationStarts.increment()
             return true
         }
-        guard await waitForRequestDispatchWaiter(http) else {
+        guard await waitUntil({ await http.pendingRequestDispatchWaiterCount() > 0 }) else {
             await cancellationBarrier.release(pass: 1)
             await cancellation.value
             await http.endIdentityTransition(lease)
@@ -1798,7 +1766,7 @@ final class SettingValuesAPITests: XCTestCase {
             hydrationStarts.increment()
             return true
         }
-        guard await waitForRequestDispatchWaiter(harness.http) else {
+        guard await waitUntil({ await harness.http.pendingRequestDispatchWaiterCount() > 0 }) else {
             await harness.http.endIdentityTransition(lease)
             return XCTFail("hydration did not queue behind the transition")
         }
@@ -1832,7 +1800,7 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v1/settings/contract/capabilities"
             )
         }
-        guard await waitForCancellationPass(barrier, count: 1) else {
+        guard await waitUntil({ await barrier.entryCount >= 1 }) else {
             return XCTFail("request did not pause before credential capture")
         }
         guard let lease = await http.beginIdentityTransition() else {
@@ -1875,7 +1843,7 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v1/settings/contract/capabilities"
             )
         }
-        guard await waitForCancellationPass(barrier, count: 1) else {
+        guard await waitUntil({ await barrier.entryCount >= 1 }) else {
             return XCTFail("request did not pause after URLSession completed")
         }
         guard let lease = await http.beginIdentityTransition() else {
@@ -1942,7 +1910,7 @@ final class SettingValuesAPITests: XCTestCase {
             await harness.http.endIdentityTransition(lease)
             return true
         }
-        guard await waitForIdentityTransitionWaiter(harness.http) else {
+        guard await waitUntil({ await harness.http.pendingIdentityTransitionCount() > 0 }) else {
             await harness.http.endIdentityTransition(blockingLease)
             return XCTFail("session install did not queue behind the active transition")
         }
@@ -1981,7 +1949,7 @@ final class SettingValuesAPITests: XCTestCase {
                 expectedAccount: account
             )
         }
-        guard await waitForCancellationPass(barrier, count: 1) else {
+        guard await waitUntil({ await barrier.entryCount >= 1 }) else {
             return XCTFail("logout did not pause before its bound account capture")
         }
         guard let lease = await http.beginIdentityTransition() else {
@@ -2011,15 +1979,7 @@ final class SettingValuesAPITests: XCTestCase {
     func testOrdinaryRefreshLateSuccessCannotWriteAcrossServerSwitch() async throws {
         SettingsStubProtocol.reset(mode: .ordinaryRefreshDelayed)
         let harness = try await makeRefreshHarness(testName: "RefreshServerSwitch")
-        let sessionExpiredCount = LockedCounter()
-        let observer = NotificationCenter.default.addObserver(
-            forName: .siloSessionExpired,
-            object: nil,
-            queue: nil
-        ) { _ in
-            sessionExpiredCount.increment()
-        }
-        defer { NotificationCenter.default.removeObserver(observer) }
+        let sessionExpiredCount = observeSessionExpiry()
 
         let requestTask = Task {
             try await harness.http.requestData(
@@ -2027,7 +1987,7 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v1/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryRefresh() else {
+        guard await waitUntil({ SettingsStubProtocol.hasPendingOrdinaryRefresh() }) else {
             SettingsStubProtocol.releaseOrdinaryRefresh(status: 503)
             return XCTFail("ordinary refresh did not reach the delayed response")
         }
@@ -2060,15 +2020,7 @@ final class SettingValuesAPITests: XCTestCase {
     func testOrdinaryRefreshLateSuccessCannotRestoreSignedOutSession() async throws {
         SettingsStubProtocol.reset(mode: .ordinaryRefreshDelayed)
         let harness = try await makeRefreshHarness(testName: "RefreshSignOut")
-        let sessionExpiredCount = LockedCounter()
-        let observer = NotificationCenter.default.addObserver(
-            forName: .siloSessionExpired,
-            object: nil,
-            queue: nil
-        ) { _ in
-            sessionExpiredCount.increment()
-        }
-        defer { NotificationCenter.default.removeObserver(observer) }
+        let sessionExpiredCount = observeSessionExpiry()
 
         let requestTask = Task {
             try await harness.http.requestData(
@@ -2076,7 +2028,7 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v1/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryRefresh() else {
+        guard await waitUntil({ SettingsStubProtocol.hasPendingOrdinaryRefresh() }) else {
             SettingsStubProtocol.releaseOrdinaryRefresh(status: 503)
             return XCTFail("ordinary refresh did not reach the delayed response")
         }
@@ -2100,15 +2052,7 @@ final class SettingValuesAPITests: XCTestCase {
     func testOrdinaryRejectedRefreshCannotClearNewerCredentials() async throws {
         SettingsStubProtocol.reset(mode: .ordinaryRefreshDelayed)
         let harness = try await makeRefreshHarness(testName: "RefreshNewerToken")
-        let sessionExpiredCount = LockedCounter()
-        let observer = NotificationCenter.default.addObserver(
-            forName: .siloSessionExpired,
-            object: nil,
-            queue: nil
-        ) { _ in
-            sessionExpiredCount.increment()
-        }
-        defer { NotificationCenter.default.removeObserver(observer) }
+        let sessionExpiredCount = observeSessionExpiry()
 
         let requestTask = Task {
             try await harness.http.requestData(
@@ -2116,7 +2060,7 @@ final class SettingValuesAPITests: XCTestCase {
                 path: "/api/v1/settings/contract/capabilities"
             )
         }
-        guard await waitForPendingOrdinaryRefresh() else {
+        guard await waitUntil({ SettingsStubProtocol.hasPendingOrdinaryRefresh() }) else {
             SettingsStubProtocol.releaseOrdinaryRefresh(status: 503)
             return XCTFail("ordinary refresh did not reach the delayed response")
         }
@@ -2380,73 +2324,17 @@ final class SettingValuesAPITests: XCTestCase {
         return (tokenStore, identity, http)
     }
 
-    private func waitForPendingOrdinaryRefresh() async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if SettingsStubProtocol.hasPendingOrdinaryRefresh() {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
+    private func observeSessionExpiry() -> LockedCounter {
+        let sessionExpiredCount = LockedCounter()
+        let observer = NotificationCenter.default.addObserver(
+            forName: .siloSessionExpired,
+            object: nil,
+            queue: nil
+        ) { _ in
+            sessionExpiredCount.increment()
         }
-        return false
-    }
-
-    private func waitForPendingOrdinaryUnauthorized() async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if SettingsStubProtocol.hasPendingOrdinaryUnauthorized() {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
-    }
-
-    private func waitForCounter(_ counter: LockedCounter, atLeast target: Int) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if counter.value >= target {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
-    }
-
-    private func waitForCancellationPass(
-        _ barrier: SerializedCancellationPassBarrier,
-        count: Int
-    ) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if await barrier.entryCount >= count {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
-    }
-
-    private func waitForIdentityTransitionWaiter(_ http: HTTPClient) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if await http.pendingIdentityTransitionCount() > 0 {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
-    }
-
-    private func waitForRequestDispatchWaiter(_ http: HTTPClient) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ContinuousClock.now < deadline {
-            if await http.pendingRequestDispatchWaiterCount() > 0 {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        addTeardownBlock { NotificationCenter.default.removeObserver(observer) }
+        return sessionExpiredCount
     }
 }
 
@@ -2609,7 +2497,7 @@ final class SettingsStubProtocol: URLProtocol {
             path: components?.path ?? "",
             query: query,
             headers: Self.lowercasedHeaders(request.allHTTPHeaderFields ?? [:]),
-            body: Self.requestBody(of: request)
+            body: request.drainedHTTPBody
         )
         Self.mutate {
             $0.lastRequest = recorded
@@ -2938,50 +2826,6 @@ final class SettingsStubProtocol: URLProtocol {
             normalized[name.lowercased()] = value
         }
         return normalized
-    }
-
-    /// URLSession surfaces outgoing bodies to URLProtocol as a stream, not
-    /// `httpBody`; drain it.
-    private static func requestBody(of request: URLRequest) -> Data? {
-        if let body = request.httpBody {
-            return body
-        }
-        guard let stream = request.httpBodyStream else {
-            return nil
-        }
-        stream.open()
-        defer { stream.close() }
-        var data = Data()
-        let bufferSize = 64 * 1024
-        var buffer = [UInt8](repeating: 0, count: bufferSize)
-        while stream.hasBytesAvailable {
-            let read = stream.read(&buffer, maxLength: bufferSize)
-            guard read > 0 else { break }
-            data.append(buffer, count: read)
-        }
-        return data
-    }
-
-    private func respond(
-        status: Int,
-        body: String,
-        contentType: String = "application/json",
-        headers: [String: String] = [:]
-    ) {
-        guard let url = request.url, let client else { return }
-        var allHeaders = headers
-        allHeaders["Content-Type"] = contentType
-        let response = HTTPURLResponse(
-            url: url,
-            statusCode: status,
-            httpVersion: "HTTP/1.1",
-            headerFields: allHeaders
-        )!
-        client.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if !body.isEmpty {
-            client.urlProtocol(self, didLoad: Data(body.utf8))
-        }
-        client.urlProtocolDidFinishLoading(self)
     }
 }
 
