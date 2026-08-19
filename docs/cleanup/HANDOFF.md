@@ -28,7 +28,7 @@ cutover**, no remote kill-switch, silo-server PR #673 closed unmerged); the suit
 
 | Item | State |
 |---|---|
-| Branch / PR | `player/architecture-remediation` @ `e893967` (+ docs commits after it), pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN`, CodeRabbit green |
+| Branch / PR | `player/architecture-remediation` @ `96cbb3d`, pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN`, CodeRabbit green |
 | Size vs `main` | ~120 commits, ~510 files, roughly +23k / −29k raw |
 | Suite (iOS `SiloTests`, only test target) | `Executed 1520 tests, with 3 tests skipped and 0 failures (0 unexpected)` — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
 | Builds | `Silo` (iOS), `SiloTV` (tvOS), `SiloMac` all green at the tip, `CODE_SIGNING_ALLOWED=NO` |
@@ -62,6 +62,16 @@ cutover**, no remote kill-switch, silo-server PR #673 closed unmerged); the suit
    **1520 / 0 failures / 3 skipped**; plus the round-5 deferred tail (`displayCapabilities:` plumbing,
    `VideoTrack.colorSpace/.colorPrimaries`, `RangeOriginStub` fake merge, spill-reason rename; net −385).
    Premise corrections recorded in backlog §0.
+8. **Player-start UX + display-gate hardening** (2026-08-18 evening; owner-directed, iterated on the Living
+   Room Apple TV): the initial-video-display gate became a blocker ladder (frame readiness → display-mode
+   recheck → **bridged-audio anchor** → sustained clock advance, 0.5 s on display-criteria starts) with a
+   re-arming fallback tick, a 15 s absolute backstop and full `cmpLog` observability (it was `Logger`-only —
+   invisible in `devicectl` captures); the resume silent-video gap is fixed (unmute holds for the FLAC bridge
+   anchor — owner-verified). UX: the full-screen loading wheel and every in-controls buffering spinner are
+   replaced by one top-right **"Buffering" capsule** (`PlayerBufferingCapsule.swift`, Android TV parity;
+   survives Up Next like Android's chip, suppressed only for error UI). Residual, owner-accepted: DV starts
+   still *read* as two steps — working explanation is the DV HDMI transition blacking out the panel (capsule
+   included) mid-start; not app-addressable. Suite green at the capsule commit; later commits view/doc-only.
 
 ## 3. How the cleanup loop runs (the machinery)
 
