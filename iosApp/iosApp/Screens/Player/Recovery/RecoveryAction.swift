@@ -7,9 +7,20 @@ import Foundation
 // control-plane types reference it: `Effect.runRecovery(RecoveryAction, LoadID)`
 // and `PlayerEvent.recovery(RecoveryAction, LoadID)` are binding deliverables
 // of that package and cannot be declared without it, and the two branches are
-// cut from the same base. On merge, take wave 1B's version of this file and
-// delete this one; `PlaybackReducer` switches over the cases below and needs
-// no change as long as they keep the shapes design §2.4 specifies.
+// cut from the same base.
+//
+// MERGE ORDER (binding — an add/add conflict resolved carelessly leaves two
+// `enum RecoveryAction` declarations and the build fails on redeclaration):
+//   1. merge wave 1B (`stage2/s2w1-recovery-policy`) first;
+//   2. merge wave 1E (`stage2/s2w1-reducer-types`) and resolve
+//      `iosApp/iosApp/Screens/Player/Recovery/RecoveryAction.swift` in favour
+//      of 1B's version — take theirs wholesale, delete this copy;
+//   3. verify before building:
+//      `grep -rc "enum RecoveryAction" iosApp/iosApp | awk -F: '{n+=$2} END {print n}'`
+//      must print 1.
+// 1B nests `RouteFallback` inside `RecoveryAction` where this copy declares it
+// top-level; `PlaybackReducer` and `PlaybackReducerTests` only ever spell the
+// cases with leading-dot syntax, so taking 1B's file compiles unchanged.
 
 /// What a recovery decision asks the rest of the player to do.
 ///

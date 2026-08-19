@@ -152,6 +152,31 @@ final class PlaybackReducerTests: XCTestCase {
         )
     }
 
+    private func makePreparing(
+        loadID: LoadID = LoadID(),
+        identity: SessionIdentity? = nil,
+        phase: Preparing.Phase = .startingEngine,
+        options: LoadOptions = LoadOptions(),
+        adoption: PlaybackAdoption = .freshLoad(.userInitiated),
+        plan: ExecutablePlan? = nil,
+        carriedPosition: Double = 0,
+        interruption: Playing.Interruption? = nil
+    ) -> PlaybackState {
+        .preparing(
+            Preparing(
+                loadID: loadID,
+                identity: identity ?? makeIdentity(),
+                phase: phase,
+                request: makeRequest(),
+                options: options,
+                adoption: adoption,
+                plan: plan ?? makePlan(),
+                carriedPosition: carriedPosition,
+                interruption: interruption
+            )
+        )
+    }
+
     private func playing(_ state: PlaybackState) -> Playing? {
         guard case .playing(let playing) = state else { return nil }
         return playing
@@ -285,17 +310,7 @@ final class PlaybackReducerTests: XCTestCase {
         let loadID = LoadID()
         let identity = makeIdentity()
         let plan = makePlan()
-        let state = PlaybackState.preparing(
-            Preparing(
-                loadID: loadID,
-                identity: identity,
-                phase: .startingEngine,
-                request: makeRequest(),
-                options: LoadOptions(),
-                adoption: .freshLoad(.userInitiated),
-                plan: plan
-            )
-        )
+        let state = makePreparing(loadID: loadID, identity: identity, plan: plan)
 
         let (next, effects) = PlaybackReducer.reduce(
             state,
@@ -321,17 +336,7 @@ final class PlaybackReducerTests: XCTestCase {
     func testFileLoadedReportRuleFollowsTheAdoptionOrigin() {
         func effects(for adoption: PlaybackAdoption) -> [Effect] {
             let loadID = LoadID()
-            let state = PlaybackState.preparing(
-                Preparing(
-                    loadID: loadID,
-                    identity: makeIdentity(),
-                    phase: .startingEngine,
-                    request: makeRequest(),
-                    options: LoadOptions(),
-                    adoption: adoption,
-                    plan: makePlan()
-                )
-            )
+            let state = makePreparing(loadID: loadID, adoption: adoption)
             return PlaybackReducer.reduce(
                 state,
                 event: .engine(.fileLoaded(reason: "status_ready"), loadID),
@@ -389,7 +394,12 @@ final class PlaybackReducerTests: XCTestCase {
     /// A renewal in flight is about to rewrite the same session, so it refuses
     /// a replan too (today's two `*SessionId` echoes, now one sub-state).
     func testReplanWhileRenewingSourceIsRefused() {
-        let renewal = SourceRenewal(reason: "progress", observedPosition: 100, startedAt: now)
+        let renewal = SourceRenewal(
+            reason: "progress",
+            observedPosition: 100,
+            startedAt: now,
+            issuedFor: makeIdentity()
+        )
         let state = makePlaying(sub: .renewingSource(renewal))
         let (next, effects) = PlaybackReducer.reduce(state, intent: .changeQuality("720p"), now: now)
         XCTAssertEqual(next, state)
@@ -591,6 +601,49 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertTrue(effects.isEmpty)
     }
 
+    // MARK: - Time reports
+
+    /// PVM:1228-1235, immediately ahead of the seek filter: outside an explicit
+    /// seek playback time is monotonic, so a report that jumps backwards is a
+    /// replacement item's anchor frame rather than a playhead. Without it a
+    /// loopback reload would drag the scrubber — and the progress reporter —
+    /// backwards, which is the bug the predicate was added for.
+    func testBackwardTimeReportsAreDroppedUnlessASeekIsInFlight() {
+        let loadID = LoadID()
+        let steady = makePlaying(loadID: loadID)
+
+        let (afterBackwards, backwardsEffects) = PlaybackReducer.reduce(
+            steady,
+            event: .engine(.time(seconds: 12), loadID),
+            now: now
+        )
+        XCTAssertEqual(afterBackwards, steady, "an anchor frame must not move the scrubber")
+        XCTAssertTrue(backwardsEffects.isEmpty)
+
+        // Inside the predicate's 0.75 s tolerance the report still lands.
+        let (afterJitter, _) = PlaybackReducer.reduce(
+            steady,
+            event: .engine(.time(seconds: 99.5), loadID),
+            now: now
+        )
+        XCTAssertEqual(playing(afterJitter)?.transport.positionSeconds, 99.5)
+
+        // A seek in flight disables the rule — that is what makes a backwards
+        // seek land at all.
+        let (seeking, _) = PlaybackReducer.reduce(
+            steady,
+            intent: .seek(targetSeconds: 10, origin: .user),
+            now: now
+        )
+        let (landed, _) = PlaybackReducer.reduce(
+            seeking,
+            event: .engine(.time(seconds: 12), loadID),
+            now: now
+        )
+        XCTAssertEqual(playing(landed)?.sub, .steady)
+        XCTAssertEqual(playing(landed)?.transport.positionSeconds, 12)
+    }
+
     // MARK: - End of file
 
     func testEndOfFileEntersTheEndedSubStateAndPauses() {
@@ -619,6 +672,33 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertTrue(timeEffects.isEmpty)
     }
 
+    /// `handleEndOfFile` PVM:3344-3347: EOF is ignored while server-outage
+    /// recovery is active. The recovery keeps the same `LoadID` while it
+    /// disposes the engine, so the teardown's own EOF passes the identity
+    /// guard — accepting it would abort the recovery and strand the player on
+    /// the postroll.
+    func testEndOfFileIsIgnoredWhileServerOutageRecoveryOwnsTheLoad() {
+        let loadID = LoadID()
+        for step in [RecoveryStep.recoveringFromServerOutage, .waitingForServerReady] {
+            let state = makePlaying(loadID: loadID, sub: .recovering(step))
+            let (next, effects) = PlaybackReducer.reduce(
+                state,
+                event: .engine(.endOfFile, loadID),
+                now: now
+            )
+            XCTAssertEqual(next, state, "\(step) must survive a late EOF")
+            XCTAssertTrue(effects.isEmpty)
+        }
+
+        // Every other in-route recovery still ends naturally.
+        let (ended, _) = PlaybackReducer.reduce(
+            makePlaying(loadID: loadID, sub: .recovering(.reloadingItem)),
+            event: .engine(.endOfFile, loadID),
+            now: now
+        )
+        XCTAssertEqual(playing(ended)?.sub, .ended)
+    }
+
     /// The near-end rung reaches the same terminal-but-clean state.
     func testTreatAsNaturalEndEndsTheLoad() {
         let loadID = LoadID()
@@ -644,12 +724,13 @@ final class PlaybackReducerTests: XCTestCase {
             now: now
         )
 
-        guard case .failed(let recorded, let failedLoadID, let request) = next else {
+        guard case .failed(let recorded, let failedLoadID, let request, let position) = next else {
             return XCTFail("expected failed")
         }
         XCTAssertEqual(recorded, failure)
         XCTAssertEqual(failedLoadID, loadID)
         XCTAssertEqual(request, makeRequest(), "retry replays the last request")
+        XCTAssertEqual(position, 100, "finalizeTerminalPlaybackError keeps currentTime")
         XCTAssertTrue(effects.contains(.disposeEngine(loadID)))
         XCTAssertTrue(effects.contains(.stopSession(identity, position: 100, isPaused: true)))
         guard case .publish(let presentation) = effects.last else {
@@ -682,8 +763,32 @@ final class PlaybackReducerTests: XCTestCase {
             ),
             now: now
         )
-        guard case .failed(let failure, _, _) = next else { return XCTFail("expected failed") }
+        guard case .failed(let failure, _, _, _) = next else { return XCTFail("expected failed") }
         XCTAssertEqual(failure.legacyMessage, "No further playback plans are available.")
+    }
+
+    /// `retry()` PVM:4557-4566 replays the last request at `currentTime`,
+    /// which `finalizeTerminalPlaybackError` deliberately keeps — Retry must
+    /// resume where playback died, not restart the title.
+    func testRetryResumesWherePlaybackDied() {
+        let loadID = LoadID()
+        let (failed, _) = PlaybackReducer.reduce(
+            makePlaying(loadID: loadID),
+            event: .recovery(.fail(PlaybackFailure(legacyMessage: "boom")), loadID),
+            now: now
+        )
+
+        let (next, effects) = PlaybackReducer.reduce(failed, intent: .retry, now: now)
+
+        guard case .preparing(let preparing) = next else { return XCTFail("expected preparing") }
+        XCTAssertEqual(preparing.request, makeRequest())
+        XCTAssertEqual(preparing.options.progressPosition, 100)
+        XCTAssertEqual(preparing.options.resumePosition, 100)
+        XCTAssertTrue(preparing.options.allowNearEndResume)
+        XCTAssertTrue(
+            effects.contains(.startSession(makeRequest(), preparing.options, preparing.loadID))
+        )
+        XCTAssertEqual(PlaybackReducer.presentation(for: failed).currentTime, 100)
     }
 
     // MARK: - Recovery actions
@@ -728,8 +833,18 @@ final class PlaybackReducerTests: XCTestCase {
         let rebuild = run(.rebuildLocalSession(atMediaSeconds: 120, reason: "loopback_starvation"))
         XCTAssertEqual(playing(rebuild.0)?.sub, .recovering(.rebuildingLocalSession))
 
+        // `attemptProtocolV3Replan` PVM:1614-1616: heartbeat off, overlay on,
+        // then the round trip — in that order.
         let replan = run(.requestServerReplan(classification: "player_error", message: "boom"))
-        XCTAssertEqual(replan.1, [
+        XCTAssertEqual(replan.1.count, 3)
+        XCTAssertEqual(replan.1.first, .cancelTimer(.progress))
+        guard case .publish(let replanPresentation) = replan.1[1] else {
+            return XCTFail("expected the loading publish")
+        }
+        XCTAssertTrue(replanPresentation.isLoading)
+        XCTAssertFalse(replanPresentation.isBuffering, "setBuffering(false, cause: \"replan\")")
+        XCTAssertEqual(
+            replan.1.last,
             .replan(
                 ReplanIntent(
                     kind: .serverReplan,
@@ -738,8 +853,8 @@ final class PlaybackReducerTests: XCTestCase {
                     message: "boom"
                 ),
                 identity
-            ),
-        ])
+            )
+        )
         guard case .replanning = playing(replan.0)?.sub else {
             return XCTFail("expected the replanning sub-state")
         }
@@ -747,7 +862,12 @@ final class PlaybackReducerTests: XCTestCase {
         let renew = run(.renewSourceInBackground(reason: "progress"))
         XCTAssertEqual(renew.1, [
             .renewSource(
-                SourceRenewal(reason: "progress", observedPosition: 100, startedAt: now),
+                SourceRenewal(
+                    reason: "progress",
+                    observedPosition: 100,
+                    startedAt: now,
+                    issuedFor: identity
+                ),
                 identity
             ),
         ])
@@ -760,7 +880,9 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertEqual(playing(routeFallback.0)?.sub, .recovering(.switchingRoute))
 
         let serverHLS = run(.switchRoute(.serverHLS(classification: "silo_loopback_failed")))
-        XCTAssertEqual(serverHLS.1, [
+        XCTAssertEqual(serverHLS.1.first, .cancelTimer(.progress))
+        XCTAssertEqual(
+            serverHLS.1.last,
             .replan(
                 ReplanIntent(
                     kind: .serverReplan,
@@ -769,8 +891,8 @@ final class PlaybackReducerTests: XCTestCase {
                     message: "silo_loopback_failed"
                 ),
                 identity
-            ),
-        ])
+            )
+        )
 
         let waitForServer = run(.waitForServerReady(probeAfter: .seconds(2)))
         XCTAssertEqual(
@@ -866,6 +988,45 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertTrue(effects.contains(.disposeEngine(loadID)))
     }
 
+    /// The one mutation that rewrites `Playing.identity` needs its own guard:
+    /// a renewal mints a new server session by definition, so
+    /// `belongsToSameSession` cannot be it. PVM:4123-4130 re-checks
+    /// `activePlaybackSessionId == staleSessionId` instead, which is the
+    /// identity the renewal was issued against.
+    func testRenewalAnswerIsGuardedByTheIdentityItWasIssuedAgainst() throws {
+        let loadID = LoadID()
+        let identity = makeIdentity()
+        let (renewing, _) = PlaybackReducer.reduce(
+            makePlaying(loadID: loadID, identity: identity),
+            event: .recovery(.renewSourceInBackground(reason: "progress"), loadID),
+            now: now
+        )
+        let renewedIdentity = makeIdentity(session: "session-2", attempt: "apple:attempt-2")
+
+        let (stale, staleEffects) = PlaybackReducer.reduce(
+            renewing,
+            event: .session(
+                .renewed(
+                    try makePreparedRef(),
+                    replacing: makeIdentity(session: "session-0", attempt: "apple:attempt-0")
+                ),
+                renewedIdentity
+            ),
+            now: now
+        )
+        XCTAssertEqual(stale, renewing, "an answer to a superseded renewal never lands")
+        XCTAssertTrue(staleEffects.isEmpty)
+
+        let (adopted, adoptedEffects) = PlaybackReducer.reduce(
+            renewing,
+            event: .session(.renewed(try makePreparedRef(), replacing: identity), renewedIdentity),
+            now: now
+        )
+        XCTAssertEqual(playing(adopted)?.identity, renewedIdentity)
+        XCTAssertEqual(playing(adopted)?.sub, .steady)
+        XCTAssertTrue(adoptedEffects.isEmpty)
+    }
+
     /// A recovery decision for a superseded load never lands.
     func testRecoveryForASupersededLoadIsIgnored() {
         let state = makePlaying()
@@ -906,14 +1067,14 @@ final class PlaybackReducerTests: XCTestCase {
 
         let pip = makePlaying(
             loadID: loadID,
-            transport: TransportState(positionSeconds: 100, isPictureInPictureActive: true)
+            transport: TransportState(positionSeconds: 100, isPictureInPictureEngaged: true)
         )
         let (pipNext, pipEffects) = PlaybackReducer.reduce(
             pip,
             intent: .scenePhase(.background),
             now: now
         )
-        XCTAssertEqual(pipNext, pip, "PiP keeps its floating window")
+        XCTAssertEqual(pipNext, pip, "PiP (engaged, i.e. active or transitioning) keeps its window")
         XCTAssertTrue(pipEffects.isEmpty)
         #elseif os(macOS)
         XCTAssertEqual(effects, [.transport(.pause, loadID)])
@@ -940,6 +1101,123 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertEqual(next, state)
         XCTAssertTrue(effects.isEmpty)
         #endif
+    }
+
+    /// Backgrounding mid-replan must resume the live playhead, not 0.
+    /// `makeSuspendedPlaybackContext` (PVM:3652) snapshots `currentTime`, and
+    /// neither `resetPublishedLoadState` nor a replan clears it, so the
+    /// replacement `Preparing` carries it.
+    func testSuspendDuringAReplanKeepsTheLivePlayhead() throws {
+        let loadID = LoadID()
+        let state = makePlaying(
+            loadID: loadID,
+            transport: TransportState(positionSeconds: 617, durationSeconds: 1000)
+        )
+        let (replanning, _) = PlaybackReducer.reduce(
+            state,
+            intent: .changeQuality("1080p"),
+            now: now
+        )
+        let (preparing, _) = PlaybackReducer.reduce(
+            replanning,
+            event: .session(.replanned(try makePreparedRef(), makePlan()), makeIdentity()),
+            now: now
+        )
+
+        let (next, _) = PlaybackReducer.reduce(preparing, intent: .scenePhase(.background), now: now)
+
+        #if os(tvOS)
+        guard case .suspended(let context) = next else { return XCTFail("expected suspended") }
+        XCTAssertEqual(context.resumePosition, 617)
+        XCTAssertEqual(context.request, makeRequest())
+        #else
+        XCTAssertEqual(next, preparing, "only tvOS suspends on background")
+        #endif
+    }
+
+    /// `suspendForBackground` (PVM:7592-7594) needs only `lastLoadRequest`,
+    /// which the terminal path keeps — so tvOS suspends from the error screen
+    /// too, and the wake path (PVM:4720-4724) awaits an explicit resume. The
+    /// failure rides on the context so the projection keeps publishing it.
+    func testSuspendFromTheErrorScreenKeepsTheRequestAndTheFailure() {
+        let loadID = LoadID()
+        let failure = PlaybackFailure(legacyMessage: "The stream could not be played.")
+        let (failed, _) = PlaybackReducer.reduce(
+            makePlaying(loadID: loadID),
+            event: .recovery(.fail(failure), loadID),
+            now: now
+        )
+
+        let (next, _) = PlaybackReducer.reduce(failed, intent: .scenePhase(.background), now: now)
+
+        #if os(tvOS)
+        guard case .suspended(let context) = next else { return XCTFail("expected suspended") }
+        XCTAssertEqual(context.request, makeRequest())
+        XCTAssertEqual(context.resumePosition, 100)
+        XCTAssertEqual(context.failure, failure)
+        XCTAssertEqual(PlaybackReducer.presentation(for: next).error, failure.legacyMessage)
+        #else
+        XCTAssertEqual(next, failed, "only tvOS suspends on background")
+        #endif
+    }
+
+    /// `preserveInterruptionState` has to actually preserve it: the pending
+    /// interruption rides the recovery load (PVM:3691-3693) so the first
+    /// forward time report can complete it (PVM:3976-3996). Without the slot
+    /// the completion could never fire and the loading overlay would stick.
+    func testPreservedInterruptionSurvivesTheRecoveryLoadAndCompletes() throws {
+        let loadID = LoadID()
+        let state = makePlaying(
+            loadID: loadID,
+            interruption: Playing.Interruption(
+                wasPlaying: true,
+                positionSeconds: 100,
+                recoveryDeadline: now,
+                didAutoRecover: false,
+                isPending: true
+            )
+        )
+
+        let (loading, _) = PlaybackReducer.reduce(
+            state,
+            event: .recovery(.autoRecoverInterruption, loadID),
+            now: now
+        )
+        guard case .preparing(let preparing) = loading else { return XCTFail("expected preparing") }
+        XCTAssertTrue(preparing.options.preserveInterruptionState)
+        XCTAssertEqual(preparing.interruption?.didAutoRecover, true)
+
+        let (prepared, _) = PlaybackReducer.reduce(
+            loading,
+            event: .session(
+                .prepared(try makePreparedRef(), makePlan(), for: preparing.loadID),
+                makeIdentity()
+            ),
+            now: now
+        )
+        let (playingAgain, _) = PlaybackReducer.reduce(
+            prepared,
+            event: .engine(.fileLoaded(reason: "status_ready"), preparing.loadID),
+            now: now
+        )
+        XCTAssertEqual(playing(playingAgain)?.interruption?.isPending, true)
+
+        let (completed, effects) = PlaybackReducer.reduce(
+            playingAgain,
+            event: .engine(.time(seconds: 100.2), preparing.loadID),
+            now: now
+        )
+        XCTAssertNil(playing(completed)?.interruption)
+        XCTAssertTrue(effects.contains(.cancelTimer(.interruptionRecovery)))
+
+        // A load that does not preserve it drops it, as `beginFreshLoad` does.
+        let (plainLoad, _) = PlaybackReducer.reduce(
+            state,
+            intent: .load(makeRequest(), origin: .userInitiated, options: LoadOptions()),
+            now: now
+        )
+        guard case .preparing(let plain) = plainLoad else { return XCTFail("expected preparing") }
+        XCTAssertNil(plain.interruption)
     }
 
     /// Resuming a suspended player replays the stored request at the stored

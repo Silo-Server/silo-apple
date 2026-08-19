@@ -26,7 +26,14 @@ enum PlaybackState: Equatable {
     /// that failed, or `nil` when the failure preceded one; the request is the
     /// replay intent `retry()` re-loads (today's `lastLoadRequest`, which the
     /// terminal path deliberately keeps).
-    case failed(PlaybackFailure, LoadID?, request: PlayerViewModel.LoadRequest?)
+    ///
+    /// `position` is the playhead the failure happened at.
+    /// `finalizeTerminalPlaybackError` (PVM:4027-4071) deliberately does not
+    /// reset `currentTime`, which is what lets `retry()` (PVM:4557-4566) pass
+    /// `progressPosition: currentTime` / `resumePositionOverride: currentTime`
+    /// and resume where playback died; without it here, Retry would restart
+    /// the title from the beginning.
+    case failed(PlaybackFailure, LoadID?, request: PlayerViewModel.LoadRequest?, position: Double)
     /// The player was dismissed; nothing may be scheduled any more.
     case disposed
 
@@ -36,7 +43,7 @@ enum PlaybackState: Equatable {
         case .idle, .suspended, .disposed: return nil
         case .preparing(let preparing): return preparing.loadID
         case .playing(let playing): return playing.loadID
-        case .failed(_, let loadID, _): return loadID
+        case .failed(_, let loadID, _, _): return loadID
         }
     }
 
@@ -70,6 +77,22 @@ struct Preparing: Equatable {
     let adoption: PlaybackAdoption
     /// Known from `.planning` onwards.
     var plan: ExecutablePlan?
+    /// The last known playhead, carried across the load.
+    ///
+    /// `resetPublishedLoadState` (PVM:3475-3546) deliberately does **not**
+    /// clear `currentTime` — it only mirrors it into `scrubPreviewTime` — so a
+    /// load in flight still has a playhead, and `makeSuspendedPlaybackContext`
+    /// (PVM:3643-3657) snapshots exactly that when tvOS backgrounds mid-load.
+    /// The tvOS suspend rule reads `options.resumePosition ?? carriedPosition`:
+    /// once the session resolves, `adoptPreparedPlayback` (PVM:2614) has set
+    /// `currentTime` to the new session's position, which is the resume
+    /// override when the caller pinned one.
+    let carriedPosition: Double
+    /// A `preserveInterruptionState` load keeps the pending tvOS interruption
+    /// alive across the reload (PVM:3691-3693), so
+    /// `completeInterruptionRecoveryIfNeeded` (PVM:3976-3996) can still clear
+    /// it — and the loading overlay — once the replacement stream advances.
+    var interruption: Playing.Interruption?
 }
 
 /// A load whose engine is live.
@@ -129,6 +152,23 @@ enum RecoveryStep: Equatable {
 struct SuspendedContext: Equatable {
     let request: PlayerViewModel.LoadRequest
     let resumePosition: Double
+    /// Set when the suspend happened on the error screen.
+    /// `suspendForBackground` (PVM:7592-7638) needs only `lastLoadRequest`, and
+    /// `finalizeTerminalPlaybackError` keeps that — so backgrounding the Apple
+    /// TV while a failure is on screen suspends *and* leaves `error` set. One
+    /// enum case cannot be both `.failed` and `.suspended`, so the failure
+    /// travels here and the projection keeps publishing it.
+    let failure: PlaybackFailure?
+
+    init(
+        request: PlayerViewModel.LoadRequest,
+        resumePosition: Double,
+        failure: PlaybackFailure? = nil
+    ) {
+        self.request = request
+        self.resumePosition = resumePosition
+        self.failure = failure
+    }
 }
 
 /// The live transport facts the control plane tracks. The view model keeps
@@ -145,9 +185,20 @@ struct TransportState: Equatable {
     /// `AVPlayerBackend.isExternalPlaybackActive` (AirPlay). The iOS
     /// background rule exempts it.
     var isExternalPlaybackActive: Bool = false
-    /// The backend's `isPictureInPictureActiveProvider` fact. The iOS
-    /// background rule exempts it too.
-    var isPictureInPictureActive: Bool = false
+    /// `PictureInPictureCoordinator.isEngaged` — `isActive || isTransitioning`
+    /// — which is the fact the scene-phase handler reads today (PVM:4772), not
+    /// the backend's `isPictureInPictureActiveProvider` (PVM:1440-1442, plain
+    /// `isActive`). `isTransitioning` exists *for this call site*
+    /// (`PictureInPictureCoordinator.swift:30-33`): wiring the provider here
+    /// would pause playback in the window where iOS auto-starts PiP as the app
+    /// is being backgrounded, i.e. on every automatic PiP start on iPhone.
+    ///
+    /// The third exemption — `isPossible` plus a bounded 1 s grace
+    /// (`schedulePictureInPictureBackgroundGrace`) — stays in the iOS shell,
+    /// because that grace is a UI timer and is deliberately absent from
+    /// `TimerID`. The shell must therefore resolve the grace *before* it
+    /// forwards `.scenePhase(.background)` to the control plane.
+    var isPictureInPictureEngaged: Bool = false
 }
 
 // MARK: - Load inputs
@@ -177,8 +228,12 @@ struct LoadOptions: Equatable {
     var resumePosition: Double?
     /// `allowNearEndResume`.
     var allowNearEndResume: Bool
-    /// `preserveInterruptionState` — keeps the tvOS interruption timer alive
-    /// across the load.
+    /// `preserveInterruptionState` — keeps the tvOS interruption alive across
+    /// the load (PVM:3691-3693): the pending `Playing.Interruption` rides on
+    /// `Preparing.interruption` and is restored into `Playing` when the
+    /// replacement engine reports `fileLoaded`, so
+    /// `completeInterruptionRecoveryIfNeeded` can still complete it. The
+    /// interruption-recovery timer is likewise not cancelled.
     var preserveInterruptionState: Bool
 
     init(
@@ -291,6 +346,12 @@ struct SourceRenewal: Equatable {
     let reason: String
     let observedPosition: Double
     let startedAt: Date
+    /// The session the renewal was issued against (`staleSessionId`,
+    /// PVM:4094). A renewal mints a *new* server session by definition, so
+    /// `belongsToSameSession` cannot guard its answer; the VM instead re-checks
+    /// `activePlaybackSessionId == staleSessionId` before adopting
+    /// (PVM:4123-4130), and this is that check's data.
+    let issuedFor: SessionIdentity
 }
 
 /// An origin-outage ride-through in flight (`handleOriginOutageChanged`).
@@ -399,7 +460,11 @@ enum SessionEvent: Equatable {
     case replanUnavailable
     case terminal(PlaybackV3TerminalFailure)
     case sessionMissing
-    case renewed(PreparedPlaybackRef)
+    /// `replacing` is the session the renewal was issued against, so the
+    /// reducer can refuse an answer to a renewal that is no longer the one in
+    /// flight — the only mutation that rewrites `Playing.identity`
+    /// (PVM:4123-4130's `activePlaybackSessionId == staleSessionId` guard).
+    case renewed(PreparedPlaybackRef, replacing: SessionIdentity)
     case renewalFailed(transient: Bool)
 }
 
@@ -546,6 +611,15 @@ struct PreparedPlaybackRef: Equatable {
 /// so `Equatable` cannot be synthesized from here. The comparison covers every
 /// stored property; `PlaybackReducerTests.testLoadRequestEqualityCoversEveryStoredProperty`
 /// fails if one is added.
+///
+/// `LocalHLSPlan` (ExecutablePlan.swift:108-114) deliberately does *not* do
+/// this for `LoopbackSessionSpec`, and the asymmetry is intentional: that type
+/// is compared, optional-compared and held in collections across the loopback
+/// data plane, so a retroactive `==` could re-resolve an existing call site.
+/// `LoadRequest` has no `==` call site at all outside this package (no
+/// `Optional`/`Array`/`Set` comparisons, no `contains`, no `firstIndex(of:)`),
+/// so the conformance adds an operator rather than changing the meaning of
+/// one.
 extension PlayerViewModel.LoadRequest: Equatable {
     static func == (lhs: PlayerViewModel.LoadRequest, rhs: PlayerViewModel.LoadRequest) -> Bool {
         lhs.contentId == rhs.contentId
