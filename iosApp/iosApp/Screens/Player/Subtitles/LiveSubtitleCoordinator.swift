@@ -368,18 +368,25 @@ final class LiveSubtitleCoordinator {
         }
     }
 
-    private func onCompleted(_ completed: PlaybackRealtimeSubtitleEvent.Completed) {
-        guard isOwnedAndActive(completed.trackKey) else { return }
-
+    /// The resume-exactly-once invariant, shared by the two halves of the
+    /// completion race (websocket `completed` and poller authority): stop
+    /// the safety timer, un-pause if this coordinator paused, and retract
+    /// the "playback resumes in a moment" notice.
+    private func resumeAndRetractNotice() {
         cancelSafetyTimer()
-
-        // If completion arrives before any cue (short clip / instant job),
-        // make sure we don't leave the viewer paused.
         if !didResume, wasPlaying {
             controls.play()
         }
         didResume = true
         sink.hidePreparingNotice()
+    }
+
+    private func onCompleted(_ completed: PlaybackRealtimeSubtitleEvent.Completed) {
+        guard isOwnedAndActive(completed.trackKey) else { return }
+
+        // If completion arrives before any cue (short clip / instant job),
+        // make sure we don't leave the viewer paused.
+        resumeAndRetractNotice()
 
         // Hand off to the persisted track. The adapter de-dupes with the
         // poller so the track is registered once; selection swaps live→persisted
@@ -456,12 +463,7 @@ final class LiveSubtitleCoordinator {
         // resolve a key but a job is active), finish cleanly.
         guard isActive else { return }
         if let trackKey, let active = activeTrackKey, trackKey != active { return }
-        cancelSafetyTimer()
-        if !didResume, wasPlaying {
-            controls.play()
-        }
-        didResume = true
-        sink.hidePreparingNotice()
+        resumeAndRetractNotice()
         if let active = activeTrackKey {
             // M5 seamless swap: the poller authority has already registered +
             // selected the persisted track (or is doing so on the main queue);

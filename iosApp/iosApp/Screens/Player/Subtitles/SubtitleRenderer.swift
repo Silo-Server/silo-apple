@@ -434,13 +434,12 @@ final class SubtitleRenderer {
         scale: CGFloat,
         videoInsets: SubtitleVideoInsets = .zero
     ) {
-        let renderScale = Self.renderScale(for: size, requested: scale)
-        let w = Int32(max(1, size.width * renderScale))
-        let h = Int32(max(1, size.height * renderScale))
-        let margins = Self.pixelMargins(for: videoInsets, scale: renderScale)
+        let geometry = Self.frameGeometry(size, scale: scale, videoInsets: videoInsets)
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            self.applyFrameGeometryOnSessionQueue(width: w, height: h, margins: margins)
+            self.applyFrameGeometryOnSessionQueue(
+                width: geometry.w, height: geometry.h, margins: geometry.margins
+            )
         }
     }
 
@@ -723,12 +722,18 @@ final class SubtitleRenderer {
             secondaryRects,
             joiningDistance: cueJoiningDistance
         )
+        // Character rects feed both the glyph-background grouping and the
+        // edge-shadow bounds; the image lists, canvas size and
+        // `glyphBackgroundBitmaps` are all frozen by now, so one walk per
+        // slot is enough.
+        let primaryCharacterRects = paintedRects(imgPrimary, charactersOnly: true)
+        let secondaryCharacterRects = paintedRects(imgSecondary, charactersOnly: true)
         let primaryCharacterGroups = Self.groupedPaintedBounds(
-            paintedRects(imgPrimary, charactersOnly: true),
+            primaryCharacterRects,
             joiningDistance: cueJoiningDistance
         )
         let secondaryCharacterGroups = Self.groupedPaintedBounds(
-            paintedRects(imgSecondary, charactersOnly: true),
+            secondaryCharacterRects,
             joiningDistance: cueJoiningDistance
         )
         func hasAuthoredGlyphBackground(_ head: UnsafeMutablePointer<ASS_Image>?) -> Bool {
@@ -738,6 +743,19 @@ final class SubtitleRenderer {
                 node = current.pointee.next
             }
             return false
+        }
+        /// Grow each group by `padding` pixels, clamped to the canvas.
+        func expanded(_ groups: [CGRect], by padding: Int) -> [CGRect] {
+            groups.map { bounds in
+                CGRect(
+                    x: max(0, Int(bounds.minX) - padding),
+                    y: max(0, Int(bounds.minY) - padding),
+                    width: min(widthPx, Int(bounds.maxX) + padding)
+                        - max(0, Int(bounds.minX) - padding),
+                    height: min(heightPx, Int(bounds.maxY) + padding)
+                        - max(0, Int(bounds.minY) - padding)
+                )
+            }
         }
         func captionWindowBounds(
             _ groups: [CGRect],
@@ -749,16 +767,7 @@ final class SubtitleRenderer {
                       opacityPercent: currentParams.captionWindowOpacityPercent,
                       overrides: currentParams.systemContentOverrides
                   ) else { return [] }
-            return groups.map { bounds in
-                CGRect(
-                    x: max(0, Int(bounds.minX) - windowPadding),
-                    y: max(0, Int(bounds.minY) - windowPadding),
-                    width: min(widthPx, Int(bounds.maxX) + windowPadding)
-                        - max(0, Int(bounds.minX) - windowPadding),
-                    height: min(heightPx, Int(bounds.maxY) + windowPadding)
-                        - max(0, Int(bounds.minY) - windowPadding)
-                )
-            }
+            return expanded(groups, by: windowPadding)
         }
         let primaryWindowBounds = captionWindowBounds(primaryGroups, for: primaryHandle)
         let secondaryWindowBounds = captionWindowBounds(secondaryGroups, for: secondaryHandle)
@@ -780,16 +789,7 @@ final class SubtitleRenderer {
                       hasAuthoredBackground: hasAuthoredGlyphBackground(imageList)
                   )
                     else { return [] }
-            return groups.map { bounds in
-                CGRect(
-                    x: max(0, Int(bounds.minX) - glyphBackgroundPadding),
-                    y: max(0, Int(bounds.minY) - glyphBackgroundPadding),
-                    width: min(widthPx, Int(bounds.maxX) + glyphBackgroundPadding)
-                        - max(0, Int(bounds.minX) - glyphBackgroundPadding),
-                    height: min(heightPx, Int(bounds.maxY) + glyphBackgroundPadding)
-                        - max(0, Int(bounds.minY) - glyphBackgroundPadding)
-                )
-            }
+            return expanded(groups, by: glyphBackgroundPadding)
         }
         let primaryGlyphBackgroundBounds = nativeGlyphBackgroundBounds(
             primaryCharacterGroups,
@@ -854,17 +854,21 @@ final class SubtitleRenderer {
         let primaryEdgeLayers = compositedEdgeLayers(for: primaryHandle)
         let secondaryEdgeLayers = compositedEdgeLayers(for: secondaryHandle)
         func shadowBounds(
-            _ head: UnsafeMutablePointer<ASS_Image>?,
+            rects: [CGRect],
             edges: [EdgeLayer]
         ) -> [CGRect] {
-            paintedRects(head, charactersOnly: true).flatMap { bounds in
+            rects.flatMap { bounds in
                 edges.map {
                     bounds.offsetBy(dx: CGFloat($0.offsetX), dy: CGFloat($0.offsetY))
                 }
             }
         }
-        let primaryShadowBounds = shadowBounds(imgPrimary, edges: primaryEdgeLayers)
-        let secondaryShadowBounds = shadowBounds(imgSecondary, edges: secondaryEdgeLayers)
+        let primaryShadowBounds = shadowBounds(
+            rects: primaryCharacterRects, edges: primaryEdgeLayers
+        )
+        let secondaryShadowBounds = shadowBounds(
+            rects: secondaryCharacterRects, edges: secondaryEdgeLayers
+        )
 
         let allBounds = primaryRects + secondaryRects
             + primaryWindowBounds + secondaryWindowBounds
@@ -1061,11 +1065,25 @@ final class SubtitleRenderer {
         scale: CGFloat,
         videoInsets: SubtitleVideoInsets = .zero
     ) {
-        let renderScale = Self.renderScale(for: size, requested: scale)
-        let w = Int32(max(1, size.width * renderScale))
-        let h = Int32(max(1, size.height * renderScale))
-        let margins = Self.pixelMargins(for: videoInsets, scale: renderScale)
-        applyFrameGeometryOnSessionQueue(width: w, height: h, margins: margins)
+        let geometry = Self.frameGeometry(size, scale: scale, videoInsets: videoInsets)
+        applyFrameGeometryOnSessionQueue(
+            width: geometry.w, height: geometry.h, margins: geometry.margins
+        )
+    }
+
+    /// libass frame size in pixels plus the video-area margins, both at the
+    /// (possibly capped) render scale for `size`.
+    private static func frameGeometry(
+        _ size: CGSize,
+        scale: CGFloat,
+        videoInsets: SubtitleVideoInsets
+    ) -> (w: Int32, h: Int32, margins: (top: Int32, bottom: Int32, left: Int32, right: Int32)) {
+        let renderScale = renderScale(for: size, requested: scale)
+        return (
+            w: Int32(max(1, size.width * renderScale)),
+            h: Int32(max(1, size.height * renderScale)),
+            margins: pixelMargins(for: videoInsets, scale: renderScale)
+        )
     }
 
     private static func pixelMargins(

@@ -31,30 +31,6 @@ struct SidecarSubtitleDescriptor: Hashable {
     /// Absolute URL (server URL already resolved against the relative
     /// path that came back from `/playback/start`).
     let url: URL
-
-    init(
-        index: Int,
-        language: String?,
-        codec: String?,
-        label: String?,
-        source: String?,
-        forced: Bool?,
-        isDefault: Bool? = nil,
-        isHearingImpaired: Bool? = nil,
-        fontBundleUrl: URL? = nil,
-        url: URL
-    ) {
-        self.index = index
-        self.language = language
-        self.codec = codec
-        self.label = label
-        self.source = source
-        self.forced = forced
-        self.isDefault = isDefault
-        self.isHearingImpaired = isHearingImpaired
-        self.fontBundleUrl = fontBundleUrl
-        self.url = url
-    }
 }
 
 final class SubtitleSession {
