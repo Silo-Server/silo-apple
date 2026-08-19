@@ -1,4 +1,4 @@
-Repo snapshot date: 2026-08-16 (branch `player/one-player-cleanup`, HEAD `6818819`)
+Last verified against the code: 2026-08-18
 
 # Dolby Vision And The SiloPlayer Loopback
 
@@ -63,7 +63,7 @@ Two behaviors worth knowing:
   [`HDRDisplayCriteriaPolicy`](../../iosApp/iosApp/Screens/Player/HDRDisplayCriteriaPolicy.swift).
 - `shouldPreserveTVDisplayCriteriaDuringReload(...)` keeps the negotiated mode
   across an in-place item reload, which is why
-  `PlaybackCoordinator.prepareEngine(for:)` reuses the engine when the route
+  `PlayerViewModel.prepareBackend(for:)` reuses the backend when the route
   kind is unchanged. Renegotiating HDMI mid-session is visible and slow.
 
 The old `applyDvGatedDisplayCriteria(...)` Profile 5 gate documented here
@@ -93,8 +93,7 @@ The loopback normally serves a static VOD playlist built from a load-time segmen
 plan. Its explicit EVENT serving mode and
 `player.apple.siloplayer_primary_enabled` kill switch were retired on 2026-08-17;
 the key is no longer read. The writer still falls back internally to a growing
-EVENT playlist when no safe VOD plan is available; see the cleanup backlog's
-section 2.5.
+EVENT playlist when no safe VOD plan is available.
 
 ## 5. Why the loopback exists
 

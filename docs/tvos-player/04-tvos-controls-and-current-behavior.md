@@ -1,4 +1,4 @@
-Repo snapshot date: 2026-08-16 (branch `player/one-player-cleanup`, HEAD `6818819`)
+Last verified against the code: 2026-08-18
 
 # tvOS Controls And Current Behavior
 
@@ -52,21 +52,33 @@ re-opens the overlay.
 
 Inside the overlay:
 
-- D-pad Down from the scrubber opens the HUD
-- D-pad Down from the transport row opens the HUD
+- D-pad Down from the scrubber moves focus to the transport row (unless a
+  scrub is in flight — downward swipes are trapped so drag spillover cannot
+  abandon a live preview)
+- D-pad Up from the transport row moves focus back to the scrubber
+- the HUD opens via Select on the transport row's `options` button
+  (`onOpenHUD` → `openHUD()`); no D-pad direction opens it
 - transport buttons live inside a `focusSection()` so left/right movement stays
   in the cluster
 
-When the HUD closes, focus is restored to the transport `options` button.
+When the HUD closes, focus is restored to the scrubber
+(`isScrubberFocused = true` in `TVPlayerControls`).
 
 ## 4. Scrubber behavior
 
-The scrubber is a scrubbing mode, not a passive progress bar:
+The scrubber is a scrubbing mode, not a passive progress bar — but gaining
+focus is *not* itself a scrub (`TVPlayerScrubber.swift`):
 
-- focus entering the scrubber calls `beginScrub(...)`
-- left/right nudge the preview by 10 seconds
-- Select commits immediately
-- blur commits too, unless the shell set `cancelOnBlur = true`
+- a Left/Right **tap** while idle fires a debounced skip —
+  `skipBackward(10)` / `skipForward(30)` (asymmetric 10 s back, 30 s forward)
+- **Select** on the idle scrubber pauses playback and begins a timeline
+  scrub (`beginScrub`); Select on an in-flight scrub commits the preview
+  immediately
+- **holding** Left/Right begins a timeline auto-seek whose rate further
+  Left/Right taps adjust; while timeline-scrubbing, taps step the preview by
+  the same 10 s / 30 s
+- blur commits an in-flight series, unless the shell set
+  `cancelOnBlur = true`
 
 `cancelOnBlur` is used specifically when opening the HUD so that moving focus
 away from the scrubber does not turn the current preview position into a seek.
@@ -90,9 +102,9 @@ The bottom transport row is icon-only:
 - options
 - close player
 
-The options button is the dedicated transport-row entry into the HUD, but not
-the only one: D-pad Down from the scrubber or any transport button opens the
-same HUD.
+The options button is the only entry into the HUD: Select on it calls
+`openHUD()`. D-pad movement never opens the HUD (Down from the scrubber only
+moves focus to this row).
 
 ## 6. HUD tabs
 
@@ -183,120 +195,15 @@ a full-pane dialog with its own focus handling. The generic HUD control kit —
 [`tvOS/HUDKit/`](../../iosApp/iosApp/Screens/Player/tvOS/HUDKit); the panes
 themselves stay in `TVPlayerInfoHUD.swift`.
 
-Current truth: the buffered fill now draws `playbackRunwaySeconds` — the
-zero-network runway, published on **every** route, so the fill is always live.
-`bufferedAheadSeconds` still exists as the raw AVPlayer decode buffer, but it
-is diagnostics and stall-recovery only and no longer feeds any scrubber. The
-old "empty on the default path" caveat was a `PlayerCore` limitation.
-
-## 5. Transport row
-
-The bottom transport row is icon-only:
-
-- skip back 10 s
-- play / pause
-- skip forward 10 s
-- options
-- close player
-
-The options button is the dedicated transport-row entry into the HUD, but not
-the only one: D-pad Down from the scrubber or any transport button opens the
-same HUD.
-
-## 6. HUD tabs
-
-`TVPlayerInfoHUD.Tab` is `{info, stats, video, audio, subtitles, chapters}`.
-Info and Video are always available. Audio, Subtitles, and Chapters are hidden
-when the stream has none — the HUD hides rather than disables, to keep the tab
-bar tidy. Subtitles is an exception: it also appears when the stream has no
-subtitle tracks but the server can still produce them (AI transcription /
-translation, or a provider search), gated on the same `hasActionableSource`
-probe the pane uses, so a track-less file still exposes "AI Subtitles…" and
-"Search Subtitles…".
-
-### Info
-
-Series / title / episode tag, year and runtime, overview, stream badges,
-selected audio summary, selected subtitle summary, current chapter summary.
-Data comes from `PlayerMetadata`, derived from the already-fetched `WatchDetail`
-plus the selected `FileVersion`.
-
-### Stats
-
-The diagnostics pane. It renders
-[`PlaybackStatsPanel`](../../iosApp/iosApp/Screens/Player/PlaybackStatsPanel.swift)
-over `viewModel.playbackStats` in a two-column TV layout, paging between the
-Source/Media, Buffer, Network, and Device sections. Loopback sessions surface
-their store, temp-spill, and playable-ahead counters here. The Buffer section
-is an ordered pipeline — `Buffer status`, `Runway`, `Downloaded ahead (est)`,
-`Generated ahead`, `Playable ahead`, `Rebuffer events` — so the numbers read
-top to bottom as one pipe from origin to decoder.
-
-macOS renders the same `PlaybackStatsPanel` in the single-column sectioned
-layout, under the options panel's `Stats` tab.
-
-The `PlayerRouteStatusRow` list `PlayerViewModel` builds from
-`ApplePlaybackRouteCapabilities` (Playback, Route, Subtitles, Audio delay,
-Subtitle styling, Now Playing, Picture in Picture) is **not** shown on tvOS —
-its only consumer is the macOS
-[`MacPlayerOptionsPanel`](../../iosApp/iosApp/macOS/MacPlayerOptionsPanel.swift),
-where it now sits under the `Stats` tab rather than `Playback`. That is where
-the read-only `Audio delay: Unsupported` row appears.
-
-### Video
-
-`VideoPane` has two columns:
-
-- **Playback** — Quality, Speed, and Aspect. Aspect is gated on
-  `viewModel.backendCapabilities.supportsVideoGravity`, which is `true` for
-  `avFoundation` and `false` for `macAVFoundation`.
-- **Sync** — Subtitle delay (gated on `supportsSubtitleDelay`, which the view
-  model raises via `withSubtitleControls(_:)` when the active track is
-  Silo-rendered) and the Auto-play next toggle.
-
-Two controls that used to live here are **gone**, removed with the
-CompatibilityPlayer backend in `f1b1bba`:
-
-- **HDR passthrough toggle.** It only did anything on the `PlayerCore` decode
-  path; on AVPlayer the HDMI mode is negotiated by
-  [`TVDisplayCriteria`](../../iosApp/iosApp/Screens/Player/Shared/TVDisplayCriteria.swift)
-  from the stream's own colour signalling, so a user toggle had nothing to act
-  on. `PlayerSettings.setHDREnabled(_:)` and the `hdrEnabled` preference still
-  exist for settings-wire compatibility, but no player UI reads them and
-  `PlayerViewModel`'s cast-command handler treats `.setHDREnabled` as an
-  explicit no-op (see [cast-remote.md](cast-remote.md)).
-- **Audio delay.** Never implemented on AVPlayer;
-  `ApplePlaybackRouteCapabilities.audioDelay` is `.unsupported` on all four
-  capability profiles, so the control had no route to appear on.
-
-### Audio
-
-A list of discovered audio streams with the selected layout and codec.
-Selection goes through AVFoundation media selection (native direct / HLS) or
-through a loopback replan that rebuilds the local session around the new track
-(SiloPlayer). The pane makes no audio-delay claim.
-
-### Subtitles
-
-Primary subtitle list including `Off`; an optional secondary list once a primary
-is selected; the stored subtitle-delay value; the stored subtitle font size; and
-the entry points into AI subtitles and provider search.
-
-Subtitle appearance (font, size, colour, outline, position) is edited through
-`SubtitleAppearanceDialog`, a full-pane dialog with its own focus handling.
-It is currently a `private struct` inside `TVPlayerInfoHUD.swift` alongside the
-rest of the HUD control kit — `HUDSettingRow`, `HUDToggleRow`, `HUDPickerDialog`,
-`HUDPickerOptions`, `HUDDropdownOption`, `PaneColumn`, `HUDScrollablePane`,
-`TabPill`, `HUDTrackRow`, `HUDChapterRow`, and the button styles. Extracting the
-control kit and the appearance dialog into their own files under
-`Screens/Player/tvOS/` is queued UI-cleanup work on `player/cleanup-ui`; as of
-this snapshot the file is not split and this doc will be updated when it lands.
-
 Current truth:
 
 - primary subtitle selection works on all three routes
 - secondary subtitles are sidecar-only on all three routes
 - subtitle delay and styling apply to Silo-rendered tracks only
+
+Current truth: `bufferedAheadSeconds` is published on **every** route now, so
+the buffered fill is always live. The old "empty on the default path" caveat
+was a `PlayerCore` limitation.
 
 ### Chapters
 

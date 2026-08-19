@@ -2,12 +2,12 @@ import Foundation
 
 /// Coalesces a burst of producer-restart requests into at most one in-flight
 /// restart plus one settled follow-up target
-/// (docs/tvos-player/2026-07-03-siloplayer-loopback-primary-plan.md, M4).
+/// (see `docs/tvos-player/03-dolby-vision-and-avplayer-route.md`).
 ///
 /// Not thread-safe: callers serialize access under their own lock. The
 /// in-flight signal is exposed so segment fetches can ride a progressing
 /// restart instead of burning their own retry budget or firing a stale
-/// restart of their own (M6).
+/// restart of their own.
 struct LoopbackRestartCoalescer {
     private(set) var isInFlight = false
     private var pending: Int?

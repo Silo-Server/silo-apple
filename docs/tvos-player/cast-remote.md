@@ -82,11 +82,11 @@ awaitable `send(_:)` and is always sent before any `enqueue`.
   (`closeActiveSession`) rather than being rejected — a dropped phone can always
   reconnect, and there is no single-session lockout.
 - **Auto-reconnect:** on a transport drop the phone shows "Reconnecting…" and
-  retries with 1–5 s backoff (up to 5 attempts), preserving the target. An
+  retries up to 5 times with 1–4 s backoff between attempts, preserving the target. An
   intentional `.close` (takeover or user disconnect) clears the target so it
   does **not** reconnect.
 - **Graceful close:** intentional disconnects enqueue `.close` (ordered after
-  pending sends) then tear down after a bounded 300 ms flush window, so the peer
+  pending sends) then tear down after a bounded 500 ms flush window, so the peer
   gets a clean app-level signal without the close being able to hang.
 - **Re-advertise:** the TV re-advertises its Bonjour service when the active
   server changes, so phones on the new server can find it (and stale phones cannot).

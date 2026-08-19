@@ -3,7 +3,7 @@ import Foundation
 /// Decode-order, keyframe-gated segment routing for the SiloPlayer VOD
 /// loopback: a new segment opens only at the keyframe whose *presentation*
 /// timestamp has reached the next plan boundary
-/// (docs/tvos-player/2026-07-03-siloplayer-loopback-primary-plan.md, M2).
+/// (see `docs/tvos-player/03-dolby-vision-and-avplayer-route.md`).
 ///
 /// Routing by the IRAP's PTS rather than by packet DTS matters under B-frame
 /// reorder: a keyframe's DTS trails its PTS, so DTS-keyed routing drops the

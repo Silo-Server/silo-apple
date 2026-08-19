@@ -7,8 +7,6 @@ import SwiftUI
 /// Below the fold the page scrolls into About, alternate narrations, and the
 /// discovery rails (`TVAudiobookDetailSections`), like the movie/series
 /// detail bodies. The **Chapters** picker stays behind a full-screen cover.
-/// Design source of truth: `docs/audiobook-detail-redesign/tvos-mockups-v2.html`
-/// (Option C v2).
 ///
 /// Focus: the action row is a flat set of sibling `Button`s so the tvOS focus
 /// engine owns movement (native-graph model, per `docs/tvos-focus.md`). We
