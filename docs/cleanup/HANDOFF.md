@@ -32,9 +32,9 @@ is over, §2).
 
 | Item | State |
 |---|---|
-| Branch / PR | `player/architecture-remediation` @ `3e7fe9a` (round 6 + tail, Stage 2 wave 1 merged), pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN` |
+| Branch / PR | `player/architecture-remediation` @ `4ee82ea` (round 6 + tail, Stage 2 waves 1 + 2a merged), pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN` |
 | Size vs `main` | ~150 commits, ~530 files, roughly +20k / −32k raw |
-| Suite (iOS `SiloTests`, only test target) | `Executed 1719 tests, with 3 tests skipped and 0 failures (0 unexpected)` at `3e7fe9a` (1539 + 180 Stage-2 wave-1 tests) (1520 + 18 tests added by the PR-review and telemetry layers + the temporary-scope guard test) — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
+| Suite (iOS `SiloTests`, only test target) | `Executed 1730 tests, with 3 tests skipped and 0 failures (0 unexpected)` at `4ee82ea` (1539 + 180 Stage-2 wave-1 tests + 11 `LocalHLSHostTests`) — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
 | Builds | `Silo` (iOS), `SiloTV` (tvOS), `SiloMac` all green at the tip, `CODE_SIGNING_ALLOWED=NO` |
 | Hardware | HDR10 loopback + display criteria validated (bedroom gen-3 08-17, Living Room gen-2 08-18); DV rows validated 08-18 on Living Room (P8.1 passthrough, P7→8.1 + TrueHD→FLAC); §8 anomaly **closed as environmental** |
 | Sibling PRs to sequence after #172 | #171 (release launch paths / deep links), #169 + #107 (subtitles) — they overlap touched files |
@@ -280,13 +280,16 @@ not reach the player.
 3. Small items left: backlog §2.5 EVENT-fallback signal (needs a device pass), backlog 1.18/1.21 — nothing else
    small is queued; the round-6 tail and the temporary-scope guard test are done.
 4. **Stage 2 is in flight (2026-08-19).** Wave 1 (seams/types/policies, 5 packages) is merged @ `3e7fe9a`; wave 2a
-   (`LocalHLSHost`, spec `stage2/specs/spec-s2w2a-local-hls-host.json`) was launched the same day off `a8f790a`.
-   Sequence: merge the approved `stage2/s2w2a-local-hls-host` → verify (§4) → re-anchor `spec-s2w2b-engine-session.json`
-   against the tip (names from LocalHLSHost as built) → run 2b (one package, effort max) → **device pass on the Living
-   Room Apple TV** (design §6 rows 1/3/4/7/13/14 — the owner turns it on) → wave 3 (actor cutover) → device pass →
-   wave 4. Lessons from wave 1: keep packages small (the reducer took five review rounds; each found real fidelity
-   gaps), always merge 1B-style canonical files first when two branches add the same path, and read the design's
-   as-built blocks (§2.3, §2.7) before writing the next spec. Owner decided 2026-08-19: no macOS smoke harness — the
+   (`LocalHLSHost` out of `AVPlayerBackend`, behaviour-identical) is merged @ `4ee82ea` — one implementer + one
+   independent reviewer, **approved** with two minors (the fail-closed attach gate applied post-merge; the
+   process-wide generation counter recorded as a strict-concurrency TODO in §2.8's as-built block).
+   `spec-s2w2b-engine-session.json` is re-anchored against 2a as built (design §2.8 as-built block: the host is
+   backend-owned, `carriedVODPlan`, the subtitle-tap carry obligation). Sequence: run 2b (one package, effort
+   max) → **device pass on the Living Room Apple TV** (design §6 rows 1/3/4/7/13/14 — the owner turns it on) →
+   wave 3 (actor cutover) → device pass → wave 4. Lessons from wave 1: keep packages small (the reducer took
+   five review rounds; each found real fidelity gaps), always merge 1B-style canonical files first when two
+   branches add the same path, and read the design's as-built blocks (§2.3, §2.7, §2.8) before writing the next
+   spec. Owner decided 2026-08-19: no macOS smoke harness — the
    simulator suite is the per-wave gate and the physical Apple TV covers DV/TrueHD/loopback rows. Key finding from the inventories: **no test constructs
    `PlayerViewModel`/`AVPlayerBackend`/the bridge** — wave 1 builds the fakes and the reducer/policy tables that
    are the real safety net; the 845 existing player tests pin statics and wire contracts and survive.

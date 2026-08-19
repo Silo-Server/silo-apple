@@ -467,6 +467,38 @@ final class LocalHLSHost {                                   // inv-3 §4.1–4.
     var onEvent: (EngineEvent) -> Void                                     // writer/store callbacks → events (firstSegmentReady, planResolved, stats, failed…)
 }
 ```
+**As built (wave 2a), `LocalHLSHost` differs from the sketch above — 2b/3 plan against these:**
+- Plain `final class`, NOT `@MainActor`: the moved bodies are entered from the writer's mux thread and the
+  server's resolver queue; per-member isolation is preserved exactly (`requestProducerRestart(atSegmentIndex:authoritative:)`
+  and `startWriter(vodBaseIndex:recycledInput:)` are `@MainActor` as their originals were; `start()`, `teardown()`
+  and the first-segment handler are non-isolated; every `DispatchQueue.main.async` hop stayed where it was).
+- `start()` is synchronous (as `startSiloLoopback` was) and does not return the playlist URL; the URL choice
+  (`playlistURLDecision`, incl. the AirPlay external branch and the abandon-handoff fallback) lives in the host
+  and is delivered via `onFirstSegmentReady: ((url: URL, playlistName: String, usesExternalURL: Bool)) -> Void`.
+  `startWriter(vodBaseIndex:recycledInput:)` replaces the sketch's `restartWriter`; `teardown()` takes no
+  argument (`SILO_KEEP_DV_HLS` is read once at init, §7.2). There is no single `onEvent`: the surface is 4 pull
+  closures + 3 init closures (`playbackPositionProvider`, `isSourceOutageActive`, `subtitleTap`) + 11 push
+  closures, all nil'd by `teardown()`. The first-segment attach gate (`canAttachFirstSegment`) fails closed when
+  no gate is installed (reviewer minor, applied post-merge).
+- The subtitle tap STAYS backend-owned (source-keyed; deliberately outlives a session so a same-source reanchor
+  re-enables instantly); the host pulls it through `subtitleTap: (URL) -> LoopbackSubtitleTap?`. **2b:**
+  `PlaybackEngineSession` inherits the same outlives-the-session problem — carry the tap above the session the
+  way `carriedVODPlan` carries the plan; do not session-scope it.
+- Ownership: `AVPlayerBackend.loopbackHost: LocalHLSHost?` owns the host; the engine session owns it
+  transitively through the backend — 2b does not re-parent it. `carriedVODPlan: LocalHLSHost.ResolvedVODPlan?`
+  on the backend reproduces the old `loopbackVODPlan`/`loopbackVODPlanSourceURL` survival semantics (seeded
+  unfiltered into each new host; refreshed only when a teardown actually retires a host, so native-route loads
+  leave it in place). `segmentWriter`/`segmentServer`/`segmentStore` survive as private read-only computed views
+  onto the host so every ladder/stats/AirPlay/subtitle reader line is unchanged — those views go away with the
+  ladders in 2b. `installLoopbackHostCallbacks(_:)` holds the former writer-callback bodies; the
+  `handleFirstSegmentReady` tail (criteria → settle → attach) stays in the backend;
+  `performVODStallRecovery` calls `loopbackHost?.requestProducerRestart(atSegmentIndex:authoritative:)`.
+- Session guard: every backend-installed closure that mutates backend state guards
+  `self.loopbackHost === host` (+ `!isDisposed`) — object identity, no string compares.
+  `activeLoopbackSessionID`/`loopbackGeneration` are deleted; the store's `generation:` tag is a process-wide
+  static counter on the host (diagnostics-only — reaches only log lines and the stats overlay; replace with a
+  UUID-derived value if strict concurrency lands).
+
 `AVPlayerBackend` after wave 2 keeps: observers, audio session, display criteria, initial-display gate, PiP/AirPlay
 policy, seek deadline, buffer policy, subtitle overlay pump, `attachLoopbackItem(url:)`,
 `reloadEstablishedLoopbackItem`, and emits `RecoveryObservation`s instead of deciding. The six ladders, their
@@ -488,7 +520,7 @@ API are **deleted** from it.
 | **3 — reducer + actor cutover** | 3A `PlaybackSessionActor` runs `PlaybackReducer`; VM load/replan/seek/scene-phase/progress/session-id code replaced by intents + `Presentation` projection; `LoadID`/`SessionIdentity` everywhere; `SeekRequest`; scene-phase tables; legacy VM core deleted | `PlayerViewModel.swift`, `ControlPlane/*`, `Engine/*`, bridge call sites | identical except §7 items 4–6 | 1 implementer (max) + 1 reviewer; device pass (§6) |
 | **4 — deletions + test rewrites + docs** | 4A `TrackSelection` model replacing the eight `pending*`; 4B remaining deletions (`[CMP-MEM]`, `SILO_KEEP_DV_HLS` threading leftovers, `hasAttempted*`, dead rungs, `ProtocolV3SidecarRestoreIntent`, 8×200 ms seek retry), the six `PlaybackProtocolV3Tests` rewrites (inv-4 A.5), docs 01–09 truth pass, HANDOFF/backlog | 4A: `Tracks/*` · 4B: rest | identical | 2 + 2 |
 
-Wave 1 landed 2026-08-19 (see the as-built blocks in §2.3/§2.7; the reducer needed four review rounds — split later waves small). Waves 2a/2b specs are re-anchored against wave 1 as built; waves 3–4 specs are drafts in `stage2/specs/` that **must be re-anchored** (line
+Wave 1 landed 2026-08-19 (see the as-built blocks in §2.3/§2.7; the reducer needed four review rounds — split later waves small). Wave 2a landed 2026-08-19 (one implementer + one reviewer, approved with two minors; as-built block above in §2.8). The 2b spec is re-anchored against 2a as built; waves 3–4 specs are drafts in `stage2/specs/` that **must be re-anchored** (line
 numbers, names that wave 1 introduced) by the orchestrator before launch — each later wave's base is the
 previous wave's merged tip.
 
