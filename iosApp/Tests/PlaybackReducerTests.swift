@@ -1203,8 +1203,9 @@ final class PlaybackReducerTests: XCTestCase {
         ])
     }
 
-    /// The visible server-outage recovery drops the engine and shows the
-    /// reconnecting projection while it waits.
+    /// The visible server-outage recovery drops the engine, probes immediately
+    /// (`waitForServerReady` PVM:4493-4504 probes before its first sleep) and
+    /// shows the reconnecting projection while it waits.
     func testServerOutageRecoveryDisposesTheEngineAndPolls() {
         let loadID = LoadID()
         let (next, effects) = PlaybackReducer.reduce(
@@ -1216,7 +1217,7 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertEqual(Array(effects.prefix(3)), [
             .cancelTimer(.progress),
             .disposeEngine(loadID),
-            .pollServerHealth(.serverOutageRecovery, after: .seconds(1), loadID),
+            .pollServerHealth(.serverOutageRecovery, after: .zero, loadID),
         ])
         guard case .publish(let presentation) = effects.last else {
             return XCTFail("expected a publish")

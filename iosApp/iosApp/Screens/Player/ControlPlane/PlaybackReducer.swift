@@ -1256,9 +1256,15 @@ enum PlaybackReducer {
                 [
                     .cancelTimer(.progress),
                     .disposeEngine(playing.loadID),
+                    // `waitForServerReady` (PVM:4493-4504) probes *first* and
+                    // sleeps afterwards, so entering the visible recovery
+                    // issues an immediate probe; the loop's own delays arrive
+                    // as `.waitForServerReady(probeAfter:)` from the policy,
+                    // which is the same "sleep, then probe" contract
+                    // `RecoveryAction` documents.
                     .pollServerHealth(
                         .serverOutageRecovery,
-                        after: .seconds(1),
+                        after: .zero,
                         playing.loadID
                     ),
                     .publish(presentation(for: next, isReconnecting: true)),
