@@ -195,8 +195,15 @@ Temp spill is not debug mirroring:
 - source cache disk spill: a separate optional path, controlled by
   `SILO_ENABLE_SOURCE_DISK_SPILL=1`
 
-The HUD/log stats keep source cache bytes, generated store bytes, generated
-temp spill bytes, debug mirror bytes, and AVPlayer playable ahead separate.
+The HUD/log stats keep those figures separate, and the Buffer section presents
+the loopback pipeline in order: `Downloaded ahead (est)` (source cache) →
+`Generated ahead` (segments the local playlist already advertises) →
+`Playable ahead` (AVPlayer's own decode buffer, deliberately held near one
+segment). Above them sits `Runway`, the user-facing figure — seconds that will
+play with zero network, which on the loopback route is
+`max(playable ahead, generated-visible ahead)`. The byte counters
+(`Source cache`, `Generated store`, `Generated temp spill`,
+`Generated debug mirror`) stay separate in the Network section.
 
 ## 11. Audio policy
 

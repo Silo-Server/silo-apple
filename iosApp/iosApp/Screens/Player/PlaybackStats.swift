@@ -35,27 +35,39 @@ struct PlaybackStats: Equatable {
     var screenFrameRate: Double?
     var playbackRate: Double?
     var bufferStatus: String?
-    var bufferedAheadSeconds: Double?
-    var bufferLoadCount: Int?
-    var averageFileBitrateBps: Double?
-    var currentDownloadBitrateBps: Double?
+    /// Raw AVPlayer decode buffer ahead of the playhead. Diagnostics and the
+    /// recovery ladder only — the user-facing figure is `runwaySeconds`.
+    var playableAheadSeconds: Double?
+    /// Seconds of media that will play with zero network. On loopback this is
+    /// normally far larger than `playableAheadSeconds`.
+    var runwaySeconds: Double?
+    var rebufferCount: Int?
+    /// Catalog-declared bitrate. Composer-owned; the backend never sets it.
+    var nominalFileBitrateBps: Double?
+    /// One definition per route, chosen by `PlaybackStatsComposer`.
+    var downloadRateBps: Double?
     var observedBitrateBps: Double?
     var indicatedBitrateBps: Double?
     var streamSpeed: Double?
-    var bytesTransferred: Int64?
+    var networkBytesTransferred: Int64?
+    /// Loopback-only debug rows: what the demuxer pulled off the proxy, which
+    /// is not the same thing as what the transport downloaded.
+    var demuxReadRateBps: Double?
+    var demuxReadBytes: Int64?
     var sourceCacheBytes: Int64?
     var sourceCacheBudgetBytes: Int64?
     var sourceCacheHighWaterBytes: Int64?
     var sourceCacheLowWaterBytes: Int64?
     var sourceCacheForwardBytes: Int64?
     var sourceCacheAheadSeconds: Double?
-    var sourceCacheHitBytes: Int64?
-    var sourceCacheMissBytes: Int64?
+    var sourceBytesServedFromCache: Int64?
+    var sourceOriginWaitCount: Int?
+    /// `sourceBytesServedFromCache / networkBytesTransferred`. May exceed 1 —
+    /// a backward seek re-serves bytes that were only fetched once.
+    var sourceCacheReuseRatio: Double?
     var sourceActiveOriginRequestCount: Int?
     var sourceDiskSpillBytes: Int64?
     var sourceDiskBytesWritten: Int64?
-    var sourceOriginBytesTransferred: Int64?
-    var sourceOriginBitrateBps: Double?
     var sourceResumeCapable: Bool?
     var sourceResumeServerAdvertised: Bool?
     var generatedAheadSeconds: Double?
@@ -87,9 +99,38 @@ struct PlaybackStats: Equatable {
 }
 
 extension PlaybackStats {
+    /// Stable identity for a row, independent of its label. The iOS compact
+    /// set selects on these — renaming a label must never silently drop a
+    /// row from the overlay again.
+    enum RowID: String, Hashable, CaseIterable {
+        case route, source, container
+        case video, audio, dynamicRange, subtitles, screenFrameRate, playbackRate
+        case bufferStatus, runway, downloadedAhead, generatedAhead, playableAhead, rebufferEvents
+        case nominalFileBitrate, downloadRate, streamSpeed
+        case indicatedBitrate, observedBitrate
+        case networkBytesTransferred, servedFromCache, cacheReuse, originWaits
+        case sourceCache, sourceCacheForward, sourceCacheWatermarks
+        case originRequests, sourceDiskSpill, sourceDiskWritten
+        case directStreamResume, serverResumeFeature
+        case demuxReadRate, demuxReadBytes
+        case generatedWrittenAhead, generatedMediaBitrate, generatedSegments
+        case generatedSpilledSegments, loopbackGeneration
+        case playlistMediaSequence, playlistVisibleRange, playlistBytes, playlistHash
+        case segmentDurationSource
+        case generatedStore, generatedTempSpill, generatedDebugMirror
+        case hlsRequests, hlsServed, hlsLatency, hlsWaits
+        case device, freeDiskSpace, volumeAvailable
+    }
+
+    struct Row: Identifiable, Equatable {
+        let id: RowID
+        let label: String
+        let value: String
+    }
+
     /// Every section's rows in display order — the full set the tvOS HUD
     /// pane pages through.
-    var allRows: [(String, String)] {
+    var allRows: [Row] {
         sourceRows + mediaRows + bufferRows + networkRows + deviceRows
     }
 
@@ -99,26 +140,21 @@ extension PlaybackStats {
     /// Advanced page) for. This keeps what identifies the file and tells
     /// you whether playback is healthy, in the same order.
     ///
-    /// Filtered by label against `allRows` rather than rebuilt from the
-    /// stored properties, so the formatting can never drift from the pane.
-    var compactRows: [(String, String)] {
-        let wanted = [
-            "Route", "Source", "Container", "Created by",
-            "Video", "Audio", "Dynamic range", "Subtitles",
-            "Buffer status", "Buffered ahead",
-            // Indicated/Observed are the fallbacks `networkRows` emits when
-            // the average/download pair is unavailable on the active route,
-            // so both spellings have to be listed or the bitrate line just
-            // vanishes there.
-            "Average file bitrate", "Current download bitrate",
-            "Indicated bitrate", "Observed bitrate",
-            "Network throughput", "Stream speed",
-            "Device", "Free disk space"
-        ]
+    /// Selected by `RowID` against `allRows` rather than by label, so a label
+    /// rename can never silently drop a row from the overlay, and rebuilt
+    /// from the pane's own rows so the formatting can never drift from it.
+    private static let compactRowIDs: [RowID] = [
+        .route, .source, .container,
+        .video, .audio, .dynamicRange, .subtitles,
+        .bufferStatus, .runway, .playableAhead,
+        .nominalFileBitrate, .downloadRate, .streamSpeed,
+        .indicatedBitrate, .observedBitrate,
+        .device, .freeDiskSpace
+    ]
+
+    var compactRows: [Row] {
         let rows = allRows
-        return wanted.compactMap { label in
-            rows.first { $0.0 == label }
-        }
+        return Self.compactRowIDs.compactMap { id in rows.first { $0.id == id } }
     }
 
     /// True once any section has something to show. Every row accessor drops
@@ -127,73 +163,108 @@ extension PlaybackStats {
     /// placeholder instead.
     var hasRows: Bool { !allRows.isEmpty }
 
-    var sourceRows: [(String, String)] {
+    var sourceRows: [Row] {
         [
-            ("Route", route),
-            ("Source", source),
-            ("Container", container)
-        ].compactMap { label, value in
+            (RowID.route, "Route", route),
+            (RowID.source, "Source", source),
+            (RowID.container, "Container", container)
+        ].compactMap { id, label, value in
             guard let value, !value.isEmpty else { return nil }
-            return (label, value)
+            return Row(id: id, label: label, value: value)
         }
     }
 
-    var mediaRows: [(String, String)] {
-        var rows: [(String, String)] = []
+    var mediaRows: [Row] {
+        var rows: [Row] = []
         if let video = mediaDescription(video) {
-            rows.append(("Video", video))
+            rows.append(Row(id: .video, label: "Video", value: video))
         }
         if let audio = mediaDescription(audio) {
-            rows.append(("Audio", audio))
+            rows.append(Row(id: .audio, label: "Audio", value: audio))
         }
         if let dynamicRange, !dynamicRange.isEmpty {
-            rows.append(("Dynamic range", dynamicRange))
+            rows.append(Row(id: .dynamicRange, label: "Dynamic range", value: dynamicRange))
         }
         if let subtitles, !subtitles.isEmpty {
-            rows.append(("Subtitles", subtitles))
+            rows.append(Row(id: .subtitles, label: "Subtitles", value: subtitles))
         }
         if let screenFrameRate, screenFrameRate > 0 {
-            rows.append(("Screen frame rate", formatFrameRate(screenFrameRate)))
+            rows.append(Row(id: .screenFrameRate, label: "Screen frame rate", value: formatFrameRate(screenFrameRate)))
         }
         if let playbackRate {
-            rows.append(("Playback rate", String(format: "%.2fx", playbackRate)))
+            rows.append(Row(id: .playbackRate, label: "Playback rate", value: String(format: "%.2fx", playbackRate)))
         }
         return rows
     }
 
-    var bufferRows: [(String, String)] {
-        var rows: [(String, String)] = []
+    /// The buffer pipeline, in flow order: what has been downloaded, what has
+    /// been remuxed out of it, and what AVPlayer has actually decoded ahead —
+    /// with the user-facing runway on top. The ordering is load-bearing; a
+    /// "just move this row" edit breaks the reading.
+    var bufferRows: [Row] {
+        var rows: [Row] = []
         if let bufferStatus, !bufferStatus.isEmpty {
-            rows.append(("Buffer status", bufferStatus))
+            rows.append(Row(id: .bufferStatus, label: "Buffer status", value: bufferStatus))
         }
-        if let bufferedAheadSeconds {
-            rows.append(("Buffered ahead", String(format: "%.1f s", bufferedAheadSeconds)))
+        if let runwaySeconds {
+            rows.append(Row(id: .runway, label: "Runway", value: String(format: "%.1f s", runwaySeconds)))
         }
-        if let bufferLoadCount {
-            rows.append(("Buffer load count", "\(bufferLoadCount)"))
+        if let sourceCacheAheadSeconds {
+            rows.append(Row(
+                id: .downloadedAhead,
+                label: "Downloaded ahead (est)",
+                value: String(format: "%.1f s", sourceCacheAheadSeconds)
+            ))
+        }
+        if let generatedVisibleAheadSeconds {
+            rows.append(Row(
+                id: .generatedAhead,
+                label: "Generated ahead",
+                value: String(format: "%.1f s", generatedVisibleAheadSeconds)
+            ))
+        }
+        if let playableAheadSeconds {
+            rows.append(Row(
+                id: .playableAhead,
+                label: "Playable ahead",
+                value: String(format: "%.1f s", playableAheadSeconds)
+            ))
+        }
+        if let rebufferCount {
+            rows.append(Row(id: .rebufferEvents, label: "Rebuffer events", value: "\(rebufferCount)"))
         }
         return rows
     }
 
-    var networkRows: [(String, String)] {
-        var rows: [(String, String)] = []
-        if let averageFileBitrateBps {
-            rows.append(("Average file bitrate", formatBitsPerSecond(averageFileBitrateBps)))
+    var networkRows: [Row] {
+        var rows: [Row] = []
+        if let nominalFileBitrateBps {
+            rows.append(Row(id: .nominalFileBitrate, label: "File bitrate (nominal)", value: formatBitsPerSecond(nominalFileBitrateBps)))
         }
-        if let currentDownloadBitrateBps {
-            rows.append(("Current download bitrate", formatBitsPerSecond(currentDownloadBitrateBps)))
+        if let downloadRateBps {
+            rows.append(Row(id: .downloadRate, label: "Download rate", value: formatBitsPerSecond(downloadRateBps)))
         }
-        if averageFileBitrateBps == nil, let indicatedBitrateBps {
-            rows.append(("Indicated bitrate", formatBitsPerSecond(indicatedBitrateBps)))
+        // AVPlayer's own transport numbers, emitted whenever present. No
+        // route-conditional fallback is needed here because the backend
+        // already publishes them only where AVPlayer fetches the origin
+        // itself (`publishesRemoteAccessLogNetworkStats`) — behind the proxy
+        // or the loopback server they would be a 127.0.0.1 socket rate, and
+        // those routes report transport through `Download rate` instead.
+        if let indicatedBitrateBps {
+            rows.append(Row(id: .indicatedBitrate, label: "Indicated bitrate", value: formatBitsPerSecond(indicatedBitrateBps)))
         }
-        if currentDownloadBitrateBps == nil, let observedBitrateBps {
-            rows.append(("Observed bitrate", formatBitsPerSecond(observedBitrateBps)))
+        if let observedBitrateBps {
+            rows.append(Row(id: .observedBitrate, label: "Observed bitrate", value: formatBitsPerSecond(observedBitrateBps)))
         }
         if let streamSpeed {
-            rows.append(("Stream speed", String(format: "%.2fx", streamSpeed)))
+            rows.append(Row(id: .streamSpeed, label: "Stream speed", value: String(format: "%.2fx", streamSpeed)))
         }
-        if let bytesTransferred {
-            rows.append(("Transferred", ByteCountFormatter.string(fromByteCount: bytesTransferred, countStyle: .file)))
+        if let networkBytesTransferred {
+            rows.append(Row(
+                id: .networkBytesTransferred,
+                label: "Downloaded from origin",
+                value: ByteCountFormatter.string(fromByteCount: networkBytesTransferred, countStyle: .file)
+            ))
         }
         if let sourceCacheBytes {
             let value: String
@@ -202,76 +273,81 @@ extension PlaybackStats {
             } else {
                 value = ByteCountFormatter.string(fromByteCount: sourceCacheBytes, countStyle: .file)
             }
-            rows.append(("Source cache", value))
+            rows.append(Row(id: .sourceCache, label: "Source cache", value: value))
         }
         if let sourceCacheForwardBytes {
-            rows.append(("Source cache forward", ByteCountFormatter.string(fromByteCount: sourceCacheForwardBytes, countStyle: .file)))
+            rows.append(Row(id: .sourceCacheForward, label: "Source cache forward", value: ByteCountFormatter.string(fromByteCount: sourceCacheForwardBytes, countStyle: .file)))
         }
         if let sourceCacheHighWaterBytes, let sourceCacheLowWaterBytes {
-            rows.append(("Source cache watermarks", "\(ByteCountFormatter.string(fromByteCount: sourceCacheLowWaterBytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: sourceCacheHighWaterBytes, countStyle: .file))"))
+            rows.append(Row(
+                id: .sourceCacheWatermarks,
+                label: "Source cache watermarks",
+                value: "\(ByteCountFormatter.string(fromByteCount: sourceCacheLowWaterBytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: sourceCacheHighWaterBytes, countStyle: .file))"
+            ))
         }
-        if let sourceCacheAheadSeconds {
-            rows.append(("Source cache ahead", String(format: "%.1f s", sourceCacheAheadSeconds)))
+        if let sourceBytesServedFromCache {
+            rows.append(Row(
+                id: .servedFromCache,
+                label: "Served from cache",
+                value: ByteCountFormatter.string(fromByteCount: sourceBytesServedFromCache, countStyle: .file)
+            ))
         }
-        if let sourceCacheHitBytes {
-            rows.append(("Cache hits", ByteCountFormatter.string(fromByteCount: sourceCacheHitBytes, countStyle: .file)))
+        if let sourceCacheReuseRatio {
+            rows.append(Row(id: .cacheReuse, label: "Cache reuse", value: String(format: "%.2fx", sourceCacheReuseRatio)))
         }
-        if let sourceCacheMissBytes {
-            rows.append(("Cache misses", ByteCountFormatter.string(fromByteCount: sourceCacheMissBytes, countStyle: .file)))
+        if let sourceOriginWaitCount {
+            rows.append(Row(id: .originWaits, label: "Origin waits", value: "\(sourceOriginWaitCount)"))
         }
         if let sourceActiveOriginRequestCount {
-            rows.append(("Origin requests", "\(sourceActiveOriginRequestCount)"))
+            rows.append(Row(id: .originRequests, label: "Origin requests", value: "\(sourceActiveOriginRequestCount)"))
         }
         if let sourceDiskSpillBytes {
-            rows.append(("Source disk spill", ByteCountFormatter.string(fromByteCount: sourceDiskSpillBytes, countStyle: .file)))
+            rows.append(Row(id: .sourceDiskSpill, label: "Source disk spill", value: ByteCountFormatter.string(fromByteCount: sourceDiskSpillBytes, countStyle: .file)))
         }
         if let sourceDiskBytesWritten, sourceDiskBytesWritten > 0 {
-            rows.append(("Source disk written", ByteCountFormatter.string(fromByteCount: sourceDiskBytesWritten, countStyle: .file)))
-        }
-        if let sourceOriginBytesTransferred {
-            rows.append(("Source origin bytes", ByteCountFormatter.string(fromByteCount: sourceOriginBytesTransferred, countStyle: .file)))
-        }
-        if let sourceOriginBitrateBps {
-            rows.append(("Source origin bitrate", formatBitsPerSecond(sourceOriginBitrateBps)))
+            rows.append(Row(id: .sourceDiskWritten, label: "Source disk written", value: ByteCountFormatter.string(fromByteCount: sourceDiskBytesWritten, countStyle: .file)))
         }
         if let sourceResumeCapable {
-            rows.append(("Direct stream resume", sourceResumeCapable ? "Enabled" : "Disabled"))
+            rows.append(Row(id: .directStreamResume, label: "Direct stream resume", value: sourceResumeCapable ? "Enabled" : "Disabled"))
         }
         if let sourceResumeServerAdvertised {
-            rows.append(("Server resume feature", sourceResumeServerAdvertised ? "Advertised" : "Not advertised"))
+            rows.append(Row(id: .serverResumeFeature, label: "Server resume feature", value: sourceResumeServerAdvertised ? "Advertised" : "Not advertised"))
+        }
+        if let demuxReadRateBps {
+            rows.append(Row(id: .demuxReadRate, label: "Demux read rate", value: formatBitsPerSecond(demuxReadRateBps)))
+        }
+        if let demuxReadBytes {
+            rows.append(Row(id: .demuxReadBytes, label: "Demux read bytes", value: ByteCountFormatter.string(fromByteCount: demuxReadBytes, countStyle: .file)))
         }
         if let generatedAheadSeconds {
-            rows.append(("Generated ahead", String(format: "%.1f s", generatedAheadSeconds)))
-        }
-        if let generatedVisibleAheadSeconds {
-            rows.append(("Generated visible ahead", String(format: "%.1f s", generatedVisibleAheadSeconds)))
+            rows.append(Row(id: .generatedWrittenAhead, label: "Generated (written) ahead", value: String(format: "%.1f s", generatedAheadSeconds)))
         }
         if let generatedMediaBitrateBps {
-            rows.append(("Generated media bitrate", formatBitsPerSecond(generatedMediaBitrateBps)))
+            rows.append(Row(id: .generatedMediaBitrate, label: "Generated media bitrate", value: formatBitsPerSecond(generatedMediaBitrateBps)))
         }
         if let generatedSegmentCount {
-            rows.append(("Generated segments", "\(generatedSegmentCount)"))
+            rows.append(Row(id: .generatedSegments, label: "Generated segments", value: "\(generatedSegmentCount)"))
         }
         if let generatedSpilledSegmentCount {
-            rows.append(("Generated spilled segments", "\(generatedSpilledSegmentCount)"))
+            rows.append(Row(id: .generatedSpilledSegments, label: "Generated spilled segments", value: "\(generatedSpilledSegmentCount)"))
         }
         if let generatedLoopbackGeneration {
-            rows.append(("Loopback generation", "\(generatedLoopbackGeneration)"))
+            rows.append(Row(id: .loopbackGeneration, label: "Loopback generation", value: "\(generatedLoopbackGeneration)"))
         }
         if let generatedPlaylistMediaSequence {
-            rows.append(("Playlist media sequence", generatedPlaylistMediaSequence))
+            rows.append(Row(id: .playlistMediaSequence, label: "Playlist media sequence", value: generatedPlaylistMediaSequence))
         }
         if let generatedPlaylistVisibleRange {
-            rows.append(("Playlist visible range", generatedPlaylistVisibleRange))
+            rows.append(Row(id: .playlistVisibleRange, label: "Playlist visible range", value: generatedPlaylistVisibleRange))
         }
         if let generatedPlaylistBytes {
-            rows.append(("Playlist bytes", "\(generatedPlaylistBytes)"))
+            rows.append(Row(id: .playlistBytes, label: "Playlist bytes", value: "\(generatedPlaylistBytes)"))
         }
         if let generatedPlaylistHash {
-            rows.append(("Playlist hash", String(format: "%016llx", generatedPlaylistHash)))
+            rows.append(Row(id: .playlistHash, label: "Playlist hash", value: String(format: "%016llx", generatedPlaylistHash)))
         }
         if let generatedDurationSource {
-            rows.append(("Segment duration source", generatedDurationSource))
+            rows.append(Row(id: .segmentDurationSource, label: "Segment duration source", value: generatedDurationSource))
         }
         if let segmentStoreBytes {
             let value: String
@@ -280,7 +356,7 @@ extension PlaybackStats {
             } else {
                 value = ByteCountFormatter.string(fromByteCount: segmentStoreBytes, countStyle: .file)
             }
-            rows.append(("Generated store", value))
+            rows.append(Row(id: .generatedStore, label: "Generated store", value: value))
         }
         if let segmentStoreTempSpillBytes {
             var value = ByteCountFormatter.string(fromByteCount: segmentStoreTempSpillBytes, countStyle: .file)
@@ -290,36 +366,36 @@ extension PlaybackStats {
             if let segmentStoreTempSpillPercent {
                 value += String(format: " (%.1f%%)", segmentStoreTempSpillPercent)
             }
-            rows.append(("Generated temp spill", value))
+            rows.append(Row(id: .generatedTempSpill, label: "Generated temp spill", value: value))
         }
         if let segmentStoreDebugMirrorBytes {
-            rows.append(("Generated debug mirror", ByteCountFormatter.string(fromByteCount: segmentStoreDebugMirrorBytes, countStyle: .file)))
+            rows.append(Row(id: .generatedDebugMirror, label: "Generated debug mirror", value: ByteCountFormatter.string(fromByteCount: segmentStoreDebugMirrorBytes, countStyle: .file)))
         }
         if let segmentServerRequestCount {
-            rows.append(("HLS requests", "\(segmentServerRequestCount)"))
+            rows.append(Row(id: .hlsRequests, label: "HLS requests", value: "\(segmentServerRequestCount)"))
         }
         if let segmentServerBytesServed {
-            rows.append(("HLS served", ByteCountFormatter.string(fromByteCount: segmentServerBytesServed, countStyle: .file)))
+            rows.append(Row(id: .hlsServed, label: "HLS served", value: ByteCountFormatter.string(fromByteCount: segmentServerBytesServed, countStyle: .file)))
         }
         if let segmentServerLastLatencyMs {
-            rows.append(("HLS latency", String(format: "%.1f ms", segmentServerLastLatencyMs)))
+            rows.append(Row(id: .hlsLatency, label: "HLS latency", value: String(format: "%.1f ms", segmentServerLastLatencyMs)))
         }
         if let segmentServerWaitCount {
-            rows.append(("HLS waits", "\(segmentServerWaitCount)"))
+            rows.append(Row(id: .hlsWaits, label: "HLS waits", value: "\(segmentServerWaitCount)"))
         }
         return rows
     }
 
-    var deviceRows: [(String, String)] {
-        var rows: [(String, String)] = []
+    var deviceRows: [Row] {
+        var rows: [Row] = []
         if let deviceInfo, !deviceInfo.isEmpty {
-            rows.append(("Device", deviceInfo))
+            rows.append(Row(id: .device, label: "Device", value: deviceInfo))
         }
         if let freeDiskSpaceBytes {
-            rows.append(("Free disk space", ByteCountFormatter.string(fromByteCount: freeDiskSpaceBytes, countStyle: .file)))
+            rows.append(Row(id: .freeDiskSpace, label: "Free disk space", value: ByteCountFormatter.string(fromByteCount: freeDiskSpaceBytes, countStyle: .file)))
         }
         if let volumeAvailableCapacityBytes {
-            rows.append(("Volume available", ByteCountFormatter.string(fromByteCount: volumeAvailableCapacityBytes, countStyle: .file)))
+            rows.append(Row(id: .volumeAvailable, label: "Volume available", value: ByteCountFormatter.string(fromByteCount: volumeAvailableCapacityBytes, countStyle: .file)))
         }
         return rows
     }

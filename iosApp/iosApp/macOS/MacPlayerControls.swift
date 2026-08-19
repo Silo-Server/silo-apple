@@ -102,7 +102,7 @@ struct MacPlayerControls: View {
                 }
 
                 iconButton("chart.line.uptrend.xyaxis", help: "Stats and route") {
-                    selectedOptionsTab = .playback
+                    selectedOptionsTab = .stats
                     isOptionsPresented.toggle()
                 }
 

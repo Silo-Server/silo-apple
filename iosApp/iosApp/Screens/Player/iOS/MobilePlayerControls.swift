@@ -439,9 +439,8 @@ struct MobilePlayerControls: View {
     }
 
     private var bufferedFraction: Double? {
-        guard viewModel.duration > 0, viewModel.bufferedAheadSeconds > 0 else { return nil }
-        let end = (viewModel.currentTime + viewModel.bufferedAheadSeconds) / viewModel.duration
-        return min(max(end, 0), 1)
+        guard viewModel.playbackRunwaySeconds > 0 else { return nil }
+        return viewModel.bufferedFraction
     }
 
     /// Floating time + chapter readout pinned above the touch point while

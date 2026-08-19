@@ -78,8 +78,8 @@ struct PlayerCallbacks {
     var onError: ((PlaybackFailure) -> Void)?
     var onEndOfFile: (() -> Void)?
     var onBufferingChange: ((Bool) -> Void)?
-    /// Seconds buffered ahead of `currentTime`, from `loadedTimeRanges`.
-    var onBufferedAheadChange: ((Double) -> Void)?
+    /// Raw AVPlayer decode buffer plus the user-facing zero-network runway.
+    var onBufferedAheadChange: ((PlaybackBufferedAhead) -> Void)?
     var onPlaybackStatsChange: ((PlaybackStats) -> Void)?
     var onTracksChange: (([PlayerTrack]) -> Void)?
     var onChaptersChange: (([PlayerChapterInfo]) -> Void)?
@@ -216,11 +216,24 @@ class PlayerViewModel {
     /// persisted, so releasing always restores `settings.playbackSpeed`.
     var isHoldFastForwarding = false
 
-    /// Seconds of media buffered ahead of `currentTime`. Populated by
-    /// `AVPlayerBackend` (KVO on `loadedTimeRanges`); stays 0 until the
-    /// player item publishes a range, and the scrubber simply doesn't draw
-    /// the buffered layer until then.
+    /// Raw AVPlayer decode buffer ahead of `currentTime`. Diagnostics and the
+    /// near-end error heuristic only — the UI shows `playbackRunwaySeconds`.
+    /// Populated by `AVPlayerBackend` (KVO on `loadedTimeRanges`); stays 0
+    /// until the player item publishes a range.
     var bufferedAheadSeconds: Double = 0
+    /// Seconds of media that will play with zero network. What every
+    /// scrubber's buffered fill draws. On the loopback route this is normally
+    /// far larger than `bufferedAheadSeconds`, because AVPlayer's own buffer
+    /// is deliberately held small — a few segments
+    /// (`AVPlayerBackend.loopbackSteadyStateForwardBufferTarget`) — while the
+    /// local store runs minutes ahead.
+    var playbackRunwaySeconds: Double = 0
+    /// The scrubber buffered-fill fraction, defined once for all four
+    /// platform controls: playhead plus runway over duration, clamped.
+    var bufferedFraction: Double {
+        guard duration > 0 else { return 0 }
+        return min(max((currentTime + playbackRunwaySeconds) / duration, 0), 1)
+    }
     var playbackStats: PlaybackStats = .empty
     var showNextUpScreen = false
     var nextUpEpisode: PlayerNextUpEpisode?
@@ -1337,15 +1350,17 @@ class PlayerViewModel {
                 cause: buffering ? "buffer_empty" : "likely_to_keep_up"
             )
         }
-        cb.onBufferedAheadChange = { [weak self] seconds in
+        cb.onBufferedAheadChange = { [weak self] ahead in
             guard let self,
                   !self.isDisposed,
-                  seconds.isFinite,
+                  ahead.playableAheadSeconds.isFinite,
+                  ahead.runwaySeconds.isFinite,
                   Self.isCurrentStreamCallback(
                       callbackGeneration,
                       currentGeneration: self.streamLoadGeneration
                   ) else { return }
-            self.bufferedAheadSeconds = max(0, seconds)
+            self.bufferedAheadSeconds = max(0, ahead.playableAheadSeconds)
+            self.playbackRunwaySeconds = max(0, ahead.runwaySeconds)
         }
         cb.onPlaybackStatsChange = { [weak self] stats in
             guard let self,
@@ -1354,12 +1369,20 @@ class PlayerViewModel {
                       callbackGeneration,
                       currentGeneration: self.streamLoadGeneration
                   ) else { return }
-            var enrichedStats = stats
-            self.applySourceCacheStats(&enrichedStats)
-            self.applyFileBitrateStats(&enrichedStats)
-            self.applySourceOriginLabel(&enrichedStats)
-            self.applyRuntimeDynamicRangeBadge(enrichedStats)
-            self.playbackStats = enrichedStats
+            let composed = PlaybackStatsComposer.compose(
+                PlaybackStatsComposer.Inputs(
+                    backend: stats,
+                    proxy: self.sourceProxy?.stats(),
+                    engine: self.activeExecutionPlan?.engine,
+                    nominalFileBitrateBps: self.currentSelectedVersion?.bitrate
+                        .flatMap { $0 > 0 ? Double($0) * 1_000 : nil },
+                    originHost: self.activeExecutionPlan.flatMap(Self.originHost(for:))
+                )
+            )
+            self.playbackStats = composed
+            // Separate step, deliberately not part of stats composition: this
+            // writes `metadata.badges`, which is player chrome, not telemetry.
+            self.reconcileDynamicRangeBadge(with: composed.confirmedDynamicRange)
         }
         cb.onEndOfFile = { [weak self] in
             guard let self,
@@ -3476,6 +3499,7 @@ class PlayerViewModel {
         selectedSubtitleId = nil
         selectedSecondarySubtitleId = nil
         bufferedAheadSeconds = 0
+        playbackRunwaySeconds = 0
         stashSourceCacheHandoff()
         sourceProxy?.stop()
         sourceProxy = nil
@@ -6655,33 +6679,13 @@ class PlayerViewModel {
         )
     }
 
-    private func applyFileBitrateStats(_ stats: inout PlaybackStats) {
-        if stats.averageFileBitrateBps == nil,
-           let bitrateKbps = currentSelectedVersion?.bitrate,
-           bitrateKbps > 0 {
-            stats.averageFileBitrateBps = Double(bitrateKbps) * 1_000
-        }
-        let currentBitrateBps = stats.sourceOriginBitrateBps ?? stats.currentDownloadBitrateBps
-        if let currentDownloadBitrateBps = currentBitrateBps,
-           let averageFileBitrateBps = stats.averageFileBitrateBps,
-           averageFileBitrateBps > 0 {
-            stats.streamSpeed = currentDownloadBitrateBps / averageFileBitrateBps
-        }
-    }
-
     /// Backends report the source they were handed, which behind the
     /// source proxy or loopback is the in-app 127.0.0.1 server — an
-    /// implementation detail, not the origin. Rewrite it to the true
-    /// origin host from the active plan for the HUD.
-    private func applySourceOriginLabel(_ stats: inout PlaybackStats) {
-        guard let source = stats.source else { return }
-        let localTokens: Set<String> = ["127.0.0.1", "localhost", "::1", "local"]
-        guard localTokens.contains(source), let plan = activeExecutionPlan else { return }
-        let origin = plan.sourceStreamRequest.url.host
+    /// implementation detail, not the origin. `PlaybackStatsComposer` swaps
+    /// this in for the HUD.
+    private static func originHost(for plan: PlaybackExecutionPlan) -> String? {
+        plan.sourceStreamRequest.url.host
             ?? URL(string: plan.sourceStreamRequest.serverUrl)?.host
-        if let origin {
-            stats.source = origin
-        }
     }
 
     /// The session metadata is available before the engine has inspected its
@@ -6696,8 +6700,8 @@ class PlayerViewModel {
     /// unavailable, so matching on it claims Dolby Vision for pictures
     /// rendering as plain HDR10. A `nil` confirmation means "not determined
     /// yet" and leaves the source-derived badge untouched.
-    private func applyRuntimeDynamicRangeBadge(_ stats: PlaybackStats) {
-        guard let confirmed = stats.confirmedDynamicRange else { return }
+    private func reconcileDynamicRangeBadge(with confirmed: PlaybackStats.ConfirmedDynamicRange?) {
+        guard let confirmed else { return }
 
         let replacement: String?
         switch confirmed {
@@ -6722,26 +6726,6 @@ class PlayerViewModel {
 
         guard metadata.badges != expectedBadges else { return }
         metadata.badges = expectedBadges
-    }
-
-    private func applySourceCacheStats(_ stats: inout PlaybackStats) {
-        guard let sourceProxy else { return }
-        let sourceStats = sourceProxy.stats()
-        stats.sourceCacheBytes = sourceStats.cachedBytes
-        stats.sourceCacheBudgetBytes = sourceStats.cacheBudgetBytes
-        stats.sourceCacheHighWaterBytes = sourceStats.highWaterBytes
-        stats.sourceCacheLowWaterBytes = sourceStats.lowWaterBytes
-        stats.sourceCacheForwardBytes = sourceStats.forwardCachedBytes
-        stats.sourceCacheAheadSeconds = sourceStats.estimatedForwardCacheAheadSeconds
-        stats.sourceCacheHitBytes = sourceStats.cacheHitBytes
-        stats.sourceCacheMissBytes = sourceStats.cacheMissBytes
-        stats.sourceActiveOriginRequestCount = sourceStats.activeOriginRequestCount
-        stats.sourceDiskSpillBytes = sourceStats.diskSpillBytes
-        stats.sourceDiskBytesWritten = sourceStats.diskBytesWritten
-        stats.sourceOriginBytesTransferred = sourceStats.originBytesTransferred
-        stats.sourceOriginBitrateBps = sourceStats.currentOriginBitrateBps
-        stats.sourceResumeCapable = sourceStats.resumeCapable
-        stats.sourceResumeServerAdvertised = sourceStats.serverAdvertisesDirectStreamResume
     }
 
     /// Loopback spec for a route-fallback plan. Routed through the planner so

@@ -539,12 +539,27 @@ final class AVPlayerBackend {
         )
     }
 
-    /// Forward-buffer target for the local DV loopback. The static VOD
-    /// playlist keeps AVPlayer's explicit target at one nominal segment;
-    /// resilience comes from the disk-backed producer/cache window instead:
-    /// AVPlayer stays paced while ten forward segments remain immediately
-    /// fetchable. This mirrors AetherEngine's proven loopback-HLS policy.
-    static let loopbackSteadyStateForwardBufferTarget = loopbackStartupForwardBuffer
+    /// Forward-buffer target applied once the first frame is on screen. Larger
+    /// than the startup target: startup optimizes for time-to-first-frame
+    /// (AVPlayer declares ready as soon as one fragment is decodable), while
+    /// steady state optimizes for riding out origin jitter on a high-bitrate
+    /// source. 12 s is ~3 nominal segments of headroom, which the bounded
+    /// producer window can sustain without forcing store eviction of segments
+    /// AVPlayer may still request.
+    ///
+    /// NOT YET DEVICE-VALIDATED: raising this from an effective 4 s changes how
+    /// far AVPlayer runs ahead of the bounded producer/store window. On a
+    /// constrained-memory Apple TV (`PlaybackSourceCache.isConstrainedMemoryDevice`)
+    /// with a high-bitrate DV/TrueHD source, a larger forward buffer can pull
+    /// segments faster than the store's memory budget retains them. Validate on
+    /// a real constrained Apple TV before release — 4K DV P7 + TrueHD, two
+    /// seeks, confirm no `edge_watchdog` escalation, no `item buffer empty`
+    /// bursts, and `Generated temp spill` within budget; record the run under
+    /// `docs/tvos-player/validations/`. Constrained-memory devices take the
+    /// conservative `8.0` tier until that run exists, matching how the source
+    /// cache, proxy, and writer already gate their budgets.
+    static let loopbackSteadyStateForwardBufferTarget: Double =
+        PlaybackSourceCache.isConstrainedMemoryDevice ? 8.0 : 12.0
 
     /// The `reason` is a log token only (`LoopbackSegmentStore` prints it at
     /// construction and nothing else reads it) — it names why the disk cache
@@ -565,7 +580,7 @@ final class AVPlayerBackend {
     var onError: ((PlaybackFailure) -> Void)?
     var onEndOfFile: (() -> Void)?
     var onBufferingChange: ((Bool) -> Void)?
-    var onBufferedAheadChange: ((Double) -> Void)?
+    var onBufferedAheadChange: ((PlaybackBufferedAhead) -> Void)?
     var onPlaybackStatsChange: ((PlaybackStats) -> Void)?
     var onTracksChange: (([PlayerTrack]) -> Void)?
     var onChaptersChange: (([PlayerChapterInfo]) -> Void)?
@@ -644,7 +659,7 @@ final class AVPlayerBackend {
               case .some(.siloLoopback) = currentSourceStrategy,
               !isUserPaused,
               avPlayer.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
-        let bufferedAhead = bufferedAheadSeconds(for: item, referenceTime: currentTime()) ?? 0
+        let bufferedAhead = playableAheadSeconds(for: item, referenceTime: currentTime())
         guard bufferedAhead < 2.0 else { return }
         cmpLog("[CMP-OUTAGE] post-outage playback kick pos=\(currentTime()) bufAhead=\(bufferedAhead)")
         performVODStallRecovery(attempt: 1, frozenPosition: currentTime())
@@ -751,9 +766,13 @@ final class AVPlayerBackend {
     private var mediaTimelineOffsetSeconds: Double = 0
     private var serverChapters: [PlayerChapterInfo] = []
     private var currentLoopbackAudioTracks: [PlayerTrack] = []
-    private var bufferLoadCount = 0
+    private var rebufferCount = 0
+    /// How long after a seek settles an `isPlaybackBufferEmpty` transition is
+    /// still attributed to that seek rather than to a rebuffer.
+    private static let rebufferSeekGraceSeconds: CFTimeInterval = 1.5
+    private var lastSeekSettledAt: CFTimeInterval = 0
     private var lastStatsEmitWall: CFTimeInterval = 0
-    private var loopbackSourceDownloadBitrateBps: Double?
+    private var loopbackDemuxReadBitrateBps: Double?
     private var loopbackHDR10PlusDetected = false
     private var loopbackSourceBytesRead: Int64?
     private var latestLoopbackGeneratedStats: LoopbackSegmentWriter.GeneratedMediaStats?
@@ -1144,6 +1163,13 @@ final class AVPlayerBackend {
             // at the requested target — the frozen clock still reports the
             // pre-seek position.
             vodPendingSeekMediaTarget = mediaSeconds
+            // The generated-media snapshot describes the OLD anchor. A
+            // backward seek would otherwise inflate the runway (and every
+            // scrubber's buffered fill) with a playlist tail whose media was
+            // retired behind the previous playhead, until the restarted
+            // producer finalizes its first segment and re-emits. Drop it;
+            // runway honestly falls back to the decode buffer meanwhile.
+            latestLoopbackGeneratedStats = nil
         }
 
         let time = CMTime(seconds: playerSeconds, preferredTimescale: 600)
@@ -1167,7 +1193,7 @@ final class AVPlayerBackend {
                 return
             }
             guard seekItem === self.currentItem else { return }
-            self.isSeekPending = false
+            self.markSeekSettled()
             self.vodPendingSeekMediaTarget = nil
             let landed = self.avPlayer.currentTime().seconds
             let mediaTime = self.mediaTime(for: landed)
@@ -1210,13 +1236,21 @@ final class AVPlayerBackend {
         return true
     }
 
+    /// The only way a seek stops being pending. Clearing `isSeekPending`
+    /// without stamping `lastSeekSettledAt` would let the very next
+    /// buffer-empty count as a rebuffer, so the pair is structural here.
+    private func markSeekSettled() {
+        isSeekPending = false
+        lastSeekSettledAt = CACurrentMediaTime()
+    }
+
     private func cancelSeekDeadline() {
         seekDeadlineWorkItem?.cancel()
         seekDeadlineWorkItem = nil
         releaseSupersededInitialSeekGateIfNeeded()
         activeSeekDeadlineKind = nil
         seekDeadlineState.cancel()
-        isSeekPending = false
+        markSeekSettled()
         vodPendingSeekMediaTarget = nil
     }
 
@@ -1232,7 +1266,7 @@ final class AVPlayerBackend {
         item: AVPlayerItem?
     ) {
         guard completeSeekDeadline(id), item === currentItem else { return }
-        isSeekPending = false
+        markSeekSettled()
         // Clearing `isSeekPending` is all the deadline owes the watchdogs.
         // Whether the seek itself is discarded depends on the kind: a
         // `.recovery` seek from an item reload is issued right after
@@ -1316,7 +1350,7 @@ final class AVPlayerBackend {
         avPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             guard let self, !self.isDisposed else { return }
             guard self.completeSeekDeadline(seekID) else { return }
-            self.isSeekPending = false
+            self.markSeekSettled()
             Self.logger.info(
                 "[CMP-SEEK] recovery seek complete reason=\(reason, privacy: .public) finished=\(finished, privacy: .public)"
             )
@@ -1715,9 +1749,10 @@ final class AVPlayerBackend {
         currentLoopbackAudioTracks = Self.normalizedLoopbackAudioTracks(for: strategy)
         configureEmbeddedSubtitleExtraction(for: strategy)
         setLoopbackPlaybackClock(0)
-        bufferLoadCount = 0
+        rebufferCount = 0
+        lastSeekSettledAt = 0
         lastStatsEmitWall = 0
-        loopbackSourceDownloadBitrateBps = nil
+        loopbackDemuxReadBitrateBps = nil
         loopbackHDR10PlusDetected = false
         loopbackSourceBytesRead = nil
         latestLoopbackGeneratedStats = nil
@@ -1920,11 +1955,10 @@ final class AVPlayerBackend {
 
         let itemURL = replacementURL ?? asset.url
         let item = AVPlayerItem(asset: AVURLAsset(url: itemURL))
-        item.preferredForwardBufferDuration = max(
-            oldItem.preferredForwardBufferDuration,
-            Self.loopbackStartupForwardBuffer
+        applyLoopbackItemBufferPolicy(
+            to: item,
+            phase: canRampLoopbackBufferToSteadyState ? .steadyState : .startup
         )
-        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         currentItem = item
         attachItemObservers(item)
         // A fresh item has not played to its end, whatever the retired one
@@ -2159,8 +2193,8 @@ final class AVPlayerBackend {
             DispatchQueue.main.async {
                 guard let self, !self.isDisposed else { return }
                 guard self.activeLoopbackSessionID == sessionID else { return }
-                let previousBitrate = self.loopbackSourceDownloadBitrateBps
-                self.loopbackSourceDownloadBitrateBps = bitsPerSecond
+                let previousBitrate = self.loopbackDemuxReadBitrateBps
+                self.loopbackDemuxReadBitrateBps = bitsPerSecond
                 self.loopbackSourceBytesRead = totalBytesRead
                 self.emitPlaybackStats(referenceTime: self.currentTime(), force: true)
                 if let bitsPerSecond {
@@ -2170,10 +2204,9 @@ final class AVPlayerBackend {
                         "[CMP-AVP] loopback source rate=\(String(format: "%.1f", mbps), privacy: .public)Mbps totalRead=\(String(format: "%.1f", mib), privacy: .public)MiB"
                     )
                 }
-                // First measurable bitrate (or a meaningful change) — re-
-                // evaluate the steady-state forward buffer so a high-
-                // bitrate source doesn't sit on the conservative 30 s
-                // default after the gate has already been released.
+                // First measurable source bitrate — re-evaluate the
+                // steady-state forward buffer, since the gate may already
+                // have released before any rate was known.
                 if previousBitrate == nil, bitsPerSecond != nil,
                    let item = self.currentItem,
                    self.canRampLoopbackBufferToSteadyState {
@@ -2350,29 +2383,24 @@ final class AVPlayerBackend {
         // For the local DV loopback the writer produces segments much faster
         // than realtime against a localhost server, so AVPlayer's default
         // automatic buffer-up was waiting for many of the source's long
-        // (~30s, one per GOP) fragments before declaring readyToPlay. Tell
-        // it to start as soon as the first fragment is decodable and cap
-        // forward buffer at one fragment-equivalent for *startup only*.
+        // (~30s, one per GOP) fragments before declaring readyToPlay. The
+        // startup phase therefore disables
+        // `automaticallyWaitsToMinimizeStalling` and caps the forward buffer
+        // at `loopbackStartupForwardBuffer` (one fragment-equivalent) so the
+        // first frame lands as soon as it is decodable.
         //
         // After the initial-video-display gate releases (see
-        // `finishInitialVideoDisplayGate`) we ramp the forward buffer up
-        // to `loopbackSteadyStateForwardBuffer` and re-enable
-        // `automaticallyWaitsToMinimizeStalling` so AVPlayer can ride out
-        // network jitter on high-bitrate sources where the WAN headroom
-        // over the source's bitrate is small (e.g. 4K DV at 72 Mbps over
-        // 80 Mbps).
+        // `finishInitialVideoDisplayGate` →
+        // `rampLoopbackBufferToSteadyStateIfNeeded`) the item moves to the
+        // steady-state phase: `loopbackSteadyStateForwardBufferTarget` and
+        // automatic waiting back on, so AVPlayer can ride out origin jitter
+        // on high-bitrate sources where headroom over the source's bitrate is
+        // small (e.g. 4K DV at 72 Mbps over 80 Mbps).
         //
-        // Remote routes keep AVPlayer's defaults since automatic buffering
-        // is genuinely useful over the WAN.
-        if case .siloLoopback = currentSourceStrategy {
-            avPlayer.automaticallyWaitsToMinimizeStalling = false
-            item.preferredForwardBufferDuration = Self.loopbackStartupForwardBuffer
-            // Do not let AVPlayer poll the local EVENT playlist while paused.
-            // Under disk pressure the writer may pause appends until playback
-            // frees spill capacity; paused polling can therefore see an
-            // unchanged playlist long enough for CoreMedia to fail the item.
-            item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
-        }
+        // Both phases are written in exactly one place,
+        // `applyLoopbackItemBufferPolicy(to:phase:)`, which also no-ops on the
+        // remote routes since automatic buffering is genuinely useful there.
+        applyLoopbackItemBufferPolicy(to: item, phase: .startup)
         currentItem = item
         beginInitialVideoDisplayGate()
         attachItemObservers(item)
@@ -2579,26 +2607,47 @@ final class AVPlayerBackend {
     }
     #endif
 
+    /// Empty-state semantics: `0` when an item exists but nothing covering the
+    /// playhead is loaded; **no emission at all** when there is no item, so the
+    /// view model keeps its last value.
     private func emitBufferedAhead(referenceTime: Double) {
         guard let item = currentItem, referenceTime.isFinite else { return }
-        let ranges = item.loadedTimeRanges.map { $0.timeRangeValue }
-        guard !ranges.isEmpty else {
-            onBufferedAheadChange?(0)
-            return
-        }
+        let playable = playableAheadSeconds(for: item, referenceTime: referenceTime)
+        onBufferedAheadChange?(
+            PlaybackBufferedAhead(
+                playableAheadSeconds: playable,
+                runwaySeconds: runwaySeconds(
+                    for: item,
+                    referenceTime: referenceTime,
+                    playableAhead: playable
+                )
+            )
+        )
+    }
 
-        let aheadEnd = ranges
-            .compactMap { range -> Double? in
-                let start = range.start.seconds
-                let end = (range.start + range.duration).seconds
-                guard start.isFinite, end.isFinite, end > referenceTime else {
-                    return nil
-                }
-                return start <= referenceTime ? end : nil
-            }
-            .max() ?? referenceTime
-
-        onBufferedAheadChange?(max(0, aheadEnd - referenceTime))
+    /// Main thread only: reads `latestLoopbackGeneratedStats`, which is written
+    /// via `DispatchQueue.main.async` in `writer.onGeneratedMediaStats`, and is
+    /// only ever called from main-thread paths (the periodic time observer is
+    /// installed with `queue: .main`, the `loadedTimeRanges` KVO handler hops
+    /// to main, and the stats snapshot is `@MainActor`). Deliberately NOT
+    /// marked `@MainActor`: `AVPlayerBackend` is not a `@MainActor` class and
+    /// `emitBufferedAhead` is nonisolated, so a synchronous call into a
+    /// `@MainActor` method would not compile. The class is main-confined by
+    /// construction; do not introduce a hop.
+    private func runwaySeconds(
+        for item: AVPlayerItem,
+        referenceTime: Double,
+        playableAhead: Double
+    ) -> Double {
+        // `latestLoopbackGeneratedStats` is non-nil only on the loopback
+        // route (written solely by the session-gated writer callback), so its
+        // nilness already encodes the route.
+        let visibleAhead = latestLoopbackGeneratedStats
+            .map { max(0, $0.playlistVisibleEndSeconds - referenceTime) }
+        return PlaybackRunwayPolicy.runwaySeconds(
+            playableAheadSeconds: playableAhead,
+            generatedVisibleAheadSeconds: visibleAhead
+        )
     }
 
     private func emitPlaybackStats(referenceTime: Double, force: Bool = false) {
@@ -2646,11 +2695,24 @@ final class AVPlayerBackend {
         stats.screenFrameRate = PlatformScreen.maximumFramesPerSecond
         stats.playbackRate = Double(avPlayer.rate == 0 ? avPlayer.defaultRate : avPlayer.rate)
         stats.bufferStatus = bufferStatus(for: item)
-        stats.bufferedAheadSeconds = bufferedAheadSeconds(for: item, referenceTime: referenceTime)
-        stats.bufferLoadCount = bufferLoadCount
+        stats.playableAheadSeconds = playableAheadSeconds(for: item, referenceTime: referenceTime)
+        stats.runwaySeconds = runwaySeconds(
+            for: item,
+            referenceTime: referenceTime,
+            playableAhead: stats.playableAheadSeconds ?? 0
+        )
+        stats.rebufferCount = rebufferCount
+        // AVPlayer's own transport figures, published only on routes where its
+        // item URL is the origin. Behind the proxy or the loopback server they
+        // describe a 127.0.0.1 socket, and the stats panel would print that
+        // local-read rate as "Observed bitrate" beside the proxy-derived
+        // "Download rate". Those routes get their honest transport numbers
+        // from the proxy, reconciled in `PlaybackStatsComposer`.
         stats.observedBitrateBps = observedBitrate
-        stats.indicatedBitrateBps = indicatedBitrate
-        stats.currentDownloadBitrateBps = observedBitrate ?? loopbackSourceDownloadBitrateBps
+        stats.indicatedBitrateBps = shouldPublishNetworkStats ? indicatedBitrate : nil
+        // The backend publishes only what it measures itself; the route's
+        // download rate is the composer's call.
+        stats.demuxReadRateBps = loopbackDemuxReadBitrateBps
         if let segmentStats = segmentStore?.stats() {
             stats.generatedAheadSeconds = max(0, segmentStats.generatedMediaSeconds - referenceTime)
             stats.generatedSegmentCount = segmentStats.segmentCount
@@ -2683,32 +2745,32 @@ final class AVPlayerBackend {
             stats.generatedPlaylistHash = generatedStats.playlistBodyHash
             stats.generatedDurationSource = generatedStats.durationSource
         }
-        if let observedBitrate, let indicatedBitrate, indicatedBitrate > 0 {
-            stats.streamSpeed = observedBitrate / indicatedBitrate
-        } else if let loopbackSourceDownloadBitrateBps,
-                  let averageFileBitrateBps = stats.averageFileBitrateBps,
-                  averageFileBitrateBps > 0 {
-            stats.streamSpeed = loopbackSourceDownloadBitrateBps / averageFileBitrateBps
-        }
         if shouldPublishNetworkStats,
            let bytes = accessEvent?.numberOfBytesTransferred,
            bytes > 0 {
-            stats.bytesTransferred = bytes
-        } else if !shouldPublishNetworkStats {
-            stats.bytesTransferred = loopbackSourceBytesRead
+            stats.networkBytesTransferred = bytes
         }
+        stats.demuxReadBytes = loopbackSourceBytesRead
         stats.deviceInfo = Self.deviceInfo()
         stats.freeDiskSpaceBytes = Self.freeDiskSpaceBytes()
         stats.volumeAvailableCapacityBytes = Self.volumeAvailableCapacityBytes()
         onPlaybackStatsChange?(stats)
     }
 
+    /// True only when AVPlayer's own transport is the one talking to the
+    /// origin, which is what makes its access log a network measurement.
+    ///
+    /// `.siloLoopback` always reads the in-app segment server, and a proxied
+    /// `.remoteDirect` item points at the 127.0.0.1 `PlaybackSourceProxy`, so
+    /// on both the access log measures a loopback socket. An unproxied
+    /// `.remoteDirect` — an offline `file://` source, or a proxy that failed
+    /// to start — still fetches the origin itself and keeps these figures.
     private var publishesRemoteAccessLogNetworkStats: Bool {
         switch currentSourceStrategy {
         case .siloLoopback:
             return false
-        case .remoteHLS, .remoteDirect:
-            return true
+        case .remoteHLS(let url, _), .remoteDirect(let url, _):
+            return !Self.isLoopbackHost(url.host)
         case .none:
             return false
         }
@@ -2895,8 +2957,13 @@ final class AVPlayerBackend {
         return "Filling"
     }
 
-    private func bufferedAheadSeconds(for item: AVPlayerItem, referenceTime: Double) -> Double? {
-        loadedRangeEnd(for: item, referenceTime: referenceTime).map { max(0, $0 - referenceTime) }
+    /// Raw AVPlayer decode buffer ahead of `referenceTime`, from
+    /// `loadedTimeRanges`. `0` when an item exists but nothing covering the
+    /// playhead is loaded. The recovery ladder and both watchdogs consume this
+    /// value and nothing else — it is deliberately NOT the user-facing runway
+    /// (see `PlaybackRunwayPolicy`).
+    private func playableAheadSeconds(for item: AVPlayerItem, referenceTime: Double) -> Double {
+        loadedRangeEnd(for: item, referenceTime: referenceTime).map { max(0, $0 - referenceTime) } ?? 0
     }
 
     private func loadedRangeEnd(for item: AVPlayerItem, referenceTime: Double) -> Double? {
@@ -2977,7 +3044,7 @@ final class AVPlayerBackend {
         let stationaryFor = watchdogLastAdvanceWall > 0 ? now - watchdogLastAdvanceWall : 0
 
         let timeControlStatus = avPlayer.timeControlStatus
-        let bufferedAhead = bufferedAheadSeconds(for: item, referenceTime: position) ?? 0
+        let bufferedAhead = playableAheadSeconds(for: item, referenceTime: position)
         let generatedEnd = latestLoopbackGeneratedStats?.playlistVisibleEndSeconds
             ?? segmentStore?.stats().generatedMediaSeconds
             ?? 0
@@ -3301,7 +3368,16 @@ final class AVPlayerBackend {
             DispatchQueue.main.async { [weak self] in
                 guard let self, !self.isDisposed else { return }
                 if item.isPlaybackBufferEmpty {
-                    self.bufferLoadCount += 1
+                    // A seek empties the decode buffer by definition, and so
+                    // does the initial fill before the first frame; counting
+                    // either made the figure a seek/startup counter. Only
+                    // unattributed empties after playback established are
+                    // rebuffers.
+                    if self.didFireFileLoaded,
+                       !self.isSeekPending,
+                       CACurrentMediaTime() - self.lastSeekSettledAt >= Self.rebufferSeekGraceSeconds {
+                        self.rebufferCount += 1
+                    }
                     if case .siloLoopback = self.currentSourceStrategy {
                         Self.logger.info(
                             "[CMP-AVP] item buffer empty current=\(self.currentTime(), privacy: .public) loadedRanges=\(self.describeLoadedRanges(item), privacy: .public)"
@@ -3613,7 +3689,7 @@ final class AVPlayerBackend {
         guard now - lastLocalLoopbackStallRecoveryAt >= 10 else { return }
         let playerSeconds = currentTime()
         guard playerSeconds.isFinite else { return }
-        let bufferedAhead = bufferedAheadSeconds(for: item, referenceTime: playerSeconds) ?? 0
+        let bufferedAhead = playableAheadSeconds(for: item, referenceTime: playerSeconds)
         guard !requireBufferedEdge || bufferedAhead <= 0.5 else { return }
         let generatedEnd = latestLoopbackGeneratedStats?.playlistVisibleEndSeconds
             ?? segmentStore?.stats().generatedMediaSeconds
@@ -3643,7 +3719,7 @@ final class AVPlayerBackend {
               avPlayer.rate == 0 else { return }
         let playerSeconds = currentTime()
         guard playerSeconds.isFinite else { return }
-        let bufferedAhead = bufferedAheadSeconds(for: item, referenceTime: playerSeconds) ?? 0
+        let bufferedAhead = playableAheadSeconds(for: item, referenceTime: playerSeconds)
         guard item.isPlaybackLikelyToKeepUp || bufferedAhead > 0.5 else { return }
         Self.logger.info(
             "[CMP-AVP] local loopback auto resume trigger=\(trigger, privacy: .public) player=\(playerSeconds, privacy: .public) bufferedAhead=\(bufferedAhead, privacy: .public)"
@@ -3690,7 +3766,7 @@ final class AVPlayerBackend {
                 )
                 return
             }
-            self.isSeekPending = false
+            self.markSeekSettled()
             self.isInitialSeekInFlight = false
 
             let landed = self.avPlayer.currentTime().seconds
@@ -3871,10 +3947,7 @@ final class AVPlayerBackend {
         cmpLog("[CMP-AVP] startup watchdog reloading item in place url=\(loggableURLDescription(url))")
         detachPerItemObservers()
         let item = AVPlayerItem(asset: AVURLAsset(url: url))
-        if case .siloLoopback = currentSourceStrategy {
-            item.preferredForwardBufferDuration = Self.loopbackStartupForwardBuffer
-            item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
-        }
+        applyLoopbackItemBufferPolicy(to: item, phase: .startup)
         currentItem = item
         attachItemObservers(item)
         // Fresh item: the end-of-item latch belongs to the retired one.
@@ -4094,9 +4167,35 @@ final class AVPlayerBackend {
         )
     }
 
+    private enum LoopbackBufferPhase {
+        case startup
+        case steadyState
+    }
+
+    /// The single place AVPlayer's buffering policy is set for a loopback
+    /// item. Remote routes keep AVFoundation's defaults — automatic buffering
+    /// is genuinely useful over the WAN — so this returns without touching
+    /// anything unless the active strategy is `.siloLoopback`.
+    private func applyLoopbackItemBufferPolicy(to item: AVPlayerItem, phase: LoopbackBufferPhase) {
+        guard case .some(.siloLoopback) = currentSourceStrategy else { return }
+        switch phase {
+        case .startup:
+            avPlayer.automaticallyWaitsToMinimizeStalling = false
+            item.preferredForwardBufferDuration = Self.loopbackStartupForwardBuffer
+        case .steadyState:
+            avPlayer.automaticallyWaitsToMinimizeStalling = true
+            item.preferredForwardBufferDuration = Self.loopbackSteadyStateForwardBufferTarget
+        }
+        // Do not let AVPlayer poll the local EVENT playlist while paused:
+        // under disk pressure the writer may pause appends until playback
+        // frees spill capacity, and paused polling can then see an unchanged
+        // playlist long enough for CoreMedia to fail the item.
+        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+    }
+
     /// Once the first frame is on screen, apply the steady-state target and
-    /// re-enable automatic waiting. Static VOD playlists stay near one segment
-    /// so AVPlayer cannot outrun the bounded producer window.
+    /// re-enable automatic waiting. The mutation itself goes through
+    /// `applyLoopbackItemBufferPolicy(to:phase:)` so there is one writer.
     private func rampLoopbackBufferToSteadyStateIfNeeded(for item: AVPlayerItem) {
         guard case .siloLoopback(let spec) = currentSourceStrategy else { return }
         guard canRampLoopbackBufferToSteadyState else { return }
@@ -4106,12 +4205,9 @@ final class AVPlayerBackend {
         let shouldRaiseForwardBuffer = item.preferredForwardBufferDuration < target
         let shouldEnableAutomaticWaiting = !avPlayer.automaticallyWaitsToMinimizeStalling
         guard shouldRaiseForwardBuffer || shouldEnableAutomaticWaiting else { return }
-        if shouldRaiseForwardBuffer {
-            item.preferredForwardBufferDuration = target
-        }
-        avPlayer.automaticallyWaitsToMinimizeStalling = true
+        applyLoopbackItemBufferPolicy(to: item, phase: .steadyState)
         Self.logger.info(
-            "[CMP-AVP] loopback buffer ramp forwardBuffer=\(target, privacy: .public)s automaticallyWaits=1 mediaBitrate=\(mediaBitrate ?? 0, privacy: .public)bps generatedBitrate=\(generatedStats?.rollingBitrateBps ?? 0, privacy: .public)bps declaredBitrate=\(spec.sourceBitrateBps ?? 0, privacy: .public)bps sourceReadBitrate=\(self.loopbackSourceDownloadBitrateBps ?? 0, privacy: .public)bps targetDuration=\(generatedStats?.targetDuration ?? 0, privacy: .public) longestSegment=\(generatedStats?.longestSegmentDuration ?? 0, privacy: .public)"
+            "[CMP-AVP] loopback buffer ramp forwardBuffer=\(target, privacy: .public)s automaticallyWaits=1 mediaBitrate=\(mediaBitrate ?? 0, privacy: .public)bps generatedBitrate=\(generatedStats?.rollingBitrateBps ?? 0, privacy: .public)bps declaredBitrate=\(spec.sourceBitrateBps ?? 0, privacy: .public)bps sourceReadBitrate=\(self.loopbackDemuxReadBitrateBps ?? 0, privacy: .public)bps targetDuration=\(generatedStats?.targetDuration ?? 0, privacy: .public) longestSegment=\(generatedStats?.longestSegmentDuration ?? 0, privacy: .public)"
         )
     }
 

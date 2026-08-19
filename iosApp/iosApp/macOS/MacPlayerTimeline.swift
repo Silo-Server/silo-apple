@@ -24,9 +24,7 @@ struct MacPlayerTimeline: View {
     }
 
     private var bufferedFraction: Double {
-        guard viewModel.duration > 0 else { return 0 }
-        let end = viewModel.currentTime + viewModel.bufferedAheadSeconds
-        return min(max(end / viewModel.duration, 0), 1)
+        viewModel.bufferedFraction
     }
 
     var body: some View {

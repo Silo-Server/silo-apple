@@ -77,9 +77,7 @@ struct TVPlayerScrubber: View {
     }
 
     private var bufferedFraction: Double {
-        guard viewModel.duration > 0 else { return 0 }
-        let end = viewModel.currentTime + viewModel.bufferedAheadSeconds
-        return min(max(end / viewModel.duration, 0), 1)
+        viewModel.bufferedFraction
     }
 
     private var displayTime: Double {
@@ -191,7 +189,7 @@ struct TVPlayerScrubber: View {
                     .frame(width: width * progressFraction, height: trackHeight)
 
                 // Buffered-ahead sliver: only the region *between* the
-                // playhead and the end of the loaded range. Rendering from
+                // playhead and the end of the local runway. Rendering from
                 // x=0 would put it entirely under the played fill (invisible)
                 // and mis-represent the semantic — buffer is inherently a
                 // forward-looking indicator.

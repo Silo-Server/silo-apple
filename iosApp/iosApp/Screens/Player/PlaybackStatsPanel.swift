@@ -51,12 +51,12 @@ struct PlaybackStatsPanel: View {
     /// inert (no scrolling) without clipping anything.
     private var plainList: some View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 4) {
-            ForEach(stats.compactRows, id: \.0) { row in
+            ForEach(stats.compactRows) { row in
                 GridRow {
-                    Text("\(row.0):")
+                    Text("\(row.label):")
                         .foregroundStyle(.white.opacity(0.58))
                         .gridColumnAlignment(.leading)
-                    Text(row.1)
+                    Text(row.value)
                         .foregroundStyle(.white.opacity(0.95))
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -112,12 +112,12 @@ struct PlaybackStatsPanel: View {
                 Color.clear
                     .frame(height: 1)
             }
-            ForEach(section.rows, id: \.0) { row in
+            ForEach(section.rows) { row in
                 GridRow {
-                    Text(row.0)
+                    Text(row.label)
                         .font(labelFont)
                         .foregroundStyle(.white.opacity(0.74))
-                    Text(row.1)
+                    Text(row.value)
                         .font(valueFont)
                         .foregroundStyle(.white)
                         .monospacedDigit()
@@ -149,6 +149,6 @@ struct PlaybackStatsPanel: View {
     private struct StatsSection: Identifiable {
         let id: String
         let title: String
-        let rows: [(String, String)]
+        let rows: [PlaybackStats.Row]
     }
 }
