@@ -202,6 +202,75 @@ final class PlaybackEngineSessionTests: XCTestCase {
         XCTAssertTrue(routeChanged.driver.context.suspendedReasons.isEmpty)
     }
 
+    /// A hold may only be adopted together with the state that releases it.
+    ///
+    /// `origin_outage`'s three releasers — `.endOutageRideThrough`, the
+    /// ride-through poll's escalation and `performServerOutageRecovery` — all
+    /// key off `context.outage`, so adopting the hold without the ride-through
+    /// would muzzle every in-route rung on the replacement session for the rest
+    /// of the load with nothing able to lift it. Legacy carried both halves: the
+    /// latch rode the reused `AVPlayerBackend` instance and the ride-through was
+    /// view-model state (`sourceOutageActive` + its poll task) that an in-place
+    /// replan never touched.
+    func testReuseDuringAnOutageRideThroughLeavesTheHoldReleasable() async {
+        let backend = FakePlaybackBackend()
+        let first = makeSession(plan: localHLSPlan(), backend: backend)
+        backend.fireFileLoaded(reason: "first_frame")
+        first.reportOriginOutage(true, isBuffering: false)
+        XCTAssertEqual(
+            first.driver.context.suspendedReasons,
+            [RecoveryDriver.originOutageSuspensionReason]
+        )
+
+        let second = PlaybackEngineSession(
+            loadID: LoadID(),
+            plan: localHLSPlan(),
+            backendFactory: { FakePlaybackBackend() },
+            reusing: first,
+            transport: nil
+        )
+
+        XCTAssertTrue(second.backend === backend)
+        XCTAssertEqual(
+            second.driver.context.suspendedReasons,
+            [RecoveryDriver.originOutageSuspensionReason]
+        )
+        XCTAssertNotNil(second.driver.context.outage)
+
+        // The replacement load reaches its file-loaded edge on the same
+        // instance, which is now bound to the new session.
+        backend.fireFileLoaded(reason: "protocol_v3_replan")
+
+        // The in-route rungs are muzzled while the hold stands…
+        backend.recoveryPlayheadSampleValue = PlayheadSample(
+            position: 100,
+            timeControl: .playing,
+            bufferedAhead: 0,
+            generatedAhead: 40,
+            secondsSinceLastServe: .infinity,
+            userPaused: false,
+            playbackEstablished: true
+        )
+        backend.fireRecoveryObservation(.playbackStalled)
+        XCTAssertTrue(backend.performedRecoveryActions.isEmpty)
+
+        // …and the replacement session can still lift it, after which the same
+        // rung fires. (`performedRecoveryActions` accumulates.)
+        second.reportOriginOutage(false, isBuffering: false)
+        XCTAssertTrue(second.driver.context.suspendedReasons.isEmpty)
+        XCTAssertNil(second.driver.context.outage)
+
+        backend.fireRecoveryObservation(.playbackStalled)
+        XCTAssertEqual(
+            backend.performedRecoveryActions,
+            [
+                .endOutageRideThrough(kick: true),
+                .reanchor(atMediaSeconds: 100, reason: "stall")
+            ]
+        )
+        _ = await drain(second)
+    }
+
     /// A session that never reuses builds its backend from the factory.
     func testWithoutReuseTheFactoryBuildsAFreshBackend() {
         let backend = FakePlaybackBackend()

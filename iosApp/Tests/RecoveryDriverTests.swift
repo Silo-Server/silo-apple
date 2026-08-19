@@ -319,4 +319,54 @@ final class RecoveryDriverTests: XCTestCase {
             .recoverFromServerOutage(reason: "network_unavailable")
         )
     }
+
+    // MARK: - Adoption across an in-place replan
+
+    /// The other releaser of an adopted `origin_outage` hold: the ride-through
+    /// poll, which is view-model-scoped and survives an in-place replan exactly
+    /// as legacy's `sourceOutageRideThroughTask` did (no load path cancels the
+    /// `.sourceOutageRideThrough` key). Adoption carries the *original*
+    /// ride-through start, so the replan neither restarts the 90 s budget nor
+    /// rewinds the backoff — the escalation lands at the instant legacy's
+    /// captured deadline did.
+    func testAdoptedRideThroughKeepsItsBudgetAndStillEscalates() {
+        let start = Date()
+        let outgoing = RecoveryDriver(route: .avPlayerNativeDirect)
+        XCTAssertEqual(
+            outgoing.observe(.originOutage(active: true), now: start),
+            .rideThroughOutage(probeAfter: .zero)
+        )
+        // The hold is the engine session's half of outage entry (it is what
+        // `setExternalStallSuppression(true)` was), taken alongside the
+        // observation.
+        outgoing.setSuspended(true, reason: RecoveryDriver.originOutageSuspensionReason)
+
+        let replacement = RecoveryDriver(route: .avPlayerNativeDirect)
+        replacement.adoptSuspensions(outgoing.context.suspendedReasons)
+        replacement.adoptOutageRideThrough(outgoing.context.outage)
+
+        XCTAssertTrue(replacement.context.isRecoverySuspended)
+        XCTAssertEqual(replacement.context.outage?.rideThroughStart, start)
+
+        // Inside the budget the ride-through continues on the new driver.
+        XCTAssertEqual(
+            replacement.observe(
+                .serverHealthProbe(ok: false),
+                now: start.addingTimeInterval(10)
+            ),
+            .rideThroughOutage(
+                probeAfter: .seconds(RecoveryPolicy.serverOutageRecoveryInitialDelay)
+            )
+        )
+
+        // The budget is measured from the original start, not from the replan.
+        XCTAssertEqual(
+            replacement.observe(
+                .serverHealthProbe(ok: false),
+                now: start.addingTimeInterval(RecoveryPolicy.serverOutageRecoveryTimeout + 1)
+            ),
+            .recoverFromServerOutage(reason: "network_unavailable")
+        )
+        XCTAssertNil(replacement.context.outage)
+    }
 }

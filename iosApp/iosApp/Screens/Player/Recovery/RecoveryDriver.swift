@@ -116,6 +116,23 @@ final class RecoveryDriver {
         }
     }
 
+    /// Adopts another driver's live origin-outage ride-through.
+    ///
+    /// Carried with `adoptSuspensions` and for the same reason: the
+    /// `origin_outage` hold's only releasers are `.endOutageRideThrough`
+    /// (gated on `context.outage != nil`), the ride-through poll's escalation
+    /// to `.recoverFromServerOutage`, and `performServerOutageRecovery` — all
+    /// three owned by *this* state. Before this wave the ride-through lived on
+    /// the view model (`sourceOutageActive`, `sourceOutageNoticeShown` and the
+    /// poll task's deadline/`delay` locals), none of which an in-place replan
+    /// touched, so the owner outlived the load exactly as the backend-instance
+    /// latch did. Adopting the hold without its owner would leave the
+    /// replacement session permanently suspended.
+    func adoptOutageRideThrough(_ outage: RecoveryContext.OutageState?) {
+        guard let outage else { return }
+        context.outage = outage
+    }
+
     // MARK: - Live inputs the policy cannot read for itself
 
     func note(userPaused: Bool) {

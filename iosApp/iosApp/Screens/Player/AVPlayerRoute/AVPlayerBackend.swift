@@ -837,8 +837,14 @@ final class AVPlayerBackend {
     private var loopbackPlayheadWatchdog: Timer?
     private var watchdogLastStateLogWall: CFTimeInterval = 0
     /// Which sampler produced the edge observation currently being decided, so
-    /// `perform(_:)` can name it on the `edge_watchdog` trigger line.
+    /// `perform(_:)` can name it on the `edge_watchdog` trigger line — together
+    /// with the two clock-derived values the decision was actually taken on.
+    /// The legacy rung printed its own `referenceTime`/`loadedEnd` locals, and
+    /// for the periodic-time-observer trigger `referenceTime` is `time.seconds`,
+    /// not `currentTime()`.
     private var lastEdgeSampleTrigger = "-"
+    private var lastEdgeSampleReferenceTime: Double?
+    private var lastEdgeSampleLoadedEnd: Double?
     /// Which KVO produced the auto-resume observation currently being decided,
     /// for the same reason.
     private var lastAutoResumeTrigger = "-"
@@ -2885,6 +2891,8 @@ final class AVPlayerBackend {
         // edge ladder's decision; they live in `RecoveryPolicy` now. This is the
         // sampler.
         lastEdgeSampleTrigger = trigger
+        lastEdgeSampleReferenceTime = referenceTime
+        lastEdgeSampleLoadedEnd = loadedEnd
         emitRecoveryObservation(
             .edgeSample(
                 EdgeSample(
@@ -2902,13 +2910,17 @@ final class AVPlayerBackend {
     }
 
     /// The edge watchdog's trigger line, printed by the rung that fires rather
-    /// than by the sampler. Every value is read from the same live state the
-    /// sampler read a moment earlier in the same run-loop turn.
+    /// than by the sampler. The clock values are the sampler's own, carried on
+    /// `lastEdgeSample*`: the decision was taken on them, and for the
+    /// periodic-time-observer trigger they are `time.seconds` rather than
+    /// `currentTime()`.
     private func logEdgeWatchdogTrigger() {
         guard let item = currentItem,
               let generatedStats = latestLoopbackGeneratedStats else { return }
-        let referenceTime = currentTime()
-        let loadedEnd = loadedRangeEnd(for: item, referenceTime: referenceTime) ?? referenceTime
+        let referenceTime = lastEdgeSampleReferenceTime ?? currentTime()
+        let loadedEnd = lastEdgeSampleLoadedEnd
+            ?? loadedRangeEnd(for: item, referenceTime: referenceTime)
+            ?? referenceTime
         let loadedAhead = max(0, loadedEnd - referenceTime)
         let visibleAhead = max(0, generatedStats.playlistVisibleEndSeconds - referenceTime)
         let trigger = lastEdgeSampleTrigger
@@ -3267,8 +3279,17 @@ final class AVPlayerBackend {
         case let .reanchor(atMediaSeconds, reason):
             if reason == "vod_stall_nudge" {
                 let anchor = playerTime(forMediaTime: atMediaSeconds)
-                MainActor.assumeIsolated {
-                    performVODStallRecovery(anchorPlayerSeconds: anchor, attempt: 1)
+                // B:3001 and B:1306's hop: both emitters of this rung — the
+                // playhead watchdog's reanchor and the expired interactive seek
+                // deadline — ran the stall recovery one main-actor turn past
+                // the trigger, so it never executed inside the `RunLoop.main`
+                // timer callback or inside `handleSeekDeadline` itself (which
+                // would arm a fresh seek deadline from within the expiring
+                // one's own work item). The post-outage kick keeps its
+                // synchronous call, exactly as B:665 had it.
+                Task { @MainActor [weak self] in
+                    guard let self, !self.isDisposed else { return }
+                    self.performVODStallRecovery(anchorPlayerSeconds: anchor, attempt: 1)
                 }
             } else {
                 performLoopbackReanchor(atMediaSeconds: atMediaSeconds, reason: reason)
@@ -3277,8 +3298,15 @@ final class AVPlayerBackend {
         case let .reloadItem(atMediaSeconds, reason):
             let anchorPlayerSeconds = playerTime(forMediaTime: atMediaSeconds)
             if reason == "vod_stall" {
-                MainActor.assumeIsolated {
-                    performVODStallRecovery(anchorPlayerSeconds: anchorPlayerSeconds, attempt: 2)
+                // Same B:3001 hop as the nudge above: attempt ≥ 2 is the same
+                // playhead-watchdog `Task { @MainActor }` call, one branch
+                // deeper inside `performVODStallRecovery`.
+                Task { @MainActor [weak self] in
+                    guard let self, !self.isDisposed else { return }
+                    self.performVODStallRecovery(
+                        anchorPlayerSeconds: anchorPlayerSeconds,
+                        attempt: 2
+                    )
                 }
             } else {
                 // B:3419's hop: the item-death reload was always deferred one

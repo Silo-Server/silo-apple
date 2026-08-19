@@ -1083,13 +1083,17 @@ class PlayerViewModel {
             self.chapters = chapters
 
         case let .buffering(buffering):
-            if buffering {
-                noteBufferingDuringSourceOutage(session: session)
-            }
+            // Order matters: legacy's `onBufferingChange` set `isBuffering`
+            // synchronously and deferred `noteBufferingDuringSourceOutage()`
+            // into a `Task { @MainActor }`, so the "Reconnecting" notice was
+            // always raised after the flag had flipped.
             setBuffering(
                 buffering,
                 cause: buffering ? "buffer_empty" : "likely_to_keep_up"
             )
+            if buffering {
+                noteBufferingDuringSourceOutage(session: session)
+            }
 
         case let .bufferedAhead(ahead):
             guard ahead.playableAheadSeconds.isFinite,
@@ -3731,18 +3735,29 @@ class PlayerViewModel {
                 if sleepFor != .zero {
                     try? await Task.sleep(for: sleepFor)
                 }
+                // The ride-through's owner outlives one load. Legacy's loop was
+                // gated on the view-model-scoped `sourceOutageActive` and
+                // re-read `self.avPlayerBackend` / `self.sourceProxy` on every
+                // turn, so an in-place replan (which cancels neither this task
+                // nor that flag) kept polling and still released the hold it
+                // had left on the reused backend instance. The replacement
+                // session adopts both the `origin_outage` hold and the outage
+                // state, so this poll re-resolves the live session each turn
+                // rather than holding the one that started it — otherwise the
+                // only releaser dies with the superseded load and every
+                // in-route rung stays muzzled for the rest of the load.
                 guard let self, !Task.isCancelled, !self.isDisposed,
-                      self.engineSession === session,
-                      session.driver.context.outage != nil else { return }
+                      let owner = self.engineSession,
+                      owner.driver.context.outage != nil else { return }
                 let ok = await self.probeServerHealthOnce().isReachable
                 guard !Task.isCancelled, !self.isDisposed,
-                      self.engineSession === session else { return }
+                      let current = self.engineSession else { return }
                 if ok {
                     Self.logger.info("[CMP-OUTAGE] server healthy; nudging origin re-probe")
                     self.sourceProxy?.reprobeOrigin()
                 }
-                self.refreshRecoveryContext(session: session)
-                switch session.driver.observe(.serverHealthProbe(ok: ok)) {
+                self.refreshRecoveryContext(session: current)
+                switch current.driver.observe(.serverHealthProbe(ok: ok)) {
                 case let .rideThroughOutage(next):
                     sleepFor = next
                 case .none:
@@ -3751,7 +3766,7 @@ class PlayerViewModel {
                     Self.logger.error(
                         "[CMP-OUTAGE] ride-through budget exhausted; escalating to visible recovery"
                     )
-                    self.executeRecoveryAction(escalation, session: session)
+                    self.executeRecoveryAction(escalation, session: current)
                     return
                 }
             }

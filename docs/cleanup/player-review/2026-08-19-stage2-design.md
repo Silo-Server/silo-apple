@@ -237,6 +237,17 @@ autoSkipIntro) stay on the presentation model.
    PVM:4072 terminal, PVM:7621 suspend) and `resetPublishedLoadState` never overwrites it — so a cold start,
    a Retry and an explicit resume record no interruption and publish no playing capsule under the overlay.
 
+9. **One `EngineEvent` case added in wave 2b: `recoveryAction(RecoveryAction)`.** The sketch above wrapped the
+   §2.4 observations as `observation(RecoveryObservation)` on the same stream; as built the *observations*
+   never leave the engine session — they go straight into that load's `RecoveryDriver` (§2.4 policy, one
+   `decide` call site), and the in-route arms are performed on the backend synchronously, where the ladder ran.
+   What rides the stream is the other half: the `RecoveryAction`s whose execution belongs to the shell
+   (`treatAsNaturalEnd`, `requestServerReplan`, `switchRoute`, `renewSourceInBackground`, `renewSessionFresh`,
+   `rideThroughOutage`, `endOutageRideThrough`, `recoverFromServerOutage`, `waitForServerReady`,
+   `autoRecoverInterruption`, `fail`). No `observation` case exists or is needed. This is what lets a
+   superseded load's decision die with its session instead of needing a generation guard; wave 3 delivers the
+   same value to the actor as `PlayerEvent.recovery(RecoveryAction, LoadID)`, which already exists.
+
 **Contract notes waves 2/3 must honour:** (a) `TransportState.isPictureInPictureEngaged` is
 `PictureInPictureCoordinator.isEngaged` (`isActive || isTransitioning`), *not* the backend's
 `isPictureInPictureActiveProvider`; (b) the third iOS background exemption — `isPossible` plus the bounded 1 s
@@ -498,6 +509,30 @@ final class LocalHLSHost {                                   // inv-3 §4.1–4.
   `activeLoopbackSessionID`/`loopbackGeneration` are deleted; the store's `generation:` tag is a process-wide
   static counter on the host (diagnostics-only — reaches only log lines and the stats overlay; replace with a
   UUID-derived value if strict concurrency lands).
+
+**As built (wave 2b), `PlaybackEngineSession` differs from the sketch above — wave 3 plans against these:**
+- **Not `@MainActor`.** `PlaybackEngineSession`, the new `Recovery/RecoveryDriver.swift` and the
+  `PlaybackBackend` protocol are all plain non-isolated declarations, for exactly the reason `LocalHLSHost` is
+  (wave 2a as-built above): every producer that reaches them — `AVPlayerBackend`'s notification observers and
+  `RunLoop.main` timers, `PlayerViewModel`, the proxy's callbacks — is itself nonisolated, and every one of
+  them already runs on the main queue. Annotating the classes would have forced a hop into each of those
+  sites and deferred every in-route recovery decision by a run-loop turn, which is precisely the timing
+  invariant (I1, "same action, same order") this wave had to hold. The four `MainActor.assumeIsolated` sites
+  in `AVPlayerBackend.perform(_:)` are the seam where a `@MainActor` body is reached from that nonisolated
+  chain; each is fed only by main-queue producers. Wave 3's actor cutover is where isolation is re-decided.
+- `start(startSeconds:)` is non-throwing (the throw moved up into `ExecutablePlan.init`); `perform(_:)` is
+  non-`async`; `dispose` gained `retainingTransport:` for the tvOS suspend (§2.3 as-built item 2's
+  `.retainProxy`) and is joined by `disposeEngineOnly(reason:)`, which keeps the session alive as the load's
+  recovery owner while the visible server-outage recovery waits out the server.
+- No `localHost` property: the host stays owned by `AVPlayerBackend`, so the session owns it transitively
+  (wave 2a ownership note above). The source-cache handoff is a shell-held slot, not session state, because
+  its value outlives a session by construction.
+- The session owns the load's `RecoveryDriver`, so every recovery latch, budget and rolling window is
+  load-scoped. Two pieces of state are deliberately *carried* across an in-place replan, because their
+  releasers outlive the load exactly as they did before the wave: `context.suspendedReasons` (the latch used
+  to live on the reused `AVPlayerBackend` instance) and `context.outage` (the ride-through was view-model
+  state, and it is the only thing able to release the `origin_outage` hold). A hold may only be adopted
+  together with its releaser.
 
 `AVPlayerBackend` after wave 2 keeps: observers, audio session, display criteria, initial-display gate, PiP/AirPlay
 policy, seek deadline, buffer policy, subtitle overlay pump, `attachLoopbackItem(url:)`,

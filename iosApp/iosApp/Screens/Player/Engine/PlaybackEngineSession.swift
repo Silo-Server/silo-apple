@@ -87,7 +87,17 @@ final class PlaybackEngineSession {
             // reused backend carried its holders across the replan; the load
             // that took the hold releases it once, on whichever session owns
             // the backend when its round trip ends.
+            //
+            // Every hold travels with its releaser, or it can never be
+            // released. `server_replan`'s releaser is the replan's own `defer`,
+            // which runs after this session exists. `origin_outage`'s releasers
+            // (`.endOutageRideThrough`, the ride-through poll's escalation, and
+            // `performServerOutageRecovery`) all read `context.outage`, which
+            // was view-model state before this wave and so survived a replan
+            // untouched — carry it, or the replacement session is muzzled for
+            // the rest of the load.
             driver.adoptSuspensions(outgoing.driver.context.suspendedReasons)
+            driver.adoptOutageRideThrough(outgoing.driver.context.outage)
         }
     }
 
