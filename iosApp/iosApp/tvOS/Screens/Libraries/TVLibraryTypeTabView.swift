@@ -82,8 +82,6 @@ struct TVLibraryTypeTabView: View {
             TVLibraryGridView(
                 libraryId: library.id,
                 libraryType: library.type,
-                showsAlphabetRail: true,
-                topContentInset: SiloTheme.Skyline.libraryContentTopInset,
                 focusRequest: focusRequest,
                 isTopMenuFocused: isTopMenuFocused,
                 onTopMenuFocusRequest: onTopMenuFocusRequest

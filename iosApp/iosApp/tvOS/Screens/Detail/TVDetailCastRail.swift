@@ -53,7 +53,7 @@ private struct TVCastCard: View {
         } label: {
             CastCardLabel(member: member, photoSize: photoSize)
         }
-        .buttonStyle(CastCardStyle(photoSize: photoSize))
+        .buttonStyle(CastCardStyle())
     }
 }
 
@@ -115,8 +115,6 @@ private struct CastCardLabel: View {
 /// Custom style so the system doesn't paint its default focus halo on
 /// top. Scale + shadow only — the portrait ring handles the focus cue.
 private struct CastCardStyle: ButtonStyle {
-    let photoSize: CGSize
-
     func makeBody(configuration: Configuration) -> some View {
         CastCardBody(configuration: configuration)
     }

@@ -107,7 +107,7 @@ struct TVEpisodeCard: View {
                 captionStyle: captionStyle
             )
         }
-        .buttonStyle(EpisodeCardStyle())
+        .buttonStyle(TVRailCardFocusStyle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
 
@@ -348,14 +348,15 @@ private struct EpisodeCardLabel: View {
 
 /// Custom style so the system doesn't paint its default focus halo over
 /// the card. Scale + drop shadow only; the white overlay ring on the
-/// still (driven by `isFocused` in the label) is the focus cue.
-private struct EpisodeCardStyle: ButtonStyle {
+/// still / thumbnail (driven by `isFocused` in the label) is the focus
+/// cue. Shared by the episode and trailer rails.
+struct TVRailCardFocusStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        EpisodeCardStyleBody(configuration: configuration)
+        TVRailCardFocusStyleBody(configuration: configuration)
     }
 }
 
-private struct EpisodeCardStyleBody: View {
+private struct TVRailCardFocusStyleBody: View {
     let configuration: ButtonStyleConfiguration
 
     @Environment(\.isFocused) private var isFocused

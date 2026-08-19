@@ -700,6 +700,18 @@ struct TVMainTabView: View {
         }
     }
 
+    /// Shared panel teardown: drop any pending focus-exit close, animate the
+    /// panel out, and clear the entered/focused flags.
+    private func teardownPanel() {
+        panelFocusExitTask?.cancel()
+        panelFocusExitTask = nil
+        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
+            openPanel = nil
+        }
+        panelEntersFocus = false
+        panelHasFocus = false
+    }
+
     /// Close the panel without changing scope (Menu/Back, scrim tap, or
     /// focus leaving the bar), optionally running a follow-up action (a
     /// profile-row selection navigates after the panel tears down).
@@ -708,14 +720,8 @@ struct TVMainTabView: View {
             action?()
             return
         }
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
         let wasFocused = panelHasFocus
-        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
-            openPanel = nil
-        }
-        panelEntersFocus = false
-        panelHasFocus = false
+        teardownPanel()
 
         // Returning focus to *that panel's* tab/avatar (§7) keeps the remote
         // from stranding. Do it whether or not a follow-up action runs:
@@ -756,13 +762,7 @@ struct TVMainTabView: View {
 
     private func closePanelForContentHandoff() {
         guard openPanel != nil else { return }
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
-        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
-            openPanel = nil
-        }
-        panelEntersFocus = false
-        panelHasFocus = false
+        teardownPanel()
         suppressTopMenuFocusForContentHandoff()
     }
 
@@ -783,8 +783,6 @@ struct TVMainTabView: View {
     /// down. The page swaps in place via the scope/pill change + the
     /// existing `.id(activeLibrary.id)` crossfade.
     private func commitScope(type: TVLibraryTabType, library: Library, pill: TVLibraryPill?) {
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
         scopeSelections[type] = library.id
         TVLibraryScopeStore.shared.setSelectedLibraryId(library.id, for: type)
         pillSelections[type] = pill ?? .recommended
@@ -792,11 +790,7 @@ struct TVMainTabView: View {
         // Tear down the panel first, then select the tab + hand focus to the
         // swapped-in content. Selecting the root bumps contentFocusRequest,
         // which the new page consumes as its entry generation.
-        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
-            openPanel = nil
-        }
-        panelEntersFocus = false
-        panelHasFocus = false
+        teardownPanel()
         selectRoot(.libraryType(type))
     }
 
@@ -807,15 +801,9 @@ struct TVMainTabView: View {
     ) {
         guard case .libraryShortcut(let libraryId, _) = root,
               library.id == libraryId else { return }
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
         shortcutPillSelections[libraryId] = pill ?? .recommended
 
-        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
-            openPanel = nil
-        }
-        panelEntersFocus = false
-        panelHasFocus = false
+        teardownPanel()
         selectRoot(root)
     }
 

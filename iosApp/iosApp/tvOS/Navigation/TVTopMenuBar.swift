@@ -1014,17 +1014,7 @@ struct TVForYouDropdown: View {
         id: TVForYouAction,
         action: @escaping () -> Void
     ) -> some View {
-        let label = HStack(spacing: 14) {
-            Image(systemName: systemImage)
-                .font(.system(size: 20, weight: .semibold))
-                .frame(width: 30)
-
-            Text(title)
-                .font(.system(size: SiloTheme.Skyline.dropdownRowTextSize, weight: .semibold))
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-        }
+        let label = TVDropdownRowLabel(title: title, systemImage: systemImage)
 
         if entersPanel {
             Button(action: action) {
@@ -1037,6 +1027,28 @@ struct TVForYouDropdown: View {
                 .foregroundStyle(.white.opacity(0.86))
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
+        }
+    }
+}
+
+/// Shared row content for the For You / Profile dropdown actions: leading
+/// glyph, title, trailing slack. The Button, its style and the focus
+/// binding stay at the call sites.
+private struct TVDropdownRowLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.system(size: 20, weight: .semibold))
+                .frame(width: 30)
+
+            Text(title)
+                .font(.system(size: SiloTheme.Skyline.dropdownRowTextSize, weight: .semibold))
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
         }
     }
 }
@@ -1221,17 +1233,7 @@ struct TVProfileDropdown: View {
         isDestructive: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
-        let label = HStack(spacing: 14) {
-            Image(systemName: systemImage)
-                .font(.system(size: 20, weight: .semibold))
-                .frame(width: 30)
-
-            Text(title)
-                .font(.system(size: SiloTheme.Skyline.dropdownRowTextSize, weight: .semibold))
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-        }
+        let label = TVDropdownRowLabel(title: title, systemImage: systemImage)
 
         if entersPanel {
             Button(action: action) {

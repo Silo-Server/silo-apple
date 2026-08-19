@@ -92,7 +92,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                         if let cast = detail.cast, !cast.isEmpty {
                             TVDetailCastRail(cast: cast, onTap: onPersonTap)
                         }
-                        detailsSection
+                        TVDetailsSection(detail: detail)
                     }
                     .padding(.horizontal, SiloTheme.safePadding)
                     .padding(.bottom, 160)
@@ -317,15 +317,6 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                     favoriteStates: episodeFavoriteStates
                 )
             }
-        }
-    }
-
-    // MARK: - Details
-
-    private var detailsSection: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            TVSectionHeader(title: "Details")
-            TVDetailFactsSection(detail: detail)
         }
     }
 }
