@@ -276,43 +276,28 @@ final class ChunkedUploadStubProtocol: URLProtocol {
         case ("POST", "/api/v1/diagnostics/reports/uploads"):
             Self.mutate { $0.initBody = body }
             let chunkBytes = Self.state().chunkBytes
-            respond(status: 201, json: #"{"upload_id":"stub-session","chunk_bytes":\#(chunkBytes),"total_chunks":3,"expires_at":"2026-01-01T00:00:00Z"}"#)
+            respond(status: 201, body: #"{"upload_id":"stub-session","chunk_bytes":\#(chunkBytes),"total_chunks":3,"expires_at":"2026-01-01T00:00:00Z"}"#)
         case ("PUT", let chunkPath) where chunkPath.contains("/uploads/stub-session/chunks/"):
             let index = Int(chunkPath.split(separator: "/").last ?? "") ?? -1
             if Self.state().failChunkIndex == index {
-                respond(status: 500, json: #"{"error":"internal_error","message":"stub chunk failure"}"#)
+                respond(status: 500, body: #"{"error":"internal_error","message":"stub chunk failure"}"#)
                 return
             }
             Self.mutate {
                 $0.chunkIndexes.append(index)
                 $0.chunkBodies.append(body)
             }
-            respond(status: 200, json: #"{"received_chunks":\#(index + 1),"total_chunks":3}"#)
+            respond(status: 200, body: #"{"received_chunks":\#(index + 1),"total_chunks":3}"#)
         case ("POST", "/api/v1/diagnostics/reports/uploads/stub-session/complete"):
             Self.mutate { $0.completed = true }
-            respond(status: 201, json: #"{"report_id":"11111111-1111-1111-1111-111111111111","short_id":"SILO-TEST12345678"}"#)
+            respond(status: 201, body: #"{"report_id":"11111111-1111-1111-1111-111111111111","short_id":"SILO-TEST12345678"}"#)
         case ("DELETE", "/api/v1/diagnostics/reports/uploads/stub-session"):
             Self.mutate { $0.aborted = true }
-            respond(status: 204, json: "")
+            respond(status: 204, body: "")
         default:
-            respond(status: 404, json: #"{"error":"not_found"}"#)
+            respond(status: 404, body: #"{"error":"not_found"}"#)
         }
     }
 
     override func stopLoading() {}
-
-    private func respond(status: Int, json: String) {
-        guard let url = request.url, let client else { return }
-        let response = HTTPURLResponse(
-            url: url,
-            statusCode: status,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/json"]
-        )!
-        client.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if !json.isEmpty {
-            client.urlProtocol(self, didLoad: Data(json.utf8))
-        }
-        client.urlProtocolDidFinishLoading(self)
-    }
 }
