@@ -706,64 +706,38 @@ actor PlaybackSessionBridge {
             response = try await SiloAPI.shared.startPlaybackV3(request: request)
         }
 
-        switch response.validatedForApple() {
-        case .terminal(let terminal):
-            Task {
-                await Self.reportTerminalStart(
-                    playbackAttemptId: playbackAttemptId,
-                    snapshot: snapshot,
-                    terminal: terminal
-                )
-            }
+        let (plan, resolvedSessionId) = try await ApplePlaybackV3PlanAdapter.resolvePlayablePlan(
+            response,
+            playbackAttemptId: playbackAttemptId,
+            snapshot: snapshot
+        )
+        guard let effectiveVersion = watchDetail.versions.first(where: {
+            $0.fileId == plan.effectiveMediaFileId
+        }) else {
+            try? await SiloAPI.shared.stopPlayback(sessionId: resolvedSessionId)
             throw PlaybackV3TerminalFailure(
-                reason: terminal.reason,
-                message: terminal.message,
-                retryable: terminal.retryable
-            )
-        case .incompatible(let allocatedSessionId):
-            if let allocatedSessionId {
-                try? await SiloAPI.shared.stopPlayback(sessionId: allocatedSessionId)
-            }
-            throw PlaybackV3TerminalFailure(
-                reason: "invalid_playback_plan",
-                message: "The server returned an incompatible protocol V3 playback plan.",
+                reason: "effective_file_unavailable",
+                message: "The server selected a media version that is not present in the item response.",
                 retryable: false
             )
-        case .playable(let plan, let resolvedSessionId):
-            do {
-                try ApplePlaybackV3PlanAdapter.validate(plan)
-            } catch {
-                try? await SiloAPI.shared.stopPlayback(sessionId: resolvedSessionId)
-                throw error
-            }
-            guard let effectiveVersion = watchDetail.versions.first(where: {
-                $0.fileId == plan.effectiveMediaFileId
-            }) else {
-                try? await SiloAPI.shared.stopPlayback(sessionId: resolvedSessionId)
-                throw PlaybackV3TerminalFailure(
-                    reason: "effective_file_unavailable",
-                    message: "The server selected a media version that is not present in the item response.",
-                    retryable: false
-                )
-            }
-            let session = ApplePlaybackV3PlanAdapter.playbackSession(
-                plan: plan,
-                sessionId: resolvedSessionId,
-                selectedVersion: effectiveVersion,
-                serverFeatures: response.serverFeatures
-            )
-            return StagedProtocolV3Start(
-                playbackAttemptId: playbackAttemptId,
-                clientQualityId: ApplePlaybackQuality.protocolV3QualityId(qualityPreference),
-                bandwidthCapKbps: bandwidthCapKbps,
-                snapshot: snapshot,
-                serverFeatures: response.serverFeatures,
-                plan: plan,
-                sessionId: resolvedSessionId,
-                selectedVersion: effectiveVersion,
-                session: session
-            )
         }
+        let session = ApplePlaybackV3PlanAdapter.playbackSession(
+            plan: plan,
+            sessionId: resolvedSessionId,
+            selectedVersion: effectiveVersion,
+            serverFeatures: response.serverFeatures
+        )
+        return StagedProtocolV3Start(
+            playbackAttemptId: playbackAttemptId,
+            clientQualityId: ApplePlaybackQuality.protocolV3QualityId(qualityPreference),
+            bandwidthCapKbps: bandwidthCapKbps,
+            snapshot: snapshot,
+            serverFeatures: response.serverFeatures,
+            plan: plan,
+            sessionId: resolvedSessionId,
+            selectedVersion: effectiveVersion,
+            session: session
+        )
     }
 
     private func adoptProtocolV3Start(

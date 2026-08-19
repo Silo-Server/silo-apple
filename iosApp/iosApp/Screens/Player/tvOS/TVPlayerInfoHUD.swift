@@ -762,12 +762,6 @@ private struct SubtitlesPane: View {
         return "\(appearance.backgroundStyle.label), \(appearance.fontSize.label), \(appearance.position.label)"
     }
 
-    private func setAppearance(_ mutate: @escaping (inout SubtitleAppearance) -> Void) {
-        var next = viewModel.settings.subtitleAppearance
-        mutate(&next)
-        Task { await viewModel.setSubtitleAppearance(next) }
-    }
-
     private func presentPicker(for option: Option, _ presentation: HUDPickerPresentation) {
         pickerReturnField = option
         activePicker = presentation
@@ -950,7 +944,7 @@ private struct SubtitlesPane: View {
                             selection: viewModel.settings.subtitleAppearance.fontSize.rawValue,
                             onSelect: { value in
                                 if let size = SubtitleFontSizePreset(rawValue: value) {
-                                    setAppearance { $0.fontSize = size }
+                                    viewModel.mutateSubtitleAppearance { $0.fontSize = size }
                                 }
                             }
                         )
@@ -970,7 +964,7 @@ private struct SubtitlesPane: View {
                             selection: viewModel.settings.subtitleAppearance.position.rawValue,
                             onSelect: { value in
                                 if let position = SubtitlePositionPreset(rawValue: value) {
-                                    setAppearance { $0.position = position }
+                                    viewModel.mutateSubtitleAppearance { $0.position = position }
                                 }
                             }
                         )

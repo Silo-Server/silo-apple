@@ -305,58 +305,32 @@ final class AudioPlayerViewModel {
             response = try await SiloAPI.shared.startPlaybackV3(request: request)
         }
 
-        switch response.validatedForApple() {
-        case .terminal(let terminal):
-            Task {
-                await PlaybackSessionBridge.reportTerminalStart(
-                    playbackAttemptId: playbackAttemptId,
-                    snapshot: snapshot,
-                    terminal: terminal
-                )
-            }
+        let (plan, sessionId) = try await ApplePlaybackV3PlanAdapter.resolvePlayablePlan(
+            response,
+            playbackAttemptId: playbackAttemptId,
+            snapshot: snapshot
+        )
+        guard let effectiveTrack = context?.tracks.first(where: {
+            $0.fileId == plan.effectiveMediaFileId
+        }) else {
+            try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
             throw PlaybackV3TerminalFailure(
-                reason: terminal.reason,
-                message: terminal.message,
-                retryable: terminal.retryable
-            )
-        case .incompatible(let allocatedSessionId):
-            if let allocatedSessionId {
-                try? await SiloAPI.shared.stopPlayback(sessionId: allocatedSessionId)
-            }
-            throw PlaybackV3TerminalFailure(
-                reason: "invalid_playback_plan",
-                message: "The server returned an incompatible protocol V3 playback plan.",
+                reason: "effective_file_unavailable",
+                message: "The server selected an unavailable audiobook part.",
                 retryable: false
             )
-        case .playable(let plan, let sessionId):
-            do {
-                try ApplePlaybackV3PlanAdapter.validate(plan)
-            } catch {
-                try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
-                throw error
-            }
-            guard let effectiveTrack = context?.tracks.first(where: {
-                $0.fileId == plan.effectiveMediaFileId
-            }) else {
-                try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
-                throw PlaybackV3TerminalFailure(
-                    reason: "effective_file_unavailable",
-                    message: "The server selected an unavailable audiobook part.",
-                    retryable: false
-                )
-            }
-            let session = ApplePlaybackV3PlanAdapter.playbackSession(
-                plan: plan,
-                sessionId: sessionId,
-                selectedVersion: effectiveTrack.version,
-                serverFeatures: response.serverFeatures
-            )
-            return StartedAudioSession(
-                session: session,
-                track: effectiveTrack,
-                streamHeaders: plan.stream.headers
-            )
         }
+        let session = ApplePlaybackV3PlanAdapter.playbackSession(
+            plan: plan,
+            sessionId: sessionId,
+            selectedVersion: effectiveTrack.version,
+            serverFeatures: response.serverFeatures
+        )
+        return StartedAudioSession(
+            session: session,
+            track: effectiveTrack,
+            streamHeaders: plan.stream.headers
+        )
     }
 
     private func loadPalette(posterUrl: String?) {

@@ -3181,6 +3181,13 @@ class PlayerViewModel {
     }
 
     @MainActor
+    func mutateSubtitleAppearance(_ mutate: (inout SubtitleAppearance) -> Void) {
+        var next = settings.subtitleAppearance
+        mutate(&next)
+        Task { await setSubtitleAppearance(next) }
+    }
+
+    @MainActor
     func setSubtitlePosition(_ position: SubtitlePositionPreset) {
         var next = settings.subtitleAppearance
         guard next.position != position else { return }
