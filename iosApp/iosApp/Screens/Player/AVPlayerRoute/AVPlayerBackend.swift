@@ -4882,3 +4882,10 @@ final class AVPlayerBackend {
         ApplePlaybackRoutePlanner.loopbackAudioPreservesAtmos(for: track)
     }
 }
+
+/// Wave 1 seam: `AVPlayerBackend` already declares every member of
+/// `PlaybackBackend` (Stage 2 design §2.5), so the conformance is a
+/// declaration only — no member is added, moved or reworded here. It is stated
+/// in an extension so the `@MainActor` protocol does not infer isolation onto
+/// the class.
+extension AVPlayerBackend: PlaybackBackend {}
