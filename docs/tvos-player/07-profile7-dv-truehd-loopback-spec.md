@@ -315,8 +315,9 @@ The current implementation has proven several important pieces:
 - physical Apple TV logs show startup and sustained local HLS segment serving
   for a 72.9 Mbps Profile 7 TrueHD remux with source download rates generally
   above the file bitrate after cooperative source-prefetch retargeting
-- generated HLS temp spill is automatically enabled above 40 Mbps and accounted
-  separately from debug mirroring
+- generated HLS temp spill is enabled for every loopback session (no bitrate
+  threshold; see `generatedHLSSpillPolicy(for:)`) and accounted separately from
+  debug mirroring
 
 The current implementation still needs continued physical validation for:
 

@@ -4,7 +4,7 @@ import Foundation
 /// boundary is decided once, before the first byte is muxed, so the local
 /// playlist can advertise the whole title up front and AVPlayer sees a
 /// complete VOD asset instead of a growing EVENT playlist
-/// (docs/tvos-player/2026-07-03-siloplayer-loopback-primary-plan.md, M1).
+/// (see `docs/tvos-player/03-dolby-vision-and-avplayer-route.md`).
 ///
 /// `boundaries` are source-PTS values in the video stream's time base and
 /// carry `segmentCount + 1` entries — the final entry is the end of the last

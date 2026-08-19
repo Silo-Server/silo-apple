@@ -1,4 +1,4 @@
-Repo snapshot date: 2026-08-16 (branch `player/one-player-cleanup`, HEAD `6818819`)
+Last verified against the code: 2026-08-18
 
 # Overview And Entrypoints
 
@@ -12,8 +12,6 @@ The Apple player spans a small set of files:
 - [`PlayerViewModel.swift`](../../iosApp/iosApp/Screens/Player/PlayerViewModel.swift)
   Playback coordinator. Owns route planning, player state, settings
   application, the fallback ladder, progress reporting, and cleanup.
-- [`PlaybackCoordinator.swift`](../../iosApp/iosApp/Screens/Player/PlaybackCoordinator.swift)
-  Owns the active `PlaybackEngine` and centralizes route installation.
 - [`AVPlayerBackend.swift`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/AVPlayerBackend.swift)
   The one and only backend. Loads a plan onto `AVPlayer`, and for the
   SiloPlayer route also stands up the local loopback (writer, store, server).
@@ -24,18 +22,12 @@ The Apple player spans a small set of files:
   Bridges the current backend into `MPNowPlayingInfoCenter` and
   `MPRemoteCommandCenter`.
 
-The view model's engine abstraction is now trivial:
-
-```swift
-enum ActivePlayer: @unchecked Sendable {
-    case none
-    case avPlayer(AVPlayerBackend)
-}
-```
-
-`PlaybackCoordinator.installEngine(for:)` only ever constructs an
-`AVFoundationPlayerEngine` wrapping an `AVPlayerBackend`, on every platform and
-for every `PlaybackEngineKind`. There is no second decode core to select.
+There is no engine abstraction left. `PlayerViewModel` holds
+`private(set) var avPlayerBackend: AVPlayerBackend?`, and
+`installBackend(for:)` constructs an `AVPlayerBackend` on every platform and
+for every `PlaybackEngineKind` (the `ActivePlayer` enum and
+`PlaybackCoordinator` were collapsed in `e458784`). There is no second decode
+core to select.
 
 ## 2. Startup flow
 
@@ -178,8 +170,8 @@ Loopback writer failures that reach this rung include
 `.prematureSourceEnd` (see
 [`LoopbackSegmentWriter.swift`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/LoopbackSegmentWriter.swift)).
 
-`PlaybackCoordinator.prepareEngine(for:)` deliberately *reuses* an already
-installed engine when the route kind is unchanged, so an in-place replan (an
+`PlayerViewModel.prepareBackend(for:)` deliberately *reuses* the already
+installed backend when the route kind is unchanged, so an in-place replan (an
 audio-track change on the loopback route, for instance) keeps the audio session
 and the negotiated tvOS display criteria instead of renegotiating HDMI around
 the replacement item.
@@ -191,9 +183,9 @@ the replacement item.
 - marks the VM disposed
 - cancels the overlay timer and progress task
 - detaches Now Playing handlers
-- disposes the active engine through `PlaybackCoordinator.dispose()`, which
-  tears down the AVPlayer item, the loopback writer/store/server, and releases
-  the tvOS display criteria
+- disposes the backend directly (`avPlayerBackend?.dispose()`), which tears
+  down the AVPlayer item, the loopback writer/store/server, and releases the
+  tvOS display criteria
 - sends a final stop request through `PlaybackSessionBridge.stopSession(...)`
 
 Scene transitions split into two paths:
@@ -220,7 +212,7 @@ auto-resume on wake, and tvOS Picture in Picture is unsupported.
   EVENT serving mode and `player.apple.siloplayer_primary_enabled` kill switch
   were retired on 2026-08-17 (the key is no longer read), but the writer still
   falls back internally to a growing EVENT playlist when it cannot build a safe
-  VOD plan; see the cleanup backlog's section 2.5. The retired mode also removed
+  VOD plan. The retired mode also removed
   the planner blockers that only existed when the gate was off
   (`h264_loopback_startup_unreliable`, `hevc_sdr_loopback_startup_unreliable`,
   `video_bridge_requires_vod_plan`).
@@ -228,9 +220,9 @@ auto-resume on wake, and tvOS Picture in Picture is unsupported.
 ## Validation log
 
 - verified: startup begins in `PlayerView.onAppear`, not in the tvOS HUD layer.
-- verified: `ActivePlayer` is `{none, avPlayer}` and `PlaybackCoordinator`
-  builds only `AVFoundationPlayerEngine`; there is no `.coreMedia` case and no
-  `PlayerCore` type in the tree.
+- corrected (2026-08-18): `ActivePlayer` and `PlaybackCoordinator` no longer
+  exist (collapsed in `e458784`); `PlayerViewModel` holds an optional
+  `AVPlayerBackend`. There is still no `PlayerCore` type in the tree.
 - verified: the fallback ladder is native-direct → loopback → server HLS
   replan, each rung guarded by a one-shot flag on the view model.
 - corrected: earlier revisions said the load path "can stay on

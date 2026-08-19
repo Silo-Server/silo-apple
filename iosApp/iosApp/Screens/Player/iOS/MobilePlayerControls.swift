@@ -1,8 +1,7 @@
 #if os(iOS)
 import SwiftUI
 
-/// Touch-driven overlay used on iOS/iPadOS. Layout (see
-/// docs/ios-player-redesign/mockups.html):
+/// Touch-driven overlay used on iOS/iPadOS. Layout:
 /// - Top strip: close, title block (series eyebrow + episode title)
 /// - Center: skip back 10s, play/pause, skip forward 10s
 /// - Bottom stack: time row (elapsed / status chips / remaining), capsule

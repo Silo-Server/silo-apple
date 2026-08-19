@@ -1,8 +1,8 @@
 import Foundation
 
 /// Decides whether a stashed source cache from a torn-down proxy may be
-/// adopted by the replacement proxy instead of starting empty (workstream C
-/// of docs/superpowers/plans/2026-07-07-playback-continuity-client.md).
+/// adopted by the replacement proxy instead of starting empty (see
+/// `docs/tvos-player/10-playback-continuity.md`).
 ///
 /// Adoption is only sound when the cached bytes are guaranteed to be the
 /// bytes the new session will serve: direct-play delivery of the *same*

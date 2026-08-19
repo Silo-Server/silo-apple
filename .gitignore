@@ -56,7 +56,13 @@ output/
 .DS_Store
 Thumbs.db
 .swiftpm/
+# docs/ is ignored by default: plans, specs, mockups, and audits are ephemeral
+# working artifacts (the plan belongs in the PR description; distill durable
+# content into a whitelisted doc before merge). Only the durable docs below are
+# tracked.
 docs/*
 !docs/tvos-focus.md
 !docs/mac-builder.md
-!docs/release/*
+!docs/companion-pairing.md
+!docs/release/
+!docs/tvos-player/

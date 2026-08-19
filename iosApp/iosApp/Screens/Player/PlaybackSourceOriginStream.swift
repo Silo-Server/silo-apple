@@ -222,7 +222,7 @@ enum PlaybackOriginReconnectPolicy {
 }
 
 /// Ride-through decisions for an origin that has stopped delivering
-/// (workstream B of docs/superpowers/plans/2026-07-07-playback-continuity-client.md).
+/// (see `docs/tvos-player/10-playback-continuity.md`).
 /// When the reconnect ladder gives up on a retryable cause, the resource
 /// parks the blocked byte demands instead of failing them, keeps re-probing
 /// the origin on a slow cadence, and lets the player ride its buffered

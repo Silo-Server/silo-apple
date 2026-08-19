@@ -1384,7 +1384,7 @@ struct SyncProgressItem: Codable {
     let forceOverwrite: Bool
     /// Client **event** time for offline-queued items (RFC3339). Present →
     /// last-write-wins merge on the bounded event time; absent → server
-    /// uses `now()`. See §5.1 of `docs/download-api.md`.
+    /// uses `now()`. See §5.1 of the silo-server repo's `docs/downloads-api.md`.
     let updatedAt: Date?
 
     init(

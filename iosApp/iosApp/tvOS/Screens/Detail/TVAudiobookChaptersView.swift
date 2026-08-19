@@ -4,8 +4,7 @@ import SwiftUI
 /// Full-screen chapter picker presented over the Lounge screen — the deep
 /// "jump to an arbitrary chapter" task on its own screen (a native tvOS
 /// pattern) instead of dozens of always-present focus targets on the main
-/// page. Source of truth: the shared `.pk` frame in
-/// `docs/audiobook-detail-redesign/tvos-mockups-v2.html`.
+/// page.
 ///
 /// Focus: the list is a native graph of row `Button`s inside a
 /// `focusSection`. On appear a `ScrollViewReader` scrolls to the current
