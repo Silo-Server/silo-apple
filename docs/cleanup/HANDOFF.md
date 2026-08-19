@@ -209,7 +209,7 @@ The whole round-5 deferred list **and** the 14 environment failures landed on 20
 ### 6b. Gated — the big levers (need an owner decision or a server change first)
 | Work | What it is | Gate |
 |---|---|---|
-| **Round 3 = Stage 2 control-plane extraction** (review §8/§9) | `PlaybackBackend` protocol, pure `PlaybackReducer` + `PlaybackSessionActor`, `PlaybackEngineSession`, one `RecoveryPolicy` replacing six backend ladders + VM outage ride-through, `TrackSelectionCoordinator` extraction from the VM's subtitle half. This is the real answer to `PlayerViewModel` ≈ 8k raw lines / `AVPlayerBackend` ≈ 4.6k. Ships as a **hard cutover** — owner decision 2026-08-18 (P11 = no runtime flag): the legacy VM core + ladders are deleted in the same effort once the new plane is verified; the 73+ characterization tests are the safety net, and rollback of a bad build is a new TestFlight/App Store build. | **UNGATED as of 2026-08-18**: P11 decided (no key — hard cutover; PR #673 closed unmerged, recoverable) and the §8 control run passed (anomaly environmental). Ready to run whenever the owner wants the cycle. Run via `player-remediation-fix.js` with spec JSONs; roughly 5–7 implementers + reviewers. |
+| **Round 3 = Stage 2 control-plane extraction** (review §8/§9) — **DRAFTED 2026-08-19**: design `docs/cleanup/player-review/2026-08-19-stage2-design.md`, four current-line inventories + per-wave specs under `docs/cleanup/player-review/stage2/`, workflow `player-stage2-fix.js`; wave 1 (5 file-disjoint packages: backend protocol + fake, RecoveryPolicy + table tests, TrackSelectionCoordinator extraction, bridge transport injection + first bridge tests, reducer + types) is ready to launch with `stage2/specs/wave1-args.json`; waves 2–4 are drafts to re-anchor after each merge | `PlaybackBackend` protocol, pure `PlaybackReducer` + `PlaybackSessionActor`, `PlaybackEngineSession`, one `RecoveryPolicy` replacing six backend ladders + VM outage ride-through, `TrackSelectionCoordinator` extraction from the VM's subtitle half. This is the real answer to `PlayerViewModel` ≈ 8k raw lines / `AVPlayerBackend` ≈ 4.6k. Ships as a **hard cutover** — owner decision 2026-08-18 (P11 = no runtime flag): the legacy VM core + ladders are deleted in the same effort once the new plane is verified; the 73+ characterization tests are the safety net, and rollback of a bad build is a new TestFlight/App Store build. | **UNGATED as of 2026-08-18**: P11 decided (no key — hard cutover; PR #673 closed unmerged, recoverable) and the §8 control run passed (anomaly environmental). Ready to run whenever the owner wants the cycle. Run via `player-remediation-fix.js` with spec JSONs; roughly 5–7 implementers + reviewers. |
 | ~~Stage 3 = narrow the local matrix (Option B deletions)~~ **Cancelled 2026-08-18** | P1 = yes, P2 = no, P5 = no (§7): the encoder ladders, the EVENT fallback and common-container local playback all stay. Only the server-authoritative tightening items (planner limited to execution detail, `local_mutations` populated, `ApplePlaybackRouteCapabilities` premium claims → `plan.claims`) remain candidates — as Stage 2 territory. | Decided — closed. |
 | ~~Stage 4~~ Folded into Stage 2 | With no runtime flag (P11 = no key) there is no separate "default it on" release: Stage 2 lands with the old VM core + ladders already deleted. (The former Stage 5 / Option C is dead: P1 = yes.) | — |
 | Review items still open | #10 server audio pick on native-direct/HLS (needs server audio-index semantics; largely moot now that non-default audio → loopback); #11 combined-index translation for embedded tracks (needs the version inventory plumbed from the VM); six online-unreachable error rungs (PVM `1524-1553` at review time); `cmpLog` vs `os_log` unification; macOS scene-phase divergence; audiobook engine as a second V3 client. | Mostly Stage 2 territory; small ones could go in a follow-up package. |
@@ -259,6 +259,7 @@ not reach the player.
 | This handoff | `docs/cleanup/HANDOFF.md` |
 | Round table, intentionally-kept list, deferred/refuted, areas worth a look | `docs/cleanup/app-cleanup-backlog.md` (§0, §3, §4) |
 | Architecture review (defects, target architecture, staged plan, product decisions) | `docs/cleanup/player-review/2026-08-17-architecture-review.md` + `slices/` |
+| **Stage 2 design + inventories + specs + workflow** | `docs/cleanup/player-review/2026-08-19-stage2-design.md`, `docs/cleanup/player-review/stage2/` (README, `inventory-1..4`, `specs/`), `.claude/workflows/player-stage2-fix.js` (mirror in `docs/cleanup/workflows/`) |
 | Workflow scripts (mirror) + README | `docs/cleanup/workflows/` (source of truth when present: `.claude/workflows/`); round-6 continuation script `app-cleanup-review-continue.js` lives only in the mirror |
 | Player docs | `docs/tvos-player/` (README, 01–09, `validations/`) |
 | tvOS focus rules | `docs/tvos-focus.md` |
@@ -278,5 +279,13 @@ not reach the player.
    workflows still need an explicit per-request opt-in).
 3. Small items left: backlog §2.5 EVENT-fallback signal (needs a device pass), backlog 1.18/1.21 — nothing else
    small is queued; the round-6 tail and the temporary-scope guard test are done.
-4. Another full DRY survey is unlikely to pay: rounds 5 and 6 back-to-back found zero orphan types and the
-   round-6 yield was already mostly repetition; Stage 2 is the lever now.
+4. **Stage 2 is drafted and ready (2026-08-19).** Read `docs/cleanup/player-review/2026-08-19-stage2-design.md`
+   then `docs/cleanup/player-review/stage2/README.md`. Launch wave 1 with
+   `Workflow({scriptPath: ".claude/workflows/player-stage2-fix.js", args: <stage2/specs/wave1-args.json with baseRef = full SHA of the tip>})`
+   (needs the owner's explicit per-request opt-in). After wave 1: merge the five `stage2/*` branches (file-disjoint),
+   verify per §4, then re-anchor `spec-s2w2-engine-session.json` against the new tip and run wave 2 (one package,
+   effort max), device-validate (design §6), wave 3, wave 4. Key finding from the inventories: **no test constructs
+   `PlayerViewModel`/`AVPlayerBackend`/the bridge** — wave 1 builds the fakes and the reducer/policy tables that
+   are the real safety net; the 845 existing player tests pin statics and wire contracts and survive.
+5. Another full DRY survey is unlikely to pay: rounds 5 and 6 back-to-back found zero orphan types and the
+   round-6 yield was already mostly repetition.

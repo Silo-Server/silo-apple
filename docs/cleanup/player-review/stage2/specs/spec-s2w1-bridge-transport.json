@@ -1,0 +1,43 @@
+{
+ "design_ref": [
+  "docs/cleanup/player-review/2026-08-19-stage2-design.md \u00a72.1 (SessionIdentity is produced by the bridge \u2014 wave 2 adds `currentIdentity`; this package prepares the seams), \u00a74 I2/I9, \u00a75 wave 1 PlaybackSessionBridgeIdentityTests",
+  "docs/cleanup/player-review/stage2/inventory-3-backend-bridge-loopback.md \u00a75 (identity fields, isCurrentProtocolV3Attempt, stopSession BR:1521, the 15 SiloAPI.shared call sites / 8 methods, stage/adopt split)",
+  "docs/cleanup/player-review/stage2/inventory-4-tests-views-platform.md A.0 (no test constructs the bridge), A.7 (no fake transport exists)"
+ ],
+ "brief": "Seam work inside PlaybackSessionBridge.swift only (+ new files). Behaviour identical.\n\nSTEP 1. New iosApp/iosApp/Screens/Player/ControlPlane/PlaybackTransport.swift: `protocol PlaybackTransport: Sendable` with exactly the 8 SiloAPI methods the bridge uses (inventory-3 \u00a75 list: playbackV3Capability, stopPlayback, watchDetail, startPlaybackV3, reportPlaybackRouteEventV3, replanPlaybackV3, reportPlaybackProgress, syncProgress) \u2014 copy signatures from SiloAPI. `extension SiloAPI: PlaybackTransport {}` (SiloAPI is an actor; if conformance needs `nonisolated` trampolines or the methods are already usable, prefer zero changes to SiloAPI.swift and put the conformance in the new file; if SiloAPI.swift must change, list it under files_outside_package).\nSTEP 2. `PlaybackSessionBridge.init(transport: any PlaybackTransport = SiloAPI.shared)` storing it; replace the 15 `SiloAPI.shared.` call sites in the bridge (and in the nested `PlaybackV3CapabilityGate` actor \u2014 give it the transport too) with the stored transport. The static `reportTerminalStart` (BR:941) takes a transport parameter defaulting to SiloAPI.shared so its two callers (AudioPlayerViewModel via ApplePlaybackV3PlanAdapter.resolvePlayablePlan, and the bridge) compile unchanged \u2014 do not edit those callers.\nSTEP 3. `func stopSession(expectedSessionId: String, position: Double?, isPaused: Bool) async` \u2014 same body as stopSession(position:isPaused:) BR:1521 but the `guard let sid = sessionId` becomes `guard sessionId == expectedSessionId`; the existing method becomes a one-line call into it with the current sessionId (the identity-check-after-await at BR:1576 stays). Also add `var currentSessionId: String? { sessionId }` (actor-isolated getter) \u2014 wave 2 will widen this into `SessionIdentity` once the type exists (another wave-1 package defines it; do NOT define SessionIdentity here).\nSTEP 4. iosApp/Tests/FakePlaybackTransport.swift: `actor FakePlaybackTransport: PlaybackTransport` with scripted responses per method (decoded from the existing Fixtures/PlaybackV3/*.json via PlaybackV3FixtureTestSupport) and a recorded call log.\nSTEP 5. iosApp/Tests/PlaybackSessionBridgeIdentityTests.swift: the FIRST tests that construct the bridge \u2014 (a) startSession over the fixture decision_response yields a PreparedPlayback and `currentSessionId` equals the fixture session id; (b) `stopSession(expectedSessionId: \"other\")` is a no-op (sessionId unchanged, no stopPlayback call); (c) `stopSession(expectedSessionId: current)` clears it and calls stopPlayback once; (d) a replan over the fixture increments the attempt and keeps identity; (e) the 8-replan cap throws `attempt_limit_reached`. Keep tests deterministic (no real network, no timers).\n\nHARD BOUNDARIES: no change to replan/renew/report logic; no new identity type; no edits outside PlaybackSessionBridge.swift + new files (SiloAPI conformance exception noted above).",
+ "deliverables": [
+  {
+   "id": "PlaybackTransport protocol + SiloAPI conformance",
+   "where": "iosApp/iosApp/Screens/Player/ControlPlane/PlaybackTransport.swift"
+  },
+  {
+   "id": "PlaybackSessionBridge.init(transport:) + all call sites on the injected transport",
+   "where": "iosApp/iosApp/Screens/Player/PlaybackSessionBridge.swift"
+  },
+  {
+   "id": "stopSession(expectedSessionId:position:isPaused:) + currentSessionId",
+   "where": "iosApp/iosApp/Screens/Player/PlaybackSessionBridge.swift"
+  },
+  {
+   "id": "FakePlaybackTransport",
+   "where": "iosApp/Tests/FakePlaybackTransport.swift"
+  },
+  {
+   "id": "PlaybackSessionBridgeIdentityTests (\u22655)",
+   "where": "iosApp/Tests/PlaybackSessionBridgeIdentityTests.swift"
+  }
+ ],
+ "invariants": [
+  "Every SiloAPI call the bridge makes is unchanged in method, arguments and order",
+  "V3 request/replan/route-event bodies byte-identical (fixture round-trip tests green)",
+  "AudioPlayerViewModel untouched and compiling",
+  "Suite total = 1539 + tests added"
+ ],
+ "tests_required": [
+  "PlaybackSessionBridgeIdentityTests (a)\u2013(e)"
+ ],
+ "deletions": [],
+ "behavior_changes_allowed": [
+  "none"
+ ]
+}

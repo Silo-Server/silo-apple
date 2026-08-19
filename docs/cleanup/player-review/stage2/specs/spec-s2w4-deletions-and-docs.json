@@ -1,0 +1,40 @@
+{
+ "_status": "DRAFT \u2014 after wave 3",
+ "design_ref": [
+  "docs/cleanup/player-review/2026-08-19-stage2-design.md \u00a73 wave 4, review \u00a79 Stage 2 'Safe deletion points'",
+  "docs/cleanup/player-review/stage2/inventory-4-tests-views-platform.md A.5 (the six rewrites), A.3",
+  "docs/cleanup/player-review/stage2/inventory-3-backend-bridge-loopback.md timer #11 (8\u00d7200 ms initial seek retry), \u00a74.1 step 4 (SILO_KEEP_DV_HLS leftovers), [CMP-MEM] block B:454-482 region"
+ ],
+ "brief": "Delete what Stage 2 made dead: [CMP-MEM] temporary block, remaining SILO_KEEP_DV_HLS threading outside LocalHLSHost, the 8\u00d7200 ms initial-seek retry (SeekRequest deadline covers it), dead online-unreachable rungs' remnants, any leftover mirrors; rewrite PlaybackProtocolV3Tests rows 1\u20133 of inventory-4 A.5 as reducer/actor tests; retarget the ~15 mechanical sites; docs/tvos-player 01\u201309 truth pass for the new ownership (names: PlaybackSessionActor, PlaybackEngineSession, LocalHLSHost, RecoveryPolicy, TrackSelectionCoordinator); backlog \u00a70 + HANDOFF rows; validation records linked.",
+ "deliverables": [
+  {
+   "id": "deletions",
+   "where": "as found"
+  },
+  {
+   "id": "test rewrites/retargets",
+   "where": "iosApp/Tests/"
+  },
+  {
+   "id": "docs truth pass",
+   "where": "docs/tvos-player/, docs/cleanup/"
+  }
+ ],
+ "invariants": [
+  "I1",
+  "suite green"
+ ],
+ "tests_required": [
+  "the rewrites named in inventory-4 A.5"
+ ],
+ "deletions": [
+  {
+   "grep": "CMP-MEM|initialSeekRetryCount",
+   "scope": "iosApp/iosApp",
+   "expected": "0 hits"
+  }
+ ],
+ "behavior_changes_allowed": [
+  "design \u00a77.5"
+ ]
+}

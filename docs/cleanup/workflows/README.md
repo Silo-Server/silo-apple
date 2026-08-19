@@ -66,3 +66,14 @@ hand-write the report (say so in `notes` so the reviewer reads the diff with ext
 the fix script's `{approved, summary}` (plus `first_review_verdict` / `repair_status`), so the merge recipe is
 unchanged. Round 6 embedded the args inline (`const EMBEDDED_ARGS = {...}`) because the packages were too large
 for a tool argument — the mirrored copy reads `args` instead.
+
+## 4. `player-stage2-fix.js` — Stage 2 control-plane extraction, one wave per run
+
+Same implementer → independent reviewer → one repair round shape, with prompts for a design-driven structural
+extraction instead of point fixes: every package has `spec_path` → JSON `{design_ref, brief, deliverables,
+invariants, tests_required, deletions, behavior_changes_allowed}`; the implementer realises the named deliverables
+(names are binding), writes the named tests first where told, keeps every intermediate step compiling; the reviewer
+traces each invariant, runs each deletion grep, checks tests exist by name. Args `{wave, baseRef (full SHA), packages,
+scratchDir?, designDoc?}`; the script refuses a wave whose packages are not file-disjoint. Branches `stage2/<id>`.
+Design + specs: `docs/cleanup/player-review/2026-08-19-stage2-design.md`, `docs/cleanup/player-review/stage2/`.
+Waves are sequential: merge → verify → re-anchor the next wave's spec against the new tip → run.

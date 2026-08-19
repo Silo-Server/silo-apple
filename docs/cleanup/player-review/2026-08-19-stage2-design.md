@@ -1,0 +1,436 @@
+# Stage 2 — playback control-plane extraction: design and wave plan
+
+**Status:** draft for implementation, 2026-08-19. Base for wave 1: `player/architecture-remediation` @ `acc3004`
+(round 6 + tail merged; suite 1539 / 3 skipped / 0). Owner decisions that bound this design: **P11 = no remote
+key → hard cutover** (legacy VM core + backend ladders are deleted in the same effort; rollback = new
+TestFlight build); **P1 = yes** (loopback tier is permanent); **P2/P5 = no** (local matrix stays); PR #172
+remains the single PR. The architecture review this realises is
+`docs/cleanup/player-review/2026-08-17-architecture-review.md` (§2.2 ownership map, §4 trouble spots, §5
+essential/accidental, **§8 target**, §9 Stage 2, §11 test/validation matrix). Evidence re-anchored at the
+current tip lives in `stage2/inventory-1..4*.md` — every spec cites those, not the review's 08-17 lines.
+
+This document is what every Stage 2 package implements against. Deliverable names below are **binding**; an
+implementer who cannot realise one without breaking an invariant stops and reports rather than improvising.
+
+---
+
+## 0. What Stage 2 is, in one paragraph
+
+Today the player's control plane is `PlayerViewModel` (8,007 lines: ~5.5k control core + ~1.4k track half +
+glue) driving `AVPlayerBackend` (4,884 lines: ~1k AVFoundation adapter, ~1.2k loopback lifecycle glue, six
+in-route recovery ladders) through 17 by-value-generation-guarded closures, with a `PlaybackSessionBridge` actor
+for the server session. Identity is spread over 3 generation counters + 5 session-id mirrors/echoes in the VM, a
+string `activeLoopbackSessionID` compared 14 times in the backend, and ~16 unregistered `Task {}`s (inventory-1
+§1a/§5, inventory-3 §3). Recovery has four owners and a two-owner handshake (`setRecoverySuspended` /
+`setExternalStallSuppression` / `kickPlaybackAfterExternalStallCleared`). Stage 2 replaces that with: a
+**pure `PlaybackReducer`** over an explicit `PlaybackState`; a **`PlaybackSessionActor`** that runs the
+reducer's effects under structured concurrency with every effect stamped by `LoadID` / `SessionIdentity`; a
+**`PlaybackEngineSession`** (one per load) that owns the backend adapter, the source proxy and — for loopback —
+a `LocalHLSHost` value; **one pure `RecoveryPolicy`** holding every ladder's constants; and a
+**`TrackSelectionCoordinator`** holding the track half behind a small port. `PlayerViewModel` becomes a thin
+presentation model that projects `PlaybackState` and forwards view commands as intents. Behaviour on
+iOS/tvOS/macOS is identical except for the items in §7.
+
+---
+
+## 1. Target architecture (the §8 sketch, made concrete for this codebase)
+
+```
+PlayerViewModel (@Observable, @MainActor, thin)        projects PlaybackState → the 130 view members (inv-4 B.2);
+                                                      forwards view commands as PlayerIntent; owns no policy
+PlaybackSessionActor (actor)                          holds PlaybackState; runs PlaybackReducer; executes [Effect]
+                                                      under structured concurrency; every mutation conditional on
+                                                      LoadID / SessionIdentity; owns PlayerTaskRegistry
+PlaybackReducer (pure, enum namespace)                (PlaybackState, PlayerIntent | PlayerEvent) → (PlaybackState, [Effect])
+RecoveryPolicy (pure, enum namespace)                 (RecoveryObservation, RecoveryContext) → (RecoveryAction?, RecoveryContext)
+PlaybackEngineSession (@MainActor final class, one per LoadID)
+    ├─ backend: any PlaybackBackend (AVPlayerBackend)  AVFoundation adapter: observers, audio session, display criteria,
+    │                                                   PiP/AirPlay, seek deadline, initial-display gate — emits EngineEvent
+    ├─ transport: PlaybackSourceProxy?                 unchanged data plane (retargetOrigin for silent renewal)
+    └─ localHost: LocalHLSHost?                        writer + store + server + VOD plan + subtitle tap + restart
+                                                       coalescer + session dir as ONE value with ONE lifecycle
+PlaybackSessionBridge (actor, unchanged shape)         + injected PlaybackTransport, + SessionIdentity, + stopSession(expected:)
+TrackSelectionCoordinator (@Observable @MainActor)     the track half behind TrackSelectionPorts; views keep reading VM forwarders
+Coordinators kept as-is (glue, not policy):            NowPlayingController, SleepTimer, PictureInPictureCoordinator,
+                                                       SubtitleAIController/LiveSubtitleCoordinator, PlayerSettings
+```
+
+**Ownership after Stage 2 (one owner per row — compare review §2.2):**
+
+| Concern | Owner | Notes |
+|---|---|---|
+| Delivery / fallback rung | server (V3 replan via bridge) | VM ladder rungs 5–10 (inv-1 §4, online-unreachable) are deleted; the offline-only native→loopback and loopback→HLS rungs become `RecoveryAction.switchRoute(.loopbackFallback / .serverHLS)` decided by `RecoveryPolicy` with the *same* preconditions |
+| Execution recipe in `original_http` | Apple planner (unchanged) | out of scope (Stage 3 cancelled) |
+| Session identity | `SessionIdentity` minted by the bridge; `LoadID` minted by the actor | the five VM mirrors/echoes and the backend string id are deleted |
+| Load generation | `LoadID` | `streamLoadGeneration`, `freshLoadGeneration`, `serverOutageRecoveryGeneration`, backend `loopbackGeneration`/`activeLoopbackSessionID` deleted |
+| Source renewal | actor effect `.renewSource` (bridge `renewDirectSession` + proxy `retargetOrigin`) | single-flight becomes a reducer sub-state, not two `*SessionId` echoes |
+| Recovery | `RecoveryPolicy` consumed by the actor; engine session only *executes* actions | six backend ladders + VM outage ride-through + VM error ladder → one policy, same constants (inv-3 §2 table) |
+| Track selection | `TrackSelectionCoordinator` | same decision sites, same order (inv-2 §2); the eight `pending*` fields collapse into `TrackSelection` in wave 4 only after the coordinator is stable |
+| Output-route change | actor: `PlayerIntent.outputRouteChanged` | the AVAudioSession observer lives in the VM shell and only forwards an intent |
+| Seek / reanchor | `SeekRequest` inside `.playing` | recovery seeks are `SeekRequest`s with deadlines; the 8 × 200 ms initial-seek retry (inv-3 timer #11) is deleted |
+| Teardown | `PlaybackEngineSession.dispose()` + `LocalHLSHost.teardown()` | the ~51-field hand reset (inv-3 §4.7) becomes "drop the value" |
+
+---
+
+## 2. Types (binding names and shapes)
+
+New files under `iosApp/iosApp/Screens/Player/ControlPlane/` unless noted. All types are `internal`. Swift 5
+mode; no macros; no new third-party code.
+
+### 2.1 Identity — `PlaybackIdentity.swift` (wave 1E)
+```swift
+struct LoadID: Hashable, Sendable { let raw: UUID; init() }           // one per loadStream; owns callback lifetime
+struct SessionIdentity: Equatable, Sendable {
+    let serverSessionId: String?        // bridge.sessionId
+    let playbackAttemptId: String       // "apple:<uuid>" (bridge ActiveProtocolV3.playbackAttemptId)
+    let planAttemptId: String?          // "apple-plan:<uuid>"
+    let planAttemptKey: String?         // server plan_attempt_key
+    let outputContextId: String         // ApplePlaybackV3CapabilitySnapshot.outputContextId
+}
+```
+`SessionIdentity` is produced only by `PlaybackSessionBridge.currentIdentity` (wave 1D) and carried by every
+session-scoped effect/event. Offline loads use `SessionIdentity(serverSessionId: nil, playbackAttemptId:
+"offline:<uuid>", …)`.
+
+### 2.2 Plan — `ExecutablePlan.swift` (wave 1E)
+```swift
+enum ExecutablePlan: Equatable {                 // valid by construction; kills PlaybackEngineLoadError.missingLoopbackSession
+    case nativeDirect(NativeDirectPlan)          // url, headers, startSeconds
+    case serverHLS(ServerHLSPlan)                // manifestURL, headers, startSeconds, startMode (.startOfManifest | .absolute)
+    case localHLS(LocalHLSPlan)                  // LoopbackSessionSpec (non-optional), startSeconds
+    var engine: PlaybackEngineKind { … }
+    init(_ plan: PlaybackExecutionPlan, request: StreamRequest) throws   // total over PlaybackExecutionPlan; throws only
+                                                                        // for .siloPlayerLoopback with loopbackSession == nil
+}
+```
+`PlaybackExecutionPlan` (planner/adapter output, decisionTrace, claims…) stays as the *planning* artefact;
+`ExecutablePlan` is what the engine session executes. `logExecutionPlan`'s `cmpLog` line is unchanged.
+
+### 2.3 State machine — `PlaybackState.swift` (wave 1E)
+```swift
+enum PlaybackState: Equatable {
+    case idle
+    case preparing(Preparing)                 // LoadID, SessionIdentity?, phase: .resolvingSession | .planning | .startingEngine, request: LoadRequest
+    case playing(Playing)                     // LoadID, SessionIdentity, ExecutablePlan, transport: TransportState, sub: Sub
+    case suspended(SuspendedContext)          // tvOS background: LoadRequest + resume position (replaces suspendedPlayback)
+    case failed(PlaybackFailure, LoadID?)     // terminal; presentation shows `error`
+    case disposed
+}
+enum Sub: Equatable { case steady; case recovering(RecoveryStep); case replanning(ReplanIntent); case seeking(SeekRequest);
+                      case renewingSource(SourceRenewal); case ridingOutOutage(OutageRideThrough); case ended }
+struct SeekRequest: Equatable { let id: UUID; let targetSeconds: Double; let origin: SeekOrigin; let deadline: Date }
+enum SeekOrigin: Equatable { case user, scrub, skip, chapter, intro, credits, nextUpKeepWatching, recovery(String), reanchor }
+enum PlayerIntent: Equatable { case load(LoadRequest, origin: LoadOrigin); case play; case pause; case togglePlayPause
+    case seek(targetSeconds: Double, origin: SeekOrigin); case selectTrack(TrackSelectionIntent)   // forwarded to the coordinator
+    case changeQuality(String); case outputRouteChanged(ApplePlaybackV3CapabilitySnapshot)
+    case scenePhase(ScenePhase); case resumeSuspended; case retry; case dismiss }
+enum PlayerEvent: Equatable { case engine(EngineEvent, LoadID); case session(SessionEvent, SessionIdentity)
+    case transport(TransportEvent, LoadID); case recovery(RecoveryAction, LoadID); case timer(TimerID, LoadID) }
+enum Effect: Equatable {   // run by PlaybackSessionActor; every case carries the identity it is conditional on
+    case startSession(LoadRequest, LoadID)                       // bridge.startSession / OfflinePlaybackBuilder → .session(.prepared)
+    case stopSession(SessionIdentity, position: Double?, isPaused: Bool)
+    case loadEngine(ExecutablePlan, LoadID, reuseEngine: Bool)   // reuseEngine == today's prepareBackend(for:) path — product-essential
+    case disposeEngine(LoadID)
+    case seek(SeekRequest, LoadID)
+    case replan(ReplanIntent, SessionIdentity)                   // bridge.replanProtocolV3 → .session(.replanned | .terminal | .missing)
+    case renewSource(SourceRenewal, SessionIdentity)             // bridge.renewDirectSession + proxy.retargetOrigin
+    case runRecovery(RecoveryAction, LoadID)                     // engine-session-level actions (nudge/reload/reanchor/rebuild/reassert)
+    case pollServerHealth(TimerID, after: Duration, LoadID)      // outage ride-through / wait-for-server-ready
+    case schedule(TimerID, after: Duration, LoadID)
+    case cancelTimer(TimerID)
+    case reportProgress(SessionIdentity, position: Double, isPaused: Bool)
+    case reportFirstFrame(SessionIdentity, ms: Int)
+    case reportPlanExecutionStarted(SessionIdentity)
+    case publish(Presentation)                                   // the only path to UI state (see §2.6)
+}
+```
+`EngineEvent` (backend → actor, stamped by the engine session): `fileLoaded(reason)`, `firstFrame(ms)`,
+`time(seconds)`, `duration(seconds)`, `pauseChanged(Bool)`, `buffering(Bool)`, `bufferedAhead(PlaybackBufferedAhead)`,
+`stats(PlaybackStats)`, `tracks([PlayerTrack])`, `chapters([PlayerChapterInfo])`, `timelineOffset(Double)`,
+`endOfFile`, `failed(PlaybackFailure)`, `externalPlayback(active:)`, `externalPlaybackAllowed(Bool)`,
+`externalPlaybackUnavailable`, `sidecarTracksRegistered([SidecarSubtitleDescriptor])`, and the recovery
+observations in §2.4 wrapped as `observation(RecoveryObservation)`.
+`SessionEvent`: `prepared(PreparedPlayback)`, `replanned(PreparedPlayback)`, `replanUnavailable`,
+`terminal(PlaybackV3TerminalFailure)`, `sessionMissing`, `renewed(PreparedPlayback)`, `renewalFailed(transient: Bool)`.
+`TransportEvent`: `sessionMissing`, `sourceInterrupted(reason)`, `originOutage(active: Bool)`.
+`TimerID`: the keys of `PlayerTaskRegistry.swift:37-62` that are control-plane (freshLoad, protocolV3Replan,
+staleSessionRecovery, backgroundRenewal, sourceOutageRideThrough, serverOutageRecovery, interruptionRecovery,
+seekFilterTimeout, progress) — UI timers (hideControls, noticeDismiss, skipDebounce, holdSeek*, nextUp*,
+autoSkipIntro) stay on the presentation model.
+
+### 2.4 Recovery — `Recovery/RecoveryPolicy.swift` + `Recovery/RecoveryObservation.swift` (wave 1B)
+```swift
+enum RecoveryObservation: Equatable {
+    // backend-originated (loopback route unless noted)
+    case startupTick(servedRequests: Int, secondsSinceStart: Double, displayModeSwitchInProgress: Bool)   // inv-3 §2 S
+    case playheadTick(PlayheadSample)          // position, timeControl, bufferedAhead, generatedAhead, secondsSinceLastServe, userPaused, playbackEstablished
+    case itemDeathEvidence(statusCode: Int?, description: String, weight: Int, position: Double, userPaused: Bool)   // D
+    case edgeSample(EdgeSample)                // loadedEnd, playlistEnd, playlistHash, loadedAhead, visibleAhead, targetDuration, longestSegment
+    case playbackStalled                       // X
+    case playlistUnchanged(userPaused: Bool)   // Y
+    case likelyToKeepUp(rate: Double, bufferedAhead: Double, reachedEnd: Bool)   // auto-resume rung
+    case seekDeadlineExpired(kind: SeekDeadlineKind)
+    case engineFailed(PlaybackFailure)         // any route
+    // transport / session
+    case originOutage(active: Bool)            // proxy
+    case sourceInterrupted                     // proxy
+    case sessionMissing(source: SessionMissingSource)   // .playerError | .proxy404 | .progressHeartbeat | .replanCatch
+    case serverHealthProbe(ok: Bool)
+    case bufferingChanged(Bool)                // for the outage "Reconnecting" runway gate
+}
+struct RecoveryContext: Equatable {            // threaded state; replaces the backend's watchdog fields + VM latches
+    var route: PlaybackEngineKind; var playbackEstablished: Bool; var userPaused: Bool
+    var suspendedReasons: Set<String>          // "server_replan", "origin_outage" — same strings as today
+    var startup: StartupState                  // stage (.initial/.nudged/.reloaded), startedAt, lastProgressAt, lastRequestCount
+    var playhead: PlayheadState                // stationarySince, reanchorCount, windowStart, didEscalateStarvation, lastStallRecoveryAt
+    var itemDeath: LoopbackItemDeathRecoveryState; var itemDeathConfirmation: LoopbackItemDeathConfirmationState   // reuse verbatim
+    var edge: LoopbackEdgeWatch?
+    var rebuildBudget: LoopbackRebuildBudget   // reuse verbatim
+    var outage: OutageState?                   // rideThroughStart, nextProbeDelay (1→8 s), noticeShown
+    var serverOutageRecovery: ServerOutageRecoveryState?   // waitStart, nextDelay
+    var backgroundRenewalTransientFailures: Int
+    var attemptedNativeDirectFallback: Bool; var attemptedLoopbackHLSFallback: Bool   // replace the two hasAttempted* latches, per LoadID
+    var nearEnd: NearEndInputs?                // duration, currentTime, bufferedAhead, sourceOutageActive — for the natural-end rule
+}
+enum RecoveryAction: Equatable {
+    case reassertPlay                                   // bare avPlayer.play()
+    case nudgeStartup                                   // S .initial
+    case reloadStartupItem                              // S .nudged
+    case reanchor(atMediaSeconds: Double, reason: String)          // recoverLocalLoopbackStallIfNeeded / vod_stall_nudge
+    case reloadItem(atMediaSeconds: Double, reason: String)        // reloadEstablishedLoopbackItem
+    case restartProducer(atSegmentIndex: Int, authoritative: Bool) // requestVODProducerRestart
+    case rebuildLocalSession(atMediaSeconds: Double, reason: String)   // rebuildSiloLoopbackSession (budgeted)
+    case deferUntilPlay(mediaSeconds: Double)           // Y while paused (pendingLocalLoopbackRecoveryMediaTime)
+    case resumePlayback                                 // auto-resume rung
+    case treatAsNaturalEnd                              // VM rung 3 (8 s / ≤1 s buffered)
+    case requestServerReplan(classification: String, message: String)   // VM rung 4 + HLS fallback rungs
+    case switchRoute(RouteFallback)                     // .loopbackFallback(plan) | .serverHLS(classification) — offline-only rungs
+    case renewSourceInBackground(reason: String)        // attemptBackgroundSessionRenewal
+    case renewSessionFresh(reason: String)              // attemptStaleSessionRenewal
+    case rideThroughOutage(probeAfter: Duration)        // handleOriginOutageChanged(active)
+    case endOutageRideThrough(kick: Bool)               // clearSourceOutageRideThroughState + kickPlaybackAfterExternalStallCleared
+    case recoverFromServerOutage(reason: String)        // attemptServerOutageRecovery
+    case waitForServerReady(probeAfter: Duration)       // waitForServerReady loop
+    case autoRecoverInterruption                        // triggerAutomaticInterruptionRecovery
+    case fail(PlaybackFailure)                          // terminal
+}
+enum RecoveryPolicy {
+    static func decide(_ o: RecoveryObservation, context: RecoveryContext, now: Date) -> (RecoveryAction?, RecoveryContext)
+    // CONSTANTS — copied verbatim from inv-3 §2 (B:440-506, B:145-146, B:67-69, B:41, B:3677 10 s cooldown, B:3184 4 s,
+    // B:3235-3243 edge thresholds, B:443 seek deadline 15 s) and inv-1 §1e/§4 (PVM:954-964, PVM:601). Each is a
+    // `static let` with the same name as today where one existed.
+}
+```
+Precedence inside `decide` for `.playheadTick` is exactly the tick order in inv-3 §2 P (item-death confirmation
+→ suspension gate → starvation → wedge qualification → window reset → exhaustion → fetch-high-water bail →
+reanchor). `engineFailed` follows the VM ladder order in inv-1 §4 with rungs 5–10 reduced to the ones that are
+reachable: `sessionMissing` (renewal), `prematureSourceEnd` (server outage), interruption auto-recover,
+`switchRoute` (offline only, same preconditions), else `.fail`. Suppression: when `suspendedReasons` is
+non-empty the policy returns `nil` for every loopback in-route observation **except** item-death confirmation
+(which takes `recoverySuppressed` as input and degrades to `.none`, as today) and the startup backstop —
+**note**: today the startup tick's `failBackstop` arm ignores suspension (inv-3 §2 S); the policy keeps that
+quirk and pins it in a test so it is a conscious decision, not drift.
+
+### 2.5 Backend protocol — `PlaybackBackend.swift` (wave 1A)
+```swift
+@MainActor protocol PlaybackBackend: AnyObject {
+    // load / transport (inv-3 §1.2)
+    func load(sessionSpec: LoopbackSessionSpec, startTime: Double)
+    func loadRemoteHLS(url: URL, headers: [String: String], startTime: Double)
+    func loadDirectFile(url: URL, headers: [String: String], startTime: Double)
+    func play(); func pause(); func isPaused() -> Bool; func currentTime() -> Double
+    func seek(to seconds: Double); func setSpeed(_ rate: Double)
+    func setUserVolume(_ v: Float); func setUserMuted(_ m: Bool); var currentUserVolume: Float { get }
+    func setMediaTimelineOffset(_ offset: Double); func dispose()
+    // recovery handshake (inv-3 §1.3) — kept in wave 1; deleted in wave 2 when the ladders move
+    func setRecoverySuspended(_ suspended: Bool, reason: String); func setExternalStallSuppression(_ active: Bool)
+    func kickPlaybackAfterExternalStallCleared()
+    // tracks / subtitles / chapters (inv-3 §1.4)
+    func selectAudioTrack(_ trackId: Int64); func selectSubtitleTrack(_ trackId: Int64?); func setSecondarySubtitleTrack(_ trackId: Int64?)
+    func registerSidecarSubtitles(_ descriptors: [SidecarSubtitleDescriptor])
+    func openLiveSubtitleTrack(slot: SubtitleSlot, label: String?, language: String?)
+    func feedLiveSubtitleCue(slot: SubtitleSlot, eventText: String, startMs: Int64, durationMs: Int64)
+    func closeLiveSubtitleTrack(slot: SubtitleSlot)
+    func setSubtitleDelay(_ seconds: Double); func applySubtitleAppearance(_ appearance: SubtitleAppearance)
+    func setServerChapters(_ chapters: [PlayerChapterInfo])
+    var hasControlledSubtitleSelection: Bool { get }
+    var isExternalPlaybackActive: Bool { get }; var isExternalPlaybackAllowed: Bool { get }
+    // callbacks (inv-3 §1.6) — wave 1 keeps the 17 closures + 3 providers exactly as declared on AVPlayerBackend;
+    // wave 2 replaces them with `var events: AsyncStream<EngineEvent>` owned by PlaybackEngineSession
+    var onTimeChange: ((Double) -> Void)? { get set }  … (all 17) …
+    var isPictureInPictureActiveProvider: (() -> Bool)? { get set }
+    var proxyStatsProvider: (() -> PlaybackSourceProxyStats?)? { get set }
+    var sourceOutageStateProvider: (() -> Bool)? { get set }
+}
+```
+`AVPlayerBackend` conforms by declaration only (no body changes in wave 1). The **view surface** (`avPlayer`,
+`subtitleOverlay`, `attach/detachSubtitleOverlay`, `subtitleRendererForOverlay`) is *not* in the protocol —
+`AVPlayerSurface` keeps taking the concrete `AVPlayerBackend`, reached through `PlayerViewModel.avPlayerBackend`
+(wave 1) and `PlaybackEngineSession.surfaceBackend` (wave 3). Test double: `iosApp/Tests/FakePlaybackBackend.swift`
+(records calls, lets tests fire any callback).
+
+### 2.6 Presentation — `Presentation` value (wave 3)
+`struct Presentation: Equatable` carries exactly the stored projections in inv-1 §1c that the actor changes
+(isPlaying, currentTime, duration, isLoading, isBuffering, error, activeQualityId, isQualitySwitching,
+bufferedAheadSeconds, playbackRunwaySeconds, playbackStats, metadata badges…). The VM applies `.publish` on the
+main actor. View-local/UI state (showControls, scrubbing, hold-seek, HUD, next-up, notices, sleep timer) stays VM-owned.
+
+### 2.7 Track coordinator — `Tracks/TrackSelectionCoordinator.swift` + `Tracks/TrackSelectionPorts.swift` (wave 1C)
+`@MainActor @Observable final class TrackSelectionCoordinator` owning the state in inv-2 §1b + §7 "moves
+wholesale", the five published lists/ids (`audioTracks`, `subtitleTracks`, `selectedAudioId`,
+`selectedSubtitleId`, `selectedSecondarySubtitleId` — the VM keeps **forwarding computed properties** with the
+same names so the 17 view files compile untouched), the `subtitleAI` controller and the two live-subtitle
+adapters (re-pointed from `PlayerViewModel` to the coordinator). Ports (a `struct TrackSelectionPorts` of
+closures, built by the VM; replaced by the engine session/actor in wave 3 without touching the coordinator):
+`backend: () -> (any PlaybackBackend)?`, `requestReplan: (classification, message, subtitleIndex?) -> Void`,
+`isReplanInFlight: () -> Bool`, `context: () -> TrackSelectionContext` (activePreparedProtocolV3,
+currentSelectedVersion, currentWatchDetail, activePlaybackSessionId, resolvedServerUrl, activeRouteKind,
+backendCapabilities, offlinePlaybackContext, currentTime, isBackgroundSuspended), `showNotice`,
+`dismissNotice`, `scheduleHideControls`, `setLastLoadRequestSubtitleIndex`. The five non-clean boundaries in
+inv-2 §7 are handled as: (a) `resetPublishedLoadState` calls `coordinator.resetForLoad(keepingTrackPrefs:)`;
+(b) `adoptPreparedPlayback` calls `coordinator.adopt(prepared, origin:)`; (c) route recovery calls
+`coordinator.snapshotForRecovery()` / `restore(_:)`; (d) `setSubtitleMatchesSystemAppearance` forwards to
+`coordinator.setMatchesSystemAppearance`; (e) `selectAudio` stays on the coordinator (it already owns
+`reapplySystemSubtitlePolicy`). The `TrackSelection` enum model of review §8 is **wave 4** (collapsing the
+`pending*` fields) — only once the coordinator is stable.
+
+### 2.8 Engine session + local host — `Engine/PlaybackEngineSession.swift`, `Engine/LocalHLSHost.swift` (wave 2)
+```swift
+@MainActor final class PlaybackEngineSession {
+    let loadID: LoadID
+    let plan: ExecutablePlan
+    private(set) var backend: any PlaybackBackend            // reused across an in-place replan when reuseEngine == true
+    var surfaceBackend: AVPlayerBackend? { backend as? AVPlayerBackend }
+    private(set) var transport: PlaybackSourceProxy?
+    private(set) var localHost: LocalHLSHost?               // .localHLS only
+    let events: AsyncStream<EngineEvent>                     // every element already stamped with loadID by the actor wrapper
+    init(loadID:plan:backendFactory:reusing existing: PlaybackEngineSession?)   // existing != nil ⇔ reuseEngine
+    func start(startSeconds:) throws; func perform(_ action: RecoveryAction) async; func seek(_ r: SeekRequest)
+    func retargetSource(url:headers:) ; func dispose(reason:)
+}
+final class LocalHLSHost {                                   // inv-3 §4.1–4.5 glue, one value
+    init(spec: LoopbackSessionSpec, startSeconds: Double, sessionDirectory: URL, store/server/writer factories…)
+    var writer: LoopbackSegmentWriter?; let store: LoopbackSegmentStore; let server: LoopbackSegmentServer
+    var vodPlan: LoopbackSegmentPlan?; var baseIndex/headIndex; var coalescer: LoopbackRestartCoalescer; var subtitleTap: LoopbackSubtitleTap?
+    func start() async throws -> URL (playlist URL, after first segment)   // startSiloLoopback steps 1–11 + handleFirstSegmentReady's URL choice
+    func requestProducerRestart(atSegment:authoritative:)                  // requestVODProducerRestart + coalescer
+    func restartWriter(atSegment:recycling:)                               // startSiloLoopbackWriter
+    func teardown(keepArtifacts: Bool)                                     // the loopback half of teardownMediaPipeline + session dir disposal
+    var onEvent: (EngineEvent) -> Void                                     // writer/store callbacks → events (firstSegmentReady, planResolved, stats, failed…)
+}
+```
+`AVPlayerBackend` after wave 2 keeps: observers, audio session, display criteria, initial-display gate, PiP/AirPlay
+policy, seek deadline, buffer policy, subtitle overlay pump, `attachLoopbackItem(url:)`,
+`reloadEstablishedLoopbackItem`, and emits `RecoveryObservation`s instead of deciding. The six ladders, their
+timers' *decisions* (the `Timer`s stay as observation sources), `activeLoopbackSessionID`/`loopbackGeneration`,
+`startSiloLoopback*`, `requestVODProducerRestart`, `vodRestartCoalescer`, `sessionDirectory`/`SILO_KEEP_DV_HLS`,
+`pendingLocalLoopbackRecoveryMediaTime`, `loopbackRebuildBudget`, `watchdogReanchor*`, `didEscalateLoopbackStall`,
+`lastLocalLoopbackStallRecoveryAt`, `loopbackItemDeath*State`, `loopbackEdgeWatch` and the recovery handshake
+API are **deleted** from it.
+
+---
+
+## 3. Waves (each wave = one `player-stage2-fix.js` run; packages in a wave are file-disjoint; waves are sequential and each leaves the tree green on all three schemes with the suite at baseline + added tests)
+
+| Wave | Packages (parallel) | Touches | Behaviour | Est. |
+|---|---|---|---|---|
+| **1 — seams, types, policies** | 1A `PlaybackBackend` protocol + conformance + `FakePlaybackBackend`; 1B `RecoveryPolicy` + observation/context/action types + table tests; 1C `TrackSelectionCoordinator` extraction; 1D bridge `PlaybackTransport` injection + `SessionIdentity` publication + `stopSession(expected:)` + `FakePlaybackTransport`; 1E control-plane types + `PlaybackReducer` + reducer tests | 1A: `AVPlayerBackend.swift` (conformance line + protocol file) · 1B: new files only · 1C: `PlayerViewModel.swift` + new `Tracks/*` · 1D: `PlaybackSessionBridge.swift` + new · 1E: new files only | identical (1C is a mechanical move; the rest is additive) | 5 implementers + 5 reviewers |
+| **2 — engine session + one recovery owner** | 2A `PlaybackEngineSession` + `LocalHLSHost`; backend ladders → observations; `RecoveryPolicy` consumed by a temporary `RecoveryDriver` inside the engine session; VM's `loadStream/prepareBackend/installBackend/loadBackend/makeCallbacks/applyCallbacks/prepareSourceProxy` retargeted to the engine session; VM outage ride-through + renewal single-flights fed through the same policy | `AVPlayerBackend.swift`, `PlayerViewModel.swift` (engine/callback/proxy region + recovery region), new `Engine/*`, `Recovery/RecoveryDriver.swift` | identical except §7 items 1–3 | 1 implementer (effort max) + 1 reviewer; device pass afterwards (§6) |
+| **3 — reducer + actor cutover** | 3A `PlaybackSessionActor` runs `PlaybackReducer`; VM load/replan/seek/scene-phase/progress/session-id code replaced by intents + `Presentation` projection; `LoadID`/`SessionIdentity` everywhere; `SeekRequest`; scene-phase tables; legacy VM core deleted | `PlayerViewModel.swift`, `ControlPlane/*`, `Engine/*`, bridge call sites | identical except §7 items 4–6 | 1 implementer (max) + 1 reviewer; device pass (§6) |
+| **4 — deletions + test rewrites + docs** | 4A `TrackSelection` model replacing the eight `pending*`; 4B remaining deletions (`[CMP-MEM]`, `SILO_KEEP_DV_HLS` threading leftovers, `hasAttempted*`, dead rungs, `ProtocolV3SidecarRestoreIntent`, 8×200 ms seek retry), the six `PlaybackProtocolV3Tests` rewrites (inv-4 A.5), docs 01–09 truth pass, HANDOFF/backlog | 4A: `Tracks/*` · 4B: rest | identical | 2 + 2 |
+
+Wave 1 can start now. Waves 2–4 specs are drafted in `stage2/specs/` but **must be re-anchored** (line
+numbers, names that wave 1 introduced) by the orchestrator before launch — each later wave's base is the
+previous wave's merged tip.
+
+---
+
+## 4. Invariants (every package's reviewer traces these; "equivalent" must be derived from code)
+
+I1. **No behaviour change** on iOS/tvOS/macOS/extensions except §7. Same server calls in the same order; same
+    `cmpLog`/`Logger` lines that tests or diagnostics consume (`HostedDiagnosticsAPITests:532` pins the
+    `"CMP playback_session_id="` and `"PlaybackSessionBridge session_id="` breadcrumb tags — keep them).
+I2. **Identity on every effect.** After wave 3 there is no by-value generation capture, no string session-id
+    compare, no `*SessionId` single-flight echo; mutation is `guard identity == current`.
+I3. **One owner per policy**; `RecoveryPolicy` is the only place a recovery decision is made; the engine
+    session/backend only execute `RecoveryAction`s; the VM never decides recovery.
+I4. **The in-place replan keeps the live backend** (tvOS HDMI/criteria): `Effect.loadEngine(reuseEngine: true)`
+    → `PlaybackEngineSession(reusing:)` → same `AVPlayerBackend` instance, same audio session, same display
+    criteria; callbacks/event stream re-bound to the new `LoadID` (review #1 stays fixed).
+I5. **Seeks always have deadlines** (recovery seeks are `SeekRequest`s through the same path), and a new
+    `LoadID` structurally drops any outstanding `SeekRequest`.
+I6. **Display-criteria ordering, initial-display gate, audio-session serialization, PiP layer binding, AirPlay URL
+    rewrite and the `prepareAssetPlayback` ordering are untouched** (inv-3 §4.3/§4.8; HANDOFF layer 8).
+I7. **Teardown is complete**: dropping a `PlaybackEngineSession` releases writer/store/server/tap/proxy/timers
+    and removes the session directory unless `SILO_KEEP_DV_HLS`; `LoopbackSessionSpecCopyHelperTests`' Mirror guard
+    still passes (no new stored property on `LoopbackSessionSpec`).
+I8. **Audiobook engine unaffected** (`AudioPlayerViewModel` uses V3 types + `resolvePlayablePlan` only) — build +
+    its tests green; Stage 2 may move `resolvePlayablePlan` into the bridge/actor only if both callers move with it.
+I9. **Wire contracts unchanged**: V3 request/replan/route-event bodies byte-identical (fixture round-trip tests),
+    `local_mutations: []` as today, SiloControl state projection unchanged.
+I10. **tvOS focus** untouched (no view code changes beyond VM member renames that keep the same names).
+
+---
+
+## 5. Tests (names binding; "rewrite" = same contract, new entry point; never a silent delete)
+
+Wave 1: `PlaybackReducerTests` (load → preparing → playing; replan while replanning rejected (§11 #22); second
+replan intent queued/replaced per reducer rule; seek request dropped on new LoadID (#17/#5); suspend/resume
+replay; ended sub-state; exactly one recovery action per failure while replanning (#16)); `RecoveryPolicyTests`
+(table test per ladder rung with today's constants — startup S (incl. the backstop-ignores-suspension quirk),
+playhead P (all nine rungs incl. precedence), item death D, edge E, stalled X, playlist-unchanged Y incl.
+`deferUntilPlay`, auto-resume, rebuild budget exhaustion → `.fail(.loopbackRebuildBudgetExhausted)`, VM ladder
+(near-end natural end 8 s/≤1 s; session-missing → background then fresh renewal; premature-source-end → server
+outage; offline-only route switches with preconditions), outage ride-through backoff 1→2→4→8 capped at 8 within
+90 s, server-outage wait) — with an in-test **oracle** copied from the legacy code where a rung is arithmetic
+(the R2 `PlayerErrorClassificationMatrixTests` pattern); `TrackSelectionCoordinatorTests` (applyTrackList pending-ff
+order incl. `<0` Off sentinel; appendSidecarTracks restore + forced-sidecar auto-select guard; fuzzy
+`TrackSelectionSnapshot` threshold 3; replan-automatic-selection path; suspended-drop guard) — **these are new
+coverage for behaviour that had none (inv-2 §6)**; `PlaybackSessionBridgeIdentityTests` (`currentIdentity`
+round-trip; `stopSession(expected:)` no-op on superseded identity (§11 #18); `FakePlaybackTransport` drives
+start/replan/renew/stop with fixture JSON); `PlaybackBackendProtocolTests` (FakePlaybackBackend smoke).
+Wave 2: `PlaybackEngineSessionTests` (FakePlaybackBackend + FakeLocalHLSHost: start/dispose/reuse; event stamping;
+`perform(RecoveryAction)` maps to the right backend call), `LocalHLSHostTests` (teardown releases everything;
+restart coalescing; playlist URL choice incl. AirPlay external URL).
+Wave 3: `PlaybackSessionActorTests` (intents → effects → events end-to-end over fakes: fresh load, in-place replan
+(reuseEngine), stale-identity event ignored, stale replan dropped, background renewal, outage ride-through with
+kick, scene-phase tables per platform (§11 #23), suspend/resume, dispose cancels all timers), progress reporting.
+Wave 4: the six `PlaybackProtocolV3Tests` rewrites (inv-4 A.5) and `TrackSelectionTests` for the enum model.
+Existing: the ~15 MECHANICAL RETARGET sites in inv-4 A.0 (the `PlayerViewModel.*`/`AVPlayerBackend.*`/
+`PlaybackSessionBridge.*` statics) move with their functions; all other 845 player tests survive unchanged.
+
+---
+
+## 6. Validation gate (P12) — before the PR is considered mergeable after wave 3
+
+Device rows from review §11 on the Living Room Apple TV 4K (gen 2) with the deep-link workflow
+(`docs/tvos-player/README.md`; records in `docs/tvos-player/validations/`): **4** (h264/AAC native-direct), **7**
+(4K HEVC seek-heavy, reanchor), **14** (native-direct startup failure → exactly one rung-1 then ≤1 rung-2,
+selections preserved), **1/3** (DV P7 + TrueHD and HDR10 loopback — the criteria/gate path), **12** (source
+expiry → silent renewal), **13** (server restart → ride-through → resume), **16** (macOS background). iPhone
+rows 9–10 (PiP, background/Now Playing). Each recorded on the pre-wave-2 build and on the wave-3 tip.
+
+---
+
+## 7. Behaviour differences allowed (listed so they are decisions, not drift)
+
+1. (wave 2) The terminal-start route-event `Task` and similar fire-and-forget reports are started from the
+   actor's executor instead of inheriting the caller's actor — same POST, same ordering relative to the throw.
+2. (wave 2) `SILO_KEEP_DV_HLS` is read once per `LocalHLSHost` at creation (it is an env var nothing mutates).
+3. (wave 2) The startup watchdog, playhead watchdog and edge sampler keep their periods, but run as observation
+   sources with no decision logic; telemetry log lines (`[CMP-AVP] loopback playhead state`, `[CMP-MEM]`) keep
+   their text.
+4. (wave 3) `streamLoadGeneration` is no longer logged (it never was); `LoadID`/`SessionIdentity` are logged on
+   the existing `[CMP-ENGINE]`/`[CMP-ROUTE]` lines — additive.
+5. (wave 3) The 8 × 200 ms initial-seek retry is replaced by a `SeekRequest` with the existing 15 s deadline.
+6. (wave 3) macOS scene phase: still "pause on background" (review row 16 is *recorded*, not changed — changing it
+   is a product call).
+
+---
+
+## 8. Out of scope (do not touch)
+
+ISOBoxSurgery, LoopbackSegmentPlan/Cutter, the subtitle renderer and SubtitleSession, writer mux internals,
+planner/adapter decisions, V3 wire models, the audiobook engine (beyond I8), NowPlayingController internals,
+PictureInPictureCoordinator internals, TVDisplayCriteria/HDRDisplayCriteriaPolicy, the loading-overlay gate
+(HANDOFF layer 8), any tvOS focus code, backlog §3.
