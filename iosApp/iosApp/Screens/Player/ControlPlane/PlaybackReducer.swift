@@ -73,14 +73,25 @@ enum PlaybackReducer {
             // the control plane does not hold; they stay with the view model,
             // which issues `.load` for them.
             guard case .playing(let playing) = state else { return (state, []) }
+            // `switchQuality` resolves the id through
+            // `ApplePlaybackQuality.protocolV3QualityId` on the V3 path and
+            // then returns early when it already equals `activeQualityId`
+            // (PVM:4603-4608), so re-picking the rung that is already playing
+            // issues no server call. The reducer holds `activeQualityId`, so
+            // it applies the same guard rather than sending a redundant
+            // replan. The other half of that guard — `qualitySwitchError != nil`
+            // re-arming the switch after a failed one — stays with the
+            // presentation model, which owns the error string.
+            let resolvedQualityId = ApplePlaybackQuality.protocolV3QualityId(qualityId)
+            guard resolvedQualityId != playing.activeQualityId else { return (state, []) }
             return requestReplan(
                 playing,
                 intent: ReplanIntent(
                     kind: .serverReplan,
                     position: max(0, playing.transport.positionSeconds.isFinite ? playing.transport.positionSeconds : 0),
                     classification: "quality_changed",
-                    message: "User selected playback quality \(qualityId).",
-                    qualityPreference: qualityId,
+                    message: "User selected playback quality \(resolvedQualityId).",
+                    qualityPreference: resolvedQualityId,
                     completesQualitySwitch: true
                 )
             )
@@ -267,10 +278,16 @@ enum PlaybackReducer {
         // replan keeps the duration it already published (PVM:2609-2612).
         let fallbackDuration: Double
         if case .freshLoad = adoption { fallbackDuration = 0 } else { fallbackDuration = transport.durationSeconds }
-        transport.durationSeconds =
-            prepared.session.durationSeconds ?? prepared.selectedVersion.duration ?? fallbackDuration
+        transport.durationSeconds = adoptedDuration(prepared, fallback: fallbackDuration)
         transport.positionSeconds = movieTime(for: prepared.session)
         return transport
+    }
+
+    /// The one duration rule every adopt shares: the session's, else the
+    /// selected version's, else what is already published (PVM:2612 for the
+    /// load/replan adopt, PVM:4149 for the silent renewal).
+    private static func adoptedDuration(_ prepared: PreparedPlayback, fallback: Double) -> Double {
+        prepared.session.durationSeconds ?? prepared.selectedVersion.duration ?? fallback
     }
 
     /// `PlayerViewModel.movieTime(for:)` (PVM:3130-3134), which is `private`
@@ -317,7 +334,7 @@ enum PlaybackReducer {
         case .preparing(let preparing): return preparing.request
         case .playing(let playing): return playing.request
         case .suspended(let context): return context.request
-        case .failed(_, _, let request, _, _): return request
+        case .failed(_, _, _, let request, _, _): return request
         }
     }
 
@@ -334,7 +351,7 @@ enum PlaybackReducer {
         // `adoptPreparedPlayback` runs); post-adopt it is the new session's.
         case .preparing(let preparing): position = preparing.transport.positionSeconds
         case .suspended(let context): position = context.resumePosition
-        case .failed(_, _, _, let failedPosition, _): position = failedPosition
+        case .failed(_, _, _, _, let failedPosition, _): position = failedPosition
         case .idle, .disposed: return 0
         }
         return position.isFinite ? max(0, position) : 0
@@ -348,7 +365,7 @@ enum PlaybackReducer {
         case .playing(let playing): return playing.transport
         case .preparing(let preparing): return preparing.transport
         case .suspended(let context): return TransportState(positionSeconds: context.resumePosition)
-        case .failed(_, _, _, let position, _): return TransportState(positionSeconds: position)
+        case .failed(_, _, _, _, let position, _): return TransportState(positionSeconds: position)
         case .idle, .disposed: return TransportState()
         }
     }
@@ -358,7 +375,7 @@ enum PlaybackReducer {
         switch state {
         case .playing(let playing): return playing.resumeSelections
         case .preparing(let preparing): return preparing.resumeSelections
-        case .failed(_, _, _, _, let selections): return selections
+        case .failed(_, _, _, _, _, let selections): return selections
         // `suspendedPlayback` already folded the selections into its request.
         case .suspended(let context): return .seeded(from: context.request)
         case .idle, .disposed: return TrackResumeSelections()
@@ -428,19 +445,28 @@ enum PlaybackReducer {
         playing.seek = request
         playing.transport.positionSeconds = targetSeconds
 
-        var effects: [Effect] = [.seek(request, playing.loadID)]
-        if origin != .reanchor {
-            // `beginReanchorSeekUI` deliberately arms the filter with no
-            // safety timeout; every other seek gets `commitSeek`'s.
-            effects.append(
+        guard origin != .reanchor else {
+            // `beginReanchorSeekUI` (PVM:5063-5076) arms the filter, moves the
+            // scrubber and cancels the safety timeout — and issues no engine
+            // seek at all: the anchoring is the stream rebuild that follows
+            // (`seek_reanchor` replan / fresh load / re-anchored loopback
+            // `loadStream`). Emitting one here would seek the *outgoing* item
+            // to a position it does not contain.
+            return (.playing(playing), [])
+        }
+        return (
+            .playing(playing),
+            [
+                .seek(request, playing.loadID),
+                // `commitSeek`'s safety valve: drop the filter if no post-seek
+                // report ever releases it.
                 .schedule(
                     .seekFilterTimeout,
                     after: .seconds(seekFilterTimeoutSeconds),
                     playing.loadID
-                )
-            )
-        }
-        return (.playing(playing), effects)
+                ),
+            ]
+        )
     }
 
     /// `makeCallbacks().onTimeChange`'s seek filter: reports still closer to
@@ -452,7 +478,10 @@ enum PlaybackReducer {
 
     // MARK: - Replan
 
-    private static func requestReplan(
+    /// The single entry point both replan pipelines take. `internal` rather
+    /// than `private` because no intent mints a `.transcodeRestart` yet —
+    /// wave 3 does — so `PlaybackReducerTests` reaches that branch here.
+    static func requestReplan(
         _ playing: Playing,
         intent: ReplanIntent
     ) -> (PlaybackState, [Effect]) {
@@ -468,23 +497,39 @@ enum PlaybackReducer {
         case .steady, .recovering, .ridingOutOutage, .ended:
             break
         }
+        let identity = playing.identity
         var playing = playing
         playing.sub = .replanning(intent)
         var effects: [Effect] = []
-        if case .serverReplan = intent.kind {
+        switch intent.kind {
+        case .serverReplan:
             // `attemptProtocolV3Replan`'s prologue (PVM:1614-1616): the 10 s
             // progress heartbeat is cancelled for the whole round trip (it is
             // restarted by the adopt path's `startProgressReporting`), the
             // loading overlay is raised, and the buffering flag is cleared.
-            // `restartCurrentTranscodeHLS` has a different prologue
-            // (PVM:5219-5222: it takes the fresh-load slot and reports
-            // progress against the outgoing session), so the transcode restart
-            // deliberately gets neither.
             playing.transport.isBuffering = false
             effects.append(.cancelTimer(.progress))
             effects.append(.publish(presentation(for: .playing(playing), isLoading: true)))
+        case .transcodeRestart(let restart):
+            // `restartCurrentTranscodeHLS` has a different prologue: it takes
+            // the fresh-load slot (so no heartbeat cancel) and reports
+            // progress against the *outgoing* session at the position it is
+            // leaving (PVM:5234-5236), guarded the same way. A quality restart
+            // leaves from where it is; a seek re-anchor carries its origin.
+            // The dispose and the overlay are the two obligations that happen
+            // outside the request — see `ReplanIntent.Kind.transcodeRestart`.
+            let outgoingPosition: Double
+            switch restart {
+            case .qualityChange: outgoingPosition = playing.transport.positionSeconds
+            case .seekReanchor(let origin): outgoingPosition = origin
+            }
+            if outgoingPosition.isFinite, outgoingPosition >= 0 {
+                effects.append(
+                    .reportProgress(identity, position: outgoingPosition, isPaused: true)
+                )
+            }
         }
-        effects.append(.replan(intent, playing.identity))
+        effects.append(.replan(intent, identity))
         return (.playing(playing), effects)
     }
 
@@ -567,7 +612,7 @@ enum PlaybackReducer {
                     ),
                     resumePosition: currentPosition(state)
                 )
-            case .failed(let failure, _, let request, let position, let selections):
+            case .failed(let failure, _, _, let request, let position, let selections):
                 // `suspendForBackground` needs only `lastLoadRequest`, and
                 // `finalizeTerminalPlaybackError` keeps it — so backgrounding
                 // the Apple TV on the error screen does suspend today (the
@@ -588,7 +633,17 @@ enum PlaybackReducer {
             case .idle, .suspended, .disposed:
                 return (state, [])
             }
+            let next = PlaybackState.suspended(context)
             var effects: [Effect] = suspendTimerCancellations()
+            // `suspendForBackground` publishes here (PVM:7616-7623): the
+            // buffering capsule and the loading overlay are cleared and
+            // `isPlaying` goes false, after the sweep and before the dispose.
+            // A suspended load produces no further engine ticks for the actor
+            // to coalesce, and the wake screen awaits an explicit resume, so
+            // without this publish the Apple TV would come back to a stale
+            // "playing" projection — or to a loading overlay the suspend
+            // interrupted mid-load.
+            effects.append(.publish(presentation(for: next)))
             if let loadID = state.loadID {
                 effects.append(.disposeEngine(loadID))
             }
@@ -599,7 +654,7 @@ enum PlaybackReducer {
                     .stopSession(identity, position: context.resumePosition, isPaused: true)
                 )
             }
-            return (.suspended(context), effects)
+            return (next, effects)
 
         case .active:
             // A suspended player awaits an explicit resume; only the controls
@@ -829,12 +884,13 @@ enum PlaybackReducer {
                 activeQualityId: preparing.activeQualityId,
                 resumeSelections: preparing.resumeSelections,
                 // A `preserveInterruptionState` load rides its pending
-                // interruption across the reload so the first forward time
-                // report can complete it (PVM:3976-3996).
+                // interruption across the reload; `fileLoaded` is what
+                // completes it (below).
                 interruption: preparing.interruption
             )
-            let next = PlaybackState.playing(playing)
             var effects: [Effect] = [.cancelTimer(.serverOutageRecovery)]
+            let recovered = completingInterruption(playing, effects: &effects)
+            let next = PlaybackState.playing(recovered)
             effects.append(
                 .schedule(.progress, after: .seconds(progressReportIntervalSeconds), loadID)
             )
@@ -845,12 +901,35 @@ enum PlaybackReducer {
             // A replacement item inside the same load (in-route reload,
             // reanchor): the load is established again.
             playing.sub = .steady
-            let next = PlaybackState.playing(playing)
-            return (next, [.cancelTimer(.serverOutageRecovery), .publish(presentation(for: next))])
+            var effects: [Effect] = [.cancelTimer(.serverOutageRecovery)]
+            let recovered = completingInterruption(playing, effects: &effects)
+            let next = PlaybackState.playing(recovered)
+            effects.append(.publish(presentation(for: next)))
+            return (next, effects)
 
         case .idle, .suspended, .failed, .disposed:
             return (state, [])
         }
+    }
+
+    /// `handleFileLoaded`'s
+    /// `completeInterruptionRecoveryIfNeeded(observedTime:requiresForwardProgress: false)`
+    /// (PVM:1513-1516 → PVM:3976-3996): a stream that reached `fileLoaded`
+    /// **is** the recovery landing, so the pending interruption is completed
+    /// there and then and the recovery timer is cancelled — it does not wait
+    /// for a forward time report. Leaving it pending let a scene `.active` in
+    /// that window re-publish the loading overlay and re-arm the timer.
+    private static func completingInterruption(
+        _ playing: Playing,
+        effects: inout [Effect]
+    ) -> Playing {
+        guard let interruption = playing.interruption, interruption.isPending else {
+            return playing
+        }
+        var playing = playing
+        playing.interruption = nil
+        effects.append(.cancelTimer(.interruptionRecovery))
+        return playing
     }
 
     private static func time(
@@ -1040,7 +1119,7 @@ enum PlaybackReducer {
             // the silent and the visible renewal.
             return (state, [])
 
-        case .renewed(_, let replacing):
+        case .renewed(let prepared, let replacing):
             guard case .playing(var playing) = state,
                   case .renewingSource(let renewal) = playing.sub,
                   // The one mutation that rewrites `Playing.identity`, so it
@@ -1053,8 +1132,21 @@ enum PlaybackReducer {
                 return (state, [])
             }
             // The proxy was retargeted in place; player, remuxer and cache are
-            // untouched, so the load survives with a new session identity.
+            // untouched, so the load survives with a new session identity —
+            // and with the renewed session's facts: a renewal can land on a
+            // re-probed source, and `attemptBackgroundSessionRenewal` adopts
+            // its duration, quality label and selected version too
+            // (PVM:4142/4149-4151). Keeping the outgoing ones would publish a
+            // stale scrubber length and a stale quality label for the rest of
+            // the load. The playhead is deliberately *not* adopted: the
+            // retarget is silent, playback never stopped.
             playing.identity = identity
+            playing.transport.durationSeconds = adoptedDuration(
+                prepared.value,
+                fallback: playing.transport.durationSeconds
+            )
+            playing.activeQualityId = prepared.value.activeQualityId
+            playing.resumeSelections.selectedFileId = prepared.value.selectedVersion.fileId
             playing.sub = .steady
             return (.playing(playing), [])
 
@@ -1180,6 +1272,13 @@ enum PlaybackReducer {
             return (
                 next,
                 [
+                    // `backgroundRenewalTask?.cancel()` first (PVM:4224-4227):
+                    // a late `retargetOrigin` from the silent renewal would
+                    // land mid-teardown. The reducer's structural drop of
+                    // `.renewed` does not cover it — the actor performs the
+                    // retarget inside `.renewSource` without coming back
+                    // through the reducer.
+                    .cancelTimer(.backgroundRenewal),
                     .syncProgress(
                         contentId: playing.request.contentId,
                         position: position,
@@ -1380,11 +1479,16 @@ enum PlaybackReducer {
         // `finalizeTerminalPlaybackError`'s teardown (PVM:4027-4071).
         //
         // It deliberately does **not** stop the server session: it drops
-        // `activePlaybackSessionId` and lets the session lapse, so a later
-        // teardown finds nothing to stop. Emitting a `.stopSession` here would
-        // be a new server call on a wire-visible path (design §4 I1), so the
-        // reducer does not synthesise one — `.failed` carries no
-        // `SessionIdentity`, which makes that structural.
+        // the view model's `activePlaybackSessionId` mirror and lets the
+        // session lapse. Emitting a `.stopSession` here would be a new server
+        // call on a wire-visible path (design §4 I1), so the reducer does not
+        // synthesise one.
+        //
+        // The identity is nevertheless carried on `.failed`: the bridge is
+        // still holding that session, and the two things that follow on the
+        // error screen do reach it — `cleanup()` stops it (PVM:6358/6404) and
+        // `retry()` reports `currentTime` against it (PVM:4557-4566). Dropping
+        // it here is what silently lost both.
         var effects: [Effect] = [
             .cancelTimer(.progress),
             .cancelTimer(.staleSessionRecovery),
@@ -1398,6 +1502,7 @@ enum PlaybackReducer {
         let next = PlaybackState.failed(
             failure,
             state.loadID,
+            identity: state.identity,
             request: retryRequest(for: state),
             position: position,
             selections: currentSelections(state)
@@ -1469,7 +1574,7 @@ enum PlaybackReducer {
                 error: context.failure?.legacyMessage
             )
 
-        case .failed(let failure, _, _, let position, _):
+        case .failed(let failure, _, _, _, let position, _):
             return Presentation(currentTime: position, error: failure.legacyMessage)
 
         case .playing(let playing):

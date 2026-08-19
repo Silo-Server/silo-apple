@@ -41,9 +41,21 @@ enum PlaybackState: Equatable {
     /// next load's adopt before the transport UI comes back. `selections` is
     /// carried because the suspend that can follow *does* consume it (see
     /// `TrackResumeSelections`).
+    ///
+    /// `identity` is the server session the failed load was bound to. The
+    /// terminal path itself deliberately does **not** stop it —
+    /// `finalizeTerminalPlaybackError` (PVM:4027-4071) only drops the view
+    /// model's `activePlaybackSessionId` mirror and lets the session lapse —
+    /// but the bridge is still holding it, and the two things that can happen
+    /// *next* on the error screen do reach it: `cleanup()` (PVM:6358/6404)
+    /// stops it whenever the load was not offline, and `retry()`
+    /// (PVM:4557-4566) reports `currentTime` against it before the
+    /// replacement session starts. Dropping the identity here made both of
+    /// those unrepresentable.
     case failed(
         PlaybackFailure,
         LoadID?,
+        identity: SessionIdentity?,
         request: PlayerViewModel.LoadRequest?,
         position: Double,
         selections: TrackResumeSelections
@@ -57,16 +69,19 @@ enum PlaybackState: Equatable {
         case .idle, .suspended, .disposed: return nil
         case .preparing(let preparing): return preparing.loadID
         case .playing(let playing): return playing.loadID
-        case .failed(_, let loadID, _, _, _): return loadID
+        case .failed(_, let loadID, _, _, _, _): return loadID
         }
     }
 
     /// The server session the state is currently bound to, if any.
     var identity: SessionIdentity? {
         switch self {
-        case .idle, .suspended, .disposed, .failed: return nil
+        case .idle, .suspended, .disposed: return nil
         case .preparing(let preparing): return preparing.identity
         case .playing(let playing): return playing.identity
+        // The failure did not stop the session; `dismiss` and the retry's
+        // progress report still reach it (see `.failed`).
+        case .failed(_, _, let identity, _, _, _): return identity
         }
     }
 }
@@ -405,6 +420,16 @@ struct ReplanIntent: Equatable {
         /// `attemptProtocolV3Replan` — may keep the live engine.
         case serverReplan
         /// `restartCurrentTranscodeHLS` — always reloads the engine.
+        ///
+        /// Its prologue reports progress against the outgoing session
+        /// (PVM:5234-5236), which the reducer emits. Two further obligations
+        /// are wave 3's, because they happen outside the request:
+        /// the outgoing engine is disposed (PVM:5239-5240 for a non-quality
+        /// restart, PVM:2580 at the adopt for a quality one) — implied here by
+        /// `reuseEngine == false`, which `.replanned` always computes for this
+        /// kind — and a quality restart raises the loading overlay and clears
+        /// the buffering flag at the *adopt* (PVM:2578-2582), i.e. from the
+        /// `.replanned` arm rather than from `requestReplan`.
         case transcodeRestart(TranscodeRestartOrigin)
     }
 
@@ -500,8 +525,20 @@ enum SeekOrigin: Equatable {
     case credits
     case nextUpKeepWatching
     case recovery(String)
-    /// A stream rebuild anchored at a new position: the UI filter is armed
-    /// without the 5 s safety timeout (`beginReanchorSeekUI`).
+    /// A stream rebuild anchored at a new position: `beginReanchorSeekUI`
+    /// (PVM:5063-5076) arms the origin/target filter, moves the scrubber and
+    /// cancels the 5 s safety timeout — and issues **no** engine seek. The
+    /// anchoring is done by the rebuild that follows it (a `seek_reanchor` V3
+    /// replan, a fresh load, or a re-anchored loopback `loadStream`), which is
+    /// also what raises the loading overlay and clears the buffering flag.
+    ///
+    /// **Wave-3 obligation:** the rebuild is *not* modelled by this reducer —
+    /// `commitSeek`'s first branch (`reloadServerBackedHLSForSeek`
+    /// PVM:5078-5131, `reloadLocalLoopbackForSeekBeforeAnchor` PVM:5133-5175)
+    /// chooses it before any of the three `.seek` paths below. Wiring a plain
+    /// `.seek` intent straight through would regress seeking past the anchor
+    /// on remux/transcode HLS and on loopback, and the loopback re-anchor is
+    /// the one path where nothing else raises the overlay.
     case reanchor
 }
 

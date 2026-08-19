@@ -158,6 +158,47 @@ staleSessionRecovery, backgroundRenewal, sourceOutageRideThrough, serverOutageRe
 seekFilterTimeout, progress) — UI timers (hideControls, noticeDismiss, skipDebounce, holdSeek*, nextUp*,
 autoSkipIntro) stay on the presentation model.
 
+**As built (wave 1E), the realised types differ from the sketch above — waves 2/3 plan against these:**
+
+1. **No `Sub.seeking`.** The outstanding seek is `Playing.seek: SeekRequest?`, a field beside `sub`:
+   `seekOriginTime`/`seekTargetTime` are independent of the replan/renewal slots today, so a seek during a
+   quality switch is performed *and* the replan still lands; a `Sub` case dropped whichever arrived second. A
+   new `LoadID` still drops the seek structurally (I5). `SeekRequest` gained `fromSeconds` (the pre-seek
+   position the filter compares against), and `SeekOrigin.reanchor` emits **no** `Effect.seek` and no filter
+   timeout — `beginReanchorSeekUI` (PVM:5063-5076) only arms the filter; the rebuild that follows anchors.
+2. **Two `Effect` cases added:** `transport(TransportCommand, LoadID)` (the view's play/pause) and
+   `syncProgress(contentId:position:duration:forceOverwrite:LoadID)` (the visible renewal's content-scoped
+   force-write, PVM:4262-4267 — the actor completes it *before* the `.startSession` after it). `startSession`
+   and `PlayerIntent.load` carry `LoadOptions` (progressPosition, finalizeCurrentSession, resumePosition,
+   allowNearEndResume, preserveInterruptionState). `PlayerIntent.selectTrack` is dropped: track intents go to
+   `TrackSelectionCoordinator` directly.
+3. **`.failed(PlaybackFailure, LoadID?, identity: SessionIdentity?, request:, position:, selections:)`.** The
+   terminal path still emits no `.stopSession` (it lets the session lapse), but the identity, playhead, replay
+   request and live selections are carried, because `cleanup()` (PVM:6358/6404), `retry()` (PVM:4557-4566) and
+   the tvOS error-screen suspend all still reach that session. `SuspendedContext` carries the failure likewise.
+   The playhead is carried, never reset, across `Preparing.transport` / `.failed(position:)` /
+   `SuspendedContext.resumePosition` — Retry and the tvOS resume depend on it.
+4. **New value types:** `ScenePhasePlatform` (the scene-phase rule takes the platform as a *parameter*; `#if os`
+   appears once, in `.current`, so the iOS-only test bundle exercises all three tables), `TrackResumeSelections`
+   (the live `copyForRecovery` inputs — its resolvers read player track lists the reducer does not own),
+   `LoadOptions`, `PlaybackAdoption`, `ReplanIntent.Kind` and `PreparedPlaybackRef` (identity-keyed `Equatable`
+   box for the non-`Equatable` `PreparedPlayback`). `LoadRequest`/`LoadOrigin` stay nested on the view model.
+
+**Contract notes waves 2/3 must honour:** (a) `TransportState.isPictureInPictureEngaged` is
+`PictureInPictureCoordinator.isEngaged` (`isActive || isTransitioning`), *not* the backend's
+`isPictureInPictureActiveProvider`; (b) the third iOS background exemption — `isPossible` plus the bounded 1 s
+grace — stays in the iOS shell, which resolves it *before* forwarding `.scenePhase(.background)`; (c) the
+shell/track coordinator must keep `TrackResumeSelections` current (the `-1` "Off" sentinel included): the actor
+performs the `copyForRecovery` substitution from it; (d) a `.transcodeRestart` replan emits its progress report
+here, but the engine dispose (implied by `reuseEngine == false`) and the quality restart's overlay (raised at
+the *adopt*, PVM:2578-2582) are wave 3's; (e) `commitSeek`'s first branch (`reloadServerBackedHLSForSeek`
+PVM:5078-5131, `reloadLocalLoopbackForSeekBeforeAnchor` PVM:5133-5175) has no reducer model — wiring `.seek`
+straight through would regress seeking past the anchor; (f) `Presentation` is a stub (`metadata` never filled,
+`playbackStats` only from transport), so wave 3 must **merge** a `.publish` onto the view model, not assign it;
+(g) the high-frequency transport arms (`.time`/`.duration`/`.buffering`/`.bufferedAhead`/`.stats`) emit no
+`.publish` — the actor owes one coalesced publish per tick, which carries the optimistic seek jump and the
+adopted position/duration/quality to the UI.
+
 ### 2.4 Recovery — `Recovery/RecoveryPolicy.swift` + `Recovery/RecoveryObservation.swift` (wave 1B)
 ```swift
 enum RecoveryObservation: Equatable {
