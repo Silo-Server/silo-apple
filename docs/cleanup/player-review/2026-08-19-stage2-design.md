@@ -191,9 +191,13 @@ autoSkipIntro) stay on the presentation model.
 4. **New value types:** `ScenePhasePlatform` (the scene-phase rule takes the platform as a *parameter*; `#if os`
    appears once, in `.current`, so the iOS-only test bundle exercises all three tables), `TrackResumeSelections`
    (the live `copyForRecovery` inputs — its resolvers read player track lists the reducer does not own),
-   `LoadOptions`, `PlaybackAdoption`, `ReplanIntent.Kind`, `SourceCacheDisposition` and `PreparedPlaybackRef`
-   (identity-keyed `Equatable` box for the non-`Equatable` `PreparedPlayback`). `LoadRequest`/`LoadOrigin` stay
-   nested on the view model.
+   `LoadOptions`, `PlaybackAdoption`, `ReplanIntent.Kind`, `SourceCacheDisposition`, `PreparedPlaybackRef`
+   (identity-keyed `Equatable` box for the non-`Equatable` `PreparedPlayback`), `TransportState`,
+   `TransportCommand`, `Playing.Interruption` (`PlaybackInterruptionState` as a field on **both** `Preparing`
+   and `Playing` — see item 8) and a top-level `LoadOrigin`. `LoadRequest` stays nested on the view model and
+   is referenced as `PlayerViewModel.LoadRequest`; `LoadOrigin` could **not** stay there because
+   `PlayerViewModel.LoadOrigin` is `private` (PVM:922) and therefore unreachable, so wave 1E declares its own
+   copy (`PlaybackState.swift`) and **wave 3 deletes the private one** rather than leaving two.
 5. **The replay request is adopted, not frozen.** `Preparing.request` / `Playing.request` are `var` and are
    rewritten at `.prepared`, `.replanned` and `.renewed` through
    `LoadRequest.adoptingProtocolV3Intent(plan:selectedVersion:activeQualityId:)` under
@@ -218,6 +222,20 @@ autoSkipIntro) stay on the presentation model.
    *do* write it by hand are ported as such: `handleEndOfFile` (PVM:3424, which also clears the buffering
    capsule at PVM:3423), `triggerAutomaticInterruptionRecovery` (PVM:4016) and `attemptServerOutageRecovery`
    (PVM:4438).
+8. **The tvOS interruption arms are state-agnostic.** `pauseForForegroundInterruptionIfNeeded`
+   (PVM:7571-7589), the `.active` re-arm (PVM:4725-4750) and `triggerAutomaticInterruptionRecovery` plus its
+   deadline task (PVM:4005-4025 / 4738-4747) key only off `playbackInterruption` and `isPlaying`, neither of
+   which `resetPublishedLoadState` clears (PVM:3475-3546) and the first of which a
+   `preserveInterruptionState` load deliberately keeps (PVM:3691-3693). `Preparing` therefore carries
+   `interruption` as well as `transport`, and all three arms go through `PlaybackReducer.interruptionSlot` /
+   `mutatingInterruptionSlot` instead of matching `case .playing` — an Apple TV going inactive while a
+   quality switch, a Retry or an interruption reload is still resolving pauses, re-arms and auto-recovers
+   exactly as a steady load does. Narrowing any of them to `.playing` would leave `fileLoaded` clearing
+   `isPaused` with no `.transport(.play)` ever issued, i.e. the UI reporting "playing" against a paused engine.
+   The other side of the same guard: a load started from `.idle`, `.failed` or `.suspended` is seeded
+   `transport.isPaused = true`, because `isPlaying` really is false in all three (PVM:185 initial,
+   PVM:4072 terminal, PVM:7621 suspend) and `resetPublishedLoadState` never overwrites it — so a cold start,
+   a Retry and an explicit resume record no interruption and publish no playing capsule under the overlay.
 
 **Contract notes waves 2/3 must honour:** (a) `TransportState.isPictureInPictureEngaged` is
 `PictureInPictureCoordinator.isEngaged` (`isActive || isTransitioning`), *not* the backend's

@@ -278,6 +278,11 @@ final class PlaybackReducerTests: XCTestCase {
         return playing
     }
 
+    private func preparing(_ state: PlaybackState) -> Preparing? {
+        guard case .preparing(let preparing) = state else { return nil }
+        return preparing
+    }
+
     // MARK: - Fresh load
 
     /// `beginFreshLoad` order: outage/interruption clears, the two task
@@ -2469,6 +2474,189 @@ final class PlaybackReducerTests: XCTestCase {
         )
         guard case .preparing(let plain) = plainLoad else { return XCTFail("expected preparing") }
         XCTAssertNil(plain.interruption)
+    }
+
+    /// The three tvOS interruption arms are **state-agnostic** in the view
+    /// model and must be here too. `pauseForForegroundInterruptionIfNeeded`
+    /// (PVM:7571-7589) guards only on `!isBackgroundSuspended` and `isPlaying`,
+    /// the `.active` re-arm (PVM:4725-4750) only on `isBackgroundSuspended` and
+    /// a pending `wasPlaying` interruption, and the deadline task
+    /// (PVM:4738-4747) → `triggerAutomaticInterruptionRecovery` (PVM:4005-4025)
+    /// only on `lastLoadRequest`/`isPending`/`!didAutoRecover`. None of them
+    /// looks at whether a load is in flight, and `resetPublishedLoadState`
+    /// (PVM:3475-3546) writes neither `playbackInterruption` nor `isPlaying` —
+    /// so an Apple TV that goes inactive while a quality switch, a Retry or an
+    /// interruption reload is still resolving must pause, re-arm and
+    /// auto-recover exactly as a steady load does. Gating these on `.playing`
+    /// would leave `fileLoaded` clearing `isPaused` with no `.transport(.play)`
+    /// ever issued: the UI would report playing against a paused engine.
+    func testTvOSInterruptionArmsAlsoCoverALoadInFlight() {
+        let loadID = LoadID()
+        let state = makePreparing(
+            loadID: loadID,
+            transport: TransportState(positionSeconds: 617, durationSeconds: 1000)
+        )
+
+        // (a) inactive mid-load records the interruption and pauses.
+        let (inactive, inactiveEffects) = PlaybackReducer.scenePhase(
+            state,
+            phase: .inactive,
+            platform: .tvOS,
+            now: now
+        )
+        XCTAssertEqual(preparing(inactive)?.interruption?.wasPlaying, true)
+        XCTAssertEqual(preparing(inactive)?.interruption?.isPending, true)
+        XCTAssertEqual(preparing(inactive)?.interruption?.positionSeconds, 617)
+        // `isPlaying` stays `onPauseChange`'s, here as everywhere.
+        XCTAssertEqual(preparing(inactive)?.transport, preparing(state)?.transport)
+        XCTAssertEqual(
+            inactiveEffects,
+            [.cancelTimer(.interruptionRecovery), .transport(.pause, loadID)]
+        )
+
+        // A load that is already paused has nothing to interrupt.
+        let (pausedNext, pausedEffects) = PlaybackReducer.scenePhase(
+            makePreparing(loadID: loadID, transport: TransportState(isPaused: true)),
+            phase: .inactive,
+            platform: .tvOS,
+            now: now
+        )
+        XCTAssertEqual(pausedNext, makePreparing(loadID: loadID, transport: TransportState(isPaused: true)))
+        XCTAssertTrue(pausedEffects.isEmpty)
+
+        // (b) active mid-load re-arms the deadline, raises the overlay and plays.
+        let (active, activeEffects) = PlaybackReducer.scenePhase(
+            inactive,
+            phase: .active,
+            platform: .tvOS,
+            now: now
+        )
+        XCTAssertEqual(
+            preparing(active)?.interruption?.recoveryDeadline,
+            now.addingTimeInterval(3),
+            "interruptionRecoveryTimeout"
+        )
+        guard case .publish(let presentation) = activeEffects.first else {
+            return XCTFail("expected the loading publish")
+        }
+        XCTAssertTrue(presentation.isLoading)
+        XCTAssertNil(presentation.error)
+        XCTAssertEqual(activeEffects.count, 3)
+        XCTAssertEqual(activeEffects[1], .transport(.play, loadID))
+        XCTAssertEqual(
+            activeEffects[2],
+            .schedule(.interruptionRecovery, after: .seconds(3), loadID)
+        )
+
+        // (c) the deadline task has no state precondition either: before the
+        // deadline it is a no-op, after it the reload runs from `.preparing`.
+        let (early, earlyEffects) = PlaybackReducer.reduce(
+            active,
+            event: .timer(.interruptionRecovery, loadID),
+            now: now
+        )
+        XCTAssertEqual(early, active, "the deadline has not passed")
+        XCTAssertTrue(earlyEffects.isEmpty)
+
+        let deadline = now.addingTimeInterval(3)
+        let (recovering, recoveringEffects) = PlaybackReducer.reduce(
+            active,
+            event: .timer(.interruptionRecovery, loadID),
+            now: deadline
+        )
+        guard let reload = preparing(recovering) else { return XCTFail("expected a reload") }
+        XCTAssertNotEqual(reload.loadID, loadID, "every load mints a new LoadID")
+        XCTAssertTrue(reload.options.preserveInterruptionState)
+        XCTAssertEqual(reload.options.resumePosition, 617)
+        XCTAssertEqual(reload.interruption?.didAutoRecover, true)
+        XCTAssertEqual(reload.interruption?.isPending, true)
+        XCTAssertTrue(reload.transport.isPaused, "the hand-written isPlaying = false at PVM:4016")
+        XCTAssertEqual(recoveringEffects.first, .cancelTimer(.interruptionRecovery))
+        XCTAssertTrue(
+            recoveringEffects.contains { if case .startSession = $0 { return true } else { return false } }
+        )
+        XCTAssertTrue(recoveringEffects.contains(.disposeEngine(loadID, sourceCache: .stash)))
+
+        // Nothing pending mid-load is still nothing to do.
+        let (steady, steadyEffects) = PlaybackReducer.scenePhase(
+            makePreparing(loadID: loadID),
+            phase: .active,
+            platform: .tvOS,
+            now: now
+        )
+        XCTAssertEqual(steady, makePreparing(loadID: loadID))
+        XCTAssertTrue(steadyEffects.isEmpty)
+    }
+
+    /// The other half of the arm above: `pauseForForegroundInterruptionIfNeeded`
+    /// guards on `isPlaying` (PVM:7573), and a cold start, a Retry and an
+    /// explicit resume all run with `isPlaying == false` — the initial value
+    /// (PVM:185), `finalizeTerminalPlaybackError`'s (PVM:4072) and
+    /// `suspendForBackground`'s (PVM:7621), none of which
+    /// `resetPublishedLoadState` overwrites. So those loads carry
+    /// `transport.isPaused`, record no interruption when tvOS goes inactive,
+    /// and publish no playing capsule under the loading overlay.
+    func testLoadsFromANotPlayingStateStayNotPlaying() {
+        let failed = PlaybackState.failed(
+            PlaybackFailure(legacyMessage: "boom"),
+            LoadID(),
+            identity: makeIdentity(),
+            request: makeRequest(),
+            position: 617,
+            selections: .seeded(from: makeRequest())
+        )
+        let suspended = PlaybackState.suspended(
+            SuspendedContext(request: makeRequest(), resumePosition: 617)
+        )
+
+        let starts: [(String, PlaybackState, PlayerIntent)] = [
+            ("cold start", .idle, .load(makeRequest(), origin: .userInitiated, options: LoadOptions())),
+            ("retry", failed, .retry),
+            ("resume", suspended, .resumeSuspended),
+        ]
+
+        for (label, from, intent) in starts {
+            let (loading, _) = PlaybackReducer.reduce(from, intent: intent, now: now)
+            guard let inFlight = preparing(loading) else {
+                return XCTFail("\(label): expected preparing")
+            }
+            XCTAssertTrue(inFlight.transport.isPaused, "\(label): isPlaying is false here")
+            XCTAssertFalse(
+                PlaybackReducer.presentation(for: loading).isPlaying,
+                "\(label): no playing capsule under the loading overlay"
+            )
+
+            let (inactive, effects) = PlaybackReducer.scenePhase(
+                loading,
+                phase: .inactive,
+                platform: .tvOS,
+                now: now
+            )
+            XCTAssertEqual(inactive, loading, "\(label): nothing to interrupt")
+            XCTAssertTrue(effects.isEmpty, "\(label): guard isPlaying, PVM:7573")
+        }
+        // `fileLoaded` is what makes a load playing (PVM:1518) — see
+        // `testFileLoadedStartsPlaybackFromTheAdoptedTransport`.
+    }
+
+    /// `handleFileLoaded` calls `startProgressReporting()` (PVM:7466-7495)
+    /// unconditionally, and that cancels and restarts the 10 s heartbeat — so
+    /// an in-route reload/reanchor re-phases it exactly as a load's first
+    /// `fileLoaded` does.
+    func testInRouteFileLoadedRestartsTheProgressHeartbeat() {
+        let loadID = LoadID()
+        let state = makePlaying(loadID: loadID, sub: .recovering(.reloadingItem))
+        let (next, effects) = PlaybackReducer.reduce(
+            state,
+            event: .engine(.fileLoaded(reason: "reload"), loadID),
+            now: now
+        )
+        XCTAssertEqual(playing(next)?.sub, .steady)
+        XCTAssertEqual(Array(effects.prefix(2)), [
+            .cancelTimer(.serverOutageRecovery),
+            .schedule(.progress, after: .seconds(10), loadID),
+        ])
+        guard case .publish = effects.last else { return XCTFail("expected a publish") }
     }
 
     /// Resuming a suspended player replays the stored request at the stored

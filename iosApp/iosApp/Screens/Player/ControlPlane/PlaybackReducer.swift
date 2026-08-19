@@ -448,9 +448,24 @@ enum PlaybackReducer {
         switch state {
         case .playing(let playing): return playing.transport
         case .preparing(let preparing): return preparing.transport
-        case .suspended(let context): return TransportState(positionSeconds: context.resumePosition)
-        case .failed(_, _, _, _, let position, _): return TransportState(positionSeconds: position)
-        case .idle, .disposed: return TransportState()
+        // `isPaused: true` is `isPlaying == false`, which each of the three
+        // states below genuinely has: it is the view model's initial value
+        // (PVM:185), `finalizeTerminalPlaybackError` sets it (PVM:4072) and
+        // `suspendForBackground` sets it (PVM:7621). `resetPublishedLoadState`
+        // never writes `isPlaying`, so a cold start, a Retry and an explicit
+        // resume all stay "not playing" until `handleFileLoaded` (PVM:1518).
+        // Two arms read the bit off `Preparing.transport` and would otherwise
+        // treat those loads as playing: `presentation(for:)` (which would
+        // publish a playing capsule under the loading overlay) and the tvOS
+        // `.inactive` interruption arm, whose original guard is exactly
+        // `guard isPlaying` (PVM:7573) — a cold start interrupted by a scene
+        // blip must not record an interruption or arm the 3 s auto-recovery.
+        case .suspended(let context):
+            return TransportState(isPaused: true, positionSeconds: context.resumePosition)
+        case .failed(_, _, _, _, let position, _):
+            return TransportState(isPaused: true, positionSeconds: position)
+        case .idle, .disposed:
+            return TransportState(isPaused: true)
         }
     }
 
@@ -471,6 +486,61 @@ enum PlaybackReducer {
         case .playing(let playing): return playing.interruption
         case .preparing(let preparing): return preparing.interruption
         case .idle, .suspended, .failed, .disposed: return nil
+        }
+    }
+
+    /// The interruption slot — the pending `Playing.Interruption`, the
+    /// transport it was recorded against and the load it belongs to — that
+    /// **both** `Preparing` and `Playing` carry.
+    ///
+    /// The three tvOS interruption sites are state-agnostic in the view model
+    /// and must stay so here:
+    ///
+    ///   * `pauseForForegroundInterruptionIfNeeded` (PVM:7571-7589) guards only
+    ///     on `!isBackgroundSuspended` and `isPlaying`;
+    ///   * the `.active` re-arm (PVM:4725-4750) guards only on
+    ///     `isBackgroundSuspended` and a pending, `wasPlaying` interruption;
+    ///   * `triggerAutomaticInterruptionRecovery` (PVM:4005-4025) and the
+    ///     deadline task that calls it (PVM:4738-4747) guard only on
+    ///     `lastLoadRequest`, `isPending` and `!didAutoRecover`.
+    ///
+    /// None of them looks at whether a load is in flight, and neither
+    /// `playbackInterruption` nor `isPlaying` is cleared by
+    /// `resetPublishedLoadState` (PVM:3475-3546) — a `preserveInterruptionState`
+    /// load deliberately keeps the interruption (PVM:3691-3693). So the Apple TV
+    /// going inactive while a quality switch, a Retry or an interruption reload
+    /// is still resolving does pause, re-arm and auto-recover today. Matching
+    /// `case .playing` in those arms would silently narrow all three to steady
+    /// playback and leave the UI reporting "playing" against a paused engine.
+    private static func interruptionSlot(
+        _ state: PlaybackState
+    ) -> (loadID: LoadID, interruption: Playing.Interruption?, transport: TransportState)? {
+        switch state {
+        case .playing(let playing):
+            return (playing.loadID, playing.interruption, playing.transport)
+        case .preparing(let preparing):
+            return (preparing.loadID, preparing.interruption, preparing.transport)
+        case .idle, .suspended, .failed, .disposed:
+            return nil
+        }
+    }
+
+    /// The write half of `interruptionSlot`: applies `mutate` to whichever of
+    /// `Preparing`/`Playing` holds the slot, and leaves the states that hold
+    /// none untouched.
+    private static func mutatingInterruptionSlot(
+        _ state: PlaybackState,
+        _ mutate: (inout Playing.Interruption?, inout TransportState) -> Void
+    ) -> PlaybackState {
+        switch state {
+        case .playing(var playing):
+            mutate(&playing.interruption, &playing.transport)
+            return .playing(playing)
+        case .preparing(var preparing):
+            mutate(&preparing.interruption, &preparing.transport)
+            return .preparing(preparing)
+        case .idle, .suspended, .failed, .disposed:
+            return state
         }
     }
 
@@ -666,23 +736,31 @@ enum PlaybackReducer {
     ) -> (PlaybackState, [Effect]) {
         switch phase {
         case .inactive:
-            // `pauseForForegroundInterruptionIfNeeded`.
-            guard case .playing(var playing) = state, !playing.transport.isPaused else {
+            // `pauseForForegroundInterruptionIfNeeded` (PVM:7571-7589). Its
+            // only guards are `!isBackgroundSuspended` and `isPlaying`, so a
+            // load in flight is interrupted exactly like a live one — hence
+            // the slot rather than `case .playing` (see `interruptionSlot`).
+            guard let slot = interruptionSlot(state), !slot.transport.isPaused else {
                 return (state, [])
             }
-            playing.interruption = Playing.Interruption(
-                wasPlaying: true,
-                positionSeconds: playing.transport.positionSeconds,
-                recoveryDeadline: now,
-                didAutoRecover: false,
-                isPending: true
-            )
-            // `pauseForForegroundInterruptionIfNeeded` (PVM:7571-7589) calls
-            // `avPlayerBackend?.pause()` and never writes `isPlaying`; see
-            // `transport(_:command:)`.
+            let position = slot.transport.positionSeconds
+            let next = mutatingInterruptionSlot(state) { interruption, _ in
+                interruption = Playing.Interruption(
+                    wasPlaying: true,
+                    positionSeconds: position,
+                    recoveryDeadline: now,
+                    didAutoRecover: false,
+                    isPending: true
+                )
+            }
+            // It calls `avPlayerBackend?.pause()` and never writes `isPlaying`;
+            // see `transport(_:command:)`. Mid-load the engine for this
+            // `LoadID` may not exist yet, in which case the actor drops the
+            // command structurally — which is what `avPlayerBackend?` does in
+            // the view model once `beginFreshLoad`'s dispose has run.
             return (
-                .playing(playing),
-                [.cancelTimer(.interruptionRecovery), .transport(.pause, playing.loadID)]
+                next,
+                [.cancelTimer(.interruptionRecovery), .transport(.pause, slot.loadID)]
             )
 
         case .background:
@@ -767,27 +845,34 @@ enum PlaybackReducer {
         case .active:
             // A suspended player awaits an explicit resume; only the controls
             // are revealed, which is view-model state.
-            guard case .playing(var playing) = state,
-                  var interruption = playing.interruption,
+            //
+            // The re-arm (PVM:4725-4750) guards only on `isBackgroundSuspended`
+            // and a pending, `wasPlaying` interruption, so it also fires for a
+            // load still in flight — one this arm itself interrupted, or one a
+            // `preserveInterruptionState` reload carried the interruption into.
+            guard let slot = interruptionSlot(state),
+                  var interruption = slot.interruption,
                   interruption.isPending,
                   interruption.wasPlaying else {
                 return (state, [])
             }
             interruption.recoveryDeadline = now.addingTimeInterval(interruptionRecoveryTimeout)
-            playing.interruption = interruption
+            let rearmed = interruption
+            let next = mutatingInterruptionSlot(state) { slotInterruption, _ in
+                slotInterruption = rearmed
+            }
             // The `.active` arm sets only `isLoading = true; error = nil`
             // (PVM:4728-4730) and then calls `avPlayerBackend?.play()`; the
             // resulting `onPauseChange` is what republishes `isPlaying`.
-            let next = PlaybackState.playing(playing)
             return (
                 next,
                 [
                     .publish(presentation(for: next, isLoading: true)),
-                    .transport(.play, playing.loadID),
+                    .transport(.play, slot.loadID),
                     .schedule(
                         .interruptionRecovery,
                         after: .seconds(interruptionRecoveryTimeout),
-                        playing.loadID
+                        slot.loadID
                     ),
                 ]
             )
@@ -1017,6 +1102,15 @@ enum PlaybackReducer {
             var effects: [Effect] = [.cancelTimer(.serverOutageRecovery)]
             let recovered = completingInterruption(playing, effects: &effects)
             let next = PlaybackState.playing(recovered)
+            // `handleFileLoaded` calls `startProgressReporting()` (PVM:7466-7495)
+            // unconditionally, and that cancels and restarts the 10 s
+            // heartbeat — so an in-route reload re-phases it here too, exactly
+            // as the first `fileLoaded` of a load does. `.schedule` re-arms the
+            // keyed timer, which is how the `.preparing` branch above spells
+            // the same call.
+            effects.append(
+                .schedule(.progress, after: .seconds(progressReportIntervalSeconds), loadID)
+            )
             effects.append(.publish(presentation(for: next)))
             return (next, effects)
 
@@ -1432,23 +1526,30 @@ enum PlaybackReducer {
             )
 
         case .autoRecoverInterruption:
-            // `triggerAutomaticInterruptionRecovery`.
-            guard case .playing(var playing) = state,
-                  var interruption = playing.interruption,
-                  !interruption.didAutoRecover else {
+            // `triggerAutomaticInterruptionRecovery` (PVM:4005-4025), whose
+            // guards are `lastLoadRequest`, an interruption and
+            // `!didAutoRecover` — no state precondition, so a reload that is
+            // itself interrupted recovers again from `.preparing`.
+            guard let slot = interruptionSlot(state),
+                  var interruption = slot.interruption,
+                  !interruption.didAutoRecover,
+                  let request = retryRequest(for: state) else {
                 return (state, [])
             }
             interruption.didAutoRecover = true
             interruption.isPending = true
-            playing.interruption = interruption
+            let recovering = interruption
             // One of the three hand-written `isPlaying = false`s (PVM:4016) —
             // the engine that would otherwise report it is about to be
             // replaced. The recovery timer is cancelled by hand even though
             // the load keeps the interruption itself (PVM:4012-4013).
-            playing.transport.isPaused = true
+            let paused = mutatingInterruptionSlot(state) { slotInterruption, transportState in
+                slotInterruption = recovering
+                transportState.isPaused = true
+            }
             let (next, effects) = beginLoad(
-                from: .playing(playing),
-                request: playing.request,
+                from: paused,
+                request: request,
                 adoption: .freshLoad(.recovery),
                 options: LoadOptions(
                     progressPosition: interruption.positionSeconds,
@@ -1626,8 +1727,12 @@ enum PlaybackReducer {
             )
 
         case .interruptionRecovery:
-            guard case .playing(let playing) = state,
-                  let interruption = playing.interruption,
+            // The deadline task (PVM:4738-4747) has no state precondition, and
+            // a `preserveInterruptionState` load deliberately leaves the timer
+            // armed (PVM:3691-3693), so it can fire while the replacement load
+            // is still `.preparing` — hence the slot (see `interruptionSlot`).
+            guard let slot = interruptionSlot(state),
+                  let interruption = slot.interruption,
                   interruption.isPending,
                   !interruption.didAutoRecover,
                   now >= interruption.recoveryDeadline else {
