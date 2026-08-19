@@ -504,9 +504,7 @@ enum StartupContentPrefetcher {
             .filter {
                 AppNavPreferences.shared.showAudiobooks || !$0.isAudiobookLibrary
             }
-            .sorted {
-                ($0.sortOrder ?? Int.max, $0.id) < ($1.sortOrder ?? Int.max, $1.id)
-            }
+            .sorted(by: Library.displayOrder)
         let storedId = UserDefaults.standard.integer(forKey: selectedLibraryDefaultsKey)
         if storedId != 0,
            let stored = visibleLibraries.first(where: { $0.id == storedId }) {

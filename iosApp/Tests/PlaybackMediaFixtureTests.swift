@@ -152,19 +152,11 @@ final class PlaybackMediaFixtureTests: XCTestCase {
                 audioCodec: "aac"
             ))
             let stream = StreamRequest(url: url, headers: [:], serverUrl: "")
-            let plan = ApplePlaybackRoutePlanner().makeExecutionPlan(
-                input: ApplePlaybackPlannerInput(
-                    session: session,
-                    selectedVersion: version,
-                    streamRequest: stream,
-                    routeRequirements: .baseline,
-                    selectedAudioTrackId: nil,
-                    pendingAudioFfIndex: nil,
-                    preferredAudioTrackIndex: 0,
-                    selectedPrimarySubtitleTrackId: nil,
-                    selectedSecondarySubtitleTrackId: nil,
-                    dolbyVisionPolicy: .default
-                )
+            let plan = makeTestExecutionPlan(
+                session: session,
+                version: version,
+                streamRequest: stream,
+                preferredAudioTrackIndex: 0
             )
             XCTAssertEqual(plan.engine, expectedEngine, container)
         }
@@ -213,19 +205,10 @@ final class PlaybackMediaFixtureTests: XCTestCase {
         )
         let stream = StreamRequest(url: streamURL, headers: [:], serverUrl: "")
 
-        let plan = ApplePlaybackRoutePlanner().makeExecutionPlan(
-            input: ApplePlaybackPlannerInput(
-                session: session,
-                selectedVersion: version,
-                streamRequest: stream,
-                routeRequirements: .baseline,
-                selectedAudioTrackId: nil,
-                pendingAudioFfIndex: nil,
-                preferredAudioTrackIndex: nil,
-                selectedPrimarySubtitleTrackId: nil,
-                selectedSecondarySubtitleTrackId: nil,
-                dolbyVisionPolicy: .default
-            )
+        let plan = makeTestExecutionPlan(
+            session: session,
+            version: version,
+            streamRequest: stream
         )
 
         XCTAssertEqual(plan.engine, .siloPlayerLoopback)

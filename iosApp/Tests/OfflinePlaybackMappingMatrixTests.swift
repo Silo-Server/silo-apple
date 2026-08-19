@@ -87,23 +87,15 @@ final class OfflinePlaybackMappingMatrixTests: XCTestCase {
         _ playback: PreparedPlayback,
         preferredAudioTrackIndex: Int?
     ) -> PlaybackExecutionPlan {
-        ApplePlaybackRoutePlanner().makeExecutionPlan(
-            input: ApplePlaybackPlannerInput(
-                session: playback.session,
-                selectedVersion: playback.selectedVersion,
-                streamRequest: StreamRequest(
-                    url: URL(fileURLWithPath: "/tmp/media.mkv"),
-                    headers: [:],
-                    serverUrl: ""
-                ),
-                routeRequirements: .baseline,
-                selectedAudioTrackId: nil,
-                pendingAudioFfIndex: nil,
-                preferredAudioTrackIndex: preferredAudioTrackIndex,
-                selectedPrimarySubtitleTrackId: nil,
-                selectedSecondarySubtitleTrackId: nil,
-                dolbyVisionPolicy: .default
-            )
+        makeTestExecutionPlan(
+            session: playback.session,
+            version: playback.selectedVersion,
+            streamRequest: StreamRequest(
+                url: URL(fileURLWithPath: "/tmp/media.mkv"),
+                headers: [:],
+                serverUrl: ""
+            ),
+            preferredAudioTrackIndex: preferredAudioTrackIndex
         )
     }
 

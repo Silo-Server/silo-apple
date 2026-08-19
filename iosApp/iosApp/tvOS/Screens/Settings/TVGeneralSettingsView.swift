@@ -367,7 +367,7 @@ private struct TVMenuCustomizationSheet: View {
                     if !libraries.isEmpty {
                         sectionHeader("PIN LIBRARIES")
                         VStack(spacing: 10) {
-                            ForEach(libraries.sorted(by: librarySort)) { library in
+                            ForEach(libraries.sorted(by: Library.displayOrder)) { library in
                                 TVSettingsToggleRow(
                                     title: library.name,
                                     isOn: preferences.isLibraryPinned(library.id)
@@ -556,10 +556,6 @@ private struct TVMenuCustomizationSheet: View {
 
     private func hasLibrary(_ type: TVLibraryTabType) -> Bool {
         libraries.contains(where: { type.matches($0) })
-    }
-
-    private func librarySort(_ lhs: Library, _ rhs: Library) -> Bool {
-        (lhs.sortOrder ?? Int.max, lhs.id) < (rhs.sortOrder ?? Int.max, rhs.id)
     }
 
     private func sectionHeader(_ title: String) -> some View {

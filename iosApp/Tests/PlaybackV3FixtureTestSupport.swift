@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+@testable import Silo
 
 enum PlaybackV3FixtureTestSupport {
     static var decoder: JSONDecoder {
@@ -25,4 +26,32 @@ enum PlaybackV3FixtureTestSupport {
             from: Data(contentsOf: fixtureURL(named: name, bundleClass: bundleClass))
         )
     }
+}
+
+/// Builds a planner execution plan from the fields the tests actually vary.
+/// `selectedAudioTrackId`, `pendingAudioFfIndex` and
+/// `selectedSecondarySubtitleTrackId` are `nil` at every call site.
+func makeTestExecutionPlan(
+    session: PlaybackSessionResponse,
+    version: FileVersion,
+    streamRequest: StreamRequest,
+    routeRequirements: PlaybackRouteRequirements = .baseline,
+    preferredAudioTrackIndex: Int? = nil,
+    selectedPrimarySubtitleTrackId: Int64? = nil,
+    dolbyVisionPolicy: DolbyVisionPolicy.Snapshot = .default
+) -> PlaybackExecutionPlan {
+    ApplePlaybackRoutePlanner().makeExecutionPlan(
+        input: ApplePlaybackPlannerInput(
+            session: session,
+            selectedVersion: version,
+            streamRequest: streamRequest,
+            routeRequirements: routeRequirements,
+            selectedAudioTrackId: nil,
+            pendingAudioFfIndex: nil,
+            preferredAudioTrackIndex: preferredAudioTrackIndex,
+            selectedPrimarySubtitleTrackId: selectedPrimarySubtitleTrackId,
+            selectedSecondarySubtitleTrackId: nil,
+            dolbyVisionPolicy: dolbyVisionPolicy
+        )
+    )
 }

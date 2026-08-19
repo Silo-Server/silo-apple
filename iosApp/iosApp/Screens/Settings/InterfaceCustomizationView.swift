@@ -401,7 +401,7 @@ struct InterfaceCustomizationView: View {
         }
         return availablePrimaryMenuShortcuts(
             candidates: candidates,
-            libraries: libraries.sorted(by: librarySort),
+            libraries: libraries.sorted(by: Library.displayOrder),
             visibleIds: visible
         )
     }
@@ -516,10 +516,6 @@ struct InterfaceCustomizationView: View {
             replacements: destinations
         )
         preferences.setPrimaryMenuItems(result)
-    }
-
-    private func librarySort(_ lhs: Library, _ rhs: Library) -> Bool {
-        (lhs.sortOrder ?? Int.max, lhs.id) < (rhs.sortOrder ?? Int.max, rhs.id)
     }
 
     private var familyLabel: String {
