@@ -157,6 +157,19 @@ drop pre-contract support.
 local growing playlist; listed in §3. Do not re-raise without new information. Original analysis kept
 below for context.
 
+**Known gap (PR #172 review, 2026-08-18): the backend does not know when the writer took this
+fallback.** With loopback-primary the backend wires every session as static VOD — VOD retention on
+the store, the miss resolver, in-item-only seeks, the flat steady-state forward-buffer target — and
+`resolveVODPlanIfNeeded` degrades to the growing playlist *inside* the writer without a signal back
+(only `onSegmentPlanResolved` not firing). So a plan-less session runs with VOD pruning that can
+drop names the growing playlist still lists, seeks outside the published window that cannot
+reanchor (`reloadLocalLoopbackForSeek` was retired in 2.2), and a live-edge runway sized for VOD.
+This is **not new in #172**: on `main` the same held for every default user (spec `.vodPlan` +
+writer degrade); the retired `.event` spec mode was reachable only with the flag off. Fixing it means
+making the backend mode-aware (a "served as EVENT" callback that keeps the store on its retirement
+policy, restores the reanchor seek and the `3·target + longest` buffer floor for that session) and
+needs a device pass on a zero-duration source — a follow-up, not a piecemeal patch.
+
 See 2.2. `LoopbackSegmentWriter` still carries the growing-playlist producer path for sources whose
 container duration/keyframe index can't be harvested, plus the store's spill/eviction that path
 uses. Retiring it would (a) turn "vod plan unavailable" into a typed planner/backend failure that
@@ -191,14 +204,17 @@ migration sources. What landed:
 
 - **Keychain** — service is `org.siloserver.silo`, accounts are `org.siloserver.silo.<…>`.
   `SharedKeychain.get` falls back on a read-miss to the pre-rename service + account (one prefix
-  swap), copies the item forward with the same audience/accessibility, and deletes the old copy
-  only after the new write confirms; `SharedKeychain.delete` drops both so sign-out cannot be
-  undone by a later migration. Top Shelf and the notification service compile the same file, so
+  swap) and copies the item forward with the same audience/accessibility. The pre-rename copy is
+  **kept** (PR #172 review, 2026-08-18): a TestFlight rollback to the previous build must still
+  find its tokens (the 2026-08-18 device validation hit exactly this — `ed761e3` was untestable
+  after the one-way migration). Once the Silo-branded item exists it wins every read;
+  `SharedKeychain.delete` drops both so sign-out cannot be undone by a later migration. Top Shelf and the notification service compile the same file, so
   they migrate the mirrored slots themselves if they run first. `ServerRegistry`'s pre-multi-server
   migration keeps reading `com.continuum.app.{access,refresh,profile}Token` — through the
   pre-rename service, which is where they actually live.
-- **UserDefaults** — `siloServerRegistry.v1` / `.migrated.v1`, with a one-shot copy-then-remove of
-  the pre-rename keys before the registry loads.
+- **UserDefaults** — `siloServerRegistry.v1` / `.migrated.v1`, with a one-shot copy of the
+  pre-rename keys before the registry loads (`siloServerRegistry.brandMigrated.v1` marks it done);
+  the pre-rename keys are likewise left in place for rollback builds.
 - **OS-registered ids** — BGTask `org.siloserver.silo.downloads-refresh` (plist + code together,
   plus a `cancel(taskRequestWithIdentifier:)` of the old id), background `URLSession`
   `org.siloserver.silo.downloads`. The old session is opened once and `invalidateAndCancel`ed

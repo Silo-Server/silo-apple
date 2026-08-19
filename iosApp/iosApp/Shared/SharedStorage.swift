@@ -79,9 +79,16 @@ enum SharedStorage {
 ///
 /// **Read-only migration sources.** Nothing may write a new item under any of
 /// these names: each one exists so exactly one upgrade path can find the value
-/// an older build left behind, copy it to its Silo-branded home, and delete the
-/// original. This is the only place in the Apple clients where the pre-rename
-/// brand still appears.
+/// an older build left behind and copy it to its Silo-branded home. This is
+/// the only place in the Apple clients where the pre-rename brand still
+/// appears.
+///
+/// Credentials and registry state are copied, not moved: the pre-rename copy
+/// stays in place for a TestFlight rollback window so the previous build can
+/// still find its server list and tokens (CLAUDE.md: preserve TestFlight
+/// continuity). Sign-out retires both copies (`SharedKeychain.delete`), and
+/// the OS-registered ids / on-disk caches are still retired outright because
+/// nothing rolls back to them.
 enum LegacyBrandKeys {
     /// Pre-rename `SharedKeychain` service. Counterpart of
     /// `SharedStorage.keychainService`.
@@ -400,16 +407,17 @@ struct SharedKeychain {
     }
 
     /// Last read fallback: the item may still live under the pre-rename
-    /// service + account name. Copy it into its Silo-branded home and retire
-    /// the old copy — but only once the new write confirms, so an interrupted
-    /// migration is retried rather than losing the value.
+    /// service + account name. Copy it into its Silo-branded home. The old
+    /// copy is deliberately left in place: a TestFlight rollback to the
+    /// pre-rename build must still find its credentials, and once the
+    /// Silo-branded item exists it wins every later read, so the stale copy
+    /// is never consulted again. `delete` retires both, so sign-out cannot be
+    /// undone by this fallback. A failed write is retried on the next read.
     private func migrateFromLegacyBrand(account: String) -> String? {
         guard let source = legacyBrandSource,
               let legacyAccount = Self.legacyBrandAccount(for: account),
               let value = source.get(legacyAccount) else { return nil }
-        if set(value, for: account) {
-            source.delete(legacyAccount)
-        }
+        set(value, for: account)
         return value
     }
 

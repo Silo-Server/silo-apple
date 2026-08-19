@@ -651,8 +651,9 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         XCTAssertEqual(remembered.profileID, "profile-a")
         XCTAssertTrue(remembered.requiredPINAtSelection)
         XCTAssertNil(registry.entry(with: serverID)?.legacyProfileId)
-        // The state moved to the Silo-branded key and the pre-rename key is gone.
-        XCTAssertNil(defaults.data(forKey: LegacyBrandKeys.serverRegistryDefaultsKey))
+        // The state moved to the Silo-branded key; the pre-rename key stays
+        // readable for a rollback build.
+        XCTAssertNotNil(defaults.data(forKey: LegacyBrandKeys.serverRegistryDefaultsKey))
         let migrated = try XCTUnwrap(defaults.data(forKey: "siloServerRegistry.v1"))
         XCTAssertFalse(String(decoding: migrated, as: UTF8.self).contains("profileId"))
     }

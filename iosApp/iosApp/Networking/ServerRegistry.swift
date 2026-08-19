@@ -145,6 +145,9 @@ final class ServerRegistry {
 
     private static let defaultsKey = "siloServerRegistry.v1"
     private static let migratedKey = "siloServerRegistry.migrated.v1"
+    /// Set once the pre-rename registry keys have been adopted (see
+    /// `migrateBrandedDefaultsIfNeeded`); those keys themselves survive.
+    private static let brandMigratedKey = "siloServerRegistry.brandMigrated.v1"
     private static let sharedTVRegistryAccount = "\(SharedStorage.keychainAccountPrefix)serverRegistry.v2"
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -958,16 +961,21 @@ final class ServerRegistry {
     // MARK: - Migration from the pre-rename brand
 
     /// One-shot, before `load()`: adopt the registry state an older build
-    /// wrote under the pre-rename UserDefaults keys. The old key is only
-    /// dropped once the copy reads back, so an interrupted migration retries
-    /// on the next launch instead of losing the server list.
+    /// wrote under the pre-rename UserDefaults keys. The copy is only marked
+    /// done once it reads back, so an interrupted migration retries on the
+    /// next launch instead of losing the server list.
+    ///
+    /// The pre-rename keys are left in place on purpose: a TestFlight
+    /// rollback to the previous build must still find its server list (the
+    /// Keychain fallback keeps the matching token copies for the same
+    /// reason). Once this build's key exists it is the only one read.
     private func migrateBrandedDefaultsIfNeeded() {
+        guard !defaults.bool(forKey: Self.brandMigratedKey) else { return }
         if defaults.data(forKey: Self.defaultsKey) == nil,
            let legacy = defaults.data(forKey: LegacyBrandKeys.serverRegistryDefaultsKey) {
             defaults.set(legacy, forKey: Self.defaultsKey)
             guard defaults.data(forKey: Self.defaultsKey) == legacy else { return }
         }
-        defaults.removeObject(forKey: LegacyBrandKeys.serverRegistryDefaultsKey)
 
         // Carry the "single-server migration already ran" flag forward too,
         // otherwise `migrateLegacyIfNeeded` would run a second time against a
@@ -977,7 +985,7 @@ final class ServerRegistry {
             defaults.set(true, forKey: Self.migratedKey)
             guard defaults.bool(forKey: Self.migratedKey) else { return }
         }
-        defaults.removeObject(forKey: LegacyBrandKeys.serverRegistryMigratedDefaultsKey)
+        defaults.set(true, forKey: Self.brandMigratedKey)
     }
 
     // MARK: - Migration from legacy single-server state

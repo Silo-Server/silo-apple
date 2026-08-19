@@ -5779,11 +5779,17 @@ final class LoopbackSegmentWriter {
             }
             return
         }
+        // Clamp the append itself, not just the entry check: an interim
+        // fragment that crosses the ceiling would otherwise overshoot the
+        // cap by its whole size. The store serves byte prefixes, so a
+        // partial fragment is a valid publication; the remainder waits
+        // for the cut like everything past the ceiling.
+        let publishEnd = min(pendingSegmentBytes.count, progressivePublishCeilingBytes)
         let delta = pendingSegmentBytes.subdata(
-            in: vodProgressivePublishedBytes..<pendingSegmentBytes.count
+            in: vodProgressivePublishedBytes..<publishEnd
         )
         store.appendProgressiveSegment(named: name, bytes: delta)
-        vodProgressivePublishedBytes = pendingSegmentBytes.count
+        vodProgressivePublishedBytes = publishEnd
     }
 
     /// Emits the fragment accumulated in the muxer so far WITHOUT closing

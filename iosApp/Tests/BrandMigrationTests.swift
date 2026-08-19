@@ -35,7 +35,7 @@ final class BrandMigrationTests: XCTestCase {
 
     // MARK: - Keychain
 
-    func testReadMissAdoptsPreRenameItemAndRetiresIt() throws {
+    func testReadMissAdoptsPreRenameItemAndKeepsItForRollback() throws {
         let (siloAccount, legacyAccount) = makeAccounts()
         let (silo, legacy) = try makeKeychains()
         defer {
@@ -47,14 +47,15 @@ final class BrandMigrationTests: XCTestCase {
 
         // Read-miss on the Silo-branded name finds the pre-rename copy.
         XCTAssertEqual(silo.get(siloAccount), "token-value")
-        // ...writes it forward...
+        // ...writes it forward, so the next read needs no migration...
         XCTAssertEqual(
             SharedKeychain(service: silo.service, accessGroup: nil, legacyService: .some(nil))
                 .get(siloAccount),
             "token-value"
         )
-        // ...and retires the old copy, so the next read needs no migration.
-        XCTAssertNil(legacy.get(legacyAccount))
+        // ...and leaves the pre-rename copy in place so a TestFlight rollback
+        // to the previous build still finds its credentials.
+        XCTAssertEqual(legacy.get(legacyAccount), "token-value")
     }
 
     func testSiloBrandedItemWinsOverPreRenameItem() throws {
@@ -123,9 +124,9 @@ final class BrandMigrationTests: XCTestCase {
         )
 
         XCTAssertTrue(defaults.bool(forKey: "siloServerRegistry.migrated.v1"))
-        XCTAssertFalse(
-            defaults.containsObject(forKey: LegacyBrandKeys.serverRegistryMigratedDefaultsKey)
-        )
+        // The pre-rename flag survives for a rollback build.
+        XCTAssertTrue(defaults.bool(forKey: LegacyBrandKeys.serverRegistryMigratedDefaultsKey))
+        XCTAssertTrue(defaults.bool(forKey: "siloServerRegistry.brandMigrated.v1"))
         XCTAssertTrue(registry.entries.isEmpty)
     }
 
