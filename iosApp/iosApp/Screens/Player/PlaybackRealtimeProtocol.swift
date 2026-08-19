@@ -236,35 +236,26 @@ extension Dictionary where Key == String, Value == PlaybackRealtimeValue {
 }
 
 struct PlaybackRealtimeCommandEnvelope: Decodable, Equatable {
-    let type: PlaybackRealtimeMessageType
     let commandId: String
     let sessionId: String
     let name: PlaybackRealtimeCommandName
-    let reason: String?
     let issuedBy: PlaybackRealtimeIssuedBy?
-    let deadlineMS: Int?
     let payload: PlaybackRealtimePayload
 
     enum CodingKeys: String, CodingKey {
-        case type
         case commandId = "command_id"
         case sessionId = "session_id"
         case name
-        case reason
         case issuedBy = "issued_by"
-        case deadlineMS = "deadline_ms"
         case payload
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        type = try container.decode(PlaybackRealtimeMessageType.self, forKey: .type)
         commandId = try container.decode(String.self, forKey: .commandId)
         sessionId = try container.decode(String.self, forKey: .sessionId)
         name = try container.decode(PlaybackRealtimeCommandName.self, forKey: .name)
-        reason = try container.decodeIfPresent(String.self, forKey: .reason)
         issuedBy = try container.decodeIfPresent(PlaybackRealtimeIssuedBy.self, forKey: .issuedBy)
-        deadlineMS = try container.decodeIfPresent(Int.self, forKey: .deadlineMS)
         payload = try container.decodeIfPresent(PlaybackRealtimePayload.self, forKey: .payload) ?? [:]
     }
 }
@@ -274,13 +265,11 @@ struct PlaybackRealtimeIssuedBy: Decodable, Equatable {
 }
 
 struct PlaybackRealtimeEventEnvelope: Decodable, Equatable {
-    let type: PlaybackRealtimeMessageType
     let sessionId: String
     let name: PlaybackRealtimeEventName
     let payload: PlaybackRealtimePayload
 
     enum CodingKeys: String, CodingKey {
-        case type
         case sessionId = "session_id"
         case name
         case payload
@@ -288,7 +277,6 @@ struct PlaybackRealtimeEventEnvelope: Decodable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        type = try container.decode(PlaybackRealtimeMessageType.self, forKey: .type)
         sessionId = try container.decode(String.self, forKey: .sessionId)
         name = try container.decode(PlaybackRealtimeEventName.self, forKey: .name)
         payload = try container.decodeIfPresent(PlaybackRealtimePayload.self, forKey: .payload) ?? [:]

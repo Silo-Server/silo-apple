@@ -261,8 +261,7 @@ struct TVPlayerControls: View {
     }
 
     private var progressFraction: Double {
-        guard viewModel.duration > 0 else { return 0 }
-        return min(max(scrubberDisplayTime / viewModel.duration, 0), 1)
+        viewModel.progressFraction
     }
 
     private var bufferedFraction: Double {
@@ -537,7 +536,7 @@ struct TVPlayerControls: View {
             }
         } else {
             HStack {
-                clockText(PlayerTimeFormatter.formatHMS(scrubberDisplayTime))
+                clockText(PlayerTimeFormatter.formatHMS(viewModel.scrubDisplayTime))
                 Spacer()
                 if viewModel.duration > 0 {
                     clockText("−\(PlayerTimeFormatter.formatHMS(remainingTime))")
@@ -553,12 +552,8 @@ struct TVPlayerControls: View {
             .monospacedDigit()
     }
 
-    private var scrubberDisplayTime: Double {
-        viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
-    }
-
     private var remainingTime: Double {
-        max(0, viewModel.duration - scrubberDisplayTime)
+        max(0, viewModel.duration - viewModel.scrubDisplayTime)
     }
 
     private func estimatedFinishDate(from now: Date) -> Date {

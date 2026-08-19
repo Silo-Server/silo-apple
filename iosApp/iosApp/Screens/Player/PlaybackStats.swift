@@ -613,28 +613,25 @@ enum AVFoundationPlaybackIntrospection {
         return .sdr
     }
 
+    /// Prose form of `confirmedDynamicRange`, which is the single classifier.
     private static func dynamicRangeLabel(from description: CMFormatDescription) -> String? {
-        if let dovi = dolbyVisionConfig(in: description) {
-            return dolbyVisionLabel(
-                profile: dovi.profile,
-                level: dovi.level,
-                compatibilityID: dovi.compatibilityID
-            )
-        }
-
-        let subtype = fourCC(CMFormatDescriptionGetMediaSubType(description)).lowercased()
-        if subtype == "dvh1" || subtype == "dvhe" {
+        switch confirmedDynamicRange(from: description) {
+        case .dolbyVision:
+            if let dovi = dolbyVisionConfig(in: description) {
+                return dolbyVisionLabel(
+                    profile: dovi.profile,
+                    level: dovi.level,
+                    compatibilityID: dovi.compatibilityID
+                )
+            }
             return "Dolby Vision"
-        }
-
-        let transfer = extensionString(description, key: kCMFormatDescriptionExtension_TransferFunction)
-        if containsAny(transfer, ["smpte_st_2084", "smpte2084", "pq"]) {
+        case .hdr10:
             return "HDR10"
-        }
-        if containsAny(transfer, ["arib_std_b67", "itu_r_2100_hlg", "hlg"]) {
+        case .hlg:
             return "HLG"
+        case .sdr:
+            return nil
         }
-        return nil
     }
 
     private static func codecLabel(for subtype: FourCharCode, mediaType: AVMediaType) -> String? {

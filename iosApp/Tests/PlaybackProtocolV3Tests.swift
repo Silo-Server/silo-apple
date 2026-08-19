@@ -1627,14 +1627,12 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         engine: PlaybackEngineKind = .avPlayerNativeDirect,
         loopbackSession: LoopbackSessionSpec? = nil
     ) -> PlaybackExecutionPlan {
-        let routeCapabilities = engine.routeCapabilities
         return PlaybackExecutionPlan(
             delivery: .direct,
             engine: engine,
             startMode: .absolutePosition(4.5),
             streamRequest: streamRequest,
             loopbackSession: loopbackSession,
-            routeCapabilities: routeCapabilities,
             requirements: .baseline,
             parityBlockers: [],
             decisionTrace: ["test"],

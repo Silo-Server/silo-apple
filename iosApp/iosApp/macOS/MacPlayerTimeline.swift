@@ -18,9 +18,7 @@ struct MacPlayerTimeline: View {
     }
 
     private var progressFraction: Double {
-        guard viewModel.duration > 0 else { return 0 }
-        let time = viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
-        return min(max(time / viewModel.duration, 0), 1)
+        viewModel.progressFraction
     }
 
     private var bufferedFraction: Double {

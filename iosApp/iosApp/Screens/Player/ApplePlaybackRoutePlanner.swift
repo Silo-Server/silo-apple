@@ -60,36 +60,19 @@ struct ApplePlaybackDisplayCapabilities: Equatable {
     let supportsDolbyVision: Bool
     let supportsHDR10: Bool
     let supportsHLG: Bool
-    let supportsAtmos: Bool
-    let maxResolution: ResolutionHint?
     let supportsTenBit: Bool
 
-    enum ResolutionHint: String, Equatable {
-        case sd
-        case hd
-        case fullHD
-        case uhd4K
-    }
-
-    /// Best-effort capability snapshot from the host. AVAudioSession's
-    /// current route gives us spatial-audio capability on iOS/tvOS;
-    /// AVPlayer gives the HDR modes available through the current display
-    /// chain. Where a value cannot be obtained, the field stays at its
-    /// conservative default rather than being optimistically populated.
+    /// Best-effort capability snapshot from the host. AVPlayer gives the HDR
+    /// modes available through the current display chain. Where a value cannot
+    /// be obtained, the field stays at its conservative default rather than
+    /// being optimistically populated.
     static func probe() -> ApplePlaybackDisplayCapabilities {
         let hdrAvailability = ApplePlaybackHDRAvailability.probe()
-        var supportsAtmos = false
-        #if !os(macOS)
-        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
-        supportsAtmos = outputs.contains { $0.isSpatialAudioEnabled }
-        #endif
         return ApplePlaybackDisplayCapabilities(
             hdrPlaybackEligible: hdrAvailability.hdrPlaybackEligible,
             supportsDolbyVision: hdrAvailability.supportsDolbyVision,
             supportsHDR10: hdrAvailability.supportsHDR10,
             supportsHLG: hdrAvailability.supportsHLG,
-            supportsAtmos: supportsAtmos,
-            maxResolution: nil,
             supportsTenBit: hdrAvailability.supportsAnyHDRMode
         )
     }
@@ -174,7 +157,6 @@ struct ApplePlaybackRoutePlanner {
 
         let engine: PlaybackEngineKind
         let parityBlockers: [String]
-        let routeCapabilities: ApplePlaybackRouteCapabilities
         let decisionTrace: [String]
         let degradationWarnings: [String]
         let reason: String
@@ -216,7 +198,6 @@ struct ApplePlaybackRoutePlanner {
                [5, 7, 8].contains(directDolbyVisionProfile), directLoopbackSession != nil {
                 engine = .siloPlayerLoopback
                 parityBlockers = []
-                routeCapabilities = .siloPlayerLoopback
                 reason = Self.dolbyVisionRouteToken(
                     profile: directDolbyVisionProfile,
                     resolution: directDolbyVisionResolution,
@@ -226,12 +207,10 @@ struct ApplePlaybackRoutePlanner {
             } else if directAssessment.isEligible {
                 engine = .avPlayerNativeDirect
                 parityBlockers = []
-                routeCapabilities = .avPlayerNativeDirect
                 reason = "native_direct_asset"
             } else if siloAssessment.isEligible, directLoopbackSession != nil {
                 engine = .siloPlayerLoopback
                 parityBlockers = []
-                routeCapabilities = .siloPlayerLoopback
                 reason = siloAssessment.reason
             } else {
                 // Terminal rung. Everything is AVPlayer-backed now, so a
@@ -241,7 +220,6 @@ struct ApplePlaybackRoutePlanner {
                 var blockers = directAssessment.blockers + siloAssessment.blockers.map { "silo_\($0)" }
                 if directLoopbackSession != nil {
                     engine = .siloPlayerLoopback
-                    routeCapabilities = .siloPlayerLoopback
                     reason = "native_direct_blocked_silo_fallback"
                 } else {
                     if directDolbyVisionProfile == 5
@@ -251,7 +229,6 @@ struct ApplePlaybackRoutePlanner {
                         blockers.append("silo_loopback_session_unresolved")
                     }
                     engine = .avPlayerHLS
-                    routeCapabilities = .avPlayerHLS
                     reason = "native_direct_blocked_hls_fallback"
                 }
                 parityBlockers = blockers
@@ -280,7 +257,7 @@ struct ApplePlaybackRoutePlanner {
                 "fallback_order_hls_controlled_retry"
             }
             decisionTrace = trace + directAssessment.trace + siloAssessment.trace + [fallbackOrderToken]
-            degradationWarnings = routeCapabilities.degradationNotes(for: input.routeRequirements)
+            degradationWarnings = engine.routeCapabilities.degradationNotes(for: input.routeRequirements)
                 + siloAssessment.degradations
         case .remux, .transcode:
             // Server-produced HLS is the only way to present a remux or
@@ -288,13 +265,12 @@ struct ApplePlaybackRoutePlanner {
             // this behind a feature flag.
             parityBlockers = []
             engine = .avPlayerHLS
-            routeCapabilities = .avPlayerHLS
             decisionTrace = input.routeRequirements.summaryTokens + [
                 "delivery_\(delivery.name)",
                 "avplayer_hls_enabled",
                 "fallback_order_hls_controlled_retry"
             ]
-            degradationWarnings = routeCapabilities.degradationNotes(for: input.routeRequirements)
+            degradationWarnings = engine.routeCapabilities.degradationNotes(for: input.routeRequirements)
             reason = "apple_hls_route_enabled"
         }
 
@@ -312,7 +288,6 @@ struct ApplePlaybackRoutePlanner {
             startMode: startMode,
             streamRequest: input.streamRequest,
             loopbackSession: engine == .siloPlayerLoopback ? directLoopbackSession : nil,
-            routeCapabilities: routeCapabilities,
             requirements: input.routeRequirements,
             parityBlockers: parityBlockers,
             decisionTrace: decisionTrace + parityBlockers.map { "blocker_\($0)" },

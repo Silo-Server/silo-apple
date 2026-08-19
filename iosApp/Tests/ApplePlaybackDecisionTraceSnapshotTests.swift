@@ -573,7 +573,6 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
                 serverUrl: "https://example.invalid"
             ),
             loopbackSession: nil,
-            routeCapabilities: engine.routeCapabilities,
             requirements: .baseline,
             parityBlockers: [],
             decisionTrace: [],

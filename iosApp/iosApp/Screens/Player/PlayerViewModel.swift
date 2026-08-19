@@ -234,6 +234,22 @@ class PlayerViewModel {
         guard duration > 0 else { return 0 }
         return min(max((currentTime + playbackRunwaySeconds) / duration, 0), 1)
     }
+    /// The time the scrubber and its time labels should show: the scrub
+    /// preview while a scrub is in flight, otherwise the playhead.
+    var scrubDisplayTime: Double {
+        isScrubbing ? scrubPreviewTime : currentTime
+    }
+    /// The scrubber playhead fraction, defined once for all four platform
+    /// controls: scrub display time over duration, clamped.
+    var progressFraction: Double {
+        guard duration > 0 else { return 0 }
+        return min(max(scrubDisplayTime / duration, 0), 1)
+    }
+    /// Index of the chapter containing the playhead, for the chapter lists and
+    /// the info HUD. `chapters` is ascending by time.
+    var currentChapterIndex: Int? {
+        chapters.lastIndex(where: { $0.time <= currentTime })
+    }
     var playbackStats: PlaybackStats = .empty
     var showNextUpScreen = false
     var nextUpEpisode: PlayerNextUpEpisode?
@@ -2300,7 +2316,6 @@ class PlayerViewModel {
         ) else {
             return nil
         }
-        let fallbackCapabilities = PlaybackEngineKind.siloPlayerLoopback.routeCapabilities
         return PlaybackExecutionPlan(
             delivery: .direct,
             engine: .siloPlayerLoopback,
@@ -2308,11 +2323,11 @@ class PlayerViewModel {
             streamRequest: activeExecutionPlan.sourceStreamRequest,
             sourceStreamRequest: activeExecutionPlan.sourceStreamRequest,
             loopbackSession: loopbackSession,
-            routeCapabilities: fallbackCapabilities,
             requirements: requirements,
             parityBlockers: [],
             decisionTrace: activeExecutionPlan.decisionTrace + [traceToken],
-            degradationWarnings: fallbackCapabilities.degradationNotes(for: requirements),
+            degradationWarnings: PlaybackEngineKind.siloPlayerLoopback.routeCapabilities
+                .degradationNotes(for: requirements),
             reason: reason,
             playbackSessionId: activeExecutionPlan.playbackSessionId,
             wireDelivery: activeExecutionPlan.wireDelivery,
@@ -2988,7 +3003,6 @@ class PlayerViewModel {
                 streamRequest: streamRequest,
                 sourceStreamRequest: plan.sourceStreamRequest,
                 loopbackSession: loopbackSession,
-                routeCapabilities: plan.routeCapabilities,
                 requirements: plan.requirements,
                 parityBlockers: plan.parityBlockers,
                 decisionTrace: plan.decisionTrace + ["source_proxy_enabled"],
@@ -5131,7 +5145,6 @@ class PlayerViewModel {
             streamRequest: plan.streamRequest,
             sourceStreamRequest: plan.sourceStreamRequest,
             loopbackSession: loopbackSession.reanchored(at: clampedTarget),
-            routeCapabilities: plan.routeCapabilities,
             requirements: plan.requirements,
             parityBlockers: plan.parityBlockers,
             decisionTrace: plan.decisionTrace + ["loopback_reanchor_seek"],
