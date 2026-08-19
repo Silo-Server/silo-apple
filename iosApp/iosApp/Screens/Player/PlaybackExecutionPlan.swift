@@ -191,18 +191,34 @@ struct LoopbackSessionSpec {
         return tracks.map { $0.selecting($0.trackId == selectedTrack.trackId) }
     }
 
-    func reanchored(at mediaSeconds: Double) -> LoopbackSessionSpec {
+    /// Copies the spec through the designated initializer, overriding only the
+    /// fields given. Swift default arguments cannot name `self`, so each
+    /// parameter is an optional sentinel coalesced against the receiver; all
+    /// five are non-optional stored properties, so `nil` unambiguously means
+    /// "keep". Audio respecs (which rewrite `selectedAudio` and
+    /// `availableAudioTracks` together) keep using the designated initializer.
+    func copy(
+        sourceURL: URL? = nil,
+        headers: [String: String]? = nil,
+        sourceStartTimeSeconds: Double? = nil,
+        videoMode: VideoMode? = nil,
+        manifestMetadata: ManifestMetadata? = nil
+    ) -> LoopbackSessionSpec {
         LoopbackSessionSpec(
-            sourceURL: sourceURL,
-            headers: headers,
-            sourceStartTimeSeconds: mediaSeconds,
+            sourceURL: sourceURL ?? self.sourceURL,
+            headers: headers ?? self.headers,
+            sourceStartTimeSeconds: sourceStartTimeSeconds ?? self.sourceStartTimeSeconds,
             sourceBitrateBps: sourceBitrateBps,
-            videoMode: videoMode,
+            videoMode: videoMode ?? self.videoMode,
             sourceVideoFrameRate: sourceVideoFrameRate,
             selectedAudio: selectedAudio,
             availableAudioTracks: availableAudioTracks,
-            manifestMetadata: manifestMetadata
+            manifestMetadata: manifestMetadata ?? self.manifestMetadata
         )
+    }
+
+    func reanchored(at mediaSeconds: Double) -> LoopbackSessionSpec {
+        copy(sourceStartTimeSeconds: mediaSeconds)
     }
 
     /// Re-points the spec at a replacement source (the local source-proxy URL
@@ -212,17 +228,7 @@ struct LoopbackSessionSpec {
     /// start-time clamp and the selected-audio marking re-run, which is
     /// idempotent here.
     func withSource(url: URL, headers: [String: String]) -> LoopbackSessionSpec {
-        LoopbackSessionSpec(
-            sourceURL: url,
-            headers: headers,
-            sourceStartTimeSeconds: sourceStartTimeSeconds,
-            sourceBitrateBps: sourceBitrateBps,
-            videoMode: videoMode,
-            sourceVideoFrameRate: sourceVideoFrameRate,
-            selectedAudio: selectedAudio,
-            availableAudioTracks: availableAudioTracks,
-            manifestMetadata: manifestMetadata
-        )
+        copy(sourceURL: url, headers: headers)
     }
 }
 
@@ -366,11 +372,6 @@ struct PlaybackValidationClaims: Equatable {
     let tvOSReceiverAtmos: ApplePlaybackCapabilityState
     let pictureInPicture: ApplePlaybackCapabilityState
     let externalPlayback: ApplePlaybackCapabilityState
-    let citations: [String]
-
-    static func from(routeCapabilities: ApplePlaybackRouteCapabilities) -> PlaybackValidationClaims {
-        from(routeCapabilities: routeCapabilities, sourceMetadata: .unknown)
-    }
 
     static func from(
         routeCapabilities: ApplePlaybackRouteCapabilities,
@@ -387,22 +388,18 @@ struct PlaybackValidationClaims: Equatable {
             tvOSDolbyVisionDisplay: hasDolbyVision ? routeCapabilities.premiumClaims.tvOSDolbyVisionDisplay.state : .unclaimed,
             tvOSReceiverAtmos: hasAtmosCandidate ? routeCapabilities.premiumClaims.tvOSReceiverAtmos.state : .unclaimed,
             pictureInPicture: routeCapabilities.pictureInPicture.state,
-            externalPlayback: routeCapabilities.externalPlayback.state,
-            citations: []
+            externalPlayback: routeCapabilities.externalPlayback.state
         )
     }
 
     var logToken: String {
-        var tokens = [
+        let tokens = [
             "hdr:\(localHDR.rawValue)",
             "dv:\(tvOSDolbyVisionDisplay.rawValue)",
             "atmos:\(tvOSReceiverAtmos.rawValue)",
             "pip:\(pictureInPicture.rawValue)",
             "external:\(externalPlayback.rawValue)"
         ]
-        if !citations.isEmpty {
-            tokens.append("citations:\(citations.joined(separator: "+"))")
-        }
         return tokens.joined(separator: ",")
     }
 }
@@ -453,7 +450,6 @@ struct PlaybackExecutionPlan {
     let streamRequest: StreamRequest
     let sourceStreamRequest: StreamRequest
     let loopbackSession: LoopbackSessionSpec?
-    let routeCapabilities: ApplePlaybackRouteCapabilities
     let requirements: PlaybackRouteRequirements
     let sourceMetadata: PlaybackSourceMetadata
     let normalizationSummary: PlaybackNormalizationSummary
@@ -466,6 +462,10 @@ struct PlaybackExecutionPlan {
     let degradationWarnings: [String]
     let reason: String
     let playbackSessionId: String?
+
+    /// Derived from `engine` like `routeFamily`/`implementationRoute`/
+    /// `appPlaybackLabel`, so engine and capabilities cannot disagree.
+    var routeCapabilities: ApplePlaybackRouteCapabilities { engine.routeCapabilities }
 
     var supportsDirectStreamResume: Bool {
         delivery == .direct
@@ -480,7 +480,6 @@ struct PlaybackExecutionPlan {
         streamRequest: StreamRequest,
         sourceStreamRequest: StreamRequest? = nil,
         loopbackSession: LoopbackSessionSpec?,
-        routeCapabilities: ApplePlaybackRouteCapabilities,
         requirements: PlaybackRouteRequirements,
         parityBlockers: [String],
         decisionTrace: [String],
@@ -504,12 +503,11 @@ struct PlaybackExecutionPlan {
         self.streamRequest = streamRequest
         self.sourceStreamRequest = sourceStreamRequest ?? streamRequest
         self.loopbackSession = loopbackSession
-        self.routeCapabilities = routeCapabilities
         self.requirements = requirements
         self.sourceMetadata = sourceMetadata
         self.normalizationSummary = normalizationSummary
         self.validationClaims = validationClaims ?? PlaybackValidationClaims.from(
-            routeCapabilities: routeCapabilities,
+            routeCapabilities: engine.routeCapabilities,
             sourceMetadata: sourceMetadata
         )
         self.parityBlockers = parityBlockers

@@ -67,21 +67,12 @@ struct TVPlayerScrubber: View {
     /// focus state cannot resize the transport stack.
     private static let trackStackHeight: CGFloat = 56
 
-    /// Playhead fraction as rendered on the bar — reflects the scrub preview
-    /// while scrubbing so the white fill tracks the user's nudges instead of
-    /// the underlying playback position.
     private var progressFraction: Double {
-        guard viewModel.duration > 0 else { return 0 }
-        let t = viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
-        return min(max(t / viewModel.duration, 0), 1)
+        viewModel.progressFraction
     }
 
     private var bufferedFraction: Double {
         viewModel.bufferedFraction
-    }
-
-    private var displayTime: Double {
-        viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
     }
 
     var body: some View {
@@ -163,7 +154,7 @@ struct TVPlayerScrubber: View {
                 }
             }
             .accessibilityLabel("Scrubber")
-            .accessibilityValue(Text(PlayerTimeFormatter.formatHMS(displayTime)))
+            .accessibilityValue(Text(PlayerTimeFormatter.formatHMS(viewModel.scrubDisplayTime)))
     }
 
     // MARK: - Bar

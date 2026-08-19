@@ -110,7 +110,7 @@ struct MacPlayerOptionsPanel: View {
                         trackButton(
                             title: chapter.title ?? "Chapter \(chapter.index + 1)",
                             detail: PlayerTimeFormatter.formatHMS(chapter.time),
-                            selected: chapter.index == currentChapterIndex
+                            selected: chapter.index == viewModel.currentChapterIndex
                         ) {
                             viewModel.seekTo(seconds: chapter.time)
                         }
@@ -232,10 +232,6 @@ struct MacPlayerOptionsPanel: View {
             }
         }
         .padding(12)
-    }
-
-    private var currentChapterIndex: Int? {
-        viewModel.chapters.lastIndex { $0.time <= viewModel.currentTime }
     }
 
     private func subtitleDetail(for track: PlayerTrack) -> String? {

@@ -1029,16 +1029,11 @@ actor PlaybackSessionBridge {
         )
         let expectedAttempt = ProtocolV3AttemptIdentity(active)
         guard active.attemptCount < 8 else {
-            await emitProtocolV3Terminal(
+            throw await terminalReplanFailure(
                 active: active,
                 sessionId: currentSessionId,
                 reason: "attempt_limit_reached",
                 message: "Playback recovery exhausted the protocol V3 route ladder."
-            )
-            throw PlaybackV3TerminalFailure(
-                reason: "attempt_limit_reached",
-                message: "Playback recovery exhausted the protocol V3 route ladder.",
-                retryable: false
             )
         }
 
@@ -1171,31 +1166,20 @@ actor PlaybackSessionBridge {
         }
         switch validatedResponse {
         case .terminal(let terminal):
-            await emitProtocolV3Terminal(
+            throw await terminalReplanFailure(
                 active: active,
                 sessionId: currentSessionId,
-                reason: terminal.reason,
-                message: terminal.message
-            )
-            throw PlaybackV3TerminalFailure(
                 reason: terminal.reason,
                 message: terminal.message,
                 retryable: terminal.retryable
             )
         case .incompatible(let allocatedSessionId):
-            if let allocatedSessionId, allocatedSessionId != currentSessionId {
-                try? await SiloAPI.shared.stopPlayback(sessionId: allocatedSessionId)
-            }
-            await emitProtocolV3Terminal(
+            throw await terminalReplanFailure(
                 active: active,
                 sessionId: currentSessionId,
+                abandoning: allocatedSessionId,
                 reason: "invalid_replan",
                 message: "The server returned an incompatible protocol V3 replacement plan."
-            )
-            throw PlaybackV3TerminalFailure(
-                reason: "invalid_replan",
-                message: "The server returned an incompatible protocol V3 replacement plan.",
-                retryable: false
             )
         case .playable(let nextPlan, let nextSessionId):
             do {
@@ -1214,37 +1198,23 @@ actor PlaybackSessionBridge {
             }
             let nextKey = nextPlan.planAttemptKey
             guard isSeekReanchor || !attemptedKeys.contains(nextKey) else {
-                if nextSessionId != currentSessionId {
-                    try? await SiloAPI.shared.stopPlayback(sessionId: nextSessionId)
-                }
-                await emitProtocolV3Terminal(
+                throw await terminalReplanFailure(
                     active: active,
                     sessionId: currentSessionId,
+                    abandoning: nextSessionId,
                     reason: "replan_loop_detected",
                     message: "The server returned a protocol V3 plan that already failed on this output route."
-                )
-                throw PlaybackV3TerminalFailure(
-                    reason: "replan_loop_detected",
-                    message: "The server returned a protocol V3 plan that already failed on this output route.",
-                    retryable: false
                 )
             }
             guard let selectedVersion = watchDetail.versions.first(where: {
                 $0.fileId == nextPlan.effectiveMediaFileId
             }) else {
-                if nextSessionId != currentSessionId {
-                    try? await SiloAPI.shared.stopPlayback(sessionId: nextSessionId)
-                }
-                await emitProtocolV3Terminal(
+                throw await terminalReplanFailure(
                     active: active,
                     sessionId: currentSessionId,
+                    abandoning: nextSessionId,
                     reason: "effective_file_unavailable",
                     message: "The replacement plan selected an unavailable media version."
-                )
-                throw PlaybackV3TerminalFailure(
-                    reason: "effective_file_unavailable",
-                    message: "The replacement plan selected an unavailable media version.",
-                    retryable: false
                 )
             }
             let nextSession = ApplePlaybackV3PlanAdapter.playbackSession(
@@ -1263,16 +1233,11 @@ actor PlaybackSessionBridge {
                       nextPlan.transformations == active.plan.transformations,
                       nextPlan.appliedQuirks == active.plan.appliedQuirks,
                       nextPlan.runtimeCorrections == active.plan.runtimeCorrections else {
-                    await emitProtocolV3Terminal(
+                    throw await terminalReplanFailure(
                         active: active,
                         sessionId: currentSessionId,
                         reason: "invalid_seek_reanchor_response",
                         message: "The server changed the route or playback intent during a V3 seek re-anchor."
-                    )
-                    throw PlaybackV3TerminalFailure(
-                        reason: "invalid_seek_reanchor_response",
-                        message: "The server changed the route or playback intent during a V3 seek re-anchor.",
-                        retryable: false
                     )
                 }
             } else {
@@ -1385,6 +1350,30 @@ actor PlaybackSessionBridge {
         } catch {
             logger.warning("Protocol V3 route event \(event.event, privacy: .public) failed: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    /// The replan route ladder's dead end: optionally abandon the replacement
+    /// session the server allocated, emit the terminal route event, and hand
+    /// back the failure to throw. Naming each reason token and prose message
+    /// once per site is the point — they used to be spelled twice.
+    private func terminalReplanFailure(
+        active: ActiveProtocolV3,
+        sessionId: String,
+        abandoning: String? = nil,
+        reason: String,
+        message: String,
+        retryable: Bool = false
+    ) async -> PlaybackV3TerminalFailure {
+        if let abandoning, abandoning != sessionId {
+            try? await SiloAPI.shared.stopPlayback(sessionId: abandoning)
+        }
+        await emitProtocolV3Terminal(
+            active: active,
+            sessionId: sessionId,
+            reason: reason,
+            message: message
+        )
+        return PlaybackV3TerminalFailure(reason: reason, message: message, retryable: retryable)
     }
 
     private func emitProtocolV3Terminal(

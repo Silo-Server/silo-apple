@@ -292,7 +292,7 @@ struct MobilePlayerControls: View {
 
     private var timeRow: some View {
         HStack {
-            Text(PlayerTimeFormatter.formatHMS(displayTime))
+            Text(PlayerTimeFormatter.formatHMS(viewModel.scrubDisplayTime))
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.85))
                 .monospacedDigit()
@@ -324,7 +324,7 @@ struct MobilePlayerControls: View {
 
     private var trailingTimeText: String {
         if showsRemainingTime {
-            return "−" + PlayerTimeFormatter.formatHMS(max(viewModel.duration - displayTime, 0))
+            return "−" + PlayerTimeFormatter.formatHMS(max(viewModel.duration - viewModel.scrubDisplayTime, 0))
         }
         return PlayerTimeFormatter.formatHMS(viewModel.duration)
     }
@@ -344,18 +344,12 @@ struct MobilePlayerControls: View {
         .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
     }
 
-    private var displayTime: Double {
-        viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
-    }
-
     // MARK: - Scrubber
 
     private var progressSlider: some View {
         GeometryReader { geo in
             let width = geo.size.width
-            let progress = viewModel.duration > 0
-                ? min(max(displayTime / viewModel.duration, 0), 1)
-                : 0
+            let progress = viewModel.progressFraction
             let barHeight: CGFloat = viewModel.isScrubbing ? 12 : 6
 
             ZStack(alignment: .leading) {
@@ -425,7 +419,7 @@ struct MobilePlayerControls: View {
             .accessibilityElement()
             .accessibilityLabel("Playback Position")
             .accessibilityValue(
-                "\(PlayerTimeFormatter.formatHMS(displayTime)) of \(PlayerTimeFormatter.formatHMS(viewModel.duration))"
+                "\(PlayerTimeFormatter.formatHMS(viewModel.scrubDisplayTime)) of \(PlayerTimeFormatter.formatHMS(viewModel.duration))"
             )
             .accessibilityAdjustableAction { direction in
                 switch direction {
@@ -798,10 +792,6 @@ struct MobilePlayerControls: View {
 
     // MARK: - Chapters menu
 
-    private var currentChapterIndex: Int? {
-        viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
-    }
-
     /// Native chapter picker: one row per chapter with the timestamp as the
     /// menu subtitle and a checkmark on the chapter currently playing.
     private func chaptersMenu(style: ActionRowStyle) -> some View {
@@ -810,7 +800,7 @@ struct MobilePlayerControls: View {
                 Button {
                     viewModel.seekTo(seconds: chapter.time)
                 } label: {
-                    if currentChapterIndex == chapter.index {
+                    if viewModel.currentChapterIndex == chapter.index {
                         Label {
                             Text(chapterMenuTitle(chapter))
                             Text(PlayerTimeFormatter.formatHMS(chapter.time))

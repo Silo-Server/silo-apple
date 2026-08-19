@@ -164,6 +164,13 @@ enum ApplePlaybackV3PlanAdapter {
         )
     }
 
+    private static func partitionedSubtitleTracks(
+        in version: FileVersion
+    ) -> (external: [SubtitleTrack], embedded: [SubtitleTrack]) {
+        let tracks = version.subtitleTracks ?? []
+        return (tracks.filter { $0.external == true }, tracks.filter { $0.external != true })
+    }
+
     /// V3 subtitle identities are external-first combined ordinals. Apple’s
     /// embedded picker carries FFmpeg stream indices instead, and watch detail
     /// lists embedded tracks before external tracks, so the wire identity must
@@ -173,9 +180,9 @@ enum ApplePlaybackV3PlanAdapter {
         in version: FileVersion
     ) -> Int? {
         guard ffmpegStreamIndex >= 0 else { return nil }
-        let tracks = version.subtitleTracks ?? []
-        let externalCount = tracks.filter { $0.external == true }.count
-        let embedded = tracks.filter { $0.external != true }
+        let partition = partitionedSubtitleTracks(in: version)
+        let externalCount = partition.external.count
+        let embedded = partition.embedded
         guard let embeddedOrdinal = embedded.firstIndex(where: {
             $0.index == ffmpegStreamIndex
         }) else {
@@ -203,9 +210,9 @@ enum ApplePlaybackV3PlanAdapter {
         in version: FileVersion
     ) -> Int? {
         guard serverCombinedIndex >= 0 else { return nil }
-        let tracks = version.subtitleTracks ?? []
-        let externalCount = tracks.filter { $0.external == true }.count
-        let embedded = tracks.filter { $0.external != true }
+        let partition = partitionedSubtitleTracks(in: version)
+        let externalCount = partition.external.count
+        let embedded = partition.embedded
         let embeddedOrdinal = serverCombinedIndex - externalCount
         guard embedded.indices.contains(embeddedOrdinal) else { return nil }
         return embedded[embeddedOrdinal].index
@@ -251,7 +258,6 @@ enum ApplePlaybackV3PlanAdapter {
             )
         }
 
-        let routeCapabilities = engine.routeCapabilities
         let sourceMetadata = PlaybackSourceMetadata(
             container: plan.source.container,
             videoCodec: plan.source.videoCodec,
@@ -283,13 +289,12 @@ enum ApplePlaybackV3PlanAdapter {
             streamRequest: streamRequest,
             sourceStreamRequest: streamRequest,
             loopbackSession: engine == .siloPlayerLoopback ? loopbackSession : nil,
-            routeCapabilities: routeCapabilities,
             requirements: routeRequirements,
             parityBlockers: [],
             decisionTrace: basePlan.decisionTrace + [
                 "protocol_v3", "v3_plan_\(plan.planId)", "v3_delivery_\(plan.delivery)"
             ] + transformationTokens + quirkTokens + correctionTokens,
-            degradationWarnings: warnings + routeCapabilities.degradationNotes(for: routeRequirements),
+            degradationWarnings: warnings + engine.routeCapabilities.degradationNotes(for: routeRequirements),
             reason: "v3_\(plan.decisionReason)",
             playbackSessionId: plan.sessionId,
             wireDelivery: plan.delivery,
@@ -323,17 +328,7 @@ enum ApplePlaybackV3PlanAdapter {
                 mayClaimAtmos: base.manifestMetadata.mayClaimAtmos
             )
         }
-        return LoopbackSessionSpec(
-            sourceURL: base.sourceURL,
-            headers: base.headers,
-            sourceStartTimeSeconds: base.sourceStartTimeSeconds,
-            sourceBitrateBps: base.sourceBitrateBps,
-            videoMode: videoMode,
-            sourceVideoFrameRate: base.sourceVideoFrameRate,
-            selectedAudio: base.selectedAudio,
-            availableAudioTracks: base.availableAudioTracks,
-            manifestMetadata: manifestMetadata
-        )
+        return base.copy(videoMode: videoMode, manifestMetadata: manifestMetadata)
     }
 
     private static func subtitleTrack(
@@ -341,10 +336,8 @@ enum ApplePlaybackV3PlanAdapter {
         in version: FileVersion
     ) -> SubtitleTrack? {
         guard index >= 0 else { return nil }
-        let tracks = version.subtitleTracks ?? []
-        let external = tracks.filter { $0.external == true }
-        let embedded = tracks.filter { $0.external != true }
-        let combined = external + embedded
+        let partition = partitionedSubtitleTracks(in: version)
+        let combined = partition.external + partition.embedded
         guard combined.indices.contains(index) else { return nil }
         return combined[index]
     }

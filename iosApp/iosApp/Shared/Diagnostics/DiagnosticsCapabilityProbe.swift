@@ -89,7 +89,7 @@ enum DiagnosticsCapabilityProbe {
             "hdr_output_eligible": .bool(capabilities.hdrPlaybackEligible),
             "hdr_types": .array(hdrTypes),
             "wide_gamut": .string("not_collected"),
-            "max_resolution": capabilities.maxResolution.map { .string($0.rawValue) } ?? .string("unknown"),
+            "max_resolution": .string("unknown"),
             "supports_ten_bit": .bool(capabilities.supportsTenBit),
         ])
     }
@@ -102,7 +102,7 @@ enum DiagnosticsCapabilityProbe {
         let maxResolution = "1080p"
         let hdr = false
         #else
-        let maxResolution = capabilities.maxResolution?.rawValue ?? "unknown"
+        let maxResolution = "unknown"
         let hdr = capabilities.supportsHDR10 || capabilities.supportsHLG || capabilities.supportsDolbyVision
         #endif
 

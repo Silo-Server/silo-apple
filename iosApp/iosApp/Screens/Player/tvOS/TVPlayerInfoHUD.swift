@@ -341,9 +341,8 @@ private struct InfoPane: View {
     }
 
     private var currentChapterTitle: String? {
-        guard !viewModel.chapters.isEmpty,
-              let current = viewModel.chapters.last(where: { $0.time <= viewModel.currentTime })
-        else { return nil }
+        guard let index = viewModel.currentChapterIndex else { return nil }
+        let current = viewModel.chapters[index]
         return current.title ?? "Chapter \(current.index + 1)"
     }
 }
@@ -1003,10 +1002,6 @@ private struct ChaptersPane: View {
     let viewModel: PlayerViewModel
     let onSelect: () -> Void
 
-    private var currentIndex: Int? {
-        viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
-    }
-
     var body: some View {
         PaneColumn("Chapters") {
             ScrollView(showsIndicators: false) {
@@ -1016,7 +1011,7 @@ private struct ChaptersPane: View {
                             number: index + 1,
                             title: chapter.title ?? "Chapter \(index + 1)",
                             time: PlayerTimeFormatter.formatHMS(chapter.time),
-                            isCurrent: currentIndex == index
+                            isCurrent: viewModel.currentChapterIndex == index
                         ) {
                             viewModel.seekTo(seconds: chapter.time)
                             onSelect()
