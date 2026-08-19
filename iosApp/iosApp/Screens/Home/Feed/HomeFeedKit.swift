@@ -167,12 +167,8 @@ private struct HomeCardMenu: ViewModifier {
     /// matching `MediaCard`.
     private var hasPersonalActions: Bool { item.userState != nil }
 
-    private var hasAnyAction: Bool {
-        hasPersonalActions || onSetWatched != nil || onRemoveFromContinueWatching != nil
-    }
-
     func body(content: Content) -> some View {
-        if hasAnyAction {
+        if menuItems.hasAny {
             content
                 .contextMenu { menuItems }
                 .onChange(of: item.userState) { _, _ in
@@ -185,39 +181,29 @@ private struct HomeCardMenu: ViewModifier {
         }
     }
 
-    @ViewBuilder
-    private var menuItems: some View {
-        if let onSetWatched {
-            Button {
-                let played = !isPlayed
-                Task { @MainActor in
+    private var menuItems: CardContextMenuItems {
+        CardContextMenuItems(
+            isWatched: isPlayed,
+            onSetWatched: onSetWatched.map { handler in
+                { played in
                     playedOverride = played
-                    if await onSetWatched(played) == false {
+                    let succeeded = await handler(played)
+                    if !succeeded {
                         playedOverride = nil
                     }
+                    return succeeded
                 }
-            } label: {
-                Label(
-                    isPlayed ? "Mark as Unwatched" : "Mark as Watched",
-                    systemImage: isPlayed ? "circle" : "checkmark.circle"
+            },
+            personalItems: hasPersonalActions
+                ? PersonalListMenuItems(
+                    isFavorite: isFavorite,
+                    inWatchlist: inWatchlist,
+                    onToggleFavorite: toggleFavorite,
+                    onToggleWatchlist: toggleWatchlist
                 )
-            }
-        }
-
-        if hasPersonalActions {
-            PersonalListMenuItems(
-                isFavorite: isFavorite,
-                inWatchlist: inWatchlist,
-                onToggleFavorite: toggleFavorite,
-                onToggleWatchlist: toggleWatchlist
-            )
-        }
-
-        if let onRemoveFromContinueWatching {
-            Button(role: .destructive, action: onRemoveFromContinueWatching) {
-                Label("Remove from Continue Watching", systemImage: "xmark.circle")
-            }
-        }
+                : nil,
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching
+        )
     }
 
     private func toggleFavorite() {

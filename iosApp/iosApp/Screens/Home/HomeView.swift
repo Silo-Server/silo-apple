@@ -19,9 +19,7 @@ struct HomeView: View {
     #if !os(tvOS)
     @State private var currentProfile: UserProfile?
     @State private var homeScrollOffset: CGFloat = 0
-    @State private var isRefreshing = false
-    @State private var refreshStartedAt: Date?
-    @State private var refreshHideTask: Task<Void, Never>?
+    @State private var refreshStatus = RefreshStatusState()
     private let chromeFadeDistance: CGFloat = 72
     #if os(iOS)
     @State private var isShowingControlPicker = false
@@ -128,17 +126,7 @@ struct HomeView: View {
                     }
                     #endif
 
-                    TabTopBarActions(
-                        profile: currentProfile,
-                        onSearch: { router.navigate(to: .search) },
-                        onOpenSettings: { router.navigate(to: .settings) },
-                        onOpenRequests: { router.navigate(to: .requestsHub) },
-                        onSwitchProfile: {
-                            router.switchProfile()
-                        },
-                        onSwitchServer: { router.navigate(to: .serverList) },
-                        onSignOut: { router.signOutAndReset() }
-                    )
+                    TabTopBarActions(profile: currentProfile, router: router)
                 }
             }
             .padding(.horizontal, SiloTheme.padding)
@@ -152,7 +140,7 @@ struct HomeView: View {
                     .ignoresSafeArea(edges: .top)
             }
 
-            if isRefreshing {
+            if refreshStatus.isRefreshing {
                 RefreshStatusPill()
                     .padding(.top, 64)
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -167,7 +155,7 @@ struct HomeView: View {
             }
 
         }
-        .animation(.easeInOut(duration: 0.18), value: isRefreshing)
+        .animation(.easeInOut(duration: 0.18), value: refreshStatus.isRefreshing)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
         #if !os(macOS)
         .toolbar(.hidden, for: .navigationBar)
@@ -264,7 +252,7 @@ struct HomeView: View {
 
     private func refreshHome() async {
         await MainActor.run {
-            showRefreshStatus()
+            refreshStatus.show()
         }
 
         async let homeRefresh: Void = viewModel.loadSections()
@@ -273,29 +261,7 @@ struct HomeView: View {
         _ = await (homeRefresh, libraryRefresh)
 
         await MainActor.run {
-            scheduleRefreshStatusHide()
-        }
-    }
-
-    private func showRefreshStatus() {
-        refreshHideTask?.cancel()
-        refreshStartedAt = Date()
-        isRefreshing = true
-    }
-
-    private func scheduleRefreshStatusHide() {
-        let elapsed = Date().timeIntervalSince(refreshStartedAt ?? Date())
-        let remaining = RefreshStatusPill.minimumVisibleDuration - elapsed
-        refreshHideTask?.cancel()
-        refreshHideTask = Task { @MainActor in
-            if remaining > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
-            }
-            guard !Task.isCancelled else { return }
-
-            isRefreshing = false
-            refreshStartedAt = nil
-            refreshHideTask = nil
+            refreshStatus.scheduleHide()
         }
     }
 

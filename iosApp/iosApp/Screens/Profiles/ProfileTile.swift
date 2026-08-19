@@ -299,8 +299,8 @@ enum ProfileAvatarResolver {
             || lowercased.contains(".avif")
     }
 
-    static func imageURL(for value: String) -> String? {
-        if let diceBear = diceBearURL(for: value) { return diceBear }
+    static func imageURL(for value: String, size: Int = 512) -> String? {
+        if let diceBear = diceBearURL(for: value, size: size) { return diceBear }
 
         let lowercased = value.lowercased()
         if lowercased.hasPrefix("http://")
@@ -322,15 +322,13 @@ enum ProfileAvatarResolver {
         return value
     }
 
-    private static func diceBearURL(for value: String) -> String? {
+    private static func diceBearURL(for value: String, size: Int) -> String? {
         guard value.lowercased().hasPrefix("preset:dicebear:") else { return nil }
         let parts = value.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
         guard parts.count == 4 else { return nil }
         let style = String(parts[2]).trimmingCharacters(in: .whitespacesAndNewlines)
         let seed = String(parts[3]).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !style.isEmpty, !seed.isEmpty else { return nil }
-        let s = style.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? style
-        let d = seed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? seed
-        return "https://api.dicebear.com/9.x/\(s)/png?seed=\(d)&size=512"
+        return ProfileAvatarPresets.imageURL(styleId: style, seed: seed, size: size)
     }
 }

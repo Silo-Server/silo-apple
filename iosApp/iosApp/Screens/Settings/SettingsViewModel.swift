@@ -123,8 +123,8 @@ class SettingsViewModel {
 
     // MARK: - Derived
 
-    // Only TVSettingsView's account card reads these; the iOS and macOS
-    // settings screens derive their own name and subtitle locally.
+    // Account-card text. The tvOS card has its own wording (below); the
+    // iOS and macOS overviews share the members in the `!os(tvOS)` block.
     #if os(tvOS)
     var isAdmin: Bool { userInfo?.isAdmin == true }
 
@@ -145,6 +145,54 @@ class SettingsViewModel {
 
     var profileAvatar: String? {
         activeProfile?.avatarEmoji
+    }
+    #else
+    var displayName: String {
+        if let name = activeProfile?.name, !name.isEmpty {
+            return name
+        }
+        if let username = userInfo?.username, !username.isEmpty {
+            return username
+        }
+        return "Switch Profile"
+    }
+
+    var subtitleLine: String {
+        let host = serverHost
+        let username = userInfo?.username
+        switch (username, host) {
+        case let (user?, host?) where !user.isEmpty && user != displayName:
+            return "\(user) · \(host)"
+        case let (_, host?):
+            return host
+        case let (user?, _) where !user.isEmpty && user != displayName:
+            return user
+        default:
+            return "Tap to switch profile"
+        }
+    }
+
+    var serverHost: String? {
+        guard let url = URL(string: serverUrl), let host = url.host else {
+            return serverUrl.isEmpty ? nil : serverUrl
+        }
+        return host
+    }
+
+    func subtitleLanguageName(_ tag: String) -> String {
+        if tag == PlaybackPrefSentinel.none || tag.isEmpty { return "None" }
+        return PlaybackLanguageOption.label(forCode: tag)
+    }
+
+    var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "1.0"
+        guard let build = info?["CFBundleVersion"] as? String,
+              !build.isEmpty,
+              build != version else {
+            return version
+        }
+        return "\(version) (\(build))"
     }
     #endif
 

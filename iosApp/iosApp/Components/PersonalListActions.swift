@@ -28,6 +28,52 @@ struct PersonalListMenuItems: View {
     }
 }
 
+/// The card context menu shared by `MediaCard` (iOS/macOS long press and the
+/// tvOS `FocusableMediaCard` wrapper), `EpisodeThumbCard` and Home's card
+/// menu: watched toggle, then the personal-list entries, then the destructive
+/// removal. Each caller supplies an `onSetWatched` that already wraps its own
+/// optimistic watched flip, and `nil` for whatever it doesn't offer.
+struct CardContextMenuItems: View {
+    let isWatched: Bool
+    let onSetWatched: ((Bool) async -> Bool)?
+    let personalItems: PersonalListMenuItems?
+    let onRemoveFromContinueWatching: (() -> Void)?
+
+    /// False when the card has nothing to show — those cards get no menu at
+    /// all rather than an empty one.
+    var hasAny: Bool {
+        onSetWatched != nil || personalItems != nil || onRemoveFromContinueWatching != nil
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if let onSetWatched {
+            Button {
+                Task { @MainActor in
+                    _ = await onSetWatched(!isWatched)
+                }
+            } label: {
+                Label(
+                    isWatched ? "Mark as Unwatched" : "Mark as Watched",
+                    systemImage: isWatched ? "circle" : "checkmark.circle"
+                )
+            }
+        }
+
+        if let personalItems {
+            personalItems
+        }
+
+        if let onRemoveFromContinueWatching {
+            Button(role: .destructive) {
+                onRemoveFromContinueWatching()
+            } label: {
+                Label("Remove from Continue Watching", systemImage: "xmark.circle")
+            }
+        }
+    }
+}
+
 extension View {
     /// Attaches a long-press context menu with the given favorite /
     /// watchlist items, or leaves the view untouched when `nil` — so

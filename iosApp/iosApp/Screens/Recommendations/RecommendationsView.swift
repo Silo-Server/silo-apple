@@ -59,17 +59,7 @@ struct RecommendationsView: View {
 
                 Spacer(minLength: 8)
 
-                TabTopBarActions(
-                    profile: currentProfile,
-                    onSearch: { router.navigate(to: .search) },
-                    onOpenSettings: { router.navigate(to: .settings) },
-                    onOpenRequests: { router.navigate(to: .requestsHub) },
-                    onSwitchProfile: {
-                        router.switchProfile()
-                    },
-                    onSwitchServer: { router.navigate(to: .serverList) },
-                    onSignOut: { router.signOutAndReset() }
-                )
+                TabTopBarActions(profile: currentProfile, router: router)
             }
             .padding(.horizontal, SiloTheme.padding)
             .padding(.top, SiloTheme.smallPadding)
