@@ -1210,6 +1210,10 @@ struct Library: Codable, Identifiable, Hashable {
     var selectedNavigationIcon: String {
         isMixedLibrary ? "square.stack.3d.up.fill" : "rectangle.stack.fill"
     }
+
+    static func displayOrder(_ lhs: Library, _ rhs: Library) -> Bool {
+        (lhs.sortOrder ?? Int.max, lhs.id) < (rhs.sortOrder ?? Int.max, rhs.id)
+    }
 }
 
 struct LibrariesResponse: Codable {

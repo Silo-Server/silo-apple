@@ -140,23 +140,17 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
         dolbyVisionPolicy: DolbyVisionPolicy.Snapshot = .default,
         selectedPrimarySubtitleTrackId: Int64? = nil
     ) -> PlaybackExecutionPlan {
-        ApplePlaybackRoutePlanner().makeExecutionPlan(
-            input: ApplePlaybackPlannerInput(
-                session: session ?? makeSession(),
-                selectedVersion: version,
-                streamRequest: StreamRequest(
-                    url: Self.streamURL,
-                    headers: ["Authorization": "Bearer pin"],
-                    serverUrl: "https://example.invalid"
-                ),
-                routeRequirements: requirements,
-                selectedAudioTrackId: nil,
-                pendingAudioFfIndex: nil,
-                preferredAudioTrackIndex: nil,
-                selectedPrimarySubtitleTrackId: selectedPrimarySubtitleTrackId,
-                selectedSecondarySubtitleTrackId: nil,
-                dolbyVisionPolicy: dolbyVisionPolicy
-            )
+        makeTestExecutionPlan(
+            session: session ?? makeSession(),
+            version: version,
+            streamRequest: StreamRequest(
+                url: Self.streamURL,
+                headers: ["Authorization": "Bearer pin"],
+                serverUrl: "https://example.invalid"
+            ),
+            routeRequirements: requirements,
+            selectedPrimarySubtitleTrackId: selectedPrimarySubtitleTrackId,
+            dolbyVisionPolicy: dolbyVisionPolicy
         )
     }
 

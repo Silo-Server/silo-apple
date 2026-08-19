@@ -64,22 +64,13 @@ final class ApplePlaybackAudioSelectionRouteTests: XCTestCase {
     }
 
     private func plan(version: FileVersion, session: PlaybackSessionResponse) -> PlaybackExecutionPlan {
-        ApplePlaybackRoutePlanner().makeExecutionPlan(
-            input: ApplePlaybackPlannerInput(
-                session: session,
-                selectedVersion: version,
-                streamRequest: StreamRequest(
-                    url: Self.streamURL,
-                    headers: [:],
-                    serverUrl: "https://example.invalid"
-                ),
-                routeRequirements: .baseline,
-                selectedAudioTrackId: nil,
-                pendingAudioFfIndex: nil,
-                preferredAudioTrackIndex: nil,
-                selectedPrimarySubtitleTrackId: nil,
-                selectedSecondarySubtitleTrackId: nil,
-                dolbyVisionPolicy: .default
+        makeTestExecutionPlan(
+            session: session,
+            version: version,
+            streamRequest: StreamRequest(
+                url: Self.streamURL,
+                headers: [:],
+                serverUrl: "https://example.invalid"
             )
         )
     }

@@ -854,9 +854,7 @@ struct TVMainTabView: View {
     private func libraries(of type: TVLibraryTabType) -> [Library] {
         libraries
             .filter { type.matches($0) }
-            .sorted {
-                ($0.sortOrder ?? Int.max, $0.id) < ($1.sortOrder ?? Int.max, $1.id)
-            }
+            .sorted(by: Library.displayOrder)
     }
 
     /// The library a type tab is currently scoped to (§3.1): the in-session

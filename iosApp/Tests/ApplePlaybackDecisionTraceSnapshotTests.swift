@@ -129,22 +129,13 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
         _ version: FileVersion,
         session: PlaybackSessionResponse? = nil
     ) -> PlaybackExecutionPlan {
-        ApplePlaybackRoutePlanner().makeExecutionPlan(
-            input: ApplePlaybackPlannerInput(
-                session: session ?? makeSession(),
-                selectedVersion: version,
-                streamRequest: StreamRequest(
-                    url: Self.streamURL,
-                    headers: ["Authorization": "Bearer trace"],
-                    serverUrl: "https://example.invalid"
-                ),
-                routeRequirements: .baseline,
-                selectedAudioTrackId: nil,
-                pendingAudioFfIndex: nil,
-                preferredAudioTrackIndex: nil,
-                selectedPrimarySubtitleTrackId: nil,
-                selectedSecondarySubtitleTrackId: nil,
-                dolbyVisionPolicy: .default
+        makeTestExecutionPlan(
+            session: session ?? makeSession(),
+            version: version,
+            streamRequest: StreamRequest(
+                url: Self.streamURL,
+                headers: ["Authorization": "Bearer trace"],
+                serverUrl: "https://example.invalid"
             )
         )
     }
