@@ -36,23 +36,9 @@ struct MacPlayerControls: View {
 
             Spacer()
 
-            // Unlike iOS/tvOS the transport bar stays mounted through the
-            // load, so the pill has to stand down while the loading overlay
-            // owns the screen — otherwise a start shows two spinners at once.
-            if viewModel.isBuffering, !viewModel.isLoading {
-                HStack(spacing: 7) {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.white)
-                    Text("Buffering")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.82))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Capsule().fill(.ultraThinMaterial))
-            }
-
+            // No buffering pill here: `PlayerBufferingCapsule` reports it from
+            // the shell, just below this bar, for the start and every rebuffer
+            // alike.
             iconButton("xmark", help: "Close", action: onDismiss)
         }
         .padding(.horizontal, 14)

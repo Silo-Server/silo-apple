@@ -95,10 +95,6 @@ struct PlayerView: View {
                 } else {
                     playerSurface()
 
-                    if viewModel.isLoading {
-                        playbackLoadingIndicator
-                    }
-
                     #if os(tvOS)
                     // Focus sink with UIKit-backed press capture. Mounted
                     // whenever the transport overlay is hidden OR a seek
@@ -228,6 +224,17 @@ struct PlayerView: View {
                         )
                     }
                     #endif
+
+                    // The player's single loading/buffering surface, for the
+                    // start (`isLoading`) and every rebuffer after it
+                    // (`isBuffering`) alike. Sits above the transports so a
+                    // rebuffer with the controls up still reports, and below
+                    // the notices so a notice keeps the corner when both want
+                    // it. Being inside this branch is what suppresses it over
+                    // Up Next and the error view.
+                    if viewModel.isLoading || viewModel.isBuffering {
+                        PlayerBufferingCapsule()
+                    }
 
                     #if os(tvOS)
                     if let identity = remoteIdentityNotice {
@@ -493,25 +500,6 @@ struct PlayerView: View {
         .transition(.opacity)
     }
     #endif
-
-    private var playbackLoadingIndicator: some View {
-        ProgressView()
-            .progressViewStyle(.circular)
-            .tint(.white)
-            #if os(tvOS)
-            .scaleEffect(1.7)
-            .frame(width: 86, height: 86)
-            #else
-            .scaleEffect(1.3)
-            .frame(width: 62, height: 62)
-            #endif
-            .siloPlayerGlass(in: .rect(cornerRadius: 8))
-            .shadow(color: .black.opacity(0.45), radius: 24, y: 10)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .allowsHitTesting(false)
-            .transition(.opacity)
-            .accessibilityLabel("Loading video")
-    }
 
     @ViewBuilder
     private func errorView(_ error: String) -> some View {
